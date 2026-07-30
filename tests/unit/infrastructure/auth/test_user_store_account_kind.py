@@ -61,7 +61,7 @@ class TestAccountKindRoundTrip:
     async def test_update_preserves_account_kind(self):
         """The regression: updating a service account must not demote it.
 
-        Any update — a role change from scripts/auth/promote_to_platform_admin.py, a
+        Any update — a role change from the fm-promote-platform-admin command, a
         display-name edit — used to write account_kind='individual' back.
         """
         store, repo = _store(_repo_user("slack"))
@@ -98,7 +98,7 @@ class TestUpdatePreservesTheStoredRecord:
     DevUser is a partial view; ``UserRepository.update`` writes every column.
     Rebuilding a User from a DevUser wiped the password hash, the SSO linkage
     and the verification/login timestamps — so a role change through
-    scripts/auth/promote_to_platform_admin.py locked the account out of BOTH auth modes.
+    fm-promote-platform-admin locked the account out of BOTH auth modes.
     """
 
     async def test_update_preserves_credentials_and_identity_links(self):
@@ -114,7 +114,7 @@ class TestUpdatePreservesTheStoredRecord:
         store, repo = _store(stored)
         user = await store.get_user("user-123")
 
-        user.roles = ["user", "admin"]  # what promote_to_platform_admin.py does
+        user.roles = ["user", "admin"]  # what fm-promote-platform-admin does
         await store.update_user(user)
 
         written = repo.update.call_args.args[0]

@@ -90,6 +90,7 @@ faultmaven/
 │   ├── shims/              # Compatibility shims (enterprise feature flags)
 │   └── concurrency/        # Report lock manager
 ├── bootstrap/              # Application startup and service factories
+├── cli/                    # Operator console entrypoints (fm-*, [project.scripts])
 ├── config/                 # Pydantic-settings configuration
 │   ├── settings.py         # Main settings with validation
 │   ├── presets.py          # Configuration presets
@@ -446,19 +447,34 @@ python scripts/frontend_verification_smoke_test.py  # Frontend smoke test
 ./scripts/run_load_tests.sh                # Run Locust load tests
 ./scripts/test_integration_logging.sh      # Test integration logging
 
-# User Management (scripts/auth/)
+# User Management — dev-only, run from a checkout (scripts/auth/)
 python scripts/auth/create_user.py         # Create a new user
 python scripts/auth/list_users.py          # List all users
 python scripts/auth/list_users_fast.py     # Fast user listing
-python scripts/auth/promote_to_platform_admin.py    # Promote user to platform admin (deployment operator)
-python scripts/auth/demote_from_platform_admin.py   # Remove platform admin privileges
-python scripts/auth/provision_sso_org.py            # Provision a Cloud tenant + WorkOS org mapping (TENANT_PROVIDER=multi)
 
 # Security (scripts/security/)
 ./scripts/security/cleanup_exposed_keys_from_history.sh  # Clean secrets from git history
 
 # Local LLM
 ./scripts/local_llm_service.sh             # Manage local LLM service (Ollama/vLLM)
+```
+
+**Operator console entrypoints (`faultmaven/cli/`, `[project.scripts]`):**
+
+Deployment procedures ship *with the installed package*, not as files under
+`scripts/` — the wheel excludes `scripts/` and the image never COPYs it, so a
+path-based in-pod invocation cannot work (#887). These land on `PATH` wherever
+FaultMaven is installed (API pod; locally after `pip install -e .`):
+
+```bash
+fm-promote-platform-admin <username>       # Promote user to platform admin (deployment operator)
+fm-demote-platform-admin <username>        # Remove platform admin privileges
+fm-provision-service-account -u slack-agent  # Mint a service-account OAuth refresh credential (AUTH_MODE=oauth)
+fm-provision-sso-org --name ... --slug ... --workos-org-id org_...  # Provision a Cloud tenant + WorkOS org mapping (TENANT_PROVIDER=multi)
+fm-reset-kb --dry-run                      # Wipe/re-bootstrap the KB (refuses under TENANT_PROVIDER=multi)
+
+# In a pod:
+kubectl exec -it deploy/faultmaven-api -- fm-provision-sso-org --name ...
 ```
 
 ## Testing
@@ -472,6 +488,7 @@ tests/
 │   ├── api/           # API endpoints, middleware
 │   ├── infrastructure/ # Persistence, logging
 │   ├── services/      # Service layer
+│   ├── cli/           # Operator console entrypoints (fm-*)
 │   └── core/          # Investigation engine
 ├── integration/       # Cross-layer workflows
 │   ├── api/           # API integration tests
@@ -788,7 +805,8 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `faultmaven/modules/knowledge/domain/services/conversion_service.py` | Document-to-runbook conversion pipeline |
 | `faultmaven/modules/knowledge/api/conversion_routes.py` | Conversion API endpoints (feature-flagged) |
 | `.env.example` | Configuration template |
-| `pyproject.toml` | Dependencies and tool config |
+| `pyproject.toml` | Dependencies, tool config, and `[project.scripts]` (the `fm-*` operator entrypoints) |
+| `faultmaven/cli/` | Operator console entrypoint modules targeted by `[project.scripts]` |
 | `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 31 tables) |
 | `faultmaven/config/llm_config_overrides.py` | Config override application + hot-reload (cloud mode only) |
 | `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, features, connection test |

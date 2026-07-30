@@ -26,7 +26,11 @@ This document describes FaultMaven's defense mechanisms against malicious or mal
 - Per-endpoint limits: Specific limits for high-cost operations
 - Global limits: 1000 requests/minute across all clients
 
-**Implementation**: Redis-backed sliding window rate limiter with progressive penalties.
+**Implementation**: Redis-backed sliding window rate limiter. The window counts
+**requests**, not time buckets — one sorted-set entry per request inside it, so a
+limit of L admits exactly L requests however they distribute across seconds. See
+[rate-limiting-sliding-window.md](../../architecture/security/rate-limiting-sliding-window.md)
+for the algorithm and its invariants.
 
 **Configuration**:
 ```python
@@ -69,12 +73,16 @@ class RateLimitMiddleware:
     Multi-level rate limiting with Redis backend
 
     Features:
-    - Sliding window algorithm
-    - Progressive penalties (exponential backoff)
+    - Sliding window algorithm (counts requests, not seconds)
     - Multiple limit types (global, per-session, per-endpoint)
     - Graceful degradation when Redis unavailable
     """
 ```
+
+**`Retry-After` is currently a flat window duration.** The penalty multipliers
+below are computed but never escalate — the violation counter they key off is
+read before its `INCR` has resolved, so every refusal takes the multiplier for a
+first violation. Escalation is tracked in #926.
 
 **Headers Added**:
 - `X-RateLimit-Limit`: Current limit
@@ -164,7 +172,9 @@ ENDPOINT_RATE_LIMITS = {
     "title_generation": 1,  # Special case: 1 per 5 minutes
 }
 
-# Progressive penalty multipliers
+# Progressive penalty multipliers. Configured but not yet reached: the
+# violation counter is always read as 1, so the effective multiplier is 1.0
+# and `Retry-After` is the window duration plus jitter (#926).
 PENALTY_MULTIPLIERS = {
     "first_violation": 2.0,    # 2x longer wait
     "second_violation": 4.0,   # 4x longer wait
@@ -198,7 +208,14 @@ PROTECTION_METRICS = {
 
 ### Graceful Degradation
 
-1. **Redis Unavailable**: Fall back to in-memory rate limiting
+1. **Redis Unavailable**: the limiter walks a ladder — the shared application
+   Redis client, then a client built by the central factory, then (only when
+   `PROTECTION_RATE_LIMIT_FAIL_OPEN=true`, the default) an in-process FakeRedis
+   stand-in, which still enforces every limit but **per replica**, so the
+   effective ceiling is the configured limit times the replica count. There is
+   no separate in-memory limiter. With `PROTECTION_RATE_LIMIT_FAIL_OPEN=false`
+   the limiter refuses the stand-in and requests are answered `503` instead
+   (liveness and readiness probes are exempt — a 503'd probe kills the pod).
 2. **Timeout Service Down**: Continue with warnings
 3. **High System Load**: Increase rate limit strictness
 

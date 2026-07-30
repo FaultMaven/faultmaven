@@ -1,4 +1,4 @@
-"""``scripts/auth/provision_sso_org.py`` refuses to bind the wrong tenants (#869).
+"""``faultmaven.cli.provision_sso_org`` refuses to bind the wrong tenants (#869).
 
 The script resolves an organization by ``(enterprise, slug)`` and the enterprise
 itself by slug, so a new customer whose slug collides with an existing one
@@ -19,13 +19,13 @@ Exercised against a real in-memory SQLite engine built from the ORM metadata,
 so the refusals are checked against the schema that actually ships.
 """
 
-import importlib.util
 from datetime import datetime, timezone
-from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from faultmaven.cli import provision_sso_org
+from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.infrastructure.persistence.models import (
     Base,
     EnterpriseModel,
@@ -35,20 +35,9 @@ from faultmaven.infrastructure.persistence.models import (
 
 pytestmark = pytest.mark.unit
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = REPO_ROOT / "scripts" / "auth" / "provision_sso_org.py"
-
 ENTERPRISE_ID = "33333333-3333-3333-3333-333333333333"
 ORG_A = "22222222-2222-2222-2222-222222222222"
 ORG_B = "55555555-5555-5555-5555-555555555555"
-
-
-@pytest.fixture(scope="module")
-def mod():
-    spec = importlib.util.spec_from_file_location("provision_sso_org", SCRIPT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _now():
@@ -121,13 +110,13 @@ async def _mapping_rows(session):
 # =============================================================================
 
 
-async def test_refuses_to_bind_an_org_already_claimed_by_another_idp_org(mod, session):
+async def test_refuses_to_bind_an_org_already_claimed_by_another_idp_org(session):
     """The slug-collision alarm: this tenant already belongs to someone else's
     IdP organization, so binding a second one would pool two customers."""
     await _seed_mapping(session, "org_INCUMBENT", ORG_A)
 
-    with pytest.raises(mod.OrgAlreadyClaimed) as exc:
-        await mod._ensure_mapping(
+    with pytest.raises(provision_sso_org.OrgAlreadyClaimed) as exc:
+        await provision_sso_org._ensure_mapping(
             session, provider_org_id="org_NEWCOMER", organization_id=ORG_A
         )
 
@@ -136,27 +125,27 @@ async def test_refuses_to_bind_an_org_already_claimed_by_another_idp_org(mod, se
     assert exc.value.requested_by == "org_NEWCOMER"
 
 
-async def test_the_reverse_claim_refusal_writes_nothing(mod, session):
+async def test_the_reverse_claim_refusal_writes_nothing(session):
     """A refusal must not leave a partial binding behind."""
     await _seed_mapping(session, "org_INCUMBENT", ORG_A)
 
-    with pytest.raises(mod.OrgAlreadyClaimed):
-        await mod._ensure_mapping(
+    with pytest.raises(provision_sso_org.OrgAlreadyClaimed):
+        await provision_sso_org._ensure_mapping(
             session, provider_org_id="org_NEWCOMER", organization_id=ORG_A
         )
 
     assert await _mapping_rows(session) == [("workos", "org_INCUMBENT", ORG_A)]
 
 
-async def test_the_refusal_replaces_a_raw_integrity_error(mod, session):
+async def test_the_refusal_replaces_a_raw_integrity_error(session):
     """Without the reverse check this same call died on the UNIQUE constraint
     as an unhandled traceback. Pin that it is now a typed refusal."""
     from sqlalchemy.exc import IntegrityError
 
     await _seed_mapping(session, "org_INCUMBENT", ORG_A)
 
-    with pytest.raises(mod.OrgAlreadyClaimed) as exc:
-        await mod._ensure_mapping(
+    with pytest.raises(provision_sso_org.OrgAlreadyClaimed) as exc:
+        await provision_sso_org._ensure_mapping(
             session, provider_org_id="org_NEWCOMER", organization_id=ORG_A
         )
 
@@ -168,11 +157,11 @@ async def test_the_refusal_replaces_a_raw_integrity_error(mod, session):
 # =============================================================================
 
 
-async def test_refuses_to_repoint_an_idp_org_at_a_different_organization(mod, session):
+async def test_refuses_to_repoint_an_idp_org_at_a_different_organization(session):
     await _seed_mapping(session, "org_01H", ORG_A)
 
-    with pytest.raises(mod.RemapRefused) as exc:
-        await mod._ensure_mapping(
+    with pytest.raises(provision_sso_org.RemapRefused) as exc:
+        await provision_sso_org._ensure_mapping(
             session, provider_org_id="org_01H", organization_id=ORG_B
         )
 
@@ -187,8 +176,8 @@ async def test_refuses_to_repoint_an_idp_org_at_a_different_organization(mod, se
 # =============================================================================
 
 
-async def test_creates_the_mapping_when_neither_side_is_bound(mod, session):
-    created = await mod._ensure_mapping(
+async def test_creates_the_mapping_when_neither_side_is_bound(session):
+    created = await provision_sso_org._ensure_mapping(
         session, provider_org_id="org_01H", organization_id=ORG_A
     )
 
@@ -196,11 +185,11 @@ async def test_creates_the_mapping_when_neither_side_is_bound(mod, session):
     assert await _mapping_rows(session) == [("workos", "org_01H", ORG_A)]
 
 
-async def test_re_running_the_same_binding_is_a_quiet_no_op(mod, session):
+async def test_re_running_the_same_binding_is_a_quiet_no_op(session):
     """Idempotence: same IdP org, same organization, nothing written, no raise."""
     await _seed_mapping(session, "org_01H", ORG_A)
 
-    created = await mod._ensure_mapping(
+    created = await provision_sso_org._ensure_mapping(
         session, provider_org_id="org_01H", organization_id=ORG_A
     )
 
@@ -208,11 +197,11 @@ async def test_re_running_the_same_binding_is_a_quiet_no_op(mod, session):
     assert await _mapping_rows(session) == [("workos", "org_01H", ORG_A)]
 
 
-async def test_a_second_organization_may_be_bound_to_its_own_idp_org(mod, session):
+async def test_a_second_organization_may_be_bound_to_its_own_idp_org(session):
     """The refusals are per-pair — an unrelated tenant is unaffected."""
     await _seed_mapping(session, "org_01H", ORG_A)
 
-    created = await mod._ensure_mapping(
+    created = await provision_sso_org._ensure_mapping(
         session, provider_org_id="org_01J", organization_id=ORG_B
     )
 
@@ -227,7 +216,7 @@ async def test_a_second_organization_may_be_bound_to_its_own_idp_org(mod, sessio
 # =============================================================================
 
 
-async def test_the_organization_is_bound_as_tenant_before_its_insert(mod, session):
+async def test_the_organization_is_bound_as_tenant_before_its_insert(session):
     """`organizations` is RLS-tenanted and its policy doubles as WITH CHECK, so
     the INSERT has to run inside the new organization's own scope."""
     from faultmaven.config.constants import STANDALONE_ORG_ID
@@ -245,7 +234,7 @@ async def test_the_organization_is_bound_as_tenant_before_its_insert(mod, sessio
 
     session.add = spy_add
     try:
-        organization, created = await mod._get_or_create_organization(
+        organization, created = await provision_sso_org._get_or_create_organization(
             session, enterprise_id=ENTERPRISE_ID, name="Acme New", slug="acme-new"
         )
     finally:
@@ -257,13 +246,13 @@ async def test_the_organization_is_bound_as_tenant_before_its_insert(mod, sessio
     assert bound_at_insert == [organization.organization_id]
 
 
-async def test_resolving_an_existing_organization_also_binds_it(mod, session):
+async def test_resolving_an_existing_organization_also_binds_it(session):
     from faultmaven.config.constants import STANDALONE_ORG_ID
     from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
 
     set_current_org_id(STANDALONE_ORG_ID)
     try:
-        organization, created = await mod._get_or_create_organization(
+        organization, created = await provision_sso_org._get_or_create_organization(
             session, enterprise_id=ENTERPRISE_ID, name="Acme A", slug="acme-a"
         )
         assert created is False
@@ -271,3 +260,61 @@ async def test_resolving_an_existing_organization_also_binds_it(mod, session):
         assert get_current_org_id() == ORG_A
     finally:
         set_current_org_id(STANDALONE_ORG_ID)
+
+
+# =============================================================================
+# The role preflight (#887) — refuses before any write
+# =============================================================================
+
+
+async def test_provision_refuses_when_the_role_is_rls_scoped(monkeypatch, capsys):
+    """The documented `kubectl exec` recipe inherits the pod's DATABASE_URL,
+    which startup guarantees is the RLS-scoped application role. Provisioning
+    must refuse on that role — and refuse *before* opening a session, so a
+    half-provisioned tenant cannot be left behind."""
+
+    async def refuse(**_kwargs):
+        raise DeploymentCoherenceError(
+            "connected as 'faultmaven_app' ... pass DATABASE_URL explicitly"
+        )
+
+    def explode(*_a, **_kw):  # pragma: no cover - must never be reached
+        raise AssertionError("a session was opened after the preflight refused")
+
+    monkeypatch.setattr(
+        provision_sso_org, "assert_provisioning_db_role_bypasses_rls", refuse
+    )
+    monkeypatch.setattr(provision_sso_org, "get_db_session", explode)
+
+    ok = await provision_sso_org.provision(
+        name="Acme", slug="acme", workos_org_id="org_01H", enterprise_id=None
+    )
+
+    assert ok is False
+    assert "faultmaven_app" in capsys.readouterr().out
+
+
+async def test_provision_proceeds_when_the_role_is_rls_exempt(monkeypatch):
+    """The gate is not a wall: an owner role passes the preflight and the run
+    reaches the session. (Mutation guard — if the gate were inverted, or always
+    raised, this test would fail while the refusal test above still passed.)"""
+    reached = []
+
+    async def allow(**_kwargs):
+        return "faultmaven"
+
+    def record(*_a, **_kw):
+        reached.append(True)
+        raise RuntimeError("stop after the preflight")
+
+    monkeypatch.setattr(
+        provision_sso_org, "assert_provisioning_db_role_bypasses_rls", allow
+    )
+    monkeypatch.setattr(provision_sso_org, "get_db_session", record)
+
+    with pytest.raises(RuntimeError, match="stop after the preflight"):
+        await provision_sso_org.provision(
+            name="Acme", slug="acme", workos_org_id="org_01H", enterprise_id=None
+        )
+
+    assert reached == [True]

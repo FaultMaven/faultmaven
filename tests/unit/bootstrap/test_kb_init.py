@@ -269,6 +269,159 @@ async def test_bootstrap_re_ingests_on_causes_change_with_unchanged_markdown(
     knowledge_service._vector_store.delete_documents_by_parent_id.assert_awaited()
 
 
+# ``knowledge_items.metadata`` is ``JsonBlob`` =
+# ``Text().with_variant(JSONB, "postgresql")``. Rows written by
+# ``KnowledgeItemRepository`` read back as a *str* on BOTH backends (it binds an
+# already-serialized ``json.dumps(...)``; JSONB stores that as a JSON string
+# scalar), while a writer binding a real object yields a *dict*. Both shapes must
+# reach the same verdict, or the idempotency comparison silently degrades — it
+# did: reading only the dict shape meant every runbook re-ingested on every boot.
+# Parameterising by the STORED SHAPE is the point; a dict-only fixture asserts a
+# shape the production writer never produces.
+CAUSES_RECORD = [{"cause_letter": "A", "cause_name": "Same cause"}]
+METADATA_SHAPES = [
+    pytest.param({"causes": CAUSES_RECORD}, id="postgresql-jsonb-dict"),
+    pytest.param(json.dumps({"causes": CAUSES_RECORD}), id="sqlite-text-json-string"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored_metadata", METADATA_SHAPES)
+async def test_bootstrap_skips_when_causes_match_in_either_metadata_shape(
+    tmp_path: Path, stored_metadata
+):
+    """Matching causes must skip regardless of how the column deserialises.
+
+    Guards the SQLite half specifically: a JSON-string metadata value that
+    decodes to the pack's causes is UNCHANGED, so the runbook must be skipped —
+    not deleted and rewritten on every boot.
+    """
+    pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+
+    existing = MagicMock()
+    existing.content = RUNBOOK_MD  # markdown unchanged → content hash matches
+    existing.knowledge_metadata = stored_metadata
+
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=existing),
+        organization_id="org-test",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+
+    assert result.skipped_unchanged == ["global/example.md"]
+    assert result.ingested == []
+    knowledge_service.ingest_runbook.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored_metadata",
+    [
+        pytest.param(
+            {"causes": [{"cause_letter": "A", "cause_name": "OLD cause"}]},
+            id="postgresql-jsonb-dict",
+        ),
+        pytest.param(
+            json.dumps({"causes": [{"cause_letter": "A", "cause_name": "OLD cause"}]}),
+            id="sqlite-text-json-string",
+        ),
+    ],
+)
+async def test_bootstrap_re_ingests_on_causes_drift_in_either_metadata_shape(
+    tmp_path: Path, stored_metadata
+):
+    """The converse of the skip: genuine causes drift still re-ingests in both
+    shapes, so the fix cannot have turned the comparison into a constant."""
+    pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+    knowledge_service._vector_store = MagicMock()
+    knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+    existing = MagicMock()
+    existing.content = RUNBOOK_MD
+    existing.knowledge_metadata = stored_metadata
+
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=existing),
+        organization_id="org-test",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+
+    assert result.ingested == ["global/example.md"]
+    assert result.skipped_unchanged == []
+    # Stale chunks must leave ChromaDB before the re-ingest, on both shapes.
+    knowledge_service._vector_store.delete_documents_by_parent_id.assert_awaited()
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ({"causes": CAUSES_RECORD}, {"causes": CAUSES_RECORD}),
+        (json.dumps({"causes": CAUSES_RECORD}), {"causes": CAUSES_RECORD}),
+        (None, {}),
+        ("", {}),
+        ("not json at all", {}),
+        ("[1, 2, 3]", {}),  # valid JSON, wrong container
+        (12345, {}),  # non-str, non-dict
+    ],
+)
+def test_decode_metadata_normalises_every_stored_shape(value, expected):
+    """``_decode_metadata`` always yields a dict, so the caller's ``.get`` is
+    safe for absent, malformed, and wrong-container values alike."""
+    assert kb_init._decode_metadata(value) == expected
+
+
+@pytest.mark.asyncio
+async def test_second_bootstrap_over_real_sqlite_skips_everything(
+    fk_on_ingest_service, tmp_path: Path
+):
+    """Two bootstraps over a REAL SQLite session: the second must skip.
+
+    The shape-parameterised tests above encode the SQLite representation as a
+    hand-written constant; this one DERIVES it, by writing through the real
+    ``KnowledgeService`` and reading back through the real ORM. That is what the
+    prior fixtures could not do — they set ``knowledge_metadata`` to a dict (the
+    PostgreSQL shape), and the persistence-side causes test read back through
+    ``DatabaseKnowledgeItemRepository``, which parses the JSON. Neither ever put
+    a real SQLite row in front of ``kb_init``, which is how a permanently-false
+    ``causes_unchanged`` shipped.
+
+    Pinning the round trip rather than the representation also means a future
+    change to the ``JsonBlob`` variant (or a third backend) fails here instead of
+    silently re-ingesting the whole KB on every boot.
+    """
+    svc, factory = fk_on_ingest_service
+    pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+
+    first = await kb_init.bootstrap_kb(
+        knowledge_service=svc,
+        db_session_factory=factory,
+        organization_id="org-1",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+    assert first.ingested == ["global/example.md"], first
+    assert first.failed == []
+
+    second = await kb_init.bootstrap_kb(
+        knowledge_service=svc,
+        db_session_factory=factory,
+        organization_id="org-1",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+    assert second.skipped_unchanged == ["global/example.md"], second
+    assert second.ingested == []
+    assert second.pruned == []
+
+
 @pytest.mark.asyncio
 async def test_bootstrap_raises_on_zero_chunks(tmp_path: Path):
     """If ingest_runbook reports 0 chunks, the runbook is recorded as failed

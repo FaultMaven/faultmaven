@@ -520,7 +520,7 @@ class ISSOOrgMappingRepository(ABC):
     equivalence, never tenant data.
 
     Operators create the mapping out of band
-    (``scripts/auth/provision_sso_org.py``); there is no self-service path, so
+    (the ``fm-provision-sso-org`` command); there is no self-service path, so
     an unmapped IdP organization is a fail-closed login, not a JIT tenant.
     """
 

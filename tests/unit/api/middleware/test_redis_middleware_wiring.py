@@ -211,6 +211,12 @@ class _ClosableClient:
     async def ping(self):
         return True
 
+    def register_script(self, script):
+        async def _run(keys=None, args=None):
+            raise AssertionError("this stand-in is never checked against")
+
+        return _run
+
     async def close(self):
         self.closed = True
 
@@ -632,14 +638,21 @@ class _DeadClient:
         self.ping_calls += 1
         raise ConnectionError("connection reset by peer")
 
-    async def eval(self, *args, **kwargs):
-        self.eval_calls += 1
-        raise ConnectionError("connection reset by peer")
+    def register_script(self, script):
+        """Registering succeeds; running the script is what fails.
 
-    async def zremrangebyscore(self, *args, **kwargs):
-        raise ConnectionError("connection reset by peer")
+        redis-py's ``register_script`` is a local operation — it only precomputes
+        the SHA — so a dead server cannot make it fail. The failure surfaces on
+        the EVALSHA, i.e. on the check path.
+        """
 
-    async def zcard(self, *args, **kwargs):
+        async def _run(keys=None, args=None):
+            self.eval_calls += 1
+            raise ConnectionError("connection reset by peer")
+
+        return _run
+
+    async def zcount(self, *args, **kwargs):
         raise ConnectionError("connection reset by peer")
 
 
@@ -829,21 +842,25 @@ async def test_an_isolated_check_failure_does_not_demote(monkeypatch):
     await mw._initialize(_http_request(app=_app(shared), client=ip))
 
     limiter = mw.rate_limiter
-    real_eval = shared.eval
+    real_script = limiter._window_script
     calls = {"n": 0}
 
-    async def _flaky_eval(*args, **kwargs):
+    async def _flaky_script(keys=None, args=None):
         calls["n"] += 1
         # Fail on every other call: never CHECK_FAILURE_DEMOTION_THRESHOLD in a
         # row, so an intermittent error must never accumulate into a demotion.
         if calls["n"] % 2 == 1:
             raise ConnectionError("transient timeout")
-        return await real_eval(*args, **kwargs)
+        return await real_script(keys=keys, args=args)
 
-    monkeypatch.setattr(shared, "eval", _flaky_eval)
+    # The check path snapshots ``_window_script``, so wrapping it here is the
+    # seam the failure actually travels through — patching the client's raw
+    # ``eval`` would miss the registered script's EVALSHA entirely.
+    monkeypatch.setattr(limiter, "_window_script", _flaky_script)
 
     await _drive(mw, ip, 12, state_client=shared)
 
+    assert calls["n"] >= 12, "the flaky script was never exercised — dead gate"
     assert limiter.demotion_generation == 0, "an intermittent error demoted the client"
     assert mw._degraded is False
     assert limiter._redis is shared
@@ -864,17 +881,23 @@ class _KillableClient:
         self._check()
         return True
 
-    async def eval(self, *args, **kwargs):
-        self._check()
-        return await self._backing.eval(*args, **kwargs)
+    def register_script(self, script):
+        """Delegate registration, but gate every *run* on liveness.
 
-    async def zremrangebyscore(self, *args, **kwargs):
-        self._check()
-        return await self._backing.zremrangebyscore(*args, **kwargs)
+        Registration is local (it only precomputes the SHA), so it keeps working
+        while the server is dead; the death has to surface on the EVALSHA.
+        """
+        registered = self._backing.register_script(script)
 
-    async def zcard(self, *args, **kwargs):
+        async def _run(keys=None, args=None):
+            self._check()
+            return await registered(keys=keys, args=args)
+
+        return _run
+
+    async def zcount(self, *args, **kwargs):
         self._check()
-        return await self._backing.zcard(*args, **kwargs)
+        return await self._backing.zcount(*args, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -937,6 +960,10 @@ class _DyingPoolClient:
     the wire block until ``socket_timeout`` (10s), while commands issued after
     the death fail immediately — so a failure *issued* before a demotion can
     *land* after it, against whatever client has replaced the dead one.
+
+    ``register_script`` succeeds — registration is local (it only precomputes
+    the SHA), so a dead server cannot make it fail. The hang-then-refuse
+    surfaces on the EVALSHA, i.e. when the script is run.
     """
 
     def __init__(self):
@@ -946,10 +973,13 @@ class _DyingPoolClient:
     async def ping(self):
         raise ConnectionError("connection reset by peer")
 
-    async def eval(self, *args, **kwargs):
-        if self.hang:
-            await self._released.wait()  # stands for the socket_timeout wait
-        raise ConnectionError("connection reset by peer")
+    def register_script(self, script):
+        async def _run(keys=None, args=None):
+            if self.hang:
+                await self._released.wait()  # stands for the socket_timeout wait
+            raise ConnectionError("connection reset by peer")
+
+        return _run
 
     def time_out_the_in_flight_commands(self):
         self._released.set()
@@ -1161,8 +1191,11 @@ class _SlowToRefuseClient:
         await self.ping_may_return.wait()
         raise ConnectionError("connection reset by peer")
 
-    async def eval(self, *args, **kwargs):
-        raise ConnectionError("connection reset by peer")
+    def register_script(self, script):
+        async def _run(keys=None, args=None):
+            raise ConnectionError("connection reset by peer")
+
+        return _run
 
 
 @pytest.mark.asyncio
@@ -1216,3 +1249,32 @@ async def test_concurrent_arrivals_wait_for_an_in_flight_re_entry(monkeypatch):
         f"{statuses.count(200)} of {len(statuses)} requests passed during the "
         "re-entry window; the global limit is 1"
     )
+
+
+# --------------------------------------------------------------------------- #
+# The limit the window actually enforces (fm#920)
+#
+# Every enforcement test above uses ``global_requests=1``, the one limit value
+# where counting requests and counting distinct seconds are indistinguishable.
+# See docs/architecture/security/rate-limiting-sliding-window.md.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_the_global_limit_refuses_past_the_configured_request_count(monkeypatch):
+    """Five rapid requests from one IP against a limit of 3: three pass, two 429."""
+    shared = fakeredis_aio.FakeRedis(decode_responses=True)
+
+    async def _never(redis_url=None):
+        raise AssertionError("the shared client from app.state was not adopted")
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _never)
+
+    mw = RateLimitMiddleware(
+        app=_asgi_app, settings=_limited_settings(global_requests=3)
+    )
+
+    statuses = await _drive(mw, _unique_client(), 5, state_client=shared)
+
+    assert statuses == [200, 200, 200, 429, 429], statuses

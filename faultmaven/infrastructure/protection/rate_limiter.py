@@ -9,6 +9,7 @@ import asyncio
 import logging
 import random
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
@@ -46,6 +47,54 @@ CHECK_FAILURE_DEMOTION_THRESHOLD = 3
 # catch-all logged once per check — up to four lines per request, indefinitely.
 CHECK_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 
+# The sliding-window check, as one atomic script: prune, count, refuse without
+# inserting, otherwise insert and refresh the TTL. It generates neither time nor
+# randomness — the caller passes both in, so the script stays deterministic.
+_WINDOW_SCRIPT = """
+local key = KEYS[1]
+local window_start = ARGV[1]
+local score = ARGV[2]
+local member = ARGV[3]
+local limit = tonumber(ARGV[4])
+local ttl = tonumber(ARGV[5])
+
+-- Remove entries that have fallen out of the window
+redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
+
+-- Count the requests still inside it
+local current_count = redis.call('ZCARD', key)
+
+-- Check if limit exceeded. Nothing is inserted on this path: a refused
+-- request must neither consume quota nor extend the window, or a client
+-- that keeps hammering a limit would hold its own quota shut.
+if current_count >= limit then
+    return {current_count, limit, 0}  -- blocked
+end
+
+-- Add current request
+redis.call('ZADD', key, score, member)
+redis.call('EXPIRE', key, ttl)
+
+return {current_count + 1, limit, 1}  -- allowed
+"""
+
+
+def _format_window_start(now: float, window: int) -> str:
+    """The window's lower edge, formatted for Redis.
+
+    One helper for both the enforcement and the status path so the two cannot
+    drift apart on where the window begins. Formatted to a fixed number of
+    decimals rather than handed over as a Lua number: Redis parses the string as
+    a double, so sub-second precision cannot be lost to Lua's default number
+    formatting.
+
+    The bound itself is *inclusive* on the enforcement path — the prune removes
+    entries scored at or below it — which makes the window the half-open interval
+    (now − window, now]. The status path counts from the exclusive form of the
+    same bound so it sees exactly the entries the prune would have left.
+    """
+    return f"{now - window:.6f}"
+
 
 class RedisRateLimiter:
     """
@@ -73,6 +122,11 @@ class RedisRateLimiter:
 
         # Redis connection
         self._redis = None
+        # The window script, registered against ``_redis`` once per adoption.
+        # redis-py's Script object caches the SHA and calls EVALSHA, reloading
+        # the body only on NOSCRIPT, so the script text is not re-sent on every
+        # request the way ``eval`` re-sent it.
+        self._window_script = None
         # Whether this limiter opened ``_redis`` itself and may therefore close
         # it. An adopted client belongs to the composition root.
         self._owns_client = False
@@ -342,6 +396,9 @@ class RedisRateLimiter:
         *next* client's death is never declared, and the ladder would be entered
         exactly once in the process's life.
 
+        The window script is registered here for the same reason: it is bound to
+        one client, so a rung change has to re-register it.
+
         The epoch bump is what makes checks still in flight against the outgoing
         client stop counting: it is monotonic rather than an identity test, so
         re-adopting the *same* object after a recovery still opens a new epoch
@@ -350,6 +407,7 @@ class RedisRateLimiter:
         from faultmaven.infrastructure.redis_client import is_fakeredis
 
         self._redis = client
+        self._window_script = client.register_script(_WINDOW_SCRIPT)
         self._owns_client = owns
         self._degraded = degraded
         self._adoption_epoch += 1
@@ -384,12 +442,13 @@ class RedisRateLimiter:
         """Check if request is within rate limits."""
         start_time = time.time()
 
-        # Snapshot the client and the epoch it was adopted under together — no
-        # await in between — and issue the command against the snapshot. That is
-        # what makes the outcome attributable: a stamp that still matches
-        # ``_adoption_epoch`` when the check completes names the client the
-        # command actually went to.
-        client = self._redis
+        # Snapshot the window script and the epoch its client was adopted under
+        # together — no await in between — and issue the command against the
+        # snapshot. The registered script is bound to the client it was
+        # registered against, so this is what makes the outcome attributable: a
+        # stamp that still matches ``_adoption_epoch`` when the check completes
+        # names the client the command actually went to.
+        script = self._window_script
         epoch = self._adoption_epoch
 
         try:
@@ -401,7 +460,7 @@ class RedisRateLimiter:
 
             rate_limit_key = f"{self.key_prefix}:{limit_type.value}:{key}"
             result = await self._check_redis_rate_limit(
-                client, rate_limit_key, config, limit_type
+                script, rate_limit_key, config, limit_type
             )
 
             duration = time.time() - start_time
@@ -435,50 +494,39 @@ class RedisRateLimiter:
                 )
 
     async def _check_redis_rate_limit(
-        self, client, key: str, config: RateLimitConfig, limit_type: LimitType
+        self, script, key: str, config: RateLimitConfig, limit_type: LimitType
     ) -> RateLimitResult:
         """Check rate limit using Redis sliding window with Lua script.
 
-        ``client`` is passed in rather than read off ``self`` so the command and
+        ``script`` is passed in rather than read off ``self`` so the command and
         the epoch stamped on its outcome refer to the same client even if an
-        adoption lands mid-check.
+        adoption lands mid-check — the registered script is bound to the client
+        it was registered against.
+
+        The window is a sorted set holding one element per request inside it. Two
+        constraints on those elements are load-bearing:
+
+        - the **score** is wall-clock ``time.time()``, not ``time.monotonic()``:
+          entries are shared across processes and replicas, so scores have to be
+          comparable across hosts;
+        - the **member** is unique per request, so ZADD grows the set instead of
+          updating an existing member's score.
+
+        Both are computed here and passed to the script as arguments (fm#920; see
+        ``docs/architecture/security/rate-limiting-sliding-window.md``).
         """
-        current_time = int(time.time())
-        window_start = current_time - config.window
+        current_time = time.time()
+        member = uuid.uuid4().hex
 
-        lua_script = """
-        local key = KEYS[1]
-        local window_start = tonumber(ARGV[1])
-        local current_time = tonumber(ARGV[2])
-        local limit = tonumber(ARGV[3])
-        local ttl = tonumber(ARGV[4])
-
-        -- Remove expired entries
-        redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
-
-        -- Count current entries
-        local current_count = redis.call('ZCARD', key)
-
-        -- Check if limit exceeded
-        if current_count >= limit then
-            return {current_count, limit, 0}  -- blocked
-        end
-
-        -- Add current request
-        redis.call('ZADD', key, current_time, current_time)
-        redis.call('EXPIRE', key, ttl)
-
-        return {current_count + 1, limit, 1}  -- allowed
-        """
-
-        result = await client.eval(
-            lua_script,
-            1,
-            key,
-            window_start,
-            current_time,
-            config.requests,
-            config.window + 60,
+        result = await script(
+            keys=[key],
+            args=[
+                _format_window_start(current_time, config.window),
+                f"{current_time:.6f}",
+                member,
+                config.requests,
+                config.window + 60,
+            ],
         )
 
         current_count, limit, allowed = result
@@ -549,11 +597,21 @@ class RedisRateLimiter:
         rate_limit_key = f"{self.key_prefix}:{limit_type.value}:{key}"
 
         try:
-            current_time = int(time.time())
-            window_start = current_time - config.window
+            # ZCOUNT rather than prune-then-ZCARD: reporting status must not
+            # mutate the window a concurrent check is deciding against, and a
+            # read-only path is also safe to serve from a read replica.
+            #
+            # The lower bound is the *exclusive* form of the same bound
+            # enforcement prunes by. The prune removes entries scored at or below
+            # it, so the entries it would have left are exactly those scored
+            # strictly above it — and the shared helper keeps the two from
+            # drifting apart on where the window begins.
+            current_time = time.time()
+            window_start = "(" + _format_window_start(current_time, config.window)
 
-            await self._redis.zremrangebyscore(rate_limit_key, "-inf", window_start)
-            current_count = await self._redis.zcard(rate_limit_key)
+            current_count = await self._redis.zcount(
+                rate_limit_key, window_start, "+inf"
+            )
 
             return RateLimitState(
                 key=key,

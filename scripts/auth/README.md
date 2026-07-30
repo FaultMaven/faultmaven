@@ -1,14 +1,44 @@
 # User Management Scripts
 
-This directory contains utilities for managing user accounts and roles in FaultMaven.
+This directory contains **development conveniences** for managing user accounts
+from a repository checkout.
+
+## Operator procedures are console commands, not scripts here
+
+The procedures an operator runs against a real deployment ship *with the
+installed package* as `fm-*` console entrypoints (`faultmaven/cli/`, declared
+under `[project.scripts]`). `scripts/` is excluded from the wheel and never
+copied into the container image, so a path-based in-pod invocation could not
+work (#887). The commands are on `PATH` wherever FaultMaven is installed — in
+the API pod, and locally after `pip install -e .`:
+
+| Command | Source | Purpose |
+|---------|--------|---------|
+| `fm-promote-platform-admin` | `faultmaven/cli/promote_platform_admin.py` | Grant the operator role set to an existing user |
+| `fm-demote-platform-admin` | `faultmaven/cli/demote_platform_admin.py` | Revoke `platform_admin` (leaves org `admin` alone) |
+| `fm-provision-service-account` | `faultmaven/cli/provision_service_account.py` | Mint a service account an OAuth refresh-token credential (`AUTH_MODE=oauth`) |
+| `fm-provision-sso-org` | `faultmaven/cli/provision_sso_org.py` | Provision a Cloud tenant + WorkOS org mapping (`TENANT_PROVIDER=multi`) |
+| `fm-reset-kb` | `faultmaven/cli/reset_kb.py` | Wipe and re-bootstrap the Knowledge Base (standalone/on-prem only) |
+
+In Kubernetes:
+
+```bash
+kubectl exec -it deploy/faultmaven-api -- fm-promote-platform-admin alice
+```
+
+## Dev-only scripts in this directory
+
+`create_user.py`, `list_users.py`, and `list_users_fast.py` are run from a
+checkout against a local database. They are deliberately **not** console
+entrypoints — they are not deployment procedures.
 
 ## Quick Reference
 
 ```bash
-# List all users
+# List all users (dev-only, from a checkout)
 python scripts/auth/list_users.py
 
-# Create a new regular user
+# Create a new regular user (dev-only, from a checkout)
 python scripts/auth/create_user.py --username alice --role user
 
 # Create a new organization admin (tenant-bounded)
@@ -18,24 +48,24 @@ python scripts/auth/create_user.py --username bob --role admin
 python scripts/auth/create_user.py --username carol --role platform_admin
 
 # Promote an existing user to platform admin
-python scripts/auth/promote_to_platform_admin.py alice
+fm-promote-platform-admin alice
 
 # Demote a platform admin back to a regular user
-python scripts/auth/demote_from_platform_admin.py bob
+fm-demote-platform-admin bob
 
 # Mint the Slack service account an OAuth refresh-token credential
 # (AUTH_MODE=oauth only — see docs/operations/security/service-account-credentials.md)
-python scripts/auth/provision_service_account.py --username slack-agent
+fm-provision-service-account --username slack-agent
 
 # Provision a Cloud tenant and map a WorkOS organization onto it
 # (TENANT_PROVIDER=multi only — see docs/operations/sso-org-provisioning.md)
-python scripts/auth/provision_sso_org.py \
+fm-provision-sso-org \
     --name "Acme Corp" --slug acme --workos-org-id org_01H...
 ```
 
 ---
 
-## Available Scripts
+## Reference
 
 ### 1. `list_users.py` - View All Users
 
@@ -127,7 +157,7 @@ User Details:
 
 ---
 
-### 3. `promote_to_platform_admin.py` - Promote User to Platform Admin
+### 3. `fm-promote-platform-admin` - Promote User to Platform Admin
 
 Grants the operator role set (`user` + `admin` + `platform_admin`) to an existing
 user. `platform_admin` is the DEPLOYMENT-scoped role (ADR-012 D9) that carries
@@ -136,12 +166,12 @@ operator also needs authority inside its own organization.
 
 **Usage:**
 ```bash
-python scripts/auth/promote_to_platform_admin.py <username>
+fm-promote-platform-admin <username>
 ```
 
 **Example:**
 ```bash
-$ python scripts/auth/promote_to_platform_admin.py alice
+$ fm-promote-platform-admin alice
 
 ================================================================================
 Promote User to Platform Admin
@@ -166,7 +196,7 @@ User 'alice' can now:
 
 ---
 
-### 4. `demote_from_platform_admin.py` - Demote Platform Admin to Regular User
+### 4. `fm-demote-platform-admin` - Demote Platform Admin to Regular User
 
 Removes the `platform_admin` role from a user account, revoking cross-tenant
 reach. The organization-scoped `admin` role is deliberately left in place —
@@ -175,12 +205,12 @@ own organization. Remove that separately if you mean to.
 
 **Usage:**
 ```bash
-python scripts/auth/demote_from_platform_admin.py <username>
+fm-demote-platform-admin <username>
 ```
 
 **Example:**
 ```bash
-$ python scripts/auth/demote_from_platform_admin.py bob
+$ fm-demote-platform-admin bob
 
 ================================================================================
 Demote Platform Admin to Regular User
@@ -238,7 +268,7 @@ The DEPLOYMENT operator (ADR-012 D9). Can do everything above, PLUS:
 
 `platform_admin` is deliberately absent from the org `Role` enum, so it grants
 no org permissions on its own — and the user-management API cannot mint one.
-Grant it only with `promote_to_platform_admin.py`. The standalone deployment's
+Grant it only with `fm-promote-platform-admin`. The standalone deployment's
 seeded account holds all three roles: it is both its org's admin and the
 operator.
 
@@ -311,7 +341,7 @@ curl http://localhost:8090/api/v1/auth/me \
 
 **Default behavior:**
 - New users created via API default to `['user']` role (since `DevUser.__post_init__()` sets it)
-- Use `promote_to_platform_admin.py` to grant operator privileges
+- Use `fm-promote-platform-admin` to grant operator privileges
 
 **Data persistence:**
 - Users persist across server restarts (stored in Redis)
@@ -342,7 +372,7 @@ python scripts/auth/create_user.py --username newuser --role user
 
 # 2. Send them login instructions
 # 3. If they need admin access later:
-python scripts/auth/promote_to_platform_admin.py newuser
+fm-promote-platform-admin newuser
 ```
 
 ### Audit User Accounts
@@ -357,7 +387,7 @@ python scripts/auth/list_users.py | grep alice
 ### Revoke Admin Access
 ```bash
 # Demote user back to regular user
-python scripts/auth/demote_from_platform_admin.py username
+fm-demote-platform-admin username
 ```
 
 ---
