@@ -125,7 +125,10 @@ def _build_local_jwt_generator(revocation_store):
     return HS256JWTTokenGenerator(
         secret_key=settings.security.jwt_secret_key.get_secret_value(),
         revocation_store=revocation_store,
-        settings=settings.auth,
+        # Lifetimes come from the single expiry source (#888); the security half
+        # carries only the secret, issuer and audience.
+        access_token_expire_minutes=settings.auth.jwt_access_token_expire_minutes,
+        refresh_token_expire_days=settings.auth.jwt_refresh_token_expire_days,
         issuer=settings.security.jwt_issuer,
         audience=settings.security.jwt_audience,
     )

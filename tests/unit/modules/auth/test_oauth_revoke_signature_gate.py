@@ -72,13 +72,6 @@ DEPLOYMENT_PRIVATE_KEY, DEPLOYMENT_PUBLIC_KEY = _keypair()
 ATTACKER_PRIVATE_KEY, _ATTACKER_PUBLIC_KEY = _keypair()
 
 
-def _settings_stub():
-    return SimpleNamespace(
-        jwt_access_token_expire_minutes=ACCESS_MINUTES,
-        jwt_refresh_token_expire_days=REFRESH_DAYS,
-    )
-
-
 def _fake_redis():
     import fakeredis.aioredis as fakeredis_aio
 
@@ -94,7 +87,8 @@ def _rs256_generator(store):
         private_key=DEPLOYMENT_PRIVATE_KEY,
         public_key=DEPLOYMENT_PUBLIC_KEY,
         revocation_store=store,
-        settings=_settings_stub(),
+        access_token_expire_minutes=ACCESS_MINUTES,
+        refresh_token_expire_days=REFRESH_DAYS,
         issuer="faultmaven",
         audience="faultmaven-api",
     )
@@ -104,9 +98,18 @@ def _hs256_generator(store):
     return HS256JWTTokenGenerator(
         secret_key=HS256_SECRET,
         revocation_store=store,
-        settings=_settings_stub(),
+        access_token_expire_minutes=ACCESS_MINUTES,
+        refresh_token_expire_days=REFRESH_DAYS,
         issuer="faultmaven",
         audience="faultmaven-api",
+    )
+
+
+def _auth_settings_stub():
+    """``settings.auth`` as the container passes it — the single expiry source."""
+    return SimpleNamespace(
+        jwt_access_token_expire_minutes=ACCESS_MINUTES,
+        jwt_refresh_token_expire_days=REFRESH_DAYS,
     )
 
 
@@ -116,7 +119,7 @@ def _oauth_service(generator):
         code_repository=None,
         user_repository=None,
         token_generator=generator,
-        settings=_settings_stub(),
+        settings=_auth_settings_stub(),
     )
 
 
@@ -434,15 +437,12 @@ class TestEntryNeverExpiresBeforeTheTokenItRevokes:
         """
         redis = _fake_redis()
         store = _store(redis)
-        long_settings = SimpleNamespace(
-            jwt_access_token_expire_minutes=ACCESS_MINUTES,
-            jwt_refresh_token_expire_days=30,
-        )
         minting_generator = RS256JWTTokenGenerator(
             private_key=DEPLOYMENT_PRIVATE_KEY,
             public_key=DEPLOYMENT_PUBLIC_KEY,
             revocation_store=store,
-            settings=long_settings,
+            access_token_expire_minutes=ACCESS_MINUTES,
+            refresh_token_expire_days=30,
             issuer="faultmaven",
             audience="faultmaven-api",
         )

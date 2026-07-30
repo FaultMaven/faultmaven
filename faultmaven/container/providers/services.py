@@ -688,7 +688,12 @@ def create_jwt_token_generator(
         private_key=private_key,
         public_key=public_key,
         revocation_store=revocation_store,
-        settings=settings.security,  # Pass security settings, not auth settings
+        # Lifetimes come from the single expiry source on the auth half (#888) —
+        # the same values the local HS256 generator is built with, so the
+        # documented knob governs cloud tokens too. Keys, issuer and audience
+        # remain the security half's, which is where they are declared.
+        access_token_expire_minutes=settings.auth.jwt_access_token_expire_minutes,
+        refresh_token_expire_days=settings.auth.jwt_refresh_token_expire_days,
         issuer=settings.security.jwt_issuer,
         audience=settings.security.jwt_audience,
     )

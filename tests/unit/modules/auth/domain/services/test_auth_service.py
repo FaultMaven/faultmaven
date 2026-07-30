@@ -43,8 +43,8 @@ def mock_settings():
     settings = MagicMock()
     settings.auth.auth_mode = "local"  # Default to local mode for tests
     settings.security.jwt_algorithm = "HS256"  # Match local mode default
-    settings.security.jwt_access_token_expire_minutes = 15
-    settings.security.jwt_refresh_token_expire_days = 7
+    settings.auth.jwt_access_token_expire_minutes = 15
+    settings.auth.jwt_refresh_token_expire_days = 7
     settings.security.jwt_issuer = "faultmaven-api"
     settings.security.jwt_audience = "faultmaven-app"
     settings.security.token_revocation_prefix = "revoked:token:"

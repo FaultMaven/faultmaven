@@ -217,13 +217,13 @@ class AuthService:
 
     @property
     def _access_token_expire_minutes(self) -> int:
-        """Get access token expiration in minutes."""
-        return self._settings.security.jwt_access_token_expire_minutes
+        """Access token expiry, from the single expiry source (#888)."""
+        return self._settings.auth.jwt_access_token_expire_minutes
 
     @property
     def _refresh_token_expire_days(self) -> int:
-        """Get refresh token expiration in days."""
-        return self._settings.security.jwt_refresh_token_expire_days
+        """Refresh token expiry in DAYS, from the single expiry source (#888)."""
+        return self._settings.auth.jwt_refresh_token_expire_days
 
     def generate_access_token(
         self,
@@ -497,43 +497,41 @@ class AuthService:
 
         A per-user watermark that expired before the tokens it revokes would
         resurrect them, so this must bound EVERY token type, not just the
-        obvious one:
+        obvious one.
 
-        - Both settings halves are consulted because each declares the expiry
-          fields under the same names and the minters are split across them:
-          the local HS256 generator is built from ``settings.auth``, the cloud
-          RS256 generator and this service from ``settings.security``. Only
-          ``settings.auth``'s carry the ``JWT_*_EXPIRY_*`` validation aliases,
-          so ``settings.security``'s never move off their defaults — but they
-          are what the cloud minters use, and neither half alone describes
-          every token this deployment can issue.
-        - Access-token expiry is included even though it is normally minutes:
-          nothing ties ``JWT_ACCESS_TOKEN_EXPIRY_MINUTES`` to the refresh
-          expiry, so at its schema maximum it can equal the shortest permitted
-          refresh lifetime and must be covered exactly like the refresh case.
+        Expiry has a single source (``settings.auth``, #888) and every minting
+        path — this service, the HS256/local generator, the RS256/cloud
+        generator — takes its lifetimes from it. So "the watermark outlives
+        every mintable token" is structural rather than a reconciliation across
+        configuration: reading that one source covers every mint path, and the
+        field bounds are the only mintable range there is.
 
-        Attributes are read directly rather than via ``getattr`` defaults: a
-        missing or mis-wired settings half must fail loudly here, not quietly
-        collapse to the 7-day fallback below and silently under-cover.
+        Access-token expiry is still folded in, because nothing ties
+        ``JWT_ACCESS_TOKEN_EXPIRY_MINUTES`` to the refresh expiry: at its schema
+        maximum (1 day) it exceeds the shortest permitted refresh lifetime and
+        must be covered exactly like the refresh case.
+
+        Attributes are read directly rather than via ``getattr`` defaults, and a
+        non-positive result raises: a missing or mis-wired settings half must
+        fail loudly here rather than silently under-cover.
         """
-        refresh_days = max(
-            self._settings.auth.jwt_refresh_token_expire_days,
-            self._settings.security.jwt_refresh_token_expire_days,
-        )
-        access_minutes = max(
-            self._settings.auth.jwt_access_token_expire_minutes,
-            self._settings.security.jwt_access_token_expire_minutes,
-        )
+        refresh_days = self._settings.auth.jwt_refresh_token_expire_days
+        access_minutes = self._settings.auth.jwt_access_token_expire_minutes
         seconds = max(int(refresh_days) * 86400, int(access_minutes) * 60)
         if seconds <= 0:
-            # A non-positive TTL is rejected by SETEX, which would turn every
-            # revocation into a store error. Fall back to the schema default
-            # rather than letting misconfiguration disable revocation.
-            logger.warning(
-                "No positive token expiry configured; defaulting the "
-                "revocation watermark TTL to 7 days"
+            # Unreachable from a real settings object: expiry has one
+            # declaration and both its fields are bounded ``ge=1``. Getting here
+            # therefore means this service was handed something that is not the
+            # source the generators mint from — so any TTL derived here would
+            # bound nothing, and a non-positive one is rejected by SETEX
+            # outright. Defaulting would restore the exact under-coverage #769
+            # fixed, so name the mis-wiring instead.
+            raise RuntimeError(
+                "Token expiry is mis-wired: settings.auth reports a non-positive "
+                f"longest token lifetime (refresh_days={refresh_days!r}, "
+                f"access_minutes={access_minutes!r}). The revocation watermark "
+                "cannot be bounded, so no revocation may be recorded against it."
             )
-            seconds = 7 * 86400
         return seconds
 
     async def revoke_user_tokens(
@@ -565,14 +563,9 @@ class AuthService:
         revoked_at = datetime.now(timezone.utc)
         # The watermark must outlive the longest-lived token that could still
         # be presented, or a long refresh token would outlive the entry that
-        # revokes it and spring back to life.
-        #
-        # Take the MAX across both settings halves rather than trusting one.
-        # `settings.auth.jwt_refresh_token_expire_days` is the operator knob
-        # (`JWT_REFRESH_TOKEN_EXPIRY_DAYS`) and is what the token generators are
-        # constructed with, while `settings.security`'s same-named field has no
-        # env alias and is always its default. Reading only the latter would
-        # cap the watermark at 7 days while tokens lived for 30.
+        # revokes it and spring back to life. There is one expiry source
+        # (`settings.auth`, the `JWT_*_EXPIRY_*` knobs) and every generator is
+        # constructed from it, so covering that source covers every mint path.
         ttl = self._longest_token_lifetime_seconds()
         try:
             await self._revocation_store.revoke_user_tokens_before(

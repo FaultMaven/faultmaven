@@ -54,6 +54,60 @@ def get_live_settings():
     return settings_module.get_settings()
 
 
+# Fields carrying the single-source JWT token expiry (#888). Field names, not env
+# names — the env names are derived from their declared aliases below.
+JWT_EXPIRY_FIELDS = ("jwt_access_token_expire_minutes", "jwt_refresh_token_expire_days")
+
+# The env spellings that have addressed those fields and no longer do, each
+# mapped to the current name that replaces it. Stated INDEPENDENTLY of
+# ``RETIRED_JWT_EXPIRY_ENV_NAMES`` on purpose: this is the historical record, and
+# the guard's rejection cases are parametrised from it so that dropping a name
+# from the production map turns those cases RED rather than silently deleting
+# them. A test whose coverage is defined by the thing under test cannot detect
+# that thing shrinking. The two are pinned equal by
+# ``test_jwt_expiry_env_units.py``.
+RETIRED_JWT_EXPIRY_SPELLINGS = {
+    # Pre-#832: the original unsuffixed ``validation_alias`` pair, before the
+    # names were made to carry their unit.
+    "JWT_ACCESS_TOKEN_EXPIRY": "JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
+    "JWT_REFRESH_TOKEN_EXPIRY": "JWT_REFRESH_TOKEN_EXPIRY_DAYS",
+    # Pre-#888: the EXPIRE spelling, which bound the duplicate declaration on the
+    # security half by field name.
+    "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": "JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
+    "JWT_REFRESH_TOKEN_EXPIRE_DAYS": "JWT_REFRESH_TOKEN_EXPIRY_DAYS",
+}
+
+
+def jwt_expiry_env_names() -> tuple[str, ...]:
+    """Every env name that has ever addressed the JWT expiry fields (#888).
+
+    Tests about *which names bind* must clear all of them first, or an ambient
+    ``.env`` decides the outcome. The list is DERIVED rather than restated in
+    each test module: the current pair comes from the ``validation_alias``
+    actually declared on ``AuthSettings``, so a future rename updates every
+    fixture at once instead of leaving hardcoded tuples that quietly stop
+    covering the names they are named for.
+
+    The retired names are the union of the production map and
+    :data:`RETIRED_JWT_EXPIRY_SPELLINGS`, so the clear stays complete even if the
+    production map loses an entry — the fixture must not stop clearing a name
+    just because the guard stopped rejecting it.
+
+    Late-bound for the same reason as :func:`get_live_settings` — the constants
+    are read off the *live* settings module at call time.
+    """
+    import faultmaven.config.settings as settings_module
+
+    current = tuple(
+        str(settings_module.AuthSettings.model_fields[field].validation_alias)
+        for field in JWT_EXPIRY_FIELDS
+    )
+    retired = tuple(settings_module.RETIRED_JWT_EXPIRY_ENV_NAMES) + tuple(
+        RETIRED_JWT_EXPIRY_SPELLINGS
+    )
+    return tuple(dict.fromkeys(current + retired))
+
+
 async def seed_default_enterprise(session) -> None:
     """Insert the default enterprise row used as parent for test orgs/users.
 

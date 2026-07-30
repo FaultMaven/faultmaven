@@ -109,14 +109,17 @@ def revocation_store() -> InMemoryRevocationStore:
 
 
 @pytest.fixture
-def token_generator(revocation_store) -> RS256JWTTokenGenerator:
+def token_generator(revocation_store, auth_settings) -> RS256JWTTokenGenerator:
     private_pem, public_pem = _rsa_keypair()
     security = SecuritySettings()
     return RS256JWTTokenGenerator(
         private_key=private_pem,
         public_key=public_pem,
         revocation_store=revocation_store,
-        settings=security,
+        # Lifetimes from the single expiry source; keys/iss/aud from the
+        # security half — exactly how the container wires it (#888).
+        access_token_expire_minutes=auth_settings.jwt_access_token_expire_minutes,
+        refresh_token_expire_days=auth_settings.jwt_refresh_token_expire_days,
         issuer=security.jwt_issuer,
         audience=security.jwt_audience,
     )

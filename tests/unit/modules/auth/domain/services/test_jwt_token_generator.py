@@ -82,23 +82,21 @@ def mock_revocation_store():
     return store
 
 
-@pytest.fixture
-def mock_settings():
-    """Mock JWT settings."""
-    settings = Mock()
-    settings.jwt_access_token_expire_minutes = 60
-    settings.jwt_refresh_token_expire_days = 7
-    return settings
+# Lifetimes are explicit constructor arguments, not read from a settings object
+# (#888), so there is nothing to stub here.
+ACCESS_MINUTES = 60
+REFRESH_DAYS = 7
 
 
 @pytest.fixture
-def token_generator(mock_revocation_store, mock_settings):
+def token_generator(mock_revocation_store):
     """Create JWT token generator with test keys."""
     return RS256JWTTokenGenerator(
         private_key=TEST_PRIVATE_KEY,
         public_key=TEST_PUBLIC_KEY,
         revocation_store=mock_revocation_store,
-        settings=mock_settings,
+        access_token_expire_minutes=ACCESS_MINUTES,
+        refresh_token_expire_days=REFRESH_DAYS,
     )
 
 
@@ -237,9 +235,7 @@ class TestTokenValidation:
         assert payload["type"] == "access"
 
     @pytest.mark.asyncio
-    async def test_validate_access_token_expired(
-        self, token_generator, mock_user, mock_settings
-    ):
+    async def test_validate_access_token_expired(self, token_generator, mock_user):
         """Test validation of expired access token."""
         # Create token with past expiry
         now = datetime.now(timezone.utc)
@@ -327,9 +323,7 @@ class TestRefreshTokenValidation:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_validate_refresh_token_expired(
-        self, token_generator, mock_user, mock_settings
-    ):
+    async def test_validate_refresh_token_expired(self, token_generator, mock_user):
         """Test validation of expired refresh token."""
         # Create token with past expiry
         now = datetime.now(timezone.utc)
@@ -370,7 +364,7 @@ class TestTokenRevocation:
 
     @pytest.mark.asyncio
     async def test_revoke_access_token(
-        self, token_generator, mock_user, mock_revocation_store, mock_settings
+        self, token_generator, mock_user, mock_revocation_store
     ):
         """Test access token revocation."""
         token = await token_generator.generate_access_token(mock_user)
@@ -394,7 +388,7 @@ class TestTokenRevocation:
 
     @pytest.mark.asyncio
     async def test_revoke_refresh_token(
-        self, token_generator, mock_user, mock_revocation_store, mock_settings
+        self, token_generator, mock_user, mock_revocation_store
     ):
         """Test refresh token revocation."""
         token = await token_generator.generate_refresh_token(mock_user)
@@ -418,9 +412,7 @@ class TestTokenRevocation:
         assert expected_seconds - 10 <= ttl <= expected_seconds + 10
 
     @pytest.mark.asyncio
-    async def test_revoke_expired_token(
-        self, token_generator, mock_revocation_store, mock_settings
-    ):
+    async def test_revoke_expired_token(self, token_generator, mock_revocation_store):
         """Test revoking expired token (should not add to revocation store)."""
         # Create expired token
         now = datetime.now(timezone.utc)

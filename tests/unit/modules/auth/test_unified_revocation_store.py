@@ -54,14 +54,11 @@ def _store(redis):
 
 
 def _generator(store):
-    settings_stub = SimpleNamespace(
-        jwt_access_token_expire_minutes=60,
-        jwt_refresh_token_expire_days=7,
-    )
     return HS256JWTTokenGenerator(
         secret_key=SECRET,
         revocation_store=store,
-        settings=settings_stub,
+        access_token_expire_minutes=60,
+        refresh_token_expire_days=7,
         issuer="faultmaven",
         audience="faultmaven-api",
     )

@@ -91,13 +91,11 @@ def _real_token_generator() -> HS256JWTTokenGenerator:
     """The real generator, so the ``organization_id`` claim comes from the real
     ``resolve_organization_claim`` rather than from a stub that could agree with
     a broken implementation."""
-    settings = MagicMock()
-    settings.jwt_access_token_expire_minutes = 15
-    settings.jwt_refresh_token_expire_days = 7
     return HS256JWTTokenGenerator(
         secret_key=SECRET,
         revocation_store=InMemoryRevocationStore(),
-        settings=settings,
+        access_token_expire_minutes=15,
+        refresh_token_expire_days=7,
         issuer="faultmaven",
         audience="faultmaven-api",
     )

@@ -190,24 +190,35 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         private_key: str,
         public_key: str,
         revocation_store,  # ITokenRevocationStore
-        settings,  # AuthSettings from config
+        access_token_expire_minutes: int,
+        refresh_token_expire_days: int,
         issuer: str = "faultmaven",
         audience: str = "faultmaven-api",
     ):
         """Initialize JWT token generator.
 
+        Lifetimes are explicit parameters rather than a settings object so that
+        which settings half the caller holds can never decide a token's
+        lifetime (#888). Both are required: there is no local default to fall
+        back to, so a construction site that forgets to wire the configured
+        value fails at construction instead of minting a plausible-looking one.
+
         Args:
             private_key: RSA private key (PEM format) for signing
             public_key: RSA public key (PEM format) for validation
             revocation_store: Token revocation tracking storage
-            settings: Authentication configuration
+            access_token_expire_minutes: Access token lifetime, in minutes
+                (``JWT_ACCESS_TOKEN_EXPIRY_MINUTES``)
+            refresh_token_expire_days: Refresh token lifetime, in DAYS
+                (``JWT_REFRESH_TOKEN_EXPIRY_DAYS``)
             issuer: JWT issuer (iss claim)
             audience: JWT audience (aud claim)
         """
         self.private_key = private_key
         self.public_key = public_key
         self.revocation_store = revocation_store
-        self.settings = settings
+        self.access_token_expire_minutes = access_token_expire_minutes
+        self.refresh_token_expire_days = refresh_token_expire_days
         self.issuer = issuer
         self.audience = audience
 
@@ -236,9 +247,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             JWT access token string
         """
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(
-            minutes=self.settings.jwt_access_token_expire_minutes
-        )
+        expires_at = now + timedelta(minutes=self.access_token_expire_minutes)
 
         jti = str(uuid.uuid4())
 
@@ -279,7 +288,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 "user_id": user.user_id,
                 "username": user.username,
                 "jti": jti,
-                "expires_in_minutes": self.settings.jwt_access_token_expire_minutes,
+                "expires_in_minutes": self.access_token_expire_minutes,
             },
         )
         return token
@@ -308,7 +317,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             JWT refresh token string
         """
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(days=self.settings.jwt_refresh_token_expire_days)
+        expires_at = now + timedelta(days=self.refresh_token_expire_days)
 
         jti = str(uuid.uuid4())
 
@@ -334,7 +343,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             extra={
                 "user_id": user.user_id,
                 "jti": jti,
-                "expires_in_days": self.settings.jwt_refresh_token_expire_days,
+                "expires_in_days": self.refresh_token_expire_days,
             },
         )
         return token
@@ -681,22 +690,31 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         self,
         secret_key: str,
         revocation_store,  # ITokenRevocationStore
-        settings,  # AuthSettings from config
+        access_token_expire_minutes: int,
+        refresh_token_expire_days: int,
         issuer: str = "faultmaven",
         audience: str = "faultmaven-api",
     ):
         """Initialize JWT token generator.
 
+        Lifetimes are explicit parameters rather than a settings object, and are
+        the same two values the RS256 generator takes — one configured source
+        for both auth modes (#888).
+
         Args:
             secret_key: Secret key for HS256 signing/validation
             revocation_store: Token revocation tracking storage
-            settings: Authentication configuration
+            access_token_expire_minutes: Access token lifetime, in minutes
+                (``JWT_ACCESS_TOKEN_EXPIRY_MINUTES``)
+            refresh_token_expire_days: Refresh token lifetime, in DAYS
+                (``JWT_REFRESH_TOKEN_EXPIRY_DAYS``)
             issuer: JWT issuer (iss claim)
             audience: JWT audience (aud claim)
         """
         self.secret_key = secret_key
         self.revocation_store = revocation_store
-        self.settings = settings
+        self.access_token_expire_minutes = access_token_expire_minutes
+        self.refresh_token_expire_days = refresh_token_expire_days
         self.issuer = issuer
         self.audience = audience
 
@@ -724,9 +742,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             JWT access token string
         """
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(
-            minutes=self.settings.jwt_access_token_expire_minutes
-        )
+        expires_at = now + timedelta(minutes=self.access_token_expire_minutes)
 
         jti = str(uuid.uuid4())
 
@@ -768,7 +784,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 "user_id": user.user_id,
                 "username": user.username,
                 "jti": jti,
-                "expires_in_minutes": self.settings.jwt_access_token_expire_minutes,
+                "expires_in_minutes": self.access_token_expire_minutes,
                 "auth_mode": "local",
             },
         )
@@ -798,7 +814,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             JWT refresh token string
         """
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(days=self.settings.jwt_refresh_token_expire_days)
+        expires_at = now + timedelta(days=self.refresh_token_expire_days)
 
         jti = str(uuid.uuid4())
 
@@ -824,7 +840,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             extra={
                 "user_id": user.user_id,
                 "jti": jti,
-                "expires_in_days": self.settings.jwt_refresh_token_expire_days,
+                "expires_in_days": self.refresh_token_expire_days,
             },
         )
         return token

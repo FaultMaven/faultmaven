@@ -56,8 +56,6 @@ def _settings():
         ),
         security=SimpleNamespace(
             jwt_algorithm="HS256",
-            jwt_access_token_expire_minutes=60,
-            jwt_refresh_token_expire_days=7,
             jwt_issuer="faultmaven",
             jwt_audience="faultmaven-api",
             token_revocation_prefix="revoked:token:",

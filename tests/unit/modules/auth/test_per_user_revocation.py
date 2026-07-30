@@ -70,14 +70,11 @@ def _store(redis=None):
 
 
 def _generator(store):
-    settings_stub = SimpleNamespace(
-        jwt_access_token_expire_minutes=60,
-        jwt_refresh_token_expire_days=7,
-    )
     return HS256JWTTokenGenerator(
         secret_key=SECRET,
         revocation_store=store,
-        settings=settings_stub,
+        access_token_expire_minutes=60,
+        refresh_token_expire_days=7,
         issuer="faultmaven",
         audience="faultmaven-api",
     )
@@ -96,9 +93,10 @@ def _user(user_id: str = USER_ID):
 def _auth_service_settings():
     """Settings stub matching the HS256 generator's fixed iss/aud.
 
-    Both halves carry ``jwt_refresh_token_expire_days`` because production
-    does: ``settings.auth``'s is the ``JWT_REFRESH_TOKEN_EXPIRY_DAYS`` knob the
-    generators are built with, ``settings.security``'s has no env alias.
+    Expiry appears on the auth half ONLY, as production declares it: that is
+    the single source every minting path and the revocation watermark read
+    (#888). A security half carrying the same field names is what let the two
+    disagree.
     """
     return SimpleNamespace(
         auth=SimpleNamespace(
@@ -108,8 +106,6 @@ def _auth_service_settings():
         ),
         security=SimpleNamespace(
             jwt_algorithm="HS256",
-            jwt_access_token_expire_minutes=60,
-            jwt_refresh_token_expire_days=7,
             jwt_issuer="faultmaven",
             jwt_audience="faultmaven-api",
             token_revocation_prefix="revoked:token:",
@@ -340,10 +336,8 @@ class TestWatermarkCoversEveryMintPath:
             private_key=private_pem,
             public_key=public_pem,
             revocation_store=store,
-            settings=SimpleNamespace(
-                jwt_access_token_expire_minutes=60,
-                jwt_refresh_token_expire_days=7,
-            ),
+            access_token_expire_minutes=60,
+            refresh_token_expire_days=7,
         )
         auth_service = _auth_service(store)
 
@@ -551,20 +545,16 @@ class TestStoreContract:
     async def test_watermark_ttl_follows_the_operator_configured_expiry(self):
         """Regression: the TTL must track ``JWT_REFRESH_TOKEN_EXPIRY_DAYS``.
 
-        That knob lands on ``settings.auth.jwt_refresh_token_expire_days``,
-        which is what the local HS256 generator mints from. ``settings.security``
-        declares the same field name with no alias — it moves only through the
-        field-name form (``JWT_REFRESH_TOKEN_EXPIRE_DAYS``) — so reading only
-        that half capped the watermark at 7 days while local refresh tokens
-        lived for 30, and the revoked token would resurrect on day 8. Taking the
-        maximum covers whichever half a given minter reads.
+        That knob lands on ``settings.auth.jwt_refresh_token_expire_days``, the
+        single source every generator is built from (#888). Reading anything
+        else once capped the watermark at the 7-day default while refresh tokens
+        lived for 30, and a revoked token resurrected on day 8.
         """
         redis = _fake_redis()
         store = _store(redis)
 
         settings = _auth_service_settings()
         settings.auth.jwt_refresh_token_expire_days = 30
-        settings.security.jwt_refresh_token_expire_days = 7
         with patch(
             "faultmaven.modules.auth.domain.services.auth_service.get_settings",
             return_value=settings,
