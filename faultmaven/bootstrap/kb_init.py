@@ -619,20 +619,29 @@ def _causes_fingerprint(causes: Optional[list]) -> str:
 def _decode_metadata(value: Any) -> dict:
     """Decode a ``knowledge_items.metadata`` value to a dict.
 
-    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so the same
-    column reads back as a JSON **string** on SQLite and an already-decoded
-    **dict** on PostgreSQL. Handling only the dict shape made the causes
-    comparison below read ``None`` on every SQLite deployment, so
-    ``causes_unchanged`` could never be true and every runbook re-ingested on
-    every boot. Returns ``{}`` for absent/undecodable values so the caller's
-    ``.get`` is always safe.
+    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so the column
+    type differs by backend — but rows written through
+    ``KnowledgeItemRepository`` come back as a **``str`` on both**, because that
+    writer binds an already-serialized ``json.dumps(...)`` value: SQLite stores it
+    verbatim in TEXT, and JSONB stores it as a JSON *string scalar* which
+    deserializes back to the same ``str`` (verified against
+    ``JSONB.bind_processor`` — binding a ``str`` yields ``"{\\"causes\\": …}"``,
+    not an object). Handling only the dict shape therefore made the causes
+    comparison read ``None`` on **every** deployment, so ``causes_unchanged``
+    could never be true and every runbook re-ingested on every boot.
+
+    The dict branch is kept because it is the shape any writer binding a real
+    object would produce, and because it is the documented JSONB contract — the
+    two branches together make this independent of who wrote the row.
+    Returns ``{}`` for absent/undecodable values so the caller's ``.get`` is
+    always safe.
 
     Same intent as ``KnowledgeItemRepository._parse_json_dict``, duplicated (not
     imported) to keep bootstrap off a module's infrastructure layer — but
     deliberately NOT its copy semantics: that one ``deepcopy``s the dict branch
-    because its callers hand the result out. **The result here is read-only**; on
-    PostgreSQL the dict branch aliases the session-bound ORM attribute, so a
-    caller that mutates it would dirty the row. Copy before mutating.
+    because its callers hand the result out. **The result here is read-only**; the
+    dict branch aliases the session-bound ORM attribute, so a caller that mutates
+    it would dirty the row. Copy before mutating.
     """
     if isinstance(value, dict):
         return value

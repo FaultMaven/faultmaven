@@ -270,12 +270,14 @@ async def test_bootstrap_re_ingests_on_causes_change_with_unchanged_markdown(
 
 
 # ``knowledge_items.metadata`` is ``JsonBlob`` =
-# ``Text().with_variant(JSONB, "postgresql")``, so the SAME column reads back as
-# a JSON *string* on SQLite and a *dict* on PostgreSQL. Both shapes must reach the
-# same verdict, or the idempotency comparison silently degrades on one backend
-# (it did: reading only the dict shape meant every runbook re-ingested on every
-# SQLite boot). Parameterising by the STORED SHAPE is the point — a dict-only
-# fixture is the PostgreSQL type standing in for both.
+# ``Text().with_variant(JSONB, "postgresql")``. Rows written by
+# ``KnowledgeItemRepository`` read back as a *str* on BOTH backends (it binds an
+# already-serialized ``json.dumps(...)``; JSONB stores that as a JSON string
+# scalar), while a writer binding a real object yields a *dict*. Both shapes must
+# reach the same verdict, or the idempotency comparison silently degrades — it
+# did: reading only the dict shape meant every runbook re-ingested on every boot.
+# Parameterising by the STORED SHAPE is the point; a dict-only fixture asserts a
+# shape the production writer never produces.
 CAUSES_RECORD = [{"cause_letter": "A", "cause_name": "Same cause"}]
 METADATA_SHAPES = [
     pytest.param({"causes": CAUSES_RECORD}, id="postgresql-jsonb-dict"),
