@@ -366,7 +366,7 @@ The **conversion-drafts path** (case-generated / document-converted content, not
 | Atomic ingest (entry point) | [`modules/knowledge/domain/services/knowledge_service.py`](../../../faultmaven/modules/knowledge/domain/services/knowledge_service.py) — `ingest_runbook()` |
 | Startup bootstrap (pre-deployed runbooks) | [`bootstrap/kb_init.py`](../../../faultmaven/bootstrap/kb_init.py) |
 | Conversion + verify (case-generated drafts) | [`modules/knowledge/domain/services/conversion_service.py`](../../../faultmaven/modules/knowledge/domain/services/conversion_service.py) — `verify_draft()` |
-| Reset / hot-rebuild | [`scripts/reset_kb.py`](../../../scripts/reset_kb.py) |
+| Reset / hot-rebuild | `fm-reset-kb` ([`faultmaven/cli/reset_kb.py`](../../../faultmaven/cli/reset_kb.py)) |
 | KBConfig (all tiers) | `modules/agent/tools/kb_configs/unified_kb_config.py` |
 
 ---

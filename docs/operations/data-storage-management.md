@@ -80,7 +80,7 @@ evidence/<organization_id>/<case_id>/<date>/<uuid>_<file>  →  background vecto
 - `evidence/` holds **raw uploaded files**. After the upload API returns a response, a background task vectorizes the content into a `case_{case_id}` collection in `chroma-evidence/`.
 - Each ChromaDB instance is independent — they share no files.
 
-Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. The bootstrap intentionally does not garbage-collect deleted files (that's a separate operator concern); use the Dashboard or `python scripts/reset_kb.py` to remove KB entries.
+Deleting a file from `knowledge/` does not remove its embeddings from ChromaDB. The bootstrap intentionally does not garbage-collect deleted files (that's a separate operator concern); use the Dashboard or `fm-reset-kb` to remove KB entries.
 
 ---
 
@@ -139,17 +139,53 @@ build + delivery detail: [`kb-pack-architecture.md`](../architecture/knowledge-a
 
 ### Reset / hot-rebuild
 
-`scripts/reset_kb.py` wipes the KB state and (optionally) re-runs the bootstrap in-process:
+`fm-reset-kb` wipes the KB state and (optionally) re-runs the bootstrap in-process:
 
 ```bash
-python scripts/reset_kb.py --dry-run             # See counts; no changes
-python scripts/reset_kb.py --yes                 # Wipe; bootstrap reruns on API restart
-python scripts/reset_kb.py --yes --rebuild       # Wipe + immediate in-process rebuild
-python scripts/reset_kb.py --yes --all-drafts    # Also delete case-generated drafts
-python scripts/reset_kb.py --yes --keep-chroma   # Wipe SQL only; keep ChromaDB collections
+fm-reset-kb --dry-run             # See counts; no changes
+fm-reset-kb --yes                 # Wipe; bootstrap reruns on API restart
+fm-reset-kb --yes --rebuild       # Wipe + immediate in-process rebuild
+fm-reset-kb --yes --all-drafts    # Also delete case-generated drafts
+fm-reset-kb --yes --keep-chroma   # Wipe SQL only; keep ChromaDB collections
 ```
 
 Defaults are conservative — `conversion_drafts` (case-generated work in progress) is preserved unless `--all-drafts` is passed.
+
+`fm-reset-kb` is a console entrypoint shipped with the installed package (`faultmaven/cli/reset_kb.py`), so it is available both in a local checkout (after `pip install -e .`) and inside the API pod.
+
+#### ⚠️ Stop the API before wiping
+
+The wipe **`rmtree`s a ChromaDB directory that a running server holds open**. A live API keeps file handles and in-memory collection state on the tree being deleted, so with the server up it can keep serving reads from deleted files, recreate a partial directory underneath the one just removed, or fail on its next write. `--dry-run` is always safe; anything with `--yes` is not.
+
+Scale the API down for the wipe, or restart it immediately afterwards so it reopens a clean store:
+
+```bash
+# Kubernetes — run the wipe against the same volume with the server down
+kubectl -n faultmaven scale deploy/faultmaven-api --replicas=0
+kubectl -n faultmaven run fm-reset --rm -it --restart=Never \
+  --image=<the API image> --overrides='<PVC mount for data/>' -- fm-reset-kb --yes
+kubectl -n faultmaven scale deploy/faultmaven-api --replicas=1
+```
+
+If scaling to zero is not an option, run it in the live pod and restart immediately — accepting that reads between the wipe and the restart are undefined:
+
+```bash
+kubectl exec -it deploy/faultmaven-api -- fm-reset-kb --dry-run   # always safe
+kubectl exec -it deploy/faultmaven-api -- fm-reset-kb --yes
+kubectl -n faultmaven rollout restart deploy/faultmaven-api       # do this now
+```
+
+The Docker Compose stack has the identical problem — `data/` is bind-mounted into the API container, so a wipe from the host or from inside the container hits a store the running server holds open:
+
+```bash
+./faultmaven.sh stop
+fm-reset-kb --yes      # in the checkout's venv, against the bind-mounted data/
+./faultmaven.sh start
+```
+
+The command prints the **resolved** ChromaDB path it found. Check it against the store the server actually writes to — if it reports that no directory was found, the SQL rows are gone and the vector store was left untouched, which means the two halves of the KB have diverged.
+
+It refuses to run under `TENANT_PROVIDER=multi` — a multi-tenant database holds every tenant's KB, and a blanket wipe would bypass the audited maintenance path. Reseed the platform tier with the `kb_seed` job instead (#770).
 
 ### Updating built-in global runbooks
 
@@ -195,7 +231,7 @@ rm data/knowledge/global/my-runbook.md
 #    disk — explicit deletion is a separate operator concern.
 ```
 
-For bulk removal, `scripts/reset_kb.py --yes` (without `--rebuild`) wipes the full KB state; the next API restart will re-ingest from whatever remains in `data/knowledge/`.
+For bulk removal, `fm-reset-kb --yes` (without `--rebuild`) wipes the full KB state; the next API restart will re-ingest from whatever remains in `data/knowledge/`.
 
 ---
 

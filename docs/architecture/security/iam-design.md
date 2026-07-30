@@ -1163,7 +1163,7 @@ Two role vocabularies coexist in the codebase:
   `api/v1/auth_dependencies.py` for `DevUser`), both delegating to that type's
   `is_platform_admin()`. It guards everything acting on the deployment as a
   whole: cross-tenant case listing, user administration, LLM configuration, and
-  Global KB authoring. It is granted out-of-band by `scripts/auth/promote_to_platform_admin.py` — never
+  Global KB authoring. It is granted out-of-band by the `fm-promote-platform-admin` command — never
   through the user-management API, whose `assign_role` validates against the
   org `Role` enum and so cannot mint an operator.
 - **Org-scoped roles (`Role` enum).** Separately,

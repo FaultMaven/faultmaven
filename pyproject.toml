@@ -198,6 +198,25 @@ include = ["faultmaven*"]
 exclude = ["tests*", "docs*", "scripts*", ".github*"]
 
 # ============================================================================
+# OPERATOR CONSOLE ENTRYPOINTS
+# ============================================================================
+# Operator procedures ship WITH the installed package, not as loose files under
+# scripts/ — the wheel excludes scripts/ and the image never COPYs it, so a
+# path-based in-pod invocation could never work (#887). These commands land on
+# PATH wherever faultmaven is installed:
+#
+#     kubectl exec deploy/faultmaven-api -- fm-provision-sso-org --name ...
+#
+# Targets live in faultmaven/cli/; each `main()` is synchronous and exits with a
+# meaningful status code.
+[project.scripts]
+fm-provision-sso-org = "faultmaven.cli.provision_sso_org:main"
+fm-provision-service-account = "faultmaven.cli.provision_service_account:main"
+fm-promote-platform-admin = "faultmaven.cli.promote_platform_admin:main"
+fm-demote-platform-admin = "faultmaven.cli.demote_platform_admin:main"
+fm-reset-kb = "faultmaven.cli.reset_kb:main"
+
+# ============================================================================
 # PROJECT METADATA AND URLS
 # ============================================================================
 [project.urls]

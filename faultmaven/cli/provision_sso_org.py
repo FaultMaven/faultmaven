@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Provision a Cloud tenant and map an IdP organization onto it (#869).
 
 Under ``TENANT_PROVIDER=multi`` an SSO login lands in the FaultMaven
@@ -26,25 +25,30 @@ membership-level consequences (see
 yet, so it needs the RLS-owning role (``faultmaven``), not the limited
 application role (``faultmaven_app``). It also binds the new organization as the
 current tenant while it writes, so the writes stay inside policy even where RLS
-is forced.
+is forced. A preflight verifies the connected role really is RLS-exempt and
+refuses before any write if it is not — the pod's own ``DATABASE_URL`` is the
+application role by design, so an unqualified ``kubectl exec`` would otherwise
+run under exactly the role this script forbids.
 
 Admin binding is manual and post-hoc (ADR-015 D5): no login path grants
 elevated roles, so the first user signs in via SSO and an operator promotes
 them with the existing role scripts.
 
-Usage:
+Usage (``fm-provision-sso-org``, installed with the package):
     DATABASE_URL=postgresql+asyncpg://faultmaven:...@host/faultmaven \\
-    python scripts/auth/provision_sso_org.py \\
+    fm-provision-sso-org \\
         --name "Acme Corp" --slug acme --workos-org-id org_01H...
 
     # Reuse an existing enterprise instead of creating one
-    python scripts/auth/provision_sso_org.py \\
+    fm-provision-sso-org \\
         --name "Acme EU" --slug acme-eu --workos-org-id org_01J... \\
         --enterprise-id 8f1c...
 
-In a Kubernetes deployment, run it in the API pod:
+In a Kubernetes deployment, run it in the API pod — with the owner DSN passed
+explicitly, because the pod's environment holds the limited application role:
     kubectl exec -it deploy/faultmaven-api -- \\
-        python scripts/auth/provision_sso_org.py --name ... --slug ... \\
+        env DATABASE_URL="$OWNER_DSN" \\
+        fm-provision-sso-org --name ... --slug ... \\
         --workos-org-id org_...
 """
 
@@ -55,22 +59,20 @@ import asyncio
 import sys
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
-# Make `faultmaven` importable when run as a script.
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from sqlalchemy import select
 
-from sqlalchemy import select  # noqa: E402
-
-from faultmaven.config.tenant_context import set_current_org_id  # noqa: E402
-from faultmaven.infrastructure.persistence.database import (  # noqa: E402
-    get_db_session,
-)
-from faultmaven.infrastructure.persistence.models import (  # noqa: E402
+from faultmaven.config.deployment_coherence import DeploymentCoherenceError
+from faultmaven.config.tenant_context import set_current_org_id
+from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     OrganizationModel,
     SSOOrgMappingModel,
     TeamModel,
+)
+from faultmaven.infrastructure.persistence.rls_role_guard import (
+    assert_provisioning_db_role_bypasses_rls,
 )
 
 #: The only SSO provider FaultMaven ships an adapter for (ADR-015).
@@ -278,6 +280,20 @@ async def provision(
     print("Provision SSO Organization Mapping")
     print("=" * 80)
 
+    # Preflight, before any write: the connected role must be RLS-exempt. The
+    # docstring's "run it with the owner DSN" was previously advice only, and
+    # the documented `kubectl exec` recipe inherits the pod's DATABASE_URL —
+    # which main.py's assert_app_db_role_enforces_rls *guarantees* is the
+    # RLS-scoped application role. Advice that the happy path contradicts is a
+    # gate that never fires; this one does.
+    try:
+        db_role = await assert_provisioning_db_role_bypasses_rls()
+    except DeploymentCoherenceError as exc:
+        print(f"\n❌ {exc}")
+        return False
+    if db_role:
+        print(f"\nDatabase role: {db_role} (RLS-exempt — provisioning allowed)")
+
     # Every refusal raises out of the session block on purpose: get_db_session
     # commits on normal exit, so returning from inside it would COMMIT the
     # enterprise/organization/team this run just created and leave a tenant with
@@ -389,7 +405,7 @@ async def provision(
     print("  2. Have the first user sign in through the dashboard's SSO button.")
     print("     They are provisioned just-in-time as an organization member.")
     print("  3. Promote them if they need admin rights:")
-    print("       python scripts/auth/promote_to_platform_admin.py <username>")
+    print("       fm-promote-platform-admin <username>")
     print("")
     return True
 

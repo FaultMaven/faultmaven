@@ -205,3 +205,90 @@ async def assert_maintenance_db_role_posture(*, engine=None) -> str:
         row.role_name,
     )
     return row.role_name
+
+
+def _raise_if_rls_scoped(
+    role_name: str,
+    is_superuser: bool,
+    has_bypassrls: bool,
+    owns_rls_table: bool,
+) -> None:
+    """Fail closed if the role is SUBJECT to RLS (pure decision logic, no I/O).
+
+    The exact inverse of :func:`_raise_if_rls_exempt`, and deliberately so.
+    Tenant provisioning writes the *first* rows of a tenant that does not exist
+    yet — an organization row whose own policy is what would have to admit it,
+    and an enterprise row in a table the application role has no business
+    writing at all. A role that RLS scopes cannot do that: the writes are
+    filtered or refused, and under FORCE ROW LEVEL SECURITY the failure can be
+    a silent zero-row result rather than an error.
+
+    The role that *can* is the schema owner (or any other RLS-exempt role).
+    Being exempt is the qualification here, which is why the app-role posture —
+    non-superuser, no BYPASSRLS, owns no RLS-enabled table — is precisely the
+    refusal condition.
+    """
+    if not (is_superuser or has_bypassrls or owns_rls_table):
+        raise DeploymentCoherenceError(
+            "Tenant provisioning must run with the RLS-owning database role "
+            "(the role that owns and migrates the schema), but this connection "
+            f"is using '{role_name}', which row-level security applies to "
+            "(superuser=False, bypassrls=False, owns_rls_table=False) — the "
+            "posture of the limited *application* role. Provisioning writes the "
+            "first rows of a tenant that does not exist yet, so RLS filters or "
+            "refuses them, and under FORCE ROW LEVEL SECURITY the failure can "
+            "be a silent zero-row result rather than an error. Nothing was "
+            "written. Note that `kubectl exec` into the API pod inherits the "
+            "pod's DATABASE_URL, which is the application role by design "
+            "(main.py asserts it) — pass the owner DSN explicitly:\n"
+            "    kubectl exec -it deploy/faultmaven-api -- \\\n"
+            "      env DATABASE_URL='postgresql+asyncpg://faultmaven:...@host/faultmaven' \\\n"
+            "      fm-provision-sso-org --name ... --slug ... --workos-org-id org_..."
+        )
+
+
+async def assert_provisioning_db_role_bypasses_rls(*, engine=None) -> str | None:
+    """Refuse to provision a tenant on a role that row-level security scopes.
+
+    Third posture alongside :func:`assert_app_db_role_enforces_rls` (the app
+    must be scoped) and :func:`assert_maintenance_db_role_posture` (a sweep must
+    hold BYPASSRLS): the tenant-provisioning path must be RLS-*exempt*, because
+    it writes rows for a tenant that has no policy admitting it yet.
+
+    Args:
+        engine: Async engine to probe; defaults to the shared engine. Injected
+            in tests.
+
+    Returns:
+        The verified DB role name, so the caller can show the operator which
+        role the writes will be attributed to — or ``None`` on a non-PostgreSQL
+        dialect, where there is no RLS to be scoped by and nothing to verify.
+
+    Raises:
+        DeploymentCoherenceError: If the connected role is subject to RLS.
+    """
+    if engine is None:
+        from faultmaven.infrastructure.persistence.database import get_engine
+
+        engine = get_engine()
+
+    if engine.dialect.name != "postgresql":
+        # SQLite (Standalone) has no row-level security, so no role can be
+        # scoped by it. Nothing to verify rather than nothing to enforce.
+        return None
+
+    async with engine.connect() as conn:
+        row = (await conn.execute(_ROLE_PRIVILEGE_QUERY)).first()
+
+    _raise_if_rls_scoped(
+        row.role_name,
+        bool(row.is_superuser),
+        bool(row.has_bypassrls),
+        bool(row.owns_rls_table),
+    )
+    logger.info(
+        "Provisioning role guard passed: DB role '%s' is not scoped by RLS; "
+        "tenant rows can be written outside any existing tenant policy.",
+        row.role_name,
+    )
+    return row.role_name
