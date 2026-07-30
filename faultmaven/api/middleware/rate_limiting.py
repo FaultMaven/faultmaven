@@ -5,6 +5,7 @@ FastAPI middleware for multi-level rate limiting with Redis backend,
 progressive penalties, and graceful degradation.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime
@@ -113,6 +114,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # on re-entry: the first adoption trusts the composition root's own
         # validation, every later one proves the client for itself.
         self._ever_initialized = False
+        # Serialises attempts, so requests arriving during one wait for its
+        # verdict instead of each concluding "no limiter" independently. See
+        # ``_initialize`` for why that matters more than it looks.
+        self._init_lock = asyncio.Lock()
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Main middleware dispatch with rate limiting"""
@@ -196,9 +201,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
           Latching on failure meant one blip on a pod's first request disabled
           rate limiting for that pod's entire lifetime, with no path back.
         - **A degraded rung** (the per-replica stand-in) counts as initialized —
-          limits keep being enforced against it, with no window of unlimited
-          traffic — but stays re-attemptable, so the pod is promoted back to the
-          shared Redis instead of running per-replica forever.
+          once adopted it keeps enforcing limits rather than opening a window of
+          unlimited traffic — but stays re-attemptable, so the pod is promoted
+          back to the shared Redis instead of running per-replica forever.
 
         Both are bounded by ``INIT_RETRY_COOLDOWN_SECONDS`` so a persistent
         outage does not open a connection on every request.
@@ -216,6 +221,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         raises and never synthesizes a response. Whether "no limiter" means pass
         or refuse is a request-path decision, taken in ``dispatch`` where a
         limit verdict is actually needed — see ``_serve_without_a_limiter``.
+
+        **Attempts are serialised, and that is what bounds the re-entry window.**
+        The window is not "one request wide": it is as wide as the attempt, which
+        against a dead pool means the ping running to ``socket_connect_timeout``
+        (5s) or ``socket_timeout`` (10s). Every request arriving in that time used
+        to see ``_initialized`` false, fall to ``_serve_without_a_limiter`` and
+        pass unlimited — measured at 30 of 30 in a concurrent burst. They now wait
+        on the in-flight attempt and are checked against whatever it adopts, so
+        the cost is that latency once rather than a hole in the limiter. The wait
+        is bounded because the factory sets both socket timeouts; the fast path
+        above returns before the lock, so a healthy limiter never touches it.
         """
         generation = self.rate_limiter.demotion_generation
         if generation != self._handled_demotion_generation:
@@ -231,59 +247,65 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if self._initialized and not self._degraded:
             return True
 
-        now = time.monotonic()
-        if (
-            self._last_attempt_at is not None
-            and now - self._last_attempt_at < INIT_RETRY_COOLDOWN_SECONDS
-        ):
-            # Inside the back-off window. A degraded limiter keeps enforcing
-            # against its stand-in; an uninitialized one has nothing to check.
-            return self._initialized
+        async with self._init_lock:
+            # Re-check under the lock: while this request waited, the attempt it
+            # was waiting for may have produced a usable client.
+            if self._initialized and not self._degraded:
+                return True
 
-        self._last_attempt_at = now
-        client = getattr(request.app.state, "redis_client", None)
-        try:
-            # Re-entry proves the offered client before adopting it: on a
-            # mid-life outage app.state holds the client that just died, and
-            # re-adopting it unchecked would never reach the stand-in.
-            await self.rate_limiter.initialize(
-                client=client, verify_client=self._ever_initialized
-            )
-        except Exception as e:
-            # The underlying rate_limiter already logged the cause.
-            self.logger.warning(
-                "Rate limiter initialization failed (%s); retrying in %.0fs",
-                e,
-                INIT_RETRY_COOLDOWN_SECONDS,
-            )
-            # A failed *promotion* keeps the degraded client it already had.
-            return self._initialized
+            now = time.monotonic()
+            if (
+                self._last_attempt_at is not None
+                and now - self._last_attempt_at < INIT_RETRY_COOLDOWN_SECONDS
+            ):
+                # Inside the back-off window. A degraded limiter keeps enforcing
+                # against its stand-in; an uninitialized one has nothing to check.
+                return self._initialized
 
-        was_degraded = self._degraded
-        self._initialized = True
-        self._ever_initialized = True
-        # Read straight off the limiter rather than via getattr-with-default: a
-        # stand-in that does not report degradation must break the test, not
-        # silently look terminal.
-        self._degraded = bool(self.rate_limiter.is_degraded)
+            self._last_attempt_at = now
+            client = getattr(request.app.state, "redis_client", None)
+            try:
+                # Re-entry proves the offered client before adopting it: on a
+                # mid-life outage app.state holds the client that just died, and
+                # re-adopting it unchecked would never reach the stand-in.
+                await self.rate_limiter.initialize(
+                    client=client, verify_client=self._ever_initialized
+                )
+            except Exception as e:
+                # The underlying rate_limiter already logged the cause.
+                self.logger.warning(
+                    "Rate limiter initialization failed (%s); retrying in %.0fs",
+                    e,
+                    INIT_RETRY_COOLDOWN_SECONDS,
+                )
+                # A failed *promotion* keeps the degraded client it already had.
+                return self._initialized
 
-        if self._degraded:
-            # Serving now, but not done: leave ``_last_attempt_at`` set so the
-            # next request past the cooldown re-attempts the shared client.
-            self.logger.warning(
-                "Rate limiter running on the per-replica stand-in; "
-                "re-attempting the shared Redis client in %.0fs",
-                INIT_RETRY_COOLDOWN_SECONDS,
-            )
-        else:
-            self._last_attempt_at = None
-            self._unavailable_logged_at = None
-            self.logger.info(
-                "Rate limiter promoted back to the shared Redis client"
-                if was_degraded
-                else "Rate limiting middleware initialized"
-            )
-        return True
+            was_degraded = self._degraded
+            self._initialized = True
+            self._ever_initialized = True
+            # Read straight off the limiter rather than via getattr-with-default:
+            # a stand-in that does not report degradation must break the test, not
+            # silently look terminal.
+            self._degraded = bool(self.rate_limiter.is_degraded)
+
+            if self._degraded:
+                # Serving now, but not done: leave ``_last_attempt_at`` set so the
+                # next request past the cooldown re-attempts the shared client.
+                self.logger.warning(
+                    "Rate limiter running on the per-replica stand-in; "
+                    "re-attempting the shared Redis client in %.0fs",
+                    INIT_RETRY_COOLDOWN_SECONDS,
+                )
+            else:
+                self._last_attempt_at = None
+                self._unavailable_logged_at = None
+                self.logger.info(
+                    "Rate limiter promoted back to the shared Redis client"
+                    if was_degraded
+                    else "Rate limiting middleware initialized"
+                )
+            return True
 
     async def _serve_without_a_limiter(
         self, request: Request, call_next: Callable
