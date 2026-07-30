@@ -20,6 +20,7 @@ Configuration:
 """
 
 import asyncio
+import importlib.util
 import logging
 import math
 import os
@@ -27,16 +28,43 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-# Import with graceful fallback
-try:
+if TYPE_CHECKING:  # the real class, for type checkers only — never at runtime
     from sentence_transformers import SentenceTransformer
 
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    SentenceTransformer = None
+# Whether the package is INSTALLED — decided without importing it. Importing
+# sentence_transformers pulls torch in behind it (~690 MiB of RSS) in every
+# process that so much as imports this module, including the cleanup CronJobs
+# that never embed anything and were OOMKilled at 512Mi (#868). find_spec
+# locates the package without executing it, so the flag keeps its meaning at a
+# fraction of the cost.
+try:
+    SENTENCE_TRANSFORMERS_AVAILABLE = (
+        importlib.util.find_spec("sentence_transformers") is not None
+    )
+except (ImportError, ValueError):  # broken install / namespace-package edge
     SENTENCE_TRANSFORMERS_AVAILABLE = False
+
+# Bound on first real load by _sentence_transformer_class(). Module-level so
+# tests can substitute a stand-in without paying for the import either.
+SentenceTransformer = None
+
+
+def _sentence_transformer_class():
+    """Import ``sentence_transformers`` on first real load, caching the class.
+
+    The deferral is the point: see SENTENCE_TRANSFORMERS_AVAILABLE. An
+    already-bound value is honoured as-is, so a test stand-in wins.
+    """
+    global SentenceTransformer
+    if SentenceTransformer is None:
+        from sentence_transformers import (  # heavy: torch loads behind it
+            SentenceTransformer as _SentenceTransformer,
+        )
+
+        SentenceTransformer = _SentenceTransformer
+    return SentenceTransformer
 
 
 # The embedding model that embeds queries at runtime. This is the authoritative
@@ -165,7 +193,7 @@ class ModelCache:
 
     def get_bge_m3_model(
         self, triggered_by: str = "lazy"
-    ) -> Optional[SentenceTransformer]:
+    ) -> Optional["SentenceTransformer"]:
         """
         Get cached BGE-M3 model instance.
 
@@ -209,7 +237,7 @@ class ModelCache:
                 # oversubscribing the node's core count against the cgroup limit.
                 configure_inference_threads()
                 self.logger.info(f"Loading BGE-M3 model ({triggered_by} load)...")
-                model = SentenceTransformer(model_key)
+                model = _sentence_transformer_class()(model_key)
                 load_time = time.time() - start_time
 
                 self._models[model_key] = model
@@ -236,7 +264,7 @@ class ModelCache:
                 self.logger.error(f"Failed to load BGE-M3 model: {e}")
                 return None
 
-    def peek_bge_m3_model(self) -> Optional[SentenceTransformer]:
+    def peek_bge_m3_model(self) -> Optional["SentenceTransformer"]:
         """Return BGE-M3 **only if it is already resident**; never load it.
 
         The load-on-construct counterpart to :meth:`get_bge_m3_model`, for

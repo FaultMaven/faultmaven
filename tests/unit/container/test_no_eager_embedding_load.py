@@ -19,6 +19,9 @@ cannot pass vacuously on a machine without the package — there, the real
 ``get_bge_m3_model`` returns None before it ever reaches the class.
 """
 
+import subprocess
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -136,3 +139,42 @@ def test_get_still_loads(loader):
     assert model_cache.get_bge_m3_model() is loader.return_value
 
     loader.assert_called_once_with(BGE_M3_MODEL_ID)
+
+
+# --------------------------------------------------------------------------- #
+# The other half of the memory bill: import weight
+# --------------------------------------------------------------------------- #
+
+
+def test_importing_the_container_does_not_import_torch():
+    """Not loading the model is not enough to fit a 512Mi pod.
+
+    ``model_cache`` used to do a module-scope ``from sentence_transformers
+    import SentenceTransformer``, which drags torch in behind it — ~690 MiB of
+    RSS in every process that imports the module, model or no model. Deferring
+    only the *load* left the cleanup jobs still OOMKilled; the import has to be
+    deferred too, so both halves are pinned.
+
+    Runs in a subprocess because this test session has almost certainly
+    imported torch already, which would make an in-process ``sys.modules``
+    assertion pass or fail for reasons that have nothing to do with the fix.
+    """
+    probe = (
+        "import sys;"
+        "import faultmaven.container;"
+        "import faultmaven.infrastructure.model_cache;"
+        "print(','.join(m for m in ('sentence_transformers','torch') "
+        "if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[3],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "", (
+        f"importing the container pulled in {result.stdout.strip()} — the "
+        "embedding stack must stay behind a lazy import (#868)"
+    )
