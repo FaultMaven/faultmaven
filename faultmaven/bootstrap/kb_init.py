@@ -258,9 +258,8 @@ async def _ingest_pack_runbook(
         # edits ONLY causes (markdown byte-identical) would hash-match and be
         # skipped — leaving the live consumer (the KB cause seeder) reading stale
         # structure. Compare the persisted causes too and re-ingest on drift.
-        existing_meta = existing_row.knowledge_metadata
-        existing_causes = (
-            existing_meta.get("causes") if isinstance(existing_meta, dict) else None
+        existing_causes = _decode_metadata(existing_row.knowledge_metadata).get(
+            "causes"
         )
         causes_unchanged = _causes_fingerprint(existing_causes) == _causes_fingerprint(
             runbook.causes
@@ -615,6 +614,30 @@ def _causes_fingerprint(causes: Optional[list]) -> str:
     ``sort_keys`` lets a semantically-identical re-serialization compare equal.
     """
     return json.dumps(causes or [], sort_keys=True, ensure_ascii=False)
+
+
+def _decode_metadata(value: Any) -> dict:
+    """Decode a ``knowledge_items.metadata`` value to a dict.
+
+    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so the same
+    column reads back as a JSON **string** on SQLite and an already-decoded
+    **dict** on PostgreSQL. Handling only the dict shape made the causes
+    comparison below read ``None`` on every SQLite deployment, so
+    ``causes_unchanged`` could never be true and every runbook re-ingested on
+    every boot. Returns ``{}`` for absent/undecodable values so the caller's
+    ``.get`` is always safe. Mirrors ``KnowledgeItemRepository._parse_json_dict``,
+    duplicated (not imported) to keep bootstrap off a module's infrastructure
+    layer.
+    """
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        decoded = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
 
 
 async def _delete_existing(
