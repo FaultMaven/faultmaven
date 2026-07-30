@@ -236,6 +236,25 @@ class ModelCache:
                 self.logger.error(f"Failed to load BGE-M3 model: {e}")
                 return None
 
+    def peek_bge_m3_model(self) -> Optional[SentenceTransformer]:
+        """Return BGE-M3 **only if it is already resident**; never load it.
+
+        The load-on-construct counterpart to :meth:`get_bge_m3_model`, for
+        callers that can work without embeddings and must not decide the
+        loading policy for the whole process. Two properties matter (#868):
+
+        - **Memory.** ``get_bge_m3_model`` from a constructor pulls ~1.3Gi into
+          every process that builds the DI container, including cleanup
+          CronJobs that never embed anything — they were OOMKilled at 512Mi.
+        - **Event loop.** A cold load takes 60–120s. Triggering one from a
+          request path would block the loop and trip the k8s liveness probe.
+
+        Whether the model is resident is decided by the documented policy
+        (``LAZY_LOAD_ML_MODELS`` / ``PRELOAD_MODELS``, applied in the web
+        lifespan) or by the first real ``aembed_*`` call — not by this method.
+        """
+        return self._models.get(BGE_M3_MODEL_ID)
+
     async def aembed_texts(self, texts: List[str]) -> Optional[List[List[float]]]:
         """Embed a LIST of texts with BGE-M3 → one 1024-dim vector per text.
 

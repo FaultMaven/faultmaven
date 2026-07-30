@@ -207,15 +207,19 @@ class KnowledgeIngester:
                 metadata={"description": "FaultMaven Knowledge Base"},
             )
 
-        # Fail fast at startup if BGE-M3 can't load (also warms the lazy cache).
-        # Embedding itself goes through model_cache.aembed_* at the call sites
-        # below, which run the encode off the event loop.
-        if model_cache.get_bge_m3_model() is None:
-            self.logger.error("Failed to load BGE-M3 embedding model from cache")
-            raise RuntimeError(
-                "BGE-M3 model unavailable - knowledge ingestion cannot proceed"
-            )
-        self.logger.debug("Cached BGE-M3 embedding model available")
+        # NO embedding-model load here. Constructing an ingester is not
+        # embedding: the DI container builds one in every process, so warming
+        # BGE-M3 from this constructor pulled ~1.3Gi into cleanup CronJobs that
+        # never embed, and they were OOMKilled at 512Mi (#868). The model loads
+        # on first real use via model_cache.aembed_*, which also runs the encode
+        # off the event loop.
+        #
+        # This warm was never the fail-fast it read as: the RuntimeError it
+        # raised was caught by the container's tools provider, which logged a
+        # warning and dropped the ingester (and both KB tools) to None. The
+        # write path is what actually fails closed — _index_document_chunks
+        # raises when aembed_texts returns None, so an unavailable model can
+        # never produce a silently vector-less document.
 
         # Supported file extensions
         self.supported_extensions = {
@@ -429,7 +433,8 @@ class KnowledgeIngester:
             return
 
         # Batch-embed all chunks off the event loop via the model_cache async
-        # boundary (availability is guaranteed by the startup check).
+        # boundary, loading BGE-M3 on this first use if it is not resident yet.
+        # The None check below is the fail-closed gate: no vectors, no write.
         embeddings = await model_cache.aembed_texts(chunks)
         if embeddings is None:
             raise RuntimeError("BGE-M3 model unavailable during ingestion")
