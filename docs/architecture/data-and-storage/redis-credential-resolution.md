@@ -67,7 +67,9 @@ to least preferred:
    fail-closed gets a refusal rather than a per-replica approximation.
 3. **Fail open** — requests pass unlimited. Governed by
    `fail_open_on_redis_error`, sourced from `PROTECTION_RATE_LIMIT_FAIL_OPEN`
-   (default `true`) on every load path, including the production loader.
+   (default `true`) on the general load paths and the development preset. The
+   production loader does not read the key: it pins fail-**closed** (see
+   "Production fails closed" below).
 
 `fail_open_on_redis_error` governs *policy*, never *reporting*.
 `RedisRateLimiter.initialize` returning normally always means a usable client
@@ -79,16 +81,40 @@ missing client look like a working one.
 nothing else. It is deliberately distinct from `PROTECTION_FAIL_OPEN`, which
 binds `settings.protection.fail_open` (default `false`) and governs whether
 PII redaction may pass un-analyzed text to a provider when Presidio is
-unavailable. The two policies have opposite safe defaults — redaction is safer
-closed, rate limiting is safer open — so sharing one key would mean an
-operator hardening redaction silently converts a Redis blip into a
-service-wide 503.
+unavailable. The two policies are independent and their defaults differ
+(redaction closed; rate limiting open on the general paths), so sharing one key
+would mean an operator hardening redaction silently converts a Redis blip into a
+service-wide 503 — a coupling neither policy asked for.
 
-Rung 3 defaults to open rather than closed deliberately: failing closed turns
-a Redis blip into a total API outage (503 on every request), which is a worse
-failure than rung 2's per-replica limiting. Rung 2 exists precisely so rung 3
-is nearly unreachable — the honest reading of "fail open" here is "after two
-strictly-better degrades have already been tried".
+### Production fails closed
+
+`get_production_protection_settings` pins `fail_open_on_redis_error=False` and
+does not read `PROTECTION_RATE_LIMIT_FAIL_OPEN`. It is the only loader that
+pins the policy.
+
+Defaulting production open would rest on the claim that rung 3 is nearly
+unreachable because rungs 1 and 2 enforce limits first. **That claim is false
+today.** The sliding window counts seconds, not requests: the Lua script does
+`ZADD key current_time current_time`, using the same integer second as both
+score *and* member, so same-second requests update one member instead of adding
+entries and `ZCARD` can never exceed the window's length in seconds. Every
+`global` limit configured in `config/protection.py` (production 500/60,
+development 5000/60, settings path 1000/60) is therefore unreachable —
+measured: 5000 requests from one IP against production's 500/60 blocked none,
+final `ZCARD` 6 — and `global` is the only limit that applies to
+unauthenticated traffic. Under that defect rungs 1 and 2 do not enforce the
+global limit at all, so fail-open is not the floor of a ladder, it is the whole
+ladder.
+
+The counting defect is tracked separately and is deliberately not fixed here.
+Until it lands, production takes the 503 cliff over the hole: rate limiting is
+a security *and* cost control, and the trade-off against a total API outage is
+only answerable once the intermediate rungs limit anything. Revisit this pin
+then — not before.
+
+The general load paths and the development preset do honour
+`PROTECTION_RATE_LIMIT_FAIL_OPEN` (default `true`), which is what removes the
+hardcode; production opts out explicitly rather than by omission.
 
 **Initialization latches in neither direction.** A failed
 `RateLimitMiddleware._initialize` leaves `_initialized` false so a later
@@ -97,10 +123,10 @@ generate a connection attempt per request. Latching on failure — the previous
 behaviour — meant one blip on the first request after a pod started disabled
 rate limiting for the pod's entire lifetime, with no path back.
 
-Landing on rung 2 does not latch either. It counts as initialized, so limits
-keep being enforced against the stand-in with no window of unlimited traffic,
-but the cooldown keeps re-attempting rung 1 so the pod is promoted back rather
-than running per-replica forever.
+Landing on rung 2 does not latch either. It counts as initialized, so once
+adopted the stand-in keeps enforcing limits rather than opening a window of
+unlimited traffic, but the cooldown keeps re-attempting rung 1 so the pod is
+promoted back rather than running per-replica forever.
 
 ### Demotion: the ladder is entered on client *death*, not only at startup
 
@@ -110,9 +136,7 @@ it is a restart, a failover, or a lost network an hour into the pod's life,
 after a perfectly successful adoption. Treating a successful adoption as
 permanent meant the limiter kept a dead client, every check fell through
 `check_rate_limit`'s catch-all to fail-open, and **no rung below rung 1 was ever
-reached** in the shape that matters most. That also falsified the justification
-for defaulting to fail-open, which rests on rung 2 making rung 3 nearly
-unreachable.
+reached** in the shape that matters most.
 
 So liveness is tracked on the check path:
 
@@ -123,6 +147,19 @@ So liveness is tracked on the check path:
   least one check — so three consecutive failures is sub-second on any pod
   carrying traffic. The count resets on any success, so an intermittent
   one-in-N error never accumulates into a demotion.
+- A failed check is **attributed to the client it was issued against**.
+  `check_rate_limit` snapshots the client and an adoption epoch together and
+  issues the command against that snapshot; a failure whose epoch is no longer
+  current is discarded. Without that, the fix ate its own successor: when a pool
+  dies under traffic the commands already on the wire hang to `socket_timeout`
+  while later ones fail fast, so the fast failures demote and re-enter the
+  ladder and *then* the slow ones land, cross the threshold a second time and
+  declare the healthy stand-in dead — inside a freshly armed cooldown, which
+  means unlimited traffic for the rest of it with a working client in hand. The
+  epoch is monotonic rather than an identity test, so re-adopting the *same*
+  client object after a recovery still opens a new epoch. Successes are
+  attributed the same way, so a stale success cannot clear a genuine failure run
+  belonging to the current client.
 - `RateLimitMiddleware` holds the generation it last acted on. A change means
   "re-enter the ladder": it drops `_initialized` (so no further checks run
   against the dead client) and re-initializes. Comparing generations keeps one
@@ -138,6 +175,24 @@ So liveness is tracked on the check path:
 - Retries stay on the cooldown. The one immediate re-entry is the transition
   out of a healthy terminal client; everything after that waits out
   `INIT_RETRY_COOLDOWN_SECONDS`, so this is never a ping per request.
+
+**How much traffic goes unlimited before the ladder is re-entered is a
+duration, not a request count.** The threshold (3) bounds *detection*, not the
+window: the window is three failing checks plus however long the re-entry
+attempt takes, and against a dead pool that attempt is a ping running to
+`socket_connect_timeout` (5s) or `socket_timeout` (10s). Every request arriving
+in that time sees `_initialized` false, and each one used to conclude "no
+limiter" independently and pass — measured at 30 of 30 in a concurrent burst,
+29 of them answered before the ping even returned. **Attempts are therefore
+serialised** (`_initialize` holds a lock): concurrent arrivals wait for the
+in-flight attempt and are then checked against whatever it adopted. They pay
+that latency once instead of passing free, and the wait is bounded because the
+factory sets both socket timeouts. The fast path returns before the lock, so a
+healthy limiter never contends on it.
+
+This is a bounded window either way, and bounded is the improvement — the
+behaviour it replaced was unlimited traffic for the pod's entire lifetime, with
+no path back.
 
 **The probes are resolved before any of this.** `dispatch` decides whether a
 request is rate limited at all — `rate_limiting_enabled`, then `_should_bypass`

@@ -31,6 +31,16 @@ from ...models.protection import (
 # consecutive failures is sub-second — a genuinely dead client cannot survive
 # long. The count is *consecutive* and resets on any success, so an intermittent
 # one-in-N error never accumulates into a demotion.
+#
+# What the threshold does *not* bound is how much traffic goes unlimited before
+# the ladder is re-entered. That is a duration, not a request count: three
+# failing checks plus however long the re-entry attempt takes — against a dead
+# pool, the ping running to socket_connect_timeout/socket_timeout. Concurrent
+# arrivals during the attempt wait for it rather than each concluding "no
+# limiter" (RateLimitMiddleware._initialize serialises attempts), which is what
+# keeps that duration from meaning "every request in it passes free". It is a
+# bounded window either way, and bounded is the whole improvement over the
+# previous behaviour, which was unlimited traffic for the pod's entire life.
 CHECK_FAILURE_DEMOTION_THRESHOLD = 3
 
 # Floor on how often a run of failing checks may log at ERROR. Without it the
@@ -144,6 +154,17 @@ class RedisRateLimiter:
         # client that dies is demoted too.
         self._client_declared_dead = False
         self._last_check_failure_log_at: Optional[float] = None
+        # Bumped on every adoption, and stamped onto each check as it is issued.
+        # A check outlives the client it was issued against: when a pool dies
+        # under traffic the commands already on the wire block until
+        # ``socket_timeout`` (10s), while commands issued afterwards fail fast —
+        # so the fast failures demote and re-enter the ladder, and *then* the
+        # slow ones land. Counted blindly they crossed the threshold a second
+        # time and declared the healthy replacement dead, which dropped the
+        # middleware's ``_initialized`` inside a freshly-armed cooldown and
+        # served unlimited traffic for the rest of it. Comparing epochs is what
+        # makes a failure attributable to one specific client.
+        self._adoption_epoch = 0
 
         # Rate limit configurations
         self._configs: Dict[str, RateLimitConfig] = {}
@@ -179,14 +200,40 @@ class RedisRateLimiter:
         """
         return self._demotion_generation
 
-    def _record_check_success(self) -> None:
-        """A working check clears the failure run."""
+    def _is_current(self, epoch: int) -> bool:
+        """Whether a check stamped with ``epoch`` was issued against this client.
+
+        Liveness is a property of one client, so only checks issued against the
+        client currently installed may move its failure run — in either
+        direction. A stale *failure* must not condemn the healthy client that
+        replaced the dead one; a stale *success* must not clear a genuine
+        failure run belonging to the new one.
+
+        This cannot hide a genuine failure of the current client:
+        ``check_rate_limit`` snapshots the client and its epoch together with no
+        await in between and issues the command against that snapshot, so a
+        stamp that still matches ``_adoption_epoch`` names the installed client.
+        """
+        return epoch == self._adoption_epoch
+
+    def _record_check_success(self, epoch: int) -> None:
+        """A working check clears the failure run — its own client's, only."""
+        if not self._is_current(epoch):
+            return
         if self._consecutive_check_failures:
             self._consecutive_check_failures = 0
             self._last_check_failure_log_at = None
 
-    def _record_check_failure(self, error: Exception) -> None:
+    def _record_check_failure(self, error: Exception, epoch: int) -> None:
         """Count a failed check, declaring the client dead past the threshold."""
+        if not self._is_current(epoch):
+            # Issued against a client that has since been replaced. Counting it
+            # would demote its successor for a predecessor's death.
+            self.logger.debug(
+                f"Ignoring a rate limit check failure from a replaced client: {error}"
+            )
+            return
+
         self._consecutive_check_failures += 1
 
         now = time.monotonic()
@@ -351,6 +398,11 @@ class RedisRateLimiter:
 
         The window script is registered here for the same reason: it is bound to
         one client, so a rung change has to re-register it.
+
+        The epoch bump is what makes checks still in flight against the outgoing
+        client stop counting: it is monotonic rather than an identity test, so
+        re-adopting the *same* object after a recovery still opens a new epoch
+        and the previous life's stragglers cannot reach into it.
         """
         from faultmaven.infrastructure.redis_client import is_fakeredis
 
@@ -358,6 +410,7 @@ class RedisRateLimiter:
         self._window_script = client.register_script(_WINDOW_SCRIPT)
         self._owns_client = owns
         self._degraded = degraded
+        self._adoption_epoch += 1
         self._consecutive_check_failures = 0
         self._client_declared_dead = False
         self._last_check_failure_log_at = None
@@ -389,6 +442,15 @@ class RedisRateLimiter:
         """Check if request is within rate limits."""
         start_time = time.time()
 
+        # Snapshot the window script and the epoch its client was adopted under
+        # together — no await in between — and issue the command against the
+        # snapshot. The registered script is bound to the client it was
+        # registered against, so this is what makes the outcome attributable: a
+        # stamp that still matches ``_adoption_epoch`` when the check completes
+        # names the client the command actually went to.
+        script = self._window_script
+        epoch = self._adoption_epoch
+
         try:
             config = self._configs.get(limit_type.value)
             if not config or not config.enabled:
@@ -398,7 +460,7 @@ class RedisRateLimiter:
 
             rate_limit_key = f"{self.key_prefix}:{limit_type.value}:{key}"
             result = await self._check_redis_rate_limit(
-                rate_limit_key, config, limit_type
+                script, rate_limit_key, config, limit_type
             )
 
             duration = time.time() - start_time
@@ -408,7 +470,7 @@ class RedisRateLimiter:
                 f"{result.limit}, duration={duration:.3f}s"
             )
 
-            self._record_check_success()
+            self._record_check_success(epoch)
             return result
 
         except Exception as e:
@@ -417,7 +479,7 @@ class RedisRateLimiter:
             # ladder; without it a mid-life Redis outage left the limiter
             # holding a dead client and passing every request unlimited,
             # forever, with no rung below it ever reached.
-            self._record_check_failure(e)
+            self._record_check_failure(e, epoch)
 
             if self.fallback_enabled:
                 return RateLimitResult(
@@ -432,9 +494,14 @@ class RedisRateLimiter:
                 )
 
     async def _check_redis_rate_limit(
-        self, key: str, config: RateLimitConfig, limit_type: LimitType
+        self, script, key: str, config: RateLimitConfig, limit_type: LimitType
     ) -> RateLimitResult:
         """Check rate limit using Redis sliding window with Lua script.
+
+        ``script`` is passed in rather than read off ``self`` so the command and
+        the epoch stamped on its outcome refer to the same client even if an
+        adoption lands mid-check — the registered script is bound to the client
+        it was registered against.
 
         The window is a sorted set holding one element per request inside it. Two
         constraints on those elements are load-bearing:
@@ -451,7 +518,7 @@ class RedisRateLimiter:
         current_time = time.time()
         member = uuid.uuid4().hex
 
-        result = await self._window_script(
+        result = await script(
             keys=[key],
             args=[
                 _format_window_start(current_time, config.window),

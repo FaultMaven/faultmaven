@@ -13,6 +13,7 @@ composition root and has both middlewares resolve it lazily on the first request
 These tests assert that lazy resolution works and that dedup actually activates.
 """
 
+import asyncio
 import itertools
 import logging
 from types import SimpleNamespace
@@ -841,21 +842,25 @@ async def test_an_isolated_check_failure_does_not_demote(monkeypatch):
     await mw._initialize(_http_request(app=_app(shared), client=ip))
 
     limiter = mw.rate_limiter
-    real_eval = shared.eval
+    real_script = limiter._window_script
     calls = {"n": 0}
 
-    async def _flaky_eval(*args, **kwargs):
+    async def _flaky_script(keys=None, args=None):
         calls["n"] += 1
         # Fail on every other call: never CHECK_FAILURE_DEMOTION_THRESHOLD in a
         # row, so an intermittent error must never accumulate into a demotion.
         if calls["n"] % 2 == 1:
             raise ConnectionError("transient timeout")
-        return await real_eval(*args, **kwargs)
+        return await real_script(keys=keys, args=args)
 
-    monkeypatch.setattr(shared, "eval", _flaky_eval)
+    # The check path snapshots ``_window_script``, so wrapping it here is the
+    # seam the failure actually travels through — patching the client's raw
+    # ``eval`` would miss the registered script's EVALSHA entirely.
+    monkeypatch.setattr(limiter, "_window_script", _flaky_script)
 
     await _drive(mw, ip, 12, state_client=shared)
 
+    assert calls["n"] >= 12, "the flaky script was never exercised — dead gate"
     assert limiter.demotion_generation == 0, "an intermittent error demoted the client"
     assert mw._degraded is False
     assert limiter._redis is shared
@@ -900,10 +905,10 @@ class _KillableClient:
 async def test_a_second_death_is_demoted_just_like_the_first(monkeypatch):
     """Demotion must stay armed across re-adoptions, not fire once per process.
 
-    The failure run is counted with ``== threshold`` so one death yields one
-    generation bump. That is only correct because adopting a client clears the
-    run: leave a stale count behind and the counter sails past the threshold
-    without ever equalling it, so the ladder is entered once and never again.
+    One death yields one generation bump because ``_client_declared_dead``
+    latches for the current client. That is only correct because adopting a
+    client clears both the flag and the failure run: leave either behind and the
+    ladder is entered once and never again.
     """
 
     async def _factory(redis_url=None):
@@ -945,6 +950,305 @@ async def test_a_second_death_is_demoted_just_like_the_first(monkeypatch):
     )
     assert mw._degraded is True
     assert mw.rate_limiter._redis is not killable
+
+
+class _DyingPoolClient:
+    """A pool that dies under traffic: in-flight commands hang, later ones fail fast.
+
+    That asymmetry is the real shape of a pool death, and it is what makes a
+    failed check outlive the client it was issued against. Commands already on
+    the wire block until ``socket_timeout`` (10s), while commands issued after
+    the death fail immediately — so a failure *issued* before a demotion can
+    *land* after it, against whatever client has replaced the dead one.
+
+    ``register_script`` succeeds — registration is local (it only precomputes
+    the SHA), so a dead server cannot make it fail. The hang-then-refuse
+    surfaces on the EVALSHA, i.e. when the script is run.
+    """
+
+    def __init__(self):
+        self._released = asyncio.Event()
+        self.hang = True
+
+    async def ping(self):
+        raise ConnectionError("connection reset by peer")
+
+    def register_script(self, script):
+        async def _run(keys=None, args=None):
+            if self.hang:
+                await self._released.wait()  # stands for the socket_timeout wait
+            raise ConnectionError("connection reset by peer")
+
+        return _run
+
+    def time_out_the_in_flight_commands(self):
+        self._released.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_a_stale_check_failure_does_not_kill_the_healthy_successor(monkeypatch):
+    """Failures must be attributed to the client they were issued against.
+
+    Otherwise the fix for a dead client eats its own successor: the ladder
+    re-enters onto a healthy stand-in, the commands that were on the wire when
+    the pool died then time out, and those stale failures cross the threshold a
+    second time. The middleware drops ``_initialized``, the cooldown gate has
+    just been armed by the re-entry, so it refuses to re-initialize — and every
+    request for the rest of the cooldown passes unlimited *while a healthy
+    client sits in the limiter*.
+    """
+    dead = _DyingPoolClient()
+
+    async def _factory(redis_url=None):
+        from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+        return get_fakeredis_client()
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    threshold = rate_limiter_module.CHECK_FAILURE_DEMOTION_THRESHOLD
+    settings = _limited_settings(global_requests=1)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+
+    await mw._initialize(_http_request(app=_app(dead), client=ip))
+    assert mw.rate_limiter._redis is dead
+
+    # `threshold` requests are on the wire when the pool dies.
+    in_flight = [
+        asyncio.create_task(
+            mw.dispatch(_http_request(app=_app(dead), client=ip), _call_next)
+        )
+        for _ in range(threshold)
+    ]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert all(not task.done() for task in in_flight), "the probe never got in flight"
+
+    # Traffic arriving after the death fails fast and declares the client dead.
+    dead.hang = False
+    await _drive(mw, ip, threshold, state_client=dead)
+    assert mw.rate_limiter.demotion_generation == 1
+
+    # The next request re-enters the ladder onto a healthy stand-in and is
+    # counted against it (the global limit is 1).
+    assert await _drive(mw, ip, 1, state_client=dead) == [200]
+    assert mw._degraded is True
+    successor = mw.rate_limiter._redis
+    assert successor is not dead
+
+    # Now the commands that were on the wire time out.
+    dead.time_out_the_in_flight_commands()
+    landed = await asyncio.gather(*in_flight)
+    assert [response.status_code for response in landed] == [200] * threshold
+
+    # The property, at the request's altitude: the successor is still enforcing.
+    assert await _drive(mw, ip, 1, state_client=dead) == [429], (
+        "unlimited traffic while a healthy client sits in the limiter — the "
+        "stale failures re-entered the ladder and the cooldown blocked recovery"
+    )
+    assert mw.rate_limiter.demotion_generation == 1, (
+        "stale failures from the dead client were counted against its "
+        "replacement, so a healthy client was declared dead"
+    )
+    assert mw.rate_limiter._redis is successor
+    assert mw._initialized is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_a_genuine_failure_run_on_the_current_client_still_demotes(monkeypatch):
+    """The converse of the guard above: attribution must not suppress real deaths.
+
+    Ignoring stale failures is only safe if failures from the *current* client
+    are still counted. A check whose client is still installed must demote it,
+    however many adoptions happened before that client arrived.
+    """
+    first = _DeadClient()
+    second = _KillableClient(fakeredis_aio.FakeRedis(decode_responses=True))
+
+    async def _factory(redis_url=None):
+        from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+        return get_fakeredis_client()
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    threshold = rate_limiter_module.CHECK_FAILURE_DEMOTION_THRESHOLD
+    settings = _limited_settings(global_requests=10_000)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+
+    # An adoption history: first client dies, the ladder demotes, a second real
+    # client is adopted on promotion.
+    await mw._initialize(_http_request(app=_app(first), client=ip))
+    await _drive(mw, ip, threshold + 1, state_client=first)
+    assert mw.rate_limiter.demotion_generation == 1
+    assert mw._degraded is True
+
+    mw._last_attempt_at -= rate_limiting.INIT_RETRY_COOLDOWN_SECONDS + 1
+    await _drive(mw, ip, 1, state_client=second)
+    assert mw.rate_limiter._redis is second
+    assert mw._degraded is False
+
+    # The current client now dies. Its own failures must still demote it.
+    second.alive = False
+    await _drive(mw, ip, threshold, state_client=second)
+
+    assert mw.rate_limiter.demotion_generation == 2, (
+        "failures from the client actually installed were ignored — attribution "
+        "is suppressing genuine deaths, not just stale ones"
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Latent invariants no test observed (fm#897 adversarial review, M4 and M6)
+#
+# Both survived mutation: the code was right and nothing guarded it.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_the_factory_returned_stand_in_is_never_owned(monkeypatch):
+    """M4: the stand-in is a process-wide singleton — this limiter cannot own it.
+
+    ``get_fakeredis_client`` returns one instance shared with sessions, token
+    revocation, deduplication and idempotency. Marking it owned means a future
+    ``close()`` caller takes all of them down together, so ownership has to be
+    false at the point of adoption, not merely unused today.
+    """
+    from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+    stand_in = get_fakeredis_client()
+
+    async def _factory(redis_url=None):
+        return get_fakeredis_client()
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    limiter = RedisRateLimiter()
+    await limiter.initialize()
+
+    assert limiter._redis is stand_in, "the factory rung did not yield the stand-in"
+    assert limiter._owns_client is False, (
+        "the limiter claims ownership of the process-wide stand-in; close() "
+        "would take sessions, token revocation, dedup and idempotency with it"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/healthcheck",
+        "/healthz",
+        "/health-status",
+        "/readinessz",
+        "/readiness-probe",
+    ],
+)
+async def test_a_path_that_merely_starts_with_a_probe_path_is_still_limited(path):
+    """M6: the liveness bypass is an exact match, not a prefix.
+
+    A loose ``startswith("/health")`` would hand any route whose path starts
+    with those letters a permanent, unauthenticated rate-limit exemption.
+    """
+    shared = fakeredis_aio.FakeRedis(decode_responses=True)
+    settings = _limited_settings(global_requests=1)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+
+    statuses = [
+        (
+            await mw.dispatch(
+                _http_request(path=path, app=_app(shared), client=ip), _call_next
+            )
+        ).status_code
+        for _ in range(2)
+    ]
+
+    assert statuses == [200, 429], (
+        f"{path} escaped rate limiting (statuses {statuses}) — the probe bypass "
+        "is matching by prefix"
+    )
+
+
+class _SlowToRefuseClient:
+    """A dead client whose *ping* takes as long as a real dead pool's does.
+
+    A pool that is gone does not refuse instantly: the re-entry ping runs to
+    ``socket_connect_timeout`` (5s) or ``socket_timeout`` (10s). That duration,
+    not a request count, is what bounds the re-entry window.
+    """
+
+    def __init__(self):
+        self.ping_may_return = asyncio.Event()
+
+    async def ping(self):
+        await self.ping_may_return.wait()
+        raise ConnectionError("connection reset by peer")
+
+    def register_script(self, script):
+        async def _run(keys=None, args=None):
+            raise ConnectionError("connection reset by peer")
+
+        return _run
+
+
+@pytest.mark.asyncio
+@pytest.mark.unit
+async def test_concurrent_arrivals_wait_for_an_in_flight_re_entry(monkeypatch):
+    """The re-entry window is bounded by the ping, so it must not be a free-for-all.
+
+    Every request arriving while the first re-entering request awaits its ping
+    used to see ``_initialized == False``, fall through to
+    ``_serve_without_a_limiter`` and pass unlimited — so the hole was as wide as
+    the ping (seconds against a dead pool), not one request wide. Concurrent
+    arrivals now wait for the attempt and get a real verdict from it.
+    """
+    dead = _SlowToRefuseClient()
+
+    async def _factory(redis_url=None):
+        from faultmaven.infrastructure.redis_client import get_fakeredis_client
+
+        return get_fakeredis_client()
+
+    monkeypatch.setattr(_GET_ASYNC_CLIENT, _factory)
+
+    threshold = rate_limiter_module.CHECK_FAILURE_DEMOTION_THRESHOLD
+    settings = _limited_settings(global_requests=1)
+    mw = RateLimitMiddleware(app=_asgi_app, settings=settings)
+    ip = _unique_client()
+
+    await mw._initialize(_http_request(app=_app(dead), client=ip))
+    await _drive(mw, ip, threshold, state_client=dead)
+    assert mw.rate_limiter.demotion_generation == 1, "the client was not declared dead"
+
+    # A burst arrives while the ladder is being re-entered.
+    burst = [
+        asyncio.create_task(
+            mw.dispatch(_http_request(app=_app(dead), client=ip), _call_next)
+        )
+        for _ in range(30)
+    ]
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert all(not task.done() for task in burst), (
+        "requests were answered while the re-entry ping was still outstanding — "
+        "they passed unlimited"
+    )
+
+    dead.ping_may_return.set()
+    statuses = [response.status_code for response in await asyncio.gather(*burst)]
+
+    assert mw._degraded is True, "the ladder was not re-entered"
+    assert statuses.count(200) == 1, (
+        f"{statuses.count(200)} of {len(statuses)} requests passed during the "
+        "re-entry window; the global limit is 1"
+    )
 
 
 # --------------------------------------------------------------------------- #

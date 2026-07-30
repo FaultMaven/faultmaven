@@ -33,9 +33,12 @@ def _fail_open_default() -> bool:
     that way — an operator hardening redaction to fail closed must not thereby
     turn a Redis blip into a 503 on every request.
 
-    One reader, used by both load paths, so the settings path and the
-    environment path cannot disagree about what the deployment asked for; the
-    settings path used to hardcode ``True`` and ignore the operator entirely.
+    One reader, so the settings path, the environment path and the development
+    preset cannot disagree about what the deployment asked for; the settings path
+    used to hardcode ``True`` and ignore the operator entirely.
+
+    ``get_production_protection_settings`` deliberately does *not* call this: it
+    pins fail-closed, for the reason given in its docstring.
     """
     return os.getenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", "true").lower() == "true"
 
@@ -281,7 +284,8 @@ def get_development_protection_settings() -> ProtectionSettings:
     - Shorter timeouts for faster feedback
     - Bypass headers enabled
     - Redis degrade policy from ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` (default
-      open), like every other loader
+      open), like the two general load paths. Production pins fail-closed
+      instead — see ``get_production_protection_settings``.
     """
     return ProtectionSettings(
         # General
@@ -325,23 +329,39 @@ def get_production_protection_settings() -> ProtectionSettings:
     - Strict rate limits
     - Long timeouts for reliability
     - No bypass headers
-    - Redis degrade policy from ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, like every
-      other loader
+    - **Fails closed** on a Redis error, and does not read
+      ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` — see below
 
-    This used to hardcode ``fail_open_on_redis_error=False``, which made
-    ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` a no-op in exactly the environment it
-    matters in. It now honours the key, and the key's default (``true``) is a
-    deliberate posture: the degrade ladder is shared Redis → per-replica
-    FakeRedis (limits still enforced, logged at ERROR) → fail open, so the
-    fail-open rung is nearly unreachable. Failing closed instead converts a
-    Redis blip into a 503 on every request — a total API outage, strictly worse
-    than per-replica limiting. An operator who genuinely wants the outage can
-    still set the key to ``false``.
+    Production is the one loader that pins the degrade policy rather than
+    honouring the key, and it pins it *closed*.
+
+    Defaulting it open would rest on the claim that the fail-open rung is nearly
+    unreachable because rungs 1 and 2 enforce limits first. That claim is false
+    today: the sliding window's ``ZADD key current_time current_time`` uses the
+    same integer second as both score *and* member, so same-second requests
+    overwrite one member instead of adding entries and ``ZCARD`` can never exceed
+    the window in seconds. Every ``global`` limit in this file is therefore
+    unreachable (measured: 5000 requests from one IP against 500/60 blocked
+    none, final ``ZCARD`` 6) — and ``global`` is the only limit that applies to
+    unauthenticated traffic. Until the window counts requests, rungs 1 and 2 do
+    not enforce the global limit at all, so "fail open" is not the bottom of a
+    ladder, it is the whole ladder.
+
+    That defect is tracked separately (the sliding window counts seconds, not
+    requests) and is deliberately not fixed here. When it lands, revisit this
+    pin: the trade-off it settles — a Redis blip becoming a 503 on every request
+    versus a hole in a security *and* cost control — is only answerable once the
+    intermediate rungs actually limit anything.
+
+    The general load paths and the development preset do honour
+    ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, which removes the real hardcode this
+    branch set out to remove; production opts out explicitly rather than by
+    omission.
     """
     return ProtectionSettings(
         # General
         enabled=True,
-        fail_open_on_redis_error=_fail_open_default(),
+        fail_open_on_redis_error=False,
         protection_bypass_headers=[],  # No bypasses in production
         # Redis: resolve centrally via RedisClientFactory.
         redis_url=None,
