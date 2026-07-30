@@ -210,6 +210,12 @@ class _ClosableClient:
     async def ping(self):
         return True
 
+    def register_script(self, script):
+        async def _run(keys=None, args=None):
+            raise AssertionError("this stand-in is never checked against")
+
+        return _run
+
     async def close(self):
         self.closed = True
 
@@ -631,14 +637,21 @@ class _DeadClient:
         self.ping_calls += 1
         raise ConnectionError("connection reset by peer")
 
-    async def eval(self, *args, **kwargs):
-        self.eval_calls += 1
-        raise ConnectionError("connection reset by peer")
+    def register_script(self, script):
+        """Registering succeeds; running the script is what fails.
 
-    async def zremrangebyscore(self, *args, **kwargs):
-        raise ConnectionError("connection reset by peer")
+        redis-py's ``register_script`` is a local operation — it only precomputes
+        the SHA — so a dead server cannot make it fail. The failure surfaces on
+        the EVALSHA, i.e. on the check path.
+        """
 
-    async def zcard(self, *args, **kwargs):
+        async def _run(keys=None, args=None):
+            self.eval_calls += 1
+            raise ConnectionError("connection reset by peer")
+
+        return _run
+
+    async def zcount(self, *args, **kwargs):
         raise ConnectionError("connection reset by peer")
 
 
@@ -863,17 +876,23 @@ class _KillableClient:
         self._check()
         return True
 
-    async def eval(self, *args, **kwargs):
-        self._check()
-        return await self._backing.eval(*args, **kwargs)
+    def register_script(self, script):
+        """Delegate registration, but gate every *run* on liveness.
 
-    async def zremrangebyscore(self, *args, **kwargs):
-        self._check()
-        return await self._backing.zremrangebyscore(*args, **kwargs)
+        Registration is local (it only precomputes the SHA), so it keeps working
+        while the server is dead; the death has to surface on the EVALSHA.
+        """
+        registered = self._backing.register_script(script)
 
-    async def zcard(self, *args, **kwargs):
+        async def _run(keys=None, args=None):
+            self._check()
+            return await registered(keys=keys, args=args)
+
+        return _run
+
+    async def zcount(self, *args, **kwargs):
         self._check()
-        return await self._backing.zcard(*args, **kwargs)
+        return await self._backing.zcount(*args, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -931,13 +950,9 @@ async def test_a_second_death_is_demoted_just_like_the_first(monkeypatch):
 # --------------------------------------------------------------------------- #
 # The limit the window actually enforces (fm#920)
 #
-# Every enforcement test above uses ``global_requests=1``, the single limit value
-# where counting requests and counting distinct wall-clock seconds are
-# indistinguishable. The window keyed its sorted-set members by the whole-second
-# timestamp, so same-second requests collapsed into one entry and any limit above
-# 1 was unreachable — measured on production's 500/60s ``global``: 5000 requests
-# from one IP, 0 refused. ``global`` is the only limit covering unauthenticated
-# traffic.
+# Every enforcement test above uses ``global_requests=1``, the one limit value
+# where counting requests and counting distinct seconds are indistinguishable.
+# See docs/architecture/security/rate-limiting-sliding-window.md.
 # --------------------------------------------------------------------------- #
 
 

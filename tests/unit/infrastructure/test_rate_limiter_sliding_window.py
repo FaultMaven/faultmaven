@@ -1,19 +1,11 @@
 """The sliding window counts requests, not wall-clock seconds (fm#920).
 
-The window is a Redis sorted set: one element per request inside the window,
-pruned by score. It used to insert ``int(time.time())`` as *both* score and
-member, and ZADD on an existing member updates its score instead of adding an
-element — so every request arriving in the same second collapsed into one
-element and ``ZCARD`` could never exceed the number of distinct seconds in the
-window. Any limit with ``requests > window`` (production ``global`` 500/60s) was
-therefore unreachable, and ``global`` is the only limit covering unauthenticated
-traffic.
+The window is a Redis sorted set holding one element per request inside it.
+These tests use ``1 < requests < window`` and drive more calls than the limit
+at a single frozen instant — the only shape that separates counting requests
+from counting distinct seconds, and the shape the pre-fix suite lacked.
 
-Why the pre-fix suite could not see it: every enforcement test used
-``requests=1`` — the single limit value where counting requests and counting
-distinct seconds are indistinguishable — and every must-not-limit test used
-10_000. These tests use ``1 < requests < window`` and drive more calls than the
-limit without sleeping, which is the only shape that separates the two.
+See docs/architecture/security/rate-limiting-sliding-window.md.
 """
 
 import time as std_time
@@ -90,13 +82,18 @@ async def _verdicts(limiter, key, count):
 
 
 @pytest.mark.parametrize("limit", [2, 5, 17])
-async def test_the_window_counts_requests_not_seconds(redis_client, limit):
+async def test_the_window_counts_requests_not_seconds(redis_client, monkeypatch, limit):
     """The property, swept: N back-to-back requests against L allow exactly L.
 
-    No sleeps, so the whole sweep lands in (about) one wall-clock second. Under
-    per-second counting only the first request of each second is counted, so the
-    allowed run collapses to 1 and ``ZCARD`` never leaves 1.
+    The clock is frozen, so every call in the sweep arrives at literally the same
+    instant — the strongest form of the property, and one a slow machine cannot
+    weaken by letting the sweep straddle a second boundary. Under per-second
+    counting only the first request of an instant is counted, so the allowed run
+    collapses to 1 and ``ZCARD`` never leaves 1.
     """
+    clock = _Clock(1_700_000_000.0)
+    monkeypatch.setattr(rate_limiter_module, "time", clock)
+
     limiter = _limiter(redis_client, requests=limit, window=60)
     key = f"10.1.0.{limit}"
     overshoot = 7
@@ -108,11 +105,10 @@ async def test_the_window_counts_requests_not_seconds(redis_client, limit):
 
 
 async def test_two_requests_in_the_same_second_are_two_entries(redis_client):
-    """The direct anti-regression: same-second requests must be distinct members.
+    """The direct anti-regression, on the real clock: distinct members per request.
 
     ZADD with the whole-second timestamp as member updated a score rather than
-    adding an element, so the set stayed at one entry however many requests
-    arrived.
+    adding an element, so the set stayed at one entry.
     """
     limiter = _limiter(redis_client, requests=2, window=60)
     key = "10.1.1.1"
@@ -172,7 +168,7 @@ async def test_blocked_requests_consume_no_quota(redis_client, monkeypatch):
 async def test_status_and_enforcement_agree_on_the_window_edge(
     redis_client, monkeypatch
 ):
-    """The read-only status path prunes by the same float bound as enforcement.
+    """The read-only status path measures from the same float bound as enforcement.
 
     Truncating ``now`` to a whole second widens the status window by up to a
     second, so status reported quota that enforcement had already released.
@@ -195,3 +191,41 @@ async def test_status_and_enforcement_agree_on_the_window_edge(
     assert (
         status.current_count == 0
     ), "status still counts an entry enforcement has released"
+
+
+async def test_an_entry_exactly_one_window_old_is_outside_the_window(
+    redis_client, monkeypatch
+):
+    """The bound is inclusive: an entry scored exactly ``window`` ago is pruned.
+
+    This pins which side of the edge the bound falls on, so the window is the
+    half-open interval (now − window, now] and not the closed one. It is the
+    boundary case the sliding test steps over (it advances 11 against a 10s
+    window) and the one where an off-by-one in either path — enforcement's prune
+    or status's count — leaves quota held for one extra tick.
+
+    Status is queried *before* the second check, so it reports the window as
+    enforcement would see it on the very next request rather than after that
+    request has already inserted.
+    """
+    clock = _Clock(1_700_000_000.0)
+    monkeypatch.setattr(rate_limiter_module, "time", clock)
+
+    limiter = _limiter(redis_client, requests=1, window=10)
+    key = "10.1.5.1"
+    window_key = _window_key(limiter, key)
+
+    assert await _verdicts(limiter, key, 1) == [True]
+    assert await redis_client.zcard(window_key) == 1
+
+    # Exactly on the bound, not past it.
+    clock.advance(10)
+
+    status = await limiter.get_rate_limit_status(key, LimitType.GLOBAL)
+    assert status is not None
+    assert status.current_count == 0, "status counts an entry sitting on the bound"
+
+    # And the quota it reports free really is free.
+    assert await _verdicts(limiter, key, 1) == [True]
+    # The aged-out entry was pruned rather than left alongside the new one.
+    assert await redis_client.zcard(window_key) == 1

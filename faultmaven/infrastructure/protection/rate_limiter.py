@@ -37,6 +37,54 @@ CHECK_FAILURE_DEMOTION_THRESHOLD = 3
 # catch-all logged once per check — up to four lines per request, indefinitely.
 CHECK_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 
+# The sliding-window check, as one atomic script: prune, count, refuse without
+# inserting, otherwise insert and refresh the TTL. It generates neither time nor
+# randomness — the caller passes both in, so the script stays deterministic.
+_WINDOW_SCRIPT = """
+local key = KEYS[1]
+local window_start = ARGV[1]
+local score = ARGV[2]
+local member = ARGV[3]
+local limit = tonumber(ARGV[4])
+local ttl = tonumber(ARGV[5])
+
+-- Remove entries that have fallen out of the window
+redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
+
+-- Count the requests still inside it
+local current_count = redis.call('ZCARD', key)
+
+-- Check if limit exceeded. Nothing is inserted on this path: a refused
+-- request must neither consume quota nor extend the window, or a client
+-- that keeps hammering a limit would hold its own quota shut.
+if current_count >= limit then
+    return {current_count, limit, 0}  -- blocked
+end
+
+-- Add current request
+redis.call('ZADD', key, score, member)
+redis.call('EXPIRE', key, ttl)
+
+return {current_count + 1, limit, 1}  -- allowed
+"""
+
+
+def _format_window_start(now: float, window: int) -> str:
+    """The window's lower edge, formatted for Redis.
+
+    One helper for both the enforcement and the status path so the two cannot
+    drift apart on where the window begins. Formatted to a fixed number of
+    decimals rather than handed over as a Lua number: Redis parses the string as
+    a double, so sub-second precision cannot be lost to Lua's default number
+    formatting.
+
+    The bound itself is *inclusive* on the enforcement path — the prune removes
+    entries scored at or below it — which makes the window the half-open interval
+    (now − window, now]. The status path counts from the exclusive form of the
+    same bound so it sees exactly the entries the prune would have left.
+    """
+    return f"{now - window:.6f}"
+
 
 class RedisRateLimiter:
     """
@@ -64,6 +112,11 @@ class RedisRateLimiter:
 
         # Redis connection
         self._redis = None
+        # The window script, registered against ``_redis`` once per adoption.
+        # redis-py's Script object caches the SHA and calls EVALSHA, reloading
+        # the body only on NOSCRIPT, so the script text is not re-sent on every
+        # request the way ``eval`` re-sent it.
+        self._window_script = None
         # Whether this limiter opened ``_redis`` itself and may therefore close
         # it. An adopted client belongs to the composition root.
         self._owns_client = False
@@ -295,10 +348,14 @@ class RedisRateLimiter:
         liveness tracking. Leaving ``_client_declared_dead`` set would mean the
         *next* client's death is never declared, and the ladder would be entered
         exactly once in the process's life.
+
+        The window script is registered here for the same reason: it is bound to
+        one client, so a rung change has to re-register it.
         """
         from faultmaven.infrastructure.redis_client import is_fakeredis
 
         self._redis = client
+        self._window_script = client.register_script(_WINDOW_SCRIPT)
         self._owns_client = owns
         self._degraded = degraded
         self._consecutive_check_failures = 0
@@ -379,71 +436,30 @@ class RedisRateLimiter:
     ) -> RateLimitResult:
         """Check rate limit using Redis sliding window with Lua script.
 
-        The window is a sorted set holding **one element per request** inside it,
-        scored by arrival time and pruned by score. Two properties make that so,
-        and both are load-bearing:
+        The window is a sorted set holding one element per request inside it. Two
+        constraints on those elements are load-bearing:
 
-        - The **score** is wall-clock ``time.time()`` with sub-second precision,
-          not ``time.monotonic()``: entries are shared across processes and
-          replicas through Redis, so scores have to be comparable across hosts.
-          Clock skew moves the window edge by the skew, which rate limiting can
-          absorb; a per-host monotonic origin would make the set meaningless.
-        - The **member** is unique per request. A member derived from the
-          timestamp alone is not: ZADD on an existing member updates its score
-          instead of adding an element, so every request arriving in the same
-          instant would collapse into one entry and the count could never exceed
-          the number of distinct instants observed. The uuid, not the clock, is
-          what guarantees uniqueness — the set stays correct even if time stands
-          still. The timestamp prefix is there only so a human reading ZRANGE
-          output can see when an entry arrived.
+        - the **score** is wall-clock ``time.time()``, not ``time.monotonic()``:
+          entries are shared across processes and replicas, so scores have to be
+          comparable across hosts;
+        - the **member** is unique per request, so ZADD grows the set instead of
+          updating an existing member's score.
 
-        Both values are computed here and passed in as arguments so the script
-        stays deterministic: it generates neither time nor randomness itself.
+        Both are computed here and passed to the script as arguments (fm#920; see
+        ``docs/architecture/security/rate-limiting-sliding-window.md``).
         """
         current_time = time.time()
-        window_start = current_time - config.window
-        member = f"{current_time:.6f}:{uuid.uuid4().hex}"
+        member = uuid.uuid4().hex
 
-        lua_script = """
-        local key = KEYS[1]
-        local window_start = ARGV[1]
-        local score = ARGV[2]
-        local member = ARGV[3]
-        local limit = tonumber(ARGV[4])
-        local ttl = tonumber(ARGV[5])
-
-        -- Remove entries that have fallen out of the window
-        redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
-
-        -- Count the requests still inside it
-        local current_count = redis.call('ZCARD', key)
-
-        -- Check if limit exceeded. Nothing is inserted on this path: a refused
-        -- request must neither consume quota nor extend the window, or a client
-        -- that keeps hammering a limit would hold its own quota shut.
-        if current_count >= limit then
-            return {current_count, limit, 0}  -- blocked
-        end
-
-        -- Add current request
-        redis.call('ZADD', key, score, member)
-        redis.call('EXPIRE', key, ttl)
-
-        return {current_count + 1, limit, 1}  -- allowed
-        """
-
-        # Scores and bounds go over the wire as formatted strings rather than Lua
-        # numbers: Redis parses them as doubles directly, so the sub-second
-        # precision cannot be lost to Lua's default number formatting.
-        result = await self._redis.eval(
-            lua_script,
-            1,
-            key,
-            f"{window_start:.6f}",
-            f"{current_time:.6f}",
-            member,
-            config.requests,
-            config.window + 60,
+        result = await self._window_script(
+            keys=[key],
+            args=[
+                _format_window_start(current_time, config.window),
+                f"{current_time:.6f}",
+                member,
+                config.requests,
+                config.window + 60,
+            ],
         )
 
         current_count, limit, allowed = result
@@ -514,14 +530,21 @@ class RedisRateLimiter:
         rate_limit_key = f"{self.key_prefix}:{limit_type.value}:{key}"
 
         try:
-            # The same float bound the check path prunes by. Truncating to a
-            # whole second here would widen the window by up to a second, so
-            # status would report quota that enforcement had already released.
+            # ZCOUNT rather than prune-then-ZCARD: reporting status must not
+            # mutate the window a concurrent check is deciding against, and a
+            # read-only path is also safe to serve from a read replica.
+            #
+            # The lower bound is the *exclusive* form of the same bound
+            # enforcement prunes by. The prune removes entries scored at or below
+            # it, so the entries it would have left are exactly those scored
+            # strictly above it — and the shared helper keeps the two from
+            # drifting apart on where the window begins.
             current_time = time.time()
-            window_start = current_time - config.window
+            window_start = "(" + _format_window_start(current_time, config.window)
 
-            await self._redis.zremrangebyscore(rate_limit_key, "-inf", window_start)
-            current_count = await self._redis.zcard(rate_limit_key)
+            current_count = await self._redis.zcount(
+                rate_limit_key, window_start, "+inf"
+            )
 
             return RateLimitState(
                 key=key,
