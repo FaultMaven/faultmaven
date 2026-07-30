@@ -368,16 +368,12 @@ class TestUpdateLLMConfig:
         provider = MagicMock()
         provider.supports_engine_response_schemas = MagicMock(return_value=False)
 
-        with (
-            patch(
-                "faultmaven.infrastructure.llm.providers.registry.get_registry"
-            ) as mock_registry,
-            patch(
-                "faultmaven.config.llm_config_overrides.save_and_reload",
-                new_callable=AsyncMock,
-            ) as mock_set,
-        ):
-            mock_registry.return_value.get_provider.return_value = provider
+        mock_llm_provider.registry.get_provider.return_value = provider
+
+        with patch(
+            "faultmaven.config.llm_config_overrides.save_and_reload",
+            new_callable=AsyncMock,
+        ) as mock_set:
             with pytest.raises(HTTPException) as exc_info:
                 await update_llm_config(
                     request=request,
@@ -400,16 +396,12 @@ class TestUpdateLLMConfig:
         provider = MagicMock()
         provider.supports_engine_response_schemas = MagicMock(return_value=True)
 
-        with (
-            patch(
-                "faultmaven.infrastructure.llm.providers.registry.get_registry"
-            ) as mock_registry,
-            patch(
-                "faultmaven.config.llm_config_overrides.save_and_reload",
-                new_callable=AsyncMock,
-            ) as mock_set,
-        ):
-            mock_registry.return_value.get_provider.return_value = provider
+        mock_llm_provider.registry.get_provider.return_value = provider
+
+        with patch(
+            "faultmaven.config.llm_config_overrides.save_and_reload",
+            new_callable=AsyncMock,
+        ) as mock_set:
             result = await update_llm_config(
                 request=request,
                 current_user=mock_admin_user,
@@ -427,16 +419,13 @@ class TestUpdateLLMConfig:
         capacity must not have its model changes refused on speculation."""
         request = LLMConfigUpdateRequest(provider_name="gemini", model="gemini-9.9-new")
 
-        with (
-            patch(
-                "faultmaven.infrastructure.llm.providers.registry.get_registry"
-            ) as mock_registry,
-            patch(
-                "faultmaven.config.llm_config_overrides.save_and_reload",
-                new_callable=AsyncMock,
-            ) as mock_set,
-        ):
-            mock_registry.return_value.get_provider.return_value = object()
+        # A provider object that does not report capacity at all.
+        mock_llm_provider.registry.get_provider.return_value = object()
+
+        with patch(
+            "faultmaven.config.llm_config_overrides.save_and_reload",
+            new_callable=AsyncMock,
+        ) as mock_set:
             result = await update_llm_config(
                 request=request,
                 current_user=mock_admin_user,

@@ -254,14 +254,15 @@ async def update_llm_config(
             # engine cannot drive and the deployment only discovers it several
             # turns into the next live investigation. 422 at the point of change
             # is the whole difference.
+            # Reached through the injected ``llm_provider`` (same ``registry``
+            # already used for ``valid_names`` above) rather than importing the
+            # provider registry directly — the API layer must not import from
+            # infrastructure, and a direct import trips the api-layer boundary
+            # test even though it satisfies the import-linter contracts.
             provider_obj = None
             try:
-                from faultmaven.infrastructure.llm.providers.registry import (
-                    get_registry,
-                )
-
-                provider_obj = get_registry().get_provider(request.provider_name)
-            except Exception as exc:  # registry unavailable — cannot judge
+                provider_obj = registry.get_provider(request.provider_name)
+            except Exception as exc:  # provider unavailable — cannot judge
                 logger.debug(
                     "Skipping schema-capacity check for %s/%s: %s",
                     request.provider_name,
