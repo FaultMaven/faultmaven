@@ -54,8 +54,8 @@ def auth_service():
         mock_settings.security.jwt_secret_key.get_secret_value.return_value = (
             "test-secret-key-for-integration-testing"
         )
-        mock_settings.security.jwt_access_token_expire_minutes = 15
-        mock_settings.security.jwt_refresh_token_expire_days = 7
+        mock_settings.auth.jwt_access_token_expire_minutes = 15
+        mock_settings.auth.jwt_refresh_token_expire_days = 7
         mock_settings.security.jwt_issuer = "faultmaven-api"
         mock_settings.security.jwt_audience = "faultmaven-app"
         mock_settings.security.token_revocation_prefix = "revoked:token:"

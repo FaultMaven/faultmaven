@@ -944,12 +944,23 @@ MAX_REFRESH_TOKEN_EXPIRY_DAYS = 90
 #: lifetime for the token's type: a token minted under a longer setting (or of a
 #: type with its own shorter one) must never outlive the entry that revokes it.
 #:
-#: This holds only because BOTH settings halves bound their expiry fields by
-#: these same constants — the security half binds by field name and would
-#: otherwise accept any value — and because every other token type this system
-#: issues (access, password reset, local session) is bounded below it. A test
-#: pins both properties; raising a bound past this one must fail loudly.
+#: This holds because the expiry fields are declared in exactly ONE place
+#: (``AuthSettings``, #888) with these constants as their bounds, and because
+#: every other token type this system issues (access, password reset, local
+#: session) is bounded below it. A test pins both properties; raising a bound
+#: past this one must fail loudly.
 MAX_TOKEN_LIFETIME_DAYS = MAX_REFRESH_TOKEN_EXPIRY_DAYS
+
+#: Env names that used to reach a second, duplicate declaration of the token
+#: expiry fields on ``SecuritySettings`` (they bound by field name, hence the
+#: EXPIRE spelling). That duplicate is gone: expiry has one source, and it is
+#: the EXPIRY-aliased pair on ``AuthSettings`` (#888). An environment still
+#: setting a retired name would be silently inert — the exact failure this
+#: design removes — so construction refuses it and names the replacement.
+RETIRED_JWT_EXPIRY_ENV_NAMES = {
+    "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": "JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
+    "JWT_REFRESH_TOKEN_EXPIRE_DAYS": "JWT_REFRESH_TOKEN_EXPIRY_DAYS",
+}
 
 
 class SecuritySettings(BaseSettings):
@@ -971,24 +982,9 @@ class SecuritySettings(BaseSettings):
         validation_alias="JWT_SECRET_KEY",
         description="HS256 secret for local auth; auto-generated+persisted in local mode by get_settings() if unset (override via JWT_SECRET_KEY). Unused in OAuth/RS256 mode.",
     )
-    # The half the cloud RS256 generator and AuthService mint from. These carry
-    # no validation_alias, so they bind by FIELD NAME
-    # (JWT_ACCESS_TOKEN_EXPIRE_MINUTES / JWT_REFRESH_TOKEN_EXPIRE_DAYS — EXPIRE,
-    # the spelling the installation guide documents, not the EXPIRY spelling
-    # AuthSettings aliases; #888 tracks the split). Same bounds as the auth half
-    # regardless: revocation entries are held against MAX_TOKEN_LIFETIME_DAYS,
-    # which is only an upper bound on token lifetime if NEITHER half can be
-    # configured past it.
-    jwt_access_token_expire_minutes: int = Field(
-        default=15,
-        ge=1,
-        le=MAX_ACCESS_TOKEN_EXPIRY_MINUTES,
-    )
-    jwt_refresh_token_expire_days: int = Field(
-        default=7,
-        ge=1,
-        le=MAX_REFRESH_TOKEN_EXPIRY_DAYS,
-    )
+    # NOTE: token expiry is deliberately NOT declared here. It lives once, on
+    # AuthSettings, and every minting path takes it from there (#888). This half
+    # carries the keys, issuer and audience only.
 
     jwt_issuer: str = Field(default="faultmaven-api")
     jwt_audience: str = Field(default="faultmaven-app")
@@ -1018,6 +1014,30 @@ class SecuritySettings(BaseSettings):
     rate_limit_enabled: bool = Field(default=True)
     rate_limit_requests_per_minute: int = Field(default=60)
     rate_limit_burst_size: int = Field(default=10)
+
+    @model_validator(mode="after")
+    def reject_retired_jwt_expiry_names(self):
+        """Refuse to build while the environment sets a retired expiry name.
+
+        The env is inspected directly because ``extra="ignore"`` means an
+        unknown name would otherwise be dropped without a trace — and a
+        silently-dropped expiry knob is precisely the defect (#888): the
+        operator sets a lifetime, the deployment mints the default, and nothing
+        says so. A boot error is the only outcome that cannot be missed.
+        """
+        present = [name for name in RETIRED_JWT_EXPIRY_ENV_NAMES if name in os.environ]
+        if present:
+            details = "; ".join(
+                f"{name} is retired — set {RETIRED_JWT_EXPIRY_ENV_NAMES[name]} instead"
+                for name in sorted(present)
+            )
+            raise ValueError(
+                f"Retired JWT expiry environment variable(s) set: {details}. "
+                "Token lifetimes now have a single source that governs every "
+                "auth mode; the retired names would be ignored, so remove them "
+                "from your environment and .env."
+            )
+        return self
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 
@@ -1145,7 +1165,14 @@ class AuthSettings(BaseSettings):
         description="Local mode token expiry (hours)",
     )
 
-    # JWT token expiry settings (common for both modes per iam-design.md).
+    # JWT token expiry settings — the SINGLE source, effective in every auth
+    # mode (#888). Every minting path takes these two values: the HS256/local
+    # and RS256/cloud generators receive them as explicit constructor arguments,
+    # and AuthService (mint + revocation watermark) and the OAuth/SSO
+    # `expires_in` surfaces read them here. SecuritySettings deliberately
+    # declares no expiry field; a second declaration is what let a documented
+    # knob be silently inert in one of the two modes.
+    #
     # The env names carry their unit because the two fields do NOT share one:
     # unsuffixed parallel names invited "10080" (7 days in minutes) into the
     # DAYS field and produced ~27 years of refresh validity. The bounds make an

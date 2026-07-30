@@ -48,11 +48,9 @@ REAL_ORG = "22222222-2222-2222-2222-222222222222"
 # =============================================================================
 
 
-def _settings_stub():
-    settings = MagicMock()
-    settings.jwt_access_token_expire_minutes = 15
-    settings.jwt_refresh_token_expire_days = 7
-    return settings
+# Token lifetimes are explicit generator arguments (#888), not a settings read.
+ACCESS_MINUTES = 15
+REFRESH_DAYS = 7
 
 
 def _rs256_generator(revocation_store=None):
@@ -77,7 +75,8 @@ def _rs256_generator(revocation_store=None):
         private_key=private_pem,
         public_key=public_pem,
         revocation_store=revocation_store or InMemoryRevocationStore(),
-        settings=_settings_stub(),
+        access_token_expire_minutes=ACCESS_MINUTES,
+        refresh_token_expire_days=REFRESH_DAYS,
     )
     return generator, {"key": public_pem, "algorithms": ["RS256"]}
 
@@ -87,7 +86,8 @@ def _hs256_generator(revocation_store=None):
     generator = HS256JWTTokenGenerator(
         secret_key=secret,
         revocation_store=revocation_store or InMemoryRevocationStore(),
-        settings=_settings_stub(),
+        access_token_expire_minutes=ACCESS_MINUTES,
+        refresh_token_expire_days=REFRESH_DAYS,
         issuer="faultmaven",
         audience="faultmaven-api",
     )

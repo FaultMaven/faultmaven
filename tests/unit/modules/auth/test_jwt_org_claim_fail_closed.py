@@ -127,14 +127,13 @@ def _rs256_generator():
         )
         .decode()
     )
-    settings = MagicMock()
-    settings.jwt_access_token_expire_minutes = 15
     return (
         RS256JWTTokenGenerator(
             private_key=private_pem,
             public_key=public_pem,
             revocation_store=MagicMock(),
-            settings=settings,
+            access_token_expire_minutes=15,
+            refresh_token_expire_days=7,
         ),
         {"key": public_pem, "algorithms": ["RS256"]},
     )
@@ -142,13 +141,12 @@ def _rs256_generator():
 
 def _hs256_generator():
     secret = "unit-test-secret-not-a-real-key-padded-to-32-bytes"
-    settings = MagicMock()
-    settings.jwt_access_token_expire_minutes = 15
     return (
         HS256JWTTokenGenerator(
             secret_key=secret,
             revocation_store=MagicMock(),
-            settings=settings,
+            access_token_expire_minutes=15,
+            refresh_token_expire_days=7,
         ),
         {"key": secret, "algorithms": ["HS256"]},
     )

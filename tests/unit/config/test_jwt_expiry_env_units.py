@@ -5,15 +5,12 @@ operator who read the old parallel names as both-minutes set `10080` on the days
 field and got ~27 years of refresh validity, silently removing the
 short-credential assumption the whole revocation design rests on.
 
-Only `settings.auth` carries the `JWT_*_EXPIRY_*` aliases. The
-`settings.security` half — the one the cloud RS256 generator and `AuthService`
-mint from — declares the same field names with no alias, so it binds by FIELD
-NAME (`JWT_ACCESS_TOKEN_EXPIRE_MINUTES` / `JWT_REFRESH_TOKEN_EXPIRE_DAYS`, EXPIRE
-rather than EXPIRY, the spelling the installation guide documents). Both
-spellings are operator-facing, each reaching a different half; #888 tracks the
-split. Both halves carry the same bounds, which is what makes the revocation
-entry ceiling sound: it is only an upper bound on token lifetime if NEITHER half
-can be configured past it.
+The pair is declared exactly once, on `settings.auth`, and governs every auth
+mode (#888). `SecuritySettings` declaring the same two field names is what let
+one documented spelling reach cloud and the other reach local, each inert in the
+other mode; that duplicate is gone, and the bounds on the surviving declaration
+are therefore the only mintable range there is — which is what makes the
+revocation entry ceiling sound.
 """
 
 from __future__ import annotations
@@ -50,10 +47,12 @@ JWT_EXPIRY_ENV_NAMES = (
     "JWT_REFRESH_TOKEN_EXPIRY",
     "JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
     "JWT_REFRESH_TOKEN_EXPIRY_DAYS",
-    # The security half's field-name binding
+    # Retired: these once bound a duplicate declaration on the security half.
     "JWT_ACCESS_TOKEN_EXPIRE_MINUTES",
     "JWT_REFRESH_TOKEN_EXPIRE_DAYS",
 )
+
+EXPIRY_FIELDS = ("jwt_access_token_expire_minutes", "jwt_refresh_token_expire_days")
 
 
 def _clean_env(**overrides):
@@ -123,97 +122,55 @@ class TestBoundsRejectImplausibleValues:
         with pytest.raises(ValidationError):
             _auth_settings_with(JWT_ACCESS_TOKEN_EXPIRY_MINUTES=value)
 
-    @pytest.mark.parametrize("value", ["1", "15", "60", "1440"])
+    # 999 is the reviewer's #888 reproduction value: in range, unremarkable, and
+    # under the old split it moved cloud lifetimes only through the retired name.
+    @pytest.mark.parametrize("value", ["1", "15", "60", "999", "1440"])
     def test_access_minutes_in_range(self, value):
         settings = _auth_settings_with(JWT_ACCESS_TOKEN_EXPIRY_MINUTES=value)
         assert settings.jwt_access_token_expire_minutes == int(value)
 
 
-class TestOnlyTheAuthHalfCarriesTheAliases:
-    """The two halves declare the same field names; one is operator-facing."""
+class TestExpiryIsDeclaredExactlyOnce:
+    """One declaration is the fix for #888, so the schema pins it.
 
-    def test_security_half_ignores_the_documented_aliases(self):
-        """The `JWT_*_EXPIRY_*` names reach the auth half only (#888)."""
-        security = _security_settings_with(
-            JWT_ACCESS_TOKEN_EXPIRY_MINUTES="45",
-            JWT_REFRESH_TOKEN_EXPIRY_DAYS="30",
-        )
-
-        assert security.jwt_access_token_expire_minutes == 15
-        assert security.jwt_refresh_token_expire_days == 7
-
-    def test_security_half_binds_by_field_name(self):
-        """With no alias, the field NAME is the binding — EXPIRE, not EXPIRY.
-
-        This is the half the cloud RS256 generator and AuthService mint from, so
-        this form is the only way to move cloud token lifetimes today.
-        """
-        security = _security_settings_with(
-            JWT_ACCESS_TOKEN_EXPIRE_MINUTES="45",
-            JWT_REFRESH_TOKEN_EXPIRE_DAYS="30",
-        )
-
-        assert security.jwt_access_token_expire_minutes == 45
-        assert security.jwt_refresh_token_expire_days == 30
-
-    def test_the_field_name_form_does_not_reach_the_auth_half(self):
-        auth = _auth_settings_with(
-            JWT_ACCESS_TOKEN_EXPIRE_MINUTES="45",
-            JWT_REFRESH_TOKEN_EXPIRE_DAYS="30",
-        )
-
-        assert auth.jwt_access_token_expire_minutes == 15
-        assert auth.jwt_refresh_token_expire_days == 7
-
-
-class TestBothHalvesAreBounded:
-    """The entry ceiling is only an upper bound if NEITHER half can exceed it.
-
-    The security half was unbounded while binding by field name, so a cloud
-    deployment could mint a 365-day refresh token against a 90-day revocation
-    entry — revoked for 90 days, live again for the next 275.
+    A second field of the same name on another half is not a duplicate value —
+    it is a second knob, reachable by a different env name, that some minting
+    path will eventually read instead.
     """
 
-    @pytest.mark.parametrize("value", ["0", "-1", "91", "365", "10080"])
-    def test_security_refresh_days_out_of_range(self, value):
-        with pytest.raises(ValidationError):
-            _security_settings_with(JWT_REFRESH_TOKEN_EXPIRE_DAYS=value)
+    @pytest.mark.parametrize("field", EXPIRY_FIELDS)
+    def test_the_auth_half_declares_it(self, field):
+        assert field in AuthSettings.model_fields
 
-    @pytest.mark.parametrize("value", ["1", "7", "30", "90"])
-    def test_security_refresh_days_in_range(self, value):
-        settings = _security_settings_with(JWT_REFRESH_TOKEN_EXPIRE_DAYS=value)
-        assert settings.jwt_refresh_token_expire_days == int(value)
+    @pytest.mark.parametrize("field", EXPIRY_FIELDS)
+    def test_the_security_half_does_not(self, field):
+        assert field not in SecuritySettings.model_fields
 
-    @pytest.mark.parametrize("value", ["0", "-1", "1441", "10080"])
-    def test_security_access_minutes_out_of_range(self, value):
-        with pytest.raises(ValidationError):
-            _security_settings_with(JWT_ACCESS_TOKEN_EXPIRE_MINUTES=value)
+    @pytest.mark.parametrize("field", EXPIRY_FIELDS)
+    def test_the_security_half_holds_no_expiry_value(self, field):
+        """Not merely undeclared — unreadable, so a stale read cannot resolve."""
+        security = _security_settings_with()
+        assert not hasattr(security, field)
 
-    # 999 is the reviewer's reproduction value: in range, but it only reaches
-    # the field at all through the field-name binding.
-    @pytest.mark.parametrize("value", ["1", "15", "60", "999", "1440"])
-    def test_security_access_minutes_in_range(self, value):
-        settings = _security_settings_with(JWT_ACCESS_TOKEN_EXPIRE_MINUTES=value)
-        assert settings.jwt_access_token_expire_minutes == int(value)
 
-    @pytest.mark.parametrize(
-        "half,field",
-        [
-            (AuthSettings, "jwt_access_token_expire_minutes"),
-            (AuthSettings, "jwt_refresh_token_expire_days"),
-            (SecuritySettings, "jwt_access_token_expire_minutes"),
-            (SecuritySettings, "jwt_refresh_token_expire_days"),
-        ],
-    )
-    def test_every_expiry_field_declares_the_shared_bounds(self, half, field):
-        """Both halves, both fields — no unbounded expiry anywhere."""
+class TestTheSingleSourceIsBounded:
+    """The entry ceiling is only an upper bound if the one source can't exceed it.
+
+    The retired security half was unbounded at first while binding by field
+    name, so a cloud deployment could mint a 365-day refresh token against a
+    90-day revocation entry — revoked for 90 days, live again for the next 275.
+    With one declaration there is one place to bound, and this is it.
+    """
+
+    @pytest.mark.parametrize("field", EXPIRY_FIELDS)
+    def test_every_expiry_field_declares_the_shared_bounds(self, field):
         expected = {
             "jwt_access_token_expire_minutes": MAX_ACCESS_TOKEN_EXPIRY_MINUTES,
             "jwt_refresh_token_expire_days": MAX_REFRESH_TOKEN_EXPIRY_DAYS,
         }[field]
 
-        assert _bound(half, field, "ge") == 1
-        assert _bound(half, field, "le") == expected
+        assert _bound(AuthSettings, field, "ge") == 1
+        assert _bound(AuthSettings, field, "le") == expected
 
 
 class TestTheCeilingIsActuallyTheMaximum:

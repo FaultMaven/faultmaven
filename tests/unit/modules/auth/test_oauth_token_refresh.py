@@ -83,15 +83,12 @@ def _make_user(**overrides) -> DevUser:
 
 def _make_rs256_generator(revocation_store) -> RS256JWTTokenGenerator:
     private_pem, public_pem = _generate_test_rsa_keypair()
-    settings_stub = SimpleNamespace(
-        jwt_access_token_expire_minutes=60,
-        jwt_refresh_token_expire_days=7,
-    )
     return RS256JWTTokenGenerator(
         private_key=private_pem,
         public_key=public_pem,
         revocation_store=revocation_store,
-        settings=settings_stub,
+        access_token_expire_minutes=60,
+        refresh_token_expire_days=7,
         issuer="faultmaven",
         audience="faultmaven-api",
     )

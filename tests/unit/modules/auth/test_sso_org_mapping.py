@@ -699,14 +699,12 @@ def _rs256_generator():
         )
         .decode()
     )
-    settings = MagicMock()
-    settings.jwt_access_token_expire_minutes = 15
-    settings.jwt_refresh_token_expire_days = 7
     generator = RS256JWTTokenGenerator(
         private_key=private_pem,
         public_key=public_pem,
         revocation_store=MagicMock(),
-        settings=settings,
+        access_token_expire_minutes=15,
+        refresh_token_expire_days=7,
     )
     return generator, public_pem
 

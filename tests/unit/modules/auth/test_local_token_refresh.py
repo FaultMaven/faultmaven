@@ -54,14 +54,11 @@ def _make_user() -> DevUser:
 
 
 def _make_generator(revocation_store) -> HS256JWTTokenGenerator:
-    settings_stub = SimpleNamespace(
-        jwt_access_token_expire_minutes=60,
-        jwt_refresh_token_expire_days=7,
-    )
     return HS256JWTTokenGenerator(
         secret_key="unit-test-secret-key-please-ignore",
         revocation_store=revocation_store,
-        settings=settings_stub,
+        access_token_expire_minutes=60,
+        refresh_token_expire_days=7,
         issuer="faultmaven",
         audience="faultmaven-api",
     )

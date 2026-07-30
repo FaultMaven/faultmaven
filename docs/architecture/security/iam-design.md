@@ -266,15 +266,14 @@ already answered 200.
 The OAuth rate limiter guarding `/revoke` remains in-memory and per-process, so
 its per-IP ceiling scales with replica count.
 
-The watermark TTL is the **maximum** of `settings.auth` and
-`settings.security`'s `jwt_refresh_token_expire_days`. Both halves declare that
-field under the same name, and the minters are split across them — the local
-HS256 generator is built from `settings.auth`, the cloud RS256 generator and
-`AuthService` from `settings.security` (see the configuration reference). Only
-`settings.auth`'s carries the `JWT_REFRESH_TOKEN_EXPIRY_DAYS` alias, so reading
-only `settings.security`'s would cap the watermark at its 7-day default while
-local refresh tokens lived for the configured 30, resurrecting revoked tokens on
-day 8. Taking the maximum covers whichever half a given minter reads.
+The watermark TTL is derived from `settings.auth.jwt_refresh_token_expire_days`
+(the `JWT_REFRESH_TOKEN_EXPIRY_DAYS` knob), folded together with the access
+expiry — the single expiry source every minter is built from (see the
+configuration reference). Because there is one source, "the watermark outlives
+every mintable token" is structural: reading it covers every mint path. When the
+field was declared on two settings halves this had to be a `max()` across both,
+and reading one half alone once capped the watermark at its 7-day default while
+refresh tokens lived for the configured 30, resurrecting revoked tokens on day 8.
 
 `UserService` persists **before** revoking, deliberately. Revoking first opens
 a TOCTOU: during the gap the database still holds the old password, roles and
@@ -1933,46 +1932,43 @@ describe('OAuth Flow Integration', () => {
 | `JWT_SECRET_KEY` | Local | Symmetric key for HS256 | Required |
 | `JWT_PRIVATE_KEY_PATH` | Cloud | Path to RS256 private key | Required |
 | `JWT_PUBLIC_KEY_PATH` | Cloud | Path to RS256 public key | Required |
-| `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` | Local | Access token lifetime in **minutes** (1–1440). Inert in cloud mode — see below | `15` |
-| `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Local | Refresh token lifetime in **days**, not minutes (1–90). Inert in cloud mode — see below | `7` |
+| `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` | Both | Access token lifetime in **minutes** (1–1440) | `15` |
+| `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Both | Refresh token lifetime in **days**, not minutes (1–90) | `7` |
 | `OAUTH_CODE_EXPIRY` | Cloud | Authorization code lifetime (minutes) | `10` |
 | `OAUTH_REQUIRE_CONSENT` | Cloud | Require user consent screen | `false` |
 | `OAUTH_REQUIRE_HTTPS_REDIRECT` | Cloud | Require HTTPS redirect URIs | `false` |
 | `DASHBOARD_URL` | Both | Dashboard URL for OAuth redirects | `http://localhost:3333` |
 
 The two JWT expiry variables name their unit because they do not share one, and
-every expiry field on **both** settings halves is bounded (1–1440 minutes,
-1–90 days) so an implausible value fails at boot rather than silently removing
-the short-credential assumption the revocation design rests on. Bounding both
-halves is also what lets a revocation entry be held against a lifetime no
-configuration can exceed — a bound on one half alone would leave the other free
-to mint tokens that outlive their own revocation entries. *(Rejected: accepting
-the old unsuffixed names as aliases — this is pre-production, and keeping a name
-whose unit an operator read as minutes is the trap itself.)*
+both are bounded (1–1440 minutes, 1–90 days) so an implausible value fails at
+boot rather than silently removing the short-credential assumption the revocation
+design rests on. Those bounds are also what lets a revocation entry be held
+against a lifetime no configuration can exceed. *(Rejected: accepting the old
+unsuffixed names as aliases — this is pre-production, and keeping a name whose
+unit an operator read as minutes is the trap itself.)*
 
-**The aliases and bounds reach local-mode tokens only.** Both settings halves
-declare `jwt_access_token_expire_minutes` and `jwt_refresh_token_expire_days`,
-but only `settings.auth`'s carry the env aliases and the bounds — and each
-generator is built from a different half:
+**The pair is the single source, effective in every auth mode.** Expiry is
+declared once, on `AuthSettings`; `SecuritySettings` carries the keys, issuer and
+audience but no expiry field. Every minter takes the same two values:
 
-| Minter | Built from | Env knobs apply |
-|--------|-----------|-----------------|
-| `HS256JWTTokenGenerator` (local) | `settings.auth` | Yes |
-| `RS256JWTTokenGenerator` (cloud/OAuth) | `settings.security` | No |
-| `AuthService.generate_*` | `settings.security` | No |
+| Minter | Lifetimes from |
+|--------|----------------|
+| `HS256JWTTokenGenerator` (local) | explicit constructor args, wired from `settings.auth` |
+| `RS256JWTTokenGenerator` (cloud/OAuth) | explicit constructor args, wired from `settings.auth` |
+| `AuthService.generate_*` | `settings.auth` |
+| `OAuthService` / SSO `expires_in` | `settings.auth` |
 
-So the `JWT_*_EXPIRY_*` names move local-mode lifetimes only. The
-`settings.security` fields are not immovable, though: carrying no alias, they
-bind by field name — `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` and
-`JWT_REFRESH_TOKEN_EXPIRE_DAYS` (**EXPIRE**, not the EXPIRY spelling above),
-which is the form the installation guide documents. That form is the only one
-that reaches cloud token lifetimes. Two spellings that differ by one word, each
-reaching a different half, is the open defect in #888; an operator who sets the
-wrong pair gets the defaults and no error. Both halves carry the same bounds
-regardless, so neither can be configured past `MAX_TOKEN_LIFETIME_DAYS`.
+The generators take the lifetimes as constructor parameters rather than reading a
+settings object, so which settings half a caller happens to hold can never
+decide a token's lifetime. The retired `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` /
+`JWT_REFRESH_TOKEN_EXPIRE_DAYS` spelling (**EXPIRE**) once bound a duplicate
+declaration on the security half — so each documented spelling worked in exactly
+one mode and was silently inert in the other (#888). Settings construction now
+**rejects** either retired name with an error naming its replacement.
 
-`AuthService._longest_token_lifetime_seconds` takes the **maximum** across both
-halves for the same reason: neither half alone describes every minter.
+`AuthService._longest_token_lifetime_seconds` reads that one source; a `max()`
+across settings halves is no longer needed because there is only one half to
+read.
 
 ### Configuration File
 
