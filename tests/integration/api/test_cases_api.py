@@ -790,21 +790,25 @@ class TestErrorHandling:
 class TestCloseCase:
     """Tests for POST /api/v1/cases/{case_id}/close endpoint.
 
-    Regression guard: the state-validation block previously referenced
-    CaseState.SOLVED / CaseState.DOCUMENTING, which do not exist on the enum,
-    so every call raised AttributeError -> 500 before any close occurred.
+    #915: the previous route set ``case.state = CLOSED`` directly (rejected
+    by the terminal-state validator → 500) and then called
+    ``update_case_status``, which no real service implements — both masked
+    here by an unspec'd AsyncMock. The route now delegates to
+    ``ICaseService.close_case`` (engine executor: derived closure_reason,
+    closed_at, action history) and maps its typed exceptions via the global
+    handlers.
     """
 
-    async def test_close_non_terminal_case_succeeds_not_500(
-        self, app, client, mock_case_service, mock_case, headers
+    async def test_close_case_succeeds(
+        self, app, client, mock_case_service, mock_user, headers
     ):
-        """A closeable case returns 200 (regression: must NOT 500)."""
+        """A closeable case returns 200 with the closure payload."""
         from faultmaven.api.v1.dependencies import get_case_repository
 
-        mock_case.state = CaseState.RESOLVED
-        mock_case.current_turn = 5
-        mock_case_service.get_case.return_value = mock_case
-        mock_case_service.update_case_status.return_value = None
+        closed_case = MagicMock()
+        closed_case.closed_at = datetime.now(timezone.utc)
+        closed_case.closure_reason = "inquiry_only"
+        mock_case_service.close_case = AsyncMock(return_value=closed_case)
         # close_case archives reports via the repository; None skips that branch.
         app.dependency_overrides[get_case_repository] = lambda: None
 
@@ -812,28 +816,56 @@ class TestCloseCase:
             "/api/v1/cases/case_123abc/close", json={}, headers=headers
         )
 
-        assert response.status_code != status.HTTP_500_INTERNAL_SERVER_ERROR
         assert response.status_code == status.HTTP_200_OK
-        assert response.json()["case_id"] == "case_123abc"
-        mock_case_service.update_case_status.assert_called_once()
+        body = response.json()
+        assert body["case_id"] == "case_123abc"
+        assert body["closed_at"]
+        assert body["archived_reports"] == []
+        mock_case_service.close_case.assert_awaited_once_with(
+            "case_123abc", mock_user.user_id
+        )
 
-    async def test_close_already_closed_returns_400(
-        self, app, client, mock_case_service, mock_case, headers
+    async def test_close_already_terminal_returns_409(
+        self, app, client, mock_case_service, headers
     ):
-        """Closing an already-CLOSED case is the one invalid close -> 400."""
+        """Closing an already-terminal case conflicts (409 via handler)."""
         from faultmaven.api.v1.dependencies import get_case_repository
+        from faultmaven.exceptions import ConflictError
 
-        mock_case.state = CaseState.CLOSED
-        mock_case_service.get_case.return_value = mock_case
+        mock_case_service.close_case = AsyncMock(
+            side_effect=ConflictError(
+                "Case case_123abc is already closed",
+                resource_type="Case",
+                resource_id="case_123abc",
+                conflict_reason="already_closed",
+            )
+        )
         app.dependency_overrides[get_case_repository] = lambda: None
 
         response = await client.post(
             "/api/v1/cases/case_123abc/close", json={}, headers=headers
         )
 
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.status_code == status.HTTP_409_CONFLICT
         assert "already closed" in response.json()["detail"].lower()
-        mock_case_service.update_case_status.assert_not_called()
+
+    async def test_close_unknown_or_unowned_returns_404(
+        self, app, client, mock_case_service, headers
+    ):
+        """Unknown case — or a non-owner caller — is a 404 (not-403 posture)."""
+        from faultmaven.api.v1.dependencies import get_case_repository
+        from faultmaven.exceptions import NotFoundError
+
+        mock_case_service.close_case = AsyncMock(
+            side_effect=NotFoundError("Case", "case_123abc")
+        )
+        app.dependency_overrides[get_case_repository] = lambda: None
+
+        response = await client.post(
+            "/api/v1/cases/case_123abc/close", json={}, headers=headers
+        )
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
 # ============================================================
