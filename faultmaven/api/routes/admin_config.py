@@ -246,6 +246,45 @@ async def update_llm_config(
                     detail=f"Unknown provider: '{request.provider_name}'",
                 )
             model_field = f"{request.provider_name}_model"
+
+            # Refuse a model that cannot serve the investigation engine's response
+            # schemas. The startup gate (validate_structured_output_capacity)
+            # covers boot, but this endpoint hot-reloads config afterwards, so
+            # without the same check here an operator can swap in a model the
+            # engine cannot drive and the deployment only discovers it several
+            # turns into the next live investigation. 422 at the point of change
+            # is the whole difference.
+            # Reached through the injected ``llm_provider`` (same ``registry``
+            # already used for ``valid_names`` above) rather than importing the
+            # provider registry directly — the API layer must not import from
+            # infrastructure, and a direct import trips the api-layer boundary
+            # test even though it satisfies the import-linter contracts.
+            provider_obj = None
+            try:
+                provider_obj = registry.get_provider(request.provider_name)
+            except Exception as exc:  # provider unavailable — cannot judge
+                logger.debug(
+                    "Skipping schema-capacity check for %s/%s: %s",
+                    request.provider_name,
+                    request.model,
+                    exc,
+                )
+            probe = getattr(provider_obj, "supports_engine_response_schemas", None)
+            # Fails OPEN when capacity is unknown, matching the startup gate: an
+            # unmeasured model is never refused on speculation.
+            if probe is not None and not probe(request.model):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Model '{request.model}' cannot serve the investigation "
+                        f"engine's response schemas: it accepts small schemas and "
+                        f"rejects the larger per-stage ones, so investigations "
+                        f"would advance a few turns and then fail every remaining "
+                        f"turn. Choose a model with a larger constrained-decoding "
+                        f"budget."
+                    ),
+                )
+
             overrides[model_field] = request.model
 
         if not overrides:

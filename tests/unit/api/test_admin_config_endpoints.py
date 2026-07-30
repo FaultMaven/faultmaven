@@ -354,6 +354,88 @@ class TestUpdateLLMConfig:
         assert call_args[0][0]["anthropic_api_key"] == "sk-ant-new-key-123"
 
     @pytest.mark.asyncio
+    async def test_incapable_model_rejected_with_422(
+        self, mock_admin_user, mock_llm_provider
+    ):
+        """A model that cannot serve the engine's response schemas is refused at
+        the point of change. The startup gate only covers boot; this endpoint
+        hot-reloads config afterwards, so without this check an operator could
+        swap in a model the engine cannot drive and the deployment would only find
+        out several turns into the next live investigation."""
+        request = LLMConfigUpdateRequest(
+            provider_name="gemini", model="gemini-2.5-flash"
+        )
+        provider = MagicMock()
+        provider.supports_engine_response_schemas = MagicMock(return_value=False)
+
+        mock_llm_provider.registry.get_provider.return_value = provider
+
+        with patch(
+            "faultmaven.config.llm_config_overrides.save_and_reload",
+            new_callable=AsyncMock,
+        ) as mock_set:
+            with pytest.raises(HTTPException) as exc_info:
+                await update_llm_config(
+                    request=request,
+                    current_user=mock_admin_user,
+                    llm_provider=mock_llm_provider,
+                )
+
+        assert exc_info.value.status_code == 422
+        assert "gemini-2.5-flash" in exc_info.value.detail
+        # Nothing persisted — the rejection happens before save_and_reload.
+        mock_set.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_capable_model_is_accepted(self, mock_admin_user, mock_llm_provider):
+        """The converse: a capable model still saves, so the guard cannot have
+        become a blanket refusal of model changes."""
+        request = LLMConfigUpdateRequest(
+            provider_name="gemini", model="gemini-3.5-flash"
+        )
+        provider = MagicMock()
+        provider.supports_engine_response_schemas = MagicMock(return_value=True)
+
+        mock_llm_provider.registry.get_provider.return_value = provider
+
+        with patch(
+            "faultmaven.config.llm_config_overrides.save_and_reload",
+            new_callable=AsyncMock,
+        ) as mock_set:
+            result = await update_llm_config(
+                request=request,
+                current_user=mock_admin_user,
+                llm_provider=mock_llm_provider,
+            )
+
+        assert "gemini_model" in result.updated_keys
+        assert mock_set.call_args[0][0]["gemini_model"] == "gemini-3.5-flash"
+
+    @pytest.mark.asyncio
+    async def test_model_change_allowed_when_capacity_unknown(
+        self, mock_admin_user, mock_llm_provider
+    ):
+        """Fails OPEN, matching the startup gate: a provider that does not report
+        capacity must not have its model changes refused on speculation."""
+        request = LLMConfigUpdateRequest(provider_name="gemini", model="gemini-9.9-new")
+
+        # A provider object that does not report capacity at all.
+        mock_llm_provider.registry.get_provider.return_value = object()
+
+        with patch(
+            "faultmaven.config.llm_config_overrides.save_and_reload",
+            new_callable=AsyncMock,
+        ) as mock_set:
+            result = await update_llm_config(
+                request=request,
+                current_user=mock_admin_user,
+                llm_provider=mock_llm_provider,
+            )
+
+        assert "gemini_model" in result.updated_keys
+        mock_set.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_unknown_provider_returns_422(
         self, mock_admin_user, mock_llm_provider
     ):

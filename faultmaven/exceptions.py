@@ -108,6 +108,41 @@ QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
 TOKEN_LIMIT = "TOKEN_LIMIT"
 
 
+# Stable error_code for a rejected provider CREDENTIAL — revoked/invalid API key,
+# or a key without access to the requested resource (HTTP 401/403). Like
+# QUOTA_EXHAUSTED this is permanent and account-scoped: every request fails the
+# same way until an operator rotates or re-provisions the key. It exists so that
+# condition can (a) open a circuit breaker instead of letting every turn make a
+# doomed round trip, and (b) survive on the open-breaker error as something
+# actionable rather than collapsing into a generic 500.
+#
+# Deliberately excludes 404: a not-found is not reliably account-scoped (a wrong
+# model id fails every request, but a wrong path fails only that call shape), and
+# converting it into a breaker trip would replace an actionable "model not found"
+# with an opaque outage.
+PROVIDER_AUTH_FAILED = "PROVIDER_AUTH_FAILED"
+
+
+# error_codes whose failure is scoped to the ACCOUNT/SERVICE rather than to the
+# individual request: if this request failed for one of these reasons, so will
+# every other request until an operator acts. Only these permanent failures may
+# open a circuit breaker (``BaseExternalClient``), because the breaker is
+# service-wide and its job is to stop pointless calls to a dependency that cannot
+# currently serve anyone.
+#
+# The distinction that matters is SCOPE, not retryability. A rejected request
+# (malformed body, unsupported feature, a response schema the model refuses to
+# compile) is also permanent, but it is permanent *for that request only* —
+# counting it opened the shared ``LLM_Providers`` breaker on three deterministic
+# Gemini 400s and took down every other LLM call, including the fallback chain
+# and smaller payloads that would have succeeded. Quota exhaustion is the
+# opposite: opening the breaker is correct, and the latched ``error_code`` keeps
+# the open-breaker error mapping to 402 instead of a generic 500 (the
+# case_b639fac38fe0 chain). A rejected credential (PROVIDER_AUTH_FAILED) is the
+# same shape as quota: permanent until an operator rotates the key.
+SERVICE_SCOPED_ERROR_CODES = frozenset({QUOTA_EXHAUSTED, PROVIDER_AUTH_FAILED})
+
+
 # Billing/quota-exhaustion markers found in provider error bodies. These signal
 # a PERMANENT account-level condition — out of credits, billing not enabled, or a
 # hard spend/quota cap — that NO amount of retrying or waiting will clear; only an
@@ -208,9 +243,17 @@ class LLMException(FaultMavenException):
         # so this single chokepoint classifies all of them.
         if error_code is None and is_billing_quota_error(message, status_code):
             error_code = QUOTA_EXHAUSTED
+        # A rejected credential is the other account-scoped permanent failure.
+        # Classified from the status code alone: 401/403 mean the key is invalid,
+        # revoked, or lacks access, and no provider wording is needed to know that
+        # every later request fails identically until an operator rotates it.
+        # Without a code here the condition is invisible to the breaker's
+        # service-scope test, and every turn keeps making a doomed round trip.
+        if error_code is None and status_code in (401, 403):
+            error_code = PROVIDER_AUTH_FAILED
         self.error_code = error_code
 
-        if error_code == QUOTA_EXHAUSTED:
+        if error_code in (QUOTA_EXHAUSTED, PROVIDER_AUTH_FAILED):
             # Permanent account-level failure — retrying/waiting cannot help.
             self.retryable = False
         elif retryable is not None:
