@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Optional, TypeVar, Union
 
+from faultmaven.exceptions import SERVICE_SCOPED_ERROR_CODES
 from faultmaven.infrastructure.logging.unified import UnifiedLogger, get_unified_logger
 
 # Type variable for generic return types
@@ -465,18 +466,46 @@ class BaseExternalClient(ABC):
 
                     # Non-retryable errors (e.g. HTTP 4xx) — fail fast,
                     # don't waste time retrying a request that will fail again.
+                    #
+                    # Whether this counts against the circuit breaker depends on
+                    # the failure's SCOPE, not on retryability:
+                    #
+                    # * REQUEST-scoped (bad shape, unsupported feature, a response
+                    #   schema the model refuses to compile) — NOT counted. The
+                    #   breaker is service-wide, so counting these let one
+                    #   permanently-bad request disable everything: three
+                    #   deterministic Gemini 400s opened the shared
+                    #   ``LLM_Providers`` breaker and every subsequent LLM call —
+                    #   including smaller payloads that would have succeeded, and
+                    #   the fallback chain behind it — failed with an opaque
+                    #   CircuitBreakerError, re-opening on each half-open probe.
+                    #   Waiting cannot fix a request the service always rejects.
+                    # * SERVICE/ACCOUNT-scoped (``SERVICE_SCOPED_ERROR_CODES`` —
+                    #   quota exhausted, billing disabled) — COUNTED. Every other
+                    #   request will fail the same way until an operator acts, so
+                    #   opening the breaker stops pointless calls, and the latched
+                    #   error_code keeps the open-breaker error mapping to 402
+                    #   rather than a generic 500 (the case_b639fac38fe0 chain).
+                    #
+                    # ``failed_calls`` counts both, so neither becomes invisible.
                     if getattr(call_error, "retryable", True) is False:
                         self.connection_metrics["failed_calls"] += 1
                         self.connection_metrics["last_failure_time"] = datetime.now(
                             timezone.utc
                         ).isoformat()
 
-                        if self.circuit_breaker:
+                        service_scoped = (
+                            getattr(call_error, "error_code", None)
+                            in SERVICE_SCOPED_ERROR_CODES
+                        )
+                        if self.circuit_breaker and service_scoped:
                             self.circuit_breaker.record_failure(call_error)
 
                         self.logger.warning(
                             f"Non-retryable error for {self.service_name}.{operation_name}, "
-                            f"failing fast: {call_error}",
+                            f"failing fast ("
+                            f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'request-scoped — not counted against the circuit breaker'}"
+                            f"): {call_error}",
                             client=self.client_name,
                             service=self.service_name,
                         )
@@ -740,19 +769,27 @@ class BaseExternalClient(ABC):
                         "error_type": type(call_error).__name__,
                     }
 
-                    # Non-retryable errors (e.g. HTTP 4xx) — fail fast
+                    # Non-retryable errors (e.g. HTTP 4xx) — fail fast. Counted
+                    # against the breaker only when SERVICE/ACCOUNT-scoped; see
+                    # the async path above for the full rationale.
                     if getattr(call_error, "retryable", True) is False:
                         self.connection_metrics["failed_calls"] += 1
                         self.connection_metrics["last_failure_time"] = datetime.now(
                             timezone.utc
                         ).isoformat()
 
-                        if self.circuit_breaker:
+                        service_scoped = (
+                            getattr(call_error, "error_code", None)
+                            in SERVICE_SCOPED_ERROR_CODES
+                        )
+                        if self.circuit_breaker and service_scoped:
                             self.circuit_breaker.record_failure(call_error)
 
                         self.logger.warning(
                             f"Non-retryable error for {self.service_name}.{operation_name}, "
-                            f"failing fast: {call_error}",
+                            f"failing fast ("
+                            f"{'service-scoped — counted against the circuit breaker' if service_scoped else 'request-scoped — not counted against the circuit breaker'}"
+                            f"): {call_error}",
                             client=self.client_name,
                             service=self.service_name,
                         )
