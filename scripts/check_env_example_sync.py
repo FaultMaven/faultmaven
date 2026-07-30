@@ -54,7 +54,7 @@ ALLOWLIST = {
     # builds ProtectionSettings — a plain BaseModel, not a BaseSettings section.
     # Deliberately NOT mirrored as a settings field: the adjacent
     # settings.protection.fail_open (PROTECTION_FAIL_OPEN) governs PII redaction
-    # and has the opposite safe default, and two similarly-named fields on the
+    # and has the opposite default, and two similarly-named fields on the
     # same section is exactly the one-key-two-meanings confusion this key exists
     # to remove.
     "PROTECTION_RATE_LIMIT_FAIL_OPEN",
