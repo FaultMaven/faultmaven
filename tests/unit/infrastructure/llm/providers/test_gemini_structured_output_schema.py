@@ -209,15 +209,52 @@ class TestSchemaCapacity:
             is True
         )
 
-    def test_judges_the_model_that_would_actually_be_sent(self):
-        """A requested model absent from config.models is NOT what the provider
-        sends — get_effective_model falls back to the default. Capacity must
-        follow that same resolution, or the gate would clear a model on the
-        strength of one that never gets used."""
+    def test_judges_the_model_generate_would_actually_send(self):
+        """The probe must resolve the model exactly as ``generate()`` does —
+        ``model or config.default_model``, verbatim.
+
+        ``get_effective_model`` (the obvious-looking helper) collapses anything
+        outside ``config.models`` to the default, so using it let the gate clear a
+        capable DEFAULT while the request went out with the denylisted model that
+        was actually asked for. Both directions are pinned so the resolution can't
+        drift back."""
+        # Capable default, denylisted model requested and NOT in config.models:
+        # generate() sends the requested one, so capacity must be False.
+        p = self._provider("gemini-3.5-flash", models=["gemini-3.5-flash"])
+        assert p.supports_engine_response_schemas("gemini-2.5-flash") is False
+        # Converse: denylisted default, capable model requested — generate() sends
+        # the requested one, so capacity must be True.
         p = self._provider("gemini-2.5-flash", models=["gemini-2.5-flash"])
-        # Asking about a capable model still yields False: the call would go out
-        # as the denylisted default.
-        assert p.supports_engine_response_schemas("gemini-3.5-flash") is False
+        assert p.supports_engine_response_schemas("gemini-3.5-flash") is True
+
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            "gemini-2.5-flash-002",
+            "gemini-2.5-flash-preview-09-2025",
+            "gemini-2.5-flash-latest",
+            "gemini-2.5-flash-lite",
+            "GEMINI-2.5-FLASH",  # ids are compared case-insensitively
+        ],
+    )
+    def test_denylist_covers_variant_ids_of_a_measured_family(self, variant):
+        """GEMINI_MODEL is free-form and dated/aliased/tier variants share the
+        constrained-decoding backend, so an exact-id match would let
+        `gemini-2.5-flash-002` walk straight past the gate."""
+        p = self._provider(variant, models=[variant])
+        assert p.supports_engine_response_schemas(variant) is False
+
+    def test_denylist_does_not_over_match_other_families(self):
+        """Prefix matching must not swallow unrelated families."""
+        for capable in ("gemini-3.5-flash", "gemini-2.5-pro", "gemini-1.5-flash"):
+            p = self._provider(capable, models=[capable])
+            assert p.supports_engine_response_schemas(capable) is True, capable
+
+    def test_missing_model_configuration_is_not_a_false_clear(self):
+        """No model at all resolves to an empty string, which must not be treated
+        as a denylisted match nor crash — the credential/config gates own that."""
+        p = self._provider("", models=[])
+        assert p.supports_engine_response_schemas(None) is True
 
     def test_capacity_is_independent_of_enforcement_capability(self):
         """The denylisted model still reports STRICT — capacity is a separate

@@ -51,22 +51,36 @@ class GeminiProvider(BaseLLMProvider):
     # (6 KB) are accepted by both, which is why the failure only surfaces once a
     # case reaches DIAGNOSIS — several turns into a live investigation.
     #
-    # Entries are exact model ids and belong here only with a reproducible
-    # measurement, matching the Fireworks ``_TOOL_CALLING_DENYLIST`` precedent.
-    # This is not a version comparison: capacity is per-model, not monotonic in
-    # version number, so a newer model is never assumed capable.
-    _SCHEMA_CAPACITY_DENYLIST = frozenset(
-        {
-            "gemini-2.5-flash",
-        }
-    )
+    # Entries are matched as model-id PREFIXES, so a measured base id also covers
+    # its dated / aliased / tier variants (``gemini-2.5-flash-002``,
+    # ``-preview-09-2025``, ``-latest``, ``-lite``) — ``GEMINI_MODEL`` is free-form
+    # and those variants share the same constrained-decoding backend. The
+    # asymmetry justifies the breadth: over-matching refuses boot with an
+    # actionable message and the operator names another model, while under-matching
+    # silently reproduces the incident several turns into a live investigation.
+    #
+    # NOT a version comparison — capacity is not monotonic in version number, so a
+    # newer model is never assumed capable. A prefix belongs here only with a
+    # reproducible measurement, matching the Fireworks
+    # ``_TOOL_CALLING_DENYLIST`` precedent.
+    _SCHEMA_CAPACITY_DENYLIST_PREFIXES = ("gemini-2.5-flash",)
 
     def supports_engine_response_schemas(self, model: Optional[str] = None) -> bool:
         """False for models measured to reject the engine's large stage schemas.
 
-        See ``_SCHEMA_CAPACITY_DENYLIST`` for the measurement behind each entry.
+        Resolves the model the way :meth:`generate` does — ``model or
+        config.default_model``, verbatim — and deliberately NOT via
+        ``get_effective_model``, which collapses anything outside
+        ``config.models`` to the default. Using the latter let the gate clear a
+        capable *default* while the request path went out with the denylisted model
+        actually requested (e.g. a ``GEMINI_DA_MODEL`` absent from
+        ``config.models``). A gate must judge the string that reaches the wire.
+
+        See ``_SCHEMA_CAPACITY_DENYLIST_PREFIXES`` for the measurement behind each
+        entry and why matching is prefix-based.
         """
-        return self.get_effective_model(model) not in self._SCHEMA_CAPACITY_DENYLIST
+        effective = (model or self.config.default_model or "").lower()
+        return not effective.startswith(self._SCHEMA_CAPACITY_DENYLIST_PREFIXES)
 
     def get_structured_output_capability(
         self, model: Optional[str] = None

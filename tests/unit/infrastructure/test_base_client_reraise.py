@@ -217,3 +217,51 @@ async def test_quota_is_non_retryable_yet_still_breaker_worthy():
     from faultmaven.exceptions import SERVICE_SCOPED_ERROR_CODES
 
     assert err.error_code in SERVICE_SCOPED_ERROR_CODES
+
+
+@pytest.mark.asyncio
+async def test_rejected_credential_opens_the_breaker():
+    """A revoked/invalid key (401/403) is account-scoped like quota: every later
+    request fails identically until an operator rotates it. Before this was
+    classified, the breaker never opened for it and every turn kept making a
+    doomed round trip — and the open-breaker error carried nothing actionable."""
+    from faultmaven.exceptions import PROVIDER_AUTH_FAILED
+
+    for status in (401, 403):
+        client = _BreakerClient(threshold=2)
+
+        async def fail_with_auth():
+            raise LLMException(
+                f"provider rejected the key ({status})", status_code=status
+            )
+
+        for _ in range(2):
+            with pytest.raises(LLMException):
+                await client.call_external(
+                    operation_name="route_llm_request",
+                    call_func=fail_with_auth,
+                    retries=0,
+                )
+
+        assert client.circuit_breaker.state == "open", status
+        assert client.circuit_breaker.last_failure_error_code == PROVIDER_AUTH_FAILED
+
+
+@pytest.mark.asyncio
+async def test_not_found_stays_request_scoped():
+    """404 is deliberately NOT account-scoped: a wrong path fails only that call
+    shape, and turning it into a breaker trip would replace an actionable
+    'not found' with an opaque outage."""
+    client = _BreakerClient(threshold=2)
+
+    async def fail_with_404():
+        raise LLMException("model not found", status_code=404)
+
+    for _ in range(4):
+        with pytest.raises(LLMException):
+            await client.call_external(
+                operation_name="route_llm_request", call_func=fail_with_404, retries=0
+            )
+
+    assert client.circuit_breaker.state == "closed"
+    assert client.circuit_breaker.failure_count == 0
