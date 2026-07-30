@@ -28,7 +28,7 @@ class Role(str, Enum):
     (``modules.auth.domain.models.rbac.PLATFORM_ADMIN_ROLE``) is therefore
     deliberately NOT a member — adding it here would let the user-management
     API mint deployment operators. Grant it via
-    ``scripts/auth/promote_to_platform_admin.py`` instead.
+    the ``fm-promote-platform-admin`` command instead.
 
     Attributes:
         ADMIN: Full access to organization resources

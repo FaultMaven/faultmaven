@@ -40,29 +40,50 @@ affiliation at login time; it does not second-guess it.
 
 ## Step 2 — provision the tenant and the mapping
 
-The script creates, idempotently, the enterprise, the organization, its default
-team, and the mapping row. Re-running it with the same arguments is a no-op that
-prints the current state.
+`fm-provision-sso-org` creates, idempotently, the enterprise, the organization,
+its default team, and the mapping row. Re-running it with the same arguments is
+a no-op that prints the current state.
+
+It is a console entrypoint shipped with the installed package
+(`faultmaven/cli/provision_sso_org.py`), so it is on `PATH` in the API pod and
+in any environment where `pip install -e .` has been run — no repository
+checkout required.
 
 It must run with the **RLS-owning** database role (`faultmaven`), not the
 limited application role (`faultmaven_app`): it writes rows for a tenant that
-does not exist yet.
+does not exist yet, so row-level security has no policy that admits them.
 
-In Kubernetes:
+**The API pod's own `DATABASE_URL` is the wrong role**, and deliberately so —
+startup asserts that the application connects as a role RLS *applies* to
+(`assert_app_db_role_enforces_rls`; a role exempt from RLS would silently defeat
+tenant isolation). A bare `kubectl exec` inherits that environment, so the owner
+DSN has to be passed explicitly. The command refuses before writing anything if
+it isn't.
+
+In Kubernetes — fetch the owner DSN from the privileged secret, then override
+`DATABASE_URL` for this one invocation:
 
 ```bash
+OWNER_DSN=$(kubectl -n faultmaven get secret faultmaven-db-privileged \
+  -o jsonpath='{.data.MIGRATION_DATABASE_URL}' | base64 -d)
+
 kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
-  python scripts/auth/provision_sso_org.py \
+  env DATABASE_URL="$OWNER_DSN" \
+  fm-provision-sso-org \
     --name "Acme Corp" \
     --slug acme \
     --workos-org-id org_01HQZX9K3P4M5N6R7S8T9V0W1X
 ```
 
+On success the command echoes the role it verified
+(`Database role: faultmaven (RLS-exempt — provisioning allowed)`). If you see a
+refusal naming `faultmaven_app`, the `env` override did not take effect.
+
 Locally, against a database URL you supply:
 
 ```bash
 DATABASE_URL="postgresql+asyncpg://faultmaven:…@host/faultmaven" \
-  python scripts/auth/provision_sso_org.py \
+  fm-provision-sso-org \
     --name "Acme Corp" --slug acme --workos-org-id org_01H…
 ```
 
@@ -145,7 +166,7 @@ afterwards:
 
 ```bash
 kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
-  python scripts/auth/promote_to_platform_admin.py <username>
+  fm-promote-platform-admin <username>
 ```
 
 Note the scope difference: `platform_admin` is the **deployment**-scoped
