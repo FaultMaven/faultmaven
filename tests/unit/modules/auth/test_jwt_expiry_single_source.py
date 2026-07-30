@@ -18,6 +18,7 @@ site, mint, verify the signature, and measure ``exp - iat``.
 
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -27,20 +28,46 @@ import pytest
 from pydantic import ValidationError
 
 from faultmaven.config.settings import FaultMavenSettings, SecuritySettings
+from tests.utils import RETIRED_JWT_EXPIRY_SPELLINGS, jwt_expiry_env_names
 
 pytestmark = pytest.mark.unit
 
-# Every env name that has ever addressed these two fields. Cleared before each
-# construction so an ambient .env cannot decide the outcome of a test about
-# which names bind.
-JWT_EXPIRY_ENV_NAMES = (
-    "JWT_ACCESS_TOKEN_EXPIRY",
-    "JWT_REFRESH_TOKEN_EXPIRY",
-    "JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
-    "JWT_REFRESH_TOKEN_EXPIRY_DAYS",
-    "JWT_ACCESS_TOKEN_EXPIRE_MINUTES",
-    "JWT_REFRESH_TOKEN_EXPIRE_DAYS",
-)
+# Every env name that has ever addressed these two fields, DERIVED from the
+# settings module rather than restated here (see ``jwt_expiry_env_names``).
+# Cleared before each construction so an ambient .env cannot decide the outcome
+# of a test about which names bind.
+JWT_EXPIRY_ENV_NAMES = jwt_expiry_env_names()
+
+
+def _retired_env_cases():
+    """One case per retired spelling, in both letter cases.
+
+    The lowercase variants are not padding: pydantic-settings binds
+    case-insensitively, so lowercase ``jwt_access_token_expire_minutes`` reached
+    the retired security-half field exactly as the uppercase name did. A gate
+    that only matched uppercase would wave through a live, silently-inert knob —
+    the failure it exists to remove. The error must still name the CANONICAL
+    retired spelling, because that is the name the operator has to go find.
+
+    Enumerated from the test-side historical record, NOT from the production map
+    the guard reads: parametrising off the map would make a dropped entry delete
+    its own coverage instead of failing it.
+    """
+    cases = []
+    for canonical, replacement in sorted(RETIRED_JWT_EXPIRY_SPELLINGS.items()):
+        cases.append(pytest.param(canonical, canonical, replacement, id=canonical))
+        cases.append(
+            pytest.param(
+                canonical.lower(),
+                canonical,
+                replacement,
+                id=f"{canonical}-lowercase",
+            )
+        )
+    return cases
+
+
+RETIRED_ENV_CASES = _retired_env_cases()
 
 ISSUER = "faultmaven-api"
 AUDIENCE = "faultmaven-app"
@@ -53,9 +80,15 @@ LIFETIME_PAIRS = [(23, 11), (37, 3)]
 
 @pytest.fixture(autouse=True)
 def _clear_expiry_env(monkeypatch):
-    """No ambient expiry configuration reaches any construction in this module."""
-    for name in JWT_EXPIRY_ENV_NAMES:
-        monkeypatch.delenv(name, raising=False)
+    """No ambient expiry configuration reaches any construction in this module.
+
+    Matched case-insensitively, like the binding itself: an ambient lowercase
+    spelling reaches these fields too, and would otherwise survive the clear and
+    decide the outcome of a test about which names bind.
+    """
+    for name in list(os.environ):
+        if name.upper() in JWT_EXPIRY_ENV_NAMES:
+            monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(scope="module")
@@ -209,49 +242,44 @@ class TestLocalMintHonoursTheSameKnob:
 
 
 class TestRetiredSpellingIsRejected:
-    """The EXPIRE spelling fails the boot instead of binding silently.
+    """Every retired spelling fails the boot instead of binding silently.
 
-    It used to reach the security half by field-name binding and was the
-    documented knob for cloud. Now that the field is gone, an environment still
-    setting it would be silently inert — the exact failure mode this design
-    removes — so settings construction refuses it and names the replacement.
+    Two generations of names have addressed these fields and no longer do: the
+    unsuffixed pre-#832 aliases, and the EXPIRE spelling that reached the
+    security half by field-name binding (the documented cloud knob). An
+    environment still setting either would be silently inert — the exact failure
+    mode this design removes — so settings construction refuses it and names the
+    replacement.
+
+    Each is checked in both letter cases, because the binding this gate stands in
+    for was itself case-insensitive.
     """
 
-    @pytest.mark.parametrize(
-        "retired,replacement",
-        [
-            ("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "JWT_ACCESS_TOKEN_EXPIRY_MINUTES"),
-            ("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "JWT_REFRESH_TOKEN_EXPIRY_DAYS"),
-        ],
-    )
+    @pytest.mark.parametrize("env_name,canonical,replacement", RETIRED_ENV_CASES)
     def test_unified_settings_construction_fails(
-        self, monkeypatch, retired, replacement
+        self, monkeypatch, env_name, canonical, replacement
     ):
-        monkeypatch.setenv(retired, "30")
+        monkeypatch.setenv(env_name, "30")
 
         with pytest.raises(ValidationError) as exc_info:
             FaultMavenSettings(_env_file=None)
 
         message = str(exc_info.value)
-        assert retired in message
+        assert canonical in message
         assert replacement in message
 
-    @pytest.mark.parametrize(
-        "retired,replacement",
-        [
-            ("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "JWT_ACCESS_TOKEN_EXPIRY_MINUTES"),
-            ("JWT_REFRESH_TOKEN_EXPIRE_DAYS", "JWT_REFRESH_TOKEN_EXPIRY_DAYS"),
-        ],
-    )
-    def test_security_half_construction_fails(self, monkeypatch, retired, replacement):
+    @pytest.mark.parametrize("env_name,canonical,replacement", RETIRED_ENV_CASES)
+    def test_security_half_construction_fails(
+        self, monkeypatch, env_name, canonical, replacement
+    ):
         """The gate lives on the half that used to carry the field."""
-        monkeypatch.setenv(retired, "30")
+        monkeypatch.setenv(env_name, "30")
 
         with pytest.raises(ValidationError) as exc_info:
             SecuritySettings()
 
         message = str(exc_info.value)
-        assert retired in message
+        assert canonical in message
         assert replacement in message
 
     def test_the_current_spelling_still_boots(self, monkeypatch):
@@ -301,3 +329,54 @@ class TestRevocationWatermarkTracksTheSingleSource:
         service = auth_module.AuthService(revocation_store=_revocation_store())
 
         assert service._longest_token_lifetime_seconds() == 1440 * 60
+
+    def test_a_non_positive_lifetime_raises_instead_of_defaulting(self, monkeypatch):
+        """A mis-wired source fails loudly; it does not default to 7 days.
+
+        This branch is unreachable from the real source — one declaration, both
+        fields bounded ``ge=1`` — which is precisely why a silent fallback there
+        was worse than none: it could only ever fire when this service is reading
+        something the generators do NOT mint from, and would then write every
+        watermark against a TTL no token respects. That is the #769 defect, so
+        the mis-wiring is named rather than papered over.
+        """
+        monkeypatch.setenv("JWT_SECRET_KEY", SECRET)
+        settings = _configured_settings(monkeypatch, 15, 7)
+
+        from faultmaven.modules.auth.domain.services import auth_service as auth_module
+
+        monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
+        service = auth_module.AuthService(revocation_store=_revocation_store())
+
+        # Assignment, not construction: the bounds make this unconstructible, and
+        # what is under test is the behaviour when the object read here is not
+        # the bounded source.
+        settings.auth.jwt_refresh_token_expire_days = 0
+        settings.auth.jwt_access_token_expire_minutes = 0
+
+        with pytest.raises(RuntimeError, match="mis-wired"):
+            service._longest_token_lifetime_seconds()
+
+    @pytest.mark.asyncio
+    async def test_a_mis_wired_source_records_no_revocation(self, monkeypatch):
+        """The raise reaches the caller rather than being swallowed into a TTL.
+
+        A revocation the store never accepted must not read as successful, so the
+        failure has to propagate out of ``revoke_user_tokens`` too.
+        """
+        monkeypatch.setenv("JWT_SECRET_KEY", SECRET)
+        settings = _configured_settings(monkeypatch, 15, 7)
+
+        from faultmaven.modules.auth.domain.services import auth_service as auth_module
+
+        monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
+        store = _revocation_store()
+        service = auth_module.AuthService(revocation_store=store)
+
+        settings.auth.jwt_refresh_token_expire_days = 0
+        settings.auth.jwt_access_token_expire_minutes = 0
+
+        with pytest.raises(RuntimeError, match="mis-wired"):
+            await service.revoke_user_tokens("user-888")
+
+        store.revoke_user_tokens_before.assert_not_awaited()

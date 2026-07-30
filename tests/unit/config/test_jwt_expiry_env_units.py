@@ -25,9 +25,12 @@ from faultmaven.config.settings import (
     MAX_ACCESS_TOKEN_EXPIRY_MINUTES,
     MAX_REFRESH_TOKEN_EXPIRY_DAYS,
     MAX_TOKEN_LIFETIME_DAYS,
+    RETIRED_JWT_EXPIRY_ENV_NAMES,
     AuthSettings,
     SecuritySettings,
 )
+from tests.utils import JWT_EXPIRY_FIELDS as EXPIRY_FIELDS
+from tests.utils import RETIRED_JWT_EXPIRY_SPELLINGS, jwt_expiry_env_names
 
 
 def _bound(model, field: str, kind: str):
@@ -39,24 +42,18 @@ def _bound(model, field: str, kind: str):
     raise AssertionError(f"{model.__name__}.{field} declares no {kind} bound")
 
 
-# Every name that has ever addressed these two fields. Cleared before each
-# construction so an ambient .env cannot decide the outcome of a test about
+# Every name that has ever addressed these two fields, DERIVED from the settings
+# module rather than restated here (see ``jwt_expiry_env_names``). Cleared before
+# each construction so an ambient .env cannot decide the outcome of a test about
 # which names bind.
-JWT_EXPIRY_ENV_NAMES = (
-    "JWT_ACCESS_TOKEN_EXPIRY",
-    "JWT_REFRESH_TOKEN_EXPIRY",
-    "JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
-    "JWT_REFRESH_TOKEN_EXPIRY_DAYS",
-    # Retired: these once bound a duplicate declaration on the security half.
-    "JWT_ACCESS_TOKEN_EXPIRE_MINUTES",
-    "JWT_REFRESH_TOKEN_EXPIRE_DAYS",
-)
-
-EXPIRY_FIELDS = ("jwt_access_token_expire_minutes", "jwt_refresh_token_expire_days")
+JWT_EXPIRY_ENV_NAMES = jwt_expiry_env_names()
 
 
 def _clean_env(**overrides):
-    env = {k: v for k, v in os.environ.items() if k not in JWT_EXPIRY_ENV_NAMES}
+    # Compared case-insensitively because the binding is: a lowercase spelling
+    # reaches these fields just as the uppercase one does, so an exact-case
+    # filter would leave an ambient lowercase name deciding the outcome.
+    env = {k: v for k, v in os.environ.items() if k.upper() not in JWT_EXPIRY_ENV_NAMES}
     env.update(overrides)
     return patch.dict(os.environ, env, clear=True)
 
@@ -91,8 +88,10 @@ class TestUnitSuffixedNamesBind:
 class TestOldUnsuffixedNamesDoNotBind:
     """No alias shim: the ambiguous names are gone, not quietly honoured.
 
-    A deployment still carrying them must fail visibly (defaults, then a bad
-    login lifetime) rather than keep a value whose unit was misread.
+    A value whose unit was misread must never survive the rename. These assert
+    the *binding* half of that — this half alone would leave the deployment
+    running on defaults with nothing said, so the names are also retired at the
+    gate (``TestRetiredSpellingIsRejected``), which refuses the boot outright.
     """
 
     def test_old_refresh_name_is_inert(self):
@@ -151,6 +150,41 @@ class TestExpiryIsDeclaredExactlyOnce:
         """Not merely undeclared — unreadable, so a stale read cannot resolve."""
         security = _security_settings_with()
         assert not hasattr(security, field)
+
+
+class TestEveryGenerationOfTheseNamesIsAccountedFor:
+    """The retired map is the whole history except the current pair.
+
+    It is load-bearing twice over: the boot gate refuses exactly these names, and
+    the fixtures in this module (and in the single-source guards) clear exactly
+    these names. A generation missing from it is both a spelling an operator can
+    still set silently and a spelling an ambient ``.env`` can smuggle into a test
+    about which names bind.
+    """
+
+    def test_both_retired_generations_are_covered(self):
+        """The guard's map equals the historical record, entry for entry.
+
+        ``RETIRED_JWT_EXPIRY_SPELLINGS`` is maintained test-side precisely so
+        this comparison has two independent sides.
+        """
+        assert RETIRED_JWT_EXPIRY_ENV_NAMES == RETIRED_JWT_EXPIRY_SPELLINGS
+
+    def test_every_retired_name_points_at_a_declared_current_name(self):
+        """A replacement that isn't a real alias would be advice that fails too."""
+        current = {
+            str(AuthSettings.model_fields[field].validation_alias)
+            for field in EXPIRY_FIELDS
+        }
+
+        assert set(RETIRED_JWT_EXPIRY_ENV_NAMES.values()) == current
+
+    def test_the_derived_env_list_is_the_current_pair_plus_every_retired_name(self):
+        """What the fixtures clear: 2 current + 4 retired, and nothing missing."""
+        assert set(JWT_EXPIRY_ENV_NAMES) == set(RETIRED_JWT_EXPIRY_SPELLINGS) | set(
+            RETIRED_JWT_EXPIRY_SPELLINGS.values()
+        )
+        assert len(JWT_EXPIRY_ENV_NAMES) == 6
 
 
 class TestTheSingleSourceIsBounded:

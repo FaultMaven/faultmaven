@@ -511,22 +511,27 @@ class AuthService:
         maximum (1 day) it exceeds the shortest permitted refresh lifetime and
         must be covered exactly like the refresh case.
 
-        Attributes are read directly rather than via ``getattr`` defaults: a
-        missing or mis-wired settings half must fail loudly here, not quietly
-        collapse to the 7-day fallback below and silently under-cover.
+        Attributes are read directly rather than via ``getattr`` defaults, and a
+        non-positive result raises: a missing or mis-wired settings half must
+        fail loudly here rather than silently under-cover.
         """
         refresh_days = self._settings.auth.jwt_refresh_token_expire_days
         access_minutes = self._settings.auth.jwt_access_token_expire_minutes
         seconds = max(int(refresh_days) * 86400, int(access_minutes) * 60)
         if seconds <= 0:
-            # A non-positive TTL is rejected by SETEX, which would turn every
-            # revocation into a store error. Fall back to the schema default
-            # rather than letting misconfiguration disable revocation.
-            logger.warning(
-                "No positive token expiry configured; defaulting the "
-                "revocation watermark TTL to 7 days"
+            # Unreachable from a real settings object: expiry has one
+            # declaration and both its fields are bounded ``ge=1``. Getting here
+            # therefore means this service was handed something that is not the
+            # source the generators mint from — so any TTL derived here would
+            # bound nothing, and a non-positive one is rejected by SETEX
+            # outright. Defaulting would restore the exact under-coverage #769
+            # fixed, so name the mis-wiring instead.
+            raise RuntimeError(
+                "Token expiry is mis-wired: settings.auth reports a non-positive "
+                f"longest token lifetime (refresh_days={refresh_days!r}, "
+                f"access_minutes={access_minutes!r}). The revocation watermark "
+                "cannot be bounded, so no revocation may be recorded against it."
             )
-            seconds = 7 * 86400
         return seconds
 
     async def revoke_user_tokens(

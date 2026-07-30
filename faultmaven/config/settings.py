@@ -951,13 +951,24 @@ MAX_REFRESH_TOKEN_EXPIRY_DAYS = 90
 #: past this one must fail loudly.
 MAX_TOKEN_LIFETIME_DAYS = MAX_REFRESH_TOKEN_EXPIRY_DAYS
 
-#: Env names that used to reach a second, duplicate declaration of the token
-#: expiry fields on ``SecuritySettings`` (they bound by field name, hence the
-#: EXPIRE spelling). That duplicate is gone: expiry has one source, and it is
-#: the EXPIRY-aliased pair on ``AuthSettings`` (#888). An environment still
-#: setting a retired name would be silently inert — the exact failure this
-#: design removes — so construction refuses it and names the replacement.
+#: Every env name that has EVER addressed the two token-expiry fields except the
+#: current pair, mapped to the current name that replaces it. Two generations:
+#:
+#: - ``JWT_ACCESS_TOKEN_EXPIRY`` / ``JWT_REFRESH_TOKEN_EXPIRY`` — the original
+#:   ``validation_alias`` on ``AuthSettings``, renamed to carry their unit
+#:   (#832) after the unsuffixed pair invited "10080" (7 days in minutes) into
+#:   the DAYS field.
+#: - ``JWT_ACCESS_TOKEN_EXPIRE_MINUTES`` / ``JWT_REFRESH_TOKEN_EXPIRE_DAYS`` —
+#:   the EXPIRE spelling, which bound a second, duplicate declaration of these
+#:   fields on ``SecuritySettings`` by field name.
+#:
+#: Both are gone: expiry has one source, and it is the EXPIRY-aliased pair on
+#: ``AuthSettings`` (#888). An environment still setting any retired name would
+#: be silently inert — the exact failure this design removes — so construction
+#: refuses it and names the replacement.
 RETIRED_JWT_EXPIRY_ENV_NAMES = {
+    "JWT_ACCESS_TOKEN_EXPIRY": "JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
+    "JWT_REFRESH_TOKEN_EXPIRY": "JWT_REFRESH_TOKEN_EXPIRY_DAYS",
     "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": "JWT_ACCESS_TOKEN_EXPIRY_MINUTES",
     "JWT_REFRESH_TOKEN_EXPIRE_DAYS": "JWT_REFRESH_TOKEN_EXPIRY_DAYS",
 }
@@ -1024,8 +1035,17 @@ class SecuritySettings(BaseSettings):
         silently-dropped expiry knob is precisely the defect (#888): the
         operator sets a lifetime, the deployment mints the default, and nothing
         says so. A boot error is the only outcome that cannot be missed.
+
+        Matching is case-INSENSITIVE because pydantic-settings' binding is: a
+        lowercase ``jwt_access_token_expire_minutes`` reached the retired
+        field exactly as the uppercase spelling did. An exact-case check would
+        wave through the very environment this gate exists to catch, leaving the
+        silently-inert knob in place.
         """
-        present = [name for name in RETIRED_JWT_EXPIRY_ENV_NAMES if name in os.environ]
+        env_names_upper = {name.upper() for name in os.environ}
+        present = [
+            name for name in RETIRED_JWT_EXPIRY_ENV_NAMES if name in env_names_upper
+        ]
         if present:
             details = "; ".join(
                 f"{name} is retired — set {RETIRED_JWT_EXPIRY_ENV_NAMES[name]} instead"

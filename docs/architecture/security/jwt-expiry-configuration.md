@@ -41,15 +41,29 @@ advertises a token lifetime reads the same source:
   values the generator mints with, so advertised and actual lifetimes cannot
   diverge.
 
-## The retired spelling fails the boot
+## Every retired spelling fails the boot
 
-The `EXPIRE` spelling (`JWT_ACCESS_TOKEN_EXPIRE_MINUTES` /
-`JWT_REFRESH_TOKEN_EXPIRE_DAYS`) formerly reached the security half by
-field-name binding and was documented in the installation guide. It is retired:
-settings construction **rejects** an environment that sets either name, with an
+`RETIRED_JWT_EXPIRY_ENV_NAMES` lists every env name that has ever addressed
+these two fields except the current pair, mapped to its replacement. Two
+generations:
+
+| Retired name | Why it bound | Replacement |
+|---|---|---|
+| `JWT_ACCESS_TOKEN_EXPIRY` | original `validation_alias` on the auth half, renamed to carry its unit (#832) | `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` |
+| `JWT_REFRESH_TOKEN_EXPIRY` | same | `JWT_REFRESH_TOKEN_EXPIRY_DAYS` |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | field-name binding on the security half's duplicate declaration; the spelling the installation guide documented | `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` |
+| `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | same | `JWT_REFRESH_TOKEN_EXPIRY_DAYS` |
+
+Settings construction **rejects** an environment that sets any of them, with an
 error naming the `EXPIRY_*` replacement. A silently-inert knob is the failure
-mode this design exists to remove — an operator who sets the old name gets a
-boot error, not a deployment whose token lifetimes quietly ignore them.
+mode this design exists to remove — an operator who sets an old name gets a boot
+error, not a deployment whose token lifetimes quietly ignore them.
+
+The match is **case-insensitive**, because the binding it stands in for was:
+pydantic-settings resolved a lowercase `jwt_access_token_expire_minutes` onto the
+retired security-half field exactly as it resolved the uppercase name. An
+exact-case gate would pass that environment silently — reproducing the defect in
+the guard meant to remove it.
 
 ## The defect this replaced
 
@@ -85,11 +99,22 @@ tokens**:
   path** decodes to `exp − iat` equal to the configured lifetime — access and
   refresh both, swept over more than one value. Same property for the
   HS256/local generator.
-- Setting either retired `EXPIRE_*` name fails settings construction with a
-  message naming the replacement.
+- Setting **any** retired name — either generation, in **either letter case** —
+  fails settings construction with a message naming the canonical retired
+  spelling and its replacement.
 - `_longest_token_lifetime_seconds` equals the configured (single-source)
-  refresh lifetime.
+  refresh lifetime, and **raises** rather than defaulting if the settings it is
+  handed report a non-positive lifetime (unreachable from the bounded source, so
+  reaching it means a mis-wiring that would silently under-cover revocation).
+
+The env-name list the fixtures clear is derived from
+`RETIRED_JWT_EXPIRY_ENV_NAMES` plus the declared `validation_alias` of the
+surviving fields (`tests/utils.jwt_expiry_env_names`), so a rename cannot leave a
+test named for a spelling it no longer covers.
 
 Mutation checks: rebinding the RS256 generator's lifetimes to a hardcoded
 default (simulating the old security-half read) must turn the cloud-mint test
-red; deleting the retired-spelling guard must turn the rejection test red.
+red; deleting the retired-spelling guard, narrowing it to exact case, or dropping
+a retired name from the map must each turn the corresponding rejection case red;
+restoring a silent fallback in `_longest_token_lifetime_seconds` must turn the
+mis-wiring test red.
