@@ -12,7 +12,7 @@ Metric names follow the existing ``faultmaven_`` prefix convention from
 ``tracing.py`` so they appear in the same namespace when scraped.
 
 Alert rules that consume these metrics live in the Grafana/Prometheus config
-(out of this repository). See ``docs/operations/observability/evidence-metrics.md``
+(out of this repository). See ``docs/operations/monitoring/evidence-metrics.md``
 for the canonical alert definitions.
 """
 
