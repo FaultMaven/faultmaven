@@ -600,10 +600,21 @@ async def lifespan(app: FastAPI):
             # Explicit opt-out: ALLOW_TOOLLESS_INVESTIGATION (degraded/offline).
             from .config.investigation_capability import (
                 validate_investigation_tooling,
+                validate_structured_output_capacity,
             )
             from .infrastructure.llm.providers.registry import get_registry
 
             validate_investigation_tooling(settings, get_registry())
+
+            # Second capability axis: can the resolved structured-output model
+            # SERVE the engine's response schemas? A constrained-decoding backend
+            # can reject the larger stage schemas outright, and it does so only
+            # once a case reaches that stage — so without this gate an
+            # incompatible model runs several turns of a live investigation and
+            # then fails every remaining turn. Fails open when capacity is
+            # unmeasured; no opt-out flag, because there is no degraded mode that
+            # still records investigation state.
+            validate_structured_output_capacity(settings, get_registry())
 
         # Validate workers configuration for in-memory storage
         workers = settings.server.workers

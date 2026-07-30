@@ -108,6 +108,25 @@ QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
 TOKEN_LIMIT = "TOKEN_LIMIT"
 
 
+# error_codes whose failure is scoped to the ACCOUNT/SERVICE rather than to the
+# individual request: if this request failed for one of these reasons, so will
+# every other request until an operator acts. Only these permanent failures may
+# open a circuit breaker (``BaseExternalClient``), because the breaker is
+# service-wide and its job is to stop pointless calls to a dependency that cannot
+# currently serve anyone.
+#
+# The distinction that matters is SCOPE, not retryability. A rejected request
+# (malformed body, unsupported feature, a response schema the model refuses to
+# compile) is also permanent, but it is permanent *for that request only* —
+# counting it opened the shared ``LLM_Providers`` breaker on three deterministic
+# Gemini 400s and took down every other LLM call, including the fallback chain
+# and smaller payloads that would have succeeded. Quota exhaustion is the
+# opposite: opening the breaker is correct, and the latched ``error_code`` keeps
+# the open-breaker error mapping to 402 instead of a generic 500 (the
+# case_b639fac38fe0 chain).
+SERVICE_SCOPED_ERROR_CODES = frozenset({QUOTA_EXHAUSTED})
+
+
 # Billing/quota-exhaustion markers found in provider error bodies. These signal
 # a PERMANENT account-level condition — out of credits, billing not enabled, or a
 # hard spend/quota cap — that NO amount of retrying or waiting will clear; only an

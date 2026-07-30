@@ -37,6 +37,37 @@ class GeminiProvider(BaseLLMProvider):
         """Get list of supported Gemini models"""
         return self.config.models.copy()
 
+    # Gemini models whose constrained-decoding budget is too small for the
+    # investigation engine's stage schemas. They advertise STRICT controlled
+    # generation and honour it for small schemas, then reject the large ones with
+    # ``400 ... "The specified schema produces a constraint that has too many
+    # states for serving"``.
+    #
+    # Measured 2026-07-30 against the resolved (post-``_resolve_refs_for_gemini``)
+    # DIAGNOSIS schema — 31,403 bytes, object depth 3, ~102 leaf fields, 18 enums:
+    #   gemini-2.5-flash  6/6 rejected, deterministic
+    #   gemini-3.5-flash  accepted (same bytes, same schema)
+    # Smaller stage schemas (Mitigation 23 KB, Treatment 27 KB) and INQUIRY
+    # (6 KB) are accepted by both, which is why the failure only surfaces once a
+    # case reaches DIAGNOSIS — several turns into a live investigation.
+    #
+    # Entries are exact model ids and belong here only with a reproducible
+    # measurement, matching the Fireworks ``_TOOL_CALLING_DENYLIST`` precedent.
+    # This is not a version comparison: capacity is per-model, not monotonic in
+    # version number, so a newer model is never assumed capable.
+    _SCHEMA_CAPACITY_DENYLIST = frozenset(
+        {
+            "gemini-2.5-flash",
+        }
+    )
+
+    def supports_engine_response_schemas(self, model: Optional[str] = None) -> bool:
+        """False for models measured to reject the engine's large stage schemas.
+
+        See ``_SCHEMA_CAPACITY_DENYLIST`` for the measurement behind each entry.
+        """
+        return self.get_effective_model(model) not in self._SCHEMA_CAPACITY_DENYLIST
+
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:

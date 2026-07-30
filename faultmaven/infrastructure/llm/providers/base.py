@@ -346,6 +346,33 @@ class BaseLLMProvider(ABC):
         """
         return True
 
+    def supports_engine_response_schemas(self, model: Optional[str] = None) -> bool:
+        """Whether this provider/model can SERVE the investigation engine's schemas.
+
+        Separate axis from ``get_structured_output_capability``, which answers
+        *how* a schema is enforced (STRICT / FUNCTION_CALLING / BEST_EFFORT). This
+        answers whether the model can accept the engine's schemas **at all**: a
+        constrained-decoding backend compiles the schema into a state machine and
+        can reject an otherwise-valid schema for exceeding its own budget. That is
+        a hard, deterministic rejection — the same model will refuse the same
+        schema every time — so it is a *capability*, not a transient failure, and
+        belongs beside ``supports_tool_calling`` where the startup gate can see it.
+
+        The engine's stage schemas are large by design (DIAGNOSIS resolves to
+        ~31 KB with ~100 leaf fields across 18 enums), and a model that cannot
+        serve them fails only once the case reaches that stage — several turns
+        into a live investigation, not at boot.
+
+        Default True: only providers with a measured, reproducible limit override.
+
+        Args:
+            model: Model name to check (uses the provider default if None)
+
+        Returns:
+            True unless this provider/model is known to reject the engine's schemas
+        """
+        return True
+
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:

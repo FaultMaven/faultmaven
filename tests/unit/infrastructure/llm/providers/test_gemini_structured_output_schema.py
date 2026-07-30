@@ -22,7 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import BaseModel, Field
 
-from faultmaven.infrastructure.llm.providers.base import ProviderConfig
+from faultmaven.infrastructure.llm.providers.base import (
+    ProviderConfig,
+    StructuredOutputCapability,
+)
 from faultmaven.infrastructure.llm.providers.gemini import GeminiProvider
 
 _UNSUPPORTED_KEYS = {
@@ -161,3 +164,73 @@ async def test_generate_applies_ref_resolution_to_response_schema(provider):
 
     _assert_no_unsupported_keys(sent_schema)
     assert request_body["generationConfig"]["response_mime_type"] == "application/json"
+
+
+# --- response-schema capacity (the axis that decides whether a schema is
+# --- ACCEPTED at all, not how it is enforced) --------------------------------
+
+
+class TestSchemaCapacity:
+    """gemini-2.5-flash advertises STRICT and honours it for small schemas, then
+    rejects the engine's DIAGNOSIS schema with 400 'too many states for serving'
+    (measured 6/6 on 2026-07-30). The two axes must therefore disagree for it."""
+
+    @staticmethod
+    def _provider(default_model, models=None):
+        """Real ProviderConfig — capacity resolution runs through
+        get_effective_model, whose fallback rules are part of the behaviour."""
+        return GeminiProvider(
+            ProviderConfig(
+                name="gemini",
+                api_key="test-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
+                models=list(models if models is not None else [default_model]),
+                default_model=default_model,
+                timeout=30,
+                confidence_score=0.9,
+            )
+        )
+
+    def test_denylisted_model_cannot_serve_engine_schemas(self):
+        p = self._provider("gemini-2.5-flash")
+        assert p.supports_engine_response_schemas("gemini-2.5-flash") is False
+
+    def test_documented_default_can_serve_engine_schemas(self):
+        p = self._provider("gemini-3.5-flash")
+        assert p.supports_engine_response_schemas("gemini-3.5-flash") is True
+
+    def test_falls_back_to_configured_default_when_no_model_requested(self):
+        assert (
+            self._provider("gemini-2.5-flash").supports_engine_response_schemas()
+            is False
+        )
+        assert (
+            self._provider("gemini-3.5-flash").supports_engine_response_schemas()
+            is True
+        )
+
+    def test_judges_the_model_that_would_actually_be_sent(self):
+        """A requested model absent from config.models is NOT what the provider
+        sends — get_effective_model falls back to the default. Capacity must
+        follow that same resolution, or the gate would clear a model on the
+        strength of one that never gets used."""
+        p = self._provider("gemini-2.5-flash", models=["gemini-2.5-flash"])
+        # Asking about a capable model still yields False: the call would go out
+        # as the denylisted default.
+        assert p.supports_engine_response_schemas("gemini-3.5-flash") is False
+
+    def test_capacity_is_independent_of_enforcement_capability(self):
+        """The denylisted model still reports STRICT — capacity is a separate
+        axis, so one 'is it capable' question cannot express both."""
+        p = self._provider("gemini-2.5-flash")
+        assert (
+            p.get_structured_output_capability("gemini-2.5-flash")
+            == StructuredOutputCapability.STRICT
+        )
+        assert p.supports_engine_response_schemas("gemini-2.5-flash") is False
+
+    def test_unlisted_models_are_assumed_capable(self):
+        """Default-open: only measured models are denied, so an unmeasured or
+        future model is never refused on speculation."""
+        p = self._provider("gemini-9.9-someday")
+        assert p.supports_engine_response_schemas("gemini-9.9-someday") is True
