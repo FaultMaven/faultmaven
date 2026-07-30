@@ -625,9 +625,14 @@ def _decode_metadata(value: Any) -> dict:
     comparison below read ``None`` on every SQLite deployment, so
     ``causes_unchanged`` could never be true and every runbook re-ingested on
     every boot. Returns ``{}`` for absent/undecodable values so the caller's
-    ``.get`` is always safe. Mirrors ``KnowledgeItemRepository._parse_json_dict``,
-    duplicated (not imported) to keep bootstrap off a module's infrastructure
-    layer.
+    ``.get`` is always safe.
+
+    Same intent as ``KnowledgeItemRepository._parse_json_dict``, duplicated (not
+    imported) to keep bootstrap off a module's infrastructure layer — but
+    deliberately NOT its copy semantics: that one ``deepcopy``s the dict branch
+    because its callers hand the result out. **The result here is read-only**; on
+    PostgreSQL the dict branch aliases the session-bound ORM attribute, so a
+    caller that mutates it would dirty the row. Copy before mutating.
     """
     if isinstance(value, dict):
         return value

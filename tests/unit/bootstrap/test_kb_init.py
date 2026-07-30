@@ -354,6 +354,8 @@ async def test_bootstrap_re_ingests_on_causes_drift_in_either_metadata_shape(
 
     assert result.ingested == ["global/example.md"]
     assert result.skipped_unchanged == []
+    # Stale chunks must leave ChromaDB before the re-ingest, on both shapes.
+    knowledge_service._vector_store.delete_documents_by_parent_id.assert_awaited()
 
 
 @pytest.mark.parametrize(
@@ -372,6 +374,50 @@ def test_decode_metadata_normalises_every_stored_shape(value, expected):
     """``_decode_metadata`` always yields a dict, so the caller's ``.get`` is
     safe for absent, malformed, and wrong-container values alike."""
     assert kb_init._decode_metadata(value) == expected
+
+
+@pytest.mark.asyncio
+async def test_second_bootstrap_over_real_sqlite_skips_everything(
+    fk_on_ingest_service, tmp_path: Path
+):
+    """Two bootstraps over a REAL SQLite session: the second must skip.
+
+    The shape-parameterised tests above encode the SQLite representation as a
+    hand-written constant; this one DERIVES it, by writing through the real
+    ``KnowledgeService`` and reading back through the real ORM. That is what the
+    prior fixtures could not do — they set ``knowledge_metadata`` to a dict (the
+    PostgreSQL shape), and the persistence-side causes test read back through
+    ``DatabaseKnowledgeItemRepository``, which parses the JSON. Neither ever put
+    a real SQLite row in front of ``kb_init``, which is how a permanently-false
+    ``causes_unchanged`` shipped.
+
+    Pinning the round trip rather than the representation also means a future
+    change to the ``JsonBlob`` variant (or a third backend) fails here instead of
+    silently re-ingesting the whole KB on every boot.
+    """
+    svc, factory = fk_on_ingest_service
+    pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+
+    first = await kb_init.bootstrap_kb(
+        knowledge_service=svc,
+        db_session_factory=factory,
+        organization_id="org-1",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+    assert first.ingested == ["global/example.md"], first
+    assert first.failed == []
+
+    second = await kb_init.bootstrap_kb(
+        knowledge_service=svc,
+        db_session_factory=factory,
+        organization_id="org-1",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+    assert second.skipped_unchanged == ["global/example.md"], second
+    assert second.ingested == []
+    assert second.pruned == []
 
 
 @pytest.mark.asyncio
