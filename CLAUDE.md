@@ -90,6 +90,7 @@ faultmaven/
 │   ├── shims/              # Compatibility shims (enterprise feature flags)
 │   └── concurrency/        # Report lock manager
 ├── bootstrap/              # Application startup and service factories
+├── cli/                    # Operator console entrypoints (fm-*, [project.scripts])
 ├── config/                 # Pydantic-settings configuration
 │   ├── settings.py         # Main settings with validation
 │   ├── presets.py          # Configuration presets
@@ -487,6 +488,7 @@ tests/
 │   ├── api/           # API endpoints, middleware
 │   ├── infrastructure/ # Persistence, logging
 │   ├── services/      # Service layer
+│   ├── cli/           # Operator console entrypoints (fm-*)
 │   └── core/          # Investigation engine
 ├── integration/       # Cross-layer workflows
 │   ├── api/           # API integration tests
@@ -803,7 +805,8 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `faultmaven/modules/knowledge/domain/services/conversion_service.py` | Document-to-runbook conversion pipeline |
 | `faultmaven/modules/knowledge/api/conversion_routes.py` | Conversion API endpoints (feature-flagged) |
 | `.env.example` | Configuration template |
-| `pyproject.toml` | Dependencies and tool config |
+| `pyproject.toml` | Dependencies, tool config, and `[project.scripts]` (the `fm-*` operator entrypoints) |
+| `faultmaven/cli/` | Operator console entrypoint modules targeted by `[project.scripts]` |
 | `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 31 tables) |
 | `faultmaven/config/llm_config_overrides.py` | Config override application + hot-reload (cloud mode only) |
 | `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, features, connection test |

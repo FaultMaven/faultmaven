@@ -9,8 +9,10 @@ package puts these commands on ``PATH`` instead::
 
     kubectl exec deploy/faultmaven-api -- fm-provision-sso-org --name ...
 
-Each module exposes a synchronous ``main()`` that argparse-parses ``sys.argv``
-and exits with a meaningful status code; ``asyncio.run`` is wrapped inside.
+Each module exposes a synchronous ``main()`` that parses ``sys.argv`` with
+``argparse`` — so every command answers ``--help`` and rejects unknown
+arguments — and exits with a meaningful status code; ``asyncio.run`` is wrapped
+inside.
 
 Dev-only conveniences (``create_user.py``, ``list_users.py``,
 ``list_users_fast.py``) deliberately stay in ``scripts/auth/`` — they are run

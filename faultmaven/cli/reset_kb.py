@@ -23,6 +23,21 @@ Safety
 Refuses to run without ``--yes`` since the operation is destructive.
 Prints a dry-run summary first so you can sanity-check counts.
 
+**Stop the API first.** The wipe ``rmtree``s a ChromaDB directory that a running
+server holds open. A live API keeps file handles (and in-memory collection
+state) on the tree being deleted, so the process can go on serving reads from
+deleted files, recreate a partial directory under the one just removed, or
+error on its next write. Scale the API down for the wipe — or, if that is not
+possible, restart it immediately afterwards so it reopens a clean store::
+
+    kubectl -n faultmaven scale deploy/faultmaven-api --replicas=0
+    # ... run the wipe against the same volume ...
+    kubectl -n faultmaven scale deploy/faultmaven-api --replicas=1
+
+The same applies to the Docker Compose stack, where ``data/`` is bind-mounted
+into the API container: ``./faultmaven.sh stop``, wipe, then ``start``. Running
+it inside the API container with the server up has the identical problem.
+
 Usage (``fm-reset-kb``, installed with the package)
 --------------------------------------------------
     source .venv/bin/activate
@@ -56,14 +71,19 @@ import asyncio
 import shutil
 import sys
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from faultmaven.bootstrap.data_init import get_project_root
 
+#: argparse's ``description``. A literal, not ``__doc__.splitlines()[0]``:
+#: ``python -OO`` strips docstrings, and that expression would raise
+#: ``AttributeError: 'NoneType'`` before argparse ever ran.
+_SUMMARY = "Reset the Knowledge Base: wipe SQL + ChromaDB state, then re-bootstrap."
 
-async def _count_rows(session, model):
-    result = await session.execute(select(model))
-    return len(list(result.scalars().all()))
+
+async def _count_rows(session, model) -> int:
+    """COUNT(*) in the database — never materialise the table to measure it."""
+    return await session.scalar(select(func.count()).select_from(model)) or 0
 
 
 async def reset_kb(
@@ -96,26 +116,35 @@ async def reset_kb(
     project_root = get_project_root()
     chroma_dir = project_root / "data" / "chroma-kb"
 
+    # One session for the survey and the wipe: the counts an operator reads
+    # are then the same snapshot the DELETEs run against.
     async with get_db_session() as session:
         ki_count = await _count_rows(session, KnowledgeItemModel)
         draft_count = await _count_rows(session, ConversionDraftModel)
 
-    print("Current state:")
-    print(f"  knowledge_items rows: {ki_count}")
-    print(f"  conversion_drafts rows: {draft_count}")
-    print(f"  data/chroma-kb/ exists: {chroma_dir.exists()}")
-    print()
+        print("Current state:")
+        print(f"  knowledge_items rows: {ki_count}")
+        print(f"  conversion_drafts rows: {draft_count}")
+        # The RESOLVED path, not the literal 'data/chroma-kb/'. Which tree this
+        # is depends on PROJECT_ROOT / the working directory, and an operator
+        # cannot check that the wipe targets the server's store unless the
+        # command says which store it found.
+        print(f"  ChromaDB path: {chroma_dir}")
+        print(f"  ChromaDB path exists: {chroma_dir.exists()}")
+        print()
 
-    if dry_run:
-        print("(dry-run) No changes made.")
-        return 0
+        if dry_run:
+            print("(dry-run) No changes made.")
+            return 0
 
-    # SQL wipe
-    async with get_db_session() as session:
-        await session.execute(delete(KnowledgeItemModel))
+        # SQL wipe. Report the DELETEs' own rowcounts rather than the counts
+        # read above, so the numbers printed are what the database actually did.
+        deleted_items = (await session.execute(delete(KnowledgeItemModel))).rowcount
         if all_drafts:
-            await session.execute(delete(ConversionDraftModel))
-            print(f"Deleted {draft_count} conversion_drafts rows (--all-drafts).")
+            deleted_drafts = (
+                await session.execute(delete(ConversionDraftModel))
+            ).rowcount
+            print(f"Deleted {deleted_drafts} conversion_drafts rows (--all-drafts).")
         else:
             # Only delete drafts whose source_url marks them as bootstrap-generated.
             # We don't currently mark these, so by default we conservatively
@@ -126,14 +155,29 @@ async def reset_kb(
                 "generated drafts too)."
             )
         await session.commit()
-    print(f"Deleted {ki_count} knowledge_items rows.")
+    print(f"Deleted {deleted_items} knowledge_items rows.")
 
     # ChromaDB wipe
-    if not keep_chroma and chroma_dir.exists():
+    if keep_chroma:
+        print(f"Kept ChromaDB collections at {chroma_dir} (--keep-chroma).")
+    elif chroma_dir.exists():
         shutil.rmtree(chroma_dir)
         print(f"Removed {chroma_dir}.")
-    elif keep_chroma:
-        print("Kept ChromaDB collections (--keep-chroma).")
+    else:
+        # Do not fall through quietly. The SQL rows are already gone; finding no
+        # vector store almost always means this process resolved a DIFFERENT
+        # root than the server writes to, and the two halves of the KB have just
+        # been left inconsistent.
+        print()
+        print("⚠️  WARNING: no ChromaDB directory found at the resolved path:")
+        print(f"      {chroma_dir}")
+        print("    knowledge_items rows were deleted but NO vector collections")
+        print("    were removed, so SQL and the vector store may now DIVERGE —")
+        print("    searches can still return chunks whose rows no longer exist.")
+        print("    This usually means the server writes its store somewhere else")
+        print("    (different PROJECT_ROOT, different working directory, or an")
+        print("    external CHROMADB_URL, which this command does not touch).")
+        print("    Compare the path above with the server's before continuing.")
 
     if rebuild:
         print()
@@ -166,7 +210,7 @@ async def reset_kb(
 
 def main() -> None:
     """Console entrypoint (``fm-reset-kb``). Exits with ``reset_kb``'s status."""
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=_SUMMARY)
     parser.add_argument(
         "--yes",
         action="store_true",
@@ -198,9 +242,9 @@ def main() -> None:
         print("Refusing to run without --yes (or use --dry-run to preview).")
         sys.exit(1)
 
-    # Exit explicitly rather than returning the code: the console-script wrapper
-    # is what would otherwise carry it, and `python -m faultmaven.cli.reset_kb`
-    # would silently drop a non-zero status.
+    # sys.exit inside main() keeps the five CLI modules uniform: every one of
+    # them exits from main() rather than returning a code for a caller to
+    # forward.
     sys.exit(
         asyncio.run(
             reset_kb(

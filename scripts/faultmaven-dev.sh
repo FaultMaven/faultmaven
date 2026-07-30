@@ -744,6 +744,8 @@ create_user() {
             echo "Note: dev-register created '$username' with the 'user' role."
             echo "  To grant the DEPLOYMENT operator role (cross-tenant reach), run:"
             echo "    fm-promote-platform-admin $username"
+            echo "  (venv without \`pip install -e .\`, so no console entrypoint:)"
+            echo "    python -m faultmaven.cli.promote_platform_admin $username"
         fi
     elif [ "$http_code" = "409" ]; then
         echo ""

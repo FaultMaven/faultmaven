@@ -13,9 +13,11 @@ import pytest
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
 from faultmaven.infrastructure.persistence.rls_role_guard import (
     _raise_if_rls_exempt,
+    _raise_if_rls_scoped,
     _raise_unless_maintenance_posture,
     assert_app_db_role_enforces_rls,
     assert_maintenance_db_role_posture,
+    assert_provisioning_db_role_bypasses_rls,
 )
 
 
@@ -201,3 +203,73 @@ async def test_maintenance_guard_fails_closed_off_postgres():
     engine = _FakeEngine(dialect="sqlite")
     with pytest.raises(DeploymentCoherenceError, match="sqlite"):
         await assert_maintenance_db_role_posture(engine=engine)
+
+
+# =============================================================================
+# Tenant-provisioning posture (#887): the third role posture
+# =============================================================================
+# The provisioning path is the INVERSE of the app path: it writes the first rows
+# of a tenant no policy admits yet, so it must run RLS-exempt. This matters
+# because the documented `kubectl exec` recipe inherits the pod's DATABASE_URL,
+# which `assert_app_db_role_enforces_rls` guarantees is the RLS-scoped app role
+# — the exact role provisioning forbids.
+
+
+class TestRaiseIfRlsScoped:
+    """Sweeps the whole 2^3 posture space, not one instance of it."""
+
+    @pytest.mark.parametrize(
+        "is_superuser,has_bypassrls,owns_rls_table",
+        [
+            (True, False, False),
+            (False, True, False),
+            (False, False, True),
+            (True, True, False),
+            (True, False, True),
+            (False, True, True),
+            (True, True, True),
+        ],
+    )
+    def test_every_rls_exempt_posture_passes(
+        self, is_superuser, has_bypassrls, owns_rls_table
+    ):
+        # Exempt on ANY axis is qualification enough to write outside a policy.
+        _raise_if_rls_scoped(
+            "faultmaven",
+            is_superuser=is_superuser,
+            has_bypassrls=has_bypassrls,
+            owns_rls_table=owns_rls_table,
+        )
+
+    def test_the_app_role_posture_is_refused(self):
+        # The one remaining corner of the space — and the one the pod runs as.
+        with pytest.raises(DeploymentCoherenceError) as exc:
+            _raise_if_rls_scoped(
+                "faultmaven_app",
+                is_superuser=False,
+                has_bypassrls=False,
+                owns_rls_table=False,
+            )
+        message = str(exc.value)
+        assert "faultmaven_app" in message, "the refusal must name the actual role"
+        assert "DATABASE_URL" in message, "the refusal must name the fix"
+
+
+@pytest.mark.asyncio
+async def test_provisioning_guard_refuses_the_app_role():
+    engine = _FakeEngine(row=_row(role_name="faultmaven_app"))
+    with pytest.raises(DeploymentCoherenceError, match="faultmaven_app"):
+        await assert_provisioning_db_role_bypasses_rls(engine=engine)
+
+
+@pytest.mark.asyncio
+async def test_provisioning_guard_passes_and_returns_the_owner_role():
+    engine = _FakeEngine(row=_row(role_name="faultmaven", owns_rls_table=True))
+    assert await assert_provisioning_db_role_bypasses_rls(engine=engine) == "faultmaven"
+
+
+@pytest.mark.asyncio
+async def test_provisioning_guard_is_a_noop_off_postgres():
+    # SQLite has no RLS, so no role can be scoped by it: nothing to verify.
+    engine = _FakeEngine(dialect="sqlite")
+    assert await assert_provisioning_db_role_bypasses_rls(engine=engine) is None

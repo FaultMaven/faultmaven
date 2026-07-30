@@ -7,17 +7,16 @@ excludes it. So every documented in-pod procedure spelled
 Moving the operator scripts into ``faultmaven/cli/`` and declaring them under
 ``[project.scripts]`` makes them ship with the package.
 
-Two independent sources are checked so drift is caught from either side:
+``pyproject.toml`` is the authority here — it is what a wheel or image build
+reads — so the commands are not hand-copied into this file. Two things are
+checked against it:
 
-* the **declaration** in ``pyproject.toml`` — always live, in every environment,
-  and it is what a fresh install would be built from;
-* the **installed metadata** via ``importlib.metadata`` — what a pod would
-  actually resolve on ``PATH``. Only observable where the distribution is
-  installed (CI does ``pip install -e . --no-deps``), so it skips otherwise
-  rather than passing vacuously.
-
-Both resolve each target to a real callable, so a renamed module or a deleted
-``main()`` fails here rather than in a pod at 3am.
+* every declared target resolves to a real callable, so a renamed module or a
+  deleted ``main()`` fails here rather than in a pod at 3am;
+* the **installed metadata** (what a pod resolves on ``PATH``) matches the
+  declaration exactly. That is only observable where the distribution is
+  installed — CI does ``pip install -e . --no-deps`` — so it skips in a bare
+  checkout rather than passing vacuously.
 """
 
 from __future__ import annotations
@@ -34,36 +33,24 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-#: Every operator procedure that must be runnable inside a pod. Adding a
-#: command here without declaring it fails the first test below.
-EXPECTED_COMMANDS = {
-    "fm-provision-sso-org",
-    "fm-provision-service-account",
-    "fm-promote-platform-admin",
-    "fm-demote-platform-admin",
-    "fm-reset-kb",
-}
-
 
 def _declared_scripts() -> dict[str, str]:
-    """``[project.scripts]`` as written on disk."""
+    """``[project.scripts]`` as written on disk — the single source of truth."""
     with PYPROJECT.open("rb") as handle:
         return tomllib.load(handle)["project"]["scripts"]
 
 
-def _load_target(target: str):
-    """Resolve a ``module:attr`` entry-point target the way the wrapper does."""
-    module_path, _, attr = target.partition(":")
-    module = importlib.import_module(module_path)
-    return getattr(module, attr)
+#: Read once at collection so the commands can drive parametrization.
+DECLARED = _declared_scripts()
 
 
-def _installed_console_scripts() -> dict[str, str]:
-    """Console scripts recorded in this distribution's installed metadata.
+@pytest.fixture(scope="module")
+def installed_console_scripts():
+    """This distribution's installed console-script entry points, by name.
 
     Skips when faultmaven is not installed into the environment (running
-    straight from a checkout), because there is no metadata to read — not
-    because the assertion would pass.
+    straight from a checkout): there is no metadata to read — not an assertion
+    that would have passed.
     """
     try:
         dist = importlib.metadata.distribution("faultmaven")
@@ -72,44 +59,38 @@ def _installed_console_scripts() -> dict[str, str]:
             "faultmaven is not installed in this environment; entry-point "
             "metadata is only observable after `pip install -e . --no-deps`"
         )
-    return {
-        ep.name: ep.value for ep in dist.entry_points if ep.group == "console_scripts"
-    }
+    return {ep.name: ep for ep in dist.entry_points if ep.group == "console_scripts"}
 
 
-def test_pyproject_declares_every_operator_command():
-    """The declaration is the source a wheel/image build reads."""
-    assert set(_declared_scripts()) == EXPECTED_COMMANDS
-
-
-@pytest.mark.parametrize("command", sorted(EXPECTED_COMMANDS))
-def test_declared_target_resolves_to_a_callable(command):
-    """A renamed module or a removed ``main()`` breaks here, not in a pod."""
-    target = _declared_scripts()[command]
-    assert target.startswith("faultmaven.cli."), (
-        f"{command} must target the in-package CLI so it ships with the "
-        f"install; got {target!r}"
+def test_the_declaration_ships_operator_commands_from_the_package():
+    """A `[project.scripts]` that quietly emptied out would defeat every other
+    check here, and a target outside the package would reintroduce the bug:
+    only what lives under ``faultmaven/`` is copied into the image."""
+    assert DECLARED, "no console entrypoints declared in pyproject.toml"
+    off_package = {k: v for k, v in DECLARED.items() if not v.startswith("faultmaven.")}
+    assert not off_package, (
+        f"these targets are outside the installed package, so they will not "
+        f"ship in the image: {off_package}"
     )
-    assert callable(_load_target(target))
 
 
-def test_installed_metadata_exposes_every_operator_command():
-    """What a pod resolves on PATH is what pyproject declares.
+@pytest.mark.parametrize("command", sorted(DECLARED))
+def test_declared_target_resolves_to_a_callable(command):
+    """Resolve ``module:attr`` the way the generated wrapper does."""
+    module_path, _, attr = DECLARED[command].partition(":")
+    target = getattr(importlib.import_module(module_path), attr)
+    assert callable(target), f"{command} -> {DECLARED[command]} is not callable"
 
-    Fails on drift in either direction: a command declared but not installed
-    (stale metadata) or installed but no longer expected.
+
+def test_installed_metadata_matches_the_declaration(installed_console_scripts):
+    """What a pod resolves on PATH is exactly what pyproject declares.
+
+    Dict equality, so it fails on drift in either direction and on a *retargeted*
+    command, not only a missing name. Each entry point is then loaded through
+    ``ep.load()`` — the call the generated console script itself performs.
     """
-    assert set(_installed_console_scripts()) == EXPECTED_COMMANDS
+    installed = {name: ep.value for name, ep in installed_console_scripts.items()}
+    assert installed == DECLARED
 
-
-@pytest.mark.parametrize("command", sorted(EXPECTED_COMMANDS))
-def test_installed_entry_point_loads(command):
-    """``ep.load()`` is exactly what the generated console script performs."""
-    installed = _installed_console_scripts()
-    assert command in installed, f"{command} is not installed as a command"
-    (entry_point,) = [
-        ep
-        for ep in importlib.metadata.distribution("faultmaven").entry_points
-        if ep.group == "console_scripts" and ep.name == command
-    ]
-    assert callable(entry_point.load())
+    for name, ep in installed_console_scripts.items():
+        assert callable(ep.load()), f"installed command {name} does not load"

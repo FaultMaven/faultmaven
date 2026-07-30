@@ -51,17 +51,33 @@ checkout required.
 
 It must run with the **RLS-owning** database role (`faultmaven`), not the
 limited application role (`faultmaven_app`): it writes rows for a tenant that
-does not exist yet.
+does not exist yet, so row-level security has no policy that admits them.
 
-In Kubernetes:
+**The API pod's own `DATABASE_URL` is the wrong role**, and deliberately so —
+startup asserts that the application connects as a role RLS *applies* to
+(`assert_app_db_role_enforces_rls`; a role exempt from RLS would silently defeat
+tenant isolation). A bare `kubectl exec` inherits that environment, so the owner
+DSN has to be passed explicitly. The command refuses before writing anything if
+it isn't.
+
+In Kubernetes — fetch the owner DSN from the privileged secret, then override
+`DATABASE_URL` for this one invocation:
 
 ```bash
+OWNER_DSN=$(kubectl -n faultmaven get secret faultmaven-db-privileged \
+  -o jsonpath='{.data.MIGRATION_DATABASE_URL}' | base64 -d)
+
 kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
+  env DATABASE_URL="$OWNER_DSN" \
   fm-provision-sso-org \
     --name "Acme Corp" \
     --slug acme \
     --workos-org-id org_01HQZX9K3P4M5N6R7S8T9V0W1X
 ```
+
+On success the command echoes the role it verified
+(`Database role: faultmaven (RLS-exempt — provisioning allowed)`). If you see a
+refusal naming `faultmaven_app`, the `env` override did not take effect.
 
 Locally, against a database URL you supply:
 

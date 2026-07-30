@@ -212,7 +212,7 @@ async def _create_admin_user(user_store: Any) -> Any:
     return user
 
 
-async def _assign_operator_roles(user_store: Any, user: Any) -> Any:
+async def assign_operator_roles(user_store: Any, user: Any) -> tuple[Any, list[str]]:
     """Ensure the given user holds the operator roles; grants any that are missing.
 
     The standalone deployment's single account is legitimately both its
@@ -227,28 +227,35 @@ async def _assign_operator_roles(user_store: Any, user: Any) -> Any:
     operator is unusable), and ``fm-demote-platform-admin`` says so when
     aimed at it. Every other account demotes permanently.
 
+    **The single writer of this grant.** ``fm-promote-platform-admin`` calls it
+    too rather than reimplementing the same three lines: an operator promoted by
+    hand and one re-granted at startup must end up with identical roles, and two
+    copies of "which roles make an operator" is exactly how they drift.
+
     Args:
         user_store: Initialised user store instance
         user: DevUser to check and update
 
     Returns:
-        User (updated if roles were granted, unchanged otherwise)
+        ``(user, granted)`` — the user (updated if roles were granted, unchanged
+        otherwise) and the list of roles this call added, empty when it was a
+        no-op. Callers that report to a human use ``granted``; startup ignores it.
     """
     missing = [r for r in PLATFORM_ADMIN_ROLE_SET if r not in (user.roles or [])]
     if not missing:
-        return user
+        return user, []
 
     logger.info(f"User '{user.username}' missing operator roles {missing} — granting")
     user.roles = list(user.roles or []) + missing
     user = await user_store.update_user(user)
     logger.info(f"Operator roles granted to '{user.username}': {user.roles}")
-    return user
+    return user, missing
 
 
 async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
     """Ensure the default local admin account exists and has the admin role.
 
-    Orchestrates _create_admin_user() + _assign_operator_roles() so each
+    Orchestrates _create_admin_user() + assign_operator_roles() so each
     step is independently testable.
 
     Args:
@@ -277,7 +284,7 @@ async def ensure_default_admin_exists(container: Any) -> Optional[Any]:
         )
 
         user = await _create_admin_user(user_store)
-        await _assign_operator_roles(user_store, user)
+        await assign_operator_roles(user_store, user)
 
         if was_new:
             return user

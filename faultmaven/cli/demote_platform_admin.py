@@ -15,6 +15,7 @@ In a Kubernetes deployment, run it in the API pod:
     kubectl exec -it deploy/faultmaven-api -- fm-demote-platform-admin bob
 """
 
+import argparse
 import asyncio
 import sys
 
@@ -22,9 +23,17 @@ from faultmaven.bootstrap.data_init import DEFAULT_ADMIN_USERNAME
 from faultmaven.container import container
 from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
 
+#: How to enumerate accounts. ``list_users.py`` is a checkout-only dev script
+#: (it is deliberately not a console entrypoint), so a pod needs the API.
+_HOW_TO_LIST_USERS = (
+    "To see all users:\n"
+    "  in a deployment:  GET /api/v1/admin/users   (needs a platform-admin token)\n"
+    "  from a checkout:  python scripts/auth/list_users.py"
+)
 
-async def demote_from_platform_admin(username: str):
-    """Remove platform_admin role from user"""
+
+async def demote_from_platform_admin(username: str) -> bool:
+    """Remove platform_admin role from user. Returns True on success."""
     print("=" * 80)
     print("Demote Platform Admin to Regular User")
     print("=" * 80)
@@ -44,8 +53,8 @@ async def demote_from_platform_admin(username: str):
     user = await user_store.get_user_by_username(username)
     if not user:
         print(f"❌ User '{username}' not found")
-        print("\nTo see all users, run (from a source checkout):")
-        print("  python scripts/auth/list_users.py")
+        print()
+        print(_HOW_TO_LIST_USERS)
         return False
 
     print(f"✅ Found user: {user.user_id}")
@@ -104,20 +113,21 @@ async def demote_from_platform_admin(username: str):
         return False
 
 
-def main():
-    """Main entry point"""
-    if len(sys.argv) < 2:
-        print("Usage: fm-demote-platform-admin <username>")
-        print()
-        print("Example:")
-        print("  fm-demote-platform-admin bob")
-        print()
-        print("To see all users (from a source checkout):")
-        print("  python scripts/auth/list_users.py")
-        sys.exit(1)
+def main() -> None:
+    """Console entrypoint (``fm-demote-platform-admin``)."""
+    parser = argparse.ArgumentParser(
+        prog="fm-demote-platform-admin",
+        description=(
+            "Remove the deployment-scoped platform_admin role from a user. "
+            "The organization-scoped 'admin' role is left in place."
+        ),
+        epilog=_HOW_TO_LIST_USERS,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("username", help="Username of the account to demote")
+    args = parser.parse_args()
 
-    username = sys.argv[1]
-    success = asyncio.run(demote_from_platform_admin(username))
+    success = asyncio.run(demote_from_platform_admin(args.username))
     sys.exit(0 if success else 1)
 
 

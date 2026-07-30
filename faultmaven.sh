@@ -1206,6 +1206,8 @@ cmd_create_user() {
             echo "Note: the account was created with the 'user' role."
             echo "  To grant the DEPLOYMENT operator role (cross-tenant reach), run:"
             echo "    docker compose exec api fm-promote-platform-admin $username"
+            echo "  (older images without the console entrypoint:)"
+            echo "    docker compose exec api python -m faultmaven.cli.promote_platform_admin $username"
         fi
     elif [ "$http_code" = "409" ]; then
         echo ""

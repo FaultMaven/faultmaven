@@ -151,11 +151,39 @@ fm-reset-kb --yes --keep-chroma   # Wipe SQL only; keep ChromaDB collections
 
 Defaults are conservative — `conversion_drafts` (case-generated work in progress) is preserved unless `--all-drafts` is passed.
 
-`fm-reset-kb` is a console entrypoint shipped with the installed package (`faultmaven/cli/reset_kb.py`), so it is available both in a local checkout (after `pip install -e .`) and inside the API pod:
+`fm-reset-kb` is a console entrypoint shipped with the installed package (`faultmaven/cli/reset_kb.py`), so it is available both in a local checkout (after `pip install -e .`) and inside the API pod.
+
+#### ⚠️ Stop the API before wiping
+
+The wipe **`rmtree`s a ChromaDB directory that a running server holds open**. A live API keeps file handles and in-memory collection state on the tree being deleted, so with the server up it can keep serving reads from deleted files, recreate a partial directory underneath the one just removed, or fail on its next write. `--dry-run` is always safe; anything with `--yes` is not.
+
+Scale the API down for the wipe, or restart it immediately afterwards so it reopens a clean store:
 
 ```bash
-kubectl exec -it deploy/faultmaven-api -- fm-reset-kb --dry-run
+# Kubernetes — run the wipe against the same volume with the server down
+kubectl -n faultmaven scale deploy/faultmaven-api --replicas=0
+kubectl -n faultmaven run fm-reset --rm -it --restart=Never \
+  --image=<the API image> --overrides='<PVC mount for data/>' -- fm-reset-kb --yes
+kubectl -n faultmaven scale deploy/faultmaven-api --replicas=1
 ```
+
+If scaling to zero is not an option, run it in the live pod and restart immediately — accepting that reads between the wipe and the restart are undefined:
+
+```bash
+kubectl exec -it deploy/faultmaven-api -- fm-reset-kb --dry-run   # always safe
+kubectl exec -it deploy/faultmaven-api -- fm-reset-kb --yes
+kubectl -n faultmaven rollout restart deploy/faultmaven-api       # do this now
+```
+
+The Docker Compose stack has the identical problem — `data/` is bind-mounted into the API container, so a wipe from the host or from inside the container hits a store the running server holds open:
+
+```bash
+./faultmaven.sh stop
+fm-reset-kb --yes      # in the checkout's venv, against the bind-mounted data/
+./faultmaven.sh start
+```
+
+The command prints the **resolved** ChromaDB path it found. Check it against the store the server actually writes to — if it reports that no directory was found, the SQL rows are gone and the vector store was left untouched, which means the two halves of the KB have diverged.
 
 It refuses to run under `TENANT_PROVIDER=multi` — a multi-tenant database holds every tenant's KB, and a blanket wipe would bypass the audited maintenance path. Reseed the platform tier with the `kb_seed` job instead (#770).
 

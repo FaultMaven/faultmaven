@@ -16,18 +16,24 @@ In a Kubernetes deployment, run it in the API pod:
     kubectl exec -it deploy/faultmaven-api -- fm-promote-platform-admin alice
 """
 
+import argparse
 import asyncio
 import sys
 
+from faultmaven.bootstrap.data_init import assign_operator_roles
 from faultmaven.container import container
-from faultmaven.modules.auth.contracts import (
-    PLATFORM_ADMIN_ROLE,
-    PLATFORM_ADMIN_ROLE_SET,
+
+#: How to enumerate accounts. ``list_users.py`` is a checkout-only dev script
+#: (it is deliberately not a console entrypoint), so a pod needs the API.
+_HOW_TO_LIST_USERS = (
+    "To see all users:\n"
+    "  in a deployment:  GET /api/v1/admin/users   (needs a platform-admin token)\n"
+    "  from a checkout:  python scripts/auth/list_users.py"
 )
 
 
-async def promote_to_platform_admin(username: str):
-    """Promote user to platform admin"""
+async def promote_to_platform_admin(username: str) -> bool:
+    """Promote user to platform admin. Returns True on success."""
     print("=" * 80)
     print("Promote User to Platform Admin")
     print("=" * 80)
@@ -47,59 +53,59 @@ async def promote_to_platform_admin(username: str):
     user = await user_store.get_user_by_username(username)
     if not user:
         print(f"❌ User '{username}' not found")
-        print("\nTo see all users, run (from a source checkout):")
-        print("  python scripts/auth/list_users.py")
+        print()
+        print(_HOW_TO_LIST_USERS)
         return False
 
     print(f"✅ Found user: {user.user_id}")
     print(f"   Email: {user.email}")
     print(f"   Current roles: {user.roles}")
 
-    # Check if already a platform admin
-    if PLATFORM_ADMIN_ROLE in user.roles:
-        print(f"\n⚠️  User '{username}' is already a platform admin!")
-        return True
-
-    # Grant the full operator role set, so an account promoted here is
-    # identical to one created with `create_user.py --role platform_admin`.
-    missing = [r for r in PLATFORM_ADMIN_ROLE_SET if r not in (user.roles or [])]
-    print(f"\nGranting operator roles {missing} to user '{username}'...")
-    user.roles = list(user.roles or []) + missing
-
-    # Update user
+    # Delegate the grant to the one writer of it (bootstrap's startup re-grant
+    # calls the same helper), so a hand-promoted operator and a startup-restored
+    # one end up with identical roles. It grants the whole PLATFORM_ADMIN_ROLE_SET
+    # — including the org-scoped 'admin' an operator needs inside its own
+    # organization — and repairs a partially-granted account rather than
+    # reporting "already an admin" and leaving the hole.
     try:
-        user = await user_store.update_user(user)
-        print("✅ User promoted to platform admin successfully!")
-        print()
-        print(f"Updated roles: {user.roles}")
-        print()
-        print(f"User '{username}' can now:")
-        print("  ✅ List cases across all users and organizations")
-        print("  ✅ Administer user accounts")
-        print("  ✅ View and change LLM configuration")
-        print("  ✅ Manage the Global KB (upload, update, delete, bulk ops)")
-        print()
-        return True
-
+        user, granted = await assign_operator_roles(user_store, user)
     except Exception as e:
         print(f"❌ Failed to promote user: {e}")
         return False
 
+    if not granted:
+        print(f"\n⚠️  User '{username}' already holds every operator role.")
+        return True
 
-def main():
-    """Main entry point"""
-    if len(sys.argv) < 2:
-        print("Usage: fm-promote-platform-admin <username>")
-        print()
-        print("Example:")
-        print("  fm-promote-platform-admin alice")
-        print()
-        print("To see all users (from a source checkout):")
-        print("  python scripts/auth/list_users.py")
-        sys.exit(1)
+    print(f"\nGranted operator roles {granted} to user '{username}'.")
+    print("✅ User promoted to platform admin successfully!")
+    print()
+    print(f"Updated roles: {user.roles}")
+    print()
+    print(f"User '{username}' can now:")
+    print("  ✅ List cases across all users and organizations")
+    print("  ✅ Administer user accounts")
+    print("  ✅ View and change LLM configuration")
+    print("  ✅ Manage the Global KB (upload, update, delete, bulk ops)")
+    print()
+    return True
 
-    username = sys.argv[1]
-    success = asyncio.run(promote_to_platform_admin(username))
+
+def main() -> None:
+    """Console entrypoint (``fm-promote-platform-admin``)."""
+    parser = argparse.ArgumentParser(
+        prog="fm-promote-platform-admin",
+        description=(
+            "Grant an existing user the deployment-operator role set "
+            "(ADR-012 D9): user + admin + platform_admin."
+        ),
+        epilog=_HOW_TO_LIST_USERS,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("username", help="Username of the account to promote")
+    args = parser.parse_args()
+
+    success = asyncio.run(promote_to_platform_admin(args.username))
     sys.exit(0 if success else 1)
 
 
