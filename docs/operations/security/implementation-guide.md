@@ -156,7 +156,8 @@ class ProtectionErrorResponse:
 
 ### Memory Usage
 
-- **Rate limiting**: ~100 bytes per session per window
+- **Rate limiting**: ~90–120 bytes per *request* inside the window (see
+  [Redis Usage](#redis-usage) for the per-key bound)
 - **Deduplication**: ~64 bytes per unique request hash
 - **Timeout tracking**: ~200 bytes per active operation
 
@@ -169,7 +170,19 @@ class ProtectionErrorResponse:
 ### Redis Usage
 
 - **Keys**: Prefixed and namespaced (`fm:rl:`, `fm:dedup:`)
-- **Memory**: ~1MB per 10K active sessions
+- **Memory (`fm:rl:`)**: each key is a sorted set holding one entry per *allowed*
+  request inside the window, so it is bounded by the limit, not by the window
+  duration — a refused request inserts nothing. Each entry is a 32-character
+  member plus a float score, roughly 90–120 bytes with sorted-set overhead, so
+
+  ```text
+  bytes per saturated key ≈ limit × ~100
+  total ≈ Σ over active keys
+  ```
+
+  Production's `global` limit of 500 therefore tops out around 50 KB per key.
+  Keys carry a TTL of `window + 60` seconds, so one stops costing anything a
+  little over a minute after its last request.
 - **Operations**: ~2-3 Redis calls per request
 
 ## Security Implementation Details
