@@ -81,20 +81,28 @@ class SemanticCache:
     ) -> Optional[LLMResponse]:
         """Check cache for semantically similar response, scoped to case_id."""
 
-        # Simple hash-based cache if no embeddings
+        # Exact key first, in BOTH modes. `encoder` is resolved per access, so
+        # one instance can start in exact-key mode and later find the model
+        # resident (#868). Entries written while it was absent have no
+        # `embeddings` row, and the semantic branch skips embedding-less
+        # entries — so gating the exact-key lookup on `not self.encoder` would
+        # strand those entries permanently unservable while they still consume
+        # `max_size` and evict newer ones. An exact hit is mode-independent
+        # anyway: identical prompt, model and case means identical response.
+        cache_key = self._get_cache_key(prompt, model, case_id)
+        cache_entry = self.cache.get(cache_key)
+        if cache_entry is not None:
+            return LLMResponse(
+                content=cache_entry["content"],
+                confidence=cache_entry["confidence"],
+                provider=cache_entry["provider"],
+                model=cache_entry["model"],
+                tokens_used=cache_entry["tokens_used"],
+                response_time_ms=0,
+                cached=True,
+            )
+
         if not self.encoder:
-            cache_key = self._get_cache_key(prompt, model, case_id)
-            if cache_key in self.cache:
-                cache_entry = self.cache[cache_key]
-                return LLMResponse(
-                    content=cache_entry["content"],
-                    confidence=cache_entry["confidence"],
-                    provider=cache_entry["provider"],
-                    model=cache_entry["model"],
-                    tokens_used=cache_entry["tokens_used"],
-                    response_time_ms=0,
-                    cached=True,
-                )
             return None
 
         # Semantic similarity cache

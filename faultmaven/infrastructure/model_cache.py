@@ -24,6 +24,7 @@ import importlib.util
 import logging
 import math
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -33,18 +34,32 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 if TYPE_CHECKING:  # the real class, for type checkers only — never at runtime
     from sentence_transformers import SentenceTransformer
 
-# Whether the package is INSTALLED — decided without importing it. Importing
-# sentence_transformers pulls torch in behind it (~690 MiB of RSS) in every
-# process that so much as imports this module, including the cleanup CronJobs
-# that never embed anything and were OOMKilled at 512Mi (#868). find_spec
-# locates the package without executing it, so the flag keeps its meaning at a
-# fraction of the cost.
-try:
-    SENTENCE_TRANSFORMERS_AVAILABLE = (
-        importlib.util.find_spec("sentence_transformers") is not None
-    )
-except (ImportError, ValueError):  # broken install / namespace-package edge
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
+
+def _sentence_transformers_obtainable() -> bool:
+    """Can we get the class, without paying to import it?
+
+    Importing sentence_transformers pulls torch in behind it (~690 MiB of RSS)
+    in every process that so much as imports this module, including the cleanup
+    CronJobs that never embed anything and were OOMKilled at 512Mi (#868). So
+    the question is answered by locating the package, not executing it.
+
+    ``sys.modules`` is consulted FIRST because an already-present module is
+    obtainable by definition — that is precisely what an import would hand
+    back. It also has to come first for a second reason: ``find_spec`` raises
+    ``ValueError`` for a module whose ``__spec__`` is None, which is exactly
+    the shape of the stand-in the test suite installs (``tests/conftest.py``).
+    Asking find_spec first would report the embedding stack as *absent* for the
+    whole test session and quietly make the real-model path untestable.
+    """
+    if "sentence_transformers" in sys.modules:
+        return True
+    try:
+        return importlib.util.find_spec("sentence_transformers") is not None
+    except (ImportError, ValueError):  # broken install / namespace-package edge
+        return False
+
+
+SENTENCE_TRANSFORMERS_AVAILABLE = _sentence_transformers_obtainable()
 
 # Bound on first real load by _sentence_transformer_class(). Module-level so
 # tests can substitute a stand-in without paying for the import either.

@@ -19,8 +19,10 @@ cannot pass vacuously on a machine without the package — there, the real
 ``get_bge_m3_model`` returns None before it ever reaches the class.
 """
 
+import importlib.util
 import subprocess
 import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -178,3 +180,78 @@ def test_importing_the_container_does_not_import_torch():
         f"importing the container pulled in {result.stdout.strip()} — the "
         "embedding stack must stay behind a lazy import (#868)"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Deferring the import must not misreport the stack as absent
+# --------------------------------------------------------------------------- #
+
+
+def test_availability_survives_a_spec_less_stand_in(monkeypatch):
+    """``find_spec`` raises ValueError for a module that is in ``sys.modules``
+    with ``__spec__ is None`` — the exact shape of the stand-in
+    ``tests/conftest.py`` installs. Answering 'absent' there would mark the
+    embedding stack unavailable for the whole suite and make the real-model
+    path silently untestable, so an already-present module has to win first."""
+    stub = types.ModuleType("sentence_transformers")
+    assert stub.__spec__ is None  # the trap this guards
+    monkeypatch.setitem(sys.modules, "sentence_transformers", stub)
+
+    # The naive probe really does blow up on this input...
+    with pytest.raises(ValueError):
+        importlib.util.find_spec("sentence_transformers")
+
+    # ...and the real one answers correctly anyway.
+    assert model_cache_module._sentence_transformers_obtainable() is True
+
+
+def test_availability_is_true_under_this_test_suite():
+    """The suite runs with conftest's stand-in installed; if the flag reads
+    False here, every assertion about the real-model path is vacuous."""
+    assert model_cache_module.SENTENCE_TRANSFORMERS_AVAILABLE is True
+
+
+def test_availability_reports_absent_when_nothing_provides_it(monkeypatch):
+    """...and the flag can still say False, or it means nothing."""
+    monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
+    monkeypatch.setattr(
+        model_cache_module.importlib.util, "find_spec", lambda name: None
+    )
+
+    assert model_cache_module._sentence_transformers_obtainable() is False
+
+
+# --------------------------------------------------------------------------- #
+# A per-access encoder must not strand entries written in the other mode
+# --------------------------------------------------------------------------- #
+
+
+def test_entries_cached_before_the_model_loads_stay_servable(loader, monkeypatch):
+    """``encoder`` resolves per access, so one instance can begin in exact-key
+    mode and later find the model resident. The semantic branch skips entries
+    with no embedding row, so without an exact-key lookup first those entries
+    would be permanently unservable while still occupying ``max_size`` and
+    evicting newer ones."""
+    from faultmaven.infrastructure.llm.providers import LLMResponse
+
+    cache = SemanticCache()
+    response = LLMResponse(
+        content="restart the kubelet",
+        confidence=0.9,
+        provider="openai",
+        model="gpt-5.4-mini",
+        tokens_used=42,
+        response_time_ms=10,
+    )
+    # Stored while BGE-M3 is absent → no embeddings row for this key.
+    cache.store("why is node-3 NotReady?", "gpt-5.4-mini", response, case_id="c-1")
+    assert cache.embeddings == {}
+
+    # The model becomes resident (a preload, or another caller's first embed).
+    monkeypatch.setitem(model_cache._models, BGE_M3_MODEL_ID, MagicMock())
+
+    hit = cache.check("why is node-3 NotReady?", "gpt-5.4-mini", case_id="c-1")
+
+    assert hit is not None, "entry stranded by the mode flip"
+    assert hit.content == "restart the kubelet"
+    assert hit.cached is True

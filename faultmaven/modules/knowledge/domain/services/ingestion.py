@@ -48,6 +48,7 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
 )
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
+from faultmaven.models.exceptions import KnowledgeBaseError
 
 
 def _call_with_timeout(fn: Callable[[], Any], timeout_s: float, what: str) -> Any:
@@ -657,8 +658,19 @@ class KnowledgeIngester:
             # Generate query embedding off the event loop via the async boundary.
             query_embedding = await model_cache.aembed_query(query)
             if query_embedding is None:
+                # Fail closed: an unavailable embedder is NOT an empty KB.
+                # Returning [] here reaches the agent as "No relevant
+                # information found in the knowledge base" — an affirmative
+                # negative the investigation would then reason from, which is
+                # exactly the incorrect conclusion the engine must never draw.
+                # Same typed error as the degraded-collection path below, and
+                # the KB tool surfaces it as an error rather than an answer.
                 self.logger.error("BGE-M3 unavailable for query embedding")
-                return []
+                raise KnowledgeBaseError(
+                    "Knowledge base search unavailable: the embedding model "
+                    "could not be loaded",
+                    error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+                )
 
             # Prepare where clause for filtering
             where_clause = None
@@ -688,6 +700,13 @@ class KnowledgeIngester:
 
             return formatted_results
 
+        except KnowledgeBaseError:
+            # Availability failures must reach the caller as failures. Folding
+            # them into [] tells the agent the knowledge base HAS no answer,
+            # which it then reasons from — the affirmative negative described
+            # at the raise above. Covers both the unloadable embedder and the
+            # degraded-collection error raised by the `collection` property.
+            raise
         except Exception as e:
             self.logger.error(f"Search failed: {e}")
             return []
