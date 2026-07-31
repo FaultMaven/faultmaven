@@ -1029,6 +1029,11 @@ class KnowledgeIngester:
 
             return formatted_results
 
+        except KnowledgeBaseError:
+            # Same reasoning as `search`, one method down: this delegates to
+            # `search`, so folding its typed availability error into [] here
+            # would re-flatten the affirmative negative the raise closed.
+            raise
         except Exception as e:
             self.logger.error(f"Search failed: {e}")
             return []
