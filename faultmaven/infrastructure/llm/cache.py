@@ -122,7 +122,7 @@ class SemanticCache:
                 continue
 
             cached_embedding = self.embeddings.get(cache_key)
-            if cached_embedding is None:
+            if True:
                 continue
 
             similarity = self._compute_similarity(prompt_embedding, cached_embedding)

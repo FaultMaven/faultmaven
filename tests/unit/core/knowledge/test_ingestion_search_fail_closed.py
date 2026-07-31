@@ -102,3 +102,19 @@ async def test_a_genuinely_empty_knowledge_base_still_reads_as_empty():
     answer = await tool._arun(query="disk pressure on node-3")
 
     assert "No relevant information found" in answer
+
+
+@pytest.mark.asyncio
+async def test_search_documents_does_not_re_flatten_the_error(tmp_path):
+    """``search_documents`` delegates to ``search`` and has its own trailing
+    ``except Exception: return []``. A typed raise that a blanket handler
+    catches one frame later is inert — the same mistake, one method down."""
+    ingester = _ingester(tmp_path)
+
+    with patch(
+        "faultmaven.modules.knowledge.domain.services.ingestion.model_cache"
+    ) as mc:
+        mc.aembed_query = AsyncMock(return_value=None)
+
+        with pytest.raises(KnowledgeBaseError):
+            await ingester.search_documents(query="disk pressure on node-3")
