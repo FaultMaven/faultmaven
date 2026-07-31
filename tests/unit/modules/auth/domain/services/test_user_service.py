@@ -31,8 +31,8 @@ from faultmaven.modules.auth.domain.services.user_service import UserService
 def mock_auth_service():
     """Create a mock AuthService."""
     auth_service = MagicMock(spec=AuthService)
-    auth_service._private_key = "test-key"
-    auth_service._public_key = "test-key"
+    auth_service._private_key = "test-key-for-jwt-min-32-bytes!!!"
+    auth_service._public_key = "test-key-for-jwt-min-32-bytes!!!"
     auth_service._access_token_expire_minutes = 15
     auth_service.generate_token_pair.return_value = MagicMock(
         access_token="access-token",

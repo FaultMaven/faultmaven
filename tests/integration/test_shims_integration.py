@@ -17,6 +17,9 @@ import pytest
 class TestShimPackageImports:
     """Tests for shim package import behavior."""
 
+    @pytest.mark.filterwarnings(
+        "ignore:Field.*has conflict with protected namespace:UserWarning"
+    )
     def test_all_exports_available(self):
         """Test that all expected exports are available from package."""
         from faultmaven.infrastructure.shims import (

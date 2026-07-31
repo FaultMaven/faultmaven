@@ -35,7 +35,7 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
 
 pytestmark = pytest.mark.asyncio
 
-HS256_SECRET = "unit-test-secret-key-please-ignore"
+HS256_SECRET = "unit-test-secret-key-min-32-bytes!"
 # The production defaults on purpose: an access lifetime that coincides with
 # another token type's would let a per-type ceiling pass these tests by accident.
 ACCESS_MINUTES = 15
@@ -167,7 +167,7 @@ def _forged_tokens():
         "unsigned": pyjwt.encode(claims, key="", algorithm="none"),
         # Signed, but with a key this deployment does not hold
         "wrong_hs256_key": pyjwt.encode(
-            claims, "attacker-secret-not-ours", algorithm="HS256"
+            claims, "attacker-secret-not-ours-32-bytes!", algorithm="HS256"
         ),
         "wrong_rs256_key": pyjwt.encode(
             claims, ATTACKER_PRIVATE_KEY, algorithm="RS256"

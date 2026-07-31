@@ -135,6 +135,10 @@ def _mock_llm_provider():
     provider.provider_name = "mock"
     provider.config = MagicMock()
     provider.config.default_model = "mock-model"
+    # supports_tool_calling is a sync method on real providers — must be
+    # MagicMock, not the implicit AsyncMock attribute, or milestone_engine's
+    # bool(supports(model)) creates an unawaited coroutine (RuntimeWarning).
+    provider.supports_tool_calling = MagicMock(return_value=True)
     # get_structured_output_strategy is a sync method, not async
     provider.get_structured_output_strategy = MagicMock(
         return_value=StructuredOutputStrategy(

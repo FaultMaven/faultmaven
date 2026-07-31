@@ -279,7 +279,6 @@ class TestOpenAITokenLimitParam:
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
 class TestOpenAIReasoningEffortCap:
     """Reasoning-family models (gpt-5.x, o-series) bill hidden reasoning against
     the output budget; on a structured JSON call that can starve the schema and
