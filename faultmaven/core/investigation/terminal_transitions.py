@@ -1414,26 +1414,30 @@ async def evaluate_runbook_suggestion(
                 extra={"case_id": case.case_id, "metric": "runbook.dedup_failed"},
             )
 
-    # Content-readiness caveat, if any.
+    # Collect every caveat rather than returning on the first one. Content
+    # readiness and dedup are independent concerns — a thin case whose dedup
+    # also failed has two things wrong with it, and reporting only the first
+    # hides the duplicate risk entirely (#944).
+    caveats = []
+
     if readiness.verdict == RunbookReadiness.NEEDS_ENRICHMENT:
-        return RunbookSuggestion(
-            verdict=RunbookSuggestion.SUGGEST_WITH_CAVEATS,
-            message=readiness.message,
+        caveats.append(readiness.message)
+
+    # Dedup did not complete — skipped or failed. Naming that is what keeps
+    # the final SUGGEST below honest: it means "checked, nothing similar
+    # found", which an unchecked case is not entitled to.
+    if not dedup_ran:
+        caveats.append(
+            "I could not check whether a similar runbook already exists — the "
+            "knowledge base search is unavailable. Creating one now risks "
+            "duplicating existing content; you may want to check the "
+            "Dashboard Knowledge Base first."
         )
 
-    # Dedup did not complete — skipped or failed. Name what could not be
-    # established rather than falling through to the plain SUGGEST below,
-    # which asserts "checked, nothing similar found" (#944).
-    if not dedup_ran:
+    if caveats:
         return RunbookSuggestion(
             verdict=RunbookSuggestion.SUGGEST_WITH_CAVEATS,
-            message=(
-                "This case has enough detail to generate a **runbook**, but I "
-                "could not check whether a similar one already exists — the "
-                "knowledge base search is unavailable. Creating one now risks "
-                "duplicating existing content; you may want to check the "
-                "Dashboard Knowledge Base first."
-            ),
+            message="\n\n".join(caveats),
         )
 
     return RunbookSuggestion(

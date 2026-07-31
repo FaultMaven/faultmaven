@@ -54,6 +54,7 @@ from faultmaven.exceptions import AuthorizationError, FaultMavenException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models import KnowledgeBaseDocument, SearchRequest
 from faultmaven.models.api import DocumentSnippetResponse
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.knowledge.api.platform_tier import (
     require_global_authoring_allowed,
@@ -855,6 +856,22 @@ async def update_document(
 
     except HTTPException:
         raise
+    except KnowledgeBaseError as e:
+        # Re-indexing failed. Because indexing now embeds before it deletes,
+        # the previous vectors are still in place — the document remains
+        # searchable on its OLD content while the row holds the new text.
+        # Say so: this used to answer 200 having deleted the vectors and
+        # written nothing back, leaving the document permanently unfindable
+        # with no signal at all (#945).
+        logger.error(f"Failed to re-index document {document_id}: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Document saved, but re-indexing for search failed — search "
+                "results still reflect the previous content. Retry the update "
+                "once the knowledge base is available."
+            ),
+        )
     except Exception as e:
         logger.error(f"Failed to update document {document_id}: {e}")
         # No str(e) in the response: this route is now reachable by any
