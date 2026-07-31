@@ -1,14 +1,16 @@
 """The container-built KnowledgeService must be able to reach the database.
 
-``KnowledgeService.ingest_runbook`` refuses outright when
-``_db_session_factory`` is unset ("vector-only ingestion is no longer
-supported"), and every other KB persistence path degrades to a warning and an
-empty result. The web process used to hide that by patching the attribute onto
-the instance from the lifespan, so only the *web* process had a DB-capable
-service. The jobs process (``python -m faultmaven.jobs.run``) initializes the
-same container and never runs a lifespan, so ``kb_seed`` failed on every pack
-runbook — and under ``TENANT_PROVIDER=multi`` that job is the only seeding
-path, leaving a fresh deployment with an empty global KB (#894).
+A DB-less KnowledgeService cannot be constructed at all (#899): the session
+factory is a required, keyword-only constructor argument. That replaced a
+per-method degradation — ``ingest_runbook`` refused outright while every read
+path returned a warning and an empty result — which made a misconfigured
+service *quiet*. The web process had hidden the misconfiguration by patching
+the attribute onto the instance from the lifespan, so only the *web* process
+was DB-capable. The jobs process (``python -m faultmaven.jobs.run``)
+initializes the same container and never runs a lifespan, so ``kb_seed``
+failed on every pack runbook — and under ``TENANT_PROVIDER=multi`` that job is
+the only seeding path, leaving a fresh deployment with an empty global KB
+(#894).
 
 The fix is at the composition root: the container hands KnowledgeService the
 session factory at construction, so every process gets the same capability.
