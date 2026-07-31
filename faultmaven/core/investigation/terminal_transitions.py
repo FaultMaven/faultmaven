@@ -1366,6 +1366,12 @@ async def evaluate_runbook_suggestion(
     # Local-dev configurations without ChromaDB legitimately reach here with
     # runbook_kb=None; logging at WARN keeps the silent-skip observable so a
     # production misconfiguration doesn't hide as "quietly working".
+    #
+    # `dedup_ran` records whether the check actually completed. The final
+    # SUGGEST below means "checked, nothing similar" — an unchecked case must
+    # never reach it, or a dedup result gets stated that was never obtained
+    # (#944).
+    dedup_ran = False
     if not runbook_kb:
         logger.warning(
             f"Runbook deduplication skipped for case {case.case_id}: "
@@ -1376,6 +1382,7 @@ async def evaluate_runbook_suggestion(
     if runbook_kb:
         try:
             similar = await _find_similar_runbooks_for_case(case, runbook_kb)
+            dedup_ran = True
             if similar:
                 top_match = similar[0]
                 similarity = top_match.get("similarity_score", 0)
@@ -1401,17 +1408,32 @@ async def evaluate_runbook_suggestion(
                         ),
                     )
         except Exception as e:
+            # `dedup_ran` stays False, so the caveat branch below owns this.
             logger.warning(
-                f"Runbook deduplication check failed for case {case.case_id}: {e}. "
-                "Proceeding without dedup check.",
-                extra={"case_id": case.case_id},
+                f"Runbook deduplication check failed for case {case.case_id}: {e}.",
+                extra={"case_id": case.case_id, "metric": "runbook.dedup_failed"},
             )
 
-    # No similar runbook found (or KB unavailable) — suggest based on content readiness
+    # Content-readiness caveat, if any.
     if readiness.verdict == RunbookReadiness.NEEDS_ENRICHMENT:
         return RunbookSuggestion(
             verdict=RunbookSuggestion.SUGGEST_WITH_CAVEATS,
             message=readiness.message,
+        )
+
+    # Dedup did not complete — skipped or failed. Name what could not be
+    # established rather than falling through to the plain SUGGEST below,
+    # which asserts "checked, nothing similar found" (#944).
+    if not dedup_ran:
+        return RunbookSuggestion(
+            verdict=RunbookSuggestion.SUGGEST_WITH_CAVEATS,
+            message=(
+                "This case has enough detail to generate a **runbook**, but I "
+                "could not check whether a similar one already exists — the "
+                "knowledge base search is unavailable. Creating one now risks "
+                "duplicating existing content; you may want to check the "
+                "Dashboard Knowledge Base first."
+            ),
         )
 
     return RunbookSuggestion(
@@ -1472,37 +1494,28 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
 
     query_text = " | ".join(parts)
 
-    # Use runbook_kb.search_runbooks if available (ChromaDB vector search)
-    if hasattr(runbook_kb, "search_by_text"):
-        results = await runbook_kb.search_by_text(
-            query_text=query_text,
-            organization_id=organization_id,
-            top_k=3,
-            min_similarity=0.65,
-        )
-        return results
-    elif hasattr(runbook_kb, "search_runbooks"):
-        # Fallback: some implementations use search_runbooks with query text
-        try:
-            results = await runbook_kb.search_runbooks(
-                query_text=query_text,
-                organization_id=organization_id,
-                top_k=3,
-                min_similarity=0.65,
-            )
-            return (
-                [
-                    {
-                        "similarity_score": getattr(r, "similarity_score", 0),
-                        "title": getattr(r, "title", "Unknown"),
-                    }
-                    for r in results
-                ]
-                if results
-                else []
-            )
-        except TypeError:
-            # search_runbooks may require query_embedding instead of text
-            return []
-
-    return []
+    # Called directly, with no hasattr probe and no fallback arm. The previous
+    # shape probed for `search_by_text` — which did not exist, so the guard was
+    # permanently False — then called `search_runbooks(query_text=...)` against
+    # a signature that takes `query_embedding`, raising TypeError into an
+    # `except` that returned []. Dedup therefore never ran, and every
+    # resolution proposed a new runbook regardless of what the KB held (#944).
+    #
+    # A missing or renamed method must now fail loudly rather than degrade to
+    # "no similar runbook": an AttributeError/TypeError here is a wiring bug,
+    # and silently answering "none found" is precisely how this rotted
+    # unnoticed. `evaluate_runbook_suggestion` decides how to handle it.
+    results = await runbook_kb.search_by_text(
+        query_text=query_text,
+        organization_id=organization_id,
+        top_k=3,
+        min_similarity=0.65,
+    )
+    return [
+        {
+            "similarity_score": getattr(r, "similarity_score", 0),
+            "title": getattr(getattr(r, "runbook", None), "title", None)
+            or getattr(r, "title", "Unknown"),
+        }
+        for r in results or []
+    ]

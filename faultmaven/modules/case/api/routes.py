@@ -115,6 +115,7 @@ from faultmaven.models.api_models import (  # Phase 2: Evidence-to-File Linkage
     UploadedFilesList,
 )
 from faultmaven.models.case_ui import CaseUIResponse
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.interfaces_case import ICaseService
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
@@ -2926,6 +2927,24 @@ async def get_report_recommendations(
 
     except HTTPException:
         raise
+    except KnowledgeBaseError as e:
+        # Refuse rather than recommend. The runbook recommendation IS a claim
+        # about what the knowledge base holds, so when the similarity search
+        # cannot run there is no honest recommendation to give — answering
+        # anyway is what produced a permanent "generate" and let duplicate
+        # runbooks accumulate (#944). 503 matches the sibling refusal above
+        # for a missing vector store, and keeps the response contract intact.
+        logger.warning(
+            f"Report recommendations unavailable for case {case_id}: {e}",
+            extra={"case_id": case_id},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Runbook similarity search is unavailable, so duplicate "
+                f"runbooks cannot be ruled out: {e}"
+            ),
+        )
     except Exception as e:
         logger.error(
             f"Failed to get report recommendations for case {case_id}: {e}",
