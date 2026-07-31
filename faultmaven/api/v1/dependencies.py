@@ -30,14 +30,13 @@ from ...models import SessionContext
 from ...models.interfaces import IJobService
 from ...models.interfaces_case import ICaseService
 
-# Lazy import to avoid circular dependency - DataService, SessionService, KnowledgeService imported in functions or TYPE_CHECKING
+# Lazy import to avoid circular dependency - DataService, SessionService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
 from ...modules.preprocessing import PreprocessingService
 from ...providers.tenancy.base import TenantProvider
 
 # Type hints for lazy imports
 if TYPE_CHECKING:
-    from ...modules.knowledge.domain.services.knowledge_service import KnowledgeService
     from ...services import DataService, SessionService
 
 
@@ -234,9 +233,13 @@ async def get_data_service(request: Request):
     return request.app.state.data_service
 
 
-async def get_knowledge_service(request: Request) -> "KnowledgeService":
-    """Get KnowledgeService instance from app.state (Composition Root)"""
-    return request.app.state.knowledge_service
+# A second ``get_knowledge_service`` used to sit here, reading the same
+# app.state slot as the one in modules/knowledge/api/routes.py. Deleted rather
+# than given the same 503 guard (#899): no route depended on it, and its only
+# importer — tests/unit/api/conftest.py — sits in a try block whose companion
+# import (faultmaven.api.v1.routes) does not resolve, so the import never ran.
+# Two accessors for one slot means the next contract change lands on one of
+# them; the knowledge module owns its own.
 
 
 async def get_tracer(request: Request):

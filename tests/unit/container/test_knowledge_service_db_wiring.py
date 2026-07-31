@@ -95,6 +95,28 @@ def test_a_db_less_knowledge_service_cannot_be_constructed():
 
 
 @pytest.mark.unit
+def test_an_explicit_none_session_factory_is_rejected_too():
+    """Requiring the argument is not enough — the VALUE must be rejected.
+
+    #894 was a ``None`` default the container never overrode, so ``None`` is
+    the shape this class actually failed in, and a required parameter alone
+    still accepts it. With the per-path guards deleted it would be the *worse*
+    failure: ``self._db_session_factory()`` raises TypeError inside each
+    method's ``try``, and the broad handlers turn that back into an empty
+    document page and a ``None`` the KB cause seeder reads as "prose-only
+    source, nothing to seed" — the exact silent degradation this contract
+    removes, re-entered through a different door.
+    """
+    with pytest.raises(ValueError, match="db_session_factory"):
+        KnowledgeService(
+            knowledge_ingester=None,
+            sanitizer=None,
+            tracer=None,
+            db_session_factory=None,
+        )
+
+
+@pytest.mark.unit
 def test_container_does_not_substitute_a_stub_knowledge_service():
     """An uncomposed container returns None — it does not stand something in.
 

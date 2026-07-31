@@ -179,11 +179,29 @@ class KnowledgeService:
                 ``knowledge_items`` is the relational source of truth for the
                 published inventory, so a service without a session factory has
                 no working read or write path — it is not a degraded service,
-                it is a broken one. Passing nothing is a ``TypeError`` here
-                rather than an empty KB in production (#894/#899), and
-                keyword-only because this signature's positional tail has
-                already shifted once (#894).
+                it is a broken one. Omitting it is a ``TypeError`` and passing
+                ``None`` is a ``ValueError``, both at construction rather than
+                an empty KB in production (#894/#899). Keyword-only because
+                this signature's positional tail has already shifted once
+                (#894).
+
+        Raises:
+            ValueError: if ``db_session_factory`` is None.
         """
+        # Rejecting the VALUE, not just the omission. #894 was a None default
+        # that the container never overrode, so None is the shape this class
+        # actually failed in — and with the per-path guards gone it is now the
+        # worse failure: every call raises TypeError inside a `try`, which the
+        # broad handlers below turn back into an empty page or a None the KB
+        # cause seeder reads as "prose-only source, nothing to seed". Exactly
+        # the silent degradation this contract exists to remove.
+        if db_session_factory is None:
+            raise ValueError(
+                "KnowledgeService requires a db_session_factory; None is not a "
+                "valid session source. Every KB read and write path needs it, "
+                "and it is what binds the RLS tenant scope per transaction."
+            )
+
         self._ingester = knowledge_ingester
         self._sanitizer = sanitizer
         self._tracer = tracer
