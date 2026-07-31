@@ -20,23 +20,66 @@ Configuration:
 """
 
 import asyncio
+import importlib.util
 import logging
 import math
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-# Import with graceful fallback
-try:
+if TYPE_CHECKING:  # the real class, for type checkers only — never at runtime
     from sentence_transformers import SentenceTransformer
 
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    SentenceTransformer = None
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
+
+def _sentence_transformers_obtainable() -> bool:
+    """Can we get the class, without paying to import it?
+
+    Importing sentence_transformers pulls torch in behind it (~690 MiB of RSS)
+    in every process that so much as imports this module, including the cleanup
+    CronJobs that never embed anything and were OOMKilled at 512Mi (#868). So
+    the question is answered by locating the package, not executing it.
+
+    ``sys.modules`` is consulted FIRST because an already-present module is
+    obtainable by definition — that is precisely what an import would hand
+    back. It also has to come first for a second reason: ``find_spec`` raises
+    ``ValueError`` for a module whose ``__spec__`` is None, which is exactly
+    the shape of the stand-in the test suite installs (``tests/conftest.py``).
+    Asking find_spec first would report the embedding stack as *absent* for the
+    whole test session and quietly make the real-model path untestable.
+    """
+    if "sentence_transformers" in sys.modules:
+        return True
+    try:
+        return importlib.util.find_spec("sentence_transformers") is not None
+    except (ImportError, ValueError):  # broken install / namespace-package edge
+        return False
+
+
+SENTENCE_TRANSFORMERS_AVAILABLE = _sentence_transformers_obtainable()
+
+# Bound on first real load by _sentence_transformer_class(). Module-level so
+# tests can substitute a stand-in without paying for the import either.
+SentenceTransformer = None
+
+
+def _sentence_transformer_class():
+    """Import ``sentence_transformers`` on first real load, caching the class.
+
+    The deferral is the point: see SENTENCE_TRANSFORMERS_AVAILABLE. An
+    already-bound value is honoured as-is, so a test stand-in wins.
+    """
+    global SentenceTransformer
+    if SentenceTransformer is None:
+        from sentence_transformers import (  # heavy: torch loads behind it
+            SentenceTransformer as _SentenceTransformer,
+        )
+
+        SentenceTransformer = _SentenceTransformer
+    return SentenceTransformer
 
 
 # The embedding model that embeds queries at runtime. This is the authoritative
@@ -165,7 +208,7 @@ class ModelCache:
 
     def get_bge_m3_model(
         self, triggered_by: str = "lazy"
-    ) -> Optional[SentenceTransformer]:
+    ) -> Optional["SentenceTransformer"]:
         """
         Get cached BGE-M3 model instance.
 
@@ -209,7 +252,7 @@ class ModelCache:
                 # oversubscribing the node's core count against the cgroup limit.
                 configure_inference_threads()
                 self.logger.info(f"Loading BGE-M3 model ({triggered_by} load)...")
-                model = SentenceTransformer(model_key)
+                model = _sentence_transformer_class()(model_key)
                 load_time = time.time() - start_time
 
                 self._models[model_key] = model
@@ -235,6 +278,25 @@ class ModelCache:
                 )
                 self.logger.error(f"Failed to load BGE-M3 model: {e}")
                 return None
+
+    def peek_bge_m3_model(self) -> Optional["SentenceTransformer"]:
+        """Return BGE-M3 **only if it is already resident**; never load it.
+
+        The load-on-construct counterpart to :meth:`get_bge_m3_model`, for
+        callers that can work without embeddings and must not decide the
+        loading policy for the whole process. Two properties matter (#868):
+
+        - **Memory.** ``get_bge_m3_model`` from a constructor pulls ~1.3Gi into
+          every process that builds the DI container, including cleanup
+          CronJobs that never embed anything — they were OOMKilled at 512Mi.
+        - **Event loop.** A cold load takes 60–120s. Triggering one from a
+          request path would block the loop and trip the k8s liveness probe.
+
+        Whether the model is resident is decided by the documented policy
+        (``LAZY_LOAD_ML_MODELS`` / ``PRELOAD_MODELS``, applied in the web
+        lifespan) or by the first real ``aembed_*`` call — not by this method.
+        """
+        return self._models.get(BGE_M3_MODEL_ID)
 
     async def aembed_texts(self, texts: List[str]) -> Optional[List[List[float]]]:
         """Embed a LIST of texts with BGE-M3 → one 1024-dim vector per text.

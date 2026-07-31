@@ -48,6 +48,7 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
 )
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
+from faultmaven.models.exceptions import KnowledgeBaseError
 
 
 def _call_with_timeout(fn: Callable[[], Any], timeout_s: float, what: str) -> Any:
@@ -207,15 +208,23 @@ class KnowledgeIngester:
                 metadata={"description": "FaultMaven Knowledge Base"},
             )
 
-        # Fail fast at startup if BGE-M3 can't load (also warms the lazy cache).
-        # Embedding itself goes through model_cache.aembed_* at the call sites
-        # below, which run the encode off the event loop.
-        if model_cache.get_bge_m3_model() is None:
-            self.logger.error("Failed to load BGE-M3 embedding model from cache")
-            raise RuntimeError(
-                "BGE-M3 model unavailable - knowledge ingestion cannot proceed"
-            )
-        self.logger.debug("Cached BGE-M3 embedding model available")
+        # NO embedding-model load here. Constructing an ingester is not
+        # embedding: the DI container builds one in every process, so warming
+        # BGE-M3 from this constructor pulled ~1.3Gi into cleanup CronJobs that
+        # never embed, and they were OOMKilled at 512Mi (#868). The model loads
+        # on first real use via model_cache.aembed_*, which also runs the encode
+        # off the event loop.
+        #
+        # This warm was never the fail-fast it read as: the RuntimeError it
+        # raised was caught by the container's tools provider, which logged a
+        # warning and dropped the ingester (and both KB tools) to None.
+        #
+        # THIS class's write path fails closed on its own — `_process_and_store`
+        # raises when `aembed_texts` returns None, so an unavailable model
+        # cannot produce a vector-less document *here*. That is a statement
+        # about this file only: `KnowledgeService._index_document_in_vector_store`
+        # logs and returns 0 on the same condition, which is the live API write
+        # path and is NOT covered by anything in this module (#945).
 
         # Supported file extensions
         self.supported_extensions = {
@@ -235,8 +244,13 @@ class KnowledgeIngester:
 
         When an external ChromaDB was configured but unreachable at startup,
         ``_collection`` is None and any access raises ``KnowledgeBaseError``.
-        Existing per-method try/except blocks turn that into a graceful
-        "KB unavailable" outcome instead of a crash or hang.
+
+        The read methods used to catch that and return ``[]``, which is the
+        same defect as an unavailable embedder: "the store is down" rendered as
+        "the knowledge base holds nothing", which the investigation then
+        reasons from. ``search`` / ``search_documents`` now re-raise
+        ``KnowledgeBaseError`` through their trailing blanket handler, so an
+        unavailable store reaches the caller AS unavailable (#868 review).
         """
         if self._collection is None:
             from faultmaven.models.exceptions import KnowledgeBaseError
@@ -429,7 +443,8 @@ class KnowledgeIngester:
             return
 
         # Batch-embed all chunks off the event loop via the model_cache async
-        # boundary (availability is guaranteed by the startup check).
+        # boundary, loading BGE-M3 on this first use if it is not resident yet.
+        # The None check below is the fail-closed gate: no vectors, no write.
         embeddings = await model_cache.aembed_texts(chunks)
         if embeddings is None:
             raise RuntimeError("BGE-M3 model unavailable during ingestion")
@@ -652,8 +667,19 @@ class KnowledgeIngester:
             # Generate query embedding off the event loop via the async boundary.
             query_embedding = await model_cache.aembed_query(query)
             if query_embedding is None:
+                # Fail closed: an unavailable embedder is NOT an empty KB.
+                # Returning [] here reaches the agent as "No relevant
+                # information found in the knowledge base" — an affirmative
+                # negative the investigation would then reason from, which is
+                # exactly the incorrect conclusion the engine must never draw.
+                # Same typed error as the degraded-collection path below, and
+                # the KB tool surfaces it as an error rather than an answer.
                 self.logger.error("BGE-M3 unavailable for query embedding")
-                return []
+                raise KnowledgeBaseError(
+                    "Knowledge base search unavailable: the embedding model "
+                    "could not be loaded",
+                    error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+                )
 
             # Prepare where clause for filtering
             where_clause = None
@@ -683,6 +709,13 @@ class KnowledgeIngester:
 
             return formatted_results
 
+        except KnowledgeBaseError:
+            # Availability failures must reach the caller as failures. Folding
+            # them into [] tells the agent the knowledge base HAS no answer,
+            # which it then reasons from — the affirmative negative described
+            # at the raise above. Covers both the unloadable embedder and the
+            # degraded-collection error raised by the `collection` property.
+            raise
         except Exception as e:
             self.logger.error(f"Search failed: {e}")
             return []
@@ -1005,6 +1038,11 @@ class KnowledgeIngester:
 
             return formatted_results
 
+        except KnowledgeBaseError:
+            # Same reasoning as `search`, one method down: this delegates to
+            # `search`, so folding its typed availability error into [] here
+            # would re-flatten the affirmative negative the raise closed.
+            raise
         except Exception as e:
             self.logger.error(f"Search failed: {e}")
             return []

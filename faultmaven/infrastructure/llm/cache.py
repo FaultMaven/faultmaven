@@ -28,14 +28,25 @@ class SemanticCache:
         self.embeddings: Dict[str, np.ndarray] = {}
         self.logger = logging.getLogger(__name__)
 
-        # Initialize sentence transformer for semantic similarity using cached model
-        self.encoder = model_cache.get_bge_m3_model()
-        if self.encoder:
-            self.logger.debug("✅ Semantic cache initialized with cached BGE-M3")
-        else:
-            self.logger.warning(
-                "BGE-M3 model not available, using simple cache without semantic similarity"
-            )
+    @property
+    def encoder(self) -> Optional[Any]:
+        """BGE-M3 for semantic similarity — only if it is ALREADY loaded.
+
+        Resolved per use through ``peek_bge_m3_model`` rather than bound in
+        ``__init__``, because this cache is constructed by ``LLMRouter``, which
+        the DI container builds in *every* process — including cleanup
+        CronJobs, which were OOMKilled loading a 1.3Gi model they never use
+        (#868). Semantic similarity is an optimisation, so it never justifies
+        forcing the load: it is available exactly when the deployment's
+        configured policy (``PRELOAD_MODELS``, applied in the web lifespan) or
+        a prior embed has already paid for the model.
+
+        Peeking rather than loading also keeps a 60–120s cold load off the
+        request path, where it would block the event loop and trip liveness.
+        When the model is absent the cache degrades to exact-key matching —
+        the documented fallback, correct but with fewer hits.
+        """
+        return model_cache.peek_bge_m3_model()
 
     def _get_cache_key(
         self, prompt: str, model: str, case_id: Optional[str] = None
@@ -70,20 +81,28 @@ class SemanticCache:
     ) -> Optional[LLMResponse]:
         """Check cache for semantically similar response, scoped to case_id."""
 
-        # Simple hash-based cache if no embeddings
+        # Exact key first, in BOTH modes. `encoder` is resolved per access, so
+        # one instance can start in exact-key mode and later find the model
+        # resident (#868). Entries written while it was absent have no
+        # `embeddings` row, and the semantic branch skips embedding-less
+        # entries — so gating the exact-key lookup on `not self.encoder` would
+        # strand those entries permanently unservable while they still consume
+        # `max_size` and evict newer ones. An exact hit is mode-independent
+        # anyway: identical prompt, model and case means identical response.
+        cache_key = self._get_cache_key(prompt, model, case_id)
+        cache_entry = self.cache.get(cache_key)
+        if cache_entry is not None:
+            return LLMResponse(
+                content=cache_entry["content"],
+                confidence=cache_entry["confidence"],
+                provider=cache_entry["provider"],
+                model=cache_entry["model"],
+                tokens_used=cache_entry["tokens_used"],
+                response_time_ms=0,
+                cached=True,
+            )
+
         if not self.encoder:
-            cache_key = self._get_cache_key(prompt, model, case_id)
-            if cache_key in self.cache:
-                cache_entry = self.cache[cache_key]
-                return LLMResponse(
-                    content=cache_entry["content"],
-                    confidence=cache_entry["confidence"],
-                    provider=cache_entry["provider"],
-                    model=cache_entry["model"],
-                    tokens_used=cache_entry["tokens_used"],
-                    response_time_ms=0,
-                    cached=True,
-                )
             return None
 
         # Semantic similarity cache
