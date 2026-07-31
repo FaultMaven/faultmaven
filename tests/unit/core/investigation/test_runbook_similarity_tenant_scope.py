@@ -35,15 +35,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.core.investigation.terminal_transitions import (
+    _find_similar_runbooks_for_case,
+)
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.report import (
     CaseReport,
     ReportStatus,
     ReportType,
     SimilarRunbook,
-)
-from faultmaven.core.investigation.terminal_transitions import (
-    _find_similar_runbooks_for_case,
 )
 from faultmaven.modules.case.contracts import (
     Case,
