@@ -104,13 +104,18 @@ def test_container_does_not_substitute_a_stub_knowledge_service():
     (#899 item 3), and a partially composed *web* process served fabricated
     runbooks — a document the KB never contained, presented as one it did.
 
-    Driving the getter on an uninitialized container, since that is the state
-    the substitution used to hide.
+    Driving the getter on an uncomposed container, since that is the state the
+    substitution used to hide. ``object.__new__`` rather than ``DIContainer()``
+    or ``DIContainer.__new__(DIContainer)``: ``BaseDIContainer.__new__`` is a
+    singleton, so both of those hand back whatever instance the session has
+    already initialized — the assertion would then be reading another test's
+    state instead of this getter's behavior.
     """
     from faultmaven._container_impl import DIContainer
 
-    container = DIContainer.__new__(DIContainer)
+    container = object.__new__(DIContainer)
     container._initialized = True  # skip lazy-init; we want the raw lookup
+    assert "knowledge_service" not in container.__dict__
 
     assert container.get_knowledge_service() is None
 
