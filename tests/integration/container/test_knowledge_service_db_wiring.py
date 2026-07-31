@@ -47,9 +47,10 @@ async def test_container_built_knowledge_service_can_reach_the_database(
 
     knowledge_service = fresh_container.get_knowledge_service()
 
-    # Assert the real class first: a partially composed container substitutes
-    # MinimalKnowledgeService (#899), which has no session factory at all. Say
-    # so plainly rather than reporting it as the #894 wiring regression.
+    # Assert the real class first: a partially composed container yields None
+    # (before #899 it substituted an in-memory stub with no session factory at
+    # all). Say so plainly rather than reporting it as the #894 wiring
+    # regression.
     assert isinstance(knowledge_service, KnowledgeService), (
         "The container did not compose a real KnowledgeService (got "
         f"{type(knowledge_service).__name__}). Fix composition first — the "

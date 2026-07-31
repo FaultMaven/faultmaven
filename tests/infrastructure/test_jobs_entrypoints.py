@@ -195,34 +195,12 @@ class TestKbSeedJob:
         assert result["status"] == "skipped"
         assert result["reason"] == "knowledge_service_unavailable"
 
-    @pytest.mark.asyncio
-    async def test_kb_seed_skips_when_the_service_cannot_ingest(
-        self, mock_container, mock_settings
-    ):
-        """A partially composed container returns a stub, not None.
-
-        ``get_knowledge_service`` substitutes ``MinimalKnowledgeService`` (an
-        in-memory stand-in with no ``ingest_runbook``) when composition is
-        incomplete, so the ``is None`` guard alone never fires and the job
-        would die mid-pack on an opaque AttributeError. Skip cleanly instead.
-        """
-        from faultmaven.jobs.kb_seed import run
-
-        class _StubKnowledgeService:
-            """No ``ingest_runbook`` — same shape as MinimalKnowledgeService."""
-
-        mock_container.get_knowledge_service = MagicMock(
-            return_value=_StubKnowledgeService()
-        )
-        with patch(
-            "faultmaven.bootstrap.kb_init.bootstrap_kb",
-            new=AsyncMock(return_value=_bootstrap_result()),
-        ) as bootstrap:
-            result = await run(settings=mock_settings, container=mock_container)
-
-        assert result["status"] == "skipped"
-        assert result["reason"] == "knowledge_service_unavailable"
-        bootstrap.assert_not_awaited()
+    # The companion case — "a partially composed container hands back a stub
+    # with no ``ingest_runbook``" — is gone with the stub itself (#899). The
+    # container now returns either a real KnowledgeService or None, which makes
+    # the ``is None`` test above the complete guard. That the container does not
+    # substitute anything is pinned at its own layer, in
+    # tests/unit/container/test_knowledge_service_db_wiring.py.
 
     @pytest.mark.asyncio
     async def test_kb_seed_partial_failure_is_failed_status(

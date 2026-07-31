@@ -1,14 +1,16 @@
 """The container-built KnowledgeService must be able to reach the database.
 
-``KnowledgeService.ingest_runbook`` refuses outright when
-``_db_session_factory`` is unset ("vector-only ingestion is no longer
-supported"), and every other KB persistence path degrades to a warning and an
-empty result. The web process used to hide that by patching the attribute onto
-the instance from the lifespan, so only the *web* process had a DB-capable
-service. The jobs process (``python -m faultmaven.jobs.run``) initializes the
-same container and never runs a lifespan, so ``kb_seed`` failed on every pack
-runbook — and under ``TENANT_PROVIDER=multi`` that job is the only seeding
-path, leaving a fresh deployment with an empty global KB (#894).
+A DB-less KnowledgeService cannot be constructed at all (#899): the session
+factory is a required, keyword-only constructor argument. That replaced a
+per-method degradation — ``ingest_runbook`` refused outright while every read
+path returned a warning and an empty result — which made a misconfigured
+service *quiet*. The web process had hidden the misconfiguration by patching
+the attribute onto the instance from the lifespan, so only the *web* process
+was DB-capable. The jobs process (``python -m faultmaven.jobs.run``)
+initializes the same container and never runs a lifespan, so ``kb_seed``
+failed on every pack runbook — and under ``TENANT_PROVIDER=multi`` that job is
+the only seeding path, leaving a fresh deployment with an empty global KB
+(#894).
 
 The fix is at the composition root: the container hands KnowledgeService the
 session factory at construction, so every process gets the same capability.
@@ -25,6 +27,9 @@ import pytest
 from faultmaven.config.settings import FaultMavenSettings
 from faultmaven.container.providers.services import create_knowledge_service
 from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    KnowledgeService,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -68,6 +73,75 @@ def test_knowledge_service_provider_always_wires_the_session_factory():
     )
 
     assert service._db_session_factory is get_db_session
+
+
+@pytest.mark.unit
+def test_a_db_less_knowledge_service_cannot_be_constructed():
+    """The capability is required at the constructor, not checked at use (#899).
+
+    ``db_session_factory`` used to default to ``None``, and each persistence
+    path carried its own guard — ``ingest_runbook`` raised, every read path
+    returned empty. That made a DB-less service a *quiet* service: the #894
+    container regression produced an empty global KB rather than a failure.
+    Omitting the dependency is now a TypeError, which happens at container
+    init, before anything serves or seeds.
+    """
+    with pytest.raises(TypeError, match="db_session_factory"):
+        KnowledgeService(
+            knowledge_ingester=None,
+            sanitizer=None,
+            tracer=None,
+        )
+
+
+@pytest.mark.unit
+def test_an_explicit_none_session_factory_is_rejected_too():
+    """Requiring the argument is not enough — the VALUE must be rejected.
+
+    #894 was a ``None`` default the container never overrode, so ``None`` is
+    the shape this class actually failed in, and a required parameter alone
+    still accepts it. With the per-path guards deleted it would be the *worse*
+    failure: ``self._db_session_factory()`` raises TypeError inside each
+    method's ``try``, and the broad handlers turn that back into an empty
+    document page and a ``None`` the KB cause seeder reads as "prose-only
+    source, nothing to seed" — the exact silent degradation this contract
+    removes, re-entered through a different door.
+    """
+    with pytest.raises(ValueError, match="db_session_factory"):
+        KnowledgeService(
+            knowledge_ingester=None,
+            sanitizer=None,
+            tracer=None,
+            db_session_factory=None,
+        )
+
+
+@pytest.mark.unit
+def test_container_does_not_substitute_a_stub_knowledge_service():
+    """An uncomposed container returns None — it does not stand something in.
+
+    It used to return ``MinimalKnowledgeService``: an in-memory fake that
+    answered ``get_document`` with invented content ("This is sample document
+    content for testing purposes.") for any plausible id, and had no
+    ``ingest_runbook`` at all. Two consequences, both live: ``kb_seed`` and
+    ``fm-reset-kb`` both guard on ``is None``, which the stub silently defeated
+    (#899 item 3), and a partially composed *web* process served fabricated
+    runbooks — a document the KB never contained, presented as one it did.
+
+    Driving the getter on an uncomposed container, since that is the state the
+    substitution used to hide. ``object.__new__`` rather than ``DIContainer()``
+    or ``DIContainer.__new__(DIContainer)``: ``BaseDIContainer.__new__`` is a
+    singleton, so both of those hand back whatever instance the session has
+    already initialized — the assertion would then be reading another test's
+    state instead of this getter's behavior.
+    """
+    from faultmaven._container_impl import DIContainer
+
+    container = object.__new__(DIContainer)
+    container._initialized = True  # skip lazy-init; we want the raw lookup
+    assert "knowledge_service" not in container.__dict__
+
+    assert container.get_knowledge_service() is None
 
 
 @pytest.mark.unit

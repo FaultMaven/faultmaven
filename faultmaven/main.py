@@ -430,7 +430,25 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     app.state.session_service = container.get_session_service()
     app.state.case_service = container.get_case_service()
     app.state.investigation_service = container.get_investigation_service()
+
+    # knowledge_service is the one exception to the paragraph above, and it
+    # names itself here. Since #899 the container returns None rather than
+    # substituting a stub that fabricated documents, so this slot CAN be empty
+    # — the KB routes then answer 503 instead of 500ing per request. Log it at
+    # the assignment: the only other line that names the condition sits in the
+    # KB-bootstrap branch, which is skipped entirely under TENANT_PROVIDER=
+    # multi, so a cloud pod would otherwise start clean and stay green with no
+    # knowledge base at all. Not raised, because must_not_degrade already
+    # refused composition for every deployment that must not degrade; what is
+    # left here is the self-hosted instance whose operator reads the log.
     app.state.knowledge_service = container.get_knowledge_service()
+    if app.state.knowledge_service is None:
+        logger.error(
+            "No knowledge service was composed — the knowledge base is "
+            "unavailable for this process. Every /knowledge route will answer "
+            "503, KB retrieval is absent from investigations, and KB "
+            "bootstrap/seeding cannot run."
+        )
 
     # Document-to-runbook conversion service
     try:

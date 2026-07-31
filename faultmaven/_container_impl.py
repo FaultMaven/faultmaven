@@ -312,7 +312,11 @@ class DIContainer(BaseDIContainer):
         # Service layer mocks
         self.agent_service = MagicMock()
         self.data_service = MagicMock()
-        self.knowledge_service = self._create_minimal_knowledge_service()
+        # No stand-in: a KnowledgeService without a database cannot answer a
+        # single KB question truthfully, and the stub that used to sit here
+        # fabricated documents for any plausible id (#899). None is the honest
+        # answer; every caller of get_knowledge_service() handles it.
+        self.knowledge_service = None
         self.session_service = self._create_minimal_session_service()
 
         logging.getLogger(__name__).info("Created minimal container for testing")
@@ -368,10 +372,13 @@ class DIContainer(BaseDIContainer):
                     "Knowledge service requested but container not initialized - this should not happen after startup"
                 )
                 self._ensure_initialized_for_getter()
-        knowledge_service = getattr(self, "knowledge_service", None)
-        if knowledge_service is None:
-            return self._create_minimal_knowledge_service()
-        return knowledge_service
+        # Returns None when composition did not produce one. It used to
+        # substitute an in-memory stub, which made a partially composed
+        # container indistinguishable from a working one: `is None` guards in
+        # kb_seed and fm-reset-kb never fired, and the stub answered document
+        # reads with fabricated content (#899). A missing service is now
+        # visible to the caller, as with every sibling getter.
+        return getattr(self, "knowledge_service", None)
 
     def get_llm_provider(self):
         """Get the LLM provider (router) from the container."""
@@ -507,273 +514,6 @@ class DIContainer(BaseDIContainer):
             if not getattr(self, "_initializing", False):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "orchestration_service", None)
-
-    def _create_minimal_knowledge_service(self):
-        """Create a minimal knowledge service for testing environments"""
-        import uuid
-        from datetime import datetime, timezone
-
-        from faultmaven.utils.serialization import to_json_compatible
-
-        class MinimalKnowledgeService:
-            def __init__(self):
-                self.documents = {}  # Simple in-memory storage for testing
-
-            async def upload_document(
-                self,
-                content,
-                title,
-                document_type,
-                category=None,
-                tags=None,
-                source_url=None,
-                description=None,
-            ):
-                doc_id = f"doc_{uuid.uuid4().hex[:8]}"
-                job_id = f"job_{doc_id}"
-
-                # Store document for later retrieval in tests
-                self.documents[doc_id] = {
-                    "document_id": doc_id,
-                    "title": title,
-                    "content": content,
-                    "document_type": document_type,
-                    "category": category or document_type,
-                    "tags": tags or [],
-                    "source_url": source_url,
-                    "description": description,
-                    "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                    "updated_at": to_json_compatible(datetime.now(timezone.utc)),
-                }
-
-                return {
-                    "document_id": doc_id,
-                    "job_id": job_id,
-                    "status": "processing",
-                    "metadata": {
-                        "title": title,
-                        "document_type": document_type,
-                        "category": category or document_type,
-                        "tags": tags or [],
-                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                    },
-                }
-
-            async def get_document(self, document_id):
-                # Return document if it exists, or create a mock one for testing
-                if document_id in self.documents:
-                    return self.documents[document_id]
-                elif document_id and (
-                    document_id.startswith("doc_") or len(document_id) >= 8
-                ):
-                    # Return mock document for testing
-                    return {
-                        "document_id": document_id,
-                        "title": f"Document {document_id}",
-                        "content": "This is sample document content for testing purposes.",
-                        "document_type": "troubleshooting",
-                        "category": "troubleshooting",
-                        "status": "processed",
-                        "tags": ["test", "sample"],
-                        "source_url": None,
-                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                        "updated_at": to_json_compatible(datetime.now(timezone.utc)),
-                        "metadata": {"author": "test-system", "version": "1.0"},
-                    }
-                return None
-
-            async def get_document_visible(self, document_id, user=None, team_ids=None):
-                """Actor-facing scoped read (#867) — always fail CLOSED.
-
-                This stub has no scope, owner or share state to evaluate the
-                read-visibility rule against, and ``get_document`` above
-                fabricates a document for any plausible id. Answering from it
-                would hand content to an actor the rule never approved, so the
-                fallback returns None and the routes answer 404.
-                """
-                return None
-
-            async def list_documents(
-                self, document_type=None, tags=None, limit=50, offset=0
-            ):
-                docs = list(self.documents.values())
-
-                # Apply filters
-                if document_type:
-                    docs = [d for d in docs if d.get("document_type") == document_type]
-                if tags:
-                    docs = [
-                        d for d in docs if any(tag in d.get("tags", []) for tag in tags)
-                    ]
-
-                # Apply pagination
-                total = len(docs)
-                docs = docs[offset : offset + limit]
-
-                return {
-                    "documents": docs,
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                    "filters": {"document_type": document_type, "tags": tags},
-                }
-
-            async def delete_document(self, document_id):
-                if document_id in self.documents:
-                    del self.documents[document_id]
-                    return {"success": True, "document_id": document_id}
-                else:
-                    return {"success": False, "document_id": document_id}
-
-            async def search_documents(
-                self, query, document_type=None, tags=None, limit=10
-            ):
-                # Simple text search in titles and content
-                results = []
-                for doc_id, doc in self.documents.items():
-                    if (
-                        query.lower() in doc.get("title", "").lower()
-                        or query.lower() in doc.get("content", "").lower()
-                    ):
-                        # Apply filters
-                        if document_type and doc.get("document_type") != document_type:
-                            continue
-                        if tags and not any(tag in doc.get("tags", []) for tag in tags):
-                            continue
-
-                        results.append(
-                            {
-                                "document_id": doc_id,
-                                "content": doc.get("content", "")[:200] + "...",
-                                "metadata": {
-                                    "title": doc.get("title"),
-                                    "document_type": doc.get("document_type"),
-                                    "tags": doc.get("tags", []),
-                                },
-                                "similarity_score": 0.8,  # Mock score
-                            }
-                        )
-
-                return {
-                    "query": query,
-                    "total_results": len(results),
-                    "results": results[:limit],
-                }
-
-            async def update_document(
-                self, document_id, title=None, content=None, tags=None
-            ):
-                # Create or update document
-                if document_id not in self.documents:
-                    # Create mock document if it doesn't exist
-                    self.documents[document_id] = {
-                        "document_id": document_id,
-                        "title": f"Document {document_id}",
-                        "content": "Sample content",
-                        "document_type": "troubleshooting",
-                        "category": "troubleshooting",
-                        "tags": [],
-                        "created_at": to_json_compatible(datetime.now(timezone.utc)),
-                        "updated_at": to_json_compatible(datetime.now(timezone.utc)),
-                    }
-
-                doc = self.documents[document_id]
-                if title:
-                    doc["title"] = title
-                if content:
-                    doc["content"] = content
-                if tags is not None:
-                    doc["tags"] = tags
-                doc["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
-
-                # Return as KnowledgeBaseDocument-like structure
-                return {
-                    "document_id": document_id,
-                    "title": doc["title"],
-                    "content": doc["content"],
-                    "document_type": doc["document_type"],
-                    "category": doc.get("category", doc["document_type"]),
-                    "tags": doc["tags"],
-                    "created_at": doc["created_at"],
-                    "updated_at": doc["updated_at"],
-                }
-
-            async def update_document_metadata(self, document_id, **kwargs):
-                if document_id in self.documents:
-                    doc = self.documents[document_id]
-                    doc.update(kwargs)
-                    doc["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
-                    return doc
-                return None
-
-            async def bulk_update_documents(self, document_ids, updates):
-                updated_count = 0
-                for doc_id in document_ids:
-                    if doc_id in self.documents:
-                        self.documents[doc_id].update(updates)
-                        self.documents[doc_id]["updated_at"] = to_json_compatible(
-                            datetime.now(timezone.utc)
-                        )
-                        updated_count += 1
-
-                return {
-                    "success": True,
-                    "updated_count": updated_count,
-                    "total_requested": len(document_ids),
-                }
-
-            async def bulk_delete_documents(self, document_ids):
-                deleted_count = 0
-                for doc_id in document_ids:
-                    if doc_id in self.documents:
-                        del self.documents[doc_id]
-                        deleted_count += 1
-
-                return {
-                    "success": True,
-                    "deleted_count": deleted_count,
-                    "total_requested": len(document_ids),
-                }
-
-            async def get_knowledge_stats(self):
-                doc_types = {}
-                categories = {}
-
-                for doc in self.documents.values():
-                    doc_type = doc.get("document_type", "unknown")
-                    doc_types[doc_type] = doc_types.get(doc_type, 0) + 1
-
-                    # Use document_type as category for simplicity
-                    categories[doc_type] = categories.get(doc_type, 0) + 1
-
-                return {
-                    "total_documents": len(self.documents),
-                    "document_types": doc_types,
-                    "categories": categories,
-                    "total_chunks": len(self.documents),  # Simplified
-                    "avg_chunk_size": 500,  # Mock value
-                    "storage_used": f"{len(self.documents) * 0.5} MB",
-                    "last_updated": to_json_compatible(datetime.now(timezone.utc)),
-                }
-
-            async def get_search_analytics(self):
-                return {
-                    "popular_queries": [
-                        "database error",
-                        "connection timeout",
-                        "network issue",
-                    ],
-                    "search_volume": 150,
-                    "avg_response_time": 0.2,
-                    "hit_rate": 0.85,
-                    "category_distribution": {
-                        "database": 40,
-                        "network": 30,
-                        "application": 30,
-                    },
-                }
-
-        return MinimalKnowledgeService()
 
     def get_llm_provider(self):
         """Get the LLM provider interface implementation"""

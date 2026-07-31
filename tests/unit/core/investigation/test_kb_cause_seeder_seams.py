@@ -680,10 +680,10 @@ async def test_loader_none_when_item_id_falsy(monkeypatch):
     assert await svc.get_runbook_causes("") is None
 
 
-async def test_loader_none_when_no_session_factory():
-    svc = KnowledgeService.__new__(KnowledgeService)
-    svc._db_session_factory = None
-    assert await svc.get_runbook_causes("rb1") is None
+# A "no session factory" case used to live here. It is gone with the degraded
+# read path: since #899 the constructor requires the factory, so a KnowledgeService
+# that would return None for that reason cannot exist. The construction contract
+# is pinned in tests/integration/modules/knowledge/test_ingest_runbook.py.
 
 
 async def test_loader_none_when_item_missing(monkeypatch):

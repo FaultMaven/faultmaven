@@ -72,8 +72,21 @@ router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
 # Cannot import from api.v1.dependencies due to circular dependency chain:
 # api.v1.dependencies → services → case → persistence → knowledge → api/routes → api.v1.dependencies
 async def get_knowledge_service(request: Request) -> KnowledgeService:
-    """Get KnowledgeService instance from app.state (Composition Root)"""
-    return request.app.state.knowledge_service
+    """Get KnowledgeService instance from app.state (Composition Root).
+
+    ``None`` means the container composed without a knowledge service — every
+    KB route is unserviceable, and saying so is the whole point. This used to
+    be papered over one layer up, where the container substituted an in-memory
+    stub that answered reads with invented content (#899); a 503 an operator
+    can act on is strictly better than a 200 nobody can trust.
+    """
+    service = getattr(request.app.state, "knowledge_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge base unavailable",
+        )
+    return service
 
 
 async def _resolve_team_ids(request: Request, user_id: Optional[str]) -> List[str]:
