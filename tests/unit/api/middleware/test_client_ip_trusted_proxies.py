@@ -219,3 +219,55 @@ class TestTrustedProxyParsing:
     @pytest.mark.parametrize("empty", [None, [], "", "  ", ",,", [""], ["  "]])
     def test_every_spelling_of_unset_trusts_nothing(self, empty):
         assert parse_trusted_proxies(empty) == ()
+
+    # The realistic operator mistake: copy a live pod address out of `kubectl
+    # get pods -o wide`, append the cluster mask. ``ipaddress.ip_network``
+    # defaults to strict=False and rounds these OUTWARD, so lenient parsing
+    # turns a typo into a silently widened trust boundary — the exact opposite
+    # of the "a typo must narrow trust" property asserted above.
+    @pytest.mark.parametrize(
+        "entry, would_have_trusted",
+        [
+            ("10.244.226.134/16", 65536),
+            ("192.168.1.50/8", 16777216),
+            ("172.16.30.9/12", 1048576),
+            ("2001:db8::dead:beef/32", 2**96),
+        ],
+    )
+    def test_host_bits_never_silently_widen_the_trust_boundary(
+        self, entry, would_have_trusted, caplog
+    ):
+        """A mistyped prefix is dropped, not rounded up to a bigger network.
+
+        Under strict=False each of these would parse — and every address in the
+        resulting network would be believed when it set ``X-Forwarded-For``.
+        """
+        with caplog.at_level(logging.ERROR):
+            trusted = parse_trusted_proxies([entry])
+
+        assert trusted == ()
+        assert entry in caplog.text
+        assert sum(net.num_addresses for net in trusted) < would_have_trusted
+
+    def test_a_bare_address_still_means_that_host_alone(self):
+        """Strictness must not cost the ordinary single-proxy spelling."""
+        trusted = parse_trusted_proxies(["10.42.0.7", "2001:db8::1"])
+
+        assert [net.num_addresses for net in trusted] == [1, 1]
+        assert (
+            resolve_client_ip(
+                _request("10.42.0.7", {"X-Forwarded-For": "203.0.113.50"}), trusted
+            )
+            == "203.0.113.50"
+        )
+
+    def test_a_correctly_written_network_is_still_accepted(self):
+        trusted = parse_trusted_proxies(["10.244.0.0/16"])
+
+        assert len(trusted) == 1
+        assert (
+            resolve_client_ip(
+                _request("10.244.226.134", {"X-Forwarded-For": "203.0.113.50"}), trusted
+            )
+            == "203.0.113.50"
+        )

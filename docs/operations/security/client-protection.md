@@ -119,6 +119,13 @@ peer. That is correct for a standalone install with no proxy in front of it,
 and it is the safe direction for everything else: the worst case is a limit
 that is too coarse, never one that can be evaded.
 
+Entries are parsed **strictly**: write the network address (`10.244.0.0/16`),
+not a host inside it (`10.244.226.134/16`). The lenient parse would round the
+second form outward to the first and trust 65,536 addresses on a typo, so a
+malformed entry is dropped with an ERROR instead — a mistake must narrow trust,
+never widen it. A bare address (`10.42.0.7`) is accepted and means that host
+alone.
+
 **Kubernetes deployments must set this** to the ingress controller's pod range.
 Until they do, all external traffic shares one `global` bucket. It is not
 silent — the server logs a warning (throttled to one every 5 minutes) whenever

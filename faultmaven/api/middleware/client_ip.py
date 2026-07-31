@@ -83,6 +83,17 @@ def parse_trusted_proxies(values: Optional[Iterable[str] | str]) -> TrustedProxi
       rate limiting, deduplication and timeouts deployment-wide rather than
       failing the boot. A loud skip is strictly safer than an exception that
       gets swallowed into "no protection at all".
+
+    Parsing is **strict** about host bits, and that is the whole point rather
+    than pedantry. ``ipaddress.ip_network`` defaults to ``strict=False``, which
+    silently rounds a mistyped entry *outward*: ``10.244.226.134/16`` becomes
+    ``10.244.0.0/16`` and trusts 65,536 addresses, ``192.168.1.50/8`` becomes
+    ``192.0.0.0/8`` and trusts 16.7 million. That is precisely the shape of
+    mistake an operator makes — pasting a live pod address and appending the
+    cluster's mask — and lenient parsing would turn it into a silently widened
+    trust boundary, breaking the one property this function is supposed to
+    hold: **a malformed entry must narrow trust, never widen it.** A bare
+    address is still accepted and means that host alone (``/32``).
     """
     if values is None:
         return ()
@@ -95,13 +106,16 @@ def parse_trusted_proxies(values: Optional[Iterable[str] | str]) -> TrustedProxi
         if not entry:
             continue
         try:
-            networks.append(ipaddress.ip_network(entry, strict=False))
-        except ValueError:
+            networks.append(ipaddress.ip_network(entry, strict=True))
+        except ValueError as exc:
             logger.error(
-                "Ignoring unparseable trusted-proxy entry %r: not an IP address or "
-                "CIDR. Requests arriving via that proxy will be keyed on the "
-                "proxy's own address, not the originating client.",
+                "Ignoring trusted-proxy entry %r (%s). It is not an address or a "
+                "network address with a matching prefix — write the network "
+                "address itself (10.244.0.0/16), not a host inside it. Until it "
+                "is corrected, requests arriving via that proxy are keyed on the "
+                "proxy's own address rather than the originating client.",
                 entry,
+                exc,
             )
     return tuple(networks)
 
