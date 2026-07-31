@@ -14,10 +14,12 @@ tenant there. These tests pin that the service resolves it through
 """
 
 from typing import Any, List, Optional
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
+from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -34,10 +36,20 @@ _PROVIDER_TARGET = "faultmaven.providers.tenancy.factory.requested_tenant_provid
 TENANT_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
 
-class _RecordingRunbookKB:
-    """Stands in for ``RunbookKnowledgeBase``, recording the tenant of each query."""
+class _RecordingRunbookKB(RunbookKnowledgeBase):
+    """Records the tenant of each query, over the REAL class.
+
+    Subclasses ``RunbookKnowledgeBase`` and overrides only the terminal query
+    rather than reimplementing the interface. A free-standing stub used to
+    stand in here, and it silently stopped exercising the production path when
+    the service moved to ``search_by_text`` (#944) — a hand-rolled double
+    asserts against an interface that no longer exists. Inheriting means the
+    real text -> embedding -> tenant-predicate path runs, so this test keeps
+    measuring the thing it claims to measure.
+    """
 
     def __init__(self) -> None:
+        super().__init__(vector_store=MagicMock())
         self.tenants: List[Optional[str]] = []
 
     async def search_runbooks(
@@ -51,6 +63,16 @@ class _RecordingRunbookKB:
     ) -> List[Any]:
         self.tenants.append(organization_id)
         return []
+
+
+@pytest.fixture(autouse=True)
+def _available_embedder():
+    """These tests are about the tenant predicate, not embedding availability."""
+    with patch(
+        "faultmaven.infrastructure.model_cache.model_cache.aembed_query",
+        new=AsyncMock(return_value=[0.1] * 1024),
+    ):
+        yield
 
 
 def _case(organization_id: str) -> Case:
