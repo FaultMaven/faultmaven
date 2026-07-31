@@ -118,3 +118,25 @@ async def test_search_documents_does_not_re_flatten_the_error(tmp_path):
 
         with pytest.raises(KnowledgeBaseError):
             await ingester.search_documents(query="disk pressure on node-3")
+
+
+@pytest.mark.asyncio
+async def test_degraded_store_also_reaches_the_caller_as_unavailable(tmp_path):
+    """The re-raise deliberately covers the OTHER availability failure too.
+
+    When ChromaDB was configured but unreachable at startup, `_collection` is
+    None and the `collection` property raises `KNOWLEDGE_STORE_UNAVAILABLE`.
+    That used to be flattened to [] by the same blanket handler — "the store is
+    down" rendered as "the KB holds nothing". Behaviour change beyond the
+    embedder case, so it is pinned rather than left implicit.
+    """
+    ingester = _ingester(tmp_path)
+    ingester._collection = None  # the degraded state set at construction
+
+    with patch(
+        "faultmaven.modules.knowledge.domain.services.ingestion.model_cache"
+    ) as mc:
+        mc.aembed_query = AsyncMock(return_value=[0.1] * 1024)
+
+        with pytest.raises(KnowledgeBaseError, match="unavailable"):
+            await ingester.search(query="disk pressure on node-3")

@@ -217,10 +217,14 @@ class KnowledgeIngester:
         #
         # This warm was never the fail-fast it read as: the RuntimeError it
         # raised was caught by the container's tools provider, which logged a
-        # warning and dropped the ingester (and both KB tools) to None. The
-        # write path is what actually fails closed — _index_document_chunks
-        # raises when aembed_texts returns None, so an unavailable model can
-        # never produce a silently vector-less document.
+        # warning and dropped the ingester (and both KB tools) to None.
+        #
+        # THIS class's write path fails closed on its own — `_process_and_store`
+        # raises when `aembed_texts` returns None, so an unavailable model
+        # cannot produce a vector-less document *here*. That is a statement
+        # about this file only: `KnowledgeService._index_document_in_vector_store`
+        # logs and returns 0 on the same condition, which is the live API write
+        # path and is NOT covered by anything in this module (#945).
 
         # Supported file extensions
         self.supported_extensions = {
@@ -240,8 +244,13 @@ class KnowledgeIngester:
 
         When an external ChromaDB was configured but unreachable at startup,
         ``_collection`` is None and any access raises ``KnowledgeBaseError``.
-        Existing per-method try/except blocks turn that into a graceful
-        "KB unavailable" outcome instead of a crash or hang.
+
+        The read methods used to catch that and return ``[]``, which is the
+        same defect as an unavailable embedder: "the store is down" rendered as
+        "the knowledge base holds nothing", which the investigation then
+        reasons from. ``search`` / ``search_documents`` now re-raise
+        ``KnowledgeBaseError`` through their trailing blanket handler, so an
+        unavailable store reaches the caller AS unavailable (#868 review).
         """
         if self._collection is None:
             from faultmaven.models.exceptions import KnowledgeBaseError

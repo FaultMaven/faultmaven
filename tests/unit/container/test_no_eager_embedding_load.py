@@ -20,6 +20,7 @@ cannot pass vacuously on a machine without the package — there, the real
 """
 
 import importlib.util
+import os
 import subprocess
 import sys
 import types
@@ -160,11 +161,27 @@ def test_importing_the_container_does_not_import_torch():
     Runs in a subprocess because this test session has almost certainly
     imported torch already, which would make an in-process ``sys.modules``
     assertion pass or fail for reasons that have nothing to do with the fix.
+
+    Imports the modules actually under review, NOT just the container:
+    ``import faultmaven.container`` pulls in ~50 modules and none of these
+    three, so a container-only probe would sit green while a module-scope
+    ``import sentence_transformers`` was added straight back into
+    ``llm/cache.py`` — one of the two constructors that caused the OOM.
+
+    Asserts provenance too. The venv installs faultmaven editable against the
+    main checkout, so an interpreter that ignores cwd (``PYTHONSAFEPATH`` /
+    ``-P``, both inherited by subprocess) would import THAT tree and report its
+    behaviour as if it were this branch's. Passing an explicit ``PYTHONPATH``
+    and checking ``__file__`` makes the probe say which tree it measured.
     """
+    repo_root = Path(__file__).resolve().parents[3]
     probe = (
         "import sys;"
         "import faultmaven.container;"
-        "import faultmaven.infrastructure.model_cache;"
+        "import faultmaven.infrastructure.model_cache as mc;"
+        "import faultmaven.infrastructure.llm.cache;"
+        "import faultmaven.modules.knowledge.domain.services.ingestion;"
+        "print(mc.__file__);"
         "print(','.join(m for m in ('sentence_transformers','torch') "
         "if m in sys.modules))"
     )
@@ -172,12 +189,23 @@ def test_importing_the_container_does_not_import_torch():
         [sys.executable, "-c", probe],
         capture_output=True,
         text=True,
-        cwd=Path(__file__).resolve().parents[3],
+        cwd=repo_root,
+        env={**os.environ, "PYTHONPATH": str(repo_root)},
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "", (
-        f"importing the container pulled in {result.stdout.strip()} — the "
+    # Second line is empty in the passing case, which strip() would eat.
+    lines = result.stdout.splitlines()
+    measured_file = lines[0]
+    heavy = lines[1] if len(lines) > 1 else ""
+
+    assert Path(measured_file).resolve().is_relative_to(repo_root), (
+        f"probe imported {measured_file}, which is outside {repo_root} — it "
+        "measured a different checkout, so its verdict says nothing about "
+        "this working tree"
+    )
+    assert heavy.strip() == "", (
+        f"importing the reviewed modules pulled in {heavy.strip()} — the "
         "embedding stack must stay behind a lazy import (#868)"
     )
 
