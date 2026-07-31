@@ -34,12 +34,17 @@ The algorithm
    appended, not on the one they chose.
 3. If there is no chain, or every hop in it is trusted, use the socket peer.
 
+The chain is assembled from **every** ``X-Forwarded-For`` field line, not just
+the first. RFC 7230 §3.2.2 makes repeated lines equivalent to one comma list,
+and a proxy that appends its own line rather than extending the caller's is
+both legal and common — reading one line would walk only the caller's chain.
+
 ``X-Real-IP`` is never used to pick the address, only as a hint that a proxy
 may be present. It carries one value and no chain, so nothing distinguishes
 what a trusted proxy wrote from what a caller sent — believing it would re-open
 the rotation this module closes. The ``X-Forwarded-For`` walk is sound
-*because* the proxy appends, which is what makes the first untrusted hop
-identifiable.
+*because* the proxy appends where we can see it, which is what makes the first
+untrusted hop identifiable.
 
 Malformed entries are skipped rather than returned: an unparseable value is
 attacker-controlled text, and putting it in a Redis key is how a limiter grows
@@ -139,8 +144,11 @@ def _parse_address(
     bound to a dual-stack socket reports IPv4 peers in that notation, and
     ``IPv6Address('::ffff:10.0.0.1') in IPv4Network('10.0.0.0/8')`` is *False* —
     so without the fold a correctly configured trusted proxy silently stops
-    matching and the deployment degrades to one shared bucket. It also keeps one
-    client from occupying two keys under two spellings of the same address.
+    matching and the deployment degrades to one shared bucket. It also keeps a
+    forwarded client from occupying two keys under two spellings of the same
+    address. (That second benefit is confined to the forwarded path: an
+    untrusted peer is returned verbatim, because its spelling is chosen by our
+    own socket rather than by the caller.)
     """
     candidate = value.strip()
     if not candidate:
@@ -222,8 +230,27 @@ def resolve_client_ip(request: Request, trusted_proxies: TrustedProxies) -> str:
             _warn_unconfigured_proxy(peer)
         return peer
 
-    forwarded_for = request.headers.get("X-Forwarded-For", "")
-    hops = [hop for hop in (h.strip() for h in forwarded_for.split(",")) if hop]
+    # EVERY ``X-Forwarded-For`` field line, joined in arrival order — not
+    # ``headers.get()``, which returns only the FIRST line.
+    #
+    # RFC 7230 §3.2.2 makes repeated field lines semantically identical to one
+    # comma-joined list, so an intermediary may legitimately append its value as
+    # a separate line rather than extending the caller's (HAProxy's
+    # ``option forwardfor`` is the standard example — its ``if-none`` argument
+    # exists precisely because it otherwise adds a line). Reading only the first
+    # line then walks the caller's chain and ignores the proxy's, which hands
+    # the key straight back to the caller: measured before this fix, one client
+    # rotating its own field line produced 199 distinct keys behind a configured
+    # trusted proxy, i.e. #927 in full.
+    #
+    # The right-to-left walk is sound only if it sees what the proxy appended,
+    # so it has to consume the whole set.
+    hops = [
+        hop
+        for line in request.headers.getlist("x-forwarded-for")
+        for hop in (h.strip() for h in line.split(","))
+        if hop
+    ]
 
     # Right to left: the trailing hops were appended by infrastructure we
     # trust, the leading ones are whatever the caller supplied. The first hop

@@ -17,6 +17,7 @@ import os
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from starlette.datastructures import Headers
 
 from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
 from faultmaven.config.protection import (
@@ -33,9 +34,17 @@ ATTACKER = "198.51.100.77"
 
 
 def _request(peer, headers=None):
+    """Headers are a real ``starlette.Headers``, not a dict.
+
+    A dict cannot express repeated field lines, which is the shape that broke
+    the resolver once already — a fixture that cannot represent the input can
+    never fail on it.
+    """
     request = Mock()
     request.client = Mock(host=peer)
-    request.headers = headers or {}
+    request.headers = Headers(
+        raw=[(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+    )
     request.url = Mock(path="/api/v1/cases")
     request.query_params = {}
     request.cookies = {}
@@ -146,6 +155,53 @@ class TestEveryLoaderReadsTheKey:
             settings = _load_from_environment()
 
         assert settings.trusted_proxies == ["10.42.0.0/16"]
+
+
+class TestPerformanceMiddlewareUsesTheSameRule:
+    """The address a request is *labelled* with must not disagree with the one
+    it is *limited* by — otherwise metrics attribute a flood to the wrong client.
+
+    Observability rather than enforcement, but the wiring was previously
+    unasserted: dropping the argument would have gone unnoticed.
+    """
+
+    def test_it_honours_a_configured_trusted_proxy(self):
+        from faultmaven.api.middleware.performance import PerformanceTrackingMiddleware
+
+        middleware = PerformanceTrackingMiddleware(
+            app=Mock(), trusted_proxies=["10.42.0.0/16"]
+        )
+
+        assert (
+            middleware._get_client_ip(
+                _request(INGRESS, {"X-Forwarded-For": "203.0.113.50"})
+            )
+            == "203.0.113.50"
+        )
+
+    def test_it_ignores_headers_by_default(self):
+        """Same empty default as the limiter, so the two cannot diverge."""
+        from faultmaven.api.middleware.performance import PerformanceTrackingMiddleware
+
+        middleware = PerformanceTrackingMiddleware(app=Mock())
+
+        assert (
+            middleware._get_client_ip(
+                _request(ATTACKER, {"X-Forwarded-For": "1.2.3.4"})
+            )
+            == ATTACKER
+        )
+
+    def test_it_agrees_with_the_limiter_on_the_same_request(self):
+        from faultmaven.api.middleware.performance import PerformanceTrackingMiddleware
+
+        limiter = _middleware(["10.42.0.0/16"])
+        perf = PerformanceTrackingMiddleware(
+            app=Mock(), trusted_proxies=["10.42.0.0/16"]
+        )
+        request = _request(INGRESS, {"X-Forwarded-For": "1.2.3.4, 203.0.113.50"})
+
+        assert limiter._get_client_ip(request) == perf._get_client_ip(request)
 
 
 class TestProductionSaysSoWhenItIsUnconfigured:

@@ -25,6 +25,7 @@ import logging
 from unittest.mock import Mock
 
 import pytest
+from starlette.datastructures import Headers
 
 from faultmaven.api.middleware.client_ip import (
     UNKNOWN_CLIENT_IP,
@@ -36,11 +37,32 @@ pytestmark = [pytest.mark.unit, pytest.mark.security]
 
 
 def _request(peer, headers=None):
-    """A request stub exposing only what the resolver reads."""
+    """A request stub whose headers are a REAL ``starlette.Headers``.
+
+    Not a dict. A dict cannot represent two ``X-Forwarded-For`` field lines,
+    and that is exactly the shape that broke this resolver: ``Headers.get()``
+    returns only the first line, so a caller whose line arrived first chose the
+    key. A dict-based fixture cannot express the input, so it cannot fail on
+    it — the stand-in would have kept the gate permanently green.
+    """
     request = Mock()
     request.client = Mock(host=peer) if peer is not None else None
-    request.headers = headers or {}
+    request.headers = _headers(headers)
     return request
+
+
+def _headers(headers=None):
+    """Build real ASGI headers. Accepts a mapping, or a list of (name, value)
+    pairs so a test can repeat a field name."""
+    if headers is None:
+        items = []
+    elif isinstance(headers, dict):
+        items = list(headers.items())
+    else:
+        items = list(headers)
+    return Headers(
+        raw=[(name.lower().encode(), value.encode()) for name, value in items]
+    )
 
 
 # Every shape an unauthenticated caller can put on the wire. The point is
@@ -135,6 +157,110 @@ def test_clients_behind_a_configured_proxy_do_not_share_one_bucket():
     }
 
     assert len(peers) == 19
+
+
+class TestDuplicateForwardedForFieldLines:
+    """A proxy may append its value as a SECOND field line, not extend the first.
+
+    RFC 7230 §3.2.2 makes repeated field lines equivalent to one comma-joined
+    list, so this is legal and common (HAProxy's ``option forwardfor`` is the
+    canonical emitter). ``Headers.get()`` returns only the *first* line — so
+    reading it walks the caller's chain and never sees the proxy's, handing the
+    key back to the party being limited.
+
+    This is #927 in full, not a variant of it, and the earlier dict-based
+    fixtures could not express the input that triggers it.
+    """
+
+    TRUSTED = ["10.42.0.0/16"]
+
+    def test_the_proxys_own_line_wins_over_the_callers(self):
+        trusted = parse_trusted_proxies(self.TRUSTED)
+        request = _request(
+            "10.42.0.7",
+            [("X-Forwarded-For", "1.2.3.4"), ("X-Forwarded-For", "203.0.113.9")],
+        )
+
+        assert resolve_client_ip(request, trusted) == "203.0.113.9"
+
+    def test_rotating_your_own_field_line_cannot_rotate_the_bucket(self):
+        """The evasion, swept over the space rather than shown once."""
+        trusted = parse_trusted_proxies(self.TRUSTED)
+        keys = {
+            resolve_client_ip(
+                _request(
+                    "10.42.0.7",
+                    [
+                        ("X-Forwarded-For", f"9.9.9.{n}"),
+                        ("X-Forwarded-For", "203.0.113.9"),
+                    ],
+                ),
+                trusted,
+            )
+            for n in range(1, 200)
+        }
+
+        assert keys == {"203.0.113.9"}
+
+    def test_split_and_merged_spellings_agree(self):
+        """Same chain, two encodings, one key — or the encoding is a quota knob."""
+        trusted = parse_trusted_proxies(self.TRUSTED)
+
+        merged = resolve_client_ip(
+            _request("10.42.0.7", {"X-Forwarded-For": "1.2.3.4, 203.0.113.9"}), trusted
+        )
+        split = resolve_client_ip(
+            _request(
+                "10.42.0.7",
+                [("X-Forwarded-For", "1.2.3.4"), ("X-Forwarded-For", "203.0.113.9")],
+            ),
+            trusted,
+        )
+
+        assert merged == split == "203.0.113.9"
+
+    def test_many_lines_each_holding_several_hops(self):
+        trusted = parse_trusted_proxies(["10.42.0.0/16", "10.43.0.0/16"])
+        request = _request(
+            "10.42.0.7",
+            [
+                ("X-Forwarded-For", "1.2.3.4, 5.6.7.8"),
+                ("X-Forwarded-For", "203.0.113.9, 10.43.0.1"),
+                ("X-Forwarded-For", "10.42.0.9"),
+            ],
+        )
+
+        # Rightmost non-trusted hop across the whole assembled chain.
+        assert resolve_client_ip(request, trusted) == "203.0.113.9"
+
+    def test_duplicate_lines_still_ignored_when_the_peer_is_untrusted(self):
+        assert (
+            resolve_client_ip(
+                _request(
+                    CALLER_PEER,
+                    [("X-Forwarded-For", "1.2.3.4"), ("X-Forwarded-For", "5.6.7.8")],
+                ),
+                parse_trusted_proxies(None),
+            )
+            == CALLER_PEER
+        )
+
+
+@pytest.mark.parametrize(
+    "name", ["X-Forwarded-For", "x-forwarded-for", "X-FORWARDED-FOR"]
+)
+def test_header_name_casing_does_not_change_the_answer(name):
+    """Pins that the lookup is case-insensitive against REAL headers.
+
+    ASGI servers deliver names lowercased and Starlette folds case, so this
+    holds — but it held only by accident under dict fixtures, which are
+    case-sensitive.
+    """
+    trusted = parse_trusted_proxies(["10.42.0.0/16"])
+
+    assert resolve_client_ip(
+        _request("10.42.0.7", {name: "203.0.113.50"}), trusted
+    ) == ("203.0.113.50")
 
 
 def test_chain_of_only_trusted_hops_falls_back_to_the_peer():
@@ -256,6 +382,69 @@ def test_missing_peer_is_not_an_ip_shaped_key():
     )
 
 
+class TestUnconfiguredProxyWarning:
+    """The docs promise this condition "is reported twice over" — so pin it.
+
+    A deployment behind an unconfigured proxy is safe but coarse. The warning is
+    the only request-time signal that it is happening, and it is throttled, so
+    both the firing and the throttle need a guard or the promise is untested.
+    """
+
+    @staticmethod
+    def _reset():
+        import faultmaven.api.middleware.client_ip as mod
+
+        mod._last_unconfigured_proxy_warning = 0.0
+
+    def test_forwarding_headers_from_an_unlisted_peer_warn(self, caplog):
+        self._reset()
+        with caplog.at_level(logging.WARNING):
+            resolve_client_ip(
+                _request(CALLER_PEER, {"X-Forwarded-For": "1.2.3.4"}),
+                parse_trusted_proxies(None),
+            )
+
+        assert "PROTECTION_TRUSTED_PROXIES" in caplog.text
+        assert CALLER_PEER in caplog.text
+
+    def test_a_request_with_no_forwarding_headers_is_silent(self, caplog):
+        """Ordinary standalone traffic must not log on every request."""
+        self._reset()
+        with caplog.at_level(logging.WARNING):
+            resolve_client_ip(_request(CALLER_PEER), parse_trusted_proxies(None))
+
+        assert "PROTECTION_TRUSTED_PROXIES" not in caplog.text
+
+    def test_the_warning_is_throttled(self, caplog):
+        """It is triggered by request content, so it must not flood the log.
+
+        Counts log *records*, not substring hits: the message names the setting
+        twice, so a text count reads 2 for a single emission.
+        """
+        self._reset()
+        with caplog.at_level(logging.WARNING):
+            for _ in range(50):
+                resolve_client_ip(
+                    _request(CALLER_PEER, {"X-Forwarded-For": "1.2.3.4"}),
+                    parse_trusted_proxies(None),
+                )
+
+        emitted = [
+            r for r in caplog.records if "PROTECTION_TRUSTED_PROXIES" in r.getMessage()
+        ]
+        assert len(emitted) == 1
+
+    def test_a_configured_deployment_never_warns(self, caplog):
+        self._reset()
+        with caplog.at_level(logging.WARNING):
+            resolve_client_ip(
+                _request("10.42.0.7", {"X-Forwarded-For": "203.0.113.50"}),
+                parse_trusted_proxies(["10.42.0.0/16"]),
+            )
+
+        assert "PROTECTION_TRUSTED_PROXIES" not in caplog.text
+
+
 class TestTrustedProxyParsing:
     def test_addresses_and_cidrs_both_parse(self):
         trusted = parse_trusted_proxies(
@@ -330,7 +519,18 @@ class TestTrustedProxyParsing:
 
         assert trusted == ()
         assert entry in caplog.text
-        assert sum(net.num_addresses for net in trusted) < would_have_trusted
+        # The consequence, asserted against a real request rather than by
+        # re-summing the empty tuple (which was vacuous: 0 < anything).
+        assert (
+            resolve_client_ip(
+                _request(
+                    str(ipaddress.ip_network(entry, strict=False)[1]),
+                    {"X-Forwarded-For": "1.2.3.4"},
+                ),
+                trusted,
+            )
+            != "1.2.3.4"
+        ), f"an address inside the would-be {would_have_trusted}-address network is trusted"
 
     def test_a_bare_address_still_means_that_host_alone(self):
         """Strictness must not cost the ordinary single-proxy spelling."""

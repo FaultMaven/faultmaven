@@ -113,8 +113,10 @@ class ProtectionSettings(BaseModel):
     debug_protection: bool = False
     protection_bypass_headers: List[str] = Field(default_factory=list)
 
-    # Proxies whose ``X-Forwarded-For`` / ``X-Real-IP`` headers may be believed
-    # when resolving the client address a limit is keyed on. Addresses or CIDRs.
+    # Proxies whose ``X-Forwarded-For`` header may be believed when resolving
+    # the client address a limit is keyed on. Addresses or CIDRs. (``X-Real-IP``
+    # is never believed — it has no chain, so nothing separates what the proxy
+    # wrote from what the caller sent.)
     #
     # Empty — the default — means no forwarding header is ever honoured and
     # every limit keys on the socket peer. That is the only safe default:

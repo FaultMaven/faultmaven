@@ -95,8 +95,12 @@ The `global` limit is the only one that applies to unauthenticated traffic, and
 it is keyed on the client's address. That address is resolved by one shared
 rule, in `faultmaven/api/middleware/client_ip.py`:
 
-> **`X-Forwarded-For` and `X-Real-IP` are honoured only when the socket peer is
-> a configured trusted proxy, and never otherwise.**
+> **`X-Forwarded-For` is honoured only when the socket peer is a configured
+> trusted proxy, and never otherwise. `X-Real-IP` is never honoured at all.**
+
+`X-Real-IP` carries a single value and no chain, so nothing distinguishes what
+a trusted proxy wrote from what a caller sent. It is read only as a signal that
+a proxy may be present (for the warning below), never to pick the address.
 
 Both halves matter, and getting either wrong breaks the limit:
 
