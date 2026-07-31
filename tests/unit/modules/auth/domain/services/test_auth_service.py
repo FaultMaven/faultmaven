@@ -53,7 +53,9 @@ def mock_settings():
     settings.security.jwt_private_key_path = None
     settings.security.jwt_public_key_path = None
     settings.security.jwt_secret_key = MagicMock()
-    settings.security.jwt_secret_key.get_secret_value.return_value = "test-secret-key"
+    settings.security.jwt_secret_key.get_secret_value.return_value = (
+        "test-secret-key-min-32-bytes!!!!!"
+    )
     return settings
 
 
@@ -391,7 +393,9 @@ class TestTokenVerification:
         }
 
         # Encode with a different secret (using HS256 with wrong secret raises InvalidTokenError, not DecodeError)
-        fake_token = jwt.encode(fake_claims, "wrong-secret", algorithm="HS256")
+        fake_token = jwt.encode(
+            fake_claims, "wrong-secret-key-min-32-bytes!!!", algorithm="HS256"
+        )
 
         with pytest.raises(AuthenticationError) as exc_info:
             auth_service.verify_token(fake_token, token_type="access")
@@ -1040,7 +1044,7 @@ class TestAlgorithmSelection:
         mock_settings.auth.auth_mode = "local"
         mock_settings.security.jwt_secret_key = MagicMock()
         mock_settings.security.jwt_secret_key.get_secret_value.return_value = (
-            "test-secret-key"
+            "test-secret-key-min-32-bytes!!!!!"
         )
         mock_settings.security.jwt_private_key = None
         mock_settings.security.jwt_public_key = None
@@ -1132,7 +1136,7 @@ class TestAlgorithmSelection:
         mock_settings.auth.auth_mode = "local"
         mock_settings.security.jwt_secret_key = MagicMock()
         mock_settings.security.jwt_secret_key.get_secret_value.return_value = (
-            "test-secret-key"
+            "test-secret-key-min-32-bytes!!!!!"
         )
         mock_settings.security.jwt_private_key = MagicMock()
         mock_settings.security.jwt_private_key.get_secret_value.return_value = (
@@ -1156,7 +1160,7 @@ class TestAlgorithmSelection:
         mock_settings.auth.auth_mode = "local"
         mock_settings.security.jwt_secret_key = MagicMock()
         mock_settings.security.jwt_secret_key.get_secret_value.return_value = (
-            "test-secret-key-for-hs256"
+            "test-secret-key-for-hs256-32b!!!"
         )
         mock_settings.security.jwt_private_key = None
         mock_settings.security.jwt_public_key = None
