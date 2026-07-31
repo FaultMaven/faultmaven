@@ -113,6 +113,18 @@ class ProtectionSettings(BaseModel):
     debug_protection: bool = False
     protection_bypass_headers: List[str] = Field(default_factory=list)
 
+    # Proxies whose ``X-Forwarded-For`` / ``X-Real-IP`` headers may be believed
+    # when resolving the client address a limit is keyed on. Addresses or CIDRs.
+    #
+    # Empty — the default — means no forwarding header is ever honoured and
+    # every limit keys on the socket peer. That is the only safe default:
+    # honouring the headers unconditionally lets a caller rotate the header and
+    # draw a fresh quota per request, which is what made the ``global`` limit
+    # (the only one covering unauthenticated traffic) evadable. A deployment
+    # behind an ingress must set this to the ingress range, or every client
+    # collapses onto one bucket. See ``api/middleware/client_ip.py``.
+    trusted_proxies: List[str] = Field(default_factory=list)
+
     # Redis configuration.
     # ``None`` means "resolve centrally via RedisClientFactory" — the normal
     # case, and the only one that picks up a discretely-configured

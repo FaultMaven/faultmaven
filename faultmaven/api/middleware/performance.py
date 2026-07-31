@@ -8,7 +8,7 @@ and integration with the monitoring framework.
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -19,20 +19,31 @@ from ...infrastructure.logging.coordinator import LoggingCoordinator
 from ...infrastructure.observability.alerting import alert_manager
 from ...infrastructure.observability.apm_integration import apm_integration
 from ...infrastructure.observability.apm_metrics import metrics_collector
+from .client_ip import parse_trusted_proxies, resolve_client_ip
 
 
 class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
     """Middleware for tracking request performance with minimal overhead."""
 
-    def __init__(self, app, service_name: str = "faultmaven_api"):
+    def __init__(
+        self,
+        app,
+        service_name: str = "faultmaven_api",
+        trusted_proxies: Optional[Sequence[str]] = None,
+    ):
         """Initialize performance tracking middleware.
 
         Args:
             app: FastAPI application
             service_name: Service name for metrics
+            trusted_proxies: addresses/CIDRs whose forwarding headers may be
+                believed when labelling a request with a client address. The
+                default — none — means the socket peer is used and headers are
+                ignored, matching ``ProtectionSettings.trusted_proxies``.
         """
         super().__init__(app)
         self.service_name = service_name
+        self.trusted_proxies = parse_trusted_proxies(trusted_proxies)
         self.logger = logging.getLogger(__name__)
 
         # Performance thresholds for different endpoint types
@@ -146,26 +157,20 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
     def _get_client_ip(self, request: Request) -> str:
         """Extract client IP address from request.
 
+        Uses the same trusted-proxy rule as the rate limiter. This is
+        observability rather than enforcement, so a spoofed value here bought
+        an attacker mislabelled metrics rather than a bypassed limit — but it
+        was a byte-for-byte copy of the resolver that *did* gate enforcement,
+        and leaving a second copy of it in the tree is how the next call site
+        inherits the defect.
+
         Args:
             request: HTTP request
 
         Returns:
             Client IP address
         """
-        # Check for forwarded headers first
-        forwarded_for = request.headers.get("x-forwarded-for")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
-
-        real_ip = request.headers.get("x-real-ip")
-        if real_ip:
-            return real_ip
-
-        # Fall back to direct client
-        if hasattr(request, "client") and request.client:
-            return request.client.host
-
-        return "unknown"
+        return resolve_client_ip(request, self.trusted_proxies)
 
     def _categorize_endpoint(self, path: str) -> str:
         """Categorize endpoint for performance tracking.

@@ -43,6 +43,37 @@ def _fail_open_default() -> bool:
     return os.getenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", "true").lower() == "true"
 
 
+def _trusted_proxies_default() -> list:
+    """Proxies whose forwarding headers may be believed when keying limits.
+
+    ``PROTECTION_TRUSTED_PROXIES`` is a comma-separated list of addresses or
+    CIDRs — for a Kubernetes deployment, the ingress controller's pod range.
+
+    **Empty is the default and it is deliberate.** With no entry, no
+    ``X-Forwarded-For`` or ``X-Real-IP`` header influences the rate-limit key
+    and every limit is keyed on the socket peer. Before this existed the
+    headers were honoured unconditionally, so the ``global`` limit — the only
+    one that applies to unauthenticated traffic — could be evaded outright by
+    rotating a header the limited party controls.
+
+    The cost of the safe default is real and worth stating: a deployment that
+    *is* behind a proxy and does not set this keys every request on the
+    proxy's address, so all clients share one bucket. It is not silent —
+    ``client_ip.resolve_client_ip`` warns when forwarding headers arrive from
+    an address that is not configured here.
+
+    One reader, for the same reason ``_fail_open_default`` is one reader: the
+    four loader paths must not be able to disagree about what the deployment
+    asked for. Production honours this key rather than pinning it — unlike the
+    degrade policy, there is no value here that is right for every deployment.
+    """
+    return [
+        entry.strip()
+        for entry in os.getenv("PROTECTION_TRUSTED_PROXIES", "").split(",")
+        if entry.strip()
+    ]
+
+
 def load_protection_settings(settings=None) -> ProtectionSettings:
     """
     Load protection settings from unified settings or environment variables (fallback).
@@ -114,6 +145,7 @@ def _load_from_settings(settings) -> ProtectionSettings:
         enabled=enabled,
         fail_open_on_redis_error=_fail_open_default(),
         protection_bypass_headers=[],  # No bypasses from settings
+        trusted_proxies=_trusted_proxies_default(),
         # Redis: ``None`` unless an operator set REDIS_URL explicitly, in which
         # case the complete URL genuinely is the configured source. Everything
         # else resolves centrally through RedisClientFactory.
@@ -262,6 +294,7 @@ def _load_from_environment() -> ProtectionSettings:
         enabled=protection_enabled,
         fail_open_on_redis_error=fail_open,
         protection_bypass_headers=bypass_headers,
+        trusted_proxies=_trusted_proxies_default(),
         # Redis
         redis_url=redis_url,
         redis_key_prefix=redis_key_prefix,
@@ -292,6 +325,7 @@ def get_development_protection_settings() -> ProtectionSettings:
         enabled=True,
         fail_open_on_redis_error=_fail_open_default(),
         protection_bypass_headers=["X-Dev-Bypass", "X-Test-Bypass"],
+        trusted_proxies=_trusted_proxies_default(),
         # Redis: resolve centrally via RedisClientFactory.
         redis_url=None,
         redis_key_prefix="faultmaven_dev",
@@ -335,34 +369,50 @@ def get_production_protection_settings() -> ProtectionSettings:
     Production is the one loader that pins the degrade policy rather than
     honouring the key, and it pins it *closed*.
 
-    Defaulting it open would rest on the claim that the fail-open rung is nearly
-    unreachable because rungs 1 and 2 enforce limits first. That claim is false
-    today: the sliding window's ``ZADD key current_time current_time`` uses the
-    same integer second as both score *and* member, so same-second requests
-    overwrite one member instead of adding entries and ``ZCARD`` can never exceed
-    the window in seconds. Every ``global`` limit in this file is therefore
-    unreachable (measured: 5000 requests from one IP against 500/60 blocked
-    none, final ``ZCARD`` 6) — and ``global`` is the only limit that applies to
-    unauthenticated traffic. Until the window counts requests, rungs 1 and 2 do
-    not enforce the global limit at all, so "fail open" is not the bottom of a
-    ladder, it is the whole ladder.
+    Defaulting it open rests on the claim that the fail-open rung is nearly
+    unreachable, because the ladder is shared Redis → per-replica FakeRedis →
+    fail open and the first two rungs enforce limits. Both of the defects that
+    once made that claim outright false have since been fixed: the sliding
+    window counts requests rather than seconds, and the ``global`` key can no
+    longer be rotated by a caller sending its own ``X-Forwarded-For``. The
+    argument is no longer refuted, so the pin is now a posture decision rather
+    than a precondition that has not been met, and it is recorded as one.
 
-    That defect is tracked separately (the sliding window counts seconds, not
-    requests) and is deliberately not fixed here. When it lands, revisit this
-    pin: the trade-off it settles — a Redis blip becoming a 503 on every request
-    versus a hole in a security *and* cost control — is only answerable once the
-    intermediate rungs actually limit anything.
+    It stays pinned for two reasons.
+
+    First, rung 2 is *per-replica*. FakeRedis is in-process, so during a shared
+    Redis outage a deployment of N replicas enforces N independent copies of a
+    limit whose configured value only means anything when it is shared, and no
+    replica can see a flood spread across its peers. "Limits still enforced" is
+    true of rung 2 and materially weaker than it sounds; it is a floor, not a
+    substitute.
+
+    Second, the trade this settles — a Redis blip becoming a 503 on every
+    request, against a hole in a control that is both a security boundary and a
+    cost boundary — is a deliberate choice about which failure production would
+    rather have, not a consequence of a bug. Reversing it should be its own
+    change, argued on its own evidence, not a rider on whichever fix happens to
+    clear the last stated blocker.
+
+    The known cost of the pin is tracked: mid-flight Redis errors are currently
+    served as ``429`` with a ``0/0 requests`` body before the ``503`` rung
+    engages, which is a confusing way to say "unavailable". That is a defect in
+    how the pinned path reports itself, and an argument for fixing the report —
+    not for unpinning.
 
     The general load paths and the development preset do honour
     ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, which removes the real hardcode this
     branch set out to remove; production opts out explicitly rather than by
-    omission.
+    omission. ``PROTECTION_TRUSTED_PROXIES`` is *not* pinned here — unlike the
+    degrade policy, no value for it is right for every deployment, and the
+    empty default is already the safe one.
     """
     return ProtectionSettings(
         # General
         enabled=True,
         fail_open_on_redis_error=False,
         protection_bypass_headers=[],  # No bypasses in production
+        trusted_proxies=_trusted_proxies_default(),
         # Redis: resolve centrally via RedisClientFactory.
         redis_url=None,
         redis_key_prefix="faultmaven_prod",
