@@ -86,6 +86,9 @@ def _service() -> "object":
         knowledge_ingester=MagicMock(),
         sanitizer=MagicMock(),
         tracer=MagicMock(),
+        # Required since #899. The paths under test either replace it with a
+        # raising stub or never reach it.
+        db_session_factory=MagicMock(),
     )
 
 

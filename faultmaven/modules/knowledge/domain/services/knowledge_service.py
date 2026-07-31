@@ -160,7 +160,8 @@ class KnowledgeService:
         llm_provider: Optional[
             ILLMProvider
         ] = None,  # Enhanced: LLM for intelligent processing
-        db_session_factory: Optional[Any] = None,
+        *,
+        db_session_factory: Any,
         share_repository: Optional[Any] = None,
     ):
         """
@@ -174,7 +175,14 @@ class KnowledgeService:
             redis_client: Optional Redis client for metadata storage
             settings: Configuration settings for the service
             llm_provider: Optional LLM for intelligent query processing
-            db_session_factory: Optional async session factory for SQLite access
+            db_session_factory: Async session factory. REQUIRED and keyword-only.
+                ``knowledge_items`` is the relational source of truth for the
+                published inventory, so a service without a session factory has
+                no working read or write path — it is not a degraded service,
+                it is a broken one. Passing nothing is a ``TypeError`` here
+                rather than an empty KB in production (#894/#899), and
+                keyword-only because this signature's positional tail has
+                already shifted once (#894).
         """
         self._ingester = knowledge_ingester
         self._sanitizer = sanitizer
@@ -485,9 +493,6 @@ class KnowledgeService:
             if not document_id or not document_id.strip():
                 raise ValueError("Document ID cannot be empty")
 
-            if not self._db_session_factory:
-                return {"success": False, "error": "No database session factory"}
-
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
                 DatabaseKnowledgeItemRepository,
             )
@@ -564,41 +569,40 @@ class KnowledgeService:
                 tag_counts: Dict[str, int] = {}
                 total_documents = 0
 
-                if self._db_session_factory:
-                    from sqlalchemy import func as sa_func
-                    from sqlalchemy.future import select
+                from sqlalchemy import func as sa_func
+                from sqlalchemy.future import select
 
-                    from faultmaven.infrastructure.persistence.models import (
-                        ConversionDraftModel,
+                from faultmaven.infrastructure.persistence.models import (
+                    ConversionDraftModel,
+                )
+
+                async with self._db_session_factory() as session:
+                    # Count by document_type
+                    result = await session.execute(
+                        select(
+                            ConversionDraftModel.document_type,
+                            sa_func.count(),
+                        )
+                        .where(ConversionDraftModel.status == "verified")
+                        .group_by(ConversionDraftModel.document_type)
                     )
+                    for dtype, count in result.all():
+                        documents_by_type[dtype or "runbook"] = count
+                        total_documents += count
 
-                    async with self._db_session_factory() as session:
-                        # Count by document_type
-                        result = await session.execute(
-                            select(
-                                ConversionDraftModel.document_type,
-                                sa_func.count(),
-                            )
-                            .where(ConversionDraftModel.status == "verified")
-                            .group_by(ConversionDraftModel.document_type)
+                    # Tags from verified drafts
+                    tag_result = await session.execute(
+                        select(ConversionDraftModel.tags).where(
+                            ConversionDraftModel.status == "verified",
+                            ConversionDraftModel.tags.isnot(None),
                         )
-                        for dtype, count in result.all():
-                            documents_by_type[dtype or "runbook"] = count
-                            total_documents += count
-
-                        # Tags from verified drafts
-                        tag_result = await session.execute(
-                            select(ConversionDraftModel.tags).where(
-                                ConversionDraftModel.status == "verified",
-                                ConversionDraftModel.tags.isnot(None),
-                            )
-                        )
-                        for (raw_tags,) in tag_result.all():
-                            if isinstance(raw_tags, str):
-                                for t in raw_tags.split(","):
-                                    t = t.strip()
-                                    if t:
-                                        tag_counts[t] = tag_counts.get(t, 0) + 1
+                    )
+                    for (raw_tags,) in tag_result.all():
+                        if isinstance(raw_tags, str):
+                            for t in raw_tags.split(","):
+                                t = t.strip()
+                                if t:
+                                    tag_counts[t] = tag_counts.get(t, 0) + 1
 
                 most_used_tags = sorted(
                     tag_counts.keys(), key=lambda t: tag_counts[t], reverse=True
@@ -909,11 +913,6 @@ class KnowledgeService:
         # is never touched. If ChromaDB later fails (step 2), the SQL row
         # is rolled back before we raise (see lines below) — atomic across
         # both stores.
-        if self._db_session_factory is None:
-            raise ServiceException(
-                "ingest_runbook requires a db_session_factory; "
-                "vector-only ingestion is no longer supported"
-            )
         item = KnowledgeItem(
             item_id=document_id,
             # Global scope is the org-free platform tier (#770): the row carries
@@ -1054,9 +1053,6 @@ class KnowledgeService:
 
         from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
 
-        if self._db_session_factory is None:
-            return 0
-
         async with self._db_session_factory() as session:
             found = await session.execute(
                 _select(KnowledgeItemModel).where(KnowledgeItemModel.item_id == item_id)
@@ -1103,8 +1099,6 @@ class KnowledgeService:
             DatabaseKnowledgeItemRepository,
         )
 
-        if self._db_session_factory is None:
-            return
         try:
             async with self._db_session_factory() as session:
                 repo = DatabaseKnowledgeItemRepository(session)
@@ -1159,96 +1153,95 @@ class KnowledgeService:
             org_id = SingleTenantProvider.DEFAULT_ORG_ID
 
             # Create SQLite record (synthetic draft, immediately verified)
-            if self._db_session_factory:
-                from faultmaven.infrastructure.persistence.models import (
-                    ConversionDraftModel,
-                    ConversionJobModel,
-                    UploadedFileModel,
+            from faultmaven.infrastructure.persistence.models import (
+                ConversionDraftModel,
+                ConversionJobModel,
+                UploadedFileModel,
+            )
+
+            conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
+            draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
+
+            # Write content to disk
+            from pathlib import Path
+
+            # Flat by scope, matching the canonical layout the scan pass
+            # infers scope from (ConversionService._scope_dir): global/,
+            # team_{id}/, user_{id}/ — NO domain subdirectory (domain lives
+            # in frontmatter + ChromaDB metadata). Writing a literal
+            # "personal"/"team" folder would break scan scope-inference,
+            # which keys off the user_/team_ prefixes.
+            data_dir = Path("data/knowledge")
+            if scope == "team" and team_id:
+                target_dir = data_dir / f"team_{team_id}"
+            elif scope == "personal" and owner_id:
+                target_dir = data_dir / f"user_{owner_id}"
+            else:
+                target_dir = data_dir / "global"
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            filename = (
+                f"{title.lower().replace(' ', '-')[:60]}-{_uuid.uuid4().hex[:4]}.md"
+            )
+            file_path = target_dir / filename
+            file_path.write_text(content, encoding="utf-8")
+
+            async with self._db_session_factory() as session:
+                # ``conversion_jobs.source_file_id`` is a FK to
+                # ``uploaded_files``. Create the upload row first.
+                source_file_id = f"file_{_uuid.uuid4().hex[:12]}"
+                upload = UploadedFileModel(
+                    file_id=source_file_id,
+                    organization_id=org_id,
+                    case_id=None,  # KB-bound, not case-bound
+                    uploaded_by=owner_id,
+                    filename=filename,
+                    size_bytes=len(content.encode()),
+                    content_type="text/markdown",
+                    storage_ref=str(file_path),
+                    upload_source="conversion_source",
+                    uploaded_at_turn=0,
                 )
+                session.add(upload)
+                await session.flush()
 
-                conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
-                draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
-
-                # Write content to disk
-                from pathlib import Path
-
-                # Flat by scope, matching the canonical layout the scan pass
-                # infers scope from (ConversionService._scope_dir): global/,
-                # team_{id}/, user_{id}/ — NO domain subdirectory (domain lives
-                # in frontmatter + ChromaDB metadata). Writing a literal
-                # "personal"/"team" folder would break scan scope-inference,
-                # which keys off the user_/team_ prefixes.
-                data_dir = Path("data/knowledge")
-                if scope == "team" and team_id:
-                    target_dir = data_dir / f"team_{team_id}"
-                elif scope == "personal" and owner_id:
-                    target_dir = data_dir / f"user_{owner_id}"
-                else:
-                    target_dir = data_dir / "global"
-                target_dir.mkdir(parents=True, exist_ok=True)
-
-                filename = (
-                    f"{title.lower().replace(' ', '-')[:60]}-{_uuid.uuid4().hex[:4]}.md"
+                job = ConversionJobModel(
+                    id=conversion_id,
+                    user_id=owner_id,  # NULL if anonymous; FK SET NULL
+                    organization_id=org_id,
+                    scope=scope,
+                    status="completed",
+                    source_file_id=source_file_id,
+                    source_type="document",
+                    failure_modes_detected=0,
+                    analysis_result={},
+                    created_at=created_at,
+                    completed_at=created_at,
                 )
-                file_path = target_dir / filename
-                file_path.write_text(content, encoding="utf-8")
+                session.add(job)
 
-                async with self._db_session_factory() as session:
-                    # ``conversion_jobs.source_file_id`` is a FK to
-                    # ``uploaded_files``. Create the upload row first.
-                    source_file_id = f"file_{_uuid.uuid4().hex[:12]}"
-                    upload = UploadedFileModel(
-                        file_id=source_file_id,
-                        organization_id=org_id,
-                        case_id=None,  # KB-bound, not case-bound
-                        uploaded_by=owner_id,
-                        filename=filename,
-                        size_bytes=len(content.encode()),
-                        content_type="text/markdown",
-                        storage_ref=str(file_path),
-                        upload_source="conversion_source",
-                        uploaded_at_turn=0,
-                    )
-                    session.add(upload)
-                    await session.flush()
-
-                    job = ConversionJobModel(
-                        id=conversion_id,
-                        user_id=owner_id,  # NULL if anonymous; FK SET NULL
-                        organization_id=org_id,
-                        scope=scope,
-                        status="completed",
-                        source_file_id=source_file_id,
-                        source_type="document",
-                        failure_modes_detected=0,
-                        analysis_result={},
-                        created_at=created_at,
-                        completed_at=created_at,
-                    )
-                    session.add(job)
-
-                    draft = ConversionDraftModel(
-                        id=draft_id,
-                        organization_id=org_id,
-                        conversion_id=conversion_id,
-                        runbook_id=document_id,
-                        title=title,
-                        file_path=str(file_path),
-                        status="verified",
-                        source_type="document",
-                        validation_passed=True,
-                        knowledge_item_id=document_id,
-                        domain=fm_meta.get("domain"),
-                        service=fm_meta.get("service"),
-                        severity=fm_meta.get("severity"),
-                        tags=tags_list,
-                        document_type=document_type,
-                        created_at=created_at,
-                        verified_at=created_at,
-                        verified_by=owner_id,  # NULL if anonymous; FK SET NULL
-                    )
-                    session.add(draft)
-                    await session.commit()
+                draft = ConversionDraftModel(
+                    id=draft_id,
+                    organization_id=org_id,
+                    conversion_id=conversion_id,
+                    runbook_id=document_id,
+                    title=title,
+                    file_path=str(file_path),
+                    status="verified",
+                    source_type="document",
+                    validation_passed=True,
+                    knowledge_item_id=document_id,
+                    domain=fm_meta.get("domain"),
+                    service=fm_meta.get("service"),
+                    severity=fm_meta.get("severity"),
+                    tags=tags_list,
+                    document_type=document_type,
+                    created_at=created_at,
+                    verified_at=created_at,
+                    verified_by=owner_id,  # NULL if anonymous; FK SET NULL
+                )
+                session.add(draft)
+                await session.commit()
 
             # Ingest both relationally and into ChromaDB.
             # upload_document is called by anonymous / non-verified upload
@@ -1308,15 +1301,6 @@ class KnowledgeService:
         the already tenant-isolated set.
         """
         try:
-            if not self._db_session_factory:
-                logger.warning("No db_session_factory for list_documents")
-                return {
-                    "documents": [],
-                    "total_count": 0,
-                    "limit": limit,
-                    "offset": offset,
-                }
-
             from faultmaven.modules.knowledge.domain.models.knowledge_item import (
                 KnowledgeItemType,
             )
@@ -1497,9 +1481,6 @@ class KnowledgeService:
             if not document_id:
                 return None
 
-            if not self._db_session_factory:
-                return None
-
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
                 DatabaseKnowledgeItemRepository,
             )
@@ -1538,7 +1519,7 @@ class KnowledgeService:
         decisions into callers that have no actor.
         """
         try:
-            if not document_id or not self._db_session_factory:
+            if not document_id:
                 return None
 
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
@@ -1582,7 +1563,7 @@ class KnowledgeService:
         source, nothing to seed").
         """
         try:
-            if not item_id or not self._db_session_factory:
+            if not item_id:
                 return None
 
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
@@ -1637,7 +1618,7 @@ class KnowledgeService:
         user already applied is not a trust-boundary crossing).
         """
         try:
-            if not item_id or not self._db_session_factory:
+            if not item_id:
                 return None
 
             from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
@@ -1989,9 +1970,6 @@ class KnowledgeService:
         ``None`` when the document is not found.
         """
         try:
-            if not self._db_session_factory:
-                return None
-
             from faultmaven.modules.knowledge.domain.models.knowledge_item import (
                 KnowledgeItemType,
             )

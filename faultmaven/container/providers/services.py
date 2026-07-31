@@ -255,10 +255,25 @@ def create_knowledge_service(
 ) -> Any:
     """Create knowledge service for knowledge base operations.
 
-    The session factory is wired here rather than left to the caller: every KB
-    persistence path is gated on it (``ingest_runbook`` refuses outright, the
-    read paths degrade to empty), so a service built without it is broken in
-    whichever process holds it (#894).
+    The session factory is wired here rather than taken as a parameter, and
+    that is the settled seam (#899 item 2). Two properties follow from it:
+    a KnowledgeService is unconstructible through this provider without a
+    database, and every process — web, jobs, CLI — picks up the identical
+    capability, which is what #894 broke by defaulting it to ``None``.
+
+    The service constructor now *requires* the factory (keyword-only, no
+    default), so omitting it is a ``TypeError`` at container init rather than
+    an empty global KB in production.
+
+    Rejected: threading the factory down from ``register_services``. The
+    composition roots that construct collaborators directly (ConversionService
+    in the web lifespan, ``bootstrap_kb`` in kb_seed) do pass it explicitly,
+    but they have no provider function to own the decision — this one does,
+    and it already receives ``settings``. When global-tier writes under multi
+    need a sentinel-org session source (the factory is what binds
+    ``app.current_org_id`` per transaction), this function is where that
+    choice gets made; adding an unused parameter now would only move the
+    decision somewhere with less context.
     """
     from faultmaven.infrastructure.persistence.database import get_db_session
     from faultmaven.modules.knowledge.domain.services.knowledge_service import (

@@ -146,6 +146,8 @@ def _knowledge_service(share_repo, vector_store):
         tracer=tracer,
         vector_store=vector_store,
         share_repository=share_repo,
+        # Required since #899; the allowlist paths under test never reach it.
+        db_session_factory=MagicMock(),
     )
 
 

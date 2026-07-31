@@ -89,6 +89,8 @@ async def test_knowledge_service_search_uses_real_signature():
         sanitizer=MagicMock(asanitize=AsyncMock(side_effect=lambda q: q)),
         tracer=tracer,
         vector_store=store,
+        # Required since #899; the vector search paths never reach it.
+        db_session_factory=MagicMock(),
     )
 
     await service.search_knowledge("kubernetes pod crashloop", limit=5)
@@ -161,6 +163,8 @@ def _service_with_hits(hits):
         sanitizer=MagicMock(asanitize=AsyncMock(side_effect=lambda q: q)),
         tracer=tracer,
         vector_store=_HitReturningStore(hits),
+        # Required since #899; the vector search paths never reach it.
+        db_session_factory=MagicMock(),
     )
 
 

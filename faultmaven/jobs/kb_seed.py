@@ -59,17 +59,15 @@ async def run(
 
     try:
         knowledge_service = container.get_knowledge_service()
-        # A partially composed container does not return None here: it
-        # substitutes an in-memory stub (``MinimalKnowledgeService``) that has
-        # no ``ingest_runbook``, so the ``is None`` check alone would let the
-        # job proceed and die mid-pack on an opaque AttributeError. Gate on the
-        # capability the job actually uses. (Removing the stub: #899.)
-        if knowledge_service is None or not hasattr(
-            knowledge_service, "ingest_runbook"
-        ):
+        # A partially composed container returns None here (#899 removed the
+        # in-memory stub that used to stand in, which made this check inert and
+        # left the job to die mid-pack on an opaque AttributeError). The
+        # container now yields either a real, DB-capable KnowledgeService or
+        # nothing, so `is None` is the complete test.
+        if knowledge_service is None:
             logger.warning(
-                "KnowledgeService cannot ingest runbooks (got %s), skipping KB seed",
-                type(knowledge_service).__name__,
+                "KnowledgeService unavailable (container composed without one), "
+                "skipping KB seed"
             )
             result["status"] = "skipped"
             result["reason"] = "knowledge_service_unavailable"

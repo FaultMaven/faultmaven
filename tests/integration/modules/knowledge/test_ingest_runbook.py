@@ -295,21 +295,19 @@ class TestIngestRunbookDualWrite:
 
         assert service._index_document_in_vector_store.await_count == first_chroma_count
 
-    @pytest.mark.asyncio
-    async def test_missing_session_factory_raises(self, engine):
-        """ingest_runbook without a db_session_factory is a misconfiguration
-        (not a graceful no-op). Vector-only ingestion was the bug we're fixing."""
-        service = KnowledgeService(
-            knowledge_ingester=MagicMock(),
-            sanitizer=MagicMock(),
-            tracer=MagicMock(),
-            vector_store=MagicMock(),
-            db_session_factory=None,
-        )
-        with pytest.raises(Exception, match="db_session_factory"):
-            await service.ingest_runbook(
-                document_id="kb_nosession001",
-                title="x",
-                content="x",
-                organization_id=DEFAULT_ORG_ID,
+    def test_missing_session_factory_is_a_construction_error(self):
+        """A DB-less KnowledgeService cannot be built at all (#899).
+
+        This used to be a runtime refusal inside ``ingest_runbook``, which
+        meant a misconfigured container composed cleanly, passed startup, and
+        failed one runbook at a time during ``kb_seed`` (#894). Moving the
+        refusal to construction turns that whole bug class into a TypeError at
+        container init — before anything serves or seeds.
+        """
+        with pytest.raises(TypeError, match="db_session_factory"):
+            KnowledgeService(
+                knowledge_ingester=MagicMock(),
+                sanitizer=MagicMock(),
+                tracer=MagicMock(),
+                vector_store=MagicMock(),
             )

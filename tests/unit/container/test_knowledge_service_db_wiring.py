@@ -25,6 +25,9 @@ import pytest
 from faultmaven.config.settings import FaultMavenSettings
 from faultmaven.container.providers.services import create_knowledge_service
 from faultmaven.infrastructure.persistence.database import get_db_session
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    KnowledgeService,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -68,6 +71,48 @@ def test_knowledge_service_provider_always_wires_the_session_factory():
     )
 
     assert service._db_session_factory is get_db_session
+
+
+@pytest.mark.unit
+def test_a_db_less_knowledge_service_cannot_be_constructed():
+    """The capability is required at the constructor, not checked at use (#899).
+
+    ``db_session_factory`` used to default to ``None``, and each persistence
+    path carried its own guard — ``ingest_runbook`` raised, every read path
+    returned empty. That made a DB-less service a *quiet* service: the #894
+    container regression produced an empty global KB rather than a failure.
+    Omitting the dependency is now a TypeError, which happens at container
+    init, before anything serves or seeds.
+    """
+    with pytest.raises(TypeError, match="db_session_factory"):
+        KnowledgeService(
+            knowledge_ingester=None,
+            sanitizer=None,
+            tracer=None,
+        )
+
+
+@pytest.mark.unit
+def test_container_does_not_substitute_a_stub_knowledge_service():
+    """An uncomposed container returns None — it does not stand something in.
+
+    It used to return ``MinimalKnowledgeService``: an in-memory fake that
+    answered ``get_document`` with invented content ("This is sample document
+    content for testing purposes.") for any plausible id, and had no
+    ``ingest_runbook`` at all. Two consequences, both live: ``kb_seed`` and
+    ``fm-reset-kb`` both guard on ``is None``, which the stub silently defeated
+    (#899 item 3), and a partially composed *web* process served fabricated
+    runbooks — a document the KB never contained, presented as one it did.
+
+    Driving the getter on an uninitialized container, since that is the state
+    the substitution used to hide.
+    """
+    from faultmaven._container_impl import DIContainer
+
+    container = DIContainer.__new__(DIContainer)
+    container._initialized = True  # skip lazy-init; we want the raw lookup
+
+    assert container.get_knowledge_service() is None
 
 
 @pytest.mark.unit
