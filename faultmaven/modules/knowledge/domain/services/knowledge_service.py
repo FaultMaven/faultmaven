@@ -1144,8 +1144,8 @@ class KnowledgeService:
 
             # Both conversion_jobs / uploaded_files / knowledge_items require
             # organization_id NOT NULL — fall back to the single-tenant
-            # default when no explicit org is in scope. Hoisted out of the
-            # db-session block so ingest_runbook below has it regardless.
+            # default when no explicit org is in scope. Resolved before the
+            # session block because ingest_runbook below needs it too.
             from faultmaven.providers.tenancy.single_tenant import (
                 SingleTenantProvider,
             )
