@@ -114,6 +114,15 @@ class DocumentQATool:
         Core Q&A logic (KB-neutral).
 
         All KB-specific logic delegated to self._kb_config.
+
+        Returns an answer only when one was actually produced. Retrieval and
+        synthesis failures propagate rather than being rendered as an answer
+        string, so "could not search" stays distinguishable from "searched and
+        found nothing" (#943).
+
+        Raises:
+            KnowledgeBaseError: Retrieval could not be performed.
+            Exception: Whatever the synthesis LLM call raises.
         """
 
         # Step 1: Get collection name from config (KB-specific)
@@ -247,8 +256,9 @@ Answer:"""
         """Retrieve chunks per the KB config's search mode.
 
         ``hybrid`` (when the store supports it) → vector + keyword + reranking;
-        otherwise pure vector search. Raises on store error — callers decide
-        how to degrade.
+        otherwise pure vector search. Raises on store error, and that error is
+        NOT caught upstream: it propagates to the tool boundary so the adapter
+        renders ``success=False`` rather than an answer (#943).
 
         ``context_metadata`` (case domain/service) only informs the hybrid
         reranker's metadata signal and is applied as a soft boost
