@@ -67,8 +67,18 @@ Consequences:
   limit also permitted an unbounded requests-per-second burst.
 
 This falsified the premise behind defaulting production to fail-open on Redis
-errors; PR #909 pinned production `fail_open_on_redis_error=False` until this
-fix landed (fm#922 tracks revisiting the pin).
+errors, and production was pinned to `fail_open_on_redis_error=False`.
+
+A counting window is necessary for that premise but not sufficient: the count
+is only meaningful if the *key* is sound. The `global` limit is keyed on the
+client address, and that address was read from `X-Forwarded-For` with no
+trusted-proxy check — so a caller could rotate the header and draw a fresh
+window per request no matter how the window counted (fm#927). Both defects are
+now fixed; see [Client identity](../../operations/security/client-protection.md#client-identity-what-a-limit-is-keyed-on).
+
+The production pin nonetheless stays, as a posture decision rather than an
+outstanding precondition — the reasoning is recorded on
+`get_production_protection_settings`.
 
 **Rejected alternative:** generating the unique member inside Lua via
 `redis.call('TIME')` — non-deterministic commands inside scripts complicate

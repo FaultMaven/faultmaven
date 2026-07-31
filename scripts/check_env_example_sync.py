@@ -58,6 +58,13 @@ ALLOWLIST = {
     # same section is exactly the one-key-two-meanings confusion this key exists
     # to remove.
     "PROTECTION_RATE_LIMIT_FAIL_OPEN",
+    # Read via os.getenv in config/protection.py (``get_trusted_proxies``),
+    # for the same reason as the key above: it populates ProtectionSettings,
+    # which is a plain BaseModel rather than a BaseSettings section. Mirroring
+    # it onto settings would give the trust policy a second source, and the
+    # whole point of the key is that the four loader paths cannot disagree
+    # about which proxies a deployment believes.
+    "PROTECTION_TRUSTED_PROXIES",
 }
 
 # Capture optional leading "#": commented lines document the DEFAULT (checked

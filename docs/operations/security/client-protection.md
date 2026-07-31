@@ -89,6 +89,67 @@ first violation. Escalation is tracked in #926.
 - `X-RateLimit-Remaining`: Requests remaining
 - `X-RateLimit-Reset`: Window reset time
 
+### Client identity: what a limit is keyed on
+
+The `global` limit is the only one that applies to unauthenticated traffic, and
+it is keyed on the client's address. That address is resolved by one shared
+rule, in `faultmaven/api/middleware/client_ip.py`:
+
+> **`X-Forwarded-For` is honoured only when the socket peer is a configured
+> trusted proxy, and never otherwise. `X-Real-IP` is never honoured at all.**
+
+`X-Real-IP` carries a single value and no chain, so nothing distinguishes what
+a trusted proxy wrote from what a caller sent. It is read only as a signal that
+a proxy may be present (for the warning below), never to pick the address.
+
+Both halves matter, and getting either wrong breaks the limit:
+
+| Policy | Failure |
+|--------|---------|
+| Always trust the headers | The limited party picks its own key. Rotating the header draws a fresh quota per request, so there is no limit at all. |
+| Never trust the headers | Behind an ingress every client resolves to the ingress address and shares one bucket, so one caller exhausts everybody's quota. |
+
+When the peer is trusted, the `X-Forwarded-For` chain is walked **from the
+right** and the first hop that is not itself a trusted proxy wins. The
+right-hand end was appended by infrastructure we trust; the left-hand end is
+whatever the caller sent. That is what makes a forged prefix inert — a caller
+sending `X-Forwarded-For: 1.2.3.4` is still keyed on the address the ingress
+appended. Hops that do not parse as an address are skipped rather than used, so
+attacker-supplied text cannot enter a Redis key.
+
+Configure it with `PROTECTION_TRUSTED_PROXIES` (see below). **The default is
+empty**, which means no header is believed and every limit keys on the socket
+peer. That is correct for a standalone install with no proxy in front of it,
+and it is the safe direction for everything else: the worst case is a limit
+that is too coarse, never one that can be evaded.
+
+Entries are parsed **strictly**: write the network address (`10.244.0.0/16`),
+not a host inside it (`10.244.226.134/16`). The lenient parse would round the
+second form outward to the first and trust 65,536 addresses on a typo, so a
+malformed entry is dropped with an ERROR instead — a mistake must narrow trust,
+never widen it. A bare address (`10.42.0.7`) is accepted and means that host
+alone.
+
+**Kubernetes deployments must set this.** Until they do, all external traffic
+shares one `global` bucket, and one caller crossing the limit refuses traffic
+for everyone. It is not silent, and it is reported twice: the production preset
+warns at startup when the value is empty, and the resolver warns at request
+time (throttled to one every 5 minutes) whenever forwarding headers arrive from
+an unlisted address.
+
+In practice the value is the **cluster pod CIDR**, not the two current ingress
+controller pod IPs — those change on every reschedule, and a stale list
+silently collapses all traffic onto one bucket again, which is the failure this
+setting exists to prevent. The residual is worth naming rather than hiding:
+trusting the pod CIDR makes *any pod that can reach the API* able to set its own
+forwarding header, so an in-cluster caller can still rotate its own `global`
+key. That is bounded by the `allow-api-ingress` NetworkPolicy, which already
+restricts who can connect to the ingress controller, first-party FaultMaven
+pods, the Slack agent and monitoring — and the dashboard genuinely does proxy
+`/api`, so trusting it is correct rather than merely tolerated. This setting
+defends against the open internet, not against a compromised in-cluster
+workload; that boundary is the NetworkPolicy's job.
+
 **Response Codes**:
 - `429 Too Many Requests`: Rate limit exceeded
 - `503 Service Unavailable`: System overloaded
@@ -148,6 +209,12 @@ RATE_LIMIT_ENABLED=true
 RATE_LIMIT_REDIS_URL=redis://localhost:6379/1
 RATE_LIMIT_GLOBAL_REQUESTS=1000
 RATE_LIMIT_GLOBAL_WINDOW=60
+
+# Proxies whose X-Forwarded-For / X-Real-IP may be believed when deciding
+# which client a limit applies to. Addresses or CIDRs, comma-separated.
+# Empty (the default) means no forwarding header is honoured and limits key
+# on the socket peer. Kubernetes: set this to the ingress pod range.
+PROTECTION_TRUSTED_PROXIES=
 
 # Request Deduplication
 DEDUP_ENABLED=true

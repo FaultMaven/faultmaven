@@ -22,6 +22,7 @@ from ...models.protection import (
     ProtectionSettings,
     RateLimitError,
 )
+from .client_ip import parse_trusted_proxies, resolve_client_ip
 
 # How long to wait before re-attempting rate-limiter initialization.
 # Initialization deliberately does not latch — neither on failure nor on a
@@ -62,6 +63,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.settings = settings
         self.logger = logging.getLogger(__name__)
+
+        # Parsed once here rather than per request: the list is operator
+        # configuration, and an unparseable entry should be reported at
+        # startup rather than on every request that arrives.
+        self.trusted_proxies = parse_trusted_proxies(settings.trusted_proxies)
 
         # Initialize rate limiter
         effective_redis_url = redis_url or settings.redis_url
@@ -475,24 +481,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return None
 
     def _get_client_ip(self, request: Request) -> str:
-        """Get client IP address for global rate limiting"""
+        """Get the client address the ``global`` limit is keyed on.
 
-        # Check for forwarded headers (behind proxy)
-        forwarded_for = request.headers.get("X-Forwarded-For")
-        if forwarded_for:
-            # Take the first IP (original client)
-            return forwarded_for.split(",")[0].strip()
-
-        # Check other proxy headers
-        real_ip = request.headers.get("X-Real-IP")
-        if real_ip:
-            return real_ip
-
-        # Fall back to direct connection
-        if hasattr(request, "client") and request.client:
-            return request.client.host
-
-        return "unknown"
+        Delegates to the shared resolver so that forwarding headers are
+        honoured only from configured trusted proxies. This used to read
+        ``X-Forwarded-For`` unconditionally, which meant the key was chosen by
+        the party being limited: rotating the header drew a fresh quota on
+        every request, and ``global`` is the only limit that covers
+        unauthenticated traffic, so it was not a limit at all.
+        """
+        return resolve_client_ip(request, self.trusted_proxies)
 
     async def _add_rate_limit_headers(
         self, request: Request, response: Response
