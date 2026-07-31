@@ -67,6 +67,26 @@ class CaseEvidenceConfig(KBConfig):
         return True
 
     @property
+    def empty_result_message(self) -> str:
+        """This case's evidence collection was searched and is empty.
+
+        Unlike the KB config, naming ingestion causes IS in-domain here: this
+        tool queries ``case_{case_id}``, so an empty collection really does
+        mean nothing has been vectorized for this case yet. The causes are
+        offered as possibilities, not asserted, and the failure case no longer
+        reaches this path (it raises) — so this text can no longer be shown
+        for a search that did not run (#943).
+        """
+        return (
+            "No vectorized evidence is available for this case yet. The case "
+            "evidence store was searched successfully and is empty — most "
+            "likely nothing has been uploaded yet, or an uploaded file is "
+            "still being indexed (usually 5-15 seconds).\n\n"
+            "Note: you can still ask about the file summaries received when "
+            "files were uploaded."
+        )
+
+    @property
     def cache_ttl(self) -> int:
         """1 hour cache (case session duration)"""
         return 3600

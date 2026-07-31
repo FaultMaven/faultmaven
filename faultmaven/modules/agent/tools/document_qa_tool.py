@@ -121,35 +121,27 @@ class DocumentQATool:
 
         logger.debug(f"Querying collection: {collection}, k={k}")
 
-        # Step 2: Retrieve chunks from vector store (same for all KBs)
-        try:
-            chunks = await self._dispatch_search(
-                collection, question, k, filters, context_metadata
-            )
-        except Exception as e:
-            logger.error(f"Vector store search failed: {e}")
-            return {
-                "answer": f"Error retrieving documents: {str(e)}",
-                "sources": [],
-                "chunk_count": 0,
-                "confidence": 0.0,
-            }
+        # Step 2: Retrieve chunks from vector store (same for all KBs).
+        #
+        # Retrieval failure is NOT caught here. Converting it into an `answer`
+        # string is what made an unavailable knowledge base indistinguishable
+        # from an empty one: the adapter above stamps success=True on whatever
+        # string comes back, so the model was handed infrastructure failure
+        # rendered as a substantive finding (#943). Letting it propagate is
+        # what lets the adapter report success=False. A store-level fix alone
+        # would merge inert against this handler.
+        chunks = await self._dispatch_search(
+            collection, question, k, filters, context_metadata
+        )
 
         if not chunks:
             logger.info(f"No chunks found in collection: {collection}")
-            # This can happen if:
-            # 1. No files uploaded yet
-            # 2. Background vectorization still in progress
-            # 3. Vectorization failed
+            # Reached ONLY when the search ran and matched nothing — a failed
+            # search raised above. The message comes from the KB config so each
+            # store states its own truth; this class does not know what
+            # collection it just queried and must not guess at a cause.
             return {
-                "answer": (
-                    "No evidence documents are available for deep analysis yet. "
-                    "This could mean:\n"
-                    "- No files have been uploaded to this case\n"
-                    "- Uploaded files are still being indexed (usually takes 5-15 seconds)\n"
-                    "- Evidence indexing failed (check logs)\n\n"
-                    "Note: You can still ask about the file summaries I received when the files were uploaded."
-                ),
+                "answer": self._kb_config.empty_result_message,
                 "sources": [],
                 "chunk_count": 0,
                 "confidence": 0.0,
@@ -203,56 +195,46 @@ Instructions:
 
 Answer:"""
 
-        # Step 5: Call synthesis LLM with config's system prompt
-        try:
-            synthesis_provider = self._settings.llm.get_synthesis_provider()
-            synthesis_model = self._settings.llm.get_synthesis_model()
+        # Step 5: Call synthesis LLM with config's system prompt.
+        # Failure propagates for the same reason as retrieval above: a tool
+        # that did not answer must not report success (#943).
+        synthesis_provider = self._settings.llm.get_synthesis_provider()
+        synthesis_model = self._settings.llm.get_synthesis_model()
 
-            logger.debug(
-                f"Calling synthesis LLM: {synthesis_provider}/{synthesis_model}"
+        logger.debug(f"Calling synthesis LLM: {synthesis_provider}/{synthesis_model}")
+
+        response = await self._llm_router.route(
+            model=synthesis_model,
+            messages=[
+                {"role": "system", "content": self._kb_config.system_prompt},
+                {"role": "user", "content": synthesis_prompt},
+            ],
+            max_tokens=2000,
+            temperature=0.3,  # Low temperature for factual accuracy
+        )
+
+        answer = response.content.strip()
+
+        # Extract sources using config (KB-specific)
+        sources = list(
+            set(
+                self._kb_config.extract_source_name(chunk["metadata"])
+                for chunk in chunks
             )
+        )
 
-            response = await self._llm_router.route(
-                model=synthesis_model,
-                messages=[
-                    {"role": "system", "content": self._kb_config.system_prompt},
-                    {"role": "user", "content": synthesis_prompt},
-                ],
-                max_tokens=2000,
-                temperature=0.3,  # Low temperature for factual accuracy
-            )
+        avg_score = sum(chunk["score"] for chunk in chunks) / len(chunks)
 
-            answer = response.content.strip()
+        logger.info(
+            f"Generated answer from {len(chunks)} chunks, avg score: {avg_score:.2f}"
+        )
 
-            # Extract sources using config (KB-specific)
-            sources = list(
-                set(
-                    self._kb_config.extract_source_name(chunk["metadata"])
-                    for chunk in chunks
-                )
-            )
-
-            avg_score = sum(chunk["score"] for chunk in chunks) / len(chunks)
-
-            logger.info(
-                f"Generated answer from {len(chunks)} chunks, avg score: {avg_score:.2f}"
-            )
-
-            return {
-                "answer": answer,
-                "sources": sources,
-                "chunk_count": len(chunks),
-                "confidence": avg_score,
-            }
-
-        except Exception as e:
-            logger.error(f"Synthesis LLM call failed: {e}")
-            return {
-                "answer": f"Error generating answer: {str(e)}",
-                "sources": [],
-                "chunk_count": len(chunks),
-                "confidence": 0.0,
-            }
+        return {
+            "answer": answer,
+            "sources": sources,
+            "chunk_count": len(chunks),
+            "confidence": avg_score,
+        }
 
     async def _dispatch_search(
         self,
