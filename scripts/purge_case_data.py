@@ -78,9 +78,7 @@ def dir_size_mb(path: Path) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
         "--confirm",
         action="store_true",
@@ -124,11 +122,7 @@ def main():
     print(f"  Users:                  {before['users']}")
     print()
 
-    if (
-        before["cases"] == 0
-        and not EVIDENCE_DIR.exists()
-        and not CHROMA_EVIDENCE_DIR.exists()
-    ):
+    if before["cases"] == 0 and not EVIDENCE_DIR.exists() and not CHROMA_EVIDENCE_DIR.exists():
         print("✓ Nothing to purge — already clean.")
         conn.close()
         return 0
