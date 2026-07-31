@@ -705,49 +705,13 @@ class TestAggregateReadRoutesRequireAuth:
         assert resp.status_code == 200
 
 
-@pytest.mark.unit
-@pytest.mark.knowledge_base
-class TestFallbackContainerService:
-    """The fallback service must satisfy the scoped read, fail-CLOSED.
-
-    ``DIContainer._create_minimal_knowledge_service`` backs
-    ``get_knowledge_service`` whenever the real service is missing. Without
-    ``get_document_visible`` the fixed GET routes raise ``AttributeError`` →
-    500 instead of 404/200, and answering from the unscoped stub instead would
-    reintroduce the very leak #867 closed.
-    """
-
-    def _fallback(self):
-        # Via the package export — importing _container_impl directly is a
-        # circular import.
-        from faultmaven.container import DIContainer
-
-        return DIContainer.__new__(DIContainer)._create_minimal_knowledge_service()
-
-    async def test_returns_none_for_any_id(self):
-        service = self._fallback()
-        # The unscoped stub fabricates a document for any plausible id; the
-        # actor-facing read must not.
-        assert await service.get_document("doc_abcdef12") is not None
-        assert await service.get_document_visible("doc_abcdef12") is None
-        assert (
-            await service.get_document_visible(
-                "doc_abcdef12", user=_user(), team_ids=[]
-            )
-            is None
-        )
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/knowledge/documents/doc_abcdef12",
-            "/knowledge/documents/doc_abcdef12/snippet",
-        ],
-    )
-    def test_routes_answer_404_not_500(self, path):
-        resp = _client(self._fallback(), _user()).get(path)
-        assert resp.status_code == 404
-        assert resp.json()["detail"] == "Document not found"
+# A ``TestFallbackContainerService`` class used to sit here, pinning that the
+# container's stand-in KnowledgeService answered the scoped read fail-CLOSED.
+# The stand-in is gone (#899): it fabricated a document for any plausible id on
+# the *unscoped* read — the very content invention that made a fail-closed
+# scoped read necessary alongside it — and the container now returns None rather
+# than substituting anything. The scoped-read rule itself (#867) is pinned above
+# against the real service.
 
 
 # ===========================================================================
