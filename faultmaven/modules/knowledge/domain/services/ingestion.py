@@ -645,7 +645,6 @@ class KnowledgeIngester:
 
         return [c for c in normalized if c.strip()]
 
-
     async def delete_document(self, document_id: str) -> bool:
         """
         Delete a document and all its chunks from the knowledge base
@@ -905,4 +904,3 @@ class KnowledgeIngester:
         except Exception as e:
             self.logger.error(f"Failed to get document {document_id}: {e}")
             return None
-

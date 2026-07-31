@@ -78,9 +78,9 @@ async def test_recommendation_issues_a_real_embedding_scoped_to_the_tenant():
         await service.get_available_report_types(case=_case())
 
     kwargs = kb.search_runbooks.await_args.kwargs
-    assert len(kwargs["query_embedding"]) == 1024, (
-        "the runbook search is still being issued without a usable embedding"
-    )
+    assert (
+        len(kwargs["query_embedding"]) == 1024
+    ), "the runbook search is still being issued without a usable embedding"
     assert kwargs["organization_id"] == "org-1", "tenant predicate lost"
 
 

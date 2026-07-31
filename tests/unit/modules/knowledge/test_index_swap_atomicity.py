@@ -181,9 +181,9 @@ async def test_update_document_metadata_does_not_report_success_on_failure():
                     document_id="doc-1", content="# New content\n\nUpdated."
                 )
 
-    assert service._vector_store.delete_documents_by_parent_id.await_count == 0, (
-        "vectors were destroyed on a path that then reported success"
-    )
+    assert (
+        service._vector_store.delete_documents_by_parent_id.await_count == 0
+    ), "vectors were destroyed on a path that then reported success"
 
 
 # ---------------------------------------------------------------------------
