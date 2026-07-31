@@ -126,10 +126,25 @@ malformed entry is dropped with an ERROR instead — a mistake must narrow trust
 never widen it. A bare address (`10.42.0.7`) is accepted and means that host
 alone.
 
-**Kubernetes deployments must set this** to the ingress controller's pod range.
-Until they do, all external traffic shares one `global` bucket. It is not
-silent — the server logs a warning (throttled to one every 5 minutes) whenever
-forwarding headers arrive from an address that is not listed.
+**Kubernetes deployments must set this.** Until they do, all external traffic
+shares one `global` bucket, and one caller crossing the limit refuses traffic
+for everyone. It is not silent, and it is reported twice: the production preset
+warns at startup when the value is empty, and the resolver warns at request
+time (throttled to one every 5 minutes) whenever forwarding headers arrive from
+an unlisted address.
+
+In practice the value is the **cluster pod CIDR**, not the two current ingress
+controller pod IPs — those change on every reschedule, and a stale list
+silently collapses all traffic onto one bucket again, which is the failure this
+setting exists to prevent. The residual is worth naming rather than hiding:
+trusting the pod CIDR makes *any pod that can reach the API* able to set its own
+forwarding header, so an in-cluster caller can still rotate its own `global`
+key. That is bounded by the `allow-api-ingress` NetworkPolicy, which already
+restricts who can connect to the ingress controller, first-party FaultMaven
+pods, the Slack agent and monitoring — and the dashboard genuinely does proxy
+`/api`, so trusting it is correct rather than merely tolerated. This setting
+defends against the open internet, not against a compromised in-cluster
+workload; that boundary is the NetworkPolicy's job.
 
 **Response Codes**:
 - `429 Too Many Requests`: Rate limit exceeded

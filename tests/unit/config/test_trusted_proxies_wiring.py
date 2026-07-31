@@ -11,6 +11,8 @@ properties are pinned here:
    deployment asked for.
 """
 
+import contextlib
+import logging
 import os
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -144,6 +146,65 @@ class TestEveryLoaderReadsTheKey:
             settings = _load_from_environment()
 
         assert settings.trusted_proxies == ["10.42.0.0/16"]
+
+
+class TestProductionSaysSoWhenItIsUnconfigured:
+    """Empty in production is safe but coarse, and must not be discovered late.
+
+    The request-time warning only fires once forwarding headers actually
+    arrive and is throttled to one per five minutes — too quiet to catch during
+    a rollout. Production is by definition behind something, so the preset
+    itself says it at startup.
+    """
+
+    def test_empty_in_production_warns_at_startup(self, caplog):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PROTECTION_TRUSTED_PROXIES", None)
+            with caplog.at_level(logging.WARNING):
+                settings = get_production_protection_settings()
+
+        assert settings.trusted_proxies == []
+        assert "PROTECTION_TRUSTED_PROXIES is empty" in caplog.text
+        assert "share one" in caplog.text
+
+    def test_a_configured_production_deployment_is_quiet(self):
+        """The warning must not fire on the correct configuration."""
+        with patch.dict(os.environ, {"PROTECTION_TRUSTED_PROXIES": "10.244.0.0/16"}):
+            with caplog_at_warning() as records:
+                settings = get_production_protection_settings()
+
+        assert settings.trusted_proxies == ["10.244.0.0/16"]
+        assert not [r for r in records if "TRUSTED_PROXIES" in r.getMessage()]
+
+    def test_it_warns_rather_than_refusing_to_boot(self):
+        """An unset value degrades availability; refusing to start removes it."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PROTECTION_TRUSTED_PROXIES", None)
+            settings = get_production_protection_settings()
+
+        assert settings.enabled is True
+        assert settings.rate_limiting_enabled is True
+
+
+@contextlib.contextmanager
+def caplog_at_warning():
+    """Collect WARNING records from the protection config logger."""
+    logger = logging.getLogger("faultmaven.config.protection")
+    records: list[logging.LogRecord] = []
+
+    class _Collector(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Collector(level=logging.WARNING)
+    logger.addHandler(handler)
+    previous = logger.level
+    logger.setLevel(logging.WARNING)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
 
 
 def test_production_still_pins_fail_closed():

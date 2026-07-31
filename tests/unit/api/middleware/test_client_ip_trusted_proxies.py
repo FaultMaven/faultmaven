@@ -137,14 +137,97 @@ def test_clients_behind_a_configured_proxy_do_not_share_one_bucket():
     assert len(peers) == 19
 
 
-def test_chain_of_only_trusted_hops_falls_back_to_real_ip():
+def test_chain_of_only_trusted_hops_falls_back_to_the_peer():
+    """With nothing in the chain we can attribute, the peer is the honest key."""
     trusted = parse_trusted_proxies(["10.42.0.0/16", "10.43.0.0/16"])
-    request = _request(
-        "10.42.0.7",
-        {"X-Forwarded-For": "10.43.0.1, 10.42.0.9", "X-Real-IP": "203.0.113.50"},
-    )
+    request = _request("10.42.0.7", {"X-Forwarded-For": "10.43.0.1, 10.42.0.9"})
 
-    assert resolve_client_ip(request, trusted) == "203.0.113.50"
+    assert resolve_client_ip(request, trusted) == "10.42.0.7"
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-Real-IP": "1.2.3.4"},
+        {"X-Forwarded-For": "", "X-Real-IP": "1.2.3.4"},
+        {"X-Forwarded-For": "10.42.0.9", "X-Real-IP": "1.2.3.4"},
+        {"X-Forwarded-For": "not-an-ip", "X-Real-IP": "1.2.3.4"},
+    ],
+)
+def test_x_real_ip_never_selects_the_key_even_from_a_trusted_peer(headers):
+    """``X-Real-IP`` is a hint, never the answer — including behind a real proxy.
+
+    It carries one value and no chain, so nothing distinguishes what the proxy
+    wrote from what the caller sent. Believing it would restore the #927
+    rotation for any deployment whose proxy passes the header through instead
+    of overwriting it: vary the header, get a fresh bucket.
+
+    Each case here has an all-trusted or unusable ``X-Forwarded-For``, which is
+    exactly when a fallback would have kicked in.
+    """
+    trusted = parse_trusted_proxies(["10.42.0.0/16"])
+
+    assert resolve_client_ip(_request("10.42.0.7", headers), trusted) == "10.42.0.7"
+
+
+def test_rotating_x_real_ip_behind_a_trusted_proxy_cannot_rotate_the_bucket():
+    """The rotation attempt itself, over the whole header space."""
+    trusted = parse_trusted_proxies(["10.42.0.0/16"])
+    keys = {
+        resolve_client_ip(_request("10.42.0.7", {"X-Real-IP": f"1.2.3.{n}"}), trusted)
+        for n in range(1, 200)
+    }
+
+    assert keys == {"10.42.0.7"}
+
+
+class TestIPv4MappedIPv6:
+    """``::ffff:10.0.0.1`` is 10.0.0.1, and both must key and match identically.
+
+    A server on a dual-stack socket reports IPv4 peers in mapped notation, and
+    ``IPv6Address('::ffff:10.42.0.7') in IPv4Network('10.42.0.0/16')`` is False.
+    Unfolded, a correctly configured trusted proxy silently stops matching and
+    the deployment degrades to the shared bucket it was configured to avoid.
+    """
+
+    def test_a_mapped_peer_still_matches_an_ipv4_trusted_range(self):
+        trusted = parse_trusted_proxies(["10.42.0.0/16"])
+        request = _request("::ffff:10.42.0.7", {"X-Forwarded-For": "203.0.113.50"})
+
+        assert resolve_client_ip(request, trusted) == "203.0.113.50"
+
+    def test_a_mapped_hop_resolves_to_its_ipv4_form(self):
+        trusted = parse_trusted_proxies(["10.42.0.0/16"])
+        request = _request("10.42.0.7", {"X-Forwarded-For": "::ffff:203.0.113.50"})
+
+        assert resolve_client_ip(request, trusted) == "203.0.113.50"
+
+    def test_both_spellings_of_one_client_share_one_key(self):
+        """Otherwise a client occupies two buckets by changing notation."""
+        trusted = parse_trusted_proxies(["10.42.0.0/16"])
+        keys = {
+            resolve_client_ip(
+                _request("10.42.0.7", {"X-Forwarded-For": spelling}), trusted
+            )
+            for spelling in (
+                "203.0.113.50",
+                "::ffff:203.0.113.50",
+                "[::ffff:203.0.113.50]:9",
+            )
+        }
+
+        assert keys == {"203.0.113.50"}
+
+    def test_a_mapped_address_is_still_excluded_when_untrusted(self):
+        trusted = parse_trusted_proxies(["10.42.0.0/16"])
+
+        assert (
+            resolve_client_ip(
+                _request("::ffff:198.51.100.77", {"X-Forwarded-For": "1.2.3.4"}),
+                trusted,
+            )
+            == "::ffff:198.51.100.77"
+        )
 
 
 def test_unparseable_hop_never_becomes_the_key():

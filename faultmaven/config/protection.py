@@ -43,24 +43,26 @@ def _fail_open_default() -> bool:
     return os.getenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", "true").lower() == "true"
 
 
-def _trusted_proxies_default() -> list:
+def get_trusted_proxies() -> list:
     """Proxies whose forwarding headers may be believed when keying limits.
 
     ``PROTECTION_TRUSTED_PROXIES`` is a comma-separated list of addresses or
     CIDRs — for a Kubernetes deployment, the ingress controller's pod range.
 
     **Empty is the default and it is deliberate.** With no entry, no
-    ``X-Forwarded-For`` or ``X-Real-IP`` header influences the rate-limit key
-    and every limit is keyed on the socket peer. Before this existed the
-    headers were honoured unconditionally, so the ``global`` limit — the only
-    one that applies to unauthenticated traffic — could be evaded outright by
-    rotating a header the limited party controls.
+    ``X-Forwarded-For`` header influences the rate-limit key and every limit is
+    keyed on the socket peer. Before this existed the headers were honoured
+    unconditionally, so the ``global`` limit — the only one that applies to
+    unauthenticated traffic — could be evaded outright by rotating a header the
+    limited party controls.
 
     The cost of the safe default is real and worth stating: a deployment that
     *is* behind a proxy and does not set this keys every request on the
-    proxy's address, so all clients share one bucket. It is not silent —
-    ``client_ip.resolve_client_ip`` warns when forwarding headers arrive from
-    an address that is not configured here.
+    proxy's address, so all clients share one bucket. It is not silent, and it
+    is reported twice over — ``get_production_protection_settings`` warns at
+    startup when production leaves it empty, and
+    ``client_ip.resolve_client_ip`` warns at request time (throttled) when
+    forwarding headers arrive from an address that is not configured here.
 
     One reader, for the same reason ``_fail_open_default`` is one reader: the
     four loader paths must not be able to disagree about what the deployment
@@ -145,7 +147,7 @@ def _load_from_settings(settings) -> ProtectionSettings:
         enabled=enabled,
         fail_open_on_redis_error=_fail_open_default(),
         protection_bypass_headers=[],  # No bypasses from settings
-        trusted_proxies=_trusted_proxies_default(),
+        trusted_proxies=get_trusted_proxies(),
         # Redis: ``None`` unless an operator set REDIS_URL explicitly, in which
         # case the complete URL genuinely is the configured source. Everything
         # else resolves centrally through RedisClientFactory.
@@ -294,7 +296,7 @@ def _load_from_environment() -> ProtectionSettings:
         enabled=protection_enabled,
         fail_open_on_redis_error=fail_open,
         protection_bypass_headers=bypass_headers,
-        trusted_proxies=_trusted_proxies_default(),
+        trusted_proxies=get_trusted_proxies(),
         # Redis
         redis_url=redis_url,
         redis_key_prefix=redis_key_prefix,
@@ -325,7 +327,7 @@ def get_development_protection_settings() -> ProtectionSettings:
         enabled=True,
         fail_open_on_redis_error=_fail_open_default(),
         protection_bypass_headers=["X-Dev-Bypass", "X-Test-Bypass"],
-        trusted_proxies=_trusted_proxies_default(),
+        trusted_proxies=get_trusted_proxies(),
         # Redis: resolve centrally via RedisClientFactory.
         redis_url=None,
         redis_key_prefix="faultmaven_dev",
@@ -405,14 +407,38 @@ def get_production_protection_settings() -> ProtectionSettings:
     branch set out to remove; production opts out explicitly rather than by
     omission. ``PROTECTION_TRUSTED_PROXIES`` is *not* pinned here — unlike the
     degrade policy, no value for it is right for every deployment, and the
-    empty default is already the safe one.
+    empty default is already the safe one. It is, however, the one preset that
+    warns when it is left empty: see below.
     """
+    trusted_proxies = get_trusted_proxies()
+
+    if not trusted_proxies:
+        # Production is by definition a deployment behind something. Empty here
+        # is safe but coarse: every external client resolves to the proxy's own
+        # address and shares a single `global` bucket, so one caller crossing
+        # 500/60s refuses everyone. The request-time warning in ``client_ip``
+        # only fires once forwarding headers actually arrive and is throttled to
+        # one per five minutes, which is too late and too quiet to notice during
+        # a rollout — so say it once, plainly, at startup.
+        #
+        # It warns rather than refuses to boot deliberately: an unset value
+        # degrades availability, and refusing to start would convert that into
+        # a total outage, which is worse than the thing it guards against.
+        logger.warning(
+            "PROTECTION_TRUSTED_PROXIES is empty in production. Forwarding "
+            "headers will be ignored and every rate limit keyed on the socket "
+            "peer — behind an ingress that is a single address, so all clients "
+            "share one 'global' bucket and one caller can refuse traffic for "
+            "everyone. Set it to the proxy's address range (in Kubernetes, the "
+            "pod CIDR). Leave it empty only if nothing proxies this service."
+        )
+
     return ProtectionSettings(
         # General
         enabled=True,
         fail_open_on_redis_error=False,
         protection_bypass_headers=[],  # No bypasses in production
-        trusted_proxies=_trusted_proxies_default(),
+        trusted_proxies=trusted_proxies,
         # Redis: resolve centrally via RedisClientFactory.
         redis_url=None,
         redis_key_prefix="faultmaven_prod",

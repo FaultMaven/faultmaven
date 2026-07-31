@@ -32,8 +32,14 @@ The algorithm
    hop is what makes a forged prefix inert — a caller who sends
    ``X-Forwarded-For: 1.2.3.4`` still gets keyed on the address the ingress
    appended, not on the one they chose.
-3. If there is no chain, or every hop in it is trusted, fall back to
-   ``X-Real-IP`` and then to the leftmost chain entry.
+3. If there is no chain, or every hop in it is trusted, use the socket peer.
+
+``X-Real-IP`` is never used to pick the address, only as a hint that a proxy
+may be present. It carries one value and no chain, so nothing distinguishes
+what a trusted proxy wrote from what a caller sent — believing it would re-open
+the rotation this module closes. The ``X-Forwarded-For`` walk is sound
+*because* the proxy appends, which is what makes the first untrusted hop
+identifiable.
 
 Malformed entries are skipped rather than returned: an unparseable value is
 attacker-controlled text, and putting it in a Redis key is how a limiter grows
@@ -45,7 +51,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import time
-from typing import Iterable, Optional, Sequence, Tuple
+from typing import Iterable, Optional, Tuple
 
 from fastapi import Request
 
@@ -128,6 +134,13 @@ def _parse_address(
     Tolerates the shapes proxies actually emit: a bracketed IPv6 literal, and
     an ``address:port`` pair. A bare IPv6 address contains colons too, so the
     port strip only applies when there is exactly one colon and no brackets.
+
+    IPv4-mapped IPv6 (``::ffff:10.0.0.1``) is folded to its IPv4 form. A server
+    bound to a dual-stack socket reports IPv4 peers in that notation, and
+    ``IPv6Address('::ffff:10.0.0.1') in IPv4Network('10.0.0.0/8')`` is *False* —
+    so without the fold a correctly configured trusted proxy silently stops
+    matching and the deployment degrades to one shared bucket. It also keeps one
+    client from occupying two keys under two spellings of the same address.
     """
     candidate = value.strip()
     if not candidate:
@@ -143,9 +156,12 @@ def _parse_address(
         candidate = candidate.split(":", 1)[0]
 
     try:
-        return ipaddress.ip_address(candidate)
+        address = ipaddress.ip_address(candidate)
     except ValueError:
         return None
+
+    mapped = getattr(address, "ipv4_mapped", None)
+    return mapped if mapped is not None else address
 
 
 def _is_trusted(
@@ -221,26 +237,21 @@ def resolve_client_ip(request: Request, trusted_proxies: TrustedProxies) -> str:
         if not _is_trusted(address, trusted_proxies):
             return str(address)
 
-    # No chain, or a chain consisting entirely of trusted proxies.
-    real_ip = _parse_address(request.headers.get("X-Real-IP", ""))
-    if real_ip is not None:
-        return str(real_ip)
-
-    for hop in hops:
-        address = _parse_address(hop)
-        if address is not None:
-            return str(address)
-
+    # No chain, or a chain consisting entirely of trusted proxies: the peer is
+    # the most specific address we can actually justify.
+    #
+    # ``X-Real-IP`` is deliberately NOT consulted here. It looks like a safe
+    # fallback and is not one: it carries a single value with no chain, so
+    # there is no way to tell the part a trusted proxy wrote from the part a
+    # caller sent. Believing it re-opens exactly the key rotation this module
+    # exists to close — a caller behind a proxy that does not overwrite the
+    # header gets a fresh bucket per request by varying it. The ``X-Forwarded-For``
+    # walk is safe *because* the proxy appends, which is what lets us find the
+    # first hop the caller could not have written; `X-Real-IP` has no such
+    # structure, so it is unverifiable by construction.
+    #
+    # Cost of leaving it out: a deployment whose proxy sets only `X-Real-IP` and
+    # no `X-Forwarded-For` keys on the proxy address. That is the safe
+    # degradation, and the fix is to have the proxy set `X-Forwarded-For` —
+    # which every proxy in front of this service does, NGINX ingress included.
     return peer
-
-
-def resolve_client_ip_from_settings(
-    request: Request, trusted_proxies: Optional[Sequence[str]]
-) -> str:
-    """Convenience wrapper for call sites holding raw configured strings.
-
-    Prefer parsing once at construction time and calling
-    :func:`resolve_client_ip`; this exists for the paths that have no natural
-    place to hold parsed state.
-    """
-    return resolve_client_ip(request, parse_trusted_proxies(trusted_proxies))
