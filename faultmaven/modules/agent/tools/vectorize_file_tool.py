@@ -60,7 +60,7 @@ class VectorizeFileTool(AgentTool):
         return (
             "Vectorize a previously uploaded evidence file for semantic search. "
             "Chunks the file content, generates embeddings, and stores them in "
-            "ChromaDB. After vectorization, use knowledge_base_search to find "
+            "ChromaDB. After vectorization, use case_evidence_search to find "
             "content semantically. Triggered automatically when directed analysis "
             "fails on large files."
         )
@@ -239,7 +239,7 @@ class VectorizeFileTool(AgentTool):
                     "data_type": data_type_str,
                     "message": (
                         "File has been vectorized and is now searchable via "
-                        "knowledge_base_search. You can search for specific "
+                        "case_evidence_search. You can search for specific "
                         "content semantically."
                     ),
                 },

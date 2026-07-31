@@ -43,7 +43,6 @@ def create_knowledge_ingester(settings: FaultMavenSettings) -> Any | None:
 
 
 def create_registry_tools(
-    ingester: Any | None,
     settings: FaultMavenSettings,
 ) -> List[Any]:
     """Create tools (no decorator/registry side effects).
@@ -53,18 +52,17 @@ def create_registry_tools(
     """
     tools: List[Any] = []
 
-    # Knowledge base tools require the ingester. If it is unavailable, skip.
-    if ingester is not None:
-        try:
-            from faultmaven.modules.agent.tools.knowledge_base import (
-                KnowledgeBaseFilteredTool,
-                KnowledgeBaseTool,
-            )
-
-            tools.append(KnowledgeBaseTool(knowledge_ingester=ingester))
-            tools.append(KnowledgeBaseFilteredTool(knowledge_ingester=ingester))
-        except Exception as e:
-            logger.warning(f"Knowledge base tool creation failed: {e}")
+    # KnowledgeBaseTool/KnowledgeBaseFilteredTool used to be constructed here.
+    # They were never reachable by the model — they landed only in
+    # `container.tools`, which is read in exactly one place (a length count for
+    # health status), and never in the registry built by
+    # `_create_investigation_tools`. The agent's real KB tool is `kb_qa`,
+    # registered below. Deleted rather than wired: their retrieval path
+    # (KnowledgeIngester.search) queried the unified `faultmaven_kb` collection
+    # with only caller-supplied metadata filters and NO scope predicate, while
+    # ChromaDB metadata filtering is the only thing isolating one user's
+    # runbooks from another's. Wiring them would have handed the model an
+    # unscoped read over every tenant's personal KB (#943).
 
     # Web search tool is optional (may be disabled if no API key configured).
     try:
@@ -159,7 +157,7 @@ def register_tools(container: BaseDIContainer) -> None:
     container.knowledge_ingester = ingester
 
     # Create registry tools (includes web search if configured)
-    tools = create_registry_tools(ingester, settings)
+    tools = create_registry_tools(settings)
     container.tools = tools
 
     # Extract web_search_tool from registry tools for DA loop registration

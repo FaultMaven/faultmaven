@@ -592,12 +592,6 @@ except (ImportError, AttributeError):
     sys.modules["ctypes"] = _mock_ctypes_module
 
 sys.modules.setdefault(
-    "faultmaven.tools.knowledge_base",
-    SimpleNamespace(
-        KnowledgeBaseTool=Mock,
-    ),
-)
-sys.modules.setdefault(
     "faultmaven.core.knowledge.ingestion",
     SimpleNamespace(
         KnowledgeIngester=Mock,
@@ -620,12 +614,10 @@ sys.modules.setdefault(
 # These will be imported only when needed, not at module level
 # Catch all exceptions since the import chain can fail at many levels (torch, transformers, langchain, etc.)
 try:
-    from faultmaven.modules.agent.tools.knowledge_base import KnowledgeBaseTool
     from faultmaven.modules.agent.tools.web_search import WebSearchTool
 except Exception as e:
     # If import fails for any reason (ctypes, langchain version, torch, etc.), create mock versions
     # This allows tests to run even if these heavy dependencies have issues
-    KnowledgeBaseTool = Mock
     WebSearchTool = Mock
 
 # from faultmaven.modules.preprocessing.classifier import DataClassifier  # May need heavy deps

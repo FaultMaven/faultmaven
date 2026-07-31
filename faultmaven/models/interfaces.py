@@ -139,7 +139,7 @@ class BaseTool(ABC):
 
             >>> schema = kb_tool.get_schema()
             >>> schema['name']
-            'knowledge_base_search'
+            'kb_qa'
             >>> schema['description']
             'Search the knowledge base for troubleshooting information'
             >>> 'query' in schema['parameters']['properties']
