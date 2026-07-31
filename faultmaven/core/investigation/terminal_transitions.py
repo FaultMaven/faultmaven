@@ -1515,11 +1515,16 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
         top_k=3,
         min_similarity=0.65,
     )
+    # Attributes are read directly, NOT via getattr with a default.
+    # ``search_by_text`` returns ``List[SimilarRunbook]``, so a missing
+    # attribute is a contract break — and a ``getattr(r, "similarity_score", 0)``
+    # default would silently score it 0, drop it below every threshold, and
+    # reproduce "no similar runbook found" from a match that WAS returned:
+    # the exact defect this function was fixed for (#944).
     return [
         {
-            "similarity_score": getattr(r, "similarity_score", 0),
-            "title": getattr(getattr(r, "runbook", None), "title", None)
-            or getattr(r, "title", "Unknown"),
+            "similarity_score": r.similarity_score,
+            "title": r.runbook.title,
         }
         for r in results or []
     ]

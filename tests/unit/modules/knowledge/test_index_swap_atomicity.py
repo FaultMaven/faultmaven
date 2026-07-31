@@ -224,3 +224,44 @@ async def test_boot_repair_still_tolerates_an_unavailable_embedder():
 
     assert chunks == 0, "boot repair must degrade, not raise"
     assert service._vector_store.delete_documents_by_parent_id.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# The human-facing search surface must not read as "nothing matched" either
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_says_unavailable_not_zero_results():
+    """``POST /knowledge/search`` returns ``total_results: 0`` on failure.
+
+    The count cannot change without breaking the response contract, so the
+    ``error`` text carries the distinction: a client rendering the count would
+    otherwise show "no results found" for a search that never ran — the same
+    affirmative negative closed on the agent path in #943, on the human surface.
+    """
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KnowledgeVectorStore,
+    )
+
+    service = KnowledgeService.__new__(KnowledgeService)
+    store = KnowledgeVectorStore(client=MagicMock())
+    store._get_or_create_collection = MagicMock(return_value=MagicMock())
+    service._vector_store = store
+    service._sanitizer = MagicMock()
+    service._sanitizer.asanitize = AsyncMock(side_effect=lambda text: text)
+    service._resolve_shared_kb_ids = AsyncMock(return_value=[])
+    service._share_repo = None
+
+    user = MagicMock()
+    user.user_id = "u1"
+
+    with patch(
+        "faultmaven.infrastructure.model_cache.model_cache.aembed_query",
+        new=AsyncMock(return_value=None),
+    ):
+        result = await service.search_documents(query="drain a node", user=user)
+
+    assert result["total_results"] == 0
+    assert "unavailable" in result["error"].lower()
+    assert "not a result of zero matches" in result["error"].lower()

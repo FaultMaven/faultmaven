@@ -1916,6 +1916,24 @@ class KnowledgeService:
                 ],
             }
 
+        except KnowledgeBaseError as e:
+            # Distinguished from the generic handler below so the response does
+            # not read as "nothing matched". `total_results: 0` alongside a bare
+            # "Search failed" is the same affirmative negative this campaign
+            # closes on the agent path (#943) — a client rendering the count
+            # shows "no results" for a search that never ran. The shape is
+            # unchanged (no contract break); only the error text now says which
+            # of the two happened.
+            logger.error(f"Semantic search unavailable: {e}")
+            return {
+                "query": query,
+                "total_results": 0,
+                "results": [],
+                "error": (
+                    "Knowledge base search is unavailable — no documents were "
+                    "searched. This is not a result of zero matches."
+                ),
+            }
         except Exception as e:
             logger.error(f"Semantic search failed: {e}")
             # Static `error` value — see list_documents (#866).
