@@ -74,7 +74,9 @@ def test_no_header_influences_the_key_without_a_trusted_proxy(headers):
     something other than the peer, that value is one an attacker chose, and the
     quota it keys is one they can rotate away from.
     """
-    resolved = resolve_client_ip(_request(CALLER_PEER, headers), parse_trusted_proxies(None))
+    resolved = resolve_client_ip(
+        _request(CALLER_PEER, headers), parse_trusted_proxies(None)
+    )
 
     assert resolved == CALLER_PEER
 
@@ -165,17 +167,25 @@ def test_unparseable_hop_never_becomes_the_key():
 
 def test_missing_peer_is_not_an_ip_shaped_key():
     """An absent transport peer must not collide with a real client's bucket."""
-    assert resolve_client_ip(_request(None), parse_trusted_proxies(None)) == UNKNOWN_CLIENT_IP
+    assert (
+        resolve_client_ip(_request(None), parse_trusted_proxies(None))
+        == UNKNOWN_CLIENT_IP
+    )
 
 
 class TestTrustedProxyParsing:
     def test_addresses_and_cidrs_both_parse(self):
-        trusted = parse_trusted_proxies(["10.42.0.7", "192.168.0.0/16", "2001:db8::/32"])
+        trusted = parse_trusted_proxies(
+            ["10.42.0.7", "192.168.0.0/16", "2001:db8::/32"]
+        )
 
         assert len(trusted) == 3
-        assert resolve_client_ip(
-            _request("192.168.4.4", {"X-Forwarded-For": "203.0.113.50"}), trusted
-        ) == "203.0.113.50"
+        assert (
+            resolve_client_ip(
+                _request("192.168.4.4", {"X-Forwarded-For": "203.0.113.50"}), trusted
+            )
+            == "203.0.113.50"
+        )
 
     def test_comma_separated_string_is_accepted(self):
         assert len(parse_trusted_proxies("10.0.0.0/8, 192.168.0.0/16")) == 2
@@ -199,9 +209,12 @@ class TestTrustedProxyParsing:
         """The consequence of the drop, not just the drop."""
         trusted = parse_trusted_proxies(["not-a-cidr"])
 
-        assert resolve_client_ip(
-            _request(CALLER_PEER, {"X-Forwarded-For": "1.2.3.4"}), trusted
-        ) == CALLER_PEER
+        assert (
+            resolve_client_ip(
+                _request(CALLER_PEER, {"X-Forwarded-For": "1.2.3.4"}), trusted
+            )
+            == CALLER_PEER
+        )
 
     @pytest.mark.parametrize("empty", [None, [], "", "  ", ",,", [""], ["  "]])
     def test_every_spelling_of_unset_trusts_nothing(self, empty):

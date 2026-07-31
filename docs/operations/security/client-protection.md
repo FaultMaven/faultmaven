@@ -89,6 +89,41 @@ first violation. Escalation is tracked in #926.
 - `X-RateLimit-Remaining`: Requests remaining
 - `X-RateLimit-Reset`: Window reset time
 
+### Client identity: what a limit is keyed on
+
+The `global` limit is the only one that applies to unauthenticated traffic, and
+it is keyed on the client's address. That address is resolved by one shared
+rule, in `faultmaven/api/middleware/client_ip.py`:
+
+> **`X-Forwarded-For` and `X-Real-IP` are honoured only when the socket peer is
+> a configured trusted proxy, and never otherwise.**
+
+Both halves matter, and getting either wrong breaks the limit:
+
+| Policy | Failure |
+|--------|---------|
+| Always trust the headers | The limited party picks its own key. Rotating the header draws a fresh quota per request, so there is no limit at all. |
+| Never trust the headers | Behind an ingress every client resolves to the ingress address and shares one bucket, so one caller exhausts everybody's quota. |
+
+When the peer is trusted, the `X-Forwarded-For` chain is walked **from the
+right** and the first hop that is not itself a trusted proxy wins. The
+right-hand end was appended by infrastructure we trust; the left-hand end is
+whatever the caller sent. That is what makes a forged prefix inert — a caller
+sending `X-Forwarded-For: 1.2.3.4` is still keyed on the address the ingress
+appended. Hops that do not parse as an address are skipped rather than used, so
+attacker-supplied text cannot enter a Redis key.
+
+Configure it with `PROTECTION_TRUSTED_PROXIES` (see below). **The default is
+empty**, which means no header is believed and every limit keys on the socket
+peer. That is correct for a standalone install with no proxy in front of it,
+and it is the safe direction for everything else: the worst case is a limit
+that is too coarse, never one that can be evaded.
+
+**Kubernetes deployments must set this** to the ingress controller's pod range.
+Until they do, all external traffic shares one `global` bucket. It is not
+silent — the server logs a warning (throttled to one every 5 minutes) whenever
+forwarding headers arrive from an address that is not listed.
+
 **Response Codes**:
 - `429 Too Many Requests`: Rate limit exceeded
 - `503 Service Unavailable`: System overloaded
@@ -148,6 +183,12 @@ RATE_LIMIT_ENABLED=true
 RATE_LIMIT_REDIS_URL=redis://localhost:6379/1
 RATE_LIMIT_GLOBAL_REQUESTS=1000
 RATE_LIMIT_GLOBAL_WINDOW=60
+
+# Proxies whose X-Forwarded-For / X-Real-IP may be believed when deciding
+# which client a limit applies to. Addresses or CIDRs, comma-separated.
+# Empty (the default) means no forwarding header is honoured and limits key
+# on the socket peer. Kubernetes: set this to the ingress pod range.
+PROTECTION_TRUSTED_PROXIES=
 
 # Request Deduplication
 DEDUP_ENABLED=true

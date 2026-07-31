@@ -106,7 +106,9 @@ def parse_trusted_proxies(values: Optional[Iterable[str] | str]) -> TrustedProxi
     return tuple(networks)
 
 
-def _parse_address(value: str) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+def _parse_address(
+    value: str,
+) -> Optional[ipaddress.IPv4Address | ipaddress.IPv6Address]:
     """Parse one hop into an address, or ``None`` if it is not one.
 
     Tolerates the shapes proxies actually emit: a bracketed IPv6 literal, and
@@ -145,7 +147,10 @@ def _warn_unconfigured_proxy(peer: str) -> None:
     global _last_unconfigured_proxy_warning
 
     now = time.monotonic()
-    if now - _last_unconfigured_proxy_warning < _UNCONFIGURED_PROXY_WARNING_INTERVAL_SECONDS:
+    if (
+        now - _last_unconfigured_proxy_warning
+        < _UNCONFIGURED_PROXY_WARNING_INTERVAL_SECONDS
+    ):
         return
     _last_unconfigured_proxy_warning = now
 
