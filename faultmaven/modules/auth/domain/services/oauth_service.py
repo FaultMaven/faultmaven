@@ -59,12 +59,16 @@ class OAuthServiceImpl(IOAuthService):
         self,
         user_id: str,
         request: OAuthAuthorizationDTO,
+        organization_id: Optional[str] = None,
     ) -> str:
         """Generate authorization code for OAuth flow.
 
         Args:
             user_id: Authenticated user's ID from Dashboard session
             request: OAuth authorization request (includes PKCE challenge)
+            organization_id: Organization the authorizing session is bound to
+                (#872). The caller passes the org the request was scoped to by
+                ``bind_request_org_context``; see the note on the stored DTO.
 
         Returns:
             Authorization code (short-lived, single-use, 10 minutes)
@@ -156,7 +160,15 @@ class OAuthServiceImpl(IOAuthService):
             seconds=self.settings.oauth_code_expiry_seconds
         )
 
-        # Store authorization code with PKCE challenge
+        # Store authorization code with PKCE challenge.
+        #
+        # The organization travels with the code (#872). This endpoint runs under
+        # an authenticated dashboard session, so its org has already been verified
+        # and bound by ``bind_request_org_context``; the token exchange that
+        # redeems this code is unauthenticated and the user row it loads carries
+        # no organization at all. Without carrying it here there is nothing left
+        # to mint from, and every copilot session under multi-tenant would mint an
+        # empty claim and then be refused on its first API call.
         code_data = OAuthCodeDTO(
             code=code,
             user_id=user_id,
@@ -164,6 +176,7 @@ class OAuthServiceImpl(IOAuthService):
             code_challenge=request.code_challenge,
             expires_at=expires_at,
             used=False,
+            organization_id=organization_id,
         )
 
         await self.code_repository.save_code(code_data)
@@ -359,6 +372,22 @@ class OAuthServiceImpl(IOAuthService):
                 "User not found",
                 error_code="USER_NOT_FOUND",
             )
+
+        # Re-attach the organization captured when the code was issued (#872),
+        # the same shape ``refresh_access_token`` below uses for the rotation leg
+        # and ``sso_login_service.exchange`` uses for the SSO leg. The repository
+        # model has no organization column, so the object returned above carries
+        # either nothing or the Standalone sentinel that ``DevUser.__post_init__``
+        # stamps on every user the store loads — neither of which is this user's
+        # tenant. Under single-tenant the captured value is the sentinel and
+        # ``resolve_organization_claim`` would restore it anyway, so this is a
+        # no-op there. ``setattr`` because the repository may return its own model
+        # or a ``DevUser`` dataclass.
+        #
+        # Both generators put ``organization_id`` in the access *and* refresh
+        # payloads, so attaching it once here carries the claim through the whole
+        # chain: the first access token, and every rotation after it.
+        setattr(user, "organization_id", code_data.organization_id or None)
 
         # Generate access token and refresh token
         access_token = await self.token_generator.generate_access_token(user)

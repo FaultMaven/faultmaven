@@ -321,8 +321,17 @@ async def get_authorization_request(
             scope=scope,
         )
 
-        # Generate authorization code using authenticated user's ID
-        code = await oauth_service.create_authorization_code(user.user_id, auth_request)
+        # Generate authorization code using authenticated user's ID.
+        #
+        # ``user.organization_id`` is sourced from the request-scoped tenant
+        # contextvar the global ``bind_request_org_context`` dependency resolved
+        # (see ``get_current_user_optional``), so it is definitionally the org
+        # this request is RLS-scoped to — not a raw, possibly-forged claim. It
+        # rides with the code so the unauthenticated token exchange can mint from
+        # it (#872).
+        code = await oauth_service.create_authorization_code(
+            user.user_id, auth_request, organization_id=user.organization_id
+        )
 
         logger.info(
             f"Generated authorization code (auto-approved) for user {user.user_id}, client {client_id}"
@@ -393,8 +402,11 @@ async def post_authorization_approval(
             scope=approval.scope,
         )
 
-        # Generate authorization code using authenticated user's ID
-        code = await oauth_service.create_authorization_code(user.user_id, auth_request)
+        # Generate authorization code using authenticated user's ID. The org is
+        # the request's RLS-bound tenant — see the GET handler for why (#872).
+        code = await oauth_service.create_authorization_code(
+            user.user_id, auth_request, organization_id=user.organization_id
+        )
 
         logger.info(
             f"Generated authorization code (user approved) for user {user.user_id}, client {approval.client_id}"

@@ -762,6 +762,14 @@ class OAuthAuthorizationCodeModel(Base):
     code_challenge = Column(String(64), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     used = Column(Boolean, nullable=False, server_default="0")
+    # Organization the authorizing session was bound to (#872). Nullable: a
+    # single-tenant deployment has no tenant to carry, and a code issued before
+    # this column existed has none either. Deliberately not a foreign key and not
+    # RLS-tenanted — the row is a 10-minute credential read by primary key from
+    # the *unauthenticated* token endpoint, where no tenant is bound and an RLS
+    # policy would hide the very row the exchange must find (the same reasoning
+    # migration 038 applies to `sso_org_mappings`).
+    organization_id = Column(String(36), nullable=True)
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
