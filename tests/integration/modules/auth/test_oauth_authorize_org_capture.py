@@ -6,12 +6,16 @@ worth nothing if the route never puts an organization on the code — and the ro
 is where it comes from, because ``GET|POST /auth/oauth/authorize`` is the last
 authenticated hop before an unauthenticated exchange.
 
-So this covers the wiring itself: whatever org
-``bind_request_org_context`` bound for the request must reach
-``create_authorization_code``. ``user.organization_id`` is exactly that value —
-``get_current_user_optional`` sources it from the tenant contextvar rather than
-from the raw JWT claim — so asserting the route forwards it is asserting the
-route forwards the RLS-scoped tenant.
+So this covers one link of that chain, and only one: whatever
+``user.organization_id`` holds must reach ``create_authorization_code``. It
+overrides ``require_authentication`` with a hand-built user, so it does **not**
+establish the other link — that ``user.organization_id`` is the RLS-bound tenant
+rather than a raw JWT claim. That half is pinned by
+``tests/unit/api/v1/test_auth_dependencies_org_scope.py::test_org_sourced_from_contextvar_not_raw_claim``,
+which fails if ``get_current_user_optional`` is changed to read the claim
+directly. Neither test is sufficient alone; stating which one covers what is the
+point, because a reader who believes this file proves both would not notice the
+other going away.
 """
 
 import os
