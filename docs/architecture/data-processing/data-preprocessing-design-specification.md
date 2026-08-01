@@ -1042,11 +1042,17 @@ Any additional scalar keys passed in `metadata=…` by the caller are forwarded 
 Embeddings are produced by the in-process BGE-M3 model via `model_cache.get_bge_m3_model()`. Two properties are important for correctness on the request hot path:
 
 1. **Async offload.** Both the model lookup and `SentenceTransformer.encode()` are synchronous/CPU-bound. On the request hot path (`store_in_vector_db_background`, `CaseVectorStore.search`, `ChromaDBVectorStore.search`, `KnowledgeVectorStore.*`) they are invoked via `asyncio.to_thread(...)` so they run on the default thread-pool executor rather than the event loop thread. This preserves the responsiveness of the FastAPI request loop, lets `asyncio.wait_for` timeouts fire on schedule, and ensures concurrent requests keep making progress while an embedding is computed. Violating this invariant — e.g., adding a new `bge_model.encode(...)` call directly in an `async def` — will resurface the class of cold-start timeout incidents that §5.7 preload guards against.
-2. **Embedding fallback.** If the model is unavailable at call time (model load failure, missing weights), `store_in_vector_db_background` **logs a warning and falls back to ChromaDB's default embedding function** rather than failing the store — so vectorization always succeeds, at reduced retrieval quality.
+2. **One embedding space, or none.** If the model is unavailable at call time (model load failure, missing weights), `store_in_vector_db_background` **logs a warning and writes nothing**, returning `VectorIndexOutcome.EMBEDDER_UNAVAILABLE`. It does not fall back to ChromaDB's default embedding function. ChromaDB pins a collection's dimension on its first write, and the retrieval paths embed with BGE-M3 (`CaseVectorStore.search`), so a default-embedded write would be unsearchable *and* would make every later BGE-M3 write to that collection fail on dimension — one unavailable-model window permanently poisoning a case's evidence index. Skipping keeps the collection writable once the model returns; the file is re-indexed on the next `vectorize_file`.
 
-#### 5.6.4 Silent-Failure Semantics
+#### 5.6.4 Failure Semantics
 
-`store_in_vector_db_background` catches all exceptions from chunking, embedding, and Chroma upsert, logs them, and returns silently. Rationale: vectorization is a background task run after the user has already received their turn response, and the raw Evidence object is always retrievable from the Case repository regardless of vector-index state. See also [Evidence Failure Modes](./evidence-failure-modes.md) for adjacent failure handling.
+`store_in_vector_db_background` catches all exceptions from chunking, embedding, and Chroma upsert, logs them, and does not raise: it runs as a fire-and-forget background task for the proactive case, and the raw Evidence object is always retrievable from the Case repository regardless of vector-index state.
+
+Despite the name, nothing calls it at upload time. `VectorizeFileTool` is its only caller, awaiting it inside the directed-analysis tool loop, so indexing is always agent-driven and nothing else will cover a file the tool does not.
+
+Not raising is not the same as not reporting. The function returns a `VectorIndexOutcome` — `INDEXED`, `NOTHING_TO_INDEX`, `EMBEDDER_UNAVAILABLE`, or `FAILED` — and only `INDEXED` means the file is searchable. The `vectorize_file` agent tool awaits this call and reports to the investigating model, so a caller that cannot distinguish the four states announces an index that may not exist; the empty `case_evidence_search` that follows then reads as a finding about the evidence rather than as an absent index.
+
+See also [Evidence Failure Modes](./evidence-failure-modes.md) for adjacent failure handling.
 
 ### 5.7 Configuration
 

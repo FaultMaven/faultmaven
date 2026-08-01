@@ -67,9 +67,9 @@ BGE-M3 is the canonical embedding model for both KB ingestion and evidence vecto
 | Dimensions | Source | Status |
 | ---------- | ------ | ------ |
 | **1024** | BGE-M3 via `model_cache.get_bge_m3_model()` | **Active** — canonical for both KB and evidence retrieval (`KnowledgeItem.EMBEDDING_DIMENSIONS = 1024`) |
-| 384 | ChromaDB default embedding | **Fallback only** — when `sentence-transformers` is unavailable; in-progress evidence cases with 384-dim vectors self-clean on close (no migration needed; see §7) |
+| 384 | ChromaDB default embedding | **Not used.** No read or write path falls back to it |
 
-The 1024-dim BGE-M3 path is the only one new code should target. The 384 value appears only in the ChromaDB-default fallback path and is not part of the active design.
+BGE-M3 is the only embedding space, on both sides of every collection. There is no second one to fall back to: ChromaDB pins a collection's dimension on its first write, so a default-embedded write is unsearchable by a BGE-M3 query *and* blocks every later BGE-M3 write to that collection on dimension. A query issued in the other space is not a degraded answer to the right question, it is a different question asked of a space nothing was indexed in — and the caller cannot tell it from "searched and found nothing".
 
 ---
 
@@ -399,7 +399,7 @@ All paths (KB and evidence) use explicit BGE-M3 embeddings (1024 dims) via `mode
 - `store_in_vector_db_background()` — generates BGE-M3 embeddings, passes to `CaseVectorStore.add_documents(embeddings=...)`
 - `CaseVectorStore.search()` — encodes query with BGE-M3, uses `query_embeddings`
 
-Both paths fall back gracefully to ChromaDB's default embedding if BGE-M3 is unavailable (e.g., `sentence-transformers` not installed). Existing in-progress cases with 384-dim vectors will self-clean as they close — no migration needed.
+Neither path degrades to a second embedding space when BGE-M3 is unavailable (e.g. `sentence-transformers` not installed). The read path raises `KnowledgeBaseError` via the shared `infrastructure/embedding_guard.py`; the write path writes nothing and returns `VectorIndexOutcome.EMBEDDER_UNAVAILABLE`, and `vectorize_file` reports the file as not indexed rather than as searchable. An unavailable embedder must never reach the investigating model as a statement about what the index holds.
 
 ### Superseded Code
 

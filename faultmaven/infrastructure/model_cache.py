@@ -306,7 +306,11 @@ class ModelCache:
         so callers NEVER block the event loop. Batched — a single ``encode`` over
         the list is far cheaper than N per-text passes (sentence-transformers
         vectorizes). Returns ``None`` if the model is unavailable, so the caller
-        decides its fallback (ChromaDB default embedding, or skip).
+        decides what that means — search paths raise (see
+        :mod:`faultmaven.infrastructure.embedding_guard`), the case indexing
+        path skips. What no caller may do is write or query in a *second*
+        embedding space: one space per collection, or the index is incoherent
+        (#941).
 
         Prefer this / ``aembed_query`` over open-coding
         ``await asyncio.to_thread(bge_model.encode, ...)`` at call sites: a bare

@@ -215,12 +215,12 @@ async def test_a_hanging_embedder_fails_closed_instead_of_hanging_the_turn():
     all the way to the outer turn budget."""
     import asyncio as _asyncio
 
-    from faultmaven.infrastructure.knowledge import knowledge_vector_store as kvs
+    from faultmaven.infrastructure import embedding_guard
 
     async def _never_returns(_text):
         await _asyncio.sleep(60)
 
-    with patch.object(kvs, "EMBED_TIMEOUT_SECONDS", 0.05):
+    with patch.object(embedding_guard, "EMBED_TIMEOUT_SECONDS", 0.05):
         with patch(_EMBEDDER, new=_never_returns):
             with pytest.raises(KnowledgeBaseError) as excinfo:
                 await _store().search(

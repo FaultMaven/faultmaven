@@ -193,7 +193,17 @@ class TestStoreInVectorDbBackground:
 
     @pytest.mark.asyncio
     @patch("faultmaven.core.preprocessing.vector_storage.model_cache")
-    async def test_fallback_when_bge_m3_unavailable(self, mock_model_cache):
+    async def test_skips_indexing_when_bge_m3_unavailable(self, mock_model_cache):
+        """No second embedding space, on either side of the collection.
+
+        This used to pass ``embeddings=None`` and let ChromaDB embed with its
+        own model. ChromaDB pins a collection's dimension on first write and
+        search embeds with BGE-M3 (#941), so those chunks would be unsearchable
+        forever AND every later BGE-M3 write into the same collection would be
+        rejected on dimension — one unavailable-model window poisoning the
+        case's evidence index for good. Skipping leaves the collection writable
+        once the model returns.
+        """
         mock_model_cache.aembed_texts = AsyncMock(return_value=None)
 
         mock_store = AsyncMock()
@@ -210,9 +220,7 @@ class TestStoreInVectorDbBackground:
             case_vector_store=mock_store,
         )
 
-        call_kwargs = mock_store.add_documents.call_args[1]
-        # embeddings should be None — falls back to ChromaDB default
-        assert call_kwargs["embeddings"] is None
+        mock_store.add_documents.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_empty_index_skips_storage(self):

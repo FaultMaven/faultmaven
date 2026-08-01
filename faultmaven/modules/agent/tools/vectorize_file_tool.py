@@ -1,17 +1,20 @@
-"""Vectorize File Tool — On-Demand Re-Vectorization for Semantic Search
+"""Vectorize File Tool — On-Demand Vectorization for Semantic Search
 
-IMPORTANT: This tool is the **re-vectorization** path, not the primary
-ingestion path. Evidence uploaded to a case is vectorized eagerly at
-upload time by ``store_in_vector_db_background()``
-(``faultmaven/core/preprocessing/vector_storage.py``), which runs after
-classification + extraction. That background task populates the case
-ChromaDB collection without the agent needing to act.
+This tool is the **only** path into a case's ChromaDB collection:
+``store_in_vector_db_background()``
+(``faultmaven/core/preprocessing/vector_storage.py``) has no other caller.
+Uploading evidence does not index it — despite that function's name, nothing
+runs at upload time.
 
-This tool is invoked by the orchestration layer only when directed
-analysis fails on a file that exceeds the size threshold — i.e. to
-*re*-index or to index a specific evidence item that wasn't covered by
-the primary path. Do not describe this tool as the default vectorization
-mechanism.
+Indexing is therefore always agent-driven, via the orchestration layer:
+proactively as a background task for evidence above the size threshold, or
+reactively when directed analysis fails on a large file. Nothing else will
+cover a file that this tool does not.
+
+That makes what this tool *reports* load-bearing. A file it did not index is
+not in the collection, so a later ``case_evidence_search`` cannot find it —
+and if the tool claimed otherwise, the model reads that empty search as a
+statement about the file's contents (#941).
 
 Design Reference: docs/architecture/data-processing/README.md
 """
@@ -28,15 +31,45 @@ logger = logging.getLogger(__name__)
 
 VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB hard cap
 
+#: What the investigating model is told when a file becomes searchable. This
+#: is the surface — everything else about vectorization is an intermediate
+#: value the model never sees.
+VECTORIZED_SYSTEM_MESSAGE = (
+    "\n\n[SYSTEM] This file has been automatically indexed for semantic "
+    "search. Use case_evidence_search to find content by meaning rather "
+    "than keywords."
+)
+
+
+def append_vectorization_advisory(text: str, indexed: bool) -> str:
+    """Append the searchability advisory, and only if the file really is indexed.
+
+    The rule lives here rather than at each emission site because it was
+    previously restated at four of them — twice in ``MilestoneEngine``, twice in
+    ``AgentOrchestrationService`` — with the message text copied inline. Four
+    copies of a rule are four chances to keep the ``if`` and lose the condition,
+    and the advisory is not a cosmetic string: it sends the model to
+    ``case_evidence_search``, so claiming it for a file that was never written
+    guarantees an empty search the model then reads as a statement about the
+    file's contents (#941).
+
+    Taking ``indexed`` as an argument means the caller's surrounding ``if``
+    cannot carry the claim on its own — this returns ``text`` unchanged for a
+    file that indexed nothing however it was reached.
+    """
+    if not indexed or VECTORIZED_SYSTEM_MESSAGE in text:
+        return text
+    return text + VECTORIZED_SYSTEM_MESSAGE
+
 
 class VectorizeFileTool(AgentTool):
-    """On-demand re-vectorization of evidence files for semantic search.
+    """On-demand vectorization of evidence files for semantic search.
 
     Chunks evidence content, generates embeddings, and stores them in
-    ChromaDB. This is the *re-vectorization* path — the primary path
-    happens at upload time via ``store_in_vector_db_background()``
-    (see module docstring). Auto-triggered by the orchestration layer
-    when directed analysis fails on files exceeding the size threshold.
+    ChromaDB. The only writer to a case's collection (see module
+    docstring). Auto-triggered by the orchestration layer — proactively
+    for evidence above the size threshold, reactively when directed
+    analysis fails on a large file.
 
     Size gates (enforced):
     - File must exceed VECTORIZATION_MIN_SIZE_BYTES (configurable, default 50KB)
@@ -208,10 +241,11 @@ class VectorizeFileTool(AgentTool):
 
             # Run vectorization
             from faultmaven.core.preprocessing.vector_storage import (
+                VectorIndexOutcome,
                 store_in_vector_db_background,
             )
 
-            await store_in_vector_db_background(
+            outcome = await store_in_vector_db_background(
                 case_id=context.case_id,
                 evidence_id=evidence_id,
                 structural_index=structural_index,
@@ -225,11 +259,20 @@ class VectorizeFileTool(AgentTool):
             )
 
             logger.info(
-                "vectorize_file completed: %s, content_size=%d, data_type=%s",
+                "vectorize_file %s: %s, content_size=%d, data_type=%s",
+                outcome.value,
                 evidence_id,
                 content_size,
                 data_type_str,
             )
+
+            # Only INDEXED makes the file searchable, and only INDEXED may say
+            # so. Reporting the others as success announced an index that does
+            # not exist; the model then searches, gets nothing back, and reads
+            # it as "this file does not contain that" — an unwritten index
+            # laundered into a finding about the evidence (#941).
+            if outcome is not VectorIndexOutcome.INDEXED:
+                return self._not_indexed(outcome, evidence_id, data_type_str)
 
             return ToolResult(
                 success=True,
@@ -237,6 +280,11 @@ class VectorizeFileTool(AgentTool):
                     "evidence_id": evidence_id,
                     "content_size_bytes": content_size,
                     "data_type": data_type_str,
+                    # Stated on BOTH success arms, not just the negative one:
+                    # the engine reads this key rather than the message text,
+                    # and a check that depends on a key being absent passes for
+                    # any caller that forgets to set it (#941).
+                    "indexed": True,
                     "message": (
                         "File has been vectorized and is now searchable via "
                         "case_evidence_search. You can search for specific "
@@ -252,3 +300,50 @@ class VectorizeFileTool(AgentTool):
                 data=None,
                 error=f"Vectorization failed: {str(e)}",
             )
+
+    @staticmethod
+    def _not_indexed(outcome: Any, evidence_id: str, data_type_str: str) -> ToolResult:
+        """Render a non-``INDEXED`` outcome without claiming an index exists.
+
+        Each arm says what happened and, where the file is genuinely absent
+        from the index, says what may NOT be concluded from a later empty
+        ``case_evidence_search`` — same rule the KB adapters follow (#943): a
+        retrieval layer that could not do its job establishes nothing about the
+        evidence.
+        """
+        from faultmaven.core.preprocessing.vector_storage import VectorIndexOutcome
+
+        # Not a failure: the file really has no chunkable content, which is a
+        # fact about the file and safe for the model to act on.
+        if outcome is VectorIndexOutcome.NOTHING_TO_INDEX:
+            return ToolResult(
+                success=True,
+                data={
+                    "evidence_id": evidence_id,
+                    "data_type": data_type_str,
+                    "indexed": False,
+                    "message": (
+                        "This file has no chunkable content, so there is "
+                        "nothing to index and case_evidence_search will not "
+                        "return it. Read it directly with read_file or "
+                        "search_file instead."
+                    ),
+                },
+                error=None,
+            )
+
+        reason = (
+            "the embedding model is unavailable"
+            if outcome is VectorIndexOutcome.EMBEDDER_UNAVAILABLE
+            else "indexing failed"
+        )
+        return ToolResult(
+            success=False,
+            data=None,
+            error=(
+                f"This file was NOT vectorized: {reason}. It is not in the "
+                f"case evidence index, so case_evidence_search cannot find it "
+                f"— an empty result for this file says nothing about its "
+                f"contents. Read it directly with read_file or search_file."
+            ),
+        )

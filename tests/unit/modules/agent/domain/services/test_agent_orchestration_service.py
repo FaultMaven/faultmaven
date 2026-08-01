@@ -2324,3 +2324,133 @@ class TestSharedKbAllowlistIsTenantScoped:
             scope_ids=["team-1"],
             organization_id=STANDALONE_ORG_ID,
         )
+
+
+class TestAutoVectorizeReportsIndexedNotJustSuccess:
+    """``_auto_vectorize``'s bool is what tells the model a file is searchable.
+
+    ``vectorize_file`` reports a file with no chunkable content as a success
+    that indexed nothing. Returning ``result.success`` verbatim turned that into
+    "[SYSTEM] This file has been automatically indexed for semantic search"; the
+    model then ran ``case_evidence_search``, got nothing, and read it as a
+    statement about the file's contents — an index that was never written
+    laundered into a finding about the evidence (#941).
+    """
+
+    @pytest.fixture
+    def service(
+        self,
+        mock_session_service,
+        mock_case_repo,
+        mock_tool_registry,
+        mock_llm_client,
+    ):
+        return AgentOrchestrationService(
+            case_repo=mock_case_repo,
+            session_service=mock_session_service,
+            tool_registry=mock_tool_registry,
+            llm_client=mock_llm_client,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "result,expected",
+        [
+            (ToolResult(success=True, data={"indexed": True}), True),
+            (ToolResult(success=True, data={"indexed": False}), False),
+            (ToolResult(success=False, data=None, error="boom"), False),
+            # Fail CLOSED: an unstated key or an unrecognisable payload means
+            # "this caller did not tell us it is indexed", and the safe reading
+            # of that is that it is not.
+            (ToolResult(success=True, data={"evidence_id": "ev_test"}), False),
+            (ToolResult(success=True, data="ok"), False),
+            (ToolResult(success=True, data=None), False),
+        ],
+        ids=[
+            "indexed",
+            "success_but_indexed_nothing",
+            "failed",
+            "key_missing",
+            "string_payload",
+            "none_payload",
+        ],
+    )
+    async def test_only_an_actual_index_is_reported(
+        self, service, mock_tool_registry, result, expected
+    ):
+        mock_tool_registry.execute_tool = AsyncMock(return_value=result)
+        ctx = ToolContext(
+            session_id="s",
+            case_id="case_test",
+            organization_id="org_test",
+            user_id="u",
+        )
+
+        assert await service._auto_vectorize("ev_test", ctx) is expected
+
+
+class TestVectorizationAdvisoryEmission:
+    """The [SYSTEM] advisory is the surface — assert THERE (#941).
+
+    ``_auto_vectorize``'s bool is an intermediate value. What reaches the model
+    is "This file has been automatically indexed for semantic search. Use
+    case_evidence_search…", which sends it to a search that must come back
+    empty for a file that was never written — and it reads that emptiness as a
+    statement about the file's contents.
+
+    Both emission sites now route through ``_note_vectorization``, so this
+    covers the proactive and reactive paths that previously lived inline in
+    ``_execute_with_streaming`` where no test could reach them.
+    """
+
+    @pytest.fixture
+    def service(
+        self,
+        mock_session_service,
+        mock_case_repo,
+        mock_tool_registry,
+        mock_llm_client,
+    ):
+        return AgentOrchestrationService(
+            case_repo=mock_case_repo,
+            session_service=mock_session_service,
+            tool_registry=mock_tool_registry,
+            llm_client=mock_llm_client,
+        )
+
+    @pytest.mark.parametrize(
+        "indexed,expect_advisory",
+        [(True, True), (False, False)],
+        ids=["indexed", "indexed_nothing"],
+    )
+    def test_advisory_and_state_track_whether_the_file_is_really_indexed(
+        self, service, indexed, expect_advisory
+    ):
+        from faultmaven.modules.agent.tools.vectorize_file_tool import (
+            VECTORIZED_SYSTEM_MESSAGE,
+        )
+
+        state = EvidenceDAState(evidence_id="ev_test", content_size_bytes=100_000)
+
+        out = service._note_vectorization(
+            "before", indexed, state, "ev_test", "auto_vectorization_triggered"
+        )
+
+        assert (VECTORIZED_SYSTEM_MESSAGE in out) is expect_advisory
+        assert state.vectorized is expect_advisory, (
+            "state.vectorized and the advisory must track the same fact — "
+            "otherwise one path skips re-vectorizing a file the other never "
+            "told the model about"
+        )
+
+    def test_advisory_is_not_repeated_when_both_paths_fire_in_one_turn(self, service):
+        state = EvidenceDAState(evidence_id="ev_test", content_size_bytes=100_000)
+
+        once = service._note_vectorization(
+            "before", True, state, "ev_test", "proactive_vectorization_completed"
+        )
+        twice = service._note_vectorization(
+            once, True, state, "ev_test", "auto_vectorization_triggered"
+        )
+
+        assert twice == once

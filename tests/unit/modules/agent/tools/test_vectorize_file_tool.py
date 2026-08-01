@@ -10,10 +10,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from faultmaven.core.preprocessing.vector_storage import VectorIndexOutcome
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VECTORIZATION_MAX_SIZE_BYTES,
+    VECTORIZED_SYSTEM_MESSAGE,
     VectorizeFileTool,
+    append_vectorization_advisory,
 )
 
 
@@ -132,9 +135,14 @@ class TestSizeGates:
 
     @pytest.mark.asyncio
     async def test_accepts_file_within_range(self, tool, context, mock_settings):
+        # Must return a real VectorIndexOutcome: the tool now branches on it to
+        # decide whether it may claim the file is searchable (#941), so a bare
+        # AsyncMock returning a MagicMock is a double that no longer stands in
+        # for production.
         with patch(
             "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
             new_callable=AsyncMock,
+            return_value=VectorIndexOutcome.INDEXED,
         ) as mock_store:
             result = await tool.execute_with_context(
                 params={"evidence_id": "ev_abc"},
@@ -167,6 +175,7 @@ class TestVectorization:
         with patch(
             "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
             new_callable=AsyncMock,
+            return_value=VectorIndexOutcome.INDEXED,
         ) as mock_store:
             await tool.execute_with_context(
                 params={"evidence_id": "ev_abc"},
@@ -194,6 +203,83 @@ class TestVectorization:
 
         assert result.success is False
         assert "no preprocessed structural_index" in result.error
+
+
+class TestOutcomeIsReportedNotAssumed:
+    """Only an index that exists may be announced (#941).
+
+    ``store_in_vector_db_background`` returned ``None`` whether it wrote chunks,
+    skipped for an unavailable embedder, found nothing to chunk, or failed — so
+    this tool said "vectorized and is now searchable via case_evidence_search"
+    for all four. The model then searched, got nothing, and read it as "this file
+    does not contain that": an index that was never written laundered into a
+    finding about the evidence.
+
+    These drive ``execute_with_context`` rather than the renderer it delegates
+    to. The renderer being right is not the property — the tool *reaching* it is,
+    and asserting on the helper's return value would pass against a tool that
+    never calls it.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "outcome,expect_success,expect_searchable",
+        [
+            (VectorIndexOutcome.INDEXED, True, True),
+            (VectorIndexOutcome.EMBEDDER_UNAVAILABLE, False, False),
+            (VectorIndexOutcome.FAILED, False, False),
+            (VectorIndexOutcome.NOTHING_TO_INDEX, True, False),
+        ],
+        ids=["indexed", "embedder_unavailable", "failed", "nothing_to_index"],
+    )
+    async def test_searchability_is_claimed_only_when_it_is_true(
+        self, tool, context, mock_settings, outcome, expect_success, expect_searchable
+    ):
+        with patch(
+            "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
+            new_callable=AsyncMock,
+            return_value=outcome,
+        ):
+            result = await tool.execute_with_context(
+                params={"evidence_id": "ev_abc"},
+                context=context,
+            )
+
+        assert result.success is expect_success
+        rendered = f"{result.error or ''} {(result.data or {}).get('message', '')}"
+        assert ("is now searchable" in rendered) is expect_searchable, (
+            f"{outcome.value} rendered as searchable="
+            f"{'is now searchable' in rendered}: {rendered!r}"
+        )
+
+        # `indexed` is the machine-readable half of the same statement, and the
+        # ONLY half the engines read — they never render `message`. Both success
+        # arms must state it: the gate upstream is `data.get("indexed") is
+        # False`, which a missing key passes, so an unstated key silently means
+        # "searchable" (#941).
+        if result.success:
+            assert result.data["indexed"] is expect_searchable
+
+    @pytest.mark.asyncio
+    async def test_an_unwritten_index_tells_the_model_to_conclude_nothing(
+        self, tool, context, mock_settings
+    ):
+        """Same rule the KB adapters follow: a layer that could not do its job
+        establishes nothing, and has to say so — otherwise the empty
+        ``case_evidence_search`` that follows is read as a finding."""
+        with patch(
+            "faultmaven.core.preprocessing.vector_storage.store_in_vector_db_background",
+            new_callable=AsyncMock,
+            return_value=VectorIndexOutcome.EMBEDDER_UNAVAILABLE,
+        ):
+            result = await tool.execute_with_context(
+                params={"evidence_id": "ev_abc"},
+                context=context,
+            )
+
+        assert result.success is False
+        assert result.data is None
+        assert "says nothing about its contents" in result.error.lower()
 
 
 class TestValidation:
@@ -236,3 +322,42 @@ class TestToolProperties:
         schema = tool.parameters_schema
         assert "evidence_id" in schema["properties"]
         assert schema["required"] == ["evidence_id"]
+
+
+class TestAdvisoryRuleIsStatedOnce:
+    """``append_vectorization_advisory`` holds the rule the four emission sites
+    used to restate — two in ``MilestoneEngine``, two in
+    ``AgentOrchestrationService``, with the message text copied inline.
+
+    The advisory is not cosmetic: it sends the model to
+    ``case_evidence_search``. Claiming it for a file that was never written
+    guarantees an empty search the model then reads as a statement about the
+    file's contents (#941).
+    """
+
+    @pytest.mark.parametrize(
+        "indexed,expect_appended",
+        [(True, True), (False, False)],
+        ids=["indexed", "indexed_nothing"],
+    )
+    def test_appended_only_for_a_file_that_is_really_indexed(
+        self, indexed, expect_appended
+    ):
+        out = append_vectorization_advisory("before", indexed)
+
+        assert (out != "before") is expect_appended
+        assert ("is now searchable" in out) is False  # tool wording, not this one
+        assert (VECTORIZED_SYSTEM_MESSAGE in out) is expect_appended
+
+    def test_not_duplicated_when_already_present(self):
+        """Two emission sites can fire for one evidence in a turn."""
+        once = append_vectorization_advisory("before", True)
+
+        assert append_vectorization_advisory(once, True) == once
+
+    @pytest.mark.parametrize("falsy", [False, None, 0, ""])
+    def test_anything_that_is_not_a_confirmed_index_is_refused(self, falsy):
+        """Fail-closed. The callers derive this from a tool payload, so the
+        rule has to hold for whatever "we were not told it is indexed" looks
+        like at the call site, not just for literal False."""
+        assert append_vectorization_advisory("before", falsy) == "before"

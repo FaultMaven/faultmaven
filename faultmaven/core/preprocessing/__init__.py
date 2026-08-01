@@ -24,7 +24,11 @@ from .models import (
     generate_concise_summary,
     to_unified_data_type,
 )
-from .vector_storage import chunk_structural_index, store_in_vector_db_background
+from .vector_storage import (
+    VectorIndexOutcome,
+    chunk_structural_index,
+    store_in_vector_db_background,
+)
 
 __all__ = [
     "UnifiedDataType",
@@ -39,4 +43,5 @@ __all__ = [
     "generate_concise_summary",
     "chunk_structural_index",
     "store_in_vector_db_background",
+    "VectorIndexOutcome",
 ]

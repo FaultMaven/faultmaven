@@ -22,7 +22,6 @@ Hybrid search: Two-stage retrieval + reranking pipeline:
     - Scope preference (personal > team > global tiebreaking)
 """
 
-import asyncio
 import logging
 import math
 import re
@@ -33,17 +32,10 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from chromadb.errors import NotFoundError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.models.exceptions import KnowledgeBaseError
 
 logger = logging.getLogger(__name__)
-
-# Bound on a single query embedding. Sits outside call_external's timeout
-# (see _embed_query_or_raise), so it is the only thing keeping a cold BGE-M3
-# load from hanging a tool call to the outer turn budget. Matched to
-# call_external's 10s for consistency — note this ADDS to the ChromaDB budget
-# rather than sharing it, so a search's worst case is now embed + query, not
-# one 10s ceiling for both.
-EMBED_TIMEOUT_SECONDS = 10.0
 
 # Minimum keyword length for extraction
 MIN_KEYWORD_LENGTH = 3
@@ -246,53 +238,18 @@ class KnowledgeVectorStore(BaseExternalClient):
     async def _embed_query_or_raise(self, query: str, operation: str) -> List[float]:
         """Embed a query with BGE-M3, raising rather than degrading to ``[]``.
 
-        An unavailable embedder is NOT an empty knowledge base. Returning ``[]``
-        here reaches the investigating model as "the KB has nothing" — an
-        affirmative negative it would then reason from, which is exactly the
-        incorrect conclusion the engine must never draw (#943). Callers that
-        genuinely want to tolerate this must catch ``KnowledgeBaseError``
-        explicitly, so tolerating it is opt-IN and visible at the call site.
-
-        Bounded by ``EMBED_TIMEOUT_SECONDS``. This runs OUTSIDE
-        ``call_external`` — deliberately, since retrying an unrecoverable model
-        load would burn ChromaDB's retry budget and trip its circuit breaker
-        for an embedder fault — but that also puts it outside
-        ``call_external``'s own timeout, so it carries its own. Without one a
-        cold BGE-M3 load can hang the tool call all the way to the outer turn
-        budget.
-
-        The bound is on the *caller*, not the work: ``aembed_query`` runs the
-        load on a worker thread via ``asyncio.to_thread``, which cannot be
-        cancelled, so a timed-out load keeps running to completion in the
-        background (and populates the cache, so a later call may find it warm).
-        What this guarantees is that the search returns — not that the load
-        stops.
+        An unavailable embedder is NOT an empty knowledge base. See
+        :mod:`faultmaven.infrastructure.embedding_guard`, which holds the one
+        implementation every vector store shares — the case evidence store had
+        its own, differently-wrong answer to this until #941, and the point of
+        a single implementation is that they cannot drift apart again.
         """
-        from faultmaven.infrastructure.model_cache import model_cache
-
-        try:
-            query_embedding = await asyncio.wait_for(
-                model_cache.aembed_query(query), timeout=EMBED_TIMEOUT_SECONDS
-            )
-        except asyncio.TimeoutError:
-            self.logger.error(
-                f"BGE-M3 embedding timed out after {EMBED_TIMEOUT_SECONDS}s "
-                f"for {operation}"
-            )
-            raise KnowledgeBaseError(
-                f"Knowledge base search unavailable: embedding the query timed "
-                f"out after {EMBED_TIMEOUT_SECONDS}s",
-                error_code="KNOWLEDGE_EMBEDDER_TIMEOUT",
-            )
-
-        if query_embedding is None:
-            self.logger.error(f"BGE-M3 model unavailable for {operation}")
-            raise KnowledgeBaseError(
-                "Knowledge base search unavailable: the embedding model "
-                "could not be loaded",
-                error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
-            )
-        return query_embedding
+        return await embed_query_or_raise(
+            query,
+            subject="Knowledge base search",
+            operation=operation,
+            log=self.logger,
+        )
 
     async def search(
         self,

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import (
@@ -107,12 +108,11 @@ class RunbookKnowledgeBase(BaseExternalClient):
         the refusal semantics cannot drift apart again.
 
         Raises:
-            KnowledgeBaseError: If the embedding model is unavailable. The
-                caller must NOT render this as "no similar runbooks found" —
-                that is the affirmative negative this method exists to end.
+            KnowledgeBaseError: If the embedding model is unavailable or its
+                load exceeds ``EMBED_TIMEOUT_SECONDS``. The caller must NOT
+                render either as "no similar runbooks found" — that is the
+                affirmative negative this method exists to end.
         """
-        from faultmaven.infrastructure.model_cache import model_cache
-
         # Refuse an unscoped search HERE rather than relying on
         # search_runbooks' falsy-org guard. That guard fails closed by
         # returning [] without querying — correct for tenancy, but every
@@ -129,14 +129,28 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 error_code="RUNBOOK_SEARCH_UNSCOPED",
             )
 
-        query_embedding = await model_cache.aembed_query(query_text)
-        if query_embedding is None:
-            logger.error("BGE-M3 unavailable — cannot search runbooks by text")
-            raise KnowledgeBaseError(
-                "Runbook similarity search unavailable: the embedding model "
-                "could not be loaded",
-                error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
-            )
+        # The shared guard, not a fourth hand-rolled copy of it. #944 gave this
+        # site the right refusal but its own implementation, which meant it
+        # also missed the time bound. Both callers sit under a caller-side
+        # deadline they can exhaust: the runbook dedup in terminal_transitions
+        # runs inside the 120s per-turn budget, and the report-recommendation
+        # endpoint under the HTTP/ingress budget. A cold BGE-M3 load is 60-120s,
+        # so an unbounded await here consumes that whole budget instead of
+        # refusing in 10s.
+        #
+        # Consequence, accepted: a terminal transition during a cold start
+        # refuses, and the resolution carries the "dedup could not run" caveat
+        # rather than blocking on the load. The timed-out load does run to
+        # completion and warm the cache, so the refusals stop once it finishes
+        # — but not only the first is affected: ``get_bge_m3_model`` loads under
+        # a ``threading.Lock``, so every embed attempt arriving during the
+        # window blocks on that lock and exhausts its own 10s bound too.
+        query_embedding = await embed_query_or_raise(
+            query_text,
+            subject="Runbook similarity search",
+            operation="runbook_search_by_text",
+            log=logger,
+        )
 
         return await self.search_runbooks(
             query_embedding=query_embedding,

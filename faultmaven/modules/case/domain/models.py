@@ -2044,9 +2044,12 @@ class Evidence(BaseModel):
         description=(
             "Whether this evidence's structural index has been persisted into "
             "the case vector store. Set to True by the investigation engine "
-            "after a successful vectorize_file run; persisted across turns so "
-            "proactive and reactive vectorization paths skip already-indexed "
-            "evidence instead of re-embedding on every turn."
+            "after a vectorize_file run that actually wrote chunks — NOT after "
+            "any successful run: a file with no chunkable content, or one seen "
+            "while the embedder was unavailable, completes successfully and "
+            "indexes nothing, and is not in the store (#941). Persisted across "
+            "turns so proactive and reactive vectorization paths skip "
+            "already-indexed evidence instead of re-embedding on every turn."
         ),
     )
 

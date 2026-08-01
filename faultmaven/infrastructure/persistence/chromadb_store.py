@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.models.interfaces import IVectorStore
 
 logger = logging.getLogger(__name__)
@@ -158,17 +159,24 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
     async def search(
         self, query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict]:
-        """Search for similar documents using explicit BGE-M3 embedding."""
+        """Search for similar documents using explicit BGE-M3 embedding.
+
+        Raises:
+            KnowledgeBaseError: If the embedding model is unavailable. NOT an
+                empty result — a caller that reads ``[]`` as "the knowledge
+                base holds nothing" would be reporting a failure to search as a
+                finding about the KB's contents (#941).
+        """
+        # Embedded BEFORE call_external: a local model call is not the ChromaDB
+        # round-trip the retry/circuit-breaker policy exists for.
+        query_embedding = await embed_query_or_raise(
+            query,
+            subject="Knowledge base search",
+            operation="search",
+            log=self.logger,
+        )
 
         async def _search_wrapper():
-            from faultmaven.infrastructure.model_cache import model_cache
-
-            # Embed off the event loop via the model_cache async boundary.
-            query_embedding = await model_cache.aembed_query(query)
-            if query_embedding is None:
-                self.logger.error("BGE-M3 model unavailable for search")
-                return []
-
             query_params = {
                 "query_embeddings": [query_embedding],
                 "n_results": k,
