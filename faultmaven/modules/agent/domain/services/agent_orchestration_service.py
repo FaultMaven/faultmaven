@@ -174,7 +174,7 @@ Available tools:
 - read_file: Read the contents of an evidence file by ID
 - search_file: Search a file for keywords, regex patterns, or timestamps (fast, free)
 - deep_analysis: LLM-interpreted analysis of specific data sections (primary tool for answering questions)
-- knowledge_base_search: Semantic search over vectorized evidence
+- case_evidence_search: Semantic search over vectorized case evidence
 
 {data_access_strategy}
 
@@ -1357,7 +1357,7 @@ class AgentOrchestrationService:
                                 content_for_context += (
                                     "\n\n[SYSTEM] This file has been "
                                     "automatically indexed for semantic "
-                                    "search. Use knowledge_base_search to "
+                                    "search. Use case_evidence_search to "
                                     "find content by meaning rather than "
                                     "keywords."
                                 )
@@ -1440,7 +1440,7 @@ class AgentOrchestrationService:
                             content_for_context += (
                                 "\n\n[SYSTEM] This file has been automatically "
                                 "indexed for semantic search. Use "
-                                "knowledge_base_search to find content by "
+                                "case_evidence_search to find content by "
                                 "meaning rather than keywords."
                             )
                             logger.info(

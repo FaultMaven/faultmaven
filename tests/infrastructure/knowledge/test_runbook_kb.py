@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import (
     CaseReport,
     ReportStatus,
@@ -272,19 +273,41 @@ async def test_search_runbooks_sorts_by_similarity(runbook_kb, mock_vector_store
 
 
 @pytest.mark.asyncio
-async def test_search_runbooks_handles_error_gracefully(runbook_kb, mock_vector_store):
-    """Test that search errors are handled gracefully."""
-    # Mock vector store to raise exception
+async def test_search_runbooks_surfaces_a_query_failure(runbook_kb, mock_vector_store):
+    """A failed query must not be reported as "no similar runbooks".
+
+    Inverted by #944. This previously asserted that a ChromaDB failure returns
+    ``[]`` and called that "graceful". It was not: every caller reads ``[]`` as
+    "the KB holds nothing similar" and proposes a new runbook, so an
+    unreachable vector store silently produced duplicate runbooks on every
+    resolution. Degrading a failure into a substantive negative is the defect,
+    not the handling.
+    """
     mock_vector_store.query_by_embedding.side_effect = Exception(
         "ChromaDB connection failed"
     )
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await runbook_kb.search_runbooks(
+            query_embedding=[0.1] * 1024, organization_id="org-A"
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_SEARCH_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_search_runbooks_still_returns_empty_for_a_genuine_miss(
+    runbook_kb, mock_vector_store
+):
+    """The gate must be able to pass: a working query that matches nothing is
+    still an honest empty result, not an error."""
+    mock_vector_store.query_by_embedding.return_value = {"ids": [[]]}
 
     results = await runbook_kb.search_runbooks(
         query_embedding=[0.1] * 1024, organization_id="org-A"
     )
 
-    # Should return empty list instead of raising exception
-    assert len(results) == 0
+    assert results == []
 
 
 # =============================================================================

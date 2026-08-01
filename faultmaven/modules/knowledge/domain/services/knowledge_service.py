@@ -42,6 +42,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
 )
 from faultmaven.models import KnowledgeBaseDocument, SearchResult
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.interfaces import (
     IKnowledgeIngester,
     ILLMProvider,
@@ -704,27 +705,38 @@ class KnowledgeService:
                 document frontmatter either way (it is not carried in the pack).
 
         Returns:
-            Number of chunks indexed (0 on failure).
+            Number of chunks indexed. Never 0 for a failure — see Raises.
+
+        Raises:
+            KnowledgeBaseError: If the embedding model is unavailable, or the
+                content yields no chunks. This used to ``return 0``, and half
+                the callers checked that sentinel while half ignored it — so
+                on the live update path the old vectors were already deleted,
+                nothing replaced them, and the API answered 200. The document
+                became permanently unsearchable while its SQL row looked
+                healthy to every later consistency check (#945). A raise makes
+                every caller fail closed by default; tolerating it is now
+                opt-IN and visible at the call site.
         """
         if not self._vector_store:
             return 0
 
         try:
-            # Remove old chunks for this document (safe for re-ingestion). The
-            # vector store implements delete_documents_by_parent_id (IVectorStore
-            # contract) — calling it directly, with no hasattr guard, so a store
-            # that silently lacks it raises here instead of leaving stale vectors
-            # behind on every re-ingest (the KB drift this campaign fixed).
-            await self._vector_store.delete_documents_by_parent_id(document.document_id)
-
+            # Build the replacement FIRST. The delete below is destructive and
+            # irreversible, so nothing may be removed until its replacement
+            # exists — the comment above this method used to call it an
+            # "atomic swap" while deleting before it had embeddings, which is
+            # what made a failed re-index destroy the document (#945).
             if prechunked is not None:
                 # Pack fast path: write the pack's chunk texts + vectors as-is.
                 # No ContentChunker, no model load.
                 chunks = [text for text, _ in prechunked]
                 embeddings = [embedding for _, embedding in prechunked]
                 if not chunks:
-                    logger.warning(f"Pack supplied 0 chunks for {document.document_id}")
-                    return 0
+                    raise KnowledgeBaseError(
+                        f"Pack supplied 0 chunks for {document.document_id}",
+                        error_code="KNOWLEDGE_NO_CHUNKS",
+                    )
             else:
                 from faultmaven.infrastructure.model_cache import model_cache
                 from faultmaven.modules.knowledge.domain.services.content_chunker import (  # noqa: E501
@@ -733,16 +745,26 @@ class KnowledgeService:
 
                 chunks = ContentChunker().split(document.content)
                 if not chunks:
-                    logger.warning(
-                        f"No chunks produced for document {document.document_id}"
+                    raise KnowledgeBaseError(
+                        f"No chunks produced for document {document.document_id}",
+                        error_code="KNOWLEDGE_NO_CHUNKS",
                     )
-                    return 0
                 # Batch-embed all chunks off the event loop via the model_cache
-                # async boundary. None → BGE unavailable, skip vector indexing.
+                # async boundary.
                 embeddings = await model_cache.aembed_texts(chunks)
                 if embeddings is None:
-                    logger.error("BGE-M3 model unavailable, skipping vector indexing")
-                    return 0
+                    raise KnowledgeBaseError(
+                        "BGE-M3 model unavailable — cannot index document "
+                        f"{document.document_id}",
+                        error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+                    )
+
+            # Replacement is in hand — only now remove the old chunks. The
+            # vector store implements delete_documents_by_parent_id (IVectorStore
+            # contract) — calling it directly, with no hasattr guard, so a store
+            # that silently lacks it raises here instead of leaving stale vectors
+            # behind on every re-ingest (the KB drift this campaign fixed).
+            await self._vector_store.delete_documents_by_parent_id(document.document_id)
 
             # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)
@@ -796,9 +818,17 @@ class KnowledgeService:
             )
             return len(chunks)
 
+        except KnowledgeBaseError:
+            # Must survive the blanket handler below, which would otherwise
+            # catch it and restore the exact 0-sentinel this change removes —
+            # a typed raise a handler swallows one frame later is not a fix.
+            raise
         except Exception as e:
             logger.error(f"Failed to index document in vector store: {e}")
-            return 0
+            raise KnowledgeBaseError(
+                f"Vector indexing failed for {document.document_id}: {e}",
+                error_code="KNOWLEDGE_INDEXING_FAILED",
+            ) from e
 
     async def _remove_from_vector_store(self, document_id: str) -> None:
         """Remove all chunks for a document from the vector store.
@@ -1058,13 +1088,20 @@ class KnowledgeService:
         row is absent, no vector store is wired, or the embedding model is
         unavailable — leaving the row orphaned for a later boot to repair.
 
+        This is the ONE caller that legitimately tolerates an indexing failure,
+        because it runs as a bounded best-effort repair pass during boot and a
+        failed repair must not abort startup. It therefore catches
+        ``KnowledgeBaseError`` **explicitly**: after #945 the tolerance is
+        opt-in and visible here, rather than a 0-sentinel that every caller
+        silently inherited and only some checked.
+
         Caveat (pre-existing, narrow): if ``add_documents`` writes SOME chunks
-        then raises, ``_index_document_in_vector_store`` returns 0 but the parent
-        now has partial vectors — so the reconcile pass (which keys on parent
-        PRESENCE, not chunk completeness) no longer flags it and repair won't
-        re-attempt it. Acceptable: the caller only invokes this on genuinely
-        vectorless rows, and the leading ``delete_documents_by_parent_id`` makes
-        a re-run idempotent, so a partial write is at worst under-retrievable,
+        then raises, the parent now has partial vectors — so the reconcile pass
+        (which keys on parent PRESENCE, not chunk completeness) no longer flags
+        it and repair won't re-attempt it. Acceptable: the caller only invokes
+        this on genuinely vectorless rows, and the
+        ``delete_documents_by_parent_id`` in the indexing path makes a re-run
+        idempotent, so a partial write is at worst under-retrievable,
         never mispaired.
         """
         from sqlalchemy import select as _select
@@ -1104,7 +1141,19 @@ class KnowledgeService:
             created_at=to_json_compatible(row.created_at),
             updated_at=to_json_compatible(row.updated_at),
         )
-        return await self._index_document_in_vector_store(doc_model, prechunked=None)
+        try:
+            return await self._index_document_in_vector_store(
+                doc_model, prechunked=None
+            )
+        except KnowledgeBaseError as e:
+            # Deliberate, documented tolerance — see the docstring. A failed
+            # boot-time repair leaves the row orphaned for a later attempt; it
+            # must not abort startup.
+            logger.warning(
+                f"reindex_missing_vectors: repair failed for {item_id}: {e} — "
+                "leaving the row orphaned for a later boot to retry"
+            )
+            return 0
 
     async def _delete_knowledge_item_row(self, item_id: str) -> None:
         """Best-effort cleanup of an orphaned knowledge_items row.
@@ -1867,6 +1916,24 @@ class KnowledgeService:
                 ],
             }
 
+        except KnowledgeBaseError as e:
+            # Distinguished from the generic handler below so the response does
+            # not read as "nothing matched". `total_results: 0` alongside a bare
+            # "Search failed" is the same affirmative negative this campaign
+            # closes on the agent path (#943) — a client rendering the count
+            # shows "no results" for a search that never ran. The shape is
+            # unchanged (no contract break); only the error text now says which
+            # of the two happened.
+            logger.error(f"Semantic search unavailable: {e}")
+            return {
+                "query": query,
+                "total_results": 0,
+                "results": [],
+                "error": (
+                    "Knowledge base search is unavailable — no documents were "
+                    "searched. This is not a result of zero matches."
+                ),
+            }
         except Exception as e:
             logger.error(f"Semantic search failed: {e}")
             # Static `error` value — see list_documents (#866).
@@ -2027,7 +2094,12 @@ class KnowledgeService:
 
                 await repo.update(item)  # commits + bumps updated_at
 
-            # Re-index ChromaDB when content changed (delete+add atomic swap).
+            # Re-index ChromaDB when content changed. The indexing path now
+            # embeds before it deletes, so a failure here leaves the OLD
+            # vectors in place: the document stays searchable on its previous
+            # content rather than becoming permanently unsearchable. The raise
+            # propagates to the caller, so the API reports the failure instead
+            # of answering 200 over a document it just made unfindable (#945).
             if content_changed and self._vector_store:
                 doc_model = KnowledgeBaseDocument(
                     document_id=item.item_id,

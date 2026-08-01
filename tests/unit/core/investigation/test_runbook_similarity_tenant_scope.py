@@ -3,14 +3,20 @@
 ``_find_similar_runbooks_for_case`` is an **id-free resolution path**: a
 similarity query names no id and no owner, so the ``organization_id`` metadata
 predicate is the only isolation available (``docs/architecture/security/rbac.md``
-→ "Tenant-Scoped Resolution"). Two things make the guard in that function the
-*only* thing standing on the first arm:
+→ "Tenant-Scoped Resolution").
 
-* the ``search_by_text`` arm calls a method with no downstream fail-closed check
-  of its own — unlike the ``search_runbooks`` arm beside it, which refuses a
-  falsy org before querying;
-* ``hasattr(runbook_kb, "search_by_text")`` is trivially true for any ``Mock``,
-  so that arm is the one tests actually drive.
+The guard in that function is what stands on the reachable failure, and the
+downstream one cannot replace it: ``search_runbooks`` refuses only a **falsy**
+org, while the Standalone sentinel is a perfectly truthy string. Under
+``TENANT_PROVIDER=multi`` the sentinel is not a tenant, so it must be rejected
+*here* — the downstream check would happily query with it as the predicate and
+pool every deployment-defaulted case into one corpus.
+
+Since #944 there is a single arm: ``_find_similar_runbooks_for_case`` calls
+``RunbookKnowledgeBase.search_by_text`` directly. The two-arm
+``hasattr``/fallback structure these tests used to cover is gone — the probe
+was permanently False (no such method existed) and the fallback raised
+``TypeError`` on a signature mismatch, so dedup never ran at all.
 
 The reachable failure is **not** an org-less case. ``Case.organization_id`` is
 ``str`` with ``min_length=1`` under ``validate_assignment=True``, so a
@@ -24,12 +30,20 @@ split, and the positive arm that proves the guard is not simply "always refuse".
 """
 
 from typing import Any, Optional
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.core.investigation.terminal_transitions import (
     _find_similar_runbooks_for_case,
+)
+from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+from faultmaven.models.report import (
+    CaseReport,
+    ReportStatus,
+    ReportType,
+    SimilarRunbook,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -54,50 +68,63 @@ TENANT_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 LEAKED_MATCH = {"similarity_score": 0.93, "title": "Another Tenant's Runbook"}
 
 
-class _RecordingSearchByText:
-    """KB double exposing only ``search_by_text`` — the arm with no downstream guard.
+def _leaked_runbook() -> SimilarRunbook:
+    """A real ``SimilarRunbook``, the type ``search_by_text`` actually returns.
 
-    Records the tenant of every query it is asked to run and always returns a
-    match, so "no query was issued" and "a query was issued but found nothing"
-    cannot be confused.
+    Built from the real models rather than a duck-typed stand-in: the previous
+    doubles returned plain dicts, which matched the old raw-passthrough arm but
+    not the production contract — so they would have kept passing against code
+    that no longer worked (which is exactly how #944's dedup rotted unnoticed).
+    """
+    return SimilarRunbook(
+        runbook=CaseReport(
+            case_id="other-case",
+            report_type=ReportType.RUNBOOK,
+            title=LEAKED_MATCH["title"],
+            content="steps",
+            generation_status=ReportStatus.COMPLETED,
+            generation_time_ms=0,
+        ),
+        similarity_score=LEAKED_MATCH["similarity_score"],
+        case_title=LEAKED_MATCH["title"],
+        case_id="other-case",
+    )
+
+
+class _RecordingKB(RunbookKnowledgeBase):
+    """Records the tenant of every query that actually reaches the store.
+
+    Subclasses the real ``RunbookKnowledgeBase`` and overrides only the
+    terminal query, so the production ``search_by_text`` — including its
+    embedding step — runs for real. Always returns a match, so "no query was
+    issued" and "a query was issued but found nothing" cannot be confused.
     """
 
     def __init__(self) -> None:
-        self.tenants: list[Optional[str]] = []
-
-    async def search_by_text(
-        self,
-        *,
-        query_text: str,
-        organization_id: Optional[str],
-        top_k: int,
-        min_similarity: float,
-    ) -> list[dict]:
-        self.tenants.append(organization_id)
-        return [dict(LEAKED_MATCH)]
-
-
-class _RecordingSearchRunbooks:
-    """KB double exposing only ``search_runbooks`` — the ``elif`` fallback arm."""
-
-    def __init__(self) -> None:
+        super().__init__(vector_store=MagicMock())
         self.tenants: list[Optional[str]] = []
 
     async def search_runbooks(
         self,
+        query_embedding: Any = None,
         *,
-        query_text: str,
         organization_id: Optional[str],
-        top_k: int,
-        min_similarity: float,
+        filters: Any = None,
+        top_k: int = 5,
+        min_similarity: float = 0.65,
     ) -> list[Any]:
         self.tenants.append(organization_id)
+        return [_leaked_runbook()]
 
-        class _Match:
-            similarity_score = LEAKED_MATCH["similarity_score"]
-            title = LEAKED_MATCH["title"]
 
-        return [_Match()]
+@pytest.fixture(autouse=True)
+def _available_embedder():
+    """These tests are about the tenant predicate, not embedder availability."""
+    with patch(
+        "faultmaven.infrastructure.model_cache.model_cache.aembed_query",
+        new=AsyncMock(return_value=[0.1] * 1024),
+    ):
+        yield
 
 
 def _case(organization_id: str) -> Case:
@@ -160,11 +187,14 @@ async def test_sentinel_stamped_case_issues_no_similarity_query_under_multi(
     predicate would pool every deployment-defaulted case into one corpus.
     """
     monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
-    kb = _RecordingSearchByText()
+    kb = _RecordingKB()
 
     result = await _find_similar_runbooks_for_case(_case(STANDALONE_ORG_ID), kb)
 
-    assert result == []
+    # None, not [] — "no search ran", which does NOT license a caller's
+    # "nothing similar exists" verdict (#944 review). The tenancy property is
+    # the second assertion and is unchanged.
+    assert result is None
     assert kb.tenants == [], "a query was issued with the sentinel as the tenant"
 
 
@@ -177,12 +207,12 @@ async def test_sentinel_stamped_case_is_a_real_tenant_under_single(monkeypatch):
     test, and a guard that always returned ``[]`` would pass.
     """
     monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_SINGLE)
-    kb = _RecordingSearchByText()
+    kb = _RecordingKB()
 
     result = await _find_similar_runbooks_for_case(_case(STANDALONE_ORG_ID), kb)
 
     assert kb.tenants == [STANDALONE_ORG_ID]
-    assert result == [dict(LEAKED_MATCH)]
+    assert result == [dict(LEAKED_MATCH)]  # mapped from the SimilarRunbook
 
 
 @pytest.mark.unit
@@ -191,47 +221,12 @@ async def test_sentinel_stamped_case_is_a_real_tenant_under_single(monkeypatch):
 async def test_a_real_tenant_reaches_the_similarity_search(monkeypatch, provider):
     """A genuine org is threaded into the query unchanged, under either provider."""
     monkeypatch.setattr(_PROVIDER_TARGET, lambda: provider)
-    kb = _RecordingSearchByText()
+    kb = _RecordingKB()
 
     result = await _find_similar_runbooks_for_case(_case(TENANT_A), kb)
 
     assert kb.tenants == [TENANT_A]
-    assert result == [dict(LEAKED_MATCH)]
-
-
-# ---------------------------------------------------------------------------
-# The ``search_runbooks`` fallback arm carries the same predicate
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-@pytest.mark.security
-@pytest.mark.asyncio
-async def test_fallback_arm_also_refuses_the_sentinel_under_multi(monkeypatch):
-    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
-    kb = _RecordingSearchRunbooks()
-
-    result = await _find_similar_runbooks_for_case(_case(STANDALONE_ORG_ID), kb)
-
-    assert result == []
-    assert kb.tenants == []
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_fallback_arm_threads_a_real_tenant(monkeypatch):
-    monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
-    kb = _RecordingSearchRunbooks()
-
-    result = await _find_similar_runbooks_for_case(_case(TENANT_A), kb)
-
-    assert kb.tenants == [TENANT_A]
-    assert result == [
-        {
-            "similarity_score": LEAKED_MATCH["similarity_score"],
-            "title": LEAKED_MATCH["title"],
-        }
-    ]
+    assert result == [dict(LEAKED_MATCH)]  # mapped from the SimilarRunbook
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +250,11 @@ async def test_an_org_less_case_issues_no_similarity_query(monkeypatch, bad_org)
     monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     case = _case(TENANT_A)
     object.__setattr__(case, "organization_id", bad_org)
-    kb = _RecordingSearchByText()
+    kb = _RecordingKB()
 
     result = await _find_similar_runbooks_for_case(case, kb)
 
-    assert result == []
+    # None, not [] — see the sentinel test above. The tenancy property (no
+    # query issued at all) is the second assertion and is unchanged.
+    assert result is None
     assert kb.tenants == []

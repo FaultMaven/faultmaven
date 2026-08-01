@@ -1908,8 +1908,16 @@ class TestReadinessAssessments:
 class TestRunbookSuggestion:
     """Test the combined runbook suggestion logic (content + dedup)."""
 
-    async def test_suggest_when_ready_and_no_kb(self):
-        """Content ready, no KB available → suggest (skip dedup)."""
+    async def test_caveat_when_ready_but_no_kb_to_dedup_against(self):
+        """Content ready, no KB available → suggest WITH CAVEATS.
+
+        Changed by #944. This previously asserted a plain ``SUGGEST``, but that
+        verdict carries "I checked and nothing similar exists" — a dedup result
+        that was never obtained, since there was no KB to check against. The
+        content is still runbook-worthy, so the suggestion stands; what changes
+        is that the unchecked duplicate risk is now stated rather than implied
+        away.
+        """
         from faultmaven.core.investigation.terminal_transitions import (
             RunbookSuggestion,
             evaluate_runbook_suggestion,
@@ -1965,7 +1973,8 @@ class TestRunbookSuggestion:
         _confirm_root_counterfactually(case)
 
         result = await evaluate_runbook_suggestion(case, runbook_kb=None)
-        assert result.verdict == RunbookSuggestion.SUGGEST
+        assert result.verdict == RunbookSuggestion.SUGGEST_WITH_CAVEATS
+        assert "could not check" in result.message
 
     async def test_existing_covers_when_high_similarity(self):
         """KB returns ≥85% match → existing covers."""
@@ -2003,11 +2012,33 @@ class TestRunbookSuggestion:
         # A suggestible cause must be CONFIRMED (counterfactually) (#590 A1).
         _confirm_root_counterfactually(case)
 
-        # Mock runbook_kb that returns a high-similarity match
+        # Mock runbook_kb that returns a high-similarity match. Returns real
+        # SimilarRunbook objects — the type search_by_text actually produces.
+        # The dicts used here before matched the old raw-passthrough arm, not
+        # the production contract (#944).
+        from faultmaven.models.report import (
+            CaseReport,
+            ReportStatus,
+            ReportType,
+            SimilarRunbook,
+        )
+
         mock_kb = AsyncMock()
         mock_kb.search_by_text = AsyncMock(
             return_value=[
-                {"similarity_score": 0.92, "title": "Connection Pool Timeout Runbook"},
+                SimilarRunbook(
+                    runbook=CaseReport(
+                        case_id="prior-case",
+                        report_type=ReportType.RUNBOOK,
+                        title="Connection Pool Timeout Runbook",
+                        content="steps",
+                        generation_status=ReportStatus.COMPLETED,
+                        generation_time_ms=0,
+                    ),
+                    similarity_score=0.92,
+                    case_title="Connection Pool Timeout Runbook",
+                    case_id="prior-case",
+                )
             ]
         )
 

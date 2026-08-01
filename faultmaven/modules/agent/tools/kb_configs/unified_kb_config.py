@@ -136,6 +136,23 @@ class UnifiedKBConfig(KBConfig):
         return 0.3
 
     @property
+    def empty_result_message(self) -> str:
+        """The KB was searched and holds nothing matching — no cause asserted.
+
+        Deliberately says only what is known: the search ran and matched
+        nothing. It does NOT explain why (no "nothing has been uploaded",
+        no "indexing may still be in progress") — this tool searches
+        runbooks and documentation, and has no visibility into any
+        ingestion state that would justify such a claim (#943).
+        """
+        return (
+            "No matching runbooks or documentation were found in the "
+            "knowledge base for this query. The knowledge base was searched "
+            "successfully; it simply contains nothing relevant. Answer from "
+            "other available context instead."
+        )
+
+    @property
     def cache_ttl(self) -> int:
         """24-hour cache (KB content is relatively stable)."""
         return 86400

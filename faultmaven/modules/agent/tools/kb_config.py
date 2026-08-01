@@ -143,6 +143,23 @@ class KBConfig(ABC):
 
     @property
     @abstractmethod
+    def empty_result_message(self) -> str:
+        """Message for a search that ran successfully and matched nothing.
+
+        Abstract on purpose. This text is the tool's claim about what the
+        store holds, so each KB must state its own — the previous shared
+        default emitted case-evidence causes ("no files have been uploaded to
+        this case") for knowledge-base queries, naming a cause for a subsystem
+        the query never touched (#943).
+
+        It may only describe an EMPTY store. It must never explain a failure:
+        a search that could not run raises ``KnowledgeBaseError`` and never
+        reaches this path.
+        """
+        pass
+
+    @property
+    @abstractmethod
     def cache_ttl(self) -> int:
         """
         Cache duration in seconds for this KB type.

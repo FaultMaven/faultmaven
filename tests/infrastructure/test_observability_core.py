@@ -190,9 +190,12 @@ class TestObservabilityIntegration:
             KnowledgeIngester,
         )
 
-        # Check that key methods have been wrapped with @trace
+        # Check that key methods have been wrapped with @trace.
+        # KnowledgeIngester.search was removed in #943 — it was reachable only
+        # via KnowledgeBaseTool, which the model could never call, and it
+        # queried the unified KB collection with no scope predicate. The live
+        # KB read path is kb_qa -> DocumentQATool -> KnowledgeVectorStore.
         assert hasattr(KnowledgeIngester.ingest_document, "__wrapped__")
-        assert hasattr(KnowledgeIngester.search, "__wrapped__")
 
     def test_api_endpoints_have_tracing(self):
         """Verify API endpoints have trace decorators."""

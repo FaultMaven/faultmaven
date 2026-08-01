@@ -141,66 +141,50 @@ class ReportRecommendationService:
         Returns:
             List of similar runbooks sorted by similarity score (descending)
         """
-        try:
-            # Create embedding for case features
-            query_embedding = await self._create_case_embedding(case)
+        # Build filters for similarity search
+        filters = {}
+        if hasattr(case, "domain") and case.domain:
+            filters["domain"] = case.domain
 
-            # Build filters for similarity search
-            filters = {}
-            if hasattr(case, "domain") and case.domain:
-                filters["domain"] = case.domain
+        # No try/except around this. Every failure mode here — an unavailable
+        # embedder, an unreachable ChromaDB — used to collapse into [], which
+        # `_generate_runbook_recommendation` reads as "no similar runbooks
+        # found" and turns into action="generate". That made the endpoint
+        # assert the KB holds nothing similar whenever it was simply unable to
+        # look, so the answer was always "generate" and duplicates accumulated
+        # (#944). The caller turns the typed error into a refusal.
+        similar_runbooks = await self.runbook_kb.search_by_text(
+            query_text=self._build_case_query_text(case),
+            organization_id=usable_tenant_id(case.organization_id),
+            filters=filters,
+            top_k=5,  # Get top 5 matches
+            min_similarity=0.65,  # Minimum 65% similarity threshold
+        )
 
-            # Search knowledge base for similar runbooks
-            similar_runbooks = await self.runbook_kb.search_runbooks(
-                query_embedding=query_embedding,
-                organization_id=usable_tenant_id(case.organization_id),
-                filters=filters,
-                top_k=5,  # Get top 5 matches
-                min_similarity=0.65,  # Minimum 65% similarity threshold
+        if similar_runbooks:
+            logger.info(
+                f"Found {len(similar_runbooks)} similar runbooks",
+                extra={
+                    "case_id": case.case_id,
+                    "top_similarity": similar_runbooks[0].similarity_score,
+                },
             )
+        else:
+            logger.debug("No similar runbooks found", extra={"case_id": case.case_id})
 
-            if similar_runbooks:
-                logger.info(
-                    f"Found {len(similar_runbooks)} similar runbooks",
-                    extra={
-                        "case_id": case.case_id,
-                        "top_similarity": similar_runbooks[0].similarity_score,
-                    },
-                )
-            else:
-                logger.debug(
-                    f"No similar runbooks found", extra={"case_id": case.case_id}
-                )
+        return similar_runbooks
 
-            return similar_runbooks
+    def _build_case_query_text(self, case: Case) -> str:
+        """Build the text used to find runbooks similar to this case.
 
-        except Exception as e:
-            logger.error(
-                f"Error finding similar runbooks: {e}", extra={"case_id": case.case_id}
-            )
-            # Return empty list on error - fail gracefully
-            return []
-
-    async def _create_case_embedding(self, case: Case) -> List[float]:
+        Replaces ``_create_case_embedding``, which built exactly this text,
+        discarded it, and returned ``[]`` on the belief that "ChromaDB will
+        handle embedding generation". ChromaDB does not: it rejects a 0-dim
+        vector outright, and the resulting error was swallowed into "no
+        similar runbooks found" (#944). Embedding now happens once, in
+        ``RunbookKnowledgeBase.search_by_text``, so both dedup callers share
+        one implementation.
         """
-        Create semantic embedding for case.
-
-        Combines:
-        - Problem description
-        - Root cause (if identified)
-        - Resolution actions (if available)
-        - Technology/domain keywords
-
-        Args:
-            case: Case object
-
-        Returns:
-            Embedding vector (list of floats)
-
-        Note: Currently uses ChromaDB's default embedding.
-        In production, should use explicit BGE-M3 model for consistency.
-        """
-        # Build searchable text from case attributes
         searchable_parts = []
 
         # Add title and description
@@ -217,22 +201,14 @@ class ReportRecommendationService:
         if hasattr(case, "tags") and case.tags:
             searchable_parts.append(f"Tags: {', '.join(case.tags)}")
 
-        # For now, return dummy embedding
-        # TODO: Integrate with actual embedding model (BGE-M3)
-        # This will be handled by ChromaDB's built-in embedding for now
         searchable_text = " ".join(searchable_parts)
 
-        # Placeholder: In production, generate actual embedding here
-        # For now, we'll rely on ChromaDB to handle embedding generation
-        # when we call search_runbooks with the searchable text
-
         logger.debug(
-            f"Created case embedding",
+            "Built case query text for runbook similarity search",
             extra={"case_id": case.case_id, "text_length": len(searchable_text)},
         )
 
-        # Return empty list for now - will be handled by ChromaDB
-        return []
+        return searchable_text
 
     def _generate_runbook_recommendation(
         self, similar_runbooks: List[SimilarRunbook]

@@ -22,6 +22,7 @@ Hybrid search: Two-stage retrieval + reranking pipeline:
     - Scope preference (personal > team > global tiebreaking)
 """
 
+import asyncio
 import logging
 import math
 import re
@@ -32,8 +33,17 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from chromadb.errors import NotFoundError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.models.exceptions import KnowledgeBaseError
 
 logger = logging.getLogger(__name__)
+
+# Bound on a single query embedding. Sits outside call_external's timeout
+# (see _embed_query_or_raise), so it is the only thing keeping a cold BGE-M3
+# load from hanging a tool call to the outer turn budget. Matched to
+# call_external's 10s for consistency — note this ADDS to the ChromaDB budget
+# rather than sharing it, so a search's worst case is now embed + query, not
+# one 10s ceiling for both.
+EMBED_TIMEOUT_SECONDS = 10.0
 
 # Minimum keyword length for extraction
 MIN_KEYWORD_LENGTH = 3
@@ -233,6 +243,57 @@ class KnowledgeVectorStore(BaseExternalClient):
                 f"Refusing unscoped search on '{collection_name}'."
             )
 
+    async def _embed_query_or_raise(self, query: str, operation: str) -> List[float]:
+        """Embed a query with BGE-M3, raising rather than degrading to ``[]``.
+
+        An unavailable embedder is NOT an empty knowledge base. Returning ``[]``
+        here reaches the investigating model as "the KB has nothing" — an
+        affirmative negative it would then reason from, which is exactly the
+        incorrect conclusion the engine must never draw (#943). Callers that
+        genuinely want to tolerate this must catch ``KnowledgeBaseError``
+        explicitly, so tolerating it is opt-IN and visible at the call site.
+
+        Bounded by ``EMBED_TIMEOUT_SECONDS``. This runs OUTSIDE
+        ``call_external`` — deliberately, since retrying an unrecoverable model
+        load would burn ChromaDB's retry budget and trip its circuit breaker
+        for an embedder fault — but that also puts it outside
+        ``call_external``'s own timeout, so it carries its own. Without one a
+        cold BGE-M3 load can hang the tool call all the way to the outer turn
+        budget.
+
+        The bound is on the *caller*, not the work: ``aembed_query`` runs the
+        load on a worker thread via ``asyncio.to_thread``, which cannot be
+        cancelled, so a timed-out load keeps running to completion in the
+        background (and populates the cache, so a later call may find it warm).
+        What this guarantees is that the search returns — not that the load
+        stops.
+        """
+        from faultmaven.infrastructure.model_cache import model_cache
+
+        try:
+            query_embedding = await asyncio.wait_for(
+                model_cache.aembed_query(query), timeout=EMBED_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            self.logger.error(
+                f"BGE-M3 embedding timed out after {EMBED_TIMEOUT_SECONDS}s "
+                f"for {operation}"
+            )
+            raise KnowledgeBaseError(
+                f"Knowledge base search unavailable: embedding the query timed "
+                f"out after {EMBED_TIMEOUT_SECONDS}s",
+                error_code="KNOWLEDGE_EMBEDDER_TIMEOUT",
+            )
+
+        if query_embedding is None:
+            self.logger.error(f"BGE-M3 model unavailable for {operation}")
+            raise KnowledgeBaseError(
+                "Knowledge base search unavailable: the embedding model "
+                "could not be loaded",
+                error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+            )
+        return query_embedding
+
     async def search(
         self,
         collection_name: str,
@@ -254,20 +315,20 @@ class KnowledgeVectorStore(BaseExternalClient):
 
         Raises:
             ValueError: If querying faultmaven_kb without a scope filter.
+            KnowledgeBaseError: If the embedding model is unavailable. NOT an
+                empty result — see :meth:`_embed_query_or_raise`.
         """
         self._enforce_scope_invariant(collection_name, where)
 
+        # Embed BEFORE entering call_external: the embedding is a local model
+        # call, not the ChromaDB round-trip that the retry/circuit-breaker
+        # policy exists for. Raising in the wrapper would burn the full retry
+        # budget on a model that cannot recover in seconds, and would charge
+        # ChromaDB's circuit breaker for an embedder fault.
+        query_embedding = await self._embed_query_or_raise(query, "search")
+
         async def _search_wrapper():
-            from faultmaven.infrastructure.model_cache import model_cache
-
             collection = self._get_or_create_collection(collection_name)
-
-            # Explicit BGE-M3 embedding (1024 dims) to match stored vectors,
-            # off the event loop via the model_cache async boundary.
-            query_embedding = await model_cache.aembed_query(query)
-            if query_embedding is None:
-                self.logger.error("BGE-M3 model unavailable for search")
-                return []
 
             query_params = {
                 "query_embeddings": [query_embedding],
@@ -482,6 +543,13 @@ class KnowledgeVectorStore(BaseExternalClient):
                     if result["id"] not in seen_ids:
                         seen_ids.add(result["id"])
                         all_results.append(result)
+            except KnowledgeBaseError:
+                # Retrieval is unavailable, not unproductive. Degrading to the
+                # results gathered so far would report a partial keyword sweep
+                # as a complete one — the affirmative negative this campaign
+                # closes. A per-keyword miss is tolerable; a dead embedder is
+                # not, so it must not be caught by the handler below (#943).
+                raise
             except Exception as e:
                 logger.debug(f"Keyword-constrained search for '{keyword}' failed: {e}")
 
@@ -495,17 +563,15 @@ class KnowledgeVectorStore(BaseExternalClient):
         k: int,
         where: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Vector search filtered to documents containing a specific keyword."""
+        """Vector search filtered to documents containing a specific keyword.
+
+        Raises:
+            KnowledgeBaseError: If the embedding model is unavailable.
+        """
+        query_embedding = await self._embed_query_or_raise(query, "keyword search")
 
         async def _search_wrapper():
-            from faultmaven.infrastructure.model_cache import model_cache
-
             collection = self._get_or_create_collection(collection_name)
-
-            query_embedding = await model_cache.aembed_query(query)
-            if query_embedding is None:
-                self.logger.error("BGE-M3 model unavailable for keyword search")
-                return []
 
             query_params = {
                 "query_embeddings": [query_embedding],

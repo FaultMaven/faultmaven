@@ -79,10 +79,20 @@ class KBToolAdapter(AgentTool):
             return ToolResult(success=True, data=result, error=None)
         except Exception as e:
             logger.error(f"KB query failed: {e}")
+            # Report the failure, and ONLY the failure. The previous text
+            # ("The KB may not be populated yet") guessed at a cause the
+            # adapter cannot know, turning an infrastructure fault into a
+            # claim about the KB's contents — the model would then reason
+            # from "the KB is empty" (#943). A failed query establishes
+            # nothing about what the knowledge base holds.
             return ToolResult(
                 success=False,
                 data=None,
-                error="Knowledge base query failed. The KB may not be populated yet.",
+                error=(
+                    f"Knowledge base query failed: {e}. This is a retrieval "
+                    f"failure, not a statement about the knowledge base's "
+                    f"contents — draw no conclusion about what it holds."
+                ),
             )
 
 
@@ -145,8 +155,15 @@ class CaseEvidenceQAAdapter(AgentTool):
             return ToolResult(success=True, data=result, error=None)
         except Exception as e:
             logger.error(f"Case evidence search failed: {e}")
+            # Same rule as KBToolAdapter above: a failed search says nothing
+            # about whether evidence exists. "may not be vectorized yet" was a
+            # guess that reads as a finding about the case (#943).
             return ToolResult(
                 success=False,
                 data=None,
-                error="Case evidence search failed. The evidence may not be vectorized yet.",
+                error=(
+                    f"Case evidence search failed: {e}. This is a retrieval "
+                    f"failure, not a statement about what evidence exists — "
+                    f"draw no conclusion about the case's evidence."
+                ),
             )

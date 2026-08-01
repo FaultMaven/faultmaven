@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import (
     CaseReport,
     ReportStatus,
@@ -76,6 +77,75 @@ class RunbookKnowledgeBase(BaseExternalClient):
             extra={"collection": self.COLLECTION_NAME},
         )
 
+    async def search_by_text(
+        self,
+        query_text: str,
+        *,
+        organization_id: str,
+        filters: Optional[Dict[str, Any]] = None,
+        top_k: int = 5,
+        min_similarity: float = MIN_SIMILARITY_THRESHOLD,
+    ) -> List[SimilarRunbook]:
+        """Find runbooks similar to ``query_text``, scoped to one tenant.
+
+        The text entry point to :meth:`search_runbooks`: embeds the query with
+        BGE-M3 (off the event loop) and delegates. This exists because BOTH
+        dedup callers had text, not a vector, and neither could get one:
+
+        - ``ReportRecommendationService`` shipped a placeholder that returned
+          ``[]`` as the "embedding". ChromaDB rejects a 0-dim vector, the error
+          was swallowed, and the recommendation was permanently "generate".
+        - ``terminal_transitions`` probed ``hasattr(runbook_kb,
+          "search_by_text")`` — which was False, because this method did not
+          exist — then fell through to ``search_runbooks(query_text=...)``,
+          a signature mismatch that raised ``TypeError`` into an
+          ``except`` that returned ``[]``.
+
+        Both therefore concluded "no similar runbook exists" from a search that
+        never ran, and every resolution proposed a new runbook regardless of
+        what the KB already held (#944). One implementation now serves both, so
+        the refusal semantics cannot drift apart again.
+
+        Raises:
+            KnowledgeBaseError: If the embedding model is unavailable. The
+                caller must NOT render this as "no similar runbooks found" —
+                that is the affirmative negative this method exists to end.
+        """
+        from faultmaven.infrastructure.model_cache import model_cache
+
+        # Refuse an unscoped search HERE rather than relying on
+        # search_runbooks' falsy-org guard. That guard fails closed by
+        # returning [] without querying — correct for tenancy, but every
+        # caller of this method reads [] as "the KB holds nothing similar"
+        # and turns it into action="generate". A refused search must not be
+        # reportable as a finding (#944).
+        if not organization_id:
+            logger.warning(
+                "Refusing unscoped runbook search: no organization_id supplied"
+            )
+            raise KnowledgeBaseError(
+                "Runbook similarity search requires a tenant; refusing to "
+                "search without one",
+                error_code="RUNBOOK_SEARCH_UNSCOPED",
+            )
+
+        query_embedding = await model_cache.aembed_query(query_text)
+        if query_embedding is None:
+            logger.error("BGE-M3 unavailable — cannot search runbooks by text")
+            raise KnowledgeBaseError(
+                "Runbook similarity search unavailable: the embedding model "
+                "could not be loaded",
+                error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+            )
+
+        return await self.search_runbooks(
+            query_embedding=query_embedding,
+            organization_id=organization_id,
+            filters=filters,
+            top_k=top_k,
+            min_similarity=min_similarity,
+        )
+
     async def search_runbooks(
         self,
         query_embedding: List[float],
@@ -128,15 +198,21 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 # Tags will be filtered post-query if needed
             where_clause: Dict[str, Any] = {"$and": conditions}
 
-            # Query vector database
+            # Query vector database. A failure here is NOT "no similar
+            # runbooks" — returning [] made every caller conclude the KB holds
+            # nothing similar and propose a new runbook, so duplicates
+            # accumulated on every resolution (#944). Surfaced as a typed
+            # error so a caller that wants to tolerate it must say so.
             try:
                 results = await self.vector_store.query_by_embedding(
                     query_embedding=query_embedding, where=where_clause, top_k=top_k
                 )
             except Exception as e:
-                logger.error(f"ChromaDB query failed: {e}")
-                # Return empty list on query failure
-                return []
+                logger.error(f"ChromaDB runbook query failed: {e}")
+                raise KnowledgeBaseError(
+                    f"Runbook similarity search failed: {e}",
+                    error_code="RUNBOOK_SEARCH_FAILED",
+                ) from e
 
             # Parse results and filter by minimum similarity
             similar_runbooks = []

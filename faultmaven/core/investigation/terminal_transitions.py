@@ -1366,6 +1366,12 @@ async def evaluate_runbook_suggestion(
     # Local-dev configurations without ChromaDB legitimately reach here with
     # runbook_kb=None; logging at WARN keeps the silent-skip observable so a
     # production misconfiguration doesn't hide as "quietly working".
+    #
+    # `dedup_ran` records whether the check actually completed. The final
+    # SUGGEST below means "checked, nothing similar" — an unchecked case must
+    # never reach it, or a dedup result gets stated that was never obtained
+    # (#944).
+    dedup_ran = False
     if not runbook_kb:
         logger.warning(
             f"Runbook deduplication skipped for case {case.case_id}: "
@@ -1376,6 +1382,10 @@ async def evaluate_runbook_suggestion(
     if runbook_kb:
         try:
             similar = await _find_similar_runbooks_for_case(case, runbook_kb)
+            # None means no search was issued (no usable tenant, or too little
+            # case content to form a query) — NOT "nothing similar found". Only
+            # a real search licenses the plain SUGGEST verdict below (#944).
+            dedup_ran = similar is not None
             if similar:
                 top_match = similar[0]
                 similarity = top_match.get("similarity_score", 0)
@@ -1401,17 +1411,36 @@ async def evaluate_runbook_suggestion(
                         ),
                     )
         except Exception as e:
+            # `dedup_ran` stays False, so the caveat branch below owns this.
             logger.warning(
-                f"Runbook deduplication check failed for case {case.case_id}: {e}. "
-                "Proceeding without dedup check.",
-                extra={"case_id": case.case_id},
+                f"Runbook deduplication check failed for case {case.case_id}: {e}.",
+                extra={"case_id": case.case_id, "metric": "runbook.dedup_failed"},
             )
 
-    # No similar runbook found (or KB unavailable) — suggest based on content readiness
+    # Collect every caveat rather than returning on the first one. Content
+    # readiness and dedup are independent concerns — a thin case whose dedup
+    # also failed has two things wrong with it, and reporting only the first
+    # hides the duplicate risk entirely (#944).
+    caveats = []
+
     if readiness.verdict == RunbookReadiness.NEEDS_ENRICHMENT:
+        caveats.append(readiness.message)
+
+    # Dedup did not complete — skipped or failed. Naming that is what keeps
+    # the final SUGGEST below honest: it means "checked, nothing similar
+    # found", which an unchecked case is not entitled to.
+    if not dedup_ran:
+        caveats.append(
+            "I could not check whether a similar runbook already exists — the "
+            "knowledge base search is unavailable. Creating one now risks "
+            "duplicating existing content; you may want to check the "
+            "Dashboard Knowledge Base first."
+        )
+
+    if caveats:
         return RunbookSuggestion(
             verdict=RunbookSuggestion.SUGGEST_WITH_CAVEATS,
-            message=readiness.message,
+            message="\n\n".join(caveats),
         )
 
     return RunbookSuggestion(
@@ -1424,11 +1453,22 @@ async def evaluate_runbook_suggestion(
     )
 
 
-async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list[dict]:
+async def _find_similar_runbooks_for_case(
+    case: "Case", runbook_kb: Any
+) -> Optional[list[dict]]:
     """Search for existing runbooks similar to a resolved case, within its tenant.
 
     Builds a query from case title + root cause + solution for semantic search.
-    Returns list of matches with similarity_score and title.
+
+    Returns:
+        A list of matches (possibly empty) when a search actually ran, or
+        ``None`` when no search was issued at all — no usable tenant, or too
+        little case content to form a query.
+
+        The distinction is load-bearing: ``[]`` licenses the caller's "checked,
+        nothing similar exists" verdict and ``None`` does not. Collapsing both
+        into ``[]`` is what let an unsearched case reach the plain ``SUGGEST``
+        branch, which asserts a dedup result that was never obtained (#944).
 
     Scoped to ``case.organization_id`` and fail-closed: a case carrying no
     usable tenant yields ``[]`` **without a search**, never a deployment-wide
@@ -1441,9 +1481,9 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
     ``get_current_org_id``, so under ``TENANT_PROVIDER=multi`` a case written
     from an execution context that never bound a tenant carries the Standalone
     sentinel — which is not a tenant there, and must not become the similarity
-    predicate. ``search_runbooks`` fails closed on a falsy org downstream, but
-    the ``search_by_text`` arm beside it has no downstream guard at all, so this
-    is the only check standing on that path.
+    predicate. ``search_by_text`` refuses a falsy org with a typed error, but
+    this check runs first so the common case is a quiet, logged skip rather
+    than an exception.
     """
     organization_id = usable_tenant_id(getattr(case, "organization_id", None))
     if not organization_id:
@@ -1451,7 +1491,7 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
             "Runbook similarity search skipped: case carries no usable tenant",
             extra={"case_id": getattr(case, "case_id", None)},
         )
-        return []
+        return None  # no search ran — see the return contract above
 
     # Build search text from case context
     parts = []
@@ -1468,41 +1508,38 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
             parts.append(title)
 
     if not parts:
-        return []
+        # Nothing to query with, so nothing was checked.
+        return None
 
     query_text = " | ".join(parts)
 
-    # Use runbook_kb.search_runbooks if available (ChromaDB vector search)
-    if hasattr(runbook_kb, "search_by_text"):
-        results = await runbook_kb.search_by_text(
-            query_text=query_text,
-            organization_id=organization_id,
-            top_k=3,
-            min_similarity=0.65,
-        )
-        return results
-    elif hasattr(runbook_kb, "search_runbooks"):
-        # Fallback: some implementations use search_runbooks with query text
-        try:
-            results = await runbook_kb.search_runbooks(
-                query_text=query_text,
-                organization_id=organization_id,
-                top_k=3,
-                min_similarity=0.65,
-            )
-            return (
-                [
-                    {
-                        "similarity_score": getattr(r, "similarity_score", 0),
-                        "title": getattr(r, "title", "Unknown"),
-                    }
-                    for r in results
-                ]
-                if results
-                else []
-            )
-        except TypeError:
-            # search_runbooks may require query_embedding instead of text
-            return []
-
-    return []
+    # Called directly, with no hasattr probe and no fallback arm. The previous
+    # shape probed for `search_by_text` — which did not exist, so the guard was
+    # permanently False — then called `search_runbooks(query_text=...)` against
+    # a signature that takes `query_embedding`, raising TypeError into an
+    # `except` that returned []. Dedup therefore never ran, and every
+    # resolution proposed a new runbook regardless of what the KB held (#944).
+    #
+    # A missing or renamed method must now fail loudly rather than degrade to
+    # "no similar runbook": an AttributeError/TypeError here is a wiring bug,
+    # and silently answering "none found" is precisely how this rotted
+    # unnoticed. `evaluate_runbook_suggestion` decides how to handle it.
+    results = await runbook_kb.search_by_text(
+        query_text=query_text,
+        organization_id=organization_id,
+        top_k=3,
+        min_similarity=0.65,
+    )
+    # Attributes are read directly, NOT via getattr with a default.
+    # ``search_by_text`` returns ``List[SimilarRunbook]``, so a missing
+    # attribute is a contract break — and a ``getattr(r, "similarity_score", 0)``
+    # default would silently score it 0, drop it below every threshold, and
+    # reproduce "no similar runbook found" from a match that WAS returned:
+    # the exact defect this function was fixed for (#944).
+    return [
+        {
+            "similarity_score": r.similarity_score,
+            "title": r.runbook.title,
+        }
+        for r in results or []
+    ]

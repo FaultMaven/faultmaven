@@ -350,7 +350,7 @@ You must ONLY reference data from these sources:
        a config snippet) that supported the claim when this evidence was recorded
      • <search_map> / <file_meta>: hints for navigating the underlying file
 2. Conversation history: Past dialogue with the user
-3. Knowledge base: Results from knowledge_base_search
+3. Knowledge base: Results from kb_qa
 
 ABSOLUTELY FORBIDDEN:
 - NEVER claim to have accessed, "looked at", or "checked" data, systems, or

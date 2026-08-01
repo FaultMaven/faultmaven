@@ -48,7 +48,6 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
 )
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
-from faultmaven.models.exceptions import KnowledgeBaseError
 
 
 def _call_with_timeout(fn: Callable[[], Any], timeout_s: float, what: str) -> Any:
@@ -245,12 +244,15 @@ class KnowledgeIngester:
         When an external ChromaDB was configured but unreachable at startup,
         ``_collection`` is None and any access raises ``KnowledgeBaseError``.
 
-        The read methods used to catch that and return ``[]``, which is the
-        same defect as an unavailable embedder: "the store is down" rendered as
-        "the knowledge base holds nothing", which the investigation then
-        reasons from. ``search`` / ``search_documents`` now re-raise
-        ``KnowledgeBaseError`` through their trailing blanket handler, so an
-        unavailable store reaches the caller AS unavailable (#868 review).
+        Raising rather than returning ``[]`` is deliberate: "the store is down"
+        rendered as "the knowledge base holds nothing" is an affirmative
+        negative the investigation would then reason from (#868 review).
+
+        The ``search``/``search_documents`` read methods that used to sit on
+        this property were deleted in #943 — they were reachable only through
+        the model-invisible ``KnowledgeBaseTool`` and queried the unified
+        collection with no scope predicate. Remaining callers are the ingestion
+        paths, which must fail closed here for the same reason.
         """
         if self._collection is None:
             from faultmaven.models.exceptions import KnowledgeBaseError
@@ -645,81 +647,6 @@ class KnowledgeIngester:
 
         return [c for c in normalized if c.strip()]
 
-    @trace("knowledge_base_search")
-    async def search(
-        self,
-        query: str,
-        n_results: int = 5,
-        filter_metadata: Optional[Dict[str, Any]] = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Search the knowledge base
-
-        Args:
-            query: Search query
-            n_results: Number of results to return
-            filter_metadata: Optional metadata filters
-
-        Returns:
-            List of search results with documents and metadata
-        """
-        try:
-            # Generate query embedding off the event loop via the async boundary.
-            query_embedding = await model_cache.aembed_query(query)
-            if query_embedding is None:
-                # Fail closed: an unavailable embedder is NOT an empty KB.
-                # Returning [] here reaches the agent as "No relevant
-                # information found in the knowledge base" — an affirmative
-                # negative the investigation would then reason from, which is
-                # exactly the incorrect conclusion the engine must never draw.
-                # Same typed error as the degraded-collection path below, and
-                # the KB tool surfaces it as an error rather than an answer.
-                self.logger.error("BGE-M3 unavailable for query embedding")
-                raise KnowledgeBaseError(
-                    "Knowledge base search unavailable: the embedding model "
-                    "could not be loaded",
-                    error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
-                )
-
-            # Prepare where clause for filtering
-            where_clause = None
-            if filter_metadata:
-                where_clause = filter_metadata
-
-            # Search in ChromaDB
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=n_results,
-                where=where_clause,
-                include=["documents", "metadatas", "distances"],
-            )
-
-            # Format results
-            formatted_results = []
-            if results["documents"] and results["documents"][0]:
-                for i, doc in enumerate(results["documents"][0]):
-                    result = {
-                        "document": doc,
-                        "metadata": results["metadatas"][0][i],
-                        "distance": results["distances"][0][i],
-                        "relevance_score": 1
-                        - results["distances"][0][i],  # Convert distance to relevance
-                    }
-                    formatted_results.append(result)
-
-            return formatted_results
-
-        except KnowledgeBaseError:
-            # Availability failures must reach the caller as failures. Folding
-            # them into [] tells the agent the knowledge base HAS no answer,
-            # which it then reasons from — the affirmative negative described
-            # at the raise above. Covers both the unloadable embedder and the
-            # degraded-collection error raised by the `collection` property.
-            raise
-        except Exception as e:
-            self.logger.error(f"Search failed: {e}")
-            return []
-
     async def delete_document(self, document_id: str) -> bool:
         """
         Delete a document and all its chunks from the knowledge base
@@ -979,70 +906,3 @@ class KnowledgeIngester:
         except Exception as e:
             self.logger.error(f"Failed to get document {document_id}: {e}")
             return None
-
-    async def search_documents(
-        self,
-        query: str,
-        document_type: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        limit: int = 10,
-    ) -> List[Dict[str, Any]]:
-        """
-        Search documents and return results with scores
-
-        Args:
-            query: Search query
-            document_type: Filter by document type
-            tags: Filter by tags
-            limit: Maximum number of results
-
-        Returns:
-            List of search results with document info and scores
-        """
-        try:
-            # Build filter metadata
-            filter_metadata = {}
-            if document_type:
-                filter_metadata["document_type"] = document_type
-            if tags:
-                filter_metadata["tags"] = {"$contains": tags[0]}
-
-            # Search using existing search method
-            results = await self.search(
-                query=query,
-                n_results=limit,
-                filter_metadata=filter_metadata if filter_metadata else None,
-            )
-
-            # Format for API response
-            formatted_results = []
-            for result in results:
-                metadata = result["metadata"]
-                formatted_result = {
-                    "document_id": metadata.get("document_id"),
-                    "title": metadata.get("title"),
-                    "document_type": metadata.get("document_type"),
-                    "tags": (
-                        metadata.get("tags", "").split(",")
-                        if metadata.get("tags")
-                        else []
-                    ),
-                    "score": result["relevance_score"],
-                    "snippet": (
-                        result["document"][:200] + "..."
-                        if len(result["document"]) > 200
-                        else result["document"]
-                    ),
-                }
-                formatted_results.append(formatted_result)
-
-            return formatted_results
-
-        except KnowledgeBaseError:
-            # Same reasoning as `search`, one method down: this delegates to
-            # `search`, so folding its typed availability error into [] here
-            # would re-flatten the affirmative negative the raise closed.
-            raise
-        except Exception as e:
-            self.logger.error(f"Search failed: {e}")
-            return []
