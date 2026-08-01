@@ -106,8 +106,12 @@ class OAuthCodeDTO:
     #: Organization the authorizing session was bound to (#872). The user row
     #: carries no organization, so under multi-tenant this is the only place the
     #: tenant survives the hop from the authenticated authorize request to the
-    #: unauthenticated token exchange. ``None`` under single-tenant, where
-    #: ``resolve_organization_claim`` supplies the Standalone sentinel.
+    #: unauthenticated token exchange. Under single-tenant it holds the Standalone
+    #: sentinel (what the request was bound to), which is also what
+    #: ``resolve_organization_claim`` would supply on its own — so it changes
+    #: nothing there. Optional because a code issued before this field existed
+    #: carries none, and an absent value must mint an unusable claim rather than a
+    #: guessed one.
     organization_id: Optional[str] = None
 
 

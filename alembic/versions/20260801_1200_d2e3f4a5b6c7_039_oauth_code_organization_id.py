@@ -15,10 +15,13 @@ organization claim and is then refused at ``bind_request_org_context`` on its
 first API call — the same shape #869 fixed for the SSO login leg and #873 for the
 OAuth refresh leg. This closes the last leg.
 
-**Nullable**, for two reasons that each stand alone: a single-tenant deployment
-has no tenant to carry (``resolve_organization_claim`` supplies the Standalone
-sentinel at mint time), and a code issued before this migration genuinely has
-none. No backfill — these rows expire in ten minutes.
+**Nullable**: a code issued before this migration genuinely carries no
+organization, and an absent value has to be representable so the exchange mints
+an unusable claim (refused at ``bind_request_org_context``) rather than a guessed
+one. No backfill — these rows expire in ten minutes. Under single-tenant the
+column holds the Standalone sentinel, which is what the request was bound to and
+what ``resolve_organization_claim`` would supply regardless, so nothing about
+that deployment changes.
 
 **Deliberately not a foreign key and not RLS-tenanted.** The exchange reads this
 row by primary key with no tenant bound; a tenant-isolation policy would hide the
