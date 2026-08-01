@@ -373,6 +373,35 @@ class OAuthServiceImpl(IOAuthService):
                 error_code="USER_NOT_FOUND",
             )
 
+        # A deactivated account must not be able to redeem a code, exactly as
+        # ``refresh_access_token`` below refuses to rotate one.
+        #
+        # Deactivation revokes the account's existing tokens by writing a per-user
+        # watermark (#769), but a watermark only kills tokens minted BEFORE it —
+        # ``is_user_revoked`` compares ``iat <= watermark``. Tokens minted *here*
+        # are newer than the watermark by construction, so nothing downstream
+        # stops them. An authorization code lives ten minutes, which is a wide
+        # enough window for a code issued just before deactivation to be redeemed
+        # just after it, handing back a fresh access token and a fresh refresh
+        # token that then rotates indefinitely.
+        #
+        # Deactivation also soft-deletes (``user_service.deactivate_user`` sets
+        # ``is_active = False`` alongside ``deleted_at``), so this one check
+        # covers both.
+        if not getattr(user, "is_active", True):
+            logger.warning(
+                "OAuth token exchange failed: user inactive",
+                extra={
+                    "user_id": code_data.user_id,
+                    "code_prefix": code[:8],
+                    "error": "USER_INACTIVE",
+                },
+            )
+            raise InvalidGrantError(
+                "User account is inactive",
+                error_code="USER_INACTIVE",
+            )
+
         # Re-attach the organization captured when the code was issued (#872),
         # the same shape ``refresh_access_token`` below uses for the rotation leg
         # and ``sso_login_service.exchange`` uses for the SSO leg. The repository

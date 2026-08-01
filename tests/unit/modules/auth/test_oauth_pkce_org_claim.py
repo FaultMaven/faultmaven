@@ -28,6 +28,7 @@ import pytest
 
 from faultmaven.config.settings import AuthSettings
 from faultmaven.config.tenant_context import usable_tenant_id
+from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO, OAuthCodeDTO
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
@@ -252,6 +253,52 @@ async def test_single_tenant_exchange_still_claims_the_standalone_org(
 
         claims = _claims(tokens.access_token)
         assert claims["organization_id"] == SingleTenantProvider.DEFAULT_ORG_ID
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_a_deactivated_account_cannot_redeem_a_code(
+    oauth_service, user_repository, token_generator, pkce_pair
+):
+    """Deactivation must stop the exchange, not just the tokens already out.
+
+    The revocation watermark cannot cover this: ``is_user_revoked`` compares
+    ``iat <= watermark``, and a token minted *by this exchange* is newer than the
+    watermark by construction. The assertion below is deliberately in two parts —
+    first that the exchange refuses, and then that the watermark alone would NOT
+    have refused a token minted now, so the guard is load-bearing rather than a
+    duplicate of a check that happens elsewhere.
+
+    An authorization code lives ten minutes, which is a wide enough window for
+    one issued just before deactivation to be redeemed just after it.
+    """
+    verifier, challenge = pkce_pair
+
+    with _MULTI:
+        code = await oauth_service.create_authorization_code(
+            "user_123", _authorization_request(challenge), organization_id=TENANT
+        )
+
+        # The account is deactivated while the code is still live, exactly as
+        # user_service.deactivate does: flag cleared, then tokens revoked.
+        user_repository.get.return_value.is_active = False
+        await token_generator.revocation_store.revoke_user_tokens_before(
+            "user_123", int(datetime.now(timezone.utc).timestamp()), 3600
+        )
+
+        with pytest.raises(InvalidGrantError) as refusal:
+            await oauth_service.exchange_code_for_token(
+                code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            )
+
+    assert refusal.value.error_code == "USER_INACTIVE"
+
+    # The watermark would not have caught a token minted at this instant, which
+    # is why the explicit check above has to exist.
+    assert not await token_generator.revocation_store.is_user_revoked(
+        "user_123", int(datetime.now(timezone.utc).timestamp()) + 1
+    )
 
 
 @pytest.mark.unit
