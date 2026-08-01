@@ -250,6 +250,14 @@ class TestOutcomeIsReportedNotAssumed:
             f"{'is now searchable' in rendered}: {rendered!r}"
         )
 
+        # `indexed` is the machine-readable half of the same statement, and the
+        # ONLY half the engines read — they never render `message`. Both success
+        # arms must state it: the gate upstream is `data.get("indexed") is
+        # False`, which a missing key passes, so an unstated key silently means
+        # "searchable" (#941).
+        if result.success:
+            assert result.data["indexed"] is expect_searchable
+
     @pytest.mark.asyncio
     async def test_an_unwritten_index_tells_the_model_to_conclude_nothing(
         self, tool, context, mock_settings
