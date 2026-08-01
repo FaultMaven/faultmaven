@@ -419,3 +419,137 @@ async def test_redis_repository_reads_a_payload_written_before_the_column():
     stored = await repo.get_code("legacy")
     assert stored is not None
     assert stored.organization_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_redis_repository_tolerates_a_field_the_dto_no_longer_declares():
+    """The other rolling-deploy direction: a payload with a RETIRED field.
+
+    ``get_code`` filters to the DTO's declared fields. Without that filter,
+    ``OAuthCodeDTO(**data)`` raises ``TypeError`` on an unexpected key — which the
+    service does not catch, so it surfaces as a 500 on a code the user
+    legitimately holds rather than as a clean grant error.
+
+    This guard is not reachable today (nothing writes an undeclared key), so it is
+    tested rather than left to be discovered the first time a field is retired
+    during a straddled deploy. Adversarial review found it was the one guard in
+    the change that no test exercised.
+    """
+    import json
+
+    fakeredis = pytest.importorskip("fakeredis")
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    repo = RedisOAuthCodeRepository(client)
+
+    await client.setex(
+        "oauth:code:retired",
+        600,
+        json.dumps(
+            {
+                "code": "retired",
+                "user_id": "user_123",
+                "redirect_uri": REDIRECT,
+                "code_challenge": "challenge",
+                "expires_at": (
+                    datetime.now(timezone.utc) + timedelta(minutes=10)
+                ).isoformat(),
+                "used": False,
+                "organization_id": TENANT,
+                "a_field_a_later_version_removed": "zzz",
+            }
+        ),
+    )
+
+    stored = await repo.get_code("retired")
+    assert stored is not None
+    assert stored.organization_id == TENANT
+
+
+# =============================================================================
+# The mint-time mutation, against the real user types
+# =============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_the_org_attaches_to_the_real_user_types_not_just_a_mock(pkce_pair):
+    """The exchange's ``setattr`` must work on what the store really returns.
+
+    The suite above uses a ``Mock`` for the user, and a ``Mock`` accepts *any*
+    ``setattr`` — so it cannot establish that this works on a real object. A
+    frozen dataclass, or a pydantic model with ``validate_assignment``, would
+    raise here and every test above would still pass. Adversarial review made
+    exactly this point about the fixture.
+
+    So this runs the real exchange over a real ``DevUser``. That is the concrete
+    type, traced rather than assumed: the container passes ``container.user_store``
+    as the service's ``user_repository``, and the wired store exposing ``.get()``
+    is ``DatabaseUserStore``, whose ``get()`` returns ``DevUser``. (The
+    ``domain/models/user.py`` ``User`` is deliberately NOT exercised here — it has
+    no ``username``, which the generators read, so it cannot be on this path.)
+
+    Asserted both ways on the decoded token: under multi the captured tenant
+    reaches the claim, and under single the Standalone sentinel survives the
+    ``or None`` wipe because ``resolve_organization_claim`` restores it — the
+    "no-op there" the source comment claims, checked against the type that
+    actually stamps that sentinel in ``__post_init__``.
+    """
+    from faultmaven.modules.auth.domain.models.auth import DevUser
+
+    verifier, challenge = pkce_pair
+    fakeredis = pytest.importorskip("fakeredis")
+
+    real_user = DevUser(
+        user_id="user_123",
+        username="testuser",
+        email="testuser@acme.example",
+        display_name="Test User",
+        created_at=datetime.now(timezone.utc),
+    )
+    # Sanity: the fixture's premise. A real DevUser arrives already carrying the
+    # sentinel, so the exchange is overwriting a value, not filling a blank.
+    assert real_user.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
+
+    users = AsyncMock()
+    users.get = AsyncMock(return_value=real_user)
+    service = OAuthServiceImpl(
+        code_repository=InMemoryOAuthCodeRepository(),
+        user_repository=users,
+        token_generator=HS256JWTTokenGenerator(
+            secret_key=SECRET,
+            revocation_store=RedisTokenRevocationStore(
+                fakeredis.aioredis.FakeRedis(decode_responses=True)
+            ),
+            access_token_expire_minutes=15,
+            refresh_token_expire_days=7,
+        ),
+        settings=AuthSettings(
+            oauth_allowed_clients=["faultmaven-copilot"],
+            oauth_redirect_uri_patterns=[
+                r"^chrome-extension://[a-z0-9]+/callback\.html$"
+            ],
+        ),
+    )
+
+    with _MULTI:
+        code = await service.create_authorization_code(
+            "user_123", _authorization_request(challenge), organization_id=TENANT
+        )
+        tokens = await service.exchange_code_for_token(
+            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+        )
+    assert _claims(tokens.access_token)["organization_id"] == TENANT
+
+    with _SINGLE:
+        code = await service.create_authorization_code(
+            "user_123", _authorization_request(challenge), organization_id=None
+        )
+        tokens = await service.exchange_code_for_token(
+            code=code, code_verifier=verifier, redirect_uri=REDIRECT
+        )
+    assert (
+        _claims(tokens.access_token)["organization_id"]
+        == SingleTenantProvider.DEFAULT_ORG_ID
+    )
