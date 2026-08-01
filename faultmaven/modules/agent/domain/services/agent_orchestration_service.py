@@ -68,6 +68,7 @@ from faultmaven.modules.agent.tools.base import (
 from faultmaven.modules.agent.tools.base import tool_registry as agent_tool_registry
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VECTORIZATION_MAX_SIZE_BYTES,
+    append_vectorization_advisory,
 )
 from faultmaven.modules.case.contracts import (
     AgentExecution,
@@ -1352,22 +1353,13 @@ class AgentOrchestrationService:
                                 and task.exception() is None
                                 and task.result()
                             )
-                            if success:
-                                state.vectorized = True
-                                content_for_context += (
-                                    "\n\n[SYSTEM] This file has been "
-                                    "automatically indexed for semantic "
-                                    "search. Use case_evidence_search to "
-                                    "find content by meaning rather than "
-                                    "keywords."
-                                )
-                                logger.info(
-                                    "proactive_vectorization_completed",
-                                    extra={
-                                        "evidence_id": evidence_id,
-                                        "content_size_bytes": state.content_size_bytes,
-                                    },
-                                )
+                            content_for_context = self._note_vectorization(
+                                content_for_context,
+                                success,
+                                state,
+                                evidence_id,
+                                "proactive_vectorization_completed",
+                            )
 
                     # Track search_file empty results
                     if result.tool_name == "search_file" and result.success:
@@ -1435,24 +1427,14 @@ class AgentOrchestrationService:
                                 reactive_timeout,
                             )
                             vectorized = False
-                        if vectorized:
-                            state.vectorized = True
-                            content_for_context += (
-                                "\n\n[SYSTEM] This file has been automatically "
-                                "indexed for semantic search. Use "
-                                "case_evidence_search to find content by "
-                                "meaning rather than keywords."
-                            )
-                            logger.info(
-                                "auto_vectorization_triggered",
-                                extra={
-                                    "evidence_id": evidence_id,
-                                    "trigger": self._vectorization_trigger_reason(
-                                        state
-                                    ),
-                                    "content_size_bytes": state.content_size_bytes,
-                                },
-                            )
+                        content_for_context = self._note_vectorization(
+                            content_for_context,
+                            vectorized,
+                            state,
+                            evidence_id,
+                            "auto_vectorization_triggered",
+                            trigger=self._vectorization_trigger_reason(state),
+                        )
                     # Small-file DA failure: inject raw content instead of vectorizing
                     elif (
                         not state.vectorized
@@ -1828,6 +1810,41 @@ class AgentOrchestrationService:
             )
         return tasks
 
+    def _note_vectorization(
+        self,
+        content: str,
+        indexed: bool,
+        state: EvidenceDAState,
+        evidence_id: str,
+        event: str,
+        trigger: str | None = None,
+    ) -> str:
+        """Record a vectorization outcome on the turn's context and state.
+
+        Extracted so both emission sites — proactive and reactive — are one
+        named, directly callable thing rather than two inline blocks buried in
+        ``_execute_with_streaming``, which no test could reach. Four copies of
+        this rule across two engines is what let two of them go uncovered
+        while the bool they read was thoroughly tested (#941).
+
+        ``state.vectorized`` is flipped only when the advisory was actually
+        appended, so both track the same fact: the file is in the collection.
+        """
+        before = content
+        content = append_vectorization_advisory(content, indexed)
+        if content == before:
+            return content
+
+        state.vectorized = True
+        extra = {
+            "evidence_id": evidence_id,
+            "content_size_bytes": state.content_size_bytes,
+        }
+        if trigger is not None:
+            extra["trigger"] = trigger
+        logger.info(event, extra=extra)
+        return content
+
     async def _auto_vectorize(
         self, evidence_id: str, tool_context: ToolContext
     ) -> bool:
@@ -1852,12 +1869,14 @@ class AgentOrchestrationService:
             # Not `result.success` alone — a file with no chunkable content is
             # reported as a success that indexed nothing, and this boolean is
             # what makes the caller tell the model the file is now searchable
-            # (#941). Mirrors MilestoneEngine._vectorize_evidence.
+            # (#941). `is not True` so an unstated key or an unrecognisable
+            # payload reads as "not indexed" rather than as searchable — see
+            # MilestoneEngine._vectorize_evidence, which this mirrors.
             data = result.data if isinstance(result.data, dict) else {}
-            if data.get("indexed") is False:
+            if data.get("indexed") is not True:
                 logger.info(
-                    "Auto-vectorization indexed nothing for %s — not reporting "
-                    "it as searchable",
+                    "Auto-vectorization did not report an index for %s — not "
+                    "reporting it as searchable",
                     evidence_id,
                 )
                 return False

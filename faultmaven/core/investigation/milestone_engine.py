@@ -123,6 +123,10 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
 from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.modules.agent.tools.vectorize_file_tool import (
+    VECTORIZED_SYSTEM_MESSAGE,
+    append_vectorization_advisory,
+)
 from faultmaven.modules.case.contracts import (
     TERMINAL_HYPOTHESIS_STATES,
     ActionAttempt,
@@ -5675,11 +5679,18 @@ class MilestoneEngine:
         # that" — an index that was never written laundered into a finding about
         # the evidence (#941). The tool's own message says otherwise, but no
         # caller here renders it.
+        #
+        # `is not True`, deliberately: an unstated key and an unrecognisable
+        # payload both mean "this caller did not tell us the file is indexed",
+        # and the safe reading of that is that it isn't. Failing the other way
+        # would make the guard depend on every future producer remembering to
+        # set a key, with a false claim to the model as the penalty for
+        # forgetting; failing this way costs a re-attempt.
         data = result.data if isinstance(result.data, dict) else {}
-        if data.get("indexed") is False:
+        if data.get("indexed") is not True:
             logger.info(
-                "vectorize_file indexed nothing for %s (%s) — not marking "
-                "vectorized",
+                "vectorize_file did not report an index for %s (%s) — not "
+                "marking vectorized",
                 evidence_id,
                 data.get("message", ""),
             )
@@ -5729,12 +5740,10 @@ class MilestoneEngine:
                 return bool(getattr(ev, "vectorized", False))
         return False
 
-    _VECTORIZED_SYSTEM_MESSAGE = (
-        "\n\n[SYSTEM] This file has been automatically "
-        "indexed for semantic search. Use "
-        "case_evidence_search to find content by "
-        "meaning rather than keywords."
-    )
+    #: Re-exported from the tool that owns it so all four emission sites —
+    #: two here, two in AgentOrchestrationService — carry the same text and the
+    #: same rule. They used to hold three separate copies (#941).
+    _VECTORIZED_SYSTEM_MESSAGE = VECTORIZED_SYSTEM_MESSAGE
 
     async def _track_da_result(
         self,
@@ -5768,14 +5777,19 @@ class MilestoneEngine:
                         evidence_id,
                         exc,
                     )
-                elif (
-                    task.result() and self._VECTORIZED_SYSTEM_MESSAGE not in result_text
-                ):
-                    result_text += self._VECTORIZED_SYSTEM_MESSAGE
-                    logger.info(
-                        "proactive_vectorization_completed",
-                        extra={"evidence_id": evidence_id},
+                else:
+                    # The advisory decision lives in the helper, not in this
+                    # `if`: a file that indexed nothing gets `result_text` back
+                    # unchanged however this site is reached (#941).
+                    before = result_text
+                    result_text = append_vectorization_advisory(
+                        result_text, task.result()
                     )
+                    if result_text != before:
+                        logger.info(
+                            "proactive_vectorization_completed",
+                            extra={"evidence_id": evidence_id},
+                        )
 
         # Track search_file empty results
         if func_name == "search_file" and tool_result.success:
@@ -5930,8 +5944,9 @@ class MilestoneEngine:
             )
             return result_text
 
-        if success:
-            result_text += self._VECTORIZED_SYSTEM_MESSAGE
+        before = result_text
+        result_text = append_vectorization_advisory(result_text, success)
+        if result_text != before:
             logger.info(
                 "reactive_vectorization_triggered",
                 extra={

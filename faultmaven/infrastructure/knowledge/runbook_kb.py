@@ -138,10 +138,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
         # so an unbounded await here consumes that whole budget instead of
         # refusing in 10s.
         #
-        # Consequence, accepted: the first terminal transition after a cold
-        # start refuses, and the resolution carries the "dedup could not run"
-        # caveat rather than blocking on the load. The timed-out load still
-        # runs to completion and warms the cache, so only the first is affected.
+        # Consequence, accepted: a terminal transition during a cold start
+        # refuses, and the resolution carries the "dedup could not run" caveat
+        # rather than blocking on the load. The timed-out load does run to
+        # completion and warm the cache, so the refusals stop once it finishes
+        # — but not only the first is affected: ``get_bge_m3_model`` loads under
+        # a ``threading.Lock``, so every embed attempt arriving during the
+        # window blocks on that lock and exhausts its own 10s bound too.
         query_embedding = await embed_query_or_raise(
             query_text,
             subject="Runbook similarity search",

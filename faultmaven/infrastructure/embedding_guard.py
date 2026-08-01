@@ -18,9 +18,9 @@ an adapter.
 
 **Every query-embedding site routes through here** — ``KnowledgeVectorStore``,
 ``CaseVectorStore`` and ``RunbookKnowledgeBase.search_by_text`` on the live
-paths, plus ``ChromaDBVectorStore``, whose ``search`` has no caller today (the
-two that call an ``IVectorStore`` pass ``collection_name=``, which its signature
-does not accept) and is covered so it is not a trap for the next one.
+paths, plus ``ChromaDBVectorStore``, whose ``search`` has no caller today (all
+three ``IVectorStore.search`` call sites pass ``collection_name=``, which its
+signature does not accept) and is covered so it is not a trap for the next one.
 
 ``search_by_text`` is why this is a module and not a method. It refused
 correctly, with its own copy of the logic — and the copy had silently dropped

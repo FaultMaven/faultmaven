@@ -1324,7 +1324,13 @@ class TestVectorizedFlagPersistence:
     stacking concurrent BGE-M3 encodes past the 60s wait_for bound.
     """
 
-    async def _make_engine_with_tool(self, tool_success: bool, tool_data="ok"):
+    async def _make_engine_with_tool(
+        self, tool_success: bool, tool_data={"indexed": True}
+    ):
+        # Default payload states `indexed`, as production's success arms do.
+        # The gate is `is not True` — fail-closed — so a stand-in returning a
+        # bare string or a Mock reads as "not indexed" and would silently
+        # exercise the refusal path while looking like a success case.
         mock_registry = MagicMock()
         mock_registry.execute_tool = AsyncMock(
             return_value=ToolResult(success=tool_success, data=tool_data)
@@ -1421,6 +1427,29 @@ class TestVectorizedFlagPersistence:
             "the vectorized flag asserts membership of the case collection; "
             "a file that indexed nothing is not in it"
         )
+        repo.update_evidence_vectorized.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "tool_data",
+        [{"evidence_id": "ev_x"}, "ok", None, MagicMock()],
+        ids=["key_missing", "string_payload", "none_payload", "mock_payload"],
+    )
+    async def test_a_success_that_does_not_state_indexed_is_refused(self, tool_data):
+        """Fail CLOSED.
+
+        The gate is `is not True`, not `is False`. An unstated key and an
+        unrecognisable payload both mean "this caller did not tell us the file
+        is indexed", and the safe reading of that is that it is not — otherwise
+        the guard depends on every future producer remembering to set a key,
+        with a false claim to the model as the penalty for forgetting.
+        """
+        engine, repo = await self._make_engine_with_tool(
+            tool_success=True, tool_data=tool_data
+        )
+        ctx, _, ev = self._make_ctx_with_evidence("ev_x")
+
+        assert await engine._vectorize_evidence("ev_x", ctx) is False
+        assert ev.vectorized is False
         repo.update_evidence_vectorized.assert_not_called()
 
     async def test_an_actual_index_is_still_reported_as_indexed(self):
@@ -1635,17 +1664,22 @@ class TestReactiveVectorizeTimeout:
             1,
         )
 
-        # Evidence large enough to pass the size gate. Post-redesign:
-        # content_size_bytes was dropped — size now comes from the extract
-        # length when source_file_id is unset (inline-evidence path).
+        # Evidence large enough to pass the size gate. Post-010 the gate reads
+        # uploaded_files.size_bytes via the source_file_id FK, so the backing
+        # file must exist: with find_uploaded_file returning None the size
+        # resolves to 0 and _reactive_vectorize returns before it ever reaches
+        # the wait_for — leaving this test asserting "no advisory" against a
+        # path that never ran, which it cannot fail.
         ev = MagicMock()
         ev.evidence_id = "ev_slow"
-        ev.extract = "x" * 1_000_000
-        ev.source_file_id = None
+        ev.source_file_id = "file_slow"
         ev.vectorized = False
+        f = MagicMock()
+        f.file_id = "file_slow"
+        f.size_bytes = 1_000_000
         case = MagicMock()
         case.evidence = [ev]
-        case.find_uploaded_file = MagicMock(return_value=None)
+        case.find_uploaded_file = MagicMock(return_value=f)
         ctx = MagicMock()
         ctx.in_memory_case = case
         ctx.case_id = "case_test"
@@ -1660,3 +1694,106 @@ class TestReactiveVectorizeTimeout:
             "appended — the agent continues without claiming a "
             "vectorize happened."
         )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestAdvisoryIsNotEmittedForAnIndexThatWasNeverWritten:
+    """The [SYSTEM] advisory is the surface — assert THERE (#941).
+
+    ``_vectorize_evidence``'s bool is an intermediate value. What reaches the
+    investigating model is ``_VECTORIZED_SYSTEM_MESSAGE``: "This file has been
+    automatically indexed for semantic search. Use case_evidence_search…". A
+    file that indexed nothing is not in the collection, so that advisory sends
+    the model to a search that must come back empty — which it then reads as a
+    statement about the file's contents.
+
+    These drive the two emission sites through the REAL ``_vectorize_evidence``
+    with a tool that reports a completed run which wrote nothing. Tests that
+    asserted only on the returned bool passed while all four emission sites
+    ignored it entirely.
+    """
+
+    def _engine(self, tool_data):
+        registry = MagicMock()
+        registry.execute_tool = AsyncMock(
+            return_value=ToolResult(success=True, data=tool_data)
+        )
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        repo.update_evidence_vectorized = AsyncMock(return_value=True)
+        return MilestoneEngine(
+            llm_provider=AsyncMock(),
+            repository=repo,
+            investigation_tools=registry,
+        )
+
+    def _ctx(self):
+        ev = MagicMock()
+        ev.evidence_id = "ev_1"
+        ev.source_file_id = "file_1"
+        ev.vectorized = False
+        # Post-010 the size gate reads uploaded_files.size_bytes via the FK.
+        # With no backing file the size resolves to 0 and _reactive_vectorize
+        # returns BEFORE it ever vectorizes — which would make an
+        # "advisory absent" assertion pass without exercising anything.
+        f = MagicMock()
+        f.file_id = "file_1"
+        f.size_bytes = 1_000_000
+        case = MagicMock()
+        case.evidence = [ev]
+        case.find_uploaded_file = MagicMock(return_value=f)
+        ctx = MagicMock()
+        ctx.in_memory_case = case
+        ctx.case_id = "case_test"
+        ctx.case_repository = None
+        return ctx, case
+
+    @pytest.mark.parametrize(
+        "indexed,expect_advisory",
+        [(True, True), (False, False)],
+        ids=["indexed", "indexed_nothing"],
+    )
+    async def test_reactive_path(self, indexed, expect_advisory):
+        engine = self._engine({"evidence_id": "ev_1", "indexed": indexed})
+        ctx, _ = self._ctx()
+
+        result_text = await engine._reactive_vectorize(
+            "ev_1", ctx, "before", "low_confidence"
+        )
+
+        emitted = engine._VECTORIZED_SYSTEM_MESSAGE in result_text
+        assert emitted is expect_advisory, (
+            f"indexed={indexed} emitted the 'indexed for semantic search' "
+            f"advisory={emitted}"
+        )
+
+    @pytest.mark.parametrize(
+        "indexed,expect_advisory",
+        [(True, True), (False, False)],
+        ids=["indexed", "indexed_nothing"],
+    )
+    async def test_proactive_path(self, indexed, expect_advisory):
+        import asyncio
+
+        engine = self._engine({"evidence_id": "ev_1", "indexed": indexed})
+        ctx, case = self._ctx()
+
+        task = asyncio.create_task(engine._vectorize_evidence("ev_1", ctx))
+        await task
+
+        result_text = await engine._track_da_result(
+            func_name="search_file",
+            evidence_id="ev_1",
+            tool_result=ToolResult(success=True, data="{}"),
+            result_text="before",
+            case=case,
+            tool_context=ctx,
+            da_empty_search_counts={},
+            proactive_tasks={"ev_1": task},
+        )
+
+        emitted = engine._VECTORIZED_SYSTEM_MESSAGE in result_text
+        assert (
+            emitted is expect_advisory
+        ), f"indexed={indexed} emitted the advisory={emitted}"

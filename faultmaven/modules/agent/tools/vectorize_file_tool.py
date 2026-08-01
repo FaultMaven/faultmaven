@@ -31,6 +31,36 @@ logger = logging.getLogger(__name__)
 
 VECTORIZATION_MAX_SIZE_BYTES = 50_000_000  # 50MB hard cap
 
+#: What the investigating model is told when a file becomes searchable. This
+#: is the surface — everything else about vectorization is an intermediate
+#: value the model never sees.
+VECTORIZED_SYSTEM_MESSAGE = (
+    "\n\n[SYSTEM] This file has been automatically indexed for semantic "
+    "search. Use case_evidence_search to find content by meaning rather "
+    "than keywords."
+)
+
+
+def append_vectorization_advisory(text: str, indexed: bool) -> str:
+    """Append the searchability advisory, and only if the file really is indexed.
+
+    The rule lives here rather than at each emission site because it was
+    previously restated at four of them — twice in ``MilestoneEngine``, twice in
+    ``AgentOrchestrationService`` — with the message text copied inline. Four
+    copies of a rule are four chances to keep the ``if`` and lose the condition,
+    and the advisory is not a cosmetic string: it sends the model to
+    ``case_evidence_search``, so claiming it for a file that was never written
+    guarantees an empty search the model then reads as a statement about the
+    file's contents (#941).
+
+    Taking ``indexed`` as an argument means the caller's surrounding ``if``
+    cannot carry the claim on its own — this returns ``text`` unchanged for a
+    file that indexed nothing however it was reached.
+    """
+    if not indexed or VECTORIZED_SYSTEM_MESSAGE in text:
+        return text
+    return text + VECTORIZED_SYSTEM_MESSAGE
+
 
 class VectorizeFileTool(AgentTool):
     """On-demand vectorization of evidence files for semantic search.
