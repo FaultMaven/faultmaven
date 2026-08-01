@@ -1046,7 +1046,9 @@ Embeddings are produced by the in-process BGE-M3 model via `model_cache.get_bge_
 
 #### 5.6.4 Failure Semantics
 
-`store_in_vector_db_background` catches all exceptions from chunking, embedding, and Chroma upsert, logs them, and does not raise: vectorization is a background task run after the user has already received their turn response, and the raw Evidence object is always retrievable from the Case repository regardless of vector-index state.
+`store_in_vector_db_background` catches all exceptions from chunking, embedding, and Chroma upsert, logs them, and does not raise: it runs as a fire-and-forget background task for the proactive case, and the raw Evidence object is always retrievable from the Case repository regardless of vector-index state.
+
+Despite the name, nothing calls it at upload time. `VectorizeFileTool` is its only caller, awaiting it inside the directed-analysis tool loop, so indexing is always agent-driven and nothing else will cover a file the tool does not.
 
 Not raising is not the same as not reporting. The function returns a `VectorIndexOutcome` — `INDEXED`, `NOTHING_TO_INDEX`, `EMBEDDER_UNAVAILABLE`, or `FAILED` — and only `INDEXED` means the file is searchable. The `vectorize_file` agent tool awaits this call and reports to the investigating model, so a caller that cannot distinguish the four states announces an index that may not exist; the empty `case_evidence_search` that follows then reads as a finding about the evidence rather than as an absent index.
 

@@ -131,10 +131,17 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
         # The shared guard, not a fourth hand-rolled copy of it. #944 gave this
         # site the right refusal but its own implementation, which meant it
-        # also missed the time bound: both callers (terminal_transitions'
-        # runbook dedup, report_recommendation_service) run inside the 120s
-        # per-turn budget, and a cold BGE-M3 load is 60-120s, so an unbounded
-        # await here can consume the whole turn instead of refusing in 10s.
+        # also missed the time bound. Both callers sit under a caller-side
+        # deadline they can exhaust: the runbook dedup in terminal_transitions
+        # runs inside the 120s per-turn budget, and the report-recommendation
+        # endpoint under the HTTP/ingress budget. A cold BGE-M3 load is 60-120s,
+        # so an unbounded await here consumes that whole budget instead of
+        # refusing in 10s.
+        #
+        # Consequence, accepted: the first terminal transition after a cold
+        # start refuses, and the resolution carries the "dedup could not run"
+        # caveat rather than blocking on the load. The timed-out load still
+        # runs to completion and warms the cache, so only the first is affected.
         query_embedding = await embed_query_or_raise(
             query_text,
             subject="Runbook similarity search",

@@ -1324,10 +1324,10 @@ class TestVectorizedFlagPersistence:
     stacking concurrent BGE-M3 encodes past the 60s wait_for bound.
     """
 
-    async def _make_engine_with_tool(self, tool_success: bool):
+    async def _make_engine_with_tool(self, tool_success: bool, tool_data="ok"):
         mock_registry = MagicMock()
         mock_registry.execute_tool = AsyncMock(
-            return_value=ToolResult(success=tool_success, data="ok")
+            return_value=ToolResult(success=tool_success, data=tool_data)
         )
         provider = AsyncMock()
         repo = MagicMock()
@@ -1387,6 +1387,58 @@ class TestVectorizedFlagPersistence:
         )
         repo.update_evidence_vectorized.assert_not_called()
         repo.save.assert_not_called()
+
+    async def test_a_success_that_indexed_nothing_does_not_count_as_indexed(self):
+        """``success=True`` is not "the file is in the collection".
+
+        ``vectorize_file`` reports a file with no chunkable content as a
+        success — the operation completed and established a fact about the
+        file — but nothing was written. This boolean is the only thing the
+        callers read: True both flips the persistent ``vectorized`` flag and
+        emits ``_VECTORIZED_SYSTEM_MESSAGE``, which tells the model the file is
+        searchable via ``case_evidence_search``. The model then searches, gets
+        nothing back, and reads it as "this file does not contain that" — an
+        index that was never written laundered into a finding about the
+        evidence (#941).
+
+        Asserting on the tool's own ToolResult would not catch this: its
+        message already says the file is not searchable, and no caller here
+        renders it.
+        """
+        engine, repo = await self._make_engine_with_tool(
+            tool_success=True,
+            tool_data={"evidence_id": "ev_empty", "indexed": False},
+        )
+        ctx, _, ev = self._make_ctx_with_evidence("ev_empty")
+
+        result = await engine._vectorize_evidence("ev_empty", ctx)
+
+        assert result is False, (
+            "an empty index was reported to the caller as a completed one, "
+            "which is what emits the 'indexed for semantic search' advisory"
+        )
+        assert ev.vectorized is False, (
+            "the vectorized flag asserts membership of the case collection; "
+            "a file that indexed nothing is not in it"
+        )
+        repo.update_evidence_vectorized.assert_not_called()
+
+    async def test_an_actual_index_is_still_reported_as_indexed(self):
+        """The gate can PASS. Rejecting every success would silently disable
+        vectorization instead of making it honest."""
+        engine, repo = await self._make_engine_with_tool(
+            tool_success=True,
+            tool_data={"evidence_id": "ev_real", "indexed": True},
+        )
+        ctx, _, ev = self._make_ctx_with_evidence("ev_real")
+
+        result = await engine._vectorize_evidence("ev_real", ctx)
+
+        assert result is True
+        assert ev.vectorized is True
+        repo.update_evidence_vectorized.assert_awaited_once_with(
+            "case_test", "ev_real", True
+        )
 
     async def test_vectorized_evidence_skips_proactive(self):
         """Proactive task should not be created for evidence that is

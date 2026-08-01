@@ -206,15 +206,20 @@ async def store_in_vector_db_background(
     overlap_tokens: Optional[int] = None,
 ) -> VectorIndexOutcome:
     """
-    Background task: Chunk and store structural index in ChromaDB.
+    Chunk a structural index and store it in the case's ChromaDB collection.
 
-    User has already received response. This doesn't block upload, and it never
-    raises — a failure here must not take down the turn that scheduled it.
+    Never raises — a failure here must not take down whatever scheduled it.
 
     It does, however, **report** what happened. Swallowing the exception is not
     the same as discarding the outcome: ``vectorize_file`` awaits this and tells
     the investigating model whether the file is searchable, so a caller that
     cannot tell "indexed" from "nothing was written" states the former (#941).
+
+    Despite the name, there is no upload-time caller: ``VectorizeFileTool`` is
+    the only one, and it awaits this inside the directed-analysis tool loop —
+    proactively as a background task, or reactively under
+    ``vectorization_reactive_timeout_seconds``. The time-bound policy lives
+    there, not here.
 
     Args:
         case_id: Case identifier

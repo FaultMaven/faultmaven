@@ -5665,6 +5665,26 @@ class MilestoneEngine:
             )
             return False
 
+        # success is not "the file is in the index". `vectorize_file` reports a
+        # file with no chunkable content as a success — the operation completed
+        # and established a fact about the file — but nothing was written. This
+        # boolean is the only thing the callers read: True flips the persistent
+        # `vectorized` flag AND emits `_VECTORIZED_SYSTEM_MESSAGE`, telling the
+        # model the file is searchable via case_evidence_search. The model then
+        # searches, gets nothing, and reads it as "this file does not contain
+        # that" — an index that was never written laundered into a finding about
+        # the evidence (#941). The tool's own message says otherwise, but no
+        # caller here renders it.
+        data = result.data if isinstance(result.data, dict) else {}
+        if data.get("indexed") is False:
+            logger.info(
+                "vectorize_file indexed nothing for %s (%s) — not marking "
+                "vectorized",
+                evidence_id,
+                data.get("message", ""),
+            )
+            return False
+
         logger.info("vectorize_file succeeded for %s", evidence_id)
 
         # Persist vectorized=True via a scoped single-row UPDATE. Must NOT

@@ -2324,3 +2324,53 @@ class TestSharedKbAllowlistIsTenantScoped:
             scope_ids=["team-1"],
             organization_id=STANDALONE_ORG_ID,
         )
+
+
+class TestAutoVectorizeReportsIndexedNotJustSuccess:
+    """``_auto_vectorize``'s bool is what tells the model a file is searchable.
+
+    ``vectorize_file`` reports a file with no chunkable content as a success
+    that indexed nothing. Returning ``result.success`` verbatim turned that into
+    "[SYSTEM] This file has been automatically indexed for semantic search"; the
+    model then ran ``case_evidence_search``, got nothing, and read it as a
+    statement about the file's contents — an index that was never written
+    laundered into a finding about the evidence (#941).
+    """
+
+    @pytest.fixture
+    def service(
+        self,
+        mock_session_service,
+        mock_case_repo,
+        mock_tool_registry,
+        mock_llm_client,
+    ):
+        return AgentOrchestrationService(
+            case_repo=mock_case_repo,
+            session_service=mock_session_service,
+            tool_registry=mock_tool_registry,
+            llm_client=mock_llm_client,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "result,expected",
+        [
+            (ToolResult(success=True, data={"indexed": True}), True),
+            (ToolResult(success=True, data={"indexed": False}), False),
+            (ToolResult(success=False, data=None, error="boom"), False),
+        ],
+        ids=["indexed", "success_but_indexed_nothing", "failed"],
+    )
+    async def test_only_an_actual_index_is_reported(
+        self, service, mock_tool_registry, result, expected
+    ):
+        mock_tool_registry.execute_tool = AsyncMock(return_value=result)
+        ctx = ToolContext(
+            session_id="s",
+            case_id="case_test",
+            organization_id="org_test",
+            user_id="u",
+        )
+
+        assert await service._auto_vectorize("ev_test", ctx) is expected

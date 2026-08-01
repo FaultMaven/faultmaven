@@ -1849,6 +1849,18 @@ class AgentOrchestrationService:
                 params={"evidence_id": evidence_id},
                 context=tool_context,
             )
+            # Not `result.success` alone — a file with no chunkable content is
+            # reported as a success that indexed nothing, and this boolean is
+            # what makes the caller tell the model the file is now searchable
+            # (#941). Mirrors MilestoneEngine._vectorize_evidence.
+            data = result.data if isinstance(result.data, dict) else {}
+            if data.get("indexed") is False:
+                logger.info(
+                    "Auto-vectorization indexed nothing for %s — not reporting "
+                    "it as searchable",
+                    evidence_id,
+                )
+                return False
             return result.success
         except Exception as e:
             logger.warning("Auto-vectorization failed for %s: %s", evidence_id, e)

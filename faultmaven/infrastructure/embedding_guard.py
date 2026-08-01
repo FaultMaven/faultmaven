@@ -16,12 +16,16 @@ wants to tolerate an unavailable embedder has to catch it, which makes
 tolerating it opt-IN and visible at the call site instead of a default buried in
 an adapter.
 
-**Every query-embedding site routes through here.** Today that is
-``KnowledgeVectorStore``, ``ChromaDBVectorStore``, ``CaseVectorStore`` and
-``RunbookKnowledgeBase.search_by_text``. The last of those refused correctly but
-with its own copy of the logic, and the copy had silently dropped the time bound
-— which is the failure mode a shared implementation exists to prevent, so a new
-site hand-rolling this is a bug even when its refusal looks right.
+**Every query-embedding site routes through here** — ``KnowledgeVectorStore``,
+``CaseVectorStore`` and ``RunbookKnowledgeBase.search_by_text`` on the live
+paths, plus ``ChromaDBVectorStore``, whose ``search`` has no caller today (the
+two that call an ``IVectorStore`` pass ``collection_name=``, which its signature
+does not accept) and is covered so it is not a trap for the next one.
+
+``search_by_text`` is why this is a module and not a method. It refused
+correctly, with its own copy of the logic — and the copy had silently dropped
+the time bound. A site that hand-rolls this is a bug even when its refusal looks
+right.
 
 **Call this BEFORE entering** ``BaseExternalClient.call_external``. The
 embedding is a local model call, not the ChromaDB round-trip the retry and
