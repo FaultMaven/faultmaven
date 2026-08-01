@@ -69,6 +69,7 @@ from faultmaven.exceptions import (
     ServiceException,
     ValidationException,
 )
+from faultmaven.infrastructure.base_client import CircuitBreakerError
 from faultmaven.infrastructure.observability.tracing import trace
 
 # TD-001: IReportStore removed - reports now accessed via CaseRepository
@@ -2927,13 +2928,18 @@ async def get_report_recommendations(
 
     except HTTPException:
         raise
-    except KnowledgeBaseError as e:
+    except (KnowledgeBaseError, TimeoutError, CircuitBreakerError) as e:
         # Refuse rather than recommend. The runbook recommendation IS a claim
         # about what the knowledge base holds, so when the similarity search
         # cannot run there is no honest recommendation to give — answering
         # anyway is what produced a permanent "generate" and let duplicate
         # runbooks accumulate (#944). 503 matches the sibling refusal above
         # for a missing vector store, and keeps the response contract intact.
+        #
+        # TimeoutError and CircuitBreakerError are caught alongside the typed
+        # error because call_external raises those two unwrapped — they are
+        # the commonest unavailability modes, and routing them to the generic
+        # handler below would answer 500 with raw exception text instead.
         logger.warning(
             f"Report recommendations unavailable for case {case_id}: {e}",
             extra={"case_id": case_id},

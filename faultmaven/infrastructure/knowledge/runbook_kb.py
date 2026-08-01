@@ -113,6 +113,22 @@ class RunbookKnowledgeBase(BaseExternalClient):
         """
         from faultmaven.infrastructure.model_cache import model_cache
 
+        # Refuse an unscoped search HERE rather than relying on
+        # search_runbooks' falsy-org guard. That guard fails closed by
+        # returning [] without querying — correct for tenancy, but every
+        # caller of this method reads [] as "the KB holds nothing similar"
+        # and turns it into action="generate". A refused search must not be
+        # reportable as a finding (#944).
+        if not organization_id:
+            logger.warning(
+                "Refusing unscoped runbook search: no organization_id supplied"
+            )
+            raise KnowledgeBaseError(
+                "Runbook similarity search requires a tenant; refusing to "
+                "search without one",
+                error_code="RUNBOOK_SEARCH_UNSCOPED",
+            )
+
         query_embedding = await model_cache.aembed_query(query_text)
         if query_embedding is None:
             logger.error("BGE-M3 unavailable — cannot search runbooks by text")

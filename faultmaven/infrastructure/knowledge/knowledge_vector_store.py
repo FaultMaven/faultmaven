@@ -22,6 +22,7 @@ Hybrid search: Two-stage retrieval + reranking pipeline:
     - Scope preference (personal > team > global tiebreaking)
 """
 
+import asyncio
 import logging
 import math
 import re
@@ -35,6 +36,12 @@ from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.models.exceptions import KnowledgeBaseError
 
 logger = logging.getLogger(__name__)
+
+# Bound on a single query embedding. Sits outside call_external's timeout
+# (see _embed_query_or_raise), so it is the only thing keeping a cold BGE-M3
+# load from hanging a tool call to the outer turn budget. Kept at
+# call_external's 10s so search latency behaves the same either side of the hoist.
+EMBED_TIMEOUT_SECONDS = 10.0
 
 # Minimum keyword length for extraction
 MIN_KEYWORD_LENGTH = 3
@@ -243,10 +250,32 @@ class KnowledgeVectorStore(BaseExternalClient):
         incorrect conclusion the engine must never draw (#943). Callers that
         genuinely want to tolerate this must catch ``KnowledgeBaseError``
         explicitly, so tolerating it is opt-IN and visible at the call site.
+
+        Bounded by ``EMBED_TIMEOUT_SECONDS``. This runs OUTSIDE
+        ``call_external`` — deliberately, since retrying an unrecoverable model
+        load would burn ChromaDB's retry budget and trip its circuit breaker
+        for an embedder fault — but that also puts it outside
+        ``call_external``'s own timeout, so it carries its own. Without one a
+        cold BGE-M3 load can hang the tool call all the way to the outer turn
+        budget.
         """
         from faultmaven.infrastructure.model_cache import model_cache
 
-        query_embedding = await model_cache.aembed_query(query)
+        try:
+            query_embedding = await asyncio.wait_for(
+                model_cache.aembed_query(query), timeout=EMBED_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            self.logger.error(
+                f"BGE-M3 embedding timed out after {EMBED_TIMEOUT_SECONDS}s "
+                f"for {operation}"
+            )
+            raise KnowledgeBaseError(
+                f"Knowledge base search unavailable: embedding the query timed "
+                f"out after {EMBED_TIMEOUT_SECONDS}s",
+                error_code="KNOWLEDGE_EMBEDDER_TIMEOUT",
+            )
+
         if query_embedding is None:
             self.logger.error(f"BGE-M3 model unavailable for {operation}")
             raise KnowledgeBaseError(

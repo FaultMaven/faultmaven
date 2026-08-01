@@ -3160,6 +3160,15 @@ class MilestoneEngine:
                 "I'll let you know here when it's ready — you'll also find it in "
                 "the Dashboard under **Knowledge > Drafts**."
             )
+            # Carry the dedup caveat onto the user-visible turn. Only NOT_READY
+            # and EXISTING_COVERS surface `suggestion.message` above, so a
+            # SUGGEST_WITH_CAVEATS verdict would otherwise reach the user as
+            # the unqualified line above — silently implying the KB was checked
+            # when it was not (#944). Draft creation still proceeds: the case is
+            # runbook-worthy, and what is uncertain is only whether a duplicate
+            # already exists.
+            if suggestion.verdict == RunbookSuggestion.SUGGEST_WITH_CAVEATS:
+                agent_response = f"{suggestion.message}\n\n{agent_response}"
             logger.info(
                 f"Runbook creation initiated for case {case.case_id}",
                 extra={"case_id": case.case_id},

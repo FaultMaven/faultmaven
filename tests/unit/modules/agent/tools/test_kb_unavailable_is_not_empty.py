@@ -199,3 +199,34 @@ def test_every_kb_config_defines_its_own_empty_result_message():
     assert kb != evidence, "the two stores must not share one claim"
     # The KB has no visibility into case uploads and must not mention them.
     assert "upload" not in kb.lower()
+
+
+# ---------------------------------------------------------------------------
+# The embedding hoist must not lose its time bound
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_hanging_embedder_fails_closed_instead_of_hanging_the_turn():
+    """Embedding runs OUTSIDE ``call_external`` (deliberately — retrying an
+    unrecoverable model load would burn ChromaDB's retry budget and trip its
+    circuit breaker). That also puts it outside ``call_external``'s timeout, so
+    it must carry its own: without one a cold BGE-M3 load hangs the tool call
+    all the way to the outer turn budget."""
+    import asyncio as _asyncio
+
+    from faultmaven.infrastructure.knowledge import knowledge_vector_store as kvs
+
+    async def _never_returns(_text):
+        await _asyncio.sleep(60)
+
+    with patch.object(kvs, "EMBED_TIMEOUT_SECONDS", 0.05):
+        with patch(_EMBEDDER, new=_never_returns):
+            with pytest.raises(KnowledgeBaseError) as excinfo:
+                await _store().search(
+                    collection_name="faultmaven_kb",
+                    query="how do I drain a node?",
+                    where={"scope": "global"},
+                )
+
+    assert excinfo.value.error_code == "KNOWLEDGE_EMBEDDER_TIMEOUT"

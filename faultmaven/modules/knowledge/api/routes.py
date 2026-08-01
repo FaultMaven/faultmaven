@@ -857,19 +857,24 @@ async def update_document(
     except HTTPException:
         raise
     except KnowledgeBaseError as e:
-        # Re-indexing failed. Because indexing now embeds before it deletes,
-        # the previous vectors are still in place — the document remains
-        # searchable on its OLD content while the row holds the new text.
-        # Say so: this used to answer 200 having deleted the vectors and
-        # written nothing back, leaving the document permanently unfindable
-        # with no signal at all (#945).
+        # Re-indexing failed. Whether the OLD vectors survived depends on where
+        # it failed, and the response must not assert more than is known:
+        # the pre-delete failures (no embedder, no chunks) leave the previous
+        # vectors intact, but KNOWLEDGE_INDEXING_FAILED can fire from
+        # add_documents AFTER the delete, leaving the document with none.
         logger.error(f"Failed to re-index document {document_id}: {e}")
+        searchable_state = (
+            "Search results still reflect the previous content."
+            if getattr(e, "error_code", None)
+            in ("KNOWLEDGE_EMBEDDER_UNAVAILABLE", "KNOWLEDGE_NO_CHUNKS")
+            else "This document may not be searchable until the update succeeds."
+        )
         raise HTTPException(
             status_code=503,
             detail=(
-                "Document saved, but re-indexing for search failed — search "
-                "results still reflect the previous content. Retry the update "
-                "once the knowledge base is available."
+                f"Document saved, but re-indexing for search failed. "
+                f"{searchable_state} Retry the update once the knowledge base "
+                f"is available."
             ),
         )
     except Exception as e:

@@ -1382,7 +1382,10 @@ async def evaluate_runbook_suggestion(
     if runbook_kb:
         try:
             similar = await _find_similar_runbooks_for_case(case, runbook_kb)
-            dedup_ran = True
+            # None means no search was issued (no usable tenant, or too little
+            # case content to form a query) — NOT "nothing similar found". Only
+            # a real search licenses the plain SUGGEST verdict below (#944).
+            dedup_ran = similar is not None
             if similar:
                 top_match = similar[0]
                 similarity = top_match.get("similarity_score", 0)
@@ -1450,11 +1453,22 @@ async def evaluate_runbook_suggestion(
     )
 
 
-async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list[dict]:
+async def _find_similar_runbooks_for_case(
+    case: "Case", runbook_kb: Any
+) -> Optional[list[dict]]:
     """Search for existing runbooks similar to a resolved case, within its tenant.
 
     Builds a query from case title + root cause + solution for semantic search.
-    Returns list of matches with similarity_score and title.
+
+    Returns:
+        A list of matches (possibly empty) when a search actually ran, or
+        ``None`` when no search was issued at all — no usable tenant, or too
+        little case content to form a query.
+
+        The distinction is load-bearing: ``[]`` licenses the caller's "checked,
+        nothing similar exists" verdict and ``None`` does not. Collapsing both
+        into ``[]`` is what let an unsearched case reach the plain ``SUGGEST``
+        branch, which asserts a dedup result that was never obtained (#944).
 
     Scoped to ``case.organization_id`` and fail-closed: a case carrying no
     usable tenant yields ``[]`` **without a search**, never a deployment-wide
@@ -1467,9 +1481,9 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
     ``get_current_org_id``, so under ``TENANT_PROVIDER=multi`` a case written
     from an execution context that never bound a tenant carries the Standalone
     sentinel — which is not a tenant there, and must not become the similarity
-    predicate. ``search_runbooks`` fails closed on a falsy org downstream, but
-    the ``search_by_text`` arm beside it has no downstream guard at all, so this
-    is the only check standing on that path.
+    predicate. ``search_by_text`` refuses a falsy org with a typed error, but
+    this check runs first so the common case is a quiet, logged skip rather
+    than an exception.
     """
     organization_id = usable_tenant_id(getattr(case, "organization_id", None))
     if not organization_id:
@@ -1477,7 +1491,7 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
             "Runbook similarity search skipped: case carries no usable tenant",
             extra={"case_id": getattr(case, "case_id", None)},
         )
-        return []
+        return None  # no search ran — see the return contract above
 
     # Build search text from case context
     parts = []
@@ -1494,7 +1508,8 @@ async def _find_similar_runbooks_for_case(case: "Case", runbook_kb: Any) -> list
             parts.append(title)
 
     if not parts:
-        return []
+        # Nothing to query with, so nothing was checked.
+        return None
 
     query_text = " | ".join(parts)
 

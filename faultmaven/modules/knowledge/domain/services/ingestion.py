@@ -48,7 +48,6 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
 )
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
-from faultmaven.models.exceptions import KnowledgeBaseError
 
 
 def _call_with_timeout(fn: Callable[[], Any], timeout_s: float, what: str) -> Any:
@@ -245,12 +244,15 @@ class KnowledgeIngester:
         When an external ChromaDB was configured but unreachable at startup,
         ``_collection`` is None and any access raises ``KnowledgeBaseError``.
 
-        The read methods used to catch that and return ``[]``, which is the
-        same defect as an unavailable embedder: "the store is down" rendered as
-        "the knowledge base holds nothing", which the investigation then
-        reasons from. ``search`` / ``search_documents`` now re-raise
-        ``KnowledgeBaseError`` through their trailing blanket handler, so an
-        unavailable store reaches the caller AS unavailable (#868 review).
+        Raising rather than returning ``[]`` is deliberate: "the store is down"
+        rendered as "the knowledge base holds nothing" is an affirmative
+        negative the investigation would then reason from (#868 review).
+
+        The ``search``/``search_documents`` read methods that used to sit on
+        this property were deleted in #943 — they were reachable only through
+        the model-invisible ``KnowledgeBaseTool`` and queried the unified
+        collection with no scope predicate. Remaining callers are the ingestion
+        paths, which must fail closed here for the same reason.
         """
         if self._collection is None:
             from faultmaven.models.exceptions import KnowledgeBaseError
