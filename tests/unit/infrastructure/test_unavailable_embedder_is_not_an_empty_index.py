@@ -36,6 +36,7 @@ from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
+from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.models.exceptions import KnowledgeBaseError
@@ -107,6 +108,18 @@ _STORES = [
             case_id="case-1", query="what errors are in app.log?"
         ),
         id="case_vector_store",
+    ),
+    # Fourth site. It already refused correctly (#944) but with its own copy of
+    # the logic, and the copy had dropped the time bound — so it is in the sweep
+    # on the strength of the timeout and circuit-breaker cases, not the refusal.
+    pytest.param(
+        lambda client: RunbookKnowledgeBase(
+            vector_store=ChromaDBVectorStore(client=client)
+        ),
+        lambda store: store.search_by_text(
+            query_text="disk pressure on the payment node", organization_id="org-1"
+        ),
+        id="runbook_kb_search_by_text",
     ),
 ]
 
@@ -209,9 +222,10 @@ async def test_every_store_states_its_own_subject(make_store, search):
             await search(store)
 
     message = str(excinfo.value).lower()
-    subject = (
-        "case evidence" if isinstance(store, CaseVectorStore) else "knowledge base"
-    )
+    subject = {
+        CaseVectorStore: "case evidence",
+        RunbookKnowledgeBase: "runbook similarity",
+    }.get(type(store), "knowledge base")
     assert subject in message, f"{type(store).__name__} did not name what failed"
 
 
@@ -289,7 +303,7 @@ async def test_a_genuinely_empty_case_still_reads_as_a_successful_empty_answer()
 # ---------------------------------------------------------------------------
 
 
-async def _index(case_vector_store, embeddings) -> None:
+async def _index(case_vector_store, embeddings, structural_index="## Errors\nOOM\n"):
     from faultmaven.core.preprocessing.models import UnifiedDataType
     from faultmaven.core.preprocessing.vector_storage import (
         store_in_vector_db_background,
@@ -299,10 +313,10 @@ async def _index(case_vector_store, embeddings) -> None:
         "faultmaven.core.preprocessing.vector_storage.model_cache.aembed_texts",
         new=AsyncMock(return_value=embeddings),
     ):
-        await store_in_vector_db_background(
+        return await store_in_vector_db_background(
             case_id="case-1",
             evidence_id="ev-1",
-            structural_index="## Errors\nOutOfMemoryError in worker-3\n",
+            structural_index=structural_index,
             data_type=UnifiedDataType.LOGS,
             metadata={},
             case_vector_store=case_vector_store,
@@ -339,3 +353,60 @@ async def test_indexing_still_writes_when_the_embedder_is_available():
 
     store.add_documents.assert_called_once()
     assert store.add_documents.call_args.kwargs["embeddings"] == [[0.1] * 1024]
+
+
+# ---------------------------------------------------------------------------
+# Skipping the write is only half of it: the tool must not announce the index
+# ---------------------------------------------------------------------------
+#
+# Not raising is not the same as not reporting. `store_in_vector_db_background`
+# returned None on every path, so `vectorize_file` said "vectorized and is now
+# searchable via case_evidence_search" for a file it had never written. The
+# model then searches, gets nothing, and reads it as "this file does not contain
+# that" — the affirmative negative relocated from the store to the tool.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "embeddings,structural_index,expected",
+    [
+        ([[0.1] * 1024], "## Errors\nOOM\n", "INDEXED"),
+        (None, "## Errors\nOOM\n", "EMBEDDER_UNAVAILABLE"),
+        ([[0.1] * 1024], "", "NOTHING_TO_INDEX"),
+    ],
+    ids=["indexed", "embedder_unavailable", "nothing_to_index"],
+)
+async def test_indexing_reports_which_of_the_outcomes_happened(
+    embeddings, structural_index, expected
+):
+    """Four states that mean four different things to whoever asks next."""
+    from faultmaven.core.preprocessing.vector_storage import VectorIndexOutcome
+
+    store = MagicMock()
+    store.add_documents = AsyncMock()
+
+    outcome = await _index(store, embeddings, structural_index)
+
+    assert outcome is getattr(VectorIndexOutcome, expected)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_is_reported_as_failed_not_as_indexed():
+    """The blanket handler must not launder a ChromaDB failure into success."""
+    from faultmaven.core.preprocessing.vector_storage import VectorIndexOutcome
+
+    store = MagicMock()
+    store.add_documents = AsyncMock(side_effect=RuntimeError("chroma is down"))
+
+    outcome = await _index(store, embeddings=[[0.1] * 1024])
+
+    assert outcome is VectorIndexOutcome.FAILED
+
+
+# The tool-boundary half of this — that ``vectorize_file`` only announces an
+# index it actually has — lives in
+# tests/unit/modules/agent/tools/test_vectorize_file_tool.py, driven through
+# ``execute_with_context``. It was first written here against the ``_not_indexed``
+# renderer directly, and mutation testing showed that version survived deleting
+# the branch that calls it: the renderer was right and unreachable. Assert at the
+# surface that produces the value, not on the helper that formats it.

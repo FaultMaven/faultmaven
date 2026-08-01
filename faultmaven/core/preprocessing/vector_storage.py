@@ -15,6 +15,7 @@ Design Reference:
 import logging
 import re
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.preprocessing.models import Chunk, UnifiedDataType
@@ -169,6 +170,31 @@ def chunk_structural_index(
     return chunks
 
 
+class VectorIndexOutcome(str, Enum):
+    """What actually happened to a file's vector index.
+
+    Four states, because they mean four different things to whoever asks next
+    and only one of them makes the file searchable. ``store_in_vector_db_background``
+    returned ``None`` for all of them, which is fine for a fire-and-forget
+    background task and wrong for ``vectorize_file``: that tool reported
+    "vectorized and now searchable via case_evidence_search" on every one, so a
+    file that was never written was announced as indexed, and the empty
+    ``case_evidence_search`` that followed read as "searched this case, found
+    nothing" — the affirmative negative moved from the store to the tool (#941).
+    """
+
+    #: Chunks were embedded and written. The file is searchable.
+    INDEXED = "indexed"
+    #: The structural index held no chunkable content. Nothing to write, and
+    #: nothing wrong — a real fact about the file, not a failure.
+    NOTHING_TO_INDEX = "nothing_to_index"
+    #: BGE-M3 could not be loaded. Nothing written; retry once it is back.
+    EMBEDDER_UNAVAILABLE = "embedder_unavailable"
+    #: Chunking, embedding, or the ChromaDB write raised. Nothing guaranteed
+    #: written.
+    FAILED = "failed"
+
+
 async def store_in_vector_db_background(
     case_id: str,
     evidence_id: str,
@@ -178,12 +204,17 @@ async def store_in_vector_db_background(
     case_vector_store: Any,
     max_chunk_tokens: Optional[int] = None,
     overlap_tokens: Optional[int] = None,
-) -> None:
+) -> VectorIndexOutcome:
     """
     Background task: Chunk and store structural index in ChromaDB.
 
-    User has already received response. This doesn't block upload.
-    Silent failure — doesn't affect user experience.
+    User has already received response. This doesn't block upload, and it never
+    raises — a failure here must not take down the turn that scheduled it.
+
+    It does, however, **report** what happened. Swallowing the exception is not
+    the same as discarding the outcome: ``vectorize_file`` awaits this and tells
+    the investigating model whether the file is searchable, so a caller that
+    cannot tell "indexed" from "nothing was written" states the former (#941).
 
     Args:
         case_id: Case identifier
@@ -196,6 +227,9 @@ async def store_in_vector_db_background(
             settings (VECTOR_CHUNK_SIZE_TOKENS, default 500).
         overlap_tokens: Overlap between chunks. When None, read from
             settings (VECTOR_CHUNK_OVERLAP_TOKENS, default 50).
+
+    Returns:
+        The :class:`VectorIndexOutcome`. Only ``INDEXED`` means searchable.
 
     Design Reference:
         data-preprocessing-design-specification.md Section 5.3
@@ -221,7 +255,7 @@ async def store_in_vector_db_background(
             logger.info(
                 f"No chunks generated for {evidence_id} — " f"structural index is empty"
             )
-            return
+            return VectorIndexOutcome.NOTHING_TO_INDEX
 
         # 2. Build documents with metadata
         documents = []
@@ -269,7 +303,7 @@ async def store_in_vector_db_background(
                 f"Evidence remains available via the Evidence record; semantic "
                 f"search will not find this file until it is re-indexed."
             )
-            return
+            return VectorIndexOutcome.EMBEDDER_UNAVAILABLE
         logger.debug(
             f"Generated BGE-M3 embeddings for {len(texts)} chunks ({evidence_id})"
         )
@@ -285,12 +319,15 @@ async def store_in_vector_db_background(
             f"Structural index stored in vector DB: {evidence_id} "
             f"({len(chunks)} chunks)"
         )
+        return VectorIndexOutcome.INDEXED
     except Exception as e:
         logger.error(
             f"Failed to store in vector DB for {evidence_id}: {e}. "
             f"Evidence is still available via the Evidence record, "
             f"but semantic search will not find this file."
         )
-        # Silent failure — evidence is still available via Evidence object.
-        # The agent can still use the Tier 1 structural_index passed in-memory
-        # during the upload turn. Only future semantic searches are affected.
+        # Does not raise — evidence is still available via the Evidence object,
+        # and the agent can still use the Tier 1 structural_index passed
+        # in-memory during the upload turn. The outcome is still reported: a
+        # caller that awaits this needs to know the file is not searchable.
+        return VectorIndexOutcome.FAILED

@@ -208,10 +208,11 @@ class VectorizeFileTool(AgentTool):
 
             # Run vectorization
             from faultmaven.core.preprocessing.vector_storage import (
+                VectorIndexOutcome,
                 store_in_vector_db_background,
             )
 
-            await store_in_vector_db_background(
+            outcome = await store_in_vector_db_background(
                 case_id=context.case_id,
                 evidence_id=evidence_id,
                 structural_index=structural_index,
@@ -225,11 +226,20 @@ class VectorizeFileTool(AgentTool):
             )
 
             logger.info(
-                "vectorize_file completed: %s, content_size=%d, data_type=%s",
+                "vectorize_file %s: %s, content_size=%d, data_type=%s",
+                outcome.value,
                 evidence_id,
                 content_size,
                 data_type_str,
             )
+
+            # Only INDEXED makes the file searchable, and only INDEXED may say
+            # so. Reporting the others as success announced an index that does
+            # not exist; the model then searches, gets nothing back, and reads
+            # it as "this file does not contain that" — an unwritten index
+            # laundered into a finding about the evidence (#941).
+            if outcome is not VectorIndexOutcome.INDEXED:
+                return self._not_indexed(outcome, evidence_id, data_type_str)
 
             return ToolResult(
                 success=True,
@@ -252,3 +262,50 @@ class VectorizeFileTool(AgentTool):
                 data=None,
                 error=f"Vectorization failed: {str(e)}",
             )
+
+    @staticmethod
+    def _not_indexed(outcome: Any, evidence_id: str, data_type_str: str) -> ToolResult:
+        """Render a non-``INDEXED`` outcome without claiming an index exists.
+
+        Each arm says what happened and, where the file is genuinely absent
+        from the index, says what may NOT be concluded from a later empty
+        ``case_evidence_search`` — same rule the KB adapters follow (#943): a
+        retrieval layer that could not do its job establishes nothing about the
+        evidence.
+        """
+        from faultmaven.core.preprocessing.vector_storage import VectorIndexOutcome
+
+        # Not a failure: the file really has no chunkable content, which is a
+        # fact about the file and safe for the model to act on.
+        if outcome is VectorIndexOutcome.NOTHING_TO_INDEX:
+            return ToolResult(
+                success=True,
+                data={
+                    "evidence_id": evidence_id,
+                    "data_type": data_type_str,
+                    "indexed": False,
+                    "message": (
+                        "This file has no chunkable content, so there is "
+                        "nothing to index and case_evidence_search will not "
+                        "return it. Read it directly with read_file or "
+                        "search_file instead."
+                    ),
+                },
+                error=None,
+            )
+
+        reason = (
+            "the embedding model is unavailable"
+            if outcome is VectorIndexOutcome.EMBEDDER_UNAVAILABLE
+            else "indexing failed"
+        )
+        return ToolResult(
+            success=False,
+            data=None,
+            error=(
+                f"This file was NOT vectorized: {reason}. It is not in the "
+                f"case evidence index, so case_evidence_search cannot find it "
+                f"— an empty result for this file says nothing about its "
+                f"contents. Read it directly with read_file or search_file."
+            ),
+        )

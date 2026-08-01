@@ -1,20 +1,27 @@
 """One answer, for every vector store, to "the embedder would not load".
 
-Each store here embeds the query with BGE-M3 before it can search anything, and
-each one used to have its own answer for an unavailable model: ``[]`` from the
-knowledge base store, ``[]`` from the generic KB store, a silent switch to
-ChromaDB's default embedding from the case evidence store. None of those are
-neutral values — downstream they are consumed as *answers*, and reach the
-investigating model as a claim about what the index holds ("the knowledge base
-has nothing", "this case has no matching evidence"). That is absence of
+Every retrieval path here embeds the query with BGE-M3 before it can search
+anything, and each one had invented its own answer for an unavailable model:
+``[]`` from the knowledge base store, ``[]`` from the generic KB store, a silent
+switch to ChromaDB's default embedding from the case evidence store. None of
+those are neutral values — downstream they are consumed as *answers*, and reach
+the investigating model as a claim about what the index holds ("the knowledge
+base has nothing", "this case has no matching evidence"). That is absence of
 evidence rendered as evidence of absence, which the investigation then reasons
 from (#941, #943).
 
-The correct answer is the same at every store, so it lives in one place rather
-than being restated three times: raise ``KnowledgeBaseError``. A caller that
-genuinely wants to tolerate an unavailable embedder has to catch it, which
-makes tolerating it opt-IN and visible at the call site instead of a default
-buried in an adapter.
+The correct answer is the same everywhere, so it lives in one place rather than
+being restated per store: raise ``KnowledgeBaseError``. A caller that genuinely
+wants to tolerate an unavailable embedder has to catch it, which makes
+tolerating it opt-IN and visible at the call site instead of a default buried in
+an adapter.
+
+**Every query-embedding site routes through here.** Today that is
+``KnowledgeVectorStore``, ``ChromaDBVectorStore``, ``CaseVectorStore`` and
+``RunbookKnowledgeBase.search_by_text``. The last of those refused correctly but
+with its own copy of the logic, and the copy had silently dropped the time bound
+— which is the failure mode a shared implementation exists to prevent, so a new
+site hand-rolling this is a bug even when its refusal looks right.
 
 **Call this BEFORE entering** ``BaseExternalClient.call_external``. The
 embedding is a local model call, not the ChromaDB round-trip the retry and
