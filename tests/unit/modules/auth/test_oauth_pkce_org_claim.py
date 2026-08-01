@@ -32,6 +32,7 @@ from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO, OAuthCodeDTO
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
+    RS256JWTTokenGenerator,
 )
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository import (
@@ -204,14 +205,21 @@ async def test_exchange_without_a_captured_org_fails_closed_under_multi(
 ):
     """A code carrying no tenant mints a claim no tenanted request can use.
 
-    The negative control. It asserts through ``usable_tenant_id`` — the one place
-    the "is this a real tenant?" rule lives, and the rule
-    ``bind_request_org_context`` refuses on — rather than against the literal
-    ``""``. Asserting the literal would pass just as happily on a claim that had
-    been silently defaulted to the Standalone sentinel, since
-    ``resolve_organization_claim`` collapses the sentinel to empty under multi
-    anyway. Routing through the shared predicate means this stays a real control
-    if either end of that collapse ever changes.
+    The negative control, and it asserts BOTH halves on purpose.
+
+    ``resolve_organization_claim`` (which emits the claim) and ``usable_tenant_id``
+    (which decides whether a claim is a tenant) are two independent copies of the
+    same sentinel-rejection rule. So an assertion routed only through
+    ``usable_tenant_id`` cannot detect ``resolve_organization_claim`` breaking:
+    mutating it to emit the Standalone sentinel under multi leaves such an
+    assertion green, because the predicate collapses the sentinel to ``None``
+    too. An earlier version of this test made exactly that mistake, on the
+    reasoning that the shared predicate was the stronger assertion — it is the
+    weaker one for this failure, and adversarial review demonstrated it.
+
+    So: the literal pins what is actually emitted, and the predicate pins the
+    downstream consequence. Neither is redundant, because each is the only check
+    on its own copy of the rule.
     """
     verifier, challenge = pkce_pair
 
@@ -224,7 +232,12 @@ async def test_exchange_without_a_captured_org_fails_closed_under_multi(
         )
 
         for token in (tokens.access_token, tokens.refresh_token):
-            assert usable_tenant_id(_claims(token)["organization_id"]) is None
+            claim = _claims(token)["organization_id"]
+            # What was emitted — catches a mint-side default to the sentinel.
+            assert claim == ""
+            assert claim != SingleTenantProvider.DEFAULT_ORG_ID
+            # What it means downstream — catches the predicate going permissive.
+            assert usable_tenant_id(claim) is None
 
 
 @pytest.mark.unit
@@ -265,15 +278,22 @@ async def test_a_deactivated_account_cannot_redeem_a_code(
 
     The revocation watermark cannot cover this: ``is_user_revoked`` compares
     ``iat <= watermark``, and a token minted *by this exchange* is newer than the
-    watermark by construction. The assertion below is deliberately in two parts —
-    first that the exchange refuses, and then that the watermark alone would NOT
-    have refused a token minted now, so the guard is load-bearing rather than a
-    duplicate of a check that happens elsewhere.
+    watermark by construction.
+
+    The watermark half is asserted in BOTH directions, and that is the whole
+    point of it. Asserting only that a now-minted token escapes the watermark
+    proves nothing, because ``is_user_revoked`` returns ``False`` for a key that
+    was never written — the assertion passes just as happily if the watermark
+    does not exist at all. An earlier version of this test did exactly that, and
+    adversarial review killed it by making ``revoke_user_tokens_before`` a no-op
+    with the suite still green. Showing the watermark is LIVE first is what makes
+    the escape meaningful.
 
     An authorization code lives ten minutes, which is a wide enough window for
     one issued just before deactivation to be redeemed just after it.
     """
     verifier, challenge = pkce_pair
+    store = token_generator.revocation_store
 
     with _MULTI:
         code = await oauth_service.create_authorization_code(
@@ -281,11 +301,10 @@ async def test_a_deactivated_account_cannot_redeem_a_code(
         )
 
         # The account is deactivated while the code is still live, exactly as
-        # user_service.deactivate does: flag cleared, then tokens revoked.
+        # user_service.deactivate_user does: flag cleared, then tokens revoked.
         user_repository.get.return_value.is_active = False
-        await token_generator.revocation_store.revoke_user_tokens_before(
-            "user_123", int(datetime.now(timezone.utc).timestamp()), 3600
-        )
+        watermark = int(datetime.now(timezone.utc).timestamp())
+        await store.revoke_user_tokens_before("user_123", watermark, 3600)
 
         with pytest.raises(InvalidGrantError) as refusal:
             await oauth_service.exchange_code_for_token(
@@ -294,11 +313,11 @@ async def test_a_deactivated_account_cannot_redeem_a_code(
 
     assert refusal.value.error_code == "USER_INACTIVE"
 
-    # The watermark would not have caught a token minted at this instant, which
-    # is why the explicit check above has to exist.
-    assert not await token_generator.revocation_store.is_user_revoked(
-        "user_123", int(datetime.now(timezone.utc).timestamp()) + 1
-    )
+    # The watermark is real and it does kill the account's OLDER tokens...
+    assert await store.is_user_revoked("user_123", watermark - 1) is True
+    # ...and yet a token minted after it walks straight through, which is why the
+    # explicit guard above has to exist.
+    assert await store.is_user_revoked("user_123", watermark + 1) is False
 
 
 @pytest.mark.unit
@@ -477,11 +496,16 @@ async def test_redis_repository_tolerates_a_field_the_dto_no_longer_declares():
 async def test_the_org_attaches_to_the_real_user_types_not_just_a_mock(pkce_pair):
     """The exchange's ``setattr`` must work on what the store really returns.
 
-    The suite above uses a ``Mock`` for the user, and a ``Mock`` accepts *any*
-    ``setattr`` — so it cannot establish that this works on a real object. A
-    frozen dataclass, or a pydantic model with ``validate_assignment``, would
-    raise here and every test above would still pass. Adversarial review made
-    exactly this point about the fixture.
+    The suite above uses a ``Mock`` for the user, which cannot establish this:
+    the divergence that matters is that a real ``DevUser`` arrives already
+    carrying the Standalone sentinel (stamped by ``__post_init__``) where the
+    mock carries nothing, so only the real type exercises the exchange
+    OVERWRITING a competing value rather than filling a blank.
+
+    Note what this does *not* prove: ``DevUser`` is a plain mutable dataclass, so
+    the ``setattr`` itself is trivially satisfied and a frozen-dataclass or
+    ``validate_assignment`` hazard is not exercised here — no such type is on
+    this path. The sentinel-overwrite property is the load-bearing half.
 
     So this runs the real exchange over a real ``DevUser``. That is the concrete
     type, traced rather than assumed: the container passes ``container.user_store``
@@ -490,66 +514,123 @@ async def test_the_org_attaches_to_the_real_user_types_not_just_a_mock(pkce_pair
     ``domain/models/user.py`` ``User`` is deliberately NOT exercised here — it has
     no ``username``, which the generators read, so it cannot be on this path.)
 
-    Asserted both ways on the decoded token: under multi the captured tenant
-    reaches the claim, and under single the Standalone sentinel survives the
-    ``or None`` wipe because ``resolve_organization_claim`` restores it — the
-    "no-op there" the source comment claims, checked against the type that
-    actually stamps that sentinel in ``__post_init__``.
+    It runs over BOTH generators. Everything else in this file uses HS256, but
+    ``AUTH_MODE=oauth`` — the cloud deployment that is the entire reason #872
+    exists — signs with RS256. The re-attach and the RS256 payload are each
+    covered separately elsewhere; without this the composition of the two is only
+    inferred, on the generator that deployment does not use.
+
+    Each leg builds its own user, because the legs are not independent otherwise:
+    the single-tenant assertion would pass off the multi leg's leftover value.
+    Under multi the captured tenant reaches the claim; under single the Standalone
+    sentinel survives the ``or None`` wipe because ``resolve_organization_claim``
+    restores it — the "no-op there" the source comment claims, checked against the
+    type that actually stamps that sentinel.
     """
     from faultmaven.modules.auth.domain.models.auth import DevUser
 
     verifier, challenge = pkce_pair
     fakeredis = pytest.importorskip("fakeredis")
 
-    real_user = DevUser(
-        user_id="user_123",
-        username="testuser",
-        email="testuser@acme.example",
-        display_name="Test User",
-        created_at=datetime.now(timezone.utc),
-    )
-    # Sanity: the fixture's premise. A real DevUser arrives already carrying the
-    # sentinel, so the exchange is overwriting a value, not filling a blank.
-    assert real_user.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
-
-    users = AsyncMock()
-    users.get = AsyncMock(return_value=real_user)
-    service = OAuthServiceImpl(
-        code_repository=InMemoryOAuthCodeRepository(),
-        user_repository=users,
-        token_generator=HS256JWTTokenGenerator(
-            secret_key=SECRET,
-            revocation_store=RedisTokenRevocationStore(
-                fakeredis.aioredis.FakeRedis(decode_responses=True)
+    def _fresh_service(generator):
+        """A service over a FRESH real DevUser, so no leg inherits another's org."""
+        real_user = DevUser(
+            user_id="user_123",
+            username="testuser",
+            email="testuser@acme.example",
+            display_name="Test User",
+            created_at=datetime.now(timezone.utc),
+        )
+        # The premise this test exists for: a real DevUser arrives already
+        # carrying the sentinel, so the exchange overwrites rather than fills.
+        assert real_user.organization_id == SingleTenantProvider.DEFAULT_ORG_ID
+        users = AsyncMock()
+        users.get = AsyncMock(return_value=real_user)
+        return OAuthServiceImpl(
+            code_repository=InMemoryOAuthCodeRepository(),
+            user_repository=users,
+            token_generator=generator,
+            settings=AuthSettings(
+                oauth_allowed_clients=["faultmaven-copilot"],
+                oauth_redirect_uri_patterns=[
+                    r"^chrome-extension://[a-z0-9]+/callback\.html$"
+                ],
             ),
+        )
+
+    def _store():
+        return RedisTokenRevocationStore(
+            fakeredis.aioredis.FakeRedis(decode_responses=True)
+        )
+
+    def _rs256():
+        """RS256 over a throwaway key pair — the cloud/AUTH_MODE=oauth signer."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        private_pem = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+        public_pem = (
+            key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+            .decode()
+        )
+        generator = RS256JWTTokenGenerator(
+            private_key=private_pem,
+            public_key=public_pem,
+            revocation_store=_store(),
             access_token_expire_minutes=15,
             refresh_token_expire_days=7,
-        ),
-        settings=AuthSettings(
-            oauth_allowed_clients=["faultmaven-copilot"],
-            oauth_redirect_uri_patterns=[
-                r"^chrome-extension://[a-z0-9]+/callback\.html$"
-            ],
-        ),
-    )
+        )
+        return generator, {"key": public_pem, "algorithms": ["RS256"]}
 
-    with _MULTI:
-        code = await service.create_authorization_code(
-            "user_123", _authorization_request(challenge), organization_id=TENANT
+    def _hs256():
+        generator = HS256JWTTokenGenerator(
+            secret_key=SECRET,
+            revocation_store=_store(),
+            access_token_expire_minutes=15,
+            refresh_token_expire_days=7,
         )
-        tokens = await service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
-        )
-    assert _claims(tokens.access_token)["organization_id"] == TENANT
+        return generator, {"key": SECRET, "algorithms": ["HS256"]}
 
-    with _SINGLE:
-        code = await service.create_authorization_code(
-            "user_123", _authorization_request(challenge), organization_id=None
-        )
-        tokens = await service.exchange_code_for_token(
-            code=code, code_verifier=verifier, redirect_uri=REDIRECT
-        )
-    assert (
-        _claims(tokens.access_token)["organization_id"]
-        == SingleTenantProvider.DEFAULT_ORG_ID
-    )
+    for build in (_hs256, _rs256):
+        generator, decode_with = build()
+        algorithm = decode_with["algorithms"][0]
+
+        def claim_of(token):
+            return jwt.decode(
+                token,
+                audience="faultmaven-api",
+                issuer="faultmaven",
+                **decode_with,
+            )["organization_id"]
+
+        with _MULTI:
+            service = _fresh_service(generator)
+            code = await service.create_authorization_code(
+                "user_123", _authorization_request(challenge), organization_id=TENANT
+            )
+            tokens = await service.exchange_code_for_token(
+                code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            )
+        assert claim_of(tokens.access_token) == TENANT, algorithm
+        assert claim_of(tokens.refresh_token) == TENANT, algorithm
+
+        with _SINGLE:
+            service = _fresh_service(generator)
+            code = await service.create_authorization_code(
+                "user_123", _authorization_request(challenge), organization_id=None
+            )
+            tokens = await service.exchange_code_for_token(
+                code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            )
+        assert (
+            claim_of(tokens.access_token) == SingleTenantProvider.DEFAULT_ORG_ID
+        ), algorithm
