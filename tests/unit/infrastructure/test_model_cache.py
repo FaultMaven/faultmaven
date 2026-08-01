@@ -193,8 +193,10 @@ class TestAsyncEmbedBoundary:
 
     @pytest.mark.asyncio
     async def test_aembed_returns_none_when_model_unavailable(self):
-        """When BGE-M3 can't load, the boundary returns None so callers can fall
-        back to ChromaDB's default embedding instead of crashing."""
+        """When BGE-M3 can't load, the boundary returns None rather than
+        raising — the caller decides what that means (search raises, indexing
+        skips; see #941). What it must never become is a query or a write in a
+        second embedding space."""
         from faultmaven.infrastructure.model_cache import ModelCache
 
         cache = ModelCache()

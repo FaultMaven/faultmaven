@@ -249,20 +249,30 @@ async def store_in_vector_db_background(
             )
 
         # 3. Generate BGE-M3 embeddings for all chunks (off the event loop via
-        # the model_cache async boundary). None → BGE unavailable, fall back to
-        # ChromaDB's default embedding.
+        # the model_cache async boundary).
+        #
+        # None → BGE-M3 unavailable, and there is nothing useful to write. This
+        # used to fall back to ChromaDB's default embedding, which pins the
+        # collection to that model's dimension: search embeds with BGE-M3
+        # (CaseVectorStore.search, #941), so those chunks are unsearchable
+        # forever, AND every later BGE-M3 write into the same collection is
+        # rejected on dimension — one unavailable-model window poisoning the
+        # case's evidence index for good. Skipping leaves the collection
+        # writable once the model returns, and the evidence itself is still
+        # reachable through the Evidence record and the Tier 1 structural index.
         texts = [doc["content"] for doc in documents]
         embeddings = await model_cache.aembed_texts(texts)
-        if embeddings is not None:
-            logger.debug(
-                f"Generated BGE-M3 embeddings for {len(texts)} chunks "
-                f"({evidence_id})"
-            )
-        else:
+        if embeddings is None:
             logger.warning(
-                f"BGE-M3 unavailable for {evidence_id}, "
-                f"falling back to ChromaDB default embedding"
+                f"BGE-M3 unavailable for {evidence_id}: skipping vector "
+                f"indexing rather than writing into a second embedding space. "
+                f"Evidence remains available via the Evidence record; semantic "
+                f"search will not find this file until it is re-indexed."
             )
+            return
+        logger.debug(
+            f"Generated BGE-M3 embeddings for {len(texts)} chunks ({evidence_id})"
+        )
 
         # 4. Store in vector DB
         await case_vector_store.add_documents(

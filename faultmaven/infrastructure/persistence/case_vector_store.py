@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 
 logger = logging.getLogger(__name__)
 
@@ -138,14 +139,25 @@ class CaseVectorStore(BaseExternalClient):
     ) -> List[Dict[str, Any]]:
         """Search for similar documents in case-specific collection.
 
-        Uses explicit BGE-M3 embeddings (1024 dims) to match vectors stored
-        at indexing time. Falls back to ChromaDB default embedding if BGE-M3
-        is unavailable (graceful degradation for existing 384-dim collections).
+        Uses explicit BGE-M3 embeddings (1024 dims) to match the vectors stored
+        at indexing time. One embedding space, always: this used to fall back
+        to ChromaDB's default embedding when BGE-M3 was unavailable, which is
+        not degradation but incoherence — the query lands in a different vector
+        space than the stored evidence, so the collection either rejects it on
+        dimension or answers from a space nothing was indexed in. Either way
+        the caller cannot tell "I searched this case and found nothing" from "I
+        could not search", and the investigating model is handed the former
+        (#941).
 
         Accepts either ``case_id`` (canonical) or ``collection_name`` (alias used
         by DocumentQATool, which names collections as "case_{case_id}"). When
         ``collection_name`` is provided, the "case_" prefix is stripped to recover
         ``case_id``.
+
+        Raises:
+            KnowledgeBaseError: If the embedding model is unavailable. The
+                caller must NOT render this as "no evidence found for this
+                case".
         """
         if case_id is None and collection_name is not None:
             # DocumentQATool passes collection_name="case_{case_id}" from CaseEvidenceConfig
@@ -160,30 +172,26 @@ class CaseVectorStore(BaseExternalClient):
                 "case_id (or collection_name) is required for case vector search"
             )
 
-        async def _search_wrapper():
-            from faultmaven.infrastructure.model_cache import model_cache
+        # Embedded BEFORE call_external: the embedding is a local model call,
+        # not the ChromaDB round-trip the retry/circuit-breaker policy exists
+        # for. Raising inside the wrapper would spend the retry budget on a
+        # model that cannot recover in seconds and charge ChromaDB's circuit
+        # breaker for an embedder fault.
+        query_embedding = await embed_query_or_raise(
+            query,
+            subject="Case evidence search",
+            operation="case_search",
+            log=self.logger,
+        )
 
+        async def _search_wrapper():
             collection = self._get_or_create_collection(case_id)
 
-            # Explicit BGE-M3 embedding to match stored vectors, off the event
-            # loop via the model_cache async boundary.
-            query_embedding = await model_cache.aembed_query(query)
-            if query_embedding is not None:
-                query_params = {
-                    "query_embeddings": [query_embedding],
-                    "n_results": k,
-                    "include": ["documents", "metadatas", "distances"],
-                }
-            else:
-                self.logger.warning(
-                    "BGE-M3 unavailable for case search, falling back to "
-                    "ChromaDB default embedding"
-                )
-                query_params = {
-                    "query_texts": [query],
-                    "n_results": k,
-                    "include": ["documents", "metadatas", "distances"],
-                }
+            query_params = {
+                "query_embeddings": [query_embedding],
+                "n_results": k,
+                "include": ["documents", "metadatas", "distances"],
+            }
 
             if where:
                 query_params["where"] = where
