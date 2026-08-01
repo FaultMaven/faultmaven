@@ -27,6 +27,7 @@ import jwt
 import pytest
 
 from faultmaven.config.settings import AuthSettings
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO, OAuthCodeDTO
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
@@ -200,13 +201,16 @@ async def test_org_claim_survives_authorize_exchange_and_repeated_rotation(
 async def test_exchange_without_a_captured_org_fails_closed_under_multi(
     oauth_service, pkce_pair
 ):
-    """A code carrying no tenant mints an EMPTY claim, never a defaulted one.
+    """A code carrying no tenant mints a claim no tenanted request can use.
 
-    This is the negative control, and it is the half that matters for isolation:
-    the danger is not only losing the claim but silently substituting the
-    Standalone sentinel, which under multi-tenant is not a tenant at all — it is
-    the identity migration 033 keys the global-KB write policy on. An empty claim
-    is refused at ``bind_request_org_context``; a sentinel claim would not be.
+    The negative control. It asserts through ``usable_tenant_id`` — the one place
+    the "is this a real tenant?" rule lives, and the rule
+    ``bind_request_org_context`` refuses on — rather than against the literal
+    ``""``. Asserting the literal would pass just as happily on a claim that had
+    been silently defaulted to the Standalone sentinel, since
+    ``resolve_organization_claim`` collapses the sentinel to empty under multi
+    anyway. Routing through the shared predicate means this stays a real control
+    if either end of that collapse ever changes.
     """
     verifier, challenge = pkce_pair
 
@@ -218,9 +222,8 @@ async def test_exchange_without_a_captured_org_fails_closed_under_multi(
             code=code, code_verifier=verifier, redirect_uri=REDIRECT
         )
 
-    claims = _claims(tokens.access_token)
-    assert claims["organization_id"] == ""
-    assert claims["organization_id"] != SingleTenantProvider.DEFAULT_ORG_ID
+        for token in (tokens.access_token, tokens.refresh_token):
+            assert usable_tenant_id(_claims(token)["organization_id"]) is None
 
 
 @pytest.mark.unit
