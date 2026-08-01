@@ -64,8 +64,17 @@ def usable_tenant_id(organization_id: Optional[str]) -> Optional[str]:
       ``api/v1/auth_dependencies.require_actor_organization`` at the route both
       turn a ``None`` here into a 403 (:data:`UNSCOPED_REQUEST_MSG`);
     * **degrade** — the service-layer read paths (the case read allowlist, the
-      KB and agent team arms, both runbook-similarity consumers) turn it into an
-      empty allowlist, which narrows rather than breaks.
+      KB and agent team arms) turn it into an empty allowlist, which narrows
+      rather than breaks;
+    * **refuse, at the service layer** — the runbook-similarity consumers.
+      Degrading is only safe where an empty result *means* "you may see less".
+      On a dedup check it means "nothing similar exists", which the caller
+      turns into "generate a new runbook" — a substantive claim derived from a
+      search that was refused (#944). ``RunbookKnowledgeBase.search_by_text``
+      therefore raises ``KnowledgeBaseError`` rather than returning ``[]``.
+      ``terminal_transitions._find_similar_runbooks_for_case`` still checks
+      here first, so its common path stays a quiet logged skip that reports
+      "not checked" rather than an exception.
 
     Under ``TENANT_PROVIDER=multi`` the Standalone sentinel is **not** a tenant —
     it identifies the single-tenant deployment. Refusing it here is what makes
