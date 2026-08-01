@@ -20,6 +20,7 @@ import pytest
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
@@ -118,17 +119,25 @@ async def test_a_real_tenant_is_threaded_into_the_similarity_query(
 async def test_the_sentinel_is_not_a_tenant_under_multi(monkeypatch):
     """A sentinel-stamped case must not query with the sentinel as the predicate.
 
-    ``search_runbooks`` then fails closed on the ``None`` it receives — the
-    refusal is visible here as "the query carried no tenant", which is what the
-    KB's own falsy-org guard turns into "no query at all".
+    The mechanism tightened in #944 review. It used to pass ``None`` down to
+    ``search_runbooks``, whose falsy-org guard returned ``[]`` without
+    querying — fail-closed, but SILENTLY, and the recommendation service reads
+    ``[]`` as "no similar runbooks exist" and answers ``generate``. A refused
+    search must not be reportable as a finding, so ``search_by_text`` now
+    refuses up front and loudly.
+
+    The tenancy property is unchanged and asserted directly: no query is ever
+    issued carrying a predicate that is not a real tenant.
     """
     monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     kb = _RecordingRunbookKB()
     service = ReportRecommendationService(runbook_kb=kb)
 
-    await service._find_similar_runbooks(_case(STANDALONE_ORG_ID))
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await service._find_similar_runbooks(_case(STANDALONE_ORG_ID))
 
-    assert kb.tenants == [None]
+    assert excinfo.value.error_code == "RUNBOOK_SEARCH_UNSCOPED"
+    assert kb.tenants == [], "a similarity query was issued without a real tenant"
 
 
 @pytest.mark.unit

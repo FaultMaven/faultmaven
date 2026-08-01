@@ -191,7 +191,10 @@ async def test_sentinel_stamped_case_issues_no_similarity_query_under_multi(
 
     result = await _find_similar_runbooks_for_case(_case(STANDALONE_ORG_ID), kb)
 
-    assert result == []
+    # None, not [] — "no search ran", which does NOT license a caller's
+    # "nothing similar exists" verdict (#944 review). The tenancy property is
+    # the second assertion and is unchanged.
+    assert result is None
     assert kb.tenants == [], "a query was issued with the sentinel as the tenant"
 
 
@@ -251,5 +254,7 @@ async def test_an_org_less_case_issues_no_similarity_query(monkeypatch, bad_org)
 
     result = await _find_similar_runbooks_for_case(case, kb)
 
-    assert result == []
+    # None, not [] — see the sentinel test above. The tenancy property (no
+    # query issued at all) is the second assertion and is unchanged.
+    assert result is None
     assert kb.tenants == []
