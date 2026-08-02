@@ -27,6 +27,21 @@ from starlette.types import ASGIApp
 
 logger = logging.getLogger(__name__)
 
+# Path fragments that must never participate in idempotency replay. Replaying a
+# token mint is not idempotency: it serves one caller's credential to whoever
+# presents the key next. Excluded structurally rather than relying on the cache
+# key being scoped correctly. Erring broad is deliberate.
+EXCLUDED_PATH_MARKERS = ("/auth/",)
+
+# Upper bound on a request body we are willing to buffer for fingerprinting.
+# Anything larger is left unbuffered (and unfingerprinted) rather than held in
+# memory on every request.
+MAX_FINGERPRINTED_BODY_BYTES = 256 * 1024
+
+# Sentinel used in the cache key when the body was deliberately not buffered.
+# Not a hex digest, so it can never collide with a real fingerprint.
+UNFINGERPRINTED_BODY = "body-unfingerprinted"
+
 
 class IdempotencyMiddleware(BaseHTTPMiddleware):
     """Middleware to handle idempotency keys for POST operations."""
@@ -61,6 +76,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         if request.method != "POST":
             return await call_next(request)
 
+        # Authentication endpoints never participate: a replayed token mint
+        # hands the first caller's credential to the next one.
+        if self._is_excluded_path(request.url.path):
+            return await call_next(request)
+
         # Check for idempotency key
         idempotency_key = request.headers.get("Idempotency-Key")
         if not idempotency_key:
@@ -78,6 +98,17 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 },
             )
 
+        # Scope the cache to the caller. A request that carries no caller
+        # identity at all must not participate in idempotency in either
+        # direction — it may neither read nor write the cache. Anonymous
+        # callers would otherwise all share one bucket, and because the cache
+        # lookup happens before ``call_next`` (route-level ``Depends`` auth
+        # never runs on a hit) an unauthenticated request could be served an
+        # authenticated caller's response body.
+        caller_identity = self._caller_identity(request)
+        if caller_identity is None:
+            return await call_next(request)
+
         try:
             # Resolve the Redis client lazily (after startup has populated
             # app.state). Kept inside the try so any failure during resolution
@@ -87,7 +118,10 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
 
             # Create cache key
-            cache_key = self._create_cache_key(idempotency_key, request)
+            body_fingerprint = await self._body_fingerprint(request)
+            cache_key = self._create_cache_key(
+                idempotency_key, request, caller_identity, body_fingerprint
+            )
 
             # Check for existing response
             cached_response = await self._get_cached_response(cache_key)
@@ -122,13 +156,93 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         pattern = r"^[a-zA-Z0-9_-]+$"
         return bool(re.match(pattern, key))
 
-    def _create_cache_key(self, idempotency_key: str, request: Request) -> str:
-        """Create Redis cache key with request context."""
-        # Include method and path for additional safety
+    def _is_excluded_path(self, path: str) -> bool:
+        """Whether this path is structurally excluded from idempotency."""
+        return any(marker in path for marker in EXCLUDED_PATH_MARKERS)
+
+    def _caller_identity(self, request: Request) -> Optional[str]:
+        """Hash the raw credential material that identifies the caller.
+
+        Returns ``None`` when the request carries no caller identity at all,
+        which the dispatcher treats as "do not participate in idempotency" —
+        the same fail-closed shape as ``DeduplicationMiddleware`` returning a
+        ``None`` request hash when there is no session id.
+
+        The identity is derived from the *raw* credential on the wire (the
+        ``Authorization`` header value and ``X-Session-ID``), never from a
+        decoded JWT claim. This middleware runs before any signature
+        verification, so a claim such as ``sub`` is attacker-controlled at this
+        point: keying on it would let a forged, unverified token select which
+        caller's cache bucket to land in. The raw string cannot be forged into
+        another caller's bucket without already possessing that caller's
+        credential. It is hashed so no credential material reaches Redis keys
+        or logs.
+        """
+        authorization = request.headers.get("Authorization")
+        session_id = request.headers.get("X-Session-ID")
+
+        if not authorization and not session_id:
+            return None
+
+        material = f"{authorization or ''}\x00{session_id or ''}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    async def _body_fingerprint(self, request: Request) -> str:
+        """Fingerprint the request body so a reused key cannot swap payloads.
+
+        Buffering a body inside ``BaseHTTPMiddleware`` is only safe because
+        Starlette wraps the request in ``_CachedRequest``: once ``body()`` has
+        been awaited, ``wrapped_receive`` replays the cached bytes to the
+        downstream app. We probe for that contract explicitly and fall back to
+        the unfingerprinted sentinel if it is ever absent, so a Starlette change
+        can only weaken this check — never starve a downstream route of its body.
+
+        Buffering is skipped for anything that is not a declared, bounded JSON
+        payload; upload paths (multipart, streamed, oversized) are never read.
+        """
+        if not hasattr(request, "wrapped_receive"):
+            return UNFINGERPRINTED_BODY
+
+        content_type = request.headers.get("content-type", "")
+        if content_type.split(";")[0].strip().lower() != "application/json":
+            return UNFINGERPRINTED_BODY
+
+        content_length = request.headers.get("content-length")
+        if content_length is None:
+            return UNFINGERPRINTED_BODY
+        try:
+            declared_length = int(content_length)
+        except ValueError:
+            return UNFINGERPRINTED_BODY
+        if declared_length > MAX_FINGERPRINTED_BODY_BYTES:
+            return UNFINGERPRINTED_BODY
+
+        try:
+            body = await request.body()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug(f"Could not buffer request body for fingerprinting: {e}")
+            return UNFINGERPRINTED_BODY
+
+        return hashlib.sha256(body).hexdigest()
+
+    def _create_cache_key(
+        self,
+        idempotency_key: str,
+        request: Request,
+        caller_identity: str,
+        body_fingerprint: str,
+    ) -> str:
+        """Create Redis cache key scoped to caller, route and payload.
+
+        The key must not be reachable by anyone but the caller that created it,
+        so caller identity is part of the hashed material rather than an
+        advisory extra.
+        """
         method_path = f"{request.method}:{request.url.path}"
-        # Hash the combination to ensure consistent key length
-        combined = f"{idempotency_key}:{method_path}"
-        hash_suffix = hashlib.sha256(combined.encode()).hexdigest()[:16]
+        combined = "|".join(
+            [idempotency_key, method_path, caller_identity, body_fingerprint]
+        )
+        hash_suffix = hashlib.sha256(combined.encode()).hexdigest()[:32]
         return f"{self.key_prefix}{idempotency_key}:{hash_suffix}"
 
     async def _get_cached_response(self, cache_key: str) -> Optional[Dict[str, Any]]:
