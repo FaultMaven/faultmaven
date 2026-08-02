@@ -24,6 +24,7 @@ import fakeredis.aioredis as fakeredis_aio
 import httpx
 import pytest
 from fastapi import Body, FastAPI, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 
 from faultmaven.api.middleware.idempotency import (
     MAX_FINGERPRINTED_BODY_BYTES,
@@ -44,7 +45,28 @@ def _build_app(redis_client=None):
     cache hit an authentication bypass rather than merely a wrong body.
     """
     app = FastAPI()
-    route_calls: dict[str, int] = {"boom": 0, "cases": 0, "case_from_session": 0}
+    route_calls: dict[str, int] = {
+        "boom": 0,
+        "cases": 0,
+        "case_from_session": 0,
+        "reject": 0,
+        "server_error": 0,
+    }
+
+    @app.post("/api/v1/reject")
+    async def reject():
+        route_calls["reject"] += 1
+        raise HTTPException(status_code=400, detail="nope")
+
+    @app.post("/api/v1/server-error")
+    async def server_error():
+        """Returns 5xx rather than raising, to exercise the status gate.
+
+        Raising would take the ``downstream_invoked`` re-raise path instead,
+        which is a different guard.
+        """
+        route_calls["server_error"] += 1
+        return JSONResponse(status_code=500, content={"detail": "boom"})
 
     @app.post("/api/v1/boom")
     async def boom():
@@ -177,6 +199,8 @@ async def test_session_id_alone_is_not_sufficient_identity():
         second = await client.post("/api/v1/anon-ok", headers=headers, json={})
         after = sorted(await fake.keys("idempotency:*"))
 
+    assert first.status_code == 200, "must reach a cacheable 2xx, not a redirect/error"
+    assert second.status_code == 200
     assert not _replayed(first)
     assert not _replayed(second)
     assert after == seeded, "a session-only caller must not write to the cache"
@@ -275,6 +299,8 @@ async def test_caller_identity_space_is_scoped(attacker_headers):
             json={},
         )
 
+    assert victim.status_code == 200
+    assert other.status_code == 200, "must reach the route, not fail some other way"
     assert victim.json()["owner"] == VICTIM
     assert not _replayed(other)
 
@@ -344,6 +370,8 @@ async def test_two_anonymous_callers_never_share_a_bucket():
             "/api/v1/anon-ok", headers={"Idempotency-Key": KEY}, json=body
         )
 
+    assert first.status_code == 200, "must reach a cacheable 2xx, not a redirect/error"
+    assert second.status_code == 200
     assert not _replayed(first)
     assert not _replayed(second)
 
@@ -509,6 +537,58 @@ async def test_query_string_splits_the_bucket():
     assert app.state.route_calls["case_from_session"] == 2
 
 
+@pytest.mark.parametrize(
+    ("path", "counter", "status"),
+    [
+        pytest.param("/api/v1/reject", "reject", 400, id="4xx"),
+        pytest.param("/api/v1/server-error", "server_error", 500, id="5xx"),
+    ],
+)
+async def test_non_2xx_responses_are_not_cached(path, counter, status):
+    """Only successful responses are idempotent.
+
+    Nothing pinned this: widening ``if 200 <= response.status_code < 300`` to
+    ``if True`` left the whole suite green. Caching a failure would pin a
+    transient error to the key for the full hour, so the caller's honest retry
+    would be served the failure it was retrying.
+    """
+    app, fake = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        seeded = await _seed_one_cache_entry(client, fake)
+        first = await client.post(path, headers=headers, json={})
+        second = await client.post(path, headers=headers, json={})
+        after = sorted(await fake.keys("idempotency:*"))
+
+    assert first.status_code == status
+    assert second.status_code == status
+    assert not _replayed(second)
+    assert after == seeded, "a non-2xx response must not be cached"
+    assert app.state.route_calls[counter] == 2, "the retry must re-execute"
+
+
+async def test_path_splits_the_bucket():
+    """The other half of "scoped to route" — the path itself.
+
+    ``_create_cache_key`` claims scoping to caller *and route*, but only the
+    query half of "route" was pinned: dropping ``request.url.path`` from the
+    hashed material left the whole suite green. Two different paths under one
+    caller and key must not share a bucket.
+    """
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        cases = await client.post("/api/v1/cases", headers=headers, json={})
+        anon_ok = await client.post("/api/v1/anon-ok", headers=headers, json={})
+
+    assert cases.status_code == 200
+    assert anon_ok.status_code == 200
+    assert not _replayed(anon_ok), "a different path must not replay"
+    assert "title" not in anon_ok.json(), "must be the anon-ok route's own response"
+
+
 async def test_same_query_still_replays():
     """Splitting on the query must not break retries of the same request."""
     app, _ = _build_app()
@@ -557,9 +637,15 @@ async def test_session_mint_exclusion_survives_a_trailing_slash():
 
     async with _client(app) as client:
         seeded = await _seed_one_cache_entry(client, fake)
-        await client.post("/api/v1/sessions/", headers=headers, json={})
+        minted = await client.post("/api/v1/sessions/", headers=headers, json={})
         after = sorted(await fake.keys("idempotency:*"))
 
+    # Pin the precondition this test depends on. Without a route registered at
+    # the trailing-slash path FastAPI answers 307, which is not cacheable — and
+    # then "nothing was written" holds whether or not the exclusion normalises
+    # the slash. Deleting the fixture route would otherwise silently restore
+    # that vacuity with no signal.
+    assert minted.status_code == 200, "must reach a cacheable 2xx, not a 307"
     assert after == seeded, "a trailing slash must not slip past the exclusion"
 
 
