@@ -18,6 +18,7 @@ from typing import Callable, Dict, Optional
 
 import jwt
 
+from faultmaven.exceptions import InactiveAccountError
 from faultmaven.modules.auth.domain.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,73 @@ def _max_revocation_entry_ttl() -> int:
 #: Emitted for an org-less user under multi-tenant. Falsy, so
 #: ``bind_request_org_context`` refuses the request instead of binding a tenant.
 _NO_ORG_CLAIM = ""
+
+
+def account_may_hold_credentials(user) -> bool:
+    """Whether this account is allowed to hold live tokens. THE rule, one copy.
+
+    Before this existed the rule was written six times across five modules in
+    three different spellings — and two mint paths (``POST /auth/login`` and
+    ``POST /auth/register``, via ``auth.py``) had no copy at all, so a
+    deactivated account could log straight back in. That is the predictable end
+    state of a rule with no home: each new mint path re-derives it, and one
+    eventually does not.
+
+    **Scope, stated precisely.** ``_refuse_if_deactivated`` enforces this at
+    every ``IJWTTokenGenerator`` mint, which is every path that signs from a user
+    object. It does **not** reach ``AuthService.generate_access_token`` /
+    ``generate_refresh_token``: those are a second, independent signing surface
+    that takes a subject id and never sees an account, so there is nothing there
+    to test. Their only account-aware composition,
+    ``AuthService.generate_token_pair``, calls this predicate when handed the
+    account. Claiming blanket coverage would be worse than the gap — it would
+    stop the next reader from looking.
+
+    ``is_active`` alone is sufficient and complete for users.
+    ``user_service.deactivate_user`` is the only writer of ``users.deleted_at``
+    and it clears ``is_active`` in the same operation, so there is no state where
+    a user is soft-deleted but still active. (``sso_login_service`` additionally
+    tests ``deleted_at``; that stays as belt-and-braces, and it also guards
+    *organizations*, which this does not cover.)
+
+    **Absence refuses.** An earlier version permitted it, on the reasoning that
+    every user type on a mint path declares ``is_active`` so absence must mean
+    "not a user object". That premise was false: ``AuthenticatedUser`` — the auth
+    module's own request-path type, carrying ``user_id``, ``organization_id`` and
+    ``roles`` — has no such field, because it is rebuilt from JWT claims and
+    genuinely does not know whether the account is still live. It is one refactor
+    away from a mint call, where permit-on-absence would have signed silently.
+
+    Adding the field to that type would be worse: it would assert liveness the
+    token cannot know. So the flag must be *present and true*. The failure mode
+    of refusing is a loud, immediate lockout on a path that forgot to load the
+    account — which is the direction an auth gate should fail, and is detectable
+    in a way a silently-minted credential is not.
+    """
+    return bool(getattr(user, "is_active", False))
+
+
+def _refuse_if_deactivated(user, token_kind: str) -> None:
+    """Chokepoint enforcement — every mint path in the process funnels here.
+
+    Placed in the generator rather than asked of each caller for the reason in
+    ``account_may_hold_credentials``: a rule that callers must remember is a rule
+    that will eventually be forgotten. Callers keep their own checks so they can
+    return protocol-correct errors, but correctness no longer depends on them
+    having one.
+    """
+    if account_may_hold_credentials(user):
+        return
+    user_id = getattr(user, "user_id", "<unknown>")
+    logger.warning(
+        "Refusing to mint a token for a deactivated account",
+        extra={"user_id": user_id, "token_kind": token_kind},
+    )
+    # The id stays in the log, not in the message. The 403 handler echoes
+    # ``str(exc)`` to the client, and POST /auth/login reaches this while still
+    # unauthenticated — interpolating the id would hand an anonymous caller the
+    # internal UUID of an account it just guessed the credentials for.
+    raise InactiveAccountError("This account is deactivated")
 
 
 def resolve_organization_claim(user: User) -> str:
@@ -246,6 +314,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT access token string
         """
+        _refuse_if_deactivated(user, "access")
+
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=self.access_token_expire_minutes)
 
@@ -316,6 +386,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT refresh token string
         """
+        _refuse_if_deactivated(user, "refresh")
+
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=self.refresh_token_expire_days)
 
@@ -741,6 +813,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT access token string
         """
+        _refuse_if_deactivated(user, "access")
+
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=self.access_token_expire_minutes)
 
@@ -813,6 +887,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         Returns:
             JWT refresh token string
         """
+        _refuse_if_deactivated(user, "refresh")
+
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=self.refresh_token_expire_days)
 

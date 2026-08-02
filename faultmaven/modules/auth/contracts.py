@@ -417,11 +417,30 @@ class IOAuthCodeRepository(ABC):
         """
         ...
 
-    async def mark_code_used(self, code: str) -> None:
-        """Mark code as used (prevents replay attacks).
+    async def claim_code(self, code: str) -> bool:
+        """Atomically claim the code for single use.
+
+        Returns True for exactly one caller, however many redeem the same code
+        concurrently; False for every other caller and for a code that is
+        already claimed, expired, or unknown.
+
+        Atomicity is the contract, not an implementation detail: a read-then-
+        write split across two calls lets two callers both observe an unclaimed
+        code and both mint a token pair, which is the replay RFC 6749 §4.1.2
+        requires the server to prevent. Implementations must delegate the
+        arbitration to their store (``SET NX``, a conditional ``UPDATE``, a held
+        lock) rather than deciding it in Python between two round trips.
+
+        Callers must treat a False return as "someone else redeemed this" and
+        refuse, and must call this only at the point they are otherwise
+        committed to minting — a claim spent before fallible work burns the
+        user's code on a transient failure.
 
         Args:
-            code: The authorization code to mark as used
+            code: The authorization code to claim
+
+        Returns:
+            True if this caller won the claim, False otherwise.
         """
         ...
 

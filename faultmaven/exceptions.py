@@ -477,6 +477,22 @@ class AuthorizationError(ServiceError):
         super().__init__(message)
 
 
+class InactiveAccountError(AuthorizationError):
+    """A deactivated account was asked to be issued a token.
+
+    Subclasses ``AuthorizationError`` rather than defining its own handler: being
+    deactivated is an authorization failure, not a server fault, and Starlette
+    resolves handlers by walking the exception's MRO — so this is already
+    answered as 403 with no registry entry to keep in sync. That matters here,
+    because the point of raising it centrally (see
+    ``jwt_token_generator._refuse_if_deactivated``) is that no caller has to know
+    about it; a caller that does not translate it must still not leak a 500.
+
+    Protocol-speaking callers translate it into their own vocabulary first — the
+    OAuth legs into ``InvalidGrantError(USER_INACTIVE)``.
+    """
+
+
 class ConflictError(ServiceError):
     """Resource conflict (duplicate, state violation, etc.).
 

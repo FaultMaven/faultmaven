@@ -33,7 +33,7 @@ def mock_code_repository():
     repo = AsyncMock()
     repo.save_code = AsyncMock()
     repo.get_code = AsyncMock()
-    repo.mark_code_used = AsyncMock()
+    repo.claim_code = AsyncMock(return_value=True)
     return repo
 
 
@@ -278,7 +278,7 @@ class TestCodeExchange:
         assert token_dto.username == "testuser"
 
         # Verify code marked as used
-        mock_code_repository.mark_code_used.assert_called_once_with(authorization_code)
+        mock_code_repository.claim_code.assert_called_once_with(authorization_code)
 
         # Verify tokens generated (with the user object returned by repository)
         mock_token_generator.generate_access_token.assert_called_once_with(user_obj)

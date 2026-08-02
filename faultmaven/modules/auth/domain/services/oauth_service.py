@@ -19,6 +19,9 @@ from faultmaven.modules.auth.contracts import (
     OAuthCodeDTO,
     OAuthTokenDTO,
 )
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    account_may_hold_credentials,
+)
 from faultmaven.modules.auth.infrastructure.metrics import oauth_metrics
 
 logger = logging.getLogger(__name__)
@@ -354,9 +357,6 @@ class OAuthServiceImpl(IOAuthService):
                 error_code="PKCE_VERIFICATION_FAILED",
             )
 
-        # Mark code as used (single-use)
-        await self.code_repository.mark_code_used(code)
-
         # Get user data
         user = await self.user_repository.get(code_data.user_id)
         if not user:
@@ -388,7 +388,7 @@ class OAuthServiceImpl(IOAuthService):
         # Deactivation also soft-deletes (``user_service.deactivate_user`` sets
         # ``is_active = False`` alongside ``deleted_at``), so this one check
         # covers both.
-        if not getattr(user, "is_active", True):
+        if not account_may_hold_credentials(user):
             logger.warning(
                 "OAuth token exchange failed: user inactive",
                 extra={
@@ -417,6 +417,53 @@ class OAuthServiceImpl(IOAuthService):
         # payloads, so attaching it once here carries the claim through the whole
         # chain: the first access token, and every rotation after it.
         setattr(user, "organization_id", code_data.organization_id or None)
+
+        # Claim the code — atomically, and only now.
+        #
+        # LAST, not first. Everything above can fail for reasons that are not the
+        # holder's fault: the user store can blip (and ``DatabaseUserStore``
+        # swallows the exception, so a blip arrives here as USER_NOT_FOUND). A
+        # claim spent before that work burns a valid code on a transient error,
+        # and the holder must restart the whole OAuth dance because the retry
+        # gets CODE_ALREADY_USED. Claiming here means only the mint itself sits
+        # after the point of no return.
+        #
+        # ATOMIC, because moving it later would otherwise widen the replay
+        # window: the ``used`` check near the top of this method is a fast-path
+        # courtesy, not a gate — two concurrent redemptions can both pass it.
+        # ``claim_code`` returns True to exactly one caller, so the loser lands
+        # here rather than minting a second token pair (RFC 6749 §4.1.2).
+        #
+        # The validations above deliberately stay in front of the claim: PKCE,
+        # redirect_uri and expiry all reject before anything is spent, so an
+        # attacker holding a stolen code but no verifier still cannot burn it.
+        if not await self.code_repository.claim_code(code):
+            logger.warning(
+                "OAuth token exchange failed: code already redeemed",
+                extra={
+                    "user_id": code_data.user_id,
+                    "code_prefix": code[:8],
+                    "error": "CODE_ALREADY_USED",
+                },
+            )
+            # Recorded exactly as the early replay branch records it. Losing a
+            # claim IS a failed exchange, and it is the branch a concurrent
+            # replay actually lands on — if only the early check reported to
+            # `record_token_exchange`, the failure rate and latency histogram
+            # would omit precisely the attacks and races this method now
+            # detects, and the metric would look healthiest under load.
+            oauth_metrics.record_token_exchange(
+                grant_type="authorization_code",
+                client_id="unknown",
+                duration_seconds=time.time() - start_time,
+                success=False,
+                error_code="CODE_ALREADY_USED",
+            )
+            oauth_metrics.record_code_replay_attempt("unknown")
+            raise InvalidGrantError(
+                "Authorization code has already been used",
+                error_code="CODE_ALREADY_USED",
+            )
 
         # Generate access token and refresh token
         access_token = await self.token_generator.generate_access_token(user)
@@ -528,7 +575,7 @@ class OAuthServiceImpl(IOAuthService):
         # accounts deactivated by any path that does not revoke. Without it, a
         # refresh credential on a deactivated account could keep minting access
         # tokens on a sliding window. POST /auth/refresh already enforces this.
-        if not getattr(user, "is_active", True):
+        if not account_may_hold_credentials(user):
             logger.warning(
                 "OAuth token refresh failed: user inactive",
                 extra={

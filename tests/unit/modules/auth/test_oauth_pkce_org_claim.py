@@ -234,8 +234,10 @@ async def test_exchange_without_a_captured_org_fails_closed_under_multi(
         for token in (tokens.access_token, tokens.refresh_token):
             claim = _claims(token)["organization_id"]
             # What was emitted — catches a mint-side default to the sentinel.
+            # `== ""` already excludes the sentinel, which is non-empty. An
+            # extra `!= sentinel` line here looked like a second guard but could
+            # never fail once this one passed.
             assert claim == ""
-            assert claim != SingleTenantProvider.DEFAULT_ORG_ID
             # What it means downstream — catches the predicate going permissive.
             assert usable_tenant_id(claim) is None
 
@@ -356,7 +358,7 @@ async def test_exchange_ignores_any_org_on_the_stored_user(
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_in_memory_repository_keeps_the_org_across_mark_used():
-    """``mark_code_used`` must not rebuild the DTO into a lossy subset."""
+    """``claim_code`` must not rebuild the DTO into a lossy subset."""
     repo = InMemoryOAuthCodeRepository()
     await repo.save_code(
         OAuthCodeDTO(
@@ -369,7 +371,7 @@ async def test_in_memory_repository_keeps_the_org_across_mark_used():
         )
     )
 
-    await repo.mark_code_used("code_1")
+    assert await repo.claim_code("code_1") is True
 
     stored = await repo.get_code("code_1")
     assert stored.used is True
@@ -397,7 +399,7 @@ async def test_redis_repository_round_trips_the_org():
     assert (await repo.get_code("code_2")).organization_id == TENANT
 
     # …and across the used-marking rewrite, which re-serializes the payload.
-    await repo.mark_code_used("code_2")
+    assert await repo.claim_code("code_2") is True
     stored = await repo.get_code("code_2")
     assert stored.used is True
     assert stored.organization_id == TENANT

@@ -84,7 +84,11 @@ def _devuser_from_user_store():
 
 def _user_without_org_attribute():
     # spec= keeps MagicMock from auto-creating organization_id on access.
-    user = MagicMock(spec=["user_id", "username", "email", "roles"])
+    # `is_active` is in the spec because this fixture varies the ORG attribute,
+    # not account liveness — and the mint gate refuses a user with no liveness
+    # flag, so omitting it here would fail for an unrelated reason.
+    user = MagicMock(spec=["user_id", "username", "email", "roles", "is_active"])
+    user.is_active = True
     user.user_id = "user-1"
     user.username = "sso-user"
     user.email = "sso-user@example.com"

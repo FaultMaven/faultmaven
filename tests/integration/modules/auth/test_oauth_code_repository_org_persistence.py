@@ -50,15 +50,16 @@ async def session_factory():
 
 
 def _code(code: str, organization_id, **overrides) -> OAuthCodeDTO:
-    return OAuthCodeDTO(
+    fields = dict(
         code=code,
         user_id="user_123",
         redirect_uri=REDIRECT,
         code_challenge="challenge",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
         organization_id=organization_id,
-        **overrides,
     )
+    fields.update(overrides)
+    return OAuthCodeDTO(**fields)
 
 
 @pytest.mark.integration
@@ -80,19 +81,76 @@ async def test_orm_repository_round_trips_the_organization(session_factory):
 async def test_orm_repository_keeps_the_organization_across_mark_used(session_factory):
     """The exchange reads the code before marking it, but order must not matter.
 
-    `mark_code_used` issues an UPDATE that touches only `used`; if it were ever
+    `claim_code` issues an UPDATE that touches only `used`; if it were ever
     rewritten as a row replacement it could drop the tenant the way the
     in-memory implementation's field-by-field rebuild once did.
     """
     repo = PostgresOAuthCodeRepository(session_factory)
     await repo.save_code(_code("code_2", TENANT))
 
-    await repo.mark_code_used("code_2")
+    assert await repo.claim_code("code_2") is True
 
     stored = await repo.get_code("code_2")
     assert stored is not None
     assert stored.used is True
     assert stored.organization_id == TENANT
+
+
+@pytest.mark.integration
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_orm_repository_claim_is_a_compare_and_swap(session_factory):
+    """The claim must be won once, and the database must be the arbiter.
+
+    `claim_code` reports success from `rowcount == 1` on an UPDATE predicated on
+    `used = false`. Drop that predicate and the UPDATE matches the row every
+    time, so every concurrent redeemer is told it won and every one of them
+    mints — the exact replay the atomic claim exists to prevent.
+
+    Mutation testing put this test here: removing the predicate left the rest of
+    this file green, because org round-tripping does not depend on it. A
+    correctness-critical primitive in an unwired implementation is still a
+    primitive someone will one day wire.
+    """
+    repo = PostgresOAuthCodeRepository(session_factory)
+    await repo.save_code(_code("code_cas", TENANT))
+
+    assert await repo.claim_code("code_cas") is True
+    # Every subsequent claim loses, however many times it is attempted.
+    assert await repo.claim_code("code_cas") is False
+    assert await repo.claim_code("code_cas") is False
+
+
+@pytest.mark.integration
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_orm_repository_refuses_to_claim_an_expired_code(session_factory):
+    """Expiry must be in the claim predicate, not left to a prior SELECT.
+
+    Rows here are removed by a sweep, not by a TTL, so an expired row lingers
+    and stays claimable unless the UPDATE says otherwise. Redis gets this free
+    because the key is gone, and the in-memory store checks it explicitly — a
+    backend that disagreed would make single-use depend on the deployment,
+    which is the divergence this contract exists to remove.
+    """
+    repo = PostgresOAuthCodeRepository(session_factory)
+    await repo.save_code(
+        _code(
+            "code_expired",
+            TENANT,
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+    )
+
+    assert await repo.claim_code("code_expired") is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_orm_repository_refuses_to_claim_an_unknown_code(session_factory):
+    """Nothing to claim must read as "you did not win", never as success."""
+    repo = PostgresOAuthCodeRepository(session_factory)
+    assert await repo.claim_code("never-existed") is False
 
 
 @pytest.mark.integration

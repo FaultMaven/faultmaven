@@ -21,6 +21,9 @@ from typing import Any, Optional
 import jwt
 
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    account_may_hold_credentials,
+)
 
 # ADR-012 account kinds. 'slack' is the service account that owns a workspace's
 # cases; 'individual' is a human.
@@ -148,7 +151,7 @@ async def provision_service_account_credential(
         user = await user_store.update_user(user)
         account_kind_corrected = True
 
-    if not user.is_active:
+    if not account_may_hold_credentials(user):
         # A refresh reloads the user and rejects inactive accounts, so a
         # credential minted here would be dead on arrival. Reactivating is not
         # this tool's call to make.

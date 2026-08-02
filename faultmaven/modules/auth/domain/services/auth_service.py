@@ -235,6 +235,13 @@ class AuthService:
     ) -> str:
         """Generate JWT access token.
 
+        Claim-level primitive. It signs a subject id, never an account, so it
+        **cannot** enforce that the account is still active — there is nothing
+        here to test. This is a second JWT mint surface, independent of
+        ``IJWTTokenGenerator``, so the chokepoint in ``jwt_token_generator``
+        does not reach it either. A caller holding an account must go through
+        ``generate_token_pair`` and pass it, which does enforce the rule.
+
         Args:
             user_id: User UUID
             organization_id: Organization UUID
@@ -277,6 +284,9 @@ class AuthService:
     ) -> str:
         """Generate JWT refresh token.
 
+        Claim-level primitive: see ``generate_access_token`` — it signs a
+        subject id and cannot enforce account rules.
+
         Refresh tokens are long-lived and used to obtain new access tokens.
         They contain minimal claims for security.
 
@@ -313,8 +323,15 @@ class AuthService:
         email: str,
         roles: List[str],
         permissions: Optional[List[str]] = None,
+        account=None,
     ) -> TokenPair:
         """Generate both access and refresh tokens.
+
+        This is the only mint on this service that a caller holding an *account*
+        should use, and the only one that can enforce account rules — see the
+        note on ``generate_access_token`` for why the primitives below cannot.
+        Pass ``account`` and a deactivated one is refused here, by the same
+        predicate the ``IJWTTokenGenerator`` chokepoint uses.
 
         Args:
             user_id: User UUID
@@ -322,10 +339,24 @@ class AuthService:
             email: User email
             roles: User roles in organization
             permissions: Granular permissions (auto-derived from roles if None)
+            account: The user object these claims describe, when the caller has
+                one. Optional only because this signature predates the check and
+                some callers legitimately hold nothing but claims; supply it
+                whenever an account exists, or the refusal cannot be made here.
 
         Returns:
             TokenPair with access and refresh tokens
+
+        Raises:
+            InactiveAccountError: ``account`` is deactivated.
         """
+        if account is not None:
+            from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+                _refuse_if_deactivated,
+            )
+
+            _refuse_if_deactivated(account, "session")
+
         access_token = self.generate_access_token(
             user_id=user_id,
             organization_id=organization_id,
