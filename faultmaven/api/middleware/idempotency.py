@@ -212,12 +212,21 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     async def _body_fingerprint(self, request: Request) -> str:
         """Fingerprint the request body so a reused key cannot swap payloads.
 
-        Buffering a body inside ``BaseHTTPMiddleware`` is only safe because
+        Buffering a body inside ``BaseHTTPMiddleware`` is safe here because
         Starlette wraps the request in ``_CachedRequest``: once ``body()`` has
         been awaited, ``wrapped_receive`` replays the cached bytes to the
-        downstream app. We probe for that contract explicitly and fall back to
-        the unfingerprinted sentinel if it is ever absent, so a Starlette change
-        can only weaken this check — never starve a downstream route of its body.
+        downstream app rather than starving it. That replay is the whole of the
+        guarantee, and it is pinned by tests that assert a downstream route
+        receives the exact bytes (see the body-integrity tests in
+        ``tests/unit/api/middleware/test_idempotency_caller_scoping.py``) — not
+        by anything this function does.
+
+        The ``wrapped_receive`` probe below is a cheap tripwire, not the
+        safety mechanism: ``BaseHTTPMiddleware.__call__`` already reads that
+        attribute before dispatch, so in practice it is always present. It is
+        kept only so that a future refactor placing this middleware outside
+        ``BaseHTTPMiddleware`` degrades to no fingerprint instead of consuming
+        a body nothing will replay.
 
         Buffering is skipped for anything that is not a declared, bounded JSON
         payload; upload paths (multipart, streamed, oversized) are never read.
