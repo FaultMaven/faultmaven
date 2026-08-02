@@ -18,6 +18,7 @@ come back here.
 """
 
 import asyncio
+import dataclasses
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
@@ -461,10 +462,15 @@ async def test_a_failed_used_flag_write_does_not_undo_a_won_claim():
 async def test_losing_a_claim_is_recorded_as_a_failed_exchange():
     """A concurrent replay is the branch this method now detects — count it.
 
-    The early `used` check reports to `record_token_exchange`; the claim-loss
-    branch is where a genuine race actually lands. If only the first reported,
-    the exchange failure rate would omit exactly the contention it was added to
-    surface, and would look healthiest under load.
+    Deliberately NOT driven by `asyncio.gather`. The early `used` check records
+    an identical `CODE_ALREADY_USED` metric, and once the winner flips the flag
+    the losers reach that branch instead — so a racing test cannot tell which
+    branch reported, and passes with the new call deleted. (It did: mutation
+    testing caught this assertion being dead.)
+
+    So the repository here reports the code as never-used while refusing every
+    claim after the first. That is only reachable through the claim-loss branch,
+    which is exactly what needs pinning.
     """
     from unittest.mock import patch
 
@@ -475,27 +481,32 @@ async def test_losing_a_claim_is_recorded_as_a_failed_exchange():
         "user_123", _authorization_request(challenge)
     )
 
+    # First redemption wins normally.
+    assert await service.exchange_code_for_token(
+        code=code, code_verifier=verifier, redirect_uri=REDIRECT
+    )
+
+    # Now replay the state a loser sees: the fast-path check still says
+    # "unused", so only the atomic claim can refuse.
+    stored = await repository.get_code(code)
+    repository.get_code = AsyncMock(
+        return_value=dataclasses.replace(stored, used=False)
+    )
+
     with patch(
         "faultmaven.modules.auth.domain.services.oauth_service.oauth_metrics"
     ) as metrics:
-        results = await asyncio.gather(
-            *[
-                service.exchange_code_for_token(
-                    code=code, code_verifier=verifier, redirect_uri=REDIRECT
-                )
-                for _ in range(4)
-            ],
-            return_exceptions=True,
-        )
+        with pytest.raises(InvalidGrantError) as loss:
+            await service.exchange_code_for_token(
+                code=code, code_verifier=verifier, redirect_uri=REDIRECT
+            )
 
-    losses = [r for r in results if isinstance(r, InvalidGrantError)]
-    assert len(losses) == 3
-
+    assert loss.value.error_code == "CODE_ALREADY_USED"
     failed = [
         call
         for call in metrics.record_token_exchange.call_args_list
         if call.kwargs.get("success") is False
         and call.kwargs.get("error_code") == "CODE_ALREADY_USED"
     ]
-    assert len(failed) == 3, metrics.record_token_exchange.call_args_list
-    assert all(c.kwargs.get("duration_seconds") is not None for c in failed)
+    assert len(failed) == 1, metrics.record_token_exchange.call_args_list
+    assert failed[0].kwargs.get("duration_seconds") is not None
