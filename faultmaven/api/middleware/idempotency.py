@@ -98,13 +98,13 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        # Scope the cache to the caller. A request that carries no caller
-        # identity at all must not participate in idempotency in either
-        # direction — it may neither read nor write the cache. Anonymous
-        # callers would otherwise all share one bucket, and because the cache
-        # lookup happens before ``call_next`` (route-level ``Depends`` auth
-        # never runs on a hit) an unauthenticated request could be served an
-        # authenticated caller's response body.
+        # Scope the cache to the caller. A request that carries no credential
+        # must not participate in idempotency in either direction — it may
+        # neither read nor write the cache. Unidentified callers would
+        # otherwise all share one bucket, and because the cache lookup happens
+        # before ``call_next`` (route-level ``Depends`` auth never runs on a
+        # hit) an unauthenticated request could be served an authenticated
+        # caller's response body.
         caller_identity = self._caller_identity(request)
         if caller_identity is None:
             return await call_next(request)
@@ -163,14 +163,21 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     def _caller_identity(self, request: Request) -> Optional[str]:
         """Hash the raw credential material that identifies the caller.
 
-        Returns ``None`` when the request carries no caller identity at all,
-        which the dispatcher treats as "do not participate in idempotency" —
-        the same fail-closed shape as ``DeduplicationMiddleware`` returning a
-        ``None`` request hash when there is no session id.
+        ``Authorization`` is **required**. It is the only header a caller
+        cannot simply choose: ``X-Session-ID`` is client-supplied and
+        guessable, so accepting it alone would let one caller pre-seed a bucket
+        that a later caller with the same session id is then served from.
+        ``X-Session-ID`` is still mixed in as *additional* material, so two
+        sessions under one token keep separate buckets — it narrows the scope,
+        it never widens it.
 
-        The identity is derived from the *raw* credential on the wire (the
-        ``Authorization`` header value and ``X-Session-ID``), never from a
-        decoded JWT claim. This middleware runs before any signature
+        Returns ``None`` when there is no ``Authorization`` header, which the
+        dispatcher treats as "do not participate in idempotency" — the same
+        fail-closed shape as ``DeduplicationMiddleware`` returning a ``None``
+        request hash when there is no session id.
+
+        The identity is derived from the *raw* credential on the wire, never
+        from a decoded JWT claim. This middleware runs before any signature
         verification, so a claim such as ``sub`` is attacker-controlled at this
         point: keying on it would let a forged, unverified token select which
         caller's cache bucket to land in. The raw string cannot be forged into
@@ -179,12 +186,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         or logs.
         """
         authorization = request.headers.get("Authorization")
-        session_id = request.headers.get("X-Session-ID")
-
-        if not authorization and not session_id:
+        if not authorization:
             return None
 
-        material = f"{authorization or ''}\x00{session_id or ''}"
+        session_id = request.headers.get("X-Session-ID")
+        material = f"{authorization}\x00{session_id or ''}"
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     async def _body_fingerprint(self, request: Request) -> str:

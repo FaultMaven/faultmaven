@@ -105,9 +105,16 @@ async def test_same_caller_same_key_still_replays():
     assert second.json() == first.json()
 
 
-async def test_same_caller_identified_by_session_id_replays():
-    """Identity may come from X-Session-ID alone (mirrors deduplication)."""
-    app, _ = _build_app()
+async def test_session_id_alone_is_not_sufficient_identity():
+    """X-Session-ID is client-chosen, so it cannot stand in for a credential.
+
+    This deliberately replaces an earlier test that asserted the opposite.
+    A caller who supplies only a session id could otherwise pre-seed a bucket
+    that any later caller presenting the same guessable session id is served
+    from. Session-only callers now do not participate at all: no replay, and
+    nothing written.
+    """
+    app, fake = _build_app()
     headers = {"X-Session-ID": "session-abc", "Idempotency-Key": KEY}
 
     async with _client(app) as client:
@@ -115,7 +122,46 @@ async def test_same_caller_identified_by_session_id_replays():
         second = await client.post("/api/v1/anon-ok", headers=headers, json={})
 
     assert not _replayed(first)
-    assert _replayed(second)
+    assert not _replayed(second)
+    assert await fake.keys("idempotency:*") == []
+
+
+async def test_two_sessions_under_one_token_get_separate_buckets():
+    """X-Session-ID still narrows the bucket; it just cannot open one alone."""
+    app, _ = _build_app()
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/anon-ok",
+            headers={
+                "Authorization": VICTIM,
+                "X-Session-ID": "session-one",
+                "Idempotency-Key": KEY,
+            },
+            json={},
+        )
+        other_session = await client.post(
+            "/api/v1/anon-ok",
+            headers={
+                "Authorization": VICTIM,
+                "X-Session-ID": "session-two",
+                "Idempotency-Key": KEY,
+            },
+            json={},
+        )
+        same_session_retry = await client.post(
+            "/api/v1/anon-ok",
+            headers={
+                "Authorization": VICTIM,
+                "X-Session-ID": "session-one",
+                "Idempotency-Key": KEY,
+            },
+            json={},
+        )
+
+    assert not _replayed(first)
+    assert not _replayed(other_session), "a second session must not reuse the first"
+    assert _replayed(same_session_retry), "the same session must still retry-replay"
 
 
 # ---------------------------------------------------------------------------
