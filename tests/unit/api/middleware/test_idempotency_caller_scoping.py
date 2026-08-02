@@ -44,18 +44,30 @@ def _build_app(redis_client=None):
     cache hit an authentication bypass rather than merely a wrong body.
     """
     app = FastAPI()
-    route_calls: dict[str, int] = {"boom": 0}
+    route_calls: dict[str, int] = {"boom": 0, "cases": 0, "case_from_session": 0}
 
     @app.post("/api/v1/boom")
     async def boom():
         route_calls["boom"] += 1
         raise RuntimeError("route exploded")
 
+    @app.post("/api/v1/cases/sessions/{session_id}/case")
+    async def case_from_session(session_id: str, force_new: bool = False):
+        """Mirrors the real route whose behaviour is selected by the query."""
+        route_calls["case_from_session"] += 1
+        return {"session_id": session_id, "force_new": force_new}
+
+    @app.post("/api/v1/sessions")
+    async def mint_session():
+        """Mirrors the real session-mint route: the body IS a credential."""
+        return {"session_id": "newly-minted-credential"}
+
     @app.post("/api/v1/cases")
     async def create_case(request: Request, payload: dict = Body(default={})):
         authorization = request.headers.get("Authorization")
         if not authorization:
             raise HTTPException(status_code=401, detail="Not authenticated")
+        route_calls["cases"] += 1
         return {"owner": authorization, "title": payload.get("title")}
 
     @app.post("/api/v1/anon-ok")
@@ -158,8 +170,17 @@ async def test_session_id_alone_is_not_sufficient_identity():
     assert after == seeded, "a session-only caller must not write to the cache"
 
 
-async def test_two_sessions_under_one_token_get_separate_buckets():
-    """X-Session-ID still narrows the bucket; it just cannot open one alone."""
+async def test_two_sessions_under_one_token_share_a_bucket():
+    """X-Session-ID must NOT contribute to identity, only Authorization.
+
+    The copilot sends both headers, and on a 401 its retry path calls
+    ``refreshSession()``, which persists a *new* session id before re-sending.
+    If the session id were part of the identity, that retry would land in a
+    different bucket and execute a second time — the exact duplicate this
+    middleware exists to prevent, on the path where it matters most. One
+    authenticated principal replaying its own response across two sessions is
+    correct, not a leak.
+    """
     app, _ = _build_app()
 
     async with _client(app) as client:
@@ -167,33 +188,23 @@ async def test_two_sessions_under_one_token_get_separate_buckets():
             "/api/v1/anon-ok",
             headers={
                 "Authorization": VICTIM,
-                "X-Session-ID": "session-one",
+                "X-Session-ID": "session-before-refresh",
                 "Idempotency-Key": KEY,
             },
             json={},
         )
-        other_session = await client.post(
+        after_refresh = await client.post(
             "/api/v1/anon-ok",
             headers={
                 "Authorization": VICTIM,
-                "X-Session-ID": "session-two",
-                "Idempotency-Key": KEY,
-            },
-            json={},
-        )
-        same_session_retry = await client.post(
-            "/api/v1/anon-ok",
-            headers={
-                "Authorization": VICTIM,
-                "X-Session-ID": "session-one",
+                "X-Session-ID": "session-after-refresh",
                 "Idempotency-Key": KEY,
             },
             json={},
         )
 
     assert not _replayed(first)
-    assert not _replayed(other_session), "a second session must not reuse the first"
-    assert _replayed(same_session_retry), "the same session must still retry-replay"
+    assert _replayed(after_refresh), "a rotated session id must not fork the bucket"
 
 
 # ---------------------------------------------------------------------------
@@ -233,10 +244,7 @@ async def test_other_authenticated_caller_cannot_replay_victims_response():
         pytest.param({"Authorization": ATTACKER}, id="different-authorization"),
         pytest.param({"Authorization": VICTIM + "x"}, id="near-miss-authorization"),
         pytest.param({"X-Session-ID": "someone-else"}, id="session-id-instead"),
-        pytest.param(
-            {"Authorization": VICTIM, "X-Session-ID": "different-session"},
-            id="same-authorization-different-session",
-        ),
+        pytest.param({}, id="no-headers-at-all"),
     ],
 )
 async def test_caller_identity_space_is_scoped(attacker_headers):
@@ -369,7 +377,14 @@ async def test_auth_path_is_excluded_before_key_validation():
 # ---------------------------------------------------------------------------
 
 
-async def test_same_key_different_body_does_not_replay():
+async def test_same_key_different_body_is_refused_with_409():
+    """A reused key with a different body must be refused, not forked.
+
+    Folding the body into the cache key would make this a cache *miss*: the
+    request would silently execute a second time and create a second resource.
+    Replaying the first response instead would answer with the wrong data.
+    Neither is right — the only correct answer is to refuse.
+    """
     app, _ = _build_app()
     headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
 
@@ -377,13 +392,224 @@ async def test_same_key_different_body_does_not_replay():
         first = await client.post(
             "/api/v1/cases", headers=headers, json={"title": "first"}
         )
-        second = await client.post(
+        conflict = await client.post(
             "/api/v1/cases", headers=headers, json={"title": "second"}
         )
 
     assert first.json()["title"] == "first"
+    assert conflict.status_code == 409
+    assert conflict.json()["error_type"] == "IdempotencyKeyReuse"
+    assert not _replayed(conflict)
+    assert app.state.route_calls["cases"] == 1, "the conflicting request must not run"
+
+
+async def test_conflicting_request_does_not_overwrite_the_stored_response():
+    """A refused request must leave the original entry intact and replayable."""
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        await client.post("/api/v1/cases", headers=headers, json={"title": "first"})
+        conflict = await client.post(
+            "/api/v1/cases", headers=headers, json={"title": "second"}
+        )
+        honest_retry = await client.post(
+            "/api/v1/cases", headers=headers, json={"title": "first"}
+        )
+
+    assert conflict.status_code == 409
+    assert _replayed(honest_retry)
+    assert honest_retry.json()["title"] == "first"
+    assert app.state.route_calls["cases"] == 1
+
+
+async def test_mixed_fingerprint_is_refused():
+    """Exactly one side fingerprinted: equality cannot be shown, so refuse."""
+    app, _ = _build_app()
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/cases",
+            headers={"Authorization": VICTIM, "Idempotency-Key": KEY},
+            json={"title": "json body"},
+        )
+        # Same caller, key, method and path — but an unfingerprintable body.
+        conflict = await client.post(
+            "/api/v1/cases",
+            headers={
+                "Authorization": VICTIM,
+                "Idempotency-Key": KEY,
+                "Content-Type": "text/plain",
+            },
+            content=b"not json",
+        )
+
+    assert first.status_code == 200
+    assert conflict.status_code == 409
+    assert app.state.route_calls["cases"] == 1
+
+
+async def test_byte_different_but_equivalent_json_is_still_refused():
+    """Fingerprinting is byte-level, and the refusal is what makes that safe.
+
+    Two semantically identical payloads that differ only in key order are
+    *different* to the fingerprint. Refusing is the conservative answer; the
+    alternative under a body-in-key scheme was to execute twice.
+    """
+    app, _ = _build_app()
+    headers = {
+        "Authorization": VICTIM,
+        "Idempotency-Key": KEY,
+        "Content-Type": "application/json",
+    }
+
+    async with _client(app) as client:
+        await client.post("/api/v1/cases", headers=headers, content=b'{"a": 1, "b": 2}')
+        conflict = await client.post(
+            "/api/v1/cases", headers=headers, content=b'{"b": 2, "a": 1}'
+        )
+
+    assert conflict.status_code == 409
+    assert app.state.route_calls["cases"] == 1
+
+
+# ---------------------------------------------------------------------------
+# The query string selects behaviour, so it must scope the cache key.
+# ---------------------------------------------------------------------------
+
+
+async def test_query_string_splits_the_bucket():
+    """?force_new=true and ?force_new=false are different operations."""
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        forced = await client.post(
+            "/api/v1/cases/sessions/s-1/case?force_new=true", headers=headers, json={}
+        )
+        not_forced = await client.post(
+            "/api/v1/cases/sessions/s-1/case?force_new=false", headers=headers, json={}
+        )
+
+    assert forced.json()["force_new"] is True
+    assert not _replayed(not_forced), "a different query must not replay"
+    assert not_forced.json()["force_new"] is False
+    assert app.state.route_calls["case_from_session"] == 2
+
+
+async def test_same_query_still_replays():
+    """Splitting on the query must not break retries of the same request."""
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+    url = "/api/v1/cases/sessions/s-1/case?force_new=true"
+
+    async with _client(app) as client:
+        first = await client.post(url, headers=headers, json={})
+        retry = await client.post(url, headers=headers, json={})
+
+    assert not _replayed(first)
+    assert _replayed(retry)
+    assert app.state.route_calls["case_from_session"] == 1
+
+
+# ---------------------------------------------------------------------------
+# The session-mint route mints a credential and is excluded by exact path.
+# ---------------------------------------------------------------------------
+
+
+async def test_session_mint_route_is_excluded():
+    """POST /api/v1/sessions returns a session id, which IS a credential.
+
+    ``api/v1/dependencies.py`` resolves a user from ``X-Session-Id`` alone, so
+    a replayed mint response hands out a working credential — the same class the
+    ``/auth/`` exclusion prevents structurally.
+    """
+    app, fake = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        seeded = await _seed_one_cache_entry(client, fake)
+        first = await client.post("/api/v1/sessions", headers=headers, json={})
+        second = await client.post("/api/v1/sessions", headers=headers, json={})
+        after = sorted(await fake.keys("idempotency:*"))
+
+    assert first.status_code == 200
     assert not _replayed(second)
-    assert second.json()["title"] == "second"
+    assert after == seeded, "a session mint must never be cached"
+
+
+async def test_session_mint_exclusion_survives_a_trailing_slash():
+    """This middleware sits outside TrailingSlashMiddleware, so it sees '/'."""
+    app, fake = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        seeded = await _seed_one_cache_entry(client, fake)
+        await client.post("/api/v1/sessions/", headers=headers, json={})
+        after = sorted(await fake.keys("idempotency:*"))
+
+    assert after == seeded, "a trailing slash must not slip past the exclusion"
+
+
+async def test_case_session_routes_are_not_excluded():
+    """The exclusion must be exact: a '/sessions' substring over-excludes.
+
+    ``/api/v1/cases/sessions/{sid}/case`` contains '/sessions' but is an
+    ordinary idempotent route. A substring marker would silently disable
+    idempotency on it — including on the query-scoping behaviour above.
+    """
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/cases/sessions/s-1/case", headers=headers, json={}
+        )
+        retry = await client.post(
+            "/api/v1/cases/sessions/s-1/case", headers=headers, json={}
+        )
+
+    assert not _replayed(first)
+    assert _replayed(retry), "case-session routes must keep idempotency"
+    assert app.state.route_calls["case_from_session"] == 1
+
+
+def test_exclusions_do_not_over_catch_any_real_post_route():
+    """Enumerate the real app and prove the exclusion set is exactly intended.
+
+    An exclusion is a silent disabling of idempotency, so it must be shown
+    against the real route table rather than against hand-written paths. The
+    tempting ``/sessions`` substring marker catches fifteen POST routes here.
+    """
+    from starlette.routing import Route
+
+    from faultmaven.main import app as real_app
+
+    middleware = IdempotencyMiddleware(app=lambda scope, receive, send: None)
+    post_paths = sorted(
+        {
+            route.path
+            for route in real_app.routes
+            if isinstance(route, Route) and "POST" in (route.methods or set())
+        }
+    )
+
+    # Guard against a vacuous pass if route collection ever breaks.
+    assert len(post_paths) > 40, f"only {len(post_paths)} POST routes enumerated"
+
+    excluded = {path for path in post_paths if middleware._is_excluded_path(path)}
+
+    assert "/api/v1/sessions" in excluded, "the session mint must be excluded"
+    for path in excluded:
+        assert (
+            path == "/api/v1/sessions" or "/auth/" in path
+        ), f"{path} is excluded but is neither the session mint nor an auth path"
+
+    # Every other route whose path merely *contains* 'sessions' must survive.
+    session_shaped = {p for p in post_paths if "/sessions" in p}
+    assert len(session_shaped) > 10, "expected many session-shaped POST routes"
+    assert session_shaped - excluded == session_shaped - {"/api/v1/sessions"}
+    assert "/api/v1/cases/sessions/{session_id}/case" not in excluded
 
 
 @pytest.mark.parametrize("with_key", [True, False], ids=["with-key", "without-key"])

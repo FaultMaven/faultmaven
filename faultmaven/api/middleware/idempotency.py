@@ -33,6 +33,16 @@ logger = logging.getLogger(__name__)
 # key being scoped correctly. Erring broad is deliberate.
 EXCLUDED_PATH_MARKERS = ("/auth/",)
 
+# Exact paths excluded from idempotency. Kept separate from the substring
+# markers above because the obvious substring is unusable here: ``POST
+# /api/v1/sessions`` mints a session id, and ``api/v1/dependencies.py``
+# resolves a user from ``X-Session-Id`` alone — so that response body is a
+# credential and must never be replayed. But a ``/sessions`` substring marker
+# catches fifteen POST routes in this app, including
+# ``/api/v1/cases/sessions/{session_id}/case``, silently disabling idempotency
+# on exactly the route that needs it. Match the minting route and nothing else.
+EXCLUDED_EXACT_PATHS = frozenset({"/api/v1/sessions"})
+
 # Upper bound on a request body we are willing to buffer for fingerprinting.
 # Anything larger is left unbuffered (and unfingerprinted) rather than held in
 # memory on every request.
@@ -128,12 +138,46 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             # Create cache key
             body_fingerprint = await self._body_fingerprint(request)
             cache_key = self._create_cache_key(
-                idempotency_key, request, caller_identity, body_fingerprint
+                idempotency_key, request, caller_identity
             )
 
             # Check for existing response
             cached_response = await self._get_cached_response(cache_key)
             if cached_response:
+                # The body is compared here rather than folded into the key.
+                # Keying on it would make a reused key with a different body a
+                # cache *miss*, which silently executes a second time and
+                # creates a second resource. Replay only when the stored and
+                # incoming bodies are shown to be the same:
+                #
+                #   both fingerprinted and equal -> replay
+                #   both unfingerprinted         -> replay (equal sentinels)
+                #   different, or only one       -> 409, do not execute
+                #
+                # The both-unfingerprinted case is load-bearing, not a
+                # loophole: the copilot's hot retry path (multipart turn
+                # submission) is never fingerprinted, so refusing it would
+                # break this feature's main consumer.
+                if cached_response.get("body_fingerprint") != body_fingerprint:
+                    logger.warning(
+                        f"Idempotency key reused with a different request body: "
+                        f"{idempotency_key}"
+                    )
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "detail": (
+                                "This Idempotency-Key was already used with a "
+                                "different request body. Use a new key for a "
+                                "different request, or retry the original "
+                                "request unchanged."
+                            ),
+                            "error_type": "IdempotencyKeyReuse",
+                            "correlation_id": str(uuid4()),
+                            "timestamp": self._get_timestamp(),
+                        },
+                    )
+
                 logger.info(
                     f"Returning cached response for idempotency key: {idempotency_key}"
                 )
@@ -145,7 +189,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
             # Cache successful responses (2xx status codes)
             if 200 <= response.status_code < 300:
-                await self._cache_response(cache_key, response, idempotency_key)
+                await self._cache_response(
+                    cache_key, response, idempotency_key, body_fingerprint
+                )
 
             return response
 
@@ -173,19 +219,36 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         return bool(re.match(pattern, key))
 
     def _is_excluded_path(self, path: str) -> bool:
-        """Whether this path is structurally excluded from idempotency."""
+        """Whether this path is structurally excluded from idempotency.
+
+        The trailing slash is normalised away first: this middleware is
+        installed *outside* ``TrailingSlashMiddleware``, so it sees the path as
+        the client sent it. Without normalising, ``POST /api/v1/sessions/``
+        would slip past an exact-path exclusion that ``POST /api/v1/sessions``
+        is caught by.
+        """
+        normalized = path.rstrip("/") or "/"
+        if normalized in EXCLUDED_EXACT_PATHS:
+            return True
         return any(marker in path for marker in EXCLUDED_PATH_MARKERS)
 
     def _caller_identity(self, request: Request) -> Optional[str]:
         """Hash the raw credential material that identifies the caller.
 
-        ``Authorization`` is **required**. It is the only header a caller
-        cannot simply choose: ``X-Session-ID`` is client-supplied and
+        ``Authorization`` is **required and sufficient**. It is the only header
+        a caller cannot simply choose: ``X-Session-ID`` is client-supplied and
         guessable, so accepting it alone would let one caller pre-seed a bucket
         that a later caller with the same session id is then served from.
-        ``X-Session-ID`` is still mixed in as *additional* material, so two
-        sessions under one token keep separate buckets — it narrows the scope,
-        it never widens it.
+
+        ``X-Session-ID`` is deliberately **not** mixed in either. It rotates far
+        more often than the token: the copilot attaches both headers
+        (``fetch-utils.ts`` ``getAuthHeaders``) and, on a 401, its retry path
+        calls ``refreshSession()``, which persists a *new* session id before
+        re-sending. Including it would put that retry in a different bucket, so
+        the request would execute a second time — precisely the duplicate this
+        middleware exists to prevent, on the one path where it matters most.
+        One authenticated principal replaying its own response across two
+        sessions is correct behaviour, not a leak.
 
         Returns ``None`` when there is no ``Authorization`` header, which the
         dispatcher treats as "do not participate in idempotency" — the same
@@ -205,9 +268,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         if not authorization:
             return None
 
-        session_id = request.headers.get("X-Session-ID")
-        material = f"{authorization}\x00{session_id or ''}"
-        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+        return hashlib.sha256(authorization.encode("utf-8")).hexdigest()
 
     async def _body_fingerprint(self, request: Request) -> str:
         """Fingerprint the request body so a reused key cannot swap payloads.
@@ -261,17 +322,27 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         idempotency_key: str,
         request: Request,
         caller_identity: str,
-        body_fingerprint: str,
     ) -> str:
-        """Create Redis cache key scoped to caller, route and payload.
+        """Create a Redis cache key scoped to caller and route.
 
         The key must not be reachable by anyone but the caller that created it,
         so caller identity is part of the hashed material rather than an
         advisory extra.
+
+        The query string is included because it selects behaviour, not just
+        presentation: ``POST /api/v1/cases/sessions/{sid}/case?force_new=true``
+        and ``?force_new=false`` are different operations, and without the query
+        they hash identically for one caller and key — so the second would be
+        served the first's response and never run.
+
+        The request body is deliberately **absent** here. It lives in the cached
+        payload instead, so that a reused key with a different body is a
+        detectable conflict rather than a cache miss that silently executes a
+        second time. See ``dispatch``.
         """
         method_path = f"{request.method}:{request.url.path}"
         combined = "|".join(
-            [idempotency_key, method_path, caller_identity, body_fingerprint]
+            [idempotency_key, method_path, request.url.query, caller_identity]
         )
         hash_suffix = hashlib.sha256(combined.encode()).hexdigest()[:32]
         return f"{self.key_prefix}{idempotency_key}:{hash_suffix}"
@@ -287,7 +358,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         return None
 
     async def _cache_response(
-        self, cache_key: str, response: Response, idempotency_key: str
+        self,
+        cache_key: str,
+        response: Response,
+        idempotency_key: str,
+        body_fingerprint: str,
     ):
         """Cache response in Redis with TTL.
 
@@ -313,6 +388,9 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                     "content-type", "application/json"
                 ),
                 "idempotency_key": idempotency_key,
+                # Stored so a later request under the same key can be shown to
+                # carry the same body before its response is replayed.
+                "body_fingerprint": body_fingerprint,
                 "cached_at": self._get_timestamp(),
             }
 
