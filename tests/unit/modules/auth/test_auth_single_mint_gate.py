@@ -20,7 +20,7 @@ come back here.
 import asyncio
 import dataclasses
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -709,3 +709,94 @@ async def test_the_authenticate_path_hands_the_account_to_the_mint():
         await service.authenticate_user(email="testuser@acme.example", password="pw")
 
     assert auth_service.generate_token_pair.call_args.kwargs["account"] is user
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_deleting_a_user_revokes_their_outstanding_tokens_first():
+    """Deletion must not leave live access tokens behind.
+
+    Deleting removes the account but not the credentials issued from it:
+    refresh stops (the user is gone) while outstanding ACCESS tokens keep
+    authenticating for the rest of their TTL, because the request path never
+    reloads the user. Deactivation — the weaker operation — already wrote a
+    revocation watermark, so deleting a compromised account left it usable
+    longer than merely disabling it.
+
+    Order is asserted, not just the call: revoking after a successful delete
+    would be unrecoverable if the revoke then failed.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from faultmaven.modules.auth.api import auth as auth_routes
+
+    order = []
+    user_store = AsyncMock()
+    user_store.get_user_by_username = AsyncMock(
+        return_value=SimpleNamespace(user_id="user_123", username="doomed")
+    )
+
+    async def _delete(_uid):
+        order.append("delete")
+        return True
+
+    async def _revoke(_uid):
+        order.append("revoke")
+        return datetime.now(timezone.utc)
+
+    user_store.delete_user = _delete
+    auth_service = MagicMock()
+    auth_service.revoke_user_tokens = _revoke
+
+    request = MagicMock()
+    request.app.state.auth_service = auth_service
+
+    with patch.object(
+        auth_routes, "get_user_store", AsyncMock(return_value=user_store)
+    ):
+        result = await auth_routes.delete_user(
+            username="doomed", request=request, _=None
+        )
+
+    assert result["user_id"] == "user_123"
+    assert order == ["revoke", "delete"], order
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_a_failed_revocation_blocks_the_delete():
+    """If the credentials cannot be killed, the account must stay to try again.
+
+    Deleting anyway would strand live tokens for an account that can no longer
+    be looked up — nothing left to revoke them by.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from faultmaven.exceptions import ServiceError
+    from faultmaven.modules.auth.api import auth as auth_routes
+
+    deleted = []
+    user_store = AsyncMock()
+    user_store.get_user_by_username = AsyncMock(
+        return_value=SimpleNamespace(user_id="user_123", username="doomed")
+    )
+    user_store.delete_user = AsyncMock(side_effect=lambda uid: deleted.append(uid))
+
+    auth_service = MagicMock()
+    auth_service.revoke_user_tokens = AsyncMock(
+        side_effect=ServiceError("revocation store down")
+    )
+    request = MagicMock()
+    request.app.state.auth_service = auth_service
+
+    with patch.object(
+        auth_routes, "get_user_store", AsyncMock(return_value=user_store)
+    ):
+        with pytest.raises(Exception):
+            await auth_routes.delete_user(username="doomed", request=request, _=None)
+
+    assert deleted == [], "the account was deleted despite revocation failing"

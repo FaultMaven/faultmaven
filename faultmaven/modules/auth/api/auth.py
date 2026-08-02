@@ -671,6 +671,15 @@ async def refresh_tokens(
 
     except HTTPException:
         raise
+    except FaultMavenException:
+        # Same pass-through login and register already have. Without it the
+        # blanket handler below re-wraps typed service exceptions as 500 —
+        # including InactiveAccountError, whose whole point is that a caller
+        # which does not translate it still answers 403 via the global
+        # handlers. Latent today (step 2 refuses a deactivated account before
+        # step 3 mints); the asymmetry is the hazard, since the next reordering
+        # here would surface as an opaque 500.
+        raise
     except Exception as e:
         logger.error(
             f"Token refresh failed: {type(e).__name__}: {str(e)}",
@@ -745,6 +754,30 @@ async def delete_user(
                     "message": f"User '{username}' not found",
                 },
             )
+
+        # Revoke BEFORE deleting, and refuse to delete if revocation fails.
+        #
+        # Deletion removes the account but not the credentials already issued
+        # from it: refresh stops working (the user is gone), while outstanding
+        # ACCESS tokens keep authenticating for the rest of their TTL because
+        # the request path never reloads the user. The weaker operation —
+        # deactivation — already writes a revocation watermark, so deleting a
+        # compromised account left it usable longer than merely disabling it.
+        #
+        # Order matters: revoking first means a failure leaves the account
+        # intact and the operator able to retry. Deleting first and then failing
+        # to revoke would strand live tokens for an account that can no longer
+        # be looked up to revoke.
+        auth_service = getattr(request.app.state, "auth_service", None)
+        if auth_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service unavailable; refusing to delete "
+                "a user without revoking their outstanding tokens.",
+            )
+        # Raises ServiceError on store failure, which surfaces as a 500 below —
+        # deliberately, so the delete does not proceed.
+        await auth_service.revoke_user_tokens(user.user_id)
 
         success = await user_store.delete_user(user.user_id)
 
