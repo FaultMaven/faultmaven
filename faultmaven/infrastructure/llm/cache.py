@@ -30,7 +30,6 @@ sha256, so they are safe to call from async code without a thread hop.
 """
 
 import hashlib
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from .providers import LLMResponse
@@ -92,14 +91,12 @@ class LLMResponseCache:
             "provider": response.provider,
             "model": response.model,
             "tokens_used": response.tokens_used,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Evict oldest entries if cache is full. Ties in the ISO timestamp
-        # resolve to the earliest-inserted key, since dicts iterate in insertion
-        # order and ``min`` keeps the first minimum it sees.
+        # Evict the oldest entry when full. Insertion order *is* age here: the
+        # cache is insert-only, because a repeat of an exact key is answered by
+        # ``check`` before ``store`` is ever reached, and the router only stores
+        # on the path where it checked. So the first key the dict yields is the
+        # oldest, and eviction is O(1) instead of a scan over every entry.
         if len(self.cache) > self.max_size:
-            oldest_key = min(
-                self.cache.keys(), key=lambda k: self.cache[k]["timestamp"]
-            )
-            del self.cache[oldest_key]
+            del self.cache[next(iter(self.cache))]
