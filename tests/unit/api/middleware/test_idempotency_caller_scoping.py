@@ -32,7 +32,7 @@ ATTACKER = "Bearer attacker-token-bbbbbbbbbbbb"
 KEY = "11111111-2222-3333-4444-555555555555"
 
 
-def _build_app():
+def _build_app(redis_client=None):
     """FastAPI app wired exactly like production: auth is route-level.
 
     ``/api/v1/cases`` mirrors the real shape — the route, not the middleware,
@@ -40,6 +40,12 @@ def _build_app():
     cache hit an authentication bypass rather than merely a wrong body.
     """
     app = FastAPI()
+    route_calls: dict[str, int] = {"boom": 0}
+
+    @app.post("/api/v1/boom")
+    async def boom():
+        route_calls["boom"] += 1
+        raise RuntimeError("route exploded")
 
     @app.post("/api/v1/cases")
     async def create_case(request: Request, payload: dict = Body(default={})):
@@ -67,8 +73,9 @@ def _build_app():
         content = await file.read()
         return {"filename": file.filename, "size": len(content), "sha": content.hex()}
 
-    fake = fakeredis_aio.FakeRedis(decode_responses=True)
+    fake = redis_client or fakeredis_aio.FakeRedis(decode_responses=True)
     app.add_middleware(IdempotencyMiddleware, redis_client=fake)
+    app.state.route_calls = route_calls
     return app, fake
 
 
@@ -389,6 +396,79 @@ async def test_multipart_upload_body_reaches_the_route_intact():
     assert response.json()["size"] == len(content)
     assert response.json()["sha"] == content.hex()
     assert response.json()["filename"] == "evidence.bin"
+
+
+# ---------------------------------------------------------------------------
+# Correctness riders in the same middleware (pre-existing, fixed here).
+# ---------------------------------------------------------------------------
+
+
+async def test_failing_route_is_not_executed_twice():
+    """The recovery path must never re-run a route that already ran.
+
+    The blanket ``except`` around dispatch called ``call_next`` a second time,
+    so a route that raised — or any downstream middleware that raised after the
+    handler had side effects — executed twice for one client request. For a
+    middleware whose entire purpose is at-most-once semantics that is the
+    sharpest possible failure.
+    """
+    app, _ = _build_app()
+
+    async with _client(app) as client:
+        with pytest.raises(RuntimeError, match="route exploded"):
+            await client.post(
+                "/api/v1/boom",
+                headers={"Authorization": VICTIM, "Idempotency-Key": KEY},
+                json={},
+            )
+
+    assert app.state.route_calls["boom"] == 1, "route must run at most once"
+
+
+class _SetexFailsRedis:
+    """A Redis stand-in that accepts reads and fails every write.
+
+    Models a real Cloud condition: Redis reachable-then-not, or a write refused
+    under memory pressure, in the window between draining the response body and
+    restoring it.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    async def get(self, key):
+        return await self._inner.get(key)
+
+    async def keys(self, pattern):
+        return await self._inner.keys(pattern)
+
+    async def setex(self, *args, **kwargs):
+        raise ConnectionError("redis unreachable")
+
+
+async def test_client_still_receives_full_body_when_caching_fails():
+    """A Redis write failure must not truncate the response.
+
+    Caching drains the single-use body iterator. The restore used to sit after
+    the ``setex`` call inside the same ``try``, so any Redis error skipped it
+    and the client got HTTP 200 with the original Content-Length and zero
+    bytes. Caching is best-effort; delivering the response is not.
+    """
+    inner = fakeredis_aio.FakeRedis(decode_responses=True)
+    app, _ = _build_app(redis_client=_SetexFailsRedis(inner))
+    payload = {"title": "y" * 4000}
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/cases",
+            headers={"Authorization": VICTIM, "Idempotency-Key": KEY},
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    assert response.content, "response body must not be empty"
+    assert response.json() == {"owner": VICTIM, "title": payload["title"]}
+    assert len(response.content) == int(response.headers["content-length"])
 
 
 async def test_non_json_body_is_not_buffered_but_still_replays_for_same_caller():

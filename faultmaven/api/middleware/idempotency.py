@@ -109,12 +109,20 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         if caller_identity is None:
             return await call_next(request)
 
+        # Whether the downstream stack has already been invoked. The recovery
+        # path below may only retry work that never reached the route: once
+        # ``call_next`` has been entered the route may have run (or partially
+        # run), and calling it again would execute the handler a second time
+        # for a single client request.
+        downstream_invoked = False
+
         try:
             # Resolve the Redis client lazily (after startup has populated
             # app.state). Kept inside the try so any failure during resolution
             # degrades gracefully (process the request) rather than 500-ing.
             self._ensure_redis(request)
             if self.redis_client is None:
+                downstream_invoked = True
                 return await call_next(request)
 
             # Create cache key
@@ -132,6 +140,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 return self._create_response_from_cache(cached_response)
 
             # Process request normally
+            downstream_invoked = True
             response = await call_next(request)
 
             # Cache successful responses (2xx status codes)
@@ -141,8 +150,15 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             return response
 
         except Exception as e:
+            if downstream_invoked:
+                # The route already ran, or failed on its way to running.
+                # Retrying here would execute a non-idempotent handler twice
+                # for one client request — exactly what this middleware exists
+                # to prevent. Let the error surface to the error handlers.
+                raise
             logger.error(f"Error in idempotency middleware: {e}")
-            # Continue processing on middleware errors
+            # The failure happened before the request reached the route, so
+            # degrading to a normal, uncached request is safe.
             return await call_next(request)
 
     def _is_valid_idempotency_key(self, key: str) -> bool:
@@ -264,10 +280,18 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     async def _cache_response(
         self, cache_key: str, response: Response, idempotency_key: str
     ):
-        """Cache response in Redis with TTL."""
+        """Cache response in Redis with TTL.
+
+        Caching drains ``response.body_iterator``, which is single-use, so the
+        drained bytes must be put back on *every* path out of this method. If
+        the restore is skipped — a Redis error between the drain and the
+        restore used to do exactly that — the client receives the original
+        status and Content-Length with a zero-byte body: a silent truncation of
+        every idempotent POST response for as long as Redis is unreachable.
+        """
+        body = b""
         try:
             # Read response body
-            body = b""
             async for chunk in response.body_iterator:
                 body += chunk
 
@@ -290,11 +314,13 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
 
             logger.info(f"Cached response for idempotency key: {idempotency_key}")
 
-            # Recreate response with same body for return
-            response.body_iterator = self._create_body_iterator(body)
-
         except Exception as e:
             logger.error(f"Error caching response: {e}")
+        finally:
+            # Always hand the drained body back to the client, whether or not
+            # it was successfully cached. Caching is best-effort; delivering
+            # the response is not.
+            response.body_iterator = self._create_body_iterator(body)
 
     def _create_response_from_cache(self, cached_data: Dict[str, Any]) -> Response:
         """Create FastAPI response from cached data."""
