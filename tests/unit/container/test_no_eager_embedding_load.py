@@ -26,7 +26,9 @@ cannot pass vacuously on a machine without the package — there, the real
 ``get_bge_m3_model`` returns None before it ever reaches the class.
 """
 
+import ast
 import importlib.util
+import inspect
 import os
 import subprocess
 import sys
@@ -121,11 +123,14 @@ def test_exercising_the_response_cache_loads_no_model(loader):
 
 
 def test_response_cache_module_holds_no_handle_on_the_model_cache():
-    """The strongest available form of the #868 guarantee for this module:
-    after #940 removed semantic matching, ``llm/cache.py`` has no route to the
-    loader at all — not the module, not the singleton, not an alias of either.
-    Swept over the whole module namespace rather than asserting on one import
-    name, so a re-entry under any spelling fails here.
+    """After #940 removed semantic matching, ``llm/cache.py`` has no route to
+    the loader at all — no module object, no singleton, no alias of either
+    bound anywhere in its namespace. Swept over the whole namespace by identity
+    rather than by import name, so any *module-level* rebinding fails here
+    whatever it is called.
+
+    A module-level sweep is necessarily blind to a function-body import, which
+    binds nothing until it runs; the source scan below covers that half.
     """
     reachable = {id(model_cache_module), id(model_cache_module.model_cache)}
     leaked = sorted(
@@ -135,6 +140,51 @@ def test_response_cache_module_holds_no_handle_on_the_model_cache():
     assert leaked == [], (
         f"llm/cache.py exposes the embedding stack via {leaked} — the response "
         "cache must not be able to reach a model load (#868, #940)"
+    )
+
+
+def _executable_source(module) -> str:
+    """The module's code with docstrings dropped, lowercased.
+
+    Docstrings are excluded because ``llm/cache.py``'s header *narrates* the
+    removed BGE-M3 branch — that history is the reason the guarantee exists and
+    must stay readable. String literals inside code are kept, so a lazy
+    ``importlib.import_module("...model_cache")`` still shows up.
+    """
+    tree = ast.parse(inspect.getsource(module))
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            node.body.pop(0)
+            if not node.body:
+                node.body.append(ast.Pass())
+    return ast.unparse(tree).lower()
+
+
+@pytest.mark.parametrize("token", ["model_cache", "sentencetransformer", "bge"])
+def test_response_cache_code_never_names_the_embedding_stack(token):
+    """The evasion the namespace sweep above cannot see: an import inside
+    ``check`` or ``store`` binds nothing at module level, so ``vars()`` stays
+    clean while the request path loads a 1.3Gi model on the event loop — the
+    exact #868/#940 failure. Reading the code catches it wherever it is
+    written, function bodies and lazy accessors included.
+
+    Scoped to these three tokens on purpose: the embedding stack's module, its
+    class, and its model family — every spelling that reaches a load today.
+    A tripwire on the known route, not a proof that no route exists; the
+    identity-level check is the namespace sweep above.
+    """
+    assert token not in _executable_source(llm_cache_module), (
+        f"llm/cache.py names {token!r} in code — the response cache must have "
+        "no route to an embedding model load, deferred ones included (#868, #940)"
     )
 
 
