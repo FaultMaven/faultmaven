@@ -224,13 +224,25 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
             # Store successful response in cache. Pure dict write plus a sha256
             # — no embedding, so this is safe to do inline on the event loop.
-            if response.confidence >= self.confidence_threshold and sanitized_prompt:
-                # Key on the *effective* model, so a later call that names that
-                # model explicitly finds this entry.
-                store_model = model or response.model
-                self.cache.store(
-                    sanitized_prompt, store_model, response, case_id=case_id
-                )
+            #
+            # The gate is the *same predicate as the check above*: store only on
+            # the calls the cache can later answer. Storing under the model the
+            # provider happened to pick (`model or response.model`) filled the
+            # cache with entries no lookup could reach, since `check` keys on the
+            # model the caller named — dead writes for every no-model caller
+            # (title generation, suggestions).
+            #
+            # Residual, deliberately not fixed here (fm#513 cluster): when the
+            # fallback chain answered with a different model than the one
+            # requested, the entry is still keyed under the *requested* model, so
+            # a later identical call is served a response another model produced.
+            if (
+                model
+                and not messages
+                and sanitized_prompt
+                and response.confidence >= self.confidence_threshold
+            ):
+                self.cache.store(sanitized_prompt, model, response, case_id=case_id)
 
             # Attach prompt data for telemetry
             response.sanitized_prompt = sanitized_prompt
