@@ -269,53 +269,6 @@ async def get_request_metadata(request: Request) -> dict:
     }
 
 
-# Authentication Dependencies (placeholder for future implementation)
-
-
-async def get_current_user(request: Request) -> Optional[dict]:
-    """
-    Get current authenticated user
-
-    Args:
-        request: FastAPI request object
-
-    Returns:
-        User info dict or None
-    """
-    # Placeholder for authentication logic
-    # In production, this would validate JWT tokens, API keys, etc.
-    auth_header = request.headers.get("authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        # Validate token and return user info
-        return {"user_id": "anonymous", "roles": ["user"]}
-    return None
-
-
-# Rate Limiting Dependencies (placeholder)
-
-
-async def check_rate_limit(
-    request: Request,
-    user: Optional[dict] = Depends(get_current_user),
-) -> bool:
-    """
-    Check rate limits
-
-    Args:
-        request: FastAPI request
-        user: Optional authenticated user
-
-    Returns:
-        True if within limits
-
-    Raises:
-        HTTPException: If rate limit exceeded
-    """
-    # Placeholder for rate limiting logic
-    # In production, this would check Redis or similar
-    return True
-
-
 # Validation Dependencies
 
 
