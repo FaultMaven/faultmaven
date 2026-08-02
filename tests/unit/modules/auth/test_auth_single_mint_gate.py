@@ -622,7 +622,12 @@ async def test_a_non_object_payload_reads_as_no_such_code():
     client = fakeredis.aioredis.FakeRedis(decode_responses=True)
     repository = RedisOAuthCodeRepository(client)
 
-    for payload in ("1", '"a string"', "null", "[1, 2]"):
+    # Two distinct failure modes, and an isinstance check only covers the first:
+    # valid JSON that is not an object, and text that is not JSON at all — the
+    # latter raises inside json.loads, so the result is never inspected.
+    not_an_object = ("1", '"a string"', "null", "[1, 2]", "true")
+    not_even_json = ("", "1: claimed", "{oops", "\x00binary")
+    for payload in not_an_object + not_even_json:
         await client.setex("oauth:code:weird", 600, payload)
         assert await repository.get_code("weird") is None, payload
 
