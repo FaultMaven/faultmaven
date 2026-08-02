@@ -50,15 +50,16 @@ async def session_factory():
 
 
 def _code(code: str, organization_id, **overrides) -> OAuthCodeDTO:
-    return OAuthCodeDTO(
+    fields = dict(
         code=code,
         user_id="user_123",
         redirect_uri=REDIRECT,
         code_challenge="challenge",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
         organization_id=organization_id,
-        **overrides,
     )
+    fields.update(overrides)
+    return OAuthCodeDTO(**fields)
 
 
 @pytest.mark.integration
@@ -118,6 +119,30 @@ async def test_orm_repository_claim_is_a_compare_and_swap(session_factory):
     # Every subsequent claim loses, however many times it is attempted.
     assert await repo.claim_code("code_cas") is False
     assert await repo.claim_code("code_cas") is False
+
+
+@pytest.mark.integration
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_orm_repository_refuses_to_claim_an_expired_code(session_factory):
+    """Expiry must be in the claim predicate, not left to a prior SELECT.
+
+    Rows here are removed by a sweep, not by a TTL, so an expired row lingers
+    and stays claimable unless the UPDATE says otherwise. Redis gets this free
+    because the key is gone, and the in-memory store checks it explicitly — a
+    backend that disagreed would make single-use depend on the deployment,
+    which is the divergence this contract exists to remove.
+    """
+    repo = PostgresOAuthCodeRepository(session_factory)
+    await repo.save_code(
+        _code(
+            "code_expired",
+            TENANT,
+            expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+        )
+    )
+
+    assert await repo.claim_code("code_expired") is False
 
 
 @pytest.mark.integration

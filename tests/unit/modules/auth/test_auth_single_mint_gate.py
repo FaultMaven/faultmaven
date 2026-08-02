@@ -363,3 +363,139 @@ async def test_the_oauth_exchange_still_reports_its_own_protocol_error():
             code=code, code_verifier=verifier, redirect_uri=REDIRECT
         )
     assert refusal.value.error_code == "USER_INACTIVE"
+
+
+# =============================================================================
+# Findings from code review on PR #957
+# =============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_the_refusal_does_not_disclose_the_account_id():
+    """`POST /auth/login` reaches this while the caller is still anonymous.
+
+    The 403 handler echoes `str(exc)` to the client, so an id interpolated into
+    the message hands an unauthenticated caller the internal UUID of an account
+    it just probed. The id belongs in the log line, which this asserts is still
+    where it goes.
+    """
+    from faultmaven.modules.auth.domain.services import jwt_token_generator
+
+    with pytest.raises(InactiveAccountError) as refusal:
+        jwt_token_generator._refuse_if_deactivated(_user(is_active=False), "access")
+
+    assert "user_123" not in str(refusal.value)
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_the_account_aware_mint_on_auth_service_refuses_a_deactivated_account():
+    """The second signing surface, gated where it can see an account.
+
+    `AuthService` signs from a subject id and never touches
+    `IJWTTokenGenerator`, so the chokepoint does not reach it. Its one
+    account-aware composition does enforce the rule when handed the account.
+    """
+    from faultmaven.modules.auth.domain.services.auth_service import AuthService
+
+    service = AuthService(revocation_store=AsyncMock())
+
+    with pytest.raises(InactiveAccountError):
+        service.generate_token_pair(
+            user_id="user_123",
+            organization_id="org_acme",
+            email="testuser@acme.example",
+            roles=["user"],
+            account=_user(is_active=False),
+        )
+
+    # An active account is unaffected.
+    pair = service.generate_token_pair(
+        user_id="user_123",
+        organization_id="org_acme",
+        email="testuser@acme.example",
+        roles=["user"],
+        account=_user(is_active=True),
+    )
+    assert pair.access_token and pair.refresh_token
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_a_failed_used_flag_write_does_not_undo_a_won_claim():
+    """The post-claim write is best-effort in fact, not only in intent.
+
+    The claim is already won when it runs. Letting it raise turns a successful
+    redemption into a 500, and the client's retry then loses the claim it
+    already holds — the burned code the "claim last" ordering exists to prevent.
+    """
+    fakeredis = pytest.importorskip("fakeredis")
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    repository = RedisOAuthCodeRepository(client)
+
+    await repository.save_code(
+        OAuthCodeDTO(
+            code="code_flag",
+            user_id="user_123",
+            redirect_uri=REDIRECT,
+            code_challenge="challenge",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+    )
+
+    async def _explode(*_args, **_kwargs):
+        raise ConnectionError("redis went away mid-claim")
+
+    client.setex = _explode
+
+    assert await repository.claim_code("code_flag") is True
+    # And single-use still holds, because the claim key is the gate.
+    assert await repository.claim_code("code_flag") is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_losing_a_claim_is_recorded_as_a_failed_exchange():
+    """A concurrent replay is the branch this method now detects — count it.
+
+    The early `used` check reports to `record_token_exchange`; the claim-loss
+    branch is where a genuine race actually lands. If only the first reported,
+    the exchange failure rate would omit exactly the contention it was added to
+    surface, and would look healthiest under load.
+    """
+    from unittest.mock import patch
+
+    repository = InMemoryOAuthCodeRepository()
+    verifier, challenge = _pkce()
+    service = _service(repository)
+    code = await service.create_authorization_code(
+        "user_123", _authorization_request(challenge)
+    )
+
+    with patch(
+        "faultmaven.modules.auth.domain.services.oauth_service.oauth_metrics"
+    ) as metrics:
+        results = await asyncio.gather(
+            *[
+                service.exchange_code_for_token(
+                    code=code, code_verifier=verifier, redirect_uri=REDIRECT
+                )
+                for _ in range(4)
+            ],
+            return_exceptions=True,
+        )
+
+    losses = [r for r in results if isinstance(r, InvalidGrantError)]
+    assert len(losses) == 3
+
+    failed = [
+        call
+        for call in metrics.record_token_exchange.call_args_list
+        if call.kwargs.get("success") is False
+        and call.kwargs.get("error_code") == "CODE_ALREADY_USED"
+    ]
+    assert len(failed) == 3, metrics.record_token_exchange.call_args_list
+    assert all(c.kwargs.get("duration_seconds") is not None for c in failed)

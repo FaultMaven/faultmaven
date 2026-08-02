@@ -446,6 +446,19 @@ class OAuthServiceImpl(IOAuthService):
                     "error": "CODE_ALREADY_USED",
                 },
             )
+            # Recorded exactly as the early replay branch records it. Losing a
+            # claim IS a failed exchange, and it is the branch a concurrent
+            # replay actually lands on — if only the early check reported to
+            # `record_token_exchange`, the failure rate and latency histogram
+            # would omit precisely the attacks and races this method now
+            # detects, and the metric would look healthiest under load.
+            oauth_metrics.record_token_exchange(
+                grant_type="authorization_code",
+                client_id="unknown",
+                duration_seconds=time.time() - start_time,
+                success=False,
+                error_code="CODE_ALREADY_USED",
+            )
             oauth_metrics.record_code_replay_attempt("unknown")
             raise InvalidGrantError(
                 "Authorization code has already been used",

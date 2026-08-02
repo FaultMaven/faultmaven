@@ -54,6 +54,16 @@ def account_may_hold_credentials(user) -> bool:
     state of a rule with no home: each new mint path re-derives it, and one
     eventually does not.
 
+    **Scope, stated precisely.** ``_refuse_if_deactivated`` enforces this at
+    every ``IJWTTokenGenerator`` mint, which is every path that signs from a user
+    object. It does **not** reach ``AuthService.generate_access_token`` /
+    ``generate_refresh_token``: those are a second, independent signing surface
+    that takes a subject id and never sees an account, so there is nothing there
+    to test. Their only account-aware composition,
+    ``AuthService.generate_token_pair``, calls this predicate when handed the
+    account. Claiming blanket coverage would be worse than the gap — it would
+    stop the next reader from looking.
+
     ``is_active`` alone is sufficient and complete for users.
     ``user_service.deactivate_user`` is the only writer of ``users.deleted_at``
     and it clears ``is_active`` in the same operation, so there is no state where
@@ -87,9 +97,11 @@ def _refuse_if_deactivated(user, token_kind: str) -> None:
         "Refusing to mint a token for a deactivated account",
         extra={"user_id": user_id, "token_kind": token_kind},
     )
-    raise InactiveAccountError(
-        f"Account {user_id} is deactivated and may not hold {token_kind} tokens"
-    )
+    # The id stays in the log, not in the message. The 403 handler echoes
+    # ``str(exc)`` to the client, and POST /auth/login reaches this while still
+    # unauthenticated — interpolating the id would hand an anonymous caller the
+    # internal UUID of an account it just guessed the credentials for.
+    raise InactiveAccountError("This account is deactivated")
 
 
 def resolve_organization_claim(user: User) -> str:

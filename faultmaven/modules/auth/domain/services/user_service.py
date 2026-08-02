@@ -303,6 +303,10 @@ class UserService(BaseService):
             email=user.email,
             roles=roles,
             permissions=permissions,
+            # The account, so the mint can refuse a deactivated one itself. The
+            # is_active check above stays — this is the backstop that survives
+            # someone reordering or removing it.
+            account=user,
         )
 
         self.logger.info(f"User authenticated successfully: {user.user_id}")

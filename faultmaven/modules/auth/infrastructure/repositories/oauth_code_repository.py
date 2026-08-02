@@ -8,10 +8,13 @@ Three implementations of IOAuthCodeRepository:
 
 import asyncio
 import dataclasses
+import logging
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
 from faultmaven.modules.auth.contracts import IOAuthCodeRepository, OAuthCodeDTO
+
+logger = logging.getLogger(__name__)
 
 
 class InMemoryOAuthCodeRepository(IOAuthCodeRepository):
@@ -153,11 +156,23 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
         if not claimed:
             return False
 
-        value = await self.redis.get(key)
-        if value:
-            data = json.loads(value)
-            data["used"] = True
-            await self.redis.setex(key, ttl, json.dumps(data))
+        # Best-effort in fact, not just in intent. The claim is already won; a
+        # failure here must not turn a successful redemption into a 500, because
+        # the caller would retry and lose the claim it already holds — the burned
+        # code this ordering exists to prevent. The flag only feeds `get_code`'s
+        # early replay message; the guarantee is the claim key above.
+        try:
+            value = await self.redis.get(key)
+            if value:
+                data = json.loads(value)
+                data["used"] = True
+                await self.redis.setex(key, ttl, json.dumps(data))
+        except Exception:  # noqa: BLE001 - see above; the claim already stands
+            logger.warning(
+                "OAuth code claimed but the used-flag write failed; "
+                "single-use still holds via the claim key",
+                exc_info=True,
+            )
         return True
 
     async def delete_expired_codes(self) -> int:
@@ -237,6 +252,13 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
                 .where(
                     OAuthAuthorizationCodeModel.code == code,
                     OAuthAuthorizationCodeModel.used.is_(False),
+                    # Expiry belongs in the predicate, not in a prior SELECT:
+                    # rows here are deleted by a sweep, not by a TTL, so an
+                    # expired row lingers and would otherwise be claimable.
+                    # Redis gets this free (the key is gone) and the in-memory
+                    # store checks it explicitly — a backend that disagreed
+                    # would make single-use depend on the deployment.
+                    OAuthAuthorizationCodeModel.expires_at > datetime.now(timezone.utc),
                 )
                 .values(used=True)
             )
