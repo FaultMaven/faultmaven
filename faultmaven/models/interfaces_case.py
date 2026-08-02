@@ -653,41 +653,6 @@ class ICaseIntegrationService(ABC):
         pass
 
     @abstractmethod
-    async def check_idempotency_key(
-        self, idempotency_key: str
-    ) -> Optional[Dict[str, Any]]:
-        """Check if an idempotency key has been used before.
-
-        Args:
-            idempotency_key: Idempotency key to check
-
-        Returns:
-            Previous result if key was used, None otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def store_idempotency_result(
-        self,
-        idempotency_key: str,
-        status_code: int,
-        content: Dict[str, Any],
-        headers: Dict[str, str],
-    ) -> bool:
-        """Store result for an idempotency key.
-
-        Args:
-            idempotency_key: Idempotency key
-            status_code: HTTP status code of the response
-            content: Response content
-            headers: Response headers
-
-        Returns:
-            True if stored successfully
-        """
-        pass
-
-    @abstractmethod
     async def create_external_ticket(
         self, case_id: str, system: str, ticket_data: Dict[str, Any]
     ) -> Optional[str]:
