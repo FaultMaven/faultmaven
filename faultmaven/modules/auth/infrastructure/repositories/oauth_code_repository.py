@@ -7,6 +7,7 @@ Three implementations of IOAuthCodeRepository:
 """
 
 import asyncio
+import dataclasses
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
@@ -41,15 +42,10 @@ class InMemoryOAuthCodeRepository(IOAuthCodeRepository):
     async def mark_code_used(self, code: str) -> None:
         async with self._lock:
             if code in self._codes:
-                existing = self._codes[code]
-                self._codes[code] = OAuthCodeDTO(
-                    code=existing.code,
-                    user_id=existing.user_id,
-                    redirect_uri=existing.redirect_uri,
-                    code_challenge=existing.code_challenge,
-                    expires_at=existing.expires_at,
-                    used=True,
-                )
+                # ``replace`` rather than a field-by-field rebuild: a rebuild
+                # silently drops any field added to the DTO later (the
+                # organization claim was exactly such a field, #872).
+                self._codes[code] = dataclasses.replace(self._codes[code], used=True)
 
     async def delete_expired_codes(self) -> int:
         async with self._lock:
@@ -81,16 +77,13 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
         import json
 
         key = self._make_key(code_data.code)
-        value = json.dumps(
-            {
-                "code": code_data.code,
-                "user_id": code_data.user_id,
-                "redirect_uri": code_data.redirect_uri,
-                "code_challenge": code_data.code_challenge,
-                "expires_at": code_data.expires_at.isoformat(),
-                "used": code_data.used,
-            }
-        )
+        # Serialize every DTO field rather than an enumerated subset: an
+        # enumerated list is a second place to lose a field, which is how the
+        # organization claim went missing from this hop (#872). Only
+        # ``expires_at`` needs coaxing out of its native type.
+        payload = dataclasses.asdict(code_data)
+        payload["expires_at"] = code_data.expires_at.isoformat()
+        value = json.dumps(payload)
         now = datetime.now(timezone.utc)
         ttl = int((code_data.expires_at - now).total_seconds())
         if ttl > 0:
@@ -104,14 +97,15 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
         if not value:
             return None
         data = json.loads(value)
-        return OAuthCodeDTO(
-            code=data["code"],
-            user_id=data["user_id"],
-            redirect_uri=data["redirect_uri"],
-            code_challenge=data["code_challenge"],
-            expires_at=datetime.fromisoformat(data["expires_at"]),
-            used=data["used"],
-        )
+        # Keep only fields the DTO still declares. During a rolling deploy this
+        # store holds payloads written by the other version: one missing a field
+        # takes the DTO default, one carrying a retired field is tolerated rather
+        # than raising TypeError, which would surface as a 500 on a code the user
+        # legitimately holds.
+        known = {f.name for f in dataclasses.fields(OAuthCodeDTO)}
+        fields = {k: v for k, v in data.items() if k in known}
+        fields["expires_at"] = datetime.fromisoformat(data["expires_at"])
+        return OAuthCodeDTO(**fields)
 
     async def mark_code_used(self, code: str) -> None:
         import json
@@ -149,6 +143,7 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
                 code_challenge=code_data.code_challenge,
                 expires_at=code_data.expires_at,
                 used=code_data.used,
+                organization_id=code_data.organization_id,
             )
             session.add(model)
             await session.commit()
@@ -179,6 +174,7 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
                 code_challenge=model.code_challenge,
                 expires_at=model.expires_at,
                 used=model.used or False,
+                organization_id=model.organization_id,
             )
 
     async def mark_code_used(self, code: str) -> None:

@@ -103,6 +103,16 @@ class OAuthCodeDTO:
     code_challenge: str
     expires_at: datetime
     used: bool = False
+    #: Organization the authorizing session was bound to (#872). The user row
+    #: carries no organization, so under multi-tenant this is the only place the
+    #: tenant survives the hop from the authenticated authorize request to the
+    #: unauthenticated token exchange. Under single-tenant it holds the Standalone
+    #: sentinel (what the request was bound to), which is also what
+    #: ``resolve_organization_claim`` would supply on its own — so it changes
+    #: nothing there. Optional because a code issued before this field existed
+    #: carries none, and an absent value must mint an unusable claim rather than a
+    #: guessed one.
+    organization_id: Optional[str] = None
 
 
 @dataclass
@@ -205,13 +215,19 @@ class IOAuthService(ABC):
     """
 
     async def create_authorization_code(
-        self, user_id: str, request: OAuthAuthorizationDTO
+        self,
+        user_id: str,
+        request: OAuthAuthorizationDTO,
+        organization_id: Optional[str] = None,
     ) -> str:
         """Generate authorization code for OAuth flow.
 
         Args:
             user_id: Authenticated user's ID from Dashboard session
             request: OAuth authorization request parameters (includes PKCE challenge)
+            organization_id: Organization the authorizing session is bound to
+                (#872). Captured here because the token exchange that follows is
+                unauthenticated and the user row carries no organization.
 
         Returns:
             Authorization code (short-lived, single-use, 10 minutes)

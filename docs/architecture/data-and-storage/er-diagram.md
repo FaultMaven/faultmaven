@@ -1,12 +1,12 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-07-22 02:04 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-08-01 09:02 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**37 tables** in the schema.
+**40 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
@@ -15,7 +15,7 @@
 | `case_actions` | 9 | `transition_id` | cases, organizations |
 | `case_checkpoints` | 9 | `checkpoint_id` | cases, organizations |
 | `case_entities` | 8 | `case_id, entity_type, entity_value, evidence_id` | cases, evidence, organizations |
-| `case_messages` | 9 | `message_id` | cases, organizations |
+| `case_messages` | 10 | `message_id` | cases, organizations |
 | `case_tags` | 5 | `tag_id` | cases, organizations |
 | `cases` | 26 | `case_id` | organizations, users |
 | `causal_edges` | 9 | `edge_id` | cases, causal_nodes, organizations |
@@ -23,7 +23,7 @@
 | `causal_nodes` | 21 | `node_id` | cases, organizations |
 | `config_overrides` | 6 | `key` | users |
 | `conversion_drafts` | 22 | `id` | conversion_jobs, knowledge_items, organizations, users |
-| `conversion_jobs` | 12 | `id` | cases, organizations, uploaded_files, users |
+| `conversion_jobs` | 13 | `id` | cases, organizations, uploaded_files, users |
 | `enterprises` | 11 | `enterprise_id` | — |
 | `evidence` | 23 | `evidence_id` | cases, organizations, uploaded_files |
 | `evidence_need_fulfillment` | 5 | `need_id, evidence_id` | evidence, evidence_needs, organizations |
@@ -33,7 +33,9 @@
 | `investigation_sessions` | 17 | `session_id` | cases, organizations, users |
 | `knowledge_items` | 28 | `item_id` | organizations, users |
 | `knowledge_suggestions` | 26 | `suggestion_id` | cases, knowledge_items, organizations, users |
-| `oauth_authorization_codes` | 7 | `code` | users |
+| `oauth_authorization_codes` | 8 | `code` | users |
+| `operator_access_audit` | 12 | `audit_id` | — |
+| `operator_access_grants` | 14 | `grant_id` | — |
 | `organization_members` | 9 | `user_id, organization_id` | organizations, roles, users |
 | `organizations` | 11 | `organization_id` | enterprises, users |
 | `permissions` | 4 | `permission_id` | — |
@@ -42,6 +44,7 @@
 | `role_permissions` | 2 | `role_id, permission_id` | permissions, roles |
 | `roles` | 7 | `role_id` | — |
 | `solutions` | 28 | `solution_id` | cases, causal_nodes, evidence, hypotheses, organizations |
+| `sso_org_mappings` | 5 | `provider, provider_org_id` | organizations |
 | `team_members` | 4 | `user_id, team_id` | teams, users |
 | `teams` | 7 | `team_id` | organizations |
 | `uploaded_files` | 18 | `file_id` | cases, organizations, users |
@@ -125,6 +128,7 @@ erDiagram
         INTEGER turn_number
         VARCHAR role
         TEXT content
+        VARCHAR author_id
         INTEGER token_count
         TEXT metadata
         DATETIME created_at
@@ -245,6 +249,7 @@ erDiagram
         VARCHAR organization_id FK
         VARCHAR user_id FK
         VARCHAR case_id FK
+        VARCHAR live_case_id
         VARCHAR source_file_id FK
         VARCHAR scope
         VARCHAR status
@@ -436,7 +441,38 @@ erDiagram
         VARCHAR code_challenge
         DATETIME expires_at
         BOOLEAN used
+        VARCHAR organization_id
         DATETIME created_at
+    }
+    operator_access_audit {
+        INTEGER audit_id PK
+        VARCHAR operator_user_id
+        VARCHAR operator_username
+        VARCHAR action
+        VARCHAR target_organization_id
+        VARCHAR target_case_id
+        TEXT reason
+        VARCHAR grant_id
+        DATETIME expires_at
+        VARCHAR deployment_mode
+        TEXT details
+        DATETIME created_at
+    }
+    operator_access_grants {
+        VARCHAR grant_id PK
+        VARCHAR operator_user_id
+        VARCHAR operator_username
+        VARCHAR target_case_id
+        VARCHAR target_organization_id
+        TEXT reason
+        DATETIME created_at
+        DATETIME expires_at
+        DATETIME revoked_at
+        VARCHAR revoked_by
+        VARCHAR approval_state
+        VARCHAR approved_by
+        DATETIME approved_at
+        VARCHAR deployment_mode
     }
     organization_members {
         VARCHAR user_id PK
@@ -537,6 +573,13 @@ erDiagram
         TEXT metadata
         DATETIME proposed_at
         DATETIME applied_at
+        DATETIME updated_at
+    }
+    sso_org_mappings {
+        VARCHAR provider PK
+        VARCHAR provider_org_id PK
+        VARCHAR organization_id FK
+        DATETIME created_at
         DATETIME updated_at
     }
     team_members {
@@ -673,6 +716,7 @@ erDiagram
     organizations ||--o{ reports : ""
     organizations ||--o{ resource_shares : ""
     organizations ||--o{ solutions : ""
+    organizations ||--o{ sso_org_mappings : ""
     organizations ||--o{ teams : ""
     organizations ||--o{ uploaded_files : ""
     organizations ||--o{ user_audit_log : ""
