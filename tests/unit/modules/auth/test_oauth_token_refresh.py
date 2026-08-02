@@ -202,10 +202,15 @@ async def test_oauth_refresh_rejects_when_user_gone():
 
 
 async def test_oauth_refresh_rejects_inactive_user():
-    user = _make_user(is_active=False)
+    # Minted while the account was live, THEN deactivated — the real sequence,
+    # and now the only expressible one: the generator refuses to mint for an
+    # already-deactivated account, so the previous shortcut of minting straight
+    # from an inactive user no longer models anything that can happen.
+    user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
     refresh = await generator.generate_refresh_token(user)
+    user.is_active = False
 
     request = _fake_request(_FakeUserStore(user), generator)
     response = SimpleNamespace(headers={})

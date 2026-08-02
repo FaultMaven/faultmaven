@@ -620,7 +620,11 @@ async def refresh_tokens(
         # 2. Load the current user — a token for a since-deleted/deactivated
         #    account must not be refreshable.
         user = await user_store.get_user(claims["sub"])
-        if not user or not getattr(user, "is_active", True):
+        from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+            account_may_hold_credentials,
+        )
+
+        if not user or not account_may_hold_credentials(user):
             raise HTTPException(
                 status_code=401,
                 detail={

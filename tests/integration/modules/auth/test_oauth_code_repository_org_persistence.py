@@ -80,14 +80,14 @@ async def test_orm_repository_round_trips_the_organization(session_factory):
 async def test_orm_repository_keeps_the_organization_across_mark_used(session_factory):
     """The exchange reads the code before marking it, but order must not matter.
 
-    `mark_code_used` issues an UPDATE that touches only `used`; if it were ever
+    `claim_code` issues an UPDATE that touches only `used`; if it were ever
     rewritten as a row replacement it could drop the tenant the way the
     in-memory implementation's field-by-field rebuild once did.
     """
     repo = PostgresOAuthCodeRepository(session_factory)
     await repo.save_code(_code("code_2", TENANT))
 
-    await repo.mark_code_used("code_2")
+    assert await repo.claim_code("code_2") is True
 
     stored = await repo.get_code("code_2")
     assert stored is not None

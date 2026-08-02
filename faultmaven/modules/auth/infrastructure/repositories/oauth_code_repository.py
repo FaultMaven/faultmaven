@@ -39,13 +39,26 @@ class InMemoryOAuthCodeRepository(IOAuthCodeRepository):
                 return None
             return code_data
 
-    async def mark_code_used(self, code: str) -> None:
+    async def claim_code(self, code: str) -> bool:
+        # The test and the set happen under one lock hold. Splitting them — as a
+        # separate `get_code(); if not used: mark_used()` did — lets two
+        # coroutines both observe `used=False` and both proceed.
         async with self._lock:
-            if code in self._codes:
-                # ``replace`` rather than a field-by-field rebuild: a rebuild
-                # silently drops any field added to the DTO later (the
-                # organization claim was exactly such a field, #872).
-                self._codes[code] = dataclasses.replace(self._codes[code], used=True)
+            code_data = self._codes.get(code)
+            if code_data is None or code_data.used:
+                return False
+            # Expiry is checked here too, not just in ``get_code``. Redis gets
+            # this free — an expired key is simply gone, so its claim fails —
+            # and a backend that disagreed with Redis about what is claimable
+            # would make the guarantee depend on the deployment.
+            if datetime.now(timezone.utc) > code_data.expires_at:
+                del self._codes[code]
+                return False
+            # ``replace`` rather than a field-by-field rebuild: a rebuild
+            # silently drops any field added to the DTO later (the
+            # organization claim was exactly such a field, #872).
+            self._codes[code] = dataclasses.replace(code_data, used=True)
+            return True
 
     async def delete_expired_codes(self) -> int:
         async with self._lock:
@@ -107,18 +120,45 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
         fields["expires_at"] = datetime.fromisoformat(data["expires_at"])
         return OAuthCodeDTO(**fields)
 
-    async def mark_code_used(self, code: str) -> None:
+    async def claim_code(self, code: str) -> bool:
+        """Claim the code via ``SET NX``, which is atomic in Redis itself.
+
+        The claim is a **separate key**, not the ``used`` flag inside the stored
+        JSON. Flipping a field inside a JSON blob is a read-modify-write: two
+        callers both read ``used=False``, both write ``used=True``, and both
+        believe they won. Only the server can arbitrate, and ``SET … NX`` is the
+        primitive that does — exactly one caller creates the key.
+
+        No Lua, deliberately: a script would need `EVAL` support from every
+        Redis-compatible backend in play (including FakeRedis in standalone),
+        and buys nothing a single `SET NX` does not already give.
+
+        The claim key inherits the code's remaining TTL, so it cannot outlive
+        what it protects and cannot accumulate. If the code key has already
+        expired there is nothing to claim and this returns False.
+
+        The ``used`` flag is still updated afterwards, best-effort: it is what
+        ``get_code`` reports and what makes a replayed code fail early with
+        CODE_ALREADY_USED rather than only failing here. Its write is not the
+        gate, so losing it costs an error message, not the guarantee.
+        """
         import json
 
         key = self._make_key(code)
-        value = await self.redis.get(key)
-        if not value:
-            return
-        data = json.loads(value)
-        data["used"] = True
         ttl = await self.redis.ttl(key)
-        if ttl > 0:
+        if ttl is None or ttl <= 0:
+            return False
+
+        claimed = await self.redis.set(f"{key}:claimed", "1", nx=True, ex=ttl)
+        if not claimed:
+            return False
+
+        value = await self.redis.get(key)
+        if value:
+            data = json.loads(value)
+            data["used"] = True
             await self.redis.setex(key, ttl, json.dumps(data))
+        return True
 
     async def delete_expired_codes(self) -> int:
         return 0  # Redis handles expiration automatically
@@ -177,7 +217,14 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
                 organization_id=model.organization_id,
             )
 
-    async def mark_code_used(self, code: str) -> None:
+    async def claim_code(self, code: str) -> bool:
+        """Claim via a conditional UPDATE, arbitrated by the database.
+
+        ``WHERE … AND used = false`` plus ``rowcount`` is the compare-and-swap:
+        the row is locked for the duration of the UPDATE, so of two concurrent
+        statements exactly one matches an unused row and reports 1. Without the
+        predicate both would report success and both callers would mint.
+        """
         from sqlalchemy import update
 
         from faultmaven.infrastructure.persistence.models import (
@@ -187,11 +234,15 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
         async with self.session_factory() as session:
             stmt = (
                 update(OAuthAuthorizationCodeModel)
-                .where(OAuthAuthorizationCodeModel.code == code)
+                .where(
+                    OAuthAuthorizationCodeModel.code == code,
+                    OAuthAuthorizationCodeModel.used.is_(False),
+                )
                 .values(used=True)
             )
-            await session.execute(stmt)
+            result = await session.execute(stmt)
             await session.commit()
+            return result.rowcount == 1
 
     async def delete_expired_codes(self) -> int:
         from sqlalchemy import delete
