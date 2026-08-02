@@ -96,6 +96,39 @@ async def test_orm_repository_keeps_the_organization_across_mark_used(session_fa
 
 
 @pytest.mark.integration
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_orm_repository_claim_is_a_compare_and_swap(session_factory):
+    """The claim must be won once, and the database must be the arbiter.
+
+    `claim_code` reports success from `rowcount == 1` on an UPDATE predicated on
+    `used = false`. Drop that predicate and the UPDATE matches the row every
+    time, so every concurrent redeemer is told it won and every one of them
+    mints — the exact replay the atomic claim exists to prevent.
+
+    Mutation testing put this test here: removing the predicate left the rest of
+    this file green, because org round-tripping does not depend on it. A
+    correctness-critical primitive in an unwired implementation is still a
+    primitive someone will one day wire.
+    """
+    repo = PostgresOAuthCodeRepository(session_factory)
+    await repo.save_code(_code("code_cas", TENANT))
+
+    assert await repo.claim_code("code_cas") is True
+    # Every subsequent claim loses, however many times it is attempted.
+    assert await repo.claim_code("code_cas") is False
+    assert await repo.claim_code("code_cas") is False
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_orm_repository_refuses_to_claim_an_unknown_code(session_factory):
+    """Nothing to claim must read as "you did not win", never as success."""
+    repo = PostgresOAuthCodeRepository(session_factory)
+    assert await repo.claim_code("never-existed") is False
+
+
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_orm_repository_tolerates_a_code_with_no_organization(session_factory):
     """Nullable means nullable: a single-tenant or pre-039 code must round-trip.
