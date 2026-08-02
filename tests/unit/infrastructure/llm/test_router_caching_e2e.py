@@ -114,8 +114,8 @@ class TestCachePromptEndToEnd:
 
             router = LLMRouter()
             with patch("aiohttp.ClientSession", return_value=mock_session):
-                # prompt=None keeps the SemanticCache (and its embedder) out of
-                # the path; messages route straight through to the provider.
+                # prompt=None keeps the LLMResponseCache out of the path;
+                # messages route straight through to the provider.
                 # tools is left at the router default (None) — the full chain
                 # must handle that without crashing.
                 await router.route(

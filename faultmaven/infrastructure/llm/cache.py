@@ -1,52 +1,49 @@
 """
-Semantic cache for LLM responses.
+Exact-key response cache for LLM responses.
 
-This module provides semantic caching functionality for LLM responses
-to reduce API calls and improve response times.
+Caches a provider response under the exact ``(case, prompt, model)`` triple, so
+a repeated identical call inside one case is served without a second API call.
+
+This used to also do semantic matching: embed the prompt with BGE-M3, and serve
+any cached entry within cosine 0.85 of it. That branch was removed (#940) for
+two independent reasons.
+
+*It could not run on the request path safely.* The embed was a bare synchronous
+``encoder.encode([text])[0]`` called from sync ``check``/``store``, which the
+async ``LLMRouter.route`` awaits — CPU-bound work directly on the event loop,
+the same shape that blocks ``/health`` long enough for the liveness probe to
+SIGKILL the pod and return 502s. The cache path only arms when ``route`` gets a
+bare ``prompt`` *and* an explicit ``model``, which today means the
+``STRUCTURED_OUTPUT_PROVIDER`` override — putting the encode on the per-turn
+structured-output path, the largest prompts in the system.
+
+*And it was unsound for this product.* Consecutive investigation turns in one
+case share most of their context, so two prompts one turn apart sit well above
+0.85 while asking different questions. Serving turn N's structured output for
+turn N+1 hands the milestone engine a stale conclusion presented as fresh.
+FaultMaven's guarantee is NO INCORRECT CONCLUSION; a cache must never be the
+thing that manufactures one.
+
+What remains is exact-key only: identical prompt, identical model, identical
+case ⇒ identical response. ``check``/``store`` are pure dict operations plus one
+sha256, so they are safe to call from async code without a thread hop.
 """
 
 import hashlib
 import logging
-import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-import numpy as np
-
-from ..model_cache import model_cache
 from .providers import LLMResponse
 
 
-class SemanticCache:
-    """Semantic cache for LLM responses"""
+class LLMResponseCache:
+    """Exact-key, case-scoped cache of LLM responses."""
 
-    def __init__(self, similarity_threshold: float = 0.85, max_size: int = 1000):
-        self.similarity_threshold = similarity_threshold
+    def __init__(self, max_size: int = 1000):
         self.max_size = max_size
         self.cache: Dict[str, Dict[str, Any]] = {}
-        self.embeddings: Dict[str, np.ndarray] = {}
         self.logger = logging.getLogger(__name__)
-
-    @property
-    def encoder(self) -> Optional[Any]:
-        """BGE-M3 for semantic similarity — only if it is ALREADY loaded.
-
-        Resolved per use through ``peek_bge_m3_model`` rather than bound in
-        ``__init__``, because this cache is constructed by ``LLMRouter``, which
-        the DI container builds in *every* process — including cleanup
-        CronJobs, which were OOMKilled loading a 1.3Gi model they never use
-        (#868). Semantic similarity is an optimisation, so it never justifies
-        forcing the load: it is available exactly when the deployment's
-        configured policy (``PRELOAD_MODELS``, applied in the web lifespan) or
-        a prior embed has already paid for the model.
-
-        Peeking rather than loading also keeps a 60–120s cold load off the
-        request path, where it would block the event loop and trip liveness.
-        When the model is absent the cache degrades to exact-key matching —
-        the documented fallback, correct but with fewer hits.
-        """
-        return model_cache.peek_bge_m3_model()
 
     def _get_cache_key(
         self, prompt: str, model: str, case_id: Optional[str] = None
@@ -55,93 +52,31 @@ class SemanticCache:
         content = f"{case_id or ''}:{prompt}:{model}"
         return hashlib.sha256(content.encode()).hexdigest()
 
-    def _compute_embedding(self, text: str) -> Optional[np.ndarray]:
-        """Compute embedding for text"""
-        if not self.encoder:
-            return None
-        try:
-            return self.encoder.encode([text])[0]
-        except Exception as e:
-            self.logger.warning(f"Failed to compute embedding: {e}")
-            return None
-
-    def _compute_similarity(
-        self, embedding1: np.ndarray, embedding2: np.ndarray
-    ) -> float:
-        """Compute cosine similarity between embeddings"""
-        try:
-            return np.dot(embedding1, embedding2) / (
-                np.linalg.norm(embedding1) * np.linalg.norm(embedding2)
-            )
-        except Exception:
-            return 0.0
-
     def check(
         self, prompt: str, model: str, case_id: Optional[str] = None
     ) -> Optional[LLMResponse]:
-        """Check cache for semantically similar response, scoped to case_id."""
+        """Return the response cached for this exact prompt/model/case, if any.
 
-        # Exact key first, in BOTH modes. `encoder` is resolved per access, so
-        # one instance can start in exact-key mode and later find the model
-        # resident (#868). Entries written while it was absent have no
-        # `embeddings` row, and the semantic branch skips embedding-less
-        # entries — so gating the exact-key lookup on `not self.encoder` would
-        # strand those entries permanently unservable while they still consume
-        # `max_size` and evict newer ones. An exact hit is mode-independent
-        # anyway: identical prompt, model and case means identical response.
+        Exact match only — a prompt that differs by one character is a miss.
+        The key carries ``case_id``, so a response is never served across cases.
+
+        Synchronous by design and safe to call from the event loop: no embedding,
+        no I/O, no similarity scan (#940).
+        """
         cache_key = self._get_cache_key(prompt, model, case_id)
         cache_entry = self.cache.get(cache_key)
-        if cache_entry is not None:
-            return LLMResponse(
-                content=cache_entry["content"],
-                confidence=cache_entry["confidence"],
-                provider=cache_entry["provider"],
-                model=cache_entry["model"],
-                tokens_used=cache_entry["tokens_used"],
-                response_time_ms=0,
-                cached=True,
-            )
-
-        if not self.encoder:
+        if cache_entry is None:
             return None
 
-        # Semantic similarity cache
-        prompt_embedding = self._compute_embedding(prompt)
-        if prompt_embedding is None:
-            return None
-
-        # Find most similar cached response, restricted to same case and model
-        best_similarity = 0.0
-        best_response = None
-
-        for cache_key, cache_entry in self.cache.items():
-            if cache_entry["model"] != model:
-                continue
-            # Strict case isolation: never serve a cached response across cases
-            if cache_entry.get("case_id") != case_id:
-                continue
-
-            cached_embedding = self.embeddings.get(cache_key)
-            if cached_embedding is None:
-                continue
-
-            similarity = self._compute_similarity(prompt_embedding, cached_embedding)
-            if similarity > best_similarity and similarity >= self.similarity_threshold:
-                best_similarity = similarity
-                best_response = cache_entry
-
-        if best_response:
-            return LLMResponse(
-                content=best_response["content"],
-                confidence=best_response["confidence"],
-                provider=best_response["provider"],
-                model=best_response["model"],
-                tokens_used=best_response["tokens_used"],
-                response_time_ms=0,  # Cached response
-                cached=True,
-            )
-
-        return None
+        return LLMResponse(
+            content=cache_entry["content"],
+            confidence=cache_entry["confidence"],
+            provider=cache_entry["provider"],
+            model=cache_entry["model"],
+            tokens_used=cache_entry["tokens_used"],
+            response_time_ms=0,  # Cached response
+            cached=True,
+        )
 
     def store(
         self,
@@ -150,10 +85,9 @@ class SemanticCache:
         response: LLMResponse,
         case_id: Optional[str] = None,
     ):
-        """Store response in cache, tagged with case_id."""
+        """Store response under its exact prompt/model/case key."""
         cache_key = self._get_cache_key(prompt, model, case_id)
 
-        # Store response
         self.cache[cache_key] = {
             "content": response.content,
             "confidence": response.confidence,
@@ -164,17 +98,11 @@ class SemanticCache:
             "case_id": case_id,
         }
 
-        # Store embedding if available
-        if self.encoder:
-            prompt_embedding = self._compute_embedding(prompt)
-            if prompt_embedding is not None:
-                self.embeddings[cache_key] = prompt_embedding
-
-        # Evict oldest entries if cache is full
+        # Evict oldest entries if cache is full. Ties in the ISO timestamp
+        # resolve to the earliest-inserted key, since dicts iterate in insertion
+        # order and ``min`` keeps the first minimum it sees.
         if len(self.cache) > self.max_size:
             oldest_key = min(
                 self.cache.keys(), key=lambda k: self.cache[k]["timestamp"]
             )
             del self.cache[oldest_key]
-            if oldest_key in self.embeddings:
-                del self.embeddings[oldest_key]

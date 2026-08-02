@@ -2,8 +2,8 @@
 
 Every process that builds the DI container — the API pod *and* the cleanup
 CronJobs — used to pull the ~1.3Gi BGE-M3 SentenceTransformer during
-construction, because two constructors called ``get_bge_m3_model()``:
-``SemanticCache`` (built by ``LLMRouter``) and ``KnowledgeIngester``. A
+construction, because two constructors called ``get_bge_m3_model()``: the LLM
+response cache (built by ``LLMRouter``) and ``KnowledgeIngester``. A
 ``storage_cleanup`` job that embeds nothing was OOMKilled at its 512Mi limit,
 which is how every app CronJob failed silently for 112 days (infra#131).
 
@@ -11,6 +11,13 @@ The invariant these tests pin: **construction is not embedding.** Whether the
 model is resident is decided by the documented policy (``LAZY_LOAD_ML_MODELS`` /
 ``PRELOAD_MODELS``, applied in the web lifespan) or by the first real
 ``aembed_*`` call — never as a side effect of building an object.
+
+For the LLM response cache the guarantee is now stronger than "does not load".
+Its semantic-matching branch was deleted in #940 — the embed it did was a bare
+synchronous ``encode`` on the event loop, and near-match serving is unsound for
+investigation turns — so the module has no handle on the embedding stack at all.
+The tests below pin that absence structurally as well as behaviourally, because
+a module that cannot reach the loader cannot regress into calling it.
 
 The probe is ``SentenceTransformer`` itself rather than ``get_bge_m3_model``:
 that catches *any* path to a load, including one added later through a third
@@ -31,7 +38,8 @@ import pytest
 
 from faultmaven.config.settings import DeploymentMode, FaultMavenSettings
 from faultmaven.infrastructure import model_cache as model_cache_module
-from faultmaven.infrastructure.llm.cache import SemanticCache
+from faultmaven.infrastructure.llm import cache as llm_cache_module
+from faultmaven.infrastructure.llm.cache import LLMResponseCache
 from faultmaven.infrastructure.model_cache import BGE_M3_MODEL_ID, model_cache
 from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 
@@ -79,41 +87,55 @@ def test_knowledge_ingester_construction_loads_no_model(loader, tmp_path):
     loader.assert_not_called()
 
 
-def test_semantic_cache_construction_loads_no_model(loader):
-    """``LLMRouter.__init__`` builds a SemanticCache — so this runs everywhere
-    the LLM router is wired, cleanup jobs included."""
-    SemanticCache()
+def test_response_cache_construction_loads_no_model(loader):
+    """``LLMRouter.__init__`` builds an LLMResponseCache — so this runs
+    everywhere the LLM router is wired, cleanup jobs included."""
+    LLMResponseCache()
 
     loader.assert_not_called()
 
 
-def test_semantic_cache_encoder_access_loads_no_model(loader):
-    """Moving the load from ``__init__`` to a property must not merely defer it.
-
-    A property that loaded on first touch would trade an OOM for a 60–120s
-    synchronous load on the request path — blocking the event loop and tripping
-    the liveness probe. Absent means absent: degrade to exact-key matching.
+def test_exercising_the_response_cache_loads_no_model(loader):
+    """Not loading during construction is worth nothing if the first *use*
+    loads instead — that trades an OOM in the CronJobs for a 60–120s
+    synchronous load on the request path, blocking the event loop and tripping
+    the liveness probe. Both halves of the cache's public surface are driven
+    here: a store, a hit, and a miss.
     """
-    cache = SemanticCache()
+    from faultmaven.infrastructure.llm.providers import LLMResponse
 
-    assert cache.encoder is None
+    cache = LLMResponseCache()
+    response = LLMResponse(
+        content="restart the kubelet",
+        confidence=0.9,
+        provider="openai",
+        model="gpt-5.4-mini",
+        tokens_used=42,
+        response_time_ms=10,
+    )
+    cache.store("why is node-3 NotReady?", "gpt-5.4-mini", response, case_id="c-1")
+    assert cache.check("why is node-3 NotReady?", "gpt-5.4-mini", case_id="c-1")
+    assert cache.check("something else entirely", "gpt-5.4-mini", case_id="c-1") is None
+
     loader.assert_not_called()
 
 
-# --------------------------------------------------------------------------- #
-# ...and the gate can pass: a resident model is still used
-# --------------------------------------------------------------------------- #
+def test_response_cache_module_holds_no_handle_on_the_model_cache():
+    """The strongest available form of the #868 guarantee for this module:
+    after #940 removed semantic matching, ``llm/cache.py`` has no route to the
+    loader at all — not the module, not the singleton, not an alias of either.
+    Swept over the whole module namespace rather than asserting on one import
+    name, so a re-entry under any spelling fails here.
+    """
+    reachable = {id(model_cache_module), id(model_cache_module.model_cache)}
+    leaked = sorted(
+        name for name, value in vars(llm_cache_module).items() if id(value) in reachable
+    )
 
-
-def test_semantic_cache_uses_the_model_once_resident(loader, monkeypatch):
-    """Proves the property reads the cache rather than being hardwired to None
-    — otherwise semantic similarity would be silently dead everywhere."""
-    resident = object()
-    monkeypatch.setitem(model_cache._models, BGE_M3_MODEL_ID, resident)
-    cache = SemanticCache()
-
-    assert cache.encoder is resident
-    loader.assert_not_called()
+    assert leaked == [], (
+        f"llm/cache.py exposes the embedding stack via {leaked} — the response "
+        "cache must not be able to reach a model load (#868, #940)"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -247,39 +269,3 @@ def test_availability_reports_absent_when_nothing_provides_it(monkeypatch):
     )
 
     assert model_cache_module._sentence_transformers_obtainable() is False
-
-
-# --------------------------------------------------------------------------- #
-# A per-access encoder must not strand entries written in the other mode
-# --------------------------------------------------------------------------- #
-
-
-def test_entries_cached_before_the_model_loads_stay_servable(loader, monkeypatch):
-    """``encoder`` resolves per access, so one instance can begin in exact-key
-    mode and later find the model resident. The semantic branch skips entries
-    with no embedding row, so without an exact-key lookup first those entries
-    would be permanently unservable while still occupying ``max_size`` and
-    evicting newer ones."""
-    from faultmaven.infrastructure.llm.providers import LLMResponse
-
-    cache = SemanticCache()
-    response = LLMResponse(
-        content="restart the kubelet",
-        confidence=0.9,
-        provider="openai",
-        model="gpt-5.4-mini",
-        tokens_used=42,
-        response_time_ms=10,
-    )
-    # Stored while BGE-M3 is absent → no embeddings row for this key.
-    cache.store("why is node-3 NotReady?", "gpt-5.4-mini", response, case_id="c-1")
-    assert cache.embeddings == {}
-
-    # The model becomes resident (a preload, or another caller's first embed).
-    monkeypatch.setitem(model_cache._models, BGE_M3_MODEL_ID, MagicMock())
-
-    hit = cache.check("why is node-3 NotReady?", "gpt-5.4-mini", case_id="c-1")
-
-    assert hit is not None, "entry stranded by the mode flip"
-    assert hit.content == "restart the kubelet"
-    assert hit.cached is True

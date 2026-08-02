@@ -111,7 +111,7 @@ class TestAnthropicExtractionAndCaching:
         # Disjoint buckets sum to the reported total.
         assert result.tokens_used == 1800
         assert result.prompt_cache_hit is True
-        # cached (local SemanticCache) must NOT be set by a provider cache read.
+        # cached (local LLMResponseCache) must NOT be set by a provider cache read.
         assert result.cached is False
 
     async def test_cache_prompt_adds_breakpoint_to_system(self, anthropic_provider):
