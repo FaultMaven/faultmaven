@@ -9,10 +9,65 @@ at runtime, not at import time.
 """
 
 import logging
-from typing import Any, Dict, Optional
+import sys
+from typing import Any, Dict, Optional, TextIO
 
 import structlog
 from opentelemetry import trace
+
+# Third-party loggers whose output is per-connection network tracing rather
+# than signal. httpcore logs exclusively at DEBUG, a record for every TCP/TLS
+# step of every request, and Opik's connection monitor probes its backend on a
+# timer from a daemon thread — so raising our own verbosity to DEBUG (what the
+# `local` preset does) buries the log in connection chatter nobody asked for.
+#
+# httpx is deliberately NOT listed. It logs only at INFO, and only the one
+# "HTTP Request: <method> <url> -> <status>" line per request, which is the
+# signal we want when an LLM provider starts returning 429s. It has no DEBUG
+# output, so pinning it would cost that line and suppress nothing.
+NOISY_THIRD_PARTY_LOGGERS = ("httpcore",)
+
+
+class LateBindingStreamHandler(logging.StreamHandler):
+    """A StreamHandler that resolves ``sys.stderr`` at emit time.
+
+    ``logging.StreamHandler()`` captures ``sys.stderr`` once, when it is
+    constructed. This handler is installed from a module-level singleton, so
+    that would pin whichever stream happened to be current at the first
+    ``get_logger()`` call — under pytest, a capture buffer that gets closed
+    when the test ends. Anything still logging afterwards (a daemon thread
+    outliving the test) then writes into a closed file, and because the dead
+    stream belongs to the *root* handler, every record routed here is lost,
+    not only the thread's own.
+
+    Resolving the stream per emit keeps the handler valid across stream swaps.
+    Assigning ``stream`` still pins an explicit stream, so ``setStream`` and
+    tests that redirect output behave as they do on the base class; assigning
+    the current ``sys.stderr`` back releases the pin, so save/restore round
+    trips leave the handler following ``sys.stderr`` as it found it.
+    """
+
+    def __init__(self) -> None:
+        # Deliberately calls Handler.__init__ rather than StreamHandler's,
+        # which would assign to the ``stream`` property below and pin it.
+        self._stream_override: Optional[TextIO] = None
+        logging.Handler.__init__(self)
+
+    @property
+    def stream(self) -> Optional[TextIO]:
+        """The explicitly-set stream, else whatever ``sys.stderr`` is now."""
+        if self._stream_override is not None:
+            return self._stream_override
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, value: Optional[TextIO]) -> None:
+        # Assigning back whatever ``sys.stderr`` currently is means "follow
+        # sys.stderr again". Without this, the standard save/restore idiom
+        # (``old = h.stream; h.stream = buf; h.stream = old``) would read a
+        # materialised stream out of the getter and pin it on the way back,
+        # silently reintroducing the very bug this class exists to fix.
+        self._stream_override = None if value is sys.stderr else value
 
 
 class LoggingConfig:
@@ -162,7 +217,7 @@ class FaultMavenLogger:
             ],
         )
 
-        handler = logging.StreamHandler()
+        handler = LateBindingStreamHandler()
         handler.setFormatter(formatter)
         setattr(handler, self._ROOT_HANDLER_MARKER, True)
 
@@ -183,6 +238,23 @@ class FaultMavenLogger:
         configured_level = self.config.get_log_level()
         if root_logger.level == logging.NOTSET or root_logger.level > configured_level:
             root_logger.setLevel(configured_level)
+
+        self.quiet_noisy_third_party_loggers()
+
+    @staticmethod
+    def quiet_noisy_third_party_loggers() -> None:
+        """Pin per-connection network tracing at WARNING.
+
+        An explicit level set on the logger by anyone else wins — an operator
+        debugging HTTP, or ``caplog.set_level(..., logger="httpcore")`` — so
+        this only supplies a default where none was chosen. Setting the level
+        on the parent logger beats the root's level for the whole subtree,
+        which is what keeps LOG_LEVEL=DEBUG from reaching these.
+        """
+        for logger_name in NOISY_THIRD_PARTY_LOGGERS:
+            third_party_logger = logging.getLogger(logger_name)
+            if third_party_logger.level == logging.NOTSET:
+                third_party_logger.setLevel(logging.WARNING)
 
     @staticmethod
     def add_request_context(

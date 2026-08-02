@@ -7,6 +7,10 @@ with only the HTTP layer mocked, and asserting on the request body the provider
 actually sends. This is the exact link where #602 silently broke — the router
 dropped the flag before it reached a provider — so it is worth an integration
 test rather than trusting the wiring.
+
+The second half of the file covers the router's *other* cache — the in-process
+`LLMResponseCache` — where the same class of wiring bug lives: read and write
+gated on different conditions, so entries are written that no lookup can reach.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -114,8 +118,8 @@ class TestCachePromptEndToEnd:
 
             router = LLMRouter()
             with patch("aiohttp.ClientSession", return_value=mock_session):
-                # prompt=None keeps the SemanticCache (and its embedder) out of
-                # the path; messages route straight through to the provider.
+                # prompt=None keeps the LLMResponseCache out of the path;
+                # messages route straight through to the provider.
                 # tools is left at the router default (None) — the full chain
                 # must handle that without crashing.
                 await router.route(
@@ -244,3 +248,83 @@ class TestCachePromptForwarding:
             await router.generate(prompt=None, messages=_MESSAGES, cache_prompt=True)
 
         assert mock_registry.route_request.call_args.kwargs.get("cache_prompt") is True
+
+
+def _mock_registry(confidence: float = 0.9, model: str = "gpt-4o"):
+    from faultmaven.infrastructure.llm.providers import LLMResponse
+
+    registry = MagicMock()
+    registry.get_available_providers.return_value = ["openai"]
+    registry.get_fallback_chain.return_value = ["openai"]
+    registry.route_request = AsyncMock(
+        return_value=LLMResponse(
+            content="check the kubelet",
+            confidence=confidence,
+            provider="openai",
+            model=model,
+            tokens_used=10,
+            response_time_ms=10,
+        )
+    )
+    return registry
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestResponseCacheStoreGate:
+    """The router writes the response cache exactly where it reads it.
+
+    ``check`` can only answer when the caller named a model (the model is part
+    of the key) and sent no ``messages``. A store gated any wider is not a
+    cache — it is memory the process pays for and no lookup can reach: the
+    router used to key entries on ``model or response.model``, so every
+    no-model caller (title generation, suggestions) left an entry behind that
+    nothing could ever hit. Swept over the shapes ``route`` is actually called
+    with rather than asserting one example, so a gate that only re-widens for
+    ``messages`` still fails here.
+    """
+
+    STORING_CALLS = {
+        # (kwargs, expected entries) — stored iff the same call could be served.
+        "named_model_prompt_only": ({"model": "gpt-4o"}, 1),
+        "no_model": ({"model": None}, 0),
+        "named_model_with_messages": ({"model": "gpt-4o", "messages": _MESSAGES}, 0),
+        "no_model_with_messages": ({"model": None, "messages": _MESSAGES}, 0),
+    }
+
+    @pytest.mark.parametrize("label", sorted(STORING_CALLS))
+    async def test_the_cache_is_written_only_where_it_can_be_read(self, label):
+        kwargs, expected = self.STORING_CALLS[label]
+        registry = _mock_registry()
+
+        with patch(
+            "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
+        ):
+            from faultmaven.infrastructure.llm.router import LLMRouter
+
+            router = LLMRouter()
+            response = await router.route(prompt="why is node-3 NotReady?", **kwargs)
+
+        # Confidence is above the store threshold in every case — the gate under
+        # test is the model/messages shape, not the quality bar.
+        assert response.confidence >= router.confidence_threshold
+        assert len(router.cache.cache) == expected
+
+    async def test_a_stored_entry_is_reachable_by_the_identical_call(self):
+        """The other half: what the narrowed gate does store must still be
+        served, without a second provider call."""
+        registry = _mock_registry()
+
+        with patch(
+            "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
+        ):
+            from faultmaven.infrastructure.llm.router import LLMRouter
+
+            router = LLMRouter()
+            await router.route(prompt="why is node-3 NotReady?", model="gpt-4o")
+            second = await router.route(
+                prompt="why is node-3 NotReady?", model="gpt-4o"
+            )
+
+        assert second.cached is True
+        assert registry.route_request.await_count == 1

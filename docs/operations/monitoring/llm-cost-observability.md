@@ -23,7 +23,7 @@ which are the most common cause of a runaway bill.
 | `llm_unpriced_calls_total` | `provider`, `model` | Calls whose `(provider, model)` had no price entry. **Non-zero ⇒ `llm_cost_usd_total` under-reports** — add the model to the price table. |
 
 These sit alongside the pre-existing `llm_requests_total` (per-route outcome,
-including `status="cached"` for local SemanticCache hits), `llm_latency`, and
+including `status="cached"` for local `LLMResponseCache` hits), `llm_latency`, and
 `llm_tokens_total`. Note the deliberate difference in basis:
 `llm_tokens_total` counts the *winning* response per route, while
 `llm_call_tokens_total` counts *every* API call — `sum(llm_call_tokens_total) ≥

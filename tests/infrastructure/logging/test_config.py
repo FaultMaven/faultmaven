@@ -10,7 +10,9 @@ import pytest
 import structlog
 
 from faultmaven.infrastructure.logging.config import (
+    NOISY_THIRD_PARTY_LOGGERS,
     FaultMavenLogger,
+    LateBindingStreamHandler,
     LoggingConfig,
     get_logger,
 )
@@ -29,6 +31,14 @@ class TestFaultMavenLogger:
         root = logging.getLogger()
         self._saved_root_handlers = root.handlers[:]
         self._saved_root_level = root.level
+        # Configuration also pins the noisy third-party loggers, which are
+        # process-global; snapshot them so that cannot leak between tests.
+        # "httpx" is snapshotted too even though it is deliberately absent from
+        # NOISY_THIRD_PARTY_LOGGERS: a test below asserts it stays unpinned.
+        self._saved_third_party_levels = {
+            name: logging.getLogger(name).level
+            for name in {*NOISY_THIRD_PARTY_LOGGERS, "httpcore", "httpx"}
+        }
 
     def teardown_method(self):
         """Cleanup after each test method."""
@@ -38,6 +48,8 @@ class TestFaultMavenLogger:
         root = logging.getLogger()
         root.handlers[:] = self._saved_root_handlers
         root.setLevel(self._saved_root_level)
+        for name, level in self._saved_third_party_levels.items():
+            logging.getLogger(name).setLevel(level)
 
     @staticmethod
     def _json_config():
@@ -168,6 +180,149 @@ class TestFaultMavenLogger:
             ), "caplog lost records after logging reconfiguration"
         finally:
             config_module._logger_config = None
+
+    def test_root_handler_resolves_stderr_at_emit_time(self):
+        """The root handler must follow ``sys.stderr``, not pin it.
+
+        Regression: ``logging.StreamHandler()`` captures ``sys.stderr`` when
+        constructed, and this handler is installed once from a module-level
+        singleton. Under pytest that pinned a capture buffer which was closed
+        when the test ended, so every later record — from any logger, not just
+        the daemon thread that happened to trigger it — died in handleError.
+        """
+        import io
+        import json
+        import sys
+
+        dead_stream = io.StringIO()
+        original_stderr = sys.stderr
+        original_raise = logging.raiseExceptions
+        # handleError() would otherwise print the swallowed ValueError into the
+        # replacement stream, masking the emptiness this test asserts on.
+        logging.raiseExceptions = False
+        try:
+            sys.stderr = dead_stream
+            FaultMavenLogger(config=self._json_config())
+
+            # The stream the handler was built over goes away, exactly as a
+            # pytest capture buffer does at end of test.
+            live_stream = io.StringIO()
+            sys.stderr = live_stream
+            dead_stream.close()
+
+            logging.getLogger("faultmaven.stream_swap_probe").info("stream_swap_probe")
+        finally:
+            sys.stderr = original_stderr
+            logging.raiseExceptions = original_raise
+
+        # Parse per line rather than the whole buffer as one document: a
+        # background thread emitting concurrently — the scenario this test is
+        # about — would otherwise turn a pass into a JSONDecodeError flake.
+        events = [
+            json.loads(line)["event"]
+            for line in live_stream.getvalue().splitlines()
+            if line.strip()
+        ]
+        assert "stream_swap_probe" in events, f"probe record lost; got {events}"
+        assert isinstance(self._fm_root_handler(), LateBindingStreamHandler)
+
+    def test_stream_save_restore_round_trip_does_not_pin(self):
+        """``old = h.stream; h.stream = buf; h.stream = old`` must leave the
+        handler following sys.stderr, not pinned to the stream it read back.
+
+        The getter has to materialise sys.stderr for emit to work, so a naive
+        setter would let this common idiom silently re-pin the handler and
+        reintroduce the closed-stream bug.
+        """
+        import io
+
+        FaultMavenLogger(config=self._json_config())
+        handler = self._fm_root_handler()
+
+        buf = io.StringIO()
+        original = handler.stream
+        handler.stream = buf
+        assert handler.stream is buf
+        handler.stream = original
+
+        assert handler._stream_override is None, "round trip left the stream pinned"
+        # And the handler still tracks a subsequent sys.stderr swap.
+        import sys
+
+        swapped = io.StringIO()
+        real_stderr = sys.stderr
+        sys.stderr = swapped
+        try:
+            assert handler.stream is swapped
+        finally:
+            sys.stderr = real_stderr
+
+    def test_noisy_third_party_loggers_pinned_at_warning(self):
+        """Raising our own verbosity to DEBUG must not drag httpcore/httpx along.
+
+        Opik's connection monitor probes its backend from a daemon thread on a
+        timer, and httpcore emits a record per TCP/TLS step, so inheriting
+        DEBUG floods the log with connection chatter.
+        """
+        for name in NOISY_THIRD_PARTY_LOGGERS:
+            logging.getLogger(name).setLevel(logging.NOTSET)
+
+        debug_config = self._json_config()
+        debug_config.LOG_LEVEL = "DEBUG"
+        FaultMavenLogger(config=debug_config)
+
+        assert logging.getLogger().level == logging.DEBUG, "root should be at DEBUG"
+        for name in NOISY_THIRD_PARTY_LOGGERS:
+            assert logging.getLogger(name).level == logging.WARNING
+            # The child logger is what actually emits (e.g. httpcore.connection);
+            # assert at that surface, since that is where the noise came from.
+            child = logging.getLogger(f"{name}.connection")
+            assert not child.isEnabledFor(logging.DEBUG)
+
+    def test_httpx_request_line_is_not_suppressed(self):
+        """httpx's per-request INFO line must survive configuration.
+
+        It is the one record telling us an LLM provider returned 429/5xx, and
+        httpx has no DEBUG output, so pinning it alongside httpcore would cost
+        that signal while suppressing no noise.
+        """
+        import io
+        import json
+
+        assert "httpx" not in NOISY_THIRD_PARTY_LOGGERS
+        logging.getLogger("httpx").setLevel(logging.NOTSET)
+
+        FaultMavenLogger(config=self._json_config())
+        handler = self._fm_root_handler()
+        buf = io.StringIO()
+        original = handler.stream
+        handler.stream = buf
+        try:
+            logging.getLogger("httpx").info(
+                'HTTP Request: POST https://api.anthropic.com "429 Too Many Requests"'
+            )
+        finally:
+            handler.stream = original
+
+        events = [
+            json.loads(line)["event"]
+            for line in buf.getvalue().splitlines()
+            if line.strip()
+        ]
+        assert any("429" in event for event in events), f"httpx line lost; got {events}"
+
+    def test_explicit_third_party_level_is_not_clobbered(self):
+        """A level someone deliberately set must survive configuration.
+
+        Otherwise an operator debugging HTTP, or a test using
+        ``caplog.set_level(..., logger="httpcore")``, would be silently
+        overridden.
+        """
+        logging.getLogger("httpcore").setLevel(logging.DEBUG)
+
+        FaultMavenLogger(config=self._json_config())
+
+        assert logging.getLogger("httpcore").level == logging.DEBUG
 
     @staticmethod
     def _fm_root_handler():
