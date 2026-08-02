@@ -85,9 +85,22 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
     def __init__(self, redis_client):
         self.redis = redis_client
         self._key_prefix = "oauth:code:"
+        # A DISTINCT namespace, not a suffix on the code key.
+        #
+        # `_make_key` is not injective if a derived key shares its prefix:
+        # `_make_key("<code>:claimed")` would name the claim key of `<code>`,
+        # and the caller-supplied code is unvalidated free text, so a client
+        # could aim `get_code` at a claim key and hit `json.loads("1")` -> int
+        # -> AttributeError -> 500 on an unauthenticated endpoint. Separate
+        # prefixes make that unreachable by construction: nothing `_make_key`
+        # can produce starts with `oauth:claim:`.
+        self._claim_prefix = "oauth:claim:"
 
     def _make_key(self, code: str) -> str:
         return f"{self._key_prefix}{code}"
+
+    def _make_claim_key(self, code: str) -> str:
+        return f"{self._claim_prefix}{code}"
 
     async def save_code(self, code_data: OAuthCodeDTO) -> None:
         import json
@@ -113,6 +126,13 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
         if not value:
             return None
         data = json.loads(value)
+        if not isinstance(data, dict):
+            # Belt to the braces above. A stored value that is not a JSON object
+            # is not a code, whatever put it there; treating it as "no such
+            # code" yields the endpoint's normal 401 rather than an unhandled
+            # AttributeError. Fails closed either way.
+            logger.warning("Ignoring non-object payload under an OAuth code key")
+            return None
         # Keep only fields the DTO still declares. During a rolling deploy this
         # store holds payloads written by the other version: one missing a field
         # takes the DTO default, one carrying a retired field is tolerated rather
@@ -152,7 +172,7 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
         if ttl is None or ttl <= 0:
             return False
 
-        claimed = await self.redis.set(f"{key}:claimed", "1", nx=True, ex=ttl)
+        claimed = await self.redis.set(self._make_claim_key(code), "1", nx=True, ex=ttl)
         if not claimed:
             return False
 

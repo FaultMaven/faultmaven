@@ -510,3 +510,59 @@ async def test_losing_a_claim_is_recorded_as_a_failed_exchange():
     ]
     assert len(failed) == 1, metrics.record_token_exchange.call_args_list
     assert failed[0].kwargs.get("duration_seconds") is not None
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_a_crafted_code_cannot_reach_the_claim_key():
+    """The claim key must not live where `get_code` will parse it.
+
+    The code arrives as unvalidated free text on an unauthenticated endpoint.
+    While the claim key was `<code-key>:claimed`, a client that had completed one
+    exchange could ask for `"<its own code>:claimed"`, land on a payload of `"1"`,
+    and turn its 401 into an unhandled AttributeError — a remotely triggerable
+    500. Separate prefixes make the collision unconstructible.
+    """
+    fakeredis = pytest.importorskip("fakeredis")
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    repository = RedisOAuthCodeRepository(client)
+
+    await repository.save_code(
+        OAuthCodeDTO(
+            code="ABC",
+            user_id="user_123",
+            redirect_uri=REDIRECT,
+            code_challenge="challenge",
+            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        )
+    )
+    assert await repository.claim_code("ABC") is True
+
+    # No key the code namespace can name is the claim key.
+    keys = sorted(await client.keys("*"))
+    assert not any(k.startswith("oauth:code:") and k.endswith(":claimed") for k in keys)
+
+    # And the crafted lookup is simply "no such code", not an exception.
+    assert await repository.get_code("ABC:claimed") is None
+    # Single-use is unaffected by the move.
+    assert await repository.claim_code("ABC") is False
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_a_non_object_payload_reads_as_no_such_code():
+    """Independent of the prefix fix, and deliberately so.
+
+    Two guards, because they fail for different reasons: the prefix stops this
+    input being reachable, this stops any non-object payload — whatever wrote
+    it — becoming a 500 instead of a 401.
+    """
+    fakeredis = pytest.importorskip("fakeredis")
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    repository = RedisOAuthCodeRepository(client)
+
+    for payload in ("1", '"a string"', "null", "[1, 2]"):
+        await client.setex("oauth:code:weird", 600, payload)
+        assert await repository.get_code("weird") is None, payload
