@@ -31,6 +31,7 @@ from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO, OAuthCodeDT
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
+    RS256JWTTokenGenerator,
     account_may_hold_credentials,
 )
 from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
@@ -139,9 +140,19 @@ def _repositories():
 async def test_concurrent_redemption_mints_exactly_one_token_pair(attempts):
     """The defect: N concurrent redemptions used to yield N token pairs.
 
-    Run against every wired repository, and with more than two racers — a
-    two-caller race can be won by luck of scheduling, whereas eight makes a
-    non-atomic implementation lose reliably.
+    Run against every wired repository, and with more than two racers.
+
+    Honest about what each arm proves. The **Redis** arm is the real race:
+    fakeredis awaits yield, so all N racers reach the claim and a non-atomic
+    implementation loses reliably — verified by porting this test to the
+    pre-fix code, where it reports "minted 8 token pairs". The **in-memory**
+    arm does NOT race: with no await between the check and the set the
+    coroutines serialize, so 7 of 8 losers die at the fast-path `used` check
+    and never reach `claim_code`. It is a contract check there (exactly one
+    success), not a concurrency proof — and a no-yield read-modify-write is
+    genuinely unraceable under one event loop, so there is no fault for it to
+    miss. Insert one await into that critical section, however, and this test
+    does catch it.
     """
     for name, repository in _repositories():
         verifier, challenge = _pkce()
@@ -285,19 +296,66 @@ async def test_a_stolen_code_without_the_verifier_still_cannot_be_burned():
 
 MINT_METHODS = ["generate_access_token", "generate_refresh_token"]
 
+#: BOTH signing implementations, because the sweep is only as wide as this list.
+#: An earlier version swept HS256 only — so both RS256 gates could be deleted
+#: with the whole suite green, on the algorithm ``AUTH_MODE=oauth`` uses, i.e.
+#: the cloud deployment this rule most matters for. The gap was invisible
+#: precisely because the sweep *looked* exhaustive.
+GENERATORS = ["hs256", "rs256"]
+
+
+def _generator_named(name):
+    fakeredis = pytest.importorskip("fakeredis")
+    store = RedisTokenRevocationStore(
+        fakeredis.aioredis.FakeRedis(decode_responses=True)
+    )
+    if name == "hs256":
+        return HS256JWTTokenGenerator(
+            secret_key=SECRET,
+            revocation_store=store,
+            access_token_expire_minutes=15,
+            refresh_token_expire_days=7,
+        )
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return RS256JWTTokenGenerator(
+        private_key=key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode(),
+        public_key=key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode(),
+        revocation_store=store,
+        access_token_expire_minutes=15,
+        refresh_token_expire_days=7,
+    )
+
 
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.asyncio
+@pytest.mark.parametrize("generator_name", GENERATORS)
 @pytest.mark.parametrize("method", MINT_METHODS)
-async def test_no_token_of_any_kind_is_minted_for_a_deactivated_account(method):
-    """Swept over the mint surface, not asserted at one call site.
+async def test_no_token_of_any_kind_is_minted_for_a_deactivated_account(
+    method, generator_name
+):
+    """Swept over the whole mint surface: both algorithms, both token kinds.
 
     This is the property the six scattered copies were each trying to express.
-    Enforcing it here means a mint path added tomorrow inherits it without its
-    author knowing the rule exists.
+    Enforcing it at the chokepoint means a mint path added tomorrow inherits it
+    without its author knowing the rule exists — but only for paths that go
+    through ``IJWTTokenGenerator``. See ``account_may_hold_credentials`` for the
+    surface that is deliberately outside this guarantee.
     """
-    generator = _generator()
+    generator = _generator_named(generator_name)
     with pytest.raises(InactiveAccountError):
         await getattr(generator, method)(_user(is_active=False))
 
@@ -305,10 +363,11 @@ async def test_no_token_of_any_kind_is_minted_for_a_deactivated_account(method):
 @pytest.mark.unit
 @pytest.mark.security
 @pytest.mark.asyncio
+@pytest.mark.parametrize("generator_name", GENERATORS)
 @pytest.mark.parametrize("method", MINT_METHODS)
-async def test_an_active_account_is_unaffected(method):
+async def test_an_active_account_is_unaffected(method, generator_name):
     """The negative control: the gate must not refuse everyone."""
-    generator = _generator()
+    generator = _generator_named(generator_name)
     assert await getattr(generator, method)(_user(is_active=True))
 
 
@@ -566,3 +625,70 @@ async def test_a_non_object_payload_reads_as_no_such_code():
     for payload in ("1", '"a string"', "null", "[1, 2]"):
         await client.setex("oauth:code:weird", 600, payload)
         assert await repository.get_code("weird") is None, payload
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_the_refusal_really_answers_403_through_the_registered_handlers():
+    """Exercise the mapping, do not merely assert the class relationship.
+
+    The `issubclass` check above states the intent; this proves the app's real
+    handler registry plus Starlette's MRO resolution actually turn the refusal
+    into a 403. Those are different claims — a registry change could break the
+    second while the first still passes.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from faultmaven.api.exception_handlers import get_exception_handlers
+
+    app = FastAPI()
+    for exc_type, handler in get_exception_handlers().items():
+        app.add_exception_handler(exc_type, handler)
+
+    @app.get("/mint")
+    async def _mint():
+        raise InactiveAccountError("This account is deactivated")
+
+    response = TestClient(app, raise_server_exceptions=False).get("/mint")
+    assert response.status_code == 403
+    assert "user_123" not in response.text
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_the_authenticate_path_hands_the_account_to_the_mint():
+    """Pin the backstop the code comment claims.
+
+    `user_service.authenticate_user` checks `is_active` itself and would refuse
+    first, so removing `account=` from its call is invisible to a behavioural
+    test. The comment there says the argument is what survives someone deleting
+    that primary check — this asserts the argument is actually passed, which is
+    the only thing that makes the claim true.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from faultmaven.modules.auth.domain.services.user_service import UserService
+
+    user = _user()
+    user.hashed_password = "x"
+
+    repo = AsyncMock()
+    repo.get_by_username = AsyncMock(return_value=user)
+    repo.get_by_email = AsyncMock(return_value=user)
+    repo.save = AsyncMock(return_value=user)
+
+    auth_service = MagicMock()
+    auth_service.generate_token_pair.return_value = MagicMock(
+        access_token="a", refresh_token="r"
+    )
+
+    service = UserService(user_repo=repo, auth_service=auth_service)
+    with patch(
+        "faultmaven.modules.auth.domain.services.user_service.verify_password",
+        return_value=True,
+    ):
+        await service.authenticate_user(email="testuser@acme.example", password="pw")
+
+    assert auth_service.generate_token_pair.call_args.kwargs["account"] is user

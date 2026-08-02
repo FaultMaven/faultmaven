@@ -234,8 +234,10 @@ async def test_exchange_without_a_captured_org_fails_closed_under_multi(
         for token in (tokens.access_token, tokens.refresh_token):
             claim = _claims(token)["organization_id"]
             # What was emitted — catches a mint-side default to the sentinel.
+            # `== ""` already excludes the sentinel, which is non-empty. An
+            # extra `!= sentinel` line here looked like a second guard but could
+            # never fail once this one passed.
             assert claim == ""
-            assert claim != SingleTenantProvider.DEFAULT_ORG_ID
             # What it means downstream — catches the predicate going permissive.
             assert usable_tenant_id(claim) is None
 

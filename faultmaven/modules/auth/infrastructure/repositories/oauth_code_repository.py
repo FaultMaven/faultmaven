@@ -125,7 +125,14 @@ class RedisOAuthCodeRepository(IOAuthCodeRepository):
         value = await self.redis.get(key)
         if not value:
             return None
-        data = json.loads(value)
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError:
+            # Non-JSON in the namespace 500s exactly as a non-object would, and
+            # an isinstance check on the result cannot catch a parse that never
+            # returned. Same disposition: not a code, so "no such code".
+            logger.warning("Ignoring unparseable payload under an OAuth code key")
+            return None
         if not isinstance(data, dict):
             # Belt to the braces above. A stored value that is not a JSON object
             # is not a code, whatever put it there; treating it as "no such
