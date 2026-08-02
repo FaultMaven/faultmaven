@@ -71,14 +71,21 @@ def account_may_hold_credentials(user) -> bool:
     tests ``deleted_at``; that stays as belt-and-braces, and it also guards
     *organizations*, which this does not cover.)
 
-    Defaults to permitting when the attribute is absent. That direction is
-    deliberate: ``users.is_active`` is ``NOT NULL DEFAULT 1`` and every user type
-    on a mint path declares it, so absence means "not a user object" rather than
-    "deactivated" — and defaulting to refusal there would lock out every account
-    on an unrelated refactor. The gate that matters is enforced at the single
-    chokepoint below, where a real user object is always present.
+    **Absence refuses.** An earlier version permitted it, on the reasoning that
+    every user type on a mint path declares ``is_active`` so absence must mean
+    "not a user object". That premise was false: ``AuthenticatedUser`` — the auth
+    module's own request-path type, carrying ``user_id``, ``organization_id`` and
+    ``roles`` — has no such field, because it is rebuilt from JWT claims and
+    genuinely does not know whether the account is still live. It is one refactor
+    away from a mint call, where permit-on-absence would have signed silently.
+
+    Adding the field to that type would be worse: it would assert liveness the
+    token cannot know. So the flag must be *present and true*. The failure mode
+    of refusing is a loud, immediate lockout on a path that forgot to load the
+    account — which is the direction an auth gate should fail, and is detectable
+    in a way a silently-minted credential is not.
     """
-    return bool(getattr(user, "is_active", True))
+    return bool(getattr(user, "is_active", False))
 
 
 def _refuse_if_deactivated(user, token_kind: str) -> None:

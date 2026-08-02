@@ -125,6 +125,9 @@ def _revocation_store():
 def _user():
     return SimpleNamespace(
         user_id="user-888",
+        # Real user types all declare is_active; a stand-in that omits it
+        # is not modelling a user. The mint gate refuses on absence.
+        is_active=True,
         username="expiry-user",
         email="expiry@local.faultmaven",
         roles=["user"],

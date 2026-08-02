@@ -83,6 +83,9 @@ def _generator(store):
 def _user(user_id: str = USER_ID):
     return SimpleNamespace(
         user_id=user_id,
+        # Real user types all declare is_active; a stand-in that omits it
+        # is not modelling a user. The mint gate refuses on absence.
+        is_active=True,
         username="revoked-user",
         email="revoked@local.faultmaven",
         roles=["user"],

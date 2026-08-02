@@ -385,18 +385,30 @@ def test_the_refusal_is_an_authorization_failure_not_a_server_fault():
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_the_predicate_permits_when_the_flag_is_absent():
-    """Documented direction, pinned: absence means "not a user", not "deactivated".
+def test_the_predicate_refuses_when_the_flag_is_absent():
+    """Absence must refuse, and the control uses a REAL type that has no flag.
 
-    `users.is_active` is NOT NULL DEFAULT 1 and every user type on a mint path
-    declares it, so refusing on absence would lock out every account the day an
-    unrelated refactor passes something without the attribute.
+    An earlier version permitted absence and asserted it with a bare local
+    class, so it could not have noticed that `AuthenticatedUser` — the auth
+    module's own request-path type, carrying user_id/organization_id/roles — has
+    no `is_active` at all. That type is one refactor from a mint call, where
+    permit-on-absence would have signed for an account nobody checked.
+
+    Using `AuthenticatedUser` here rather than a stand-in is the point: it is
+    the object that actually exists and actually lacks the field.
     """
+    from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
-    class NoFlag:
-        user_id = "user_123"
+    token_derived = AuthenticatedUser(
+        user_id="user_123",
+        organization_id="org_acme",
+        email="testuser@acme.example",
+        roles=["user"],
+        permissions=[],
+    )
+    assert not hasattr(token_derived, "is_active")
+    assert account_may_hold_credentials(token_derived) is False
 
-    assert account_may_hold_credentials(NoFlag()) is True
     assert account_may_hold_credentials(_user(is_active=True)) is True
     assert account_may_hold_credentials(_user(is_active=False)) is False
 
