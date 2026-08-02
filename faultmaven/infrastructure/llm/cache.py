@@ -45,9 +45,33 @@ class LLMResponseCache:
     def _get_cache_key(
         self, prompt: str, model: str, case_id: Optional[str] = None
     ) -> str:
-        """Generate cache key scoped to case, prompt, and model"""
-        content = f"{case_id or ''}:{prompt}:{model}"
-        return hashlib.sha256(content.encode()).hexdigest()
+        """Generate cache key scoped to case, prompt, and model.
+
+        The fields are length-prefixed rather than joined on a delimiter (#940
+        review). ``':'`` is legal inside every one of them — Ollama models are
+        literally ``llama3:8b`` — so a joined key is ambiguous: shifting the
+        boundary between two fields produces the same string, and
+        ``(prompt='P', model='llama3:8b')`` would collide with
+        ``(prompt='P:llama3', model='8b')``. A collision here serves one call's
+        answer for a different call, which is the one thing a cache must never
+        do. Length prefixes make the encoding injective, so distinct triples
+        always hash apart.
+
+        ``None`` gets its own flag byte instead of folding to ``''``: an
+        un-scoped call and a call carrying an empty case id are different
+        namespaces, and only one of them may serve the other's entries.
+        """
+        digest = hashlib.sha256()
+        for field in (case_id, prompt, model):
+            if field is None:
+                digest.update(b"\x00")
+                continue
+            encoded = field.encode()
+            # Feed the parts separately — no full-string concatenation.
+            digest.update(b"\x01")
+            digest.update(f"{len(encoded)}:".encode())
+            digest.update(encoded)
+        return digest.hexdigest()
 
     def check(
         self, prompt: str, model: str, case_id: Optional[str] = None

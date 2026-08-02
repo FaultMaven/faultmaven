@@ -145,6 +145,69 @@ def test_a_populated_cache_still_misses_on_a_near_key():
 
 
 # --------------------------------------------------------------------------- #
+# The key is unambiguous
+# --------------------------------------------------------------------------- #
+
+
+# Every pair below is a *different* (case, prompt, model) triple that the old
+# ``f"{case_id}:{prompt}:{model}"`` join flattened into one identical string —
+# the boundary between two fields moved, and ':' is legal inside all three
+# (Ollama models are spelled ``llama3:8b``). Stored under the left triple, a
+# lookup with the right one must miss: a hit is one call being served another
+# call's answer. Swept over each boundary in the key rather than pinned to one
+# example, so an encoding that only fixes the model boundary still fails here.
+BOUNDARY_SHIFTS = {
+    "model_boundary": (
+        {"case_id": "case-1", "prompt": "P", "model": "llama3:8b"},
+        {"case_id": "case-1", "prompt": "P:llama3", "model": "8b"},
+    ),
+    "case_boundary": (
+        {"case_id": "c:1", "prompt": "P", "model": "gpt-5.4-mini"},
+        {"case_id": "c", "prompt": "1:P", "model": "gpt-5.4-mini"},
+    ),
+    "both_boundaries": (
+        {"case_id": "c:1", "prompt": "P", "model": "llama3:8b"},
+        {"case_id": "c", "prompt": "1:P:llama3", "model": "8b"},
+    ),
+    "empty_field_absorbed": (
+        {"case_id": "case-1", "prompt": "", "model": ":llama3"},
+        {"case_id": "case-1", "prompt": ":", "model": "llama3"},
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(BOUNDARY_SHIFTS))
+@pytest.mark.parametrize("direction", ["forward", "reverse"])
+def test_shifting_a_field_boundary_is_a_miss(label, direction):
+    stored, probe = BOUNDARY_SHIFTS[label]
+    if direction == "reverse":
+        stored, probe = probe, stored
+
+    cache = LLMResponseCache()
+    cache.store(stored["prompt"], stored["model"], _response(), stored["case_id"])
+
+    assert cache.check(probe["prompt"], probe["model"], probe["case_id"]) is None
+
+
+@pytest.mark.parametrize(
+    "stored_case, probe_case",
+    [(None, ""), ("", None)],
+    ids=["none_then_empty", "empty_then_none"],
+)
+def test_no_case_and_an_empty_case_are_different_namespaces(stored_case, probe_case):
+    """``case_id=None`` means "this call belongs to no case"; ``""`` is a value
+    that arrived from somewhere. Folding one into the other would let an
+    un-scoped answer surface inside a case (or the reverse), which is the same
+    cross-case serve the case scoping exists to prevent — so they key apart, in
+    both directions."""
+    cache = LLMResponseCache()
+    cache.store(PROMPT, "gpt-5.4-mini", _response(), case_id=stored_case)
+
+    assert cache.check(PROMPT, "gpt-5.4-mini", case_id=probe_case) is None
+    assert cache.check(PROMPT, "gpt-5.4-mini", case_id=stored_case) is not None
+
+
+# --------------------------------------------------------------------------- #
 # Bounded memory
 # --------------------------------------------------------------------------- #
 
