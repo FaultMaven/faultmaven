@@ -30,7 +30,6 @@ sha256, so they are safe to call from async code without a thread hop.
 """
 
 import hashlib
-import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -43,7 +42,6 @@ class LLMResponseCache:
     def __init__(self, max_size: int = 1000):
         self.max_size = max_size
         self.cache: Dict[str, Dict[str, Any]] = {}
-        self.logger = logging.getLogger(__name__)
 
     def _get_cache_key(
         self, prompt: str, model: str, case_id: Optional[str] = None
@@ -95,7 +93,6 @@ class LLMResponseCache:
             "model": response.model,
             "tokens_used": response.tokens_used,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "case_id": case_id,
         }
 
         # Evict oldest entries if cache is full. Ties in the ISO timestamp
