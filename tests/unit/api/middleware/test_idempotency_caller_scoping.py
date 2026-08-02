@@ -62,6 +62,18 @@ def _build_app(redis_client=None):
         """Mirrors the real session-mint route: the body IS a credential."""
         return {"session_id": "newly-minted-credential"}
 
+    @app.post("/api/v1/sessions/")
+    async def mint_session_trailing_slash():
+        """Registered so the trailing-slash request reaches a 2xx route.
+
+        Without it FastAPI answers ``/api/v1/sessions/`` with a 307, which is
+        not cacheable — and a test asserting "nothing was cached" would then
+        pass whether or not the exclusion normalises the trailing slash. In the
+        real app ``TrailingSlashMiddleware`` plays this role, and it sits
+        *inside* this middleware, so idempotency still sees the raw path.
+        """
+        return {"session_id": "newly-minted-credential"}
+
     @app.post("/api/v1/cases")
     async def create_case(request: Request, payload: dict = Body(default={})):
         authorization = request.headers.get("Authorization")
@@ -572,6 +584,22 @@ async def test_case_session_routes_are_not_excluded():
     assert not _replayed(first)
     assert _replayed(retry), "case-session routes must keep idempotency"
     assert app.state.route_calls["case_from_session"] == 1
+
+
+def test_exclusion_predicate_normalises_the_trailing_slash():
+    """Pin the normalisation on the predicate itself.
+
+    The end-to-end version of this needs a route registered at the trailing-slash
+    path, or FastAPI answers 307 and "nothing was cached" holds vacuously. This
+    asserts the property directly, with the negative case alongside so the
+    normalisation cannot be widened into a prefix match.
+    """
+    middleware = IdempotencyMiddleware(app=lambda scope, receive, send: None)
+
+    assert middleware._is_excluded_path("/api/v1/sessions")
+    assert middleware._is_excluded_path("/api/v1/sessions/")
+    assert not middleware._is_excluded_path("/api/v1/sessions/search")
+    assert not middleware._is_excluded_path("/api/v1/cases/sessions/s-1/case")
 
 
 def test_exclusions_do_not_over_catch_any_real_post_route():
