@@ -124,24 +124,29 @@ async def test_same_caller_identified_by_session_id_replays():
 
 
 async def test_other_authenticated_caller_cannot_replay_victims_response():
+    """Identical request, different credential — only the caller distinguishes.
+
+    The bodies are deliberately byte-identical so this isolates caller scoping:
+    the body fingerprint cannot be what separates these two requests.
+    """
     app, _ = _build_app()
+    body = {"title": "victim case"}
 
     async with _client(app) as client:
         victim = await client.post(
             "/api/v1/cases",
             headers={"Authorization": VICTIM, "Idempotency-Key": KEY},
-            json={"title": "victim case"},
+            json=body,
         )
         attacker = await client.post(
             "/api/v1/cases",
             headers={"Authorization": ATTACKER, "Idempotency-Key": KEY},
-            json={"title": "attacker case"},
+            json=body,
         )
 
     assert victim.json()["owner"] == VICTIM
     assert not _replayed(attacker)
     assert attacker.json()["owner"] == ATTACKER
-    assert attacker.json()["title"] == "attacker case"
 
 
 @pytest.mark.parametrize(
@@ -223,14 +228,21 @@ async def test_anonymous_request_does_not_populate_the_cache():
 
 
 async def test_two_anonymous_callers_never_share_a_bucket():
+    """Byte-identical anonymous requests must still not replay one another.
+
+    Anonymous callers are indistinguishable, so "same bucket" would mean *every*
+    anonymous caller sharing one. The bodies match so only the fail-closed guard
+    can keep these apart.
+    """
     app, _ = _build_app()
+    body = {"who": "anyone"}
 
     async with _client(app) as client:
         first = await client.post(
-            "/api/v1/anon-ok", headers={"Idempotency-Key": KEY}, json={"who": "first"}
+            "/api/v1/anon-ok", headers={"Idempotency-Key": KEY}, json=body
         )
         second = await client.post(
-            "/api/v1/anon-ok", headers={"Idempotency-Key": KEY}, json={"who": "second"}
+            "/api/v1/anon-ok", headers={"Idempotency-Key": KEY}, json=body
         )
 
     assert not _replayed(first)
