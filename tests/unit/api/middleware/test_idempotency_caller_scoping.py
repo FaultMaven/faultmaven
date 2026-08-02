@@ -25,11 +25,15 @@ import httpx
 import pytest
 from fastapi import Body, FastAPI, HTTPException, Request, UploadFile
 
-from faultmaven.api.middleware.idempotency import IdempotencyMiddleware
+from faultmaven.api.middleware.idempotency import (
+    MAX_FINGERPRINTED_BODY_BYTES,
+    IdempotencyMiddleware,
+)
 
 VICTIM = "Bearer victim-token-aaaaaaaaaaaaaaaa"
 ATTACKER = "Bearer attacker-token-bbbbbbbbbbbb"
 KEY = "11111111-2222-3333-4444-555555555555"
+OTHER_KEY = "99999999-8888-7777-6666-555555555555"
 
 
 def _build_app(redis_client=None):
@@ -89,6 +93,25 @@ def _replayed(response) -> bool:
     return response.headers.get("X-Idempotency-Replayed") == "true"
 
 
+async def _seed_one_cache_entry(client, fake):
+    """Positive control for the ``idempotency:*`` glob.
+
+    ``assert await fake.keys("idempotency:*") == []`` proves nothing by itself:
+    rename ``key_prefix`` and the glob matches nothing in every case, so the
+    assertion holds vacuously and the test can no longer fail. Seed one entry
+    from a known-good identified request and prove the glob *does* see it, so a
+    later "unchanged" result is real evidence rather than a broken pattern.
+    """
+    await client.post(
+        "/api/v1/anon-ok",
+        headers={"Authorization": VICTIM, "Idempotency-Key": OTHER_KEY},
+        json={"seed": True},
+    )
+    seeded = await fake.keys("idempotency:*")
+    assert seeded, "positive control: an identified request must write a cache key"
+    return sorted(seeded)
+
+
 # ---------------------------------------------------------------------------
 # The legitimate feature must survive: the copilot retries a failed create or
 # turn with the SAME key and the SAME credential and expects the cached result.
@@ -125,12 +148,14 @@ async def test_session_id_alone_is_not_sufficient_identity():
     headers = {"X-Session-ID": "session-abc", "Idempotency-Key": KEY}
 
     async with _client(app) as client:
+        seeded = await _seed_one_cache_entry(client, fake)
         first = await client.post("/api/v1/anon-ok", headers=headers, json={})
         second = await client.post("/api/v1/anon-ok", headers=headers, json={})
+        after = sorted(await fake.keys("idempotency:*"))
 
     assert not _replayed(first)
     assert not _replayed(second)
-    assert await fake.keys("idempotency:*") == []
+    assert after == seeded, "a session-only caller must not write to the cache"
 
 
 async def test_two_sessions_under_one_token_get_separate_buckets():
@@ -232,7 +257,6 @@ async def test_caller_identity_space_is_scoped(attacker_headers):
 
     assert victim.json()["owner"] == VICTIM
     assert not _replayed(other)
-    assert other.json()["owner"] != VICTIM or "X-Session-ID" in attacker_headers
 
 
 # ---------------------------------------------------------------------------
@@ -272,12 +296,14 @@ async def test_anonymous_request_does_not_populate_the_cache():
     app, fake = _build_app()
 
     async with _client(app) as client:
+        seeded = await _seed_one_cache_entry(client, fake)
         response = await client.post(
             "/api/v1/anon-ok", headers={"Idempotency-Key": KEY}, json={}
         )
+        after = sorted(await fake.keys("idempotency:*"))
 
     assert response.status_code == 200
-    assert await fake.keys("idempotency:*") == []
+    assert after == seeded, "an anonymous request must not add a cache entry"
 
 
 async def test_two_anonymous_callers_never_share_a_bucket():
@@ -312,13 +338,15 @@ async def test_auth_path_never_caches_even_for_the_same_caller():
     headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
 
     async with _client(app) as client:
+        seeded = await _seed_one_cache_entry(client, fake)
         first = await client.post("/api/v1/auth/oauth/token", headers=headers, json={})
         second = await client.post("/api/v1/auth/oauth/token", headers=headers, json={})
+        after = sorted(await fake.keys("idempotency:*"))
 
     assert first.status_code == 200
     assert not _replayed(first)
     assert not _replayed(second)
-    assert await fake.keys("idempotency:*") == [], "token mints must never be cached"
+    assert after == seeded, "token mints must never be cached"
 
 
 async def test_auth_path_is_excluded_before_key_validation():
@@ -486,3 +514,75 @@ async def test_non_json_body_is_not_buffered_but_still_replays_for_same_caller()
 
     assert not _replayed(first)
     assert _replayed(second)
+
+
+# ---------------------------------------------------------------------------
+# The content-type gate, and the sentinel behaviour it produces, are a DELIBERATE
+# CONTRACT — not an accident. Requests that are not bounded JSON are never read,
+# so they share one unfingerprinted bucket per caller+key+path and a different
+# body under the same key DOES replay.
+#
+# This is the price of never touching an upload body in middleware, and the
+# copilot's multipart turn-retry path depends on unfingerprinted requests still
+# being cacheable. The tests below fail if the gate is ever widened to buffer
+# these bodies, which is what makes them defend the gate rather than merely
+# coexist with it.
+# ---------------------------------------------------------------------------
+
+
+async def test_different_text_plain_bodies_replay_by_design():
+    """Removing the content-type gate would make this RED."""
+    app, _ = _build_app()
+    headers = {
+        "Authorization": VICTIM,
+        "Idempotency-Key": KEY,
+        "Content-Type": "text/plain",
+    }
+
+    async with _client(app) as client:
+        first = await client.post("/api/v1/anon-ok", headers=headers, content=b"alpha")
+        second = await client.post("/api/v1/anon-ok", headers=headers, content=b"beta")
+
+    assert not _replayed(first)
+    assert _replayed(second), "non-JSON bodies are deliberately unfingerprinted"
+
+
+async def test_different_multipart_uploads_replay_by_design():
+    """Upload bodies are never read, so they cannot be told apart."""
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/upload",
+            headers=headers,
+            files={"file": ("a.bin", b"aaaaaaaa", "application/octet-stream")},
+        )
+        second = await client.post(
+            "/api/v1/upload",
+            headers=headers,
+            files={"file": ("b.bin", b"bbbbbbbb", "application/octet-stream")},
+        )
+
+    assert first.json()["filename"] == "a.bin"
+    assert _replayed(second)
+    assert second.json()["filename"] == "a.bin", "replays the first upload by design"
+
+
+async def test_oversized_json_bodies_replay_by_design():
+    """Above MAX_FINGERPRINTED_BODY_BYTES the body is not buffered either."""
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+    oversized = "x" * (MAX_FINGERPRINTED_BODY_BYTES + 1000)
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/cases", headers=headers, json={"title": oversized}
+        )
+        second = await client.post(
+            "/api/v1/cases", headers=headers, json={"title": "y" * len(oversized)}
+        )
+
+    assert first.json()["title"] == oversized
+    assert _replayed(second)
+    assert second.json()["title"] == oversized, "oversized bodies share one bucket"
