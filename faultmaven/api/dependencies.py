@@ -29,8 +29,6 @@ from faultmaven.api.v1.dependencies import (
     get_current_user,
     get_session_id,
     get_session_service,
-    get_user_id,
-    require_authenticated_user,
 )
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
@@ -62,8 +60,6 @@ __all__ = [
     "get_agent_orchestration_service",
     # Re-exported from v1.dependencies (legacy)
     "get_current_user",
-    "require_authenticated_user",
-    "get_user_id",
     "get_session_id",
 ]
 

@@ -170,59 +170,6 @@ async def get_session_id(request: Request) -> Optional[str]:
     return session_id
 
 
-async def get_user_id(request: Request) -> Optional[str]:
-    """
-    Extract user ID from validated session
-
-    Validates the session and returns the authenticated user_id.
-    Returns None only if no authentication is provided (for optional auth endpoints).
-    """
-    # Get session service for validation
-    session_service = await get_session_service()
-
-    # Check for session ID in headers (primary method)
-    session_id = request.headers.get("X-Session-Id")
-
-    # Fallback: Check for session_id in query params (for testing)
-    if not session_id:
-        session_id = request.query_params.get("session_id")
-
-    if session_id:
-        try:
-            # Validate session and get user_id from it
-            session = await session_service.get_session(session_id, validate=True)
-            if session and session.user_id:
-                return session.user_id
-        except Exception:
-            # Invalid session - do not return user_id
-            pass
-
-    # Legacy support: Direct X-User-Id header (for testing only)
-    # In production, this should be removed or restricted to admin endpoints
-    user_id = request.headers.get("X-User-Id")
-    if user_id:
-        return user_id
-
-    # No valid authentication found
-    return None
-
-
-async def require_authenticated_user(request: Request) -> str:
-    """
-    Require authenticated user for protected endpoints
-
-    Returns user_id for authenticated users, raises HTTPException for unauthenticated.
-    Use this dependency for endpoints that require authentication.
-    """
-    user_id = await get_user_id(request)
-    if not user_id:
-        raise HTTPException(
-            status_code=401,
-            detail="Authentication required. Please log in to access this resource.",
-        )
-    return user_id
-
-
 async def get_orchestration_service(request: Request):
     """Get OrchestrationService instance from app.state (Composition Root)"""
     return request.app.state.orchestration_service
