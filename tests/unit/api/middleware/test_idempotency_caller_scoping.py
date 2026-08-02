@@ -96,13 +96,35 @@ def _build_app(redis_client=None):
         """
         return {"session_id": "newly-minted-credential"}
 
-    @app.post("/api/v1/cases")
-    async def create_case(request: Request, payload: dict = Body(default={})):
+    async def _create_case(request: Request, payload: dict):
         authorization = request.headers.get("Authorization")
         if not authorization:
             raise HTTPException(status_code=401, detail="Not authenticated")
         route_calls["cases"] += 1
         return {"owner": authorization, "title": payload.get("title")}
+
+    @app.post("/api/v1/cases")
+    async def create_case(request: Request, payload: dict = Body(default={})):
+        return await _create_case(request, payload)
+
+    @app.post("/api/v1/cases/")
+    async def create_case_trailing_slash(
+        request: Request, payload: dict = Body(default={})
+    ):
+        """Both spellings reach the same handler and the same call counter.
+
+        Registered for the same reason as the trailing-slash session route:
+        without it FastAPI answers 307, which is not cacheable, and a test
+        asserting "the retry replayed" could not tell a working normalisation
+        from a redirect. In the real app ``TrailingSlashMiddleware`` plays this
+        role, and it sits *inside* this middleware.
+        """
+        return await _create_case(request, payload)
+
+    @app.post("/api/v1/anon-okay")
+    async def anon_okay(request: Request):
+        """A near-miss path: differs from /anon-ok by more than a slash."""
+        return {"owner": request.headers.get("Authorization") or "anonymous"}
 
     @app.post("/api/v1/anon-ok")
     async def anon_ok(request: Request):
@@ -587,6 +609,49 @@ async def test_path_splits_the_bucket():
     assert anon_ok.status_code == 200
     assert not _replayed(anon_ok), "a different path must not replay"
     assert "title" not in anon_ok.json(), "must be the anon-ok route's own response"
+
+
+async def test_trailing_slash_variants_share_a_bucket():
+    """A retry that varies only by the trailing slash must not execute twice.
+
+    Both spellings reach the same route — this middleware sits outside
+    ``TrailingSlashMiddleware``, so it sees the raw path while the route sees
+    the normalised one. Keying them apart would let the retry create a second
+    resource, which is the whole failure this middleware prevents.
+    """
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+    body = {"title": "one case"}
+
+    async with _client(app) as client:
+        first = await client.post("/api/v1/cases", headers=headers, json=body)
+        with_slash = await client.post("/api/v1/cases/", headers=headers, json=body)
+
+    assert first.status_code == 200
+    # Defence in depth, not the load-bearing assertion. Unlike the exclusion
+    # test — which asserts an *absence* ("nothing was written") that a 307
+    # satisfies — this asserts a *presence*: a 307 cannot carry
+    # X-Idempotency-Replayed, so `_replayed` already fails if the request never
+    # reaches a cacheable route. Verified by probe: with the fixture route
+    # removed and this line deleted, a broken guard is still RED.
+    assert with_slash.status_code == 200, "must reach a cacheable 2xx, not a 307"
+    assert _replayed(with_slash), "the slash variant must replay, not re-execute"
+    assert with_slash.json() == first.json()
+    assert app.state.route_calls["cases"] == 1, "the route must run exactly once"
+
+
+async def test_paths_differing_by_more_than_a_slash_still_split():
+    """Normalising the slash must not merge genuinely different paths."""
+    app, _ = _build_app()
+    headers = {"Authorization": VICTIM, "Idempotency-Key": KEY}
+
+    async with _client(app) as client:
+        anon_ok = await client.post("/api/v1/anon-ok", headers=headers, json={})
+        anon_okay = await client.post("/api/v1/anon-okay", headers=headers, json={})
+
+    assert anon_ok.status_code == 200
+    assert anon_okay.status_code == 200
+    assert not _replayed(anon_okay), "a near-miss path must still split the bucket"
 
 
 async def test_same_query_still_replays():

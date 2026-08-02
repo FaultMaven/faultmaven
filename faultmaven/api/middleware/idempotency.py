@@ -340,7 +340,19 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         detectable conflict rather than a cache miss that silently executes a
         second time. See ``dispatch``.
         """
-        method_path = f"{request.method}:{request.url.path}"
+        # Normalise the trailing slash, as ``_is_excluded_path`` does and for the
+        # same reason: this middleware sits *outside* ``TrailingSlashMiddleware``,
+        # so it sees the client's raw path while the route sees the normalised
+        # one. ``/api/v1/cases`` and ``/api/v1/cases/`` reach the same handler,
+        # so keying them apart would let a retry that varies only by the slash
+        # execute twice. Merging them is not a widening — it makes the key agree
+        # with the routing that actually happens.
+        #
+        # The query string keeps its exact value: unlike the trailing slash it
+        # is never normalised downstream, and two different queries really are
+        # two different operations.
+        normalized_path = request.url.path.rstrip("/") or "/"
+        method_path = f"{request.method}:{normalized_path}"
         combined = "|".join(
             [idempotency_key, method_path, request.url.query, caller_identity]
         )
