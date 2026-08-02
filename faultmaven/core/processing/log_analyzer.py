@@ -27,7 +27,6 @@ Core Design Principles:
 • Learning: Continuously improve from user interactions and feedback
 • Privacy-First: Enhanced PII detection and sanitization in logs
 • Resilience: Implement retries and fallbacks with memory
-• Cost-Efficiency: Use semantic caching with context awareness
 • Extensibility: Use interfaces for pluggable components
 • Observability: Add tracing spans for key operations
 """
