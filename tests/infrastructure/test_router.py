@@ -152,7 +152,15 @@ class TestLLMRouter:
 
     @pytest.mark.asyncio
     async def test_route_with_caching(self, router):
-        """Test that responses are cached."""
+        """Responses are cached exactly where the cache can answer.
+
+        The response cache is exact-key (#940): the model is part of the key, so
+        ``check`` can only answer a call that named a model. The store is gated
+        on that same predicate, which makes both halves observable here — a
+        no-model call leaves the cache empty (storing it under whichever model
+        the provider picked was a write no lookup could reach), and a call that
+        names a model stores an entry the identical next call is served from.
+        """
         mock_response = {
             "choices": [{"message": {"content": "Cached response"}}],
             "usage": {"total_tokens": 10},
@@ -187,24 +195,30 @@ class TestLLMRouter:
             )
             mock_session.post = mock_post
 
-            # First call - should hit the API
+            # A call that names no model: hits the API, and stores nothing —
+            # nothing could ever look it up.
             result1 = await router.route("Test prompt for caching")
             assert result1.content == "Cached response"
             assert not result1.cached
+            assert mock_post.call_count == 1
+            assert router.cache.cache == {}
 
-            # Get the actual model that was used from the response
+            # The model the provider actually answered with — naming it is what
+            # arms the cache.
             actual_model = result1.model
 
-            # Verify the API was called once
-            assert mock_post.call_count == 1
-
-            # Second call with same prompt and the actual model - should use cache
+            # Same prompt, now with the model named: still a miss (nothing was
+            # stored above), so it hits the API and this time it is cached.
             result2 = await router.route("Test prompt for caching", model=actual_model)
-            assert result2.content == "Cached response"
-            assert result2.cached
+            assert not result2.cached
+            assert mock_post.call_count == 2
+            assert len(router.cache.cache) == 1
 
-            # Verify the API was still only called once (no new calls)
-            assert mock_post.call_count == 1
+            # The identical call is served from memory, with no new API call.
+            result3 = await router.route("Test prompt for caching", model=actual_model)
+            assert result3.content == "Cached response"
+            assert result3.cached
+            assert mock_post.call_count == 2
 
     @pytest.mark.asyncio
     async def test_route_different_prompts_not_cached(self, router):

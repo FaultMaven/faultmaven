@@ -23,7 +23,7 @@ from faultmaven.infrastructure.shims import llm_latency, llm_requests, llm_token
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
 
-from .cache import SemanticCache
+from .cache import LLMResponseCache
 from .providers import LLMResponse, get_registry
 
 # Opik native tracing for LLM calls
@@ -70,7 +70,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         )
 
         self.sanitizer = DataSanitizer()
-        self.cache = SemanticCache()
+        self.cache = LLMResponseCache()
         self.confidence_threshold = confidence_threshold
         self._router_initialized = False  # Track router initialization separately
 
@@ -166,8 +166,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             await self._sanitize_if_needed(messages) if messages else None
         )
 
-        # Check cache first (skip for multi-turn conversations — not cacheable)
-        # The cache will be stored with the effective model used
+        # Check cache first. The cache is exact-key (#940): it can only answer
+        # when the caller named a model, since the model is part of the key.
+        # Multi-turn `messages` calls are skipped outright — an identical
+        # message list is not a thing that recurs, so there is nothing to hit.
         cache_model = model  # Use the requested model for cache lookup
         if cache_model and not messages and sanitized_prompt:
             cached_response = self.cache.check(
@@ -220,13 +222,27 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 retry_delay=1.0,
             )
 
-            # Store successful response in cache
-            if response.confidence >= self.confidence_threshold and sanitized_prompt:
-                # Store with the requested model key for consistent cache lookup
-                store_model = model or response.model
-                self.cache.store(
-                    sanitized_prompt, store_model, response, case_id=case_id
-                )
+            # Store successful response in cache. Pure dict write plus a sha256
+            # — no embedding, so this is safe to do inline on the event loop.
+            #
+            # The gate is the *same predicate as the check above*: store only on
+            # the calls the cache can later answer. Storing under the model the
+            # provider happened to pick (`model or response.model`) filled the
+            # cache with entries no lookup could reach, since `check` keys on the
+            # model the caller named — dead writes for every no-model caller
+            # (title generation, suggestions).
+            #
+            # Residual, deliberately not fixed here (fm#513 cluster): when the
+            # fallback chain answered with a different model than the one
+            # requested, the entry is still keyed under the *requested* model, so
+            # a later identical call is served a response another model produced.
+            if (
+                model
+                and not messages
+                and sanitized_prompt
+                and response.confidence >= self.confidence_threshold
+            ):
+                self.cache.store(sanitized_prompt, model, response, case_id=case_id)
 
             # Attach prompt data for telemetry
             response.sanitized_prompt = sanitized_prompt

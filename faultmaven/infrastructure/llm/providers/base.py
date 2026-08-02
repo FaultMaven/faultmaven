@@ -195,7 +195,7 @@ class LLMResponse:
     cache_read_tokens: int = 0
     # True when the provider served part of the prompt from ITS OWN prompt cache
     # (a real, reduced-rate billed read). Distinct from `cached`, which means the
-    # response was served from FaultMaven's local SemanticCache (zero provider
+    # response was served from FaultMaven's local LLMResponseCache (zero provider
     # spend). Never conflate the two — doing so mislabels billed calls as free.
     prompt_cache_hit: bool = False
 
