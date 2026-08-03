@@ -724,7 +724,14 @@ async def list_users(
             for user in users
         ]
 
-        return {"users": users_list, "total": total_count}
+        # The listing is capped at 1000 with no pagination parameters, while
+        # `total` counts every user. Say so rather than letting a caller read
+        # a short list as the whole population.
+        return {
+            "users": users_list,
+            "total": total_count,
+            "truncated": len(users_list) < total_count,
+        }
 
     except HTTPException:
         raise
