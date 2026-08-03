@@ -2211,7 +2211,7 @@ async def create_case_for_session(
                 detail="Failed to create case for session",
             )
 
-        return {"case_id": case_id, "created_new": force_new, "success": True}
+        return {"case_id": case_id, "success": True}
 
     except HTTPException:
         raise
