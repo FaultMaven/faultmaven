@@ -4796,16 +4796,14 @@ class MilestoneEngine:
                 )
 
             # Append the synthesized summary (or skip / failure note) so it
-            # appears in chat at the moment of generation. Update the
-            # already-recorded turn_record in place and re-save so chat
-            # history persists the composed reply, not just the LLM's text.
+            # appears in chat at the moment of generation. The composed reply
+            # is persisted by the caller (investigation_service step 4) from
+            # the returned ``agent_response`` — turn_history records are
+            # frozen and carry only a summary, never the chat text.
             if summary_payload:
                 agent_response_text = (
                     f"{agent_response_text}\n\n{summary_payload}".strip()
                 )
-                if case_updated.turn_history:
-                    case_updated.turn_history[-1].agent_response = agent_response_text
-                    await self.repository.save(case_updated)
 
             # INV-40 (§7.9): narration-truth coherence guard. The narration
             # channel (agent_response) is LLM free text and sits outside every
@@ -4832,9 +4830,6 @@ class MilestoneEngine:
                 agent_response_text = _prose_with_gate_notice(
                     agent_response_text, _overclaim_notice
                 )
-                if case_updated.turn_history:
-                    case_updated.turn_history[-1].agent_response = agent_response_text
-                    await self.repository.save(case_updated)
                 narration_overclaim_total.labels(
                     provider=_resolve_chat_provider_name(self.llm_provider)
                 ).inc()
