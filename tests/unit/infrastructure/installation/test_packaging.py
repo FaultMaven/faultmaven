@@ -186,11 +186,17 @@ class TestDependencyCategorization:
         """Verify base dependencies include LLM framework (required for core functionality)."""
         base_str = " ".join(base_dependencies)
 
-        required = ["openai", "anthropic", "fireworks-ai"]
+        required = ["openai", "anthropic"]
         for pkg in required:
             assert any(
                 pkg in dep for dep in base_dependencies
             ), f"Missing LLM dependency: {pkg}"
+
+        # The Fireworks provider is REST-only (aiohttp); the fireworks-ai SDK
+        # must stay out — its exact protobuf pin blocked security bumps (#903).
+        assert not any(
+            "fireworks" in dep for dep in base_dependencies
+        ), "fireworks-ai SDK reintroduced — the Fireworks provider does not use it"
 
     def test_enterprise_has_observability(self, enterprise_dependencies: List[str]):
         """Verify enterprise dependencies include observability tools."""
