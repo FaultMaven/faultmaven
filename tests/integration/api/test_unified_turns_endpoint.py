@@ -448,7 +448,6 @@ class TestSubmitTurnRejectsMalformedIntent:
         current_user.user_id = "test-user-123"
         return await submit_turn(
             case_id="case_abc123def456",
-            fastapi_request=MagicMock(),
             query="close it",
             files=[],
             pasted_content=None,
@@ -496,12 +495,8 @@ class TestSubmitTurnBillingExhaustion:
         current_user = MagicMock()
         current_user.user_id = "test-user-123"
 
-        request = MagicMock()
-        request.headers.get = MagicMock(return_value=None)  # no idempotency-key
-
         return await submit_turn(
             case_id="case_abc123def456",
-            fastapi_request=request,
             query="why is the pod crashing?",
             files=[],
             pasted_content=None,

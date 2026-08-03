@@ -35,12 +35,23 @@ EXCLUDED_PATH_MARKERS = ("/auth/",)
 
 # Exact paths excluded from idempotency. Kept separate from the substring
 # markers above because the obvious substring is unusable here: ``POST
-# /api/v1/sessions`` mints a session id, and ``api/v1/dependencies.py``
-# resolves a user from ``X-Session-Id`` alone — so that response body is a
-# credential and must never be replayed. But a ``/sessions`` substring marker
-# catches fifteen POST routes in this app, including
-# ``/api/v1/cases/sessions/{session_id}/case``, silently disabling idempotency
-# on exactly the route that needs it. Match the minting route and nothing else.
+# /api/v1/sessions`` mints a session id already bound to a user_id
+# (``modules/auth/api/session.py``), and a bare session id is still accepted as
+# proof of that identity wherever no ``Authorization`` header is present —
+# ``create_case_for_session`` in ``modules/case/api/routes.py`` derives its
+# ``user_id`` from ``session.user_id`` for exactly those callers. That makes the
+# mint response a credential: replaying it serves one caller's identity to
+# whoever presents the key next.
+#
+# The invariant to re-check before dropping this entry is "no route treats a
+# session id alone as identity" — not the continued existence of any single
+# call site. Call sites move; the exclusion stops being necessary only when
+# nothing derives identity from a session id.
+#
+# A ``/sessions`` substring marker is not an option: it catches fifteen POST
+# routes in this app, including ``/api/v1/cases/sessions/{session_id}/case``,
+# silently disabling idempotency on exactly the route that needs it. Match the
+# minting route and nothing else.
 EXCLUDED_EXACT_PATHS = frozenset({"/api/v1/sessions"})
 
 # Upper bound on a request body we are willing to buffer for fingerprinting.
