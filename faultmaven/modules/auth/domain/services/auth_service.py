@@ -73,9 +73,19 @@ class AuthService:
     carried a parallel mint until #853; it reached no route and was removed.
 
     Under ``AUTH_MODE=oauth`` verification is RS256 against the configured public
-    key; under ``AUTH_MODE=local`` it is HS256 against the shared secret. The
-    private key is still loaded because ``_algorithm``'s legacy fallback reads
-    its presence, not because anything here signs with it.
+    key; under ``AUTH_MODE=local`` it is HS256 against the shared secret.
+    ``AuthMode`` admits only those two values, so the RSA-presence branch at the
+    end of ``_algorithm`` is unreachable and decides nothing.
+
+    **Both RSA keys must stay configured, even though nothing here signs.**
+    ``_load_keys`` runs on every construction and loads the private key as well
+    as the public one. If *either* is missing it calls ``_generate_dev_keys``,
+    which overwrites **both** with a freshly generated random pair — it does not
+    fill in only the missing one. So dropping ``JWT_PRIVATE_KEY`` from an
+    ``AUTH_MODE=oauth`` deployment on the reasoning that a verify-only service
+    has no use for it silently replaces the configured *public* key too, and
+    every genuinely minted token then fails signature verification with a 401.
+    The only warning is a log line.
 
     Token revocation is tracked via the deployment-wide revocation store
     (one key prefix, shared by every revoke path — #767) with TTL matching
