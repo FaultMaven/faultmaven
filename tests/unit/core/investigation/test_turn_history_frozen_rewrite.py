@@ -9,8 +9,11 @@ sim turn 14 when the INV-40 notice fired), and ``agent_response`` is not a
 even an unfrozen write would have been dropped by ``model_dump`` on save. The
 composed reply reaches chat through the engine's returned ``agent_response``,
 which ``investigation_service.process_turn`` step 4 appends to
-``case.messages`` and persists. The engine-side writes were deleted; these
-tests pin the two contracts that made them wrong.
+``case.messages`` and persists. The engine-side writes were deleted; the
+composed reply is instead reflected into the record's real summary channel
+(``agent_response_summary``) by frozen-safe replacement (``model_copy``), so
+the next-turn prompt and turn_outcome heuristics see the corrected text.
+These tests pin the two contracts that made the original writes wrong.
 """
 
 import pydantic

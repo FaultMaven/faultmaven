@@ -118,13 +118,17 @@ class OpenAIProvider(BaseLLMProvider):
             return False
         return bool(cls._COMPLETION_TOKENS_MODEL_RE.search(name))
 
-    # Model families with server-side DEFAULT reasoning on /v1/chat/completions
-    # (gpt-5.6+): they reject non-default ``temperature`` (only 1 accepted) and
-    # reject function tools unless ``reasoning_effort`` is explicitly ``"none"``
+    # Model families with server-side DEFAULT reasoning on /v1/chat/completions:
+    # they reject non-default ``temperature`` (only 1 accepted) and reject
+    # function tools unless ``reasoning_effort`` is explicitly ``"none"``
     # ("use /v1/responses" otherwise). Earlier reasoning families don't share
     # either constraint — gpt-5.4-mini accepts ``temperature: 0.2`` and tool
     # calls without an effort param — so this family needs its own axis rather
-    # than reusing the completion-tokens regex.
+    # than reusing the completion-tokens regex. The tuple lists EXACTLY the
+    # verified families (probed 2026-08-03): if a later release (gpt-5.7, …)
+    # ships the same constraints it must be added here deliberately — until
+    # then it fails loudly with the API's own 400, never a silent behavior
+    # change.
     _DEFAULT_REASONING_MODEL_FAMILIES = ("gpt-5.6",)
     _DEFAULT_REASONING_MODEL_RE = re.compile(
         r"(?:^|/)(?:"
@@ -235,14 +239,18 @@ class OpenAIProvider(BaseLLMProvider):
             if self._uses_completion_tokens_param(effective_model)
             else "max_tokens"
         )
+        # One evaluation serves both the temperature and reasoning_effort
+        # decisions below — split call sites with opposite polarity invite the
+        # two axes drifting apart when the predicate's scope changes.
+        defaults_reasoning = self._defaults_reasoning(effective_model)
         payload = {
             "model": effective_model,
             "messages": messages if messages else [{"role": "user", "content": prompt}],
             token_limit_param: max_tokens,
         }
-        # Default-reasoning models (gpt-5.6+) accept only the default
-        # temperature and 400 on any other value; omission means default.
-        if not self._defaults_reasoning(effective_model):
+        # The gpt-5.6 family accepts only the default temperature and 400s on
+        # any other value; omission means default.
+        if not defaults_reasoning:
             payload["temperature"] = temperature
 
         # Add function calling support
@@ -250,9 +258,15 @@ class OpenAIProvider(BaseLLMProvider):
             payload["tools"] = tools
             if tool_choice:
                 payload["tool_choice"] = tool_choice
-            # Default-reasoning models reject function tools on
-            # /v1/chat/completions unless reasoning is explicitly disabled.
-            if self._defaults_reasoning(effective_model):
+            # The gpt-5.6 family rejects function tools on /v1/chat/completions
+            # unless reasoning is explicitly disabled — there is no combination
+            # on this endpoint where tools run WITH reasoning (that would need
+            # /v1/responses support), so "none" is mandatory, not a preference:
+            # pop any stray kwargs copy so the merge below can't restore the
+            # 400. Trade-off: tool-loop turns on these models run without
+            # hidden reasoning.
+            if defaults_reasoning:
+                kwargs.pop("reasoning_effort", None)
                 payload["reasoning_effort"] = "none"
 
         # Add response format if specified in kwargs

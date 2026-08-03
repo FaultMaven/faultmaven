@@ -452,14 +452,17 @@ def test_token_param_classifier_is_pure_and_case_insensitive():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
 class TestOpenAIDefaultReasoningFamily:
-    """gpt-5.6+ reason by DEFAULT on /v1/chat/completions: they 400 on any
-    non-default ``temperature`` (only the default is accepted — omission means
-    default) and 400 on function tools unless ``reasoning_effort`` is
-    explicitly ``"none"`` ('use /v1/responses' otherwise). Earlier reasoning
-    families share neither constraint — gpt-5.4-mini accepts ``temperature:
-    0.2`` and effort-less tool calls — so the accommodation is scoped to the
-    ``gpt-5.6`` family predicate and must not leak to other models."""
+    """The gpt-5.6 family reasons by DEFAULT on /v1/chat/completions: it 400s
+    on any non-default ``temperature`` (only the default is accepted —
+    omission means default) and on function tools unless ``reasoning_effort``
+    is explicitly ``"none"`` ('use /v1/responses' otherwise). Earlier
+    reasoning families share neither constraint — gpt-5.4-mini accepts
+    ``temperature: 0.2`` and effort-less tool calls — so the accommodation is
+    scoped to the ``gpt-5.6`` family predicate and must not leak to other
+    models, nor onto OpenRouter routes (the gateway normalizes temperature
+    itself and rejects the top-level effort param)."""
 
     @pytest.mark.parametrize(
         "model,expected",
@@ -537,3 +540,32 @@ class TestOpenAIDefaultReasoningFamily:
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["temperature"] == 0.2
             assert "reasoning_effort" not in request_body
+
+    def test_openrouter_opts_out(self):
+        """OpenRouter routes never take the direct-OpenAI accommodation: the
+        gateway normalizes ``temperature`` itself and rejects-or-ignores the
+        top-level ``reasoning_effort``, so ``openai/gpt-5.6-*`` ids must not
+        match through the subclass — mirroring the other two predicate
+        opt-outs pinned above."""
+        assert OpenAIProvider._defaults_reasoning("openai/gpt-5.6-luna") is True
+        assert OpenRouterProvider._defaults_reasoning("openai/gpt-5.6-luna") is False
+        assert OpenRouterProvider._defaults_reasoning("gpt-5.6-luna") is False
+
+    async def test_mandatory_effort_none_survives_kwargs_merge(self):
+        """``"none"`` is a hard API requirement with tools on this family, not
+        a preference — a stray ``reasoning_effort`` threaded through kwargs
+        must not restore the 400 by overwriting it in the payload merge."""
+        provider = OpenAIProvider(_config_for("gpt-5.6-luna"))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate(
+                "hi",
+                tools=[
+                    {"type": "function", "function": {"name": "f", "parameters": {}}}
+                ],
+                reasoning_effort="medium",
+            )
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert request_body["reasoning_effort"] == "none"

@@ -4842,6 +4842,30 @@ class MilestoneEngine:
                     },
                 )
 
+            # The turn record (step 6) summarized the RAW LLM text; the gate,
+            # summary, and INV-40 compositions above changed only the returned
+            # reply. Re-record the summary channel when they diverge: the
+            # next-turn prompt (context_builder) and the turn_outcome
+            # heuristics read ``agent_response_summary``, so without this the
+            # model is replayed its own uncorrected over-claim (the #668 loop
+            # INV-40 exists to break) and terminal summaries vanish from
+            # long-case state prompts. TurnProgress is frozen — replace the
+            # record, never mutate; the caller's step-4 save persists it
+            # alongside the messages.
+            if (
+                case_updated.turn_history
+                and agent_response_text != response_obj.agent_response
+            ):
+                case_updated.turn_history[-1] = case_updated.turn_history[
+                    -1
+                ].model_copy(
+                    update={
+                        "agent_response_summary": self._summarize_text(
+                            agent_response_text, 500
+                        )
+                    }
+                )
+
             # Compliance instrumentation: per-turn signal on whether the LLM
             # is honoring the transition-handling prompt rules. Used for
             # quarterly drift review across model-version changes and prompt
