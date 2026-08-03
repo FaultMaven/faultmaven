@@ -286,11 +286,15 @@ class ProtectionSystem:
 
         try:
             # Add intelligent protection middleware
+            # ``trusted_proxies`` comes from the same ``ProtectionSettings`` the
+            # rate limiter is configured from, so the address a request is
+            # *analysed* under cannot disagree with the one it is *limited* by.
             self.intelligent_middleware = IntelligentProtectionMiddleware(
                 app=self.app,
                 config=self.intelligent_config,
                 session_store=self.session_store,
                 enabled=True,
+                trusted_proxies=self.basic_config.trusted_proxies,
             )
 
             self.app.add_middleware(
@@ -298,6 +302,7 @@ class ProtectionSystem:
                 config=self.intelligent_config,
                 session_store=self.session_store,
                 enabled=True,
+                trusted_proxies=self.basic_config.trusted_proxies,
             )
 
             intelligent_result["middleware_added"].append(

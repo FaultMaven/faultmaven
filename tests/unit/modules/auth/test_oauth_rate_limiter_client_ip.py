@@ -1,0 +1,323 @@
+"""OAuth limits are per client, not per ingress (fm#948).
+
+``OAuthRateLimiter.check_rate_limit`` keyed on ``request.client.host``. Behind
+an ingress that address is the ingress pod's, identical for every caller, so
+``/token``'s 5-per-minute budget was shared by the entire deployment: the first
+user to authenticate refused everyone else for the rest of the minute.
+
+Every test here drives the enforcement surface — ``check_rate_limit`` raising
+``HTTPException`` 429 — rather than a key helper, because a correct key that no
+limit consults fixes nothing.
+
+The fix adopts the fm#927 resolver, so the tests below pin *both* directions at
+once: the shared bucket must open up behind a configured proxy, and the header
+rotation fm#927 closed must stay closed everywhere else.
+"""
+
+import pytest
+from fastapi import HTTPException
+from starlette.datastructures import Headers
+
+from faultmaven.modules.auth.api import rate_limiting as oauth_rate_limiting
+from faultmaven.modules.auth.api.rate_limiting import (
+    OAuthRateLimiter,
+    require_oauth_rate_limit_token,
+    reset_rate_limiter,
+)
+
+pytestmark = [pytest.mark.unit, pytest.mark.security]
+
+INGRESS = "10.42.0.7"
+INGRESS_RANGE = "10.42.0.0/16"
+CLIENT_A = "203.0.113.1"
+CLIENT_B = "203.0.113.2"
+TOKEN_LIMIT = 5  # /token, requests per minute
+
+
+class _StubRequest:
+    """A request stub whose headers are a REAL ``starlette.Headers``.
+
+    Not a dict: a dict cannot express two ``X-Forwarded-For`` field lines, and
+    that is precisely the shape that defeated the resolver once already. A
+    fixture that cannot represent the input can never fail on it.
+    """
+
+    def __init__(self, peer, headers=None):
+        self.client = _Peer(peer) if peer is not None else None
+        items = (
+            list(headers.items()) if isinstance(headers, dict) else list(headers or [])
+        )
+        self.headers = Headers(
+            raw=[(name.lower().encode(), value.encode()) for name, value in items]
+        )
+
+
+class _Peer:
+    def __init__(self, host):
+        self.host = host
+
+
+def _forwarded(client_ip, peer=INGRESS):
+    """A request that arrived at ``peer`` carrying ``client_ip`` forwarded."""
+    return _StubRequest(peer, {"X-Forwarded-For": client_ip})
+
+
+async def _spend(limiter, request_factory, count, endpoint="/token"):
+    """Consume ``count`` of the budget, asserting none of them is refused."""
+    for n in range(count):
+        await limiter.check_rate_limit(request_factory(), endpoint)
+
+
+async def _refused(limiter, request, endpoint="/token") -> bool:
+    try:
+        await limiter.check_rate_limit(request, endpoint)
+    except HTTPException as exc:
+        assert exc.status_code == 429
+        return True
+    return False
+
+
+class TestClientsBehindAnIngressDoNotShareOneBucket:
+    """The fm#948 defect itself, at the enforcement boundary."""
+
+    async def test_one_clients_exhausted_budget_does_not_refuse_another(self):
+        limiter = OAuthRateLimiter(trusted_proxies=[INGRESS_RANGE])
+
+        await _spend(limiter, lambda: _forwarded(CLIENT_A), TOKEN_LIMIT)
+
+        # Client A has spent its whole minute...
+        assert await _refused(limiter, _forwarded(CLIENT_A))
+        # ...and client B, arriving through the very same ingress pod, has not.
+        assert not await _refused(limiter, _forwarded(CLIENT_B))
+
+    async def test_every_endpoint_is_keyed_the_same_way(self):
+        """The defect was in the shared method, so it applied to all six."""
+        for endpoint, limit in (
+            ("/authorize", 10),
+            ("/token", 5),
+            ("/revoke", 20),
+            ("/sso/login", 10),
+            ("/sso/callback", 10),
+            ("/sso/exchange", 5),
+        ):
+            limiter = OAuthRateLimiter(trusted_proxies=[INGRESS_RANGE])
+            await _spend(limiter, lambda: _forwarded(CLIENT_A), limit, endpoint)
+
+            assert await _refused(limiter, _forwarded(CLIENT_A), endpoint), endpoint
+            assert not await _refused(limiter, _forwarded(CLIENT_B), endpoint), endpoint
+
+
+class TestTheEvasionDirectionStaysClosed:
+    """Adopting the resolver must not re-open fm#927.
+
+    A caller that is not behind a configured proxy chooses the content of its
+    own ``X-Forwarded-For``. If that value reached the key, the limit would be
+    keyed on a value the limited party picks — which is no limit at all.
+    """
+
+    async def test_rotating_a_forged_header_cannot_draw_a_fresh_budget(self):
+        limiter = OAuthRateLimiter()  # no trusted proxies
+        attacker = "198.51.100.77"
+
+        for n in range(TOKEN_LIMIT):
+            await limiter.check_rate_limit(
+                _StubRequest(attacker, {"X-Forwarded-For": f"1.2.3.{n}"}), "/token"
+            )
+
+        assert await _refused(
+            limiter, _StubRequest(attacker, {"X-Forwarded-For": "1.2.3.99"})
+        )
+
+    async def test_a_second_field_line_cannot_draw_one_either(self):
+        """``Headers.get()`` reads only the first line; the resolver reads all."""
+        limiter = OAuthRateLimiter()
+        attacker = "198.51.100.78"
+
+        for n in range(TOKEN_LIMIT):
+            await limiter.check_rate_limit(
+                _StubRequest(
+                    attacker,
+                    [
+                        ("X-Forwarded-For", f"9.9.9.{n}"),
+                        ("X-Forwarded-For", f"8.8.8.{n}"),
+                    ],
+                ),
+                "/token",
+            )
+
+        assert await _refused(
+            limiter,
+            _StubRequest(
+                attacker,
+                [("X-Forwarded-For", "9.9.9.99"), ("X-Forwarded-For", "8.8.8.99")],
+            ),
+        )
+
+
+class TestUnconfiguredIsExactlyTodaysBehaviour:
+    """The fix is inert until the infrastructure setting lands.
+
+    With no trusted proxies the resolver returns the socket peer and
+    ``UNKNOWN_CLIENT_IP`` when there is none — byte-identical to the code this
+    replaced. A deployment that upgrades without setting anything must see no
+    change at all.
+    """
+
+    async def test_distinct_peers_get_distinct_budgets(self):
+        limiter = OAuthRateLimiter()
+
+        await _spend(limiter, lambda: _StubRequest("198.51.100.1"), TOKEN_LIMIT)
+
+        assert await _refused(limiter, _StubRequest("198.51.100.1"))
+        assert not await _refused(limiter, _StubRequest("198.51.100.2"))
+
+    async def test_a_missing_peer_is_still_limited_and_does_not_crash(self):
+        """No transport peer must not mean no limit — nor an exception."""
+        limiter = OAuthRateLimiter()
+
+        await _spend(limiter, lambda: _StubRequest(None), TOKEN_LIMIT)
+
+        assert await _refused(limiter, _StubRequest(None))
+
+    async def test_a_missing_peer_does_not_share_a_real_clients_budget(self):
+        limiter = OAuthRateLimiter()
+
+        await _spend(limiter, lambda: _StubRequest(None), TOKEN_LIMIT)
+
+        assert not await _refused(limiter, _StubRequest("198.51.100.3"))
+
+
+class TestAMistypedTrustEntryNarrowsTrust:
+    """``10.42.0.7/16`` is the classic operator paste: a live pod address plus
+    the cluster mask. ``ipaddress.ip_network`` defaults to ``strict=False`` and
+    would round it *outward* to ``10.42.0.0/16``, trusting 65,536 addresses.
+
+    ``parse_trusted_proxies`` is strict, so the entry is dropped and the ingress
+    is simply not trusted — the limit degrades to the shared bucket rather than
+    widening trust. Asserted here, at the surface that renders the consequence,
+    and not only in the parser's own tests: a malformed entry must narrow trust,
+    never widen it.
+    """
+
+    async def test_the_ingress_is_not_trusted_so_headers_are_ignored(self):
+        limiter = OAuthRateLimiter(trusted_proxies=["10.42.0.7/16"])
+
+        # Alternating forwarded addresses; if the mistyped entry had been
+        # rounded up, these would be two independent budgets.
+        for n in range(TOKEN_LIMIT):
+            await limiter.check_rate_limit(
+                _forwarded(CLIENT_A if n % 2 else CLIENT_B), "/token"
+            )
+
+        assert await _refused(limiter, _forwarded("203.0.113.3"))
+
+    async def test_a_correctly_written_range_still_works(self):
+        """Strictness must not cost the correct configuration."""
+        limiter = OAuthRateLimiter(trusted_proxies=[INGRESS_RANGE])
+
+        await _spend(limiter, lambda: _forwarded(CLIENT_A), TOKEN_LIMIT)
+
+        assert not await _refused(limiter, _forwarded(CLIENT_B))
+
+
+class TestTheTrustListIsResolvedLazily:
+    """``_oauth_rate_limiter = OAuthRateLimiter()`` runs at *import* time.
+
+    Nothing guarantees that `.env` has reached ``os.environ`` by then; the first
+    request does guarantee it. So the singleton must read the environment on
+    first use, not on construction — otherwise the setting is silently empty on
+    exactly the deployments that configured it.
+    """
+
+    async def test_the_env_is_read_after_construction_not_before(self, monkeypatch):
+        monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+        limiter = OAuthRateLimiter()  # constructed while the key is unset
+
+        monkeypatch.setenv("PROTECTION_TRUSTED_PROXIES", INGRESS_RANGE)
+
+        # First use is now. If construction had read the environment, the
+        # ingress would be untrusted and both clients would share one budget.
+        await _spend(limiter, lambda: _forwarded(CLIENT_A), TOKEN_LIMIT)
+
+        assert await _refused(limiter, _forwarded(CLIENT_A))
+        assert not await _refused(limiter, _forwarded(CLIENT_B))
+
+    async def test_it_is_resolved_once_and_then_pinned(self, monkeypatch):
+        """Re-reading per request would make the key depend on a mutable global."""
+        monkeypatch.setenv("PROTECTION_TRUSTED_PROXIES", INGRESS_RANGE)
+        limiter = OAuthRateLimiter()
+
+        await _spend(limiter, lambda: _forwarded(CLIENT_A), TOKEN_LIMIT)
+        monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+
+        # Still keyed on the forwarded address, so client A is still refused. A
+        # re-read would key on the ingress peer, whose budget is untouched.
+        assert await _refused(limiter, _forwarded(CLIENT_A))
+
+    async def test_an_explicit_list_ignores_the_environment_entirely(self, monkeypatch):
+        monkeypatch.setenv("PROTECTION_TRUSTED_PROXIES", INGRESS_RANGE)
+        limiter = OAuthRateLimiter(trusted_proxies=[])
+
+        for n in range(TOKEN_LIMIT):
+            await limiter.check_rate_limit(_forwarded(f"203.0.113.{n}"), "/token")
+
+        assert await _refused(limiter, _forwarded("203.0.113.99"))
+
+    async def test_reset_makes_the_singleton_re_read(self, monkeypatch):
+        """Otherwise the first test to touch the singleton pins it for the run."""
+        monkeypatch.setenv("PROTECTION_TRUSTED_PROXIES", INGRESS_RANGE)
+        reset_rate_limiter()
+        singleton = oauth_rate_limiting._oauth_rate_limiter
+
+        await _spend(singleton, lambda: _forwarded(CLIENT_A), TOKEN_LIMIT)
+        assert await _refused(singleton, _forwarded(CLIENT_A))
+
+        monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+        reset_rate_limiter()
+
+        # Trust dropped: five *differently* forwarded requests now share the
+        # ingress peer's single budget, so the sixth is refused.
+        for n in range(TOKEN_LIMIT):
+            await singleton.check_rate_limit(_forwarded(f"203.0.113.{n}"), "/token")
+
+        assert await _refused(singleton, _forwarded("203.0.113.99"))
+        reset_rate_limiter()
+
+
+class TestTheDependencyConsultsTheFixedLimiter:
+    """The wiring, not just the method.
+
+    ``require_oauth_rate_limit_token`` is the callable FastAPI actually
+    ``Depends`` on. A perfect ``check_rate_limit`` that no dependency reaches
+    would leave ``/token`` exactly as broken as before.
+    """
+
+    async def test_it_refuses_once_the_budget_is_spent(self, monkeypatch):
+        monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+        reset_rate_limiter()
+        try:
+            for _ in range(TOKEN_LIMIT):
+                await require_oauth_rate_limit_token(_StubRequest("198.51.100.9"))
+
+            with pytest.raises(HTTPException) as refusal:
+                await require_oauth_rate_limit_token(_StubRequest("198.51.100.9"))
+
+            assert refusal.value.status_code == 429
+        finally:
+            reset_rate_limiter()
+
+    async def test_it_separates_clients_behind_a_configured_ingress(self, monkeypatch):
+        monkeypatch.setenv("PROTECTION_TRUSTED_PROXIES", INGRESS_RANGE)
+        reset_rate_limiter()
+        try:
+            for _ in range(TOKEN_LIMIT):
+                await require_oauth_rate_limit_token(_forwarded(CLIENT_A))
+
+            with pytest.raises(HTTPException):
+                await require_oauth_rate_limit_token(_forwarded(CLIENT_A))
+
+            # The neighbour is unaffected — the whole point of fm#948.
+            await require_oauth_rate_limit_token(_forwarded(CLIENT_B))
+        finally:
+            monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+            reset_rate_limiter()

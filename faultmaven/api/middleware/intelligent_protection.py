@@ -4,12 +4,13 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
+from faultmaven.api.middleware.client_ip import parse_trusted_proxies, resolve_client_ip
 from faultmaven.models.behavioral import ProtectionDecision, RiskLevel
 from faultmaven.models.interfaces import ISessionStore
 from faultmaven.utils.serialization import to_json_compatible
@@ -36,10 +37,18 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
         config: Optional[Any] = None,
         session_store: Optional[ISessionStore] = None,
         enabled: bool = True,
+        trusted_proxies: Optional[Iterable[str]] = None,
     ):
         super().__init__(app)
         self.enabled = enabled
         self.logger = logging.getLogger(__name__)
+
+        # Parsed before the disabled early-return so a disabled instance still
+        # carries the attribute. Eager, unlike the OAuth limiter: this
+        # middleware is constructed by ``ProtectionSystem`` after settings are
+        # loaded, matching ``RateLimitMiddleware``. The default — none — means
+        # the socket peer is used and forwarding headers are ignored.
+        self.trusted_proxies = parse_trusted_proxies(trusted_proxies)
 
         if not self.enabled:
             self.logger.info("Intelligent Protection Middleware disabled")
@@ -180,9 +189,15 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
         return None
 
     def _get_client_identifier(self, request: Request) -> str:
-        """Get client identifier for requests without session ID"""
+        """Get client identifier for requests without session ID.
+
+        The address comes from the shared resolver: behind an ingress the
+        socket peer is one value for every client, so a peer-based identifier
+        collapses distinct anonymous callers onto a single identity (and with
+        it, a single behavioural profile).
+        """
         # Use IP address and User-Agent as fallback identifier
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = resolve_client_ip(request, self.trusted_proxies)
         user_agent = request.headers.get("user-agent", "unknown")
 
         # Create a consistent identifier
@@ -199,7 +214,7 @@ class IntelligentProtectionMiddleware(BaseHTTPMiddleware):
             "endpoint": request.url.path,
             "method": request.method,
             "timestamp": datetime.now(timezone.utc),
-            "client_ip": request.client.host if request.client else "unknown",
+            "client_ip": resolve_client_ip(request, self.trusted_proxies),
             "user_agent": request.headers.get("user-agent", ""),
             "content_type": request.headers.get("content-type", ""),
             "content_length": int(request.headers.get("content-length", 0)),
