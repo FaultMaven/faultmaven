@@ -27,7 +27,6 @@ including sites added later.
 
 from __future__ import annotations
 
-import ast
 import pathlib
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -40,6 +39,10 @@ import faultmaven.modules.auth.api as auth_api_package
 from faultmaven.api.v1.auth_dependencies import require_platform_admin
 from faultmaven.exceptions import ServiceException
 from faultmaven.modules.auth.api.auth import router as auth_router
+from tests.error_text_ast import (
+    http_exception_leak_sites,
+    returned_body_leak_sites,
+)
 
 AUTH_API_DIR = pathlib.Path(auth_api_package.__file__).parent
 
@@ -73,71 +76,31 @@ def _auth_api_sources() -> list[pathlib.Path]:
     return paths
 
 
-def _interpolates(node: ast.AST, name: str) -> bool:
-    """Does ``node`` embed the caught exception bound to ``name``?"""
-    text = ast.unparse(node)
-    return f"str({name})" in text or f"{{{name}}}" in text or f"{{str({name})}}" in text
-
-
-def _is_500(call: ast.Call) -> bool:
-    for kw in call.keywords:
-        if kw.arg == "status_code":
-            text = ast.unparse(kw.value)
-            if "500" in text or "INTERNAL_SERVER_ERROR" in text:
-                return True
-    return any(
-        "500" in ast.unparse(a) or "INTERNAL_SERVER_ERROR" in ast.unparse(a)
-        for a in call.args
-    )
-
-
-def _detail_arg(call: ast.Call) -> ast.AST | None:
-    for kw in call.keywords:
-        if kw.arg == "detail":
-            return kw.value
-    return None
-
-
 @pytest.mark.unit
 def test_no_500_site_interpolates_the_exception():
-    """No ``HTTPException(500)`` under ``modules/auth/api/`` interpolates ``e``.
+    """No 5xx under ``modules/auth/api/`` carries ``e`` into the response.
 
     Pins the whole class rather than the endpoints probed below, so a new
     handler copied from an old one cannot quietly reintroduce the leak. Both
     detail forms are covered: the f-string and the
     ``{"error": ..., "message": ...}`` dict, whose ``message`` value main.py
-    extracts and returns verbatim.
+    extracts and returns verbatim. The analysis in ``tests/error_text_ast``
+    follows local aliases and matches ``ast.Name`` nodes, so ``repr(e)``,
+    ``f"{e!s}"``, ``e.args[0]``, a positional ``detail`` and a payload built one
+    statement earlier are all caught too.
 
     4xx sites are deliberately out of scope: ``detail=str(e)`` on an
     ``InvalidGrantError`` or ``ValidationException`` arm is a domain message
     meant for the caller, not internal text escaping a broad except.
     """
-    offenders: list[str] = []
-    for path in _auth_api_sources():
-        tree = ast.parse(path.read_text())
-        for handler in ast.walk(tree):
-            if not isinstance(handler, ast.ExceptHandler) or not handler.name:
-                continue
-            for node in ast.walk(handler):
-                if not isinstance(node, ast.Raise) or not isinstance(
-                    node.exc, ast.Call
-                ):
-                    continue
-                func = node.exc.func
-                if (getattr(func, "id", None) or getattr(func, "attr", None)) != (
-                    "HTTPException"
-                ):
-                    continue
-                detail = _detail_arg(node.exc)
-                if detail is None or not _is_500(node.exc):
-                    continue
-                if _interpolates(detail, handler.name):
-                    offenders.append(f"{path.name}:{node.lineno}")
+    offenders = [
+        site for path in _auth_api_sources() for site in http_exception_leak_sites(path)
+    ]
 
     assert offenders == [], (
-        "HTTPException(500) sites interpolating the caught exception (leaks "
-        "internal text verbatim; use a static detail and log server-side): "
-        f"{offenders}"
+        "5xx HTTPException sites carrying the caught exception into the "
+        "response (leaks internal text verbatim; use a static detail and log "
+        f"server-side): {offenders}"
     )
 
 
@@ -149,16 +112,9 @@ def test_no_except_handler_returns_the_exception():
     degraded by *returning* ``{"status": "unhealthy", "error": str(e)}`` with a
     200, on an unauthenticated route. Same leak, different wire shape.
     """
-    offenders: list[str] = []
-    for path in _auth_api_sources():
-        tree = ast.parse(path.read_text())
-        for handler in ast.walk(tree):
-            if not isinstance(handler, ast.ExceptHandler) or not handler.name:
-                continue
-            for node in ast.walk(handler):
-                if isinstance(node, ast.Return) and node.value is not None:
-                    if _interpolates(node.value, handler.name):
-                        offenders.append(f"{path.name}:{node.lineno}")
+    offenders = [
+        site for path in _auth_api_sources() for site in returned_body_leak_sites(path)
+    ]
 
     assert offenders == [], (
         "return statements inside except handlers embedding the caught "

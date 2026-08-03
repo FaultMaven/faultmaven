@@ -17,18 +17,31 @@ serialized straight to the client.
 
 This is the case-module analogue of the knowledge module's #866 fix, and these
 tests follow that module's ``test_error_text_not_echoed.py``: they assert on
-the **class**, not on one site. ``test_no_500_site_interpolates_the_exception``
-is the load-bearing one — it fails if *any* site in the router reintroduces the
-pattern, including sites added later.
+the **class**, not on one site. The two class guards are the load-bearing ones
+— they fail if *any* site in the router reintroduces the pattern, including
+sites added later.
+
+Four sites survived the original sweep because they do not name the exception
+in the ``detail`` expression at all: this router builds an ``ErrorResponse``
+one statement earlier and passes ``error_response.model_dump()``, and two of
+them *return* a body instead of raising. Those are fixed and the guards now
+follow local aliases and cover returned bodies — see ``tests/error_text_ast``.
+
+Scope is ``routes.py``, as before. ``modules/case/api/replay.py`` has its own
+sites and is knowingly not covered here; it is queued with the remaining
+unswept modules.
 """
 
-import ast
 import pathlib
 
 import pytest
 
 import faultmaven.modules.case.api.routes as routes_module
 from faultmaven.exceptions import ServiceException
+from tests.error_text_ast import (
+    http_exception_leak_sites,
+    returned_body_leak_sites,
+)
 
 # A ServiceException carrying the sort of internals that wrapping leaks.
 _SECRET = "secret-internal-detail"
@@ -82,47 +95,47 @@ async def test_500_body_does_not_echo_the_exception(build_app, call_api):
 
 @pytest.mark.unit
 def test_no_500_site_interpolates_the_exception():
-    """Class guard: no ``HTTPException(500)`` in the router interpolates ``e``.
+    """Class guard: no 5xx in the router carries ``e`` into the response.
 
     Pins the whole class rather than the one endpoint above, so a new handler
     copied from an old one cannot quietly reintroduce the leak. 4xx sites are
     deliberately out of scope — ``detail=str(e)`` on a ``ValidationException``
     arm is a domain message meant for the caller.
+
+    The original version of this guard inspected the ``detail`` expression for
+    the substrings ``str(e)``/``{e}``, and so reported this file clean while
+    three sites leaked. This router does not put the text in ``detail``: it
+    builds the payload one statement earlier and passes an alias::
+
+        error_response = ErrorResponse(error=ErrorDetail(message=str(e)))
+        raise HTTPException(500, detail=error_response.model_dump())
+
+    ``tests/error_text_ast`` follows local aliases and matches ``ast.Name``
+    nodes rather than unparsed substrings, which is what closes that gap (and
+    ``repr(e)``, ``f"{e!s}"`` and ``e.args[0]`` with it).
     """
-    source = pathlib.Path(routes_module.__file__).read_text()
-    tree = ast.parse(source)
-
-    def is_500(call: ast.Call) -> bool:
-        for kw in call.keywords:
-            if kw.arg == "status_code":
-                text = ast.unparse(kw.value)
-                if "500" in text or "INTERNAL_SERVER_ERROR" in text:
-                    return True
-        return any(
-            "500" in ast.unparse(a) or "INTERNAL_SERVER_ERROR" in ast.unparse(a)
-            for a in call.args
-        )
-
-    def interpolates_exception(call: ast.Call) -> bool:
-        for kw in call.keywords:
-            if kw.arg == "detail":
-                text = ast.unparse(kw.value)
-                if "str(e)" in text or "{e}" in text:
-                    return True
-        return False
-
-    offenders = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
-            continue
-        func = node.exc.func
-        name = getattr(func, "id", None) or getattr(func, "attr", None)
-        if name != "HTTPException":
-            continue
-        if is_500(node.exc) and interpolates_exception(node.exc):
-            offenders.append(node.lineno)
+    offenders = http_exception_leak_sites(pathlib.Path(routes_module.__file__))
 
     assert offenders == [], (
-        "HTTPException(500) sites interpolating the exception (leaks internal "
-        f"text verbatim; use a static detail and log server-side): lines {offenders}"
+        "5xx HTTPException sites carrying the caught exception into the "
+        "response (leaks internal text verbatim; use a static message and log "
+        f"server-side): {offenders}"
+    )
+
+
+@pytest.mark.unit
+def test_no_except_handler_returns_the_exception():
+    """No ``return`` inside an ``except`` carries ``e`` into a body either.
+
+    The guard above cannot see these: ``list_cases`` degraded by *returning* a
+    ``JSONResponse(503, content=error_response.model_dump())``, and
+    ``GET /cases/health`` by returning ``{"error": str(e)}`` with a 200. Same
+    leak, different wire shape.
+    """
+    offenders = returned_body_leak_sites(pathlib.Path(routes_module.__file__))
+
+    assert offenders == [], (
+        "return statements inside except handlers carrying the caught "
+        "exception into the response body (use a static message and log "
+        f"server-side): {offenders}"
     )
