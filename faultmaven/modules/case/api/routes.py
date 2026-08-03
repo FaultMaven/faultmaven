@@ -2337,6 +2337,20 @@ async def submit_turn(
                 headers={"x-correlation-id": correlation_id},
             )
 
+        # Per-attachment size cap. Starlette >= 1.1 bounds only non-file form
+        # fields via max_part_size (see main.py); file parts reach the route
+        # unbounded, so the same MAX_UPLOAD_SIZE_MB limit is enforced here.
+        for upload in files:
+            if upload.size is not None and upload.size > _max_text_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"{upload.filename or 'attachment'} exceeds the "
+                        f"{_max_text_bytes // (1024 * 1024)}MB upload limit."
+                    ),
+                    headers={"x-correlation-id": correlation_id},
+                )
+
         # Verify case exists and user has access
         case = await case_service.get_case(case_id, current_user.user_id)
         if not case:
