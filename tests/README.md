@@ -177,7 +177,7 @@ open htmlcov/index.html
 
 | Variable | Description |
 |----------|-------------|
-| `SKIP_SERVICE_CHECKS` | Skip external service availability checks |
+| `SKIP_SERVICE_CHECKS` | Application config knob, not a test switch — relaxes service-availability checks in the app the tests boot in-process. It does not gate which tests run |
 | `RUN_PERFORMANCE_TESTS` | Enable performance/benchmark tests |
 | `LOG_LEVEL` | Set logging level (DEBUG, INFO, etc.) |
 
