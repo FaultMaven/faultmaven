@@ -33,10 +33,11 @@ advertises a token lifetime reads the same source:
   `container/providers/services.py::create_jwt_token_generator` (RS256/cloud —
   keys, issuer and audience still come from `settings.security`; only the
   lifetimes come from auth).
-- `AuthService`'s internal mint properties and its
-  `_longest_token_lifetime_seconds` (the #769 revocation-watermark bound) read
-  `settings.auth`. With one source, "the watermark outlives every mintable
-  token" is structural rather than a `max()` across halves.
+- `AuthService._longest_token_lifetime_seconds` (the #769 revocation-watermark
+  bound) reads `settings.auth`. With one source, "the watermark outlives every
+  mintable token" is structural rather than a `max()` across halves.
+  (`AuthService` mints nothing itself: its parallel token-mint path was dead and
+  was removed in #853.)
 - `OAuthService` and the SSO login service advertise `expires_in` from the same
   values the generator mints with, so advertised and actual lifetimes cannot
   diverge.
