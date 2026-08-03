@@ -119,34 +119,57 @@ Install test dependencies:
 pip install -r ../../requirements-test.txt
 ```
 
-**Environment Configuration for Integration Testing**:
-```bash
-# Skip external service checks for integration testing
-export SKIP_SERVICE_CHECKS=true
+**No environment variables are required.** These tests run in-process — they
+drive the application through `TestClient` and real repositories against
+throwaway SQLite databases, not through a live HTTP server. There is no
+"wait for the backend to come up" step to configure.
 
+Optional settings:
+```bash
 # Enable debug logging for integration test debugging
 export LOG_LEVEL=DEBUG
 
-# Set integration test configuration
+# Point the Redis-backed suites at a real Redis (they self-skip without one)
 export REDIS_HOST=192.168.0.111
 export REDIS_PORT=30379
-export CHROMADB_URL=http://chromadb.faultmaven.local:30080
+
+# Point the postgres-marked suites at a scratch PostgreSQL
+export DATABASE_URL=postgresql://…
 ```
+
+`SKIP_SERVICE_CHECKS` is **not** a test-runner switch. It is a live application
+config knob (read by the DI container providers and the middleware wiring in
+`faultmaven/main.py`), so a handful of suites that boot an in-process app set it
+deliberately. Setting it no longer changes which tests run.
 
 ### Basic Execution
 
 **New Architecture Integration Tests**:
 ```bash
-# Run new architecture workflow tests (18+ tests)
-pytest tests/integration/test_new_architecture_workflows.py -v
+# Run all integration tests
+pytest tests/integration/ -v
 
-# Run all integration tests with container patterns
-SKIP_SERVICE_CHECKS=true pytest tests/integration/ -v
+# Run a single suite
+pytest tests/integration/test_alembic_migrations.py -v
 
 # Run from integration directory
 cd tests/integration
-SKIP_SERVICE_CHECKS=true pytest -v
+pytest -v
 ```
+
+### An all-skipped run is a failure
+
+If a session selects tests and skips **every** one of them, this suite forces a
+non-zero exit and prints the distinct skip reasons. A green run must mean tests
+actually executed — a missing service is not allowed to silently turn the tree
+into no-ops.
+
+The practical consequence: running a suite whose backing service is absent —
+for example `pytest tests/integration/test_postgresql_repository_roundtrip.py`
+with no PostgreSQL — now **fails** instead of reporting green with skips.
+Provide the service (a real `DATABASE_URL`, a reachable Redis) or narrow the
+selection so the run stops claiming to cover it. Mixed runs, where some tests
+pass and environment-dependent ones skip, stay green.
 
 **Specific Integration Test Categories**:
 ```bash
@@ -173,13 +196,13 @@ pytest -k "mock_server" -v -s
 
 ### Environment Variables
 
-Set environment variables for external service dependencies:
+None are required. Optional ones:
 ```bash
-# Skip external service checks for testing
-SKIP_SERVICE_CHECKS=true pytest tests/integration/ -v
-
 # Enable debug logging
 LOG_LEVEL=DEBUG pytest tests/integration/ -v
+
+# Back the Redis-dependent suites with a real Redis
+REDIS_HOST=localhost REDIS_PORT=6379 pytest tests/integration/ -v
 ```
 
 ## Test Execution Notes
