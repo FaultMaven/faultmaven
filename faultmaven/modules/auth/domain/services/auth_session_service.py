@@ -169,14 +169,22 @@ class AuthSessionService:
         return session, False
 
     @trace("session_service_get_session")
-    async def get_session(self, session_id: str) -> Optional[SessionContext]:
-        """Get session by ID
+    async def get_session(
+        self, session_id: str, validate: bool = True
+    ) -> Optional[SessionContext]:
+        """Get session by ID, optionally enforcing expiry (ISessionService contract)
 
         Args:
             session_id: Session identifier
+            validate: When True (default), enforce expiry — an expired session is
+                deleted and None is returned. When False, read the stored session
+                as-is: no expiry check and no delete side effect. Readers that only
+                want to observe session data (e.g. the heartbeat endpoint reporting
+                last_activity) must not destroy a session as a side effect of
+                reading it.
 
         Returns:
-            SessionContext if found and valid, None otherwise
+            SessionContext if found (and unexpired when validate=True), None otherwise
         """
         if not session_id or not session_id.strip():
             return None
@@ -187,6 +195,10 @@ class AuthSessionService:
         session = await self.session_store.get_session(session_id)
         if not session:
             return None
+
+        if not validate:
+            # Non-validating read: return the stored session untouched.
+            return session
 
         # Check if session is expired
         if session.expires_at and datetime.now(timezone.utc) > session.expires_at:
