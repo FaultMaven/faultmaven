@@ -33,6 +33,9 @@ from faultmaven.modules.knowledge.api.routes import (
 
 LISTED = {"documents": [{"document_id": "doc-1"}], "total_count": 1}
 
+# Distinctive so its presence anywhere in the body is unambiguous.
+BOGUS_SCOPE = "bogus-scope-xyzzy"
+
 
 def _build_app():
     app = FastAPI()
@@ -63,17 +66,19 @@ async def _list_documents(params):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_invalid_scope_surfaces_as_400_not_500():
-    """The handler's own 400 must reach the client verbatim."""
-    response = await _list_documents({"scope": "bogus"})
+    """The handler's own 400 must reach the client, and must not echo input."""
+    response = await _list_documents({"scope": BOGUS_SCOPE})
 
     # Exact status, not merely "not 500": a request that never reaches the
     # handler fails here rather than passing vacuously.
     assert response.status_code == 400, response.text
 
     detail = response.json()["detail"]
-    assert "Invalid scope: bogus" in detail
-    # The 500 branch replaced the detail with a static string.
-    assert detail != "Failed to list documents"
+    assert detail == "Invalid scope. Allowed: global, team, personal"
+    # Mutation oracle: the detail must not reflect the submitted value back.
+    # This endpoint takes optional auth, so echoing would hand an anonymous
+    # caller arbitrary input in the response body.
+    assert BOGUS_SCOPE not in response.text
 
 
 @pytest.mark.unit
