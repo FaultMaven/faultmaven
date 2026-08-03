@@ -671,9 +671,6 @@ async def create_case(
     Returns CaseSummary with basic case info and milestone progress.
     """
     correlation_id = str(uuid.uuid4())
-    print(
-        f"DEBUG: create_case entered! Request title: {request.title}, User: {current_user.user_id if current_user else 'None'}"
-    )
     case_service = check_case_service_available(case_service)
 
     try:
