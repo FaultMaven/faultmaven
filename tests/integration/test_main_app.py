@@ -267,30 +267,52 @@ def test_application_structure():
     assert hasattr(app, "middleware")
 
 
-def test_multipart_parser_size_limits_configured():
-    """MultiPartParser limits must match MAX_UPLOAD_SIZE_MB to allow large submissions.
+def test_multipart_form_field_limit_matches_max_upload_size():
+    """Form fields between Starlette's 1MB default and MAX_UPLOAD_SIZE_MB must parse.
 
-    Starlette defaults to 1MB per form part, which silently rejects page injections
-    and pasted text >1MB with a bare 400 error. FaultMaven overrides this at app
-    startup to match the configured MAX_UPLOAD_SIZE_MB (default 10MB).
+    Starlette defaults to 1MB per form field, which silently rejects page
+    injections and pasted text >1MB with a bare 400 error. Starlette >= 1.1
+    enforces that limit via Request.form()'s max_part_size keyword default —
+    MultiPartParser class-attribute overrides are shadowed and do nothing —
+    so faultmaven.main replaces the default process-globally.
 
-    All three data submission paths (file upload, page injection, pasted text) go
-    through the same /turns endpoint as multipart form data.
+    This asserts the BEHAVIOR through a live multipart parse rather than any
+    attribute: if a future starlette bump changes the enforcement surface
+    again, this test fails while an attribute assertion would stay green.
     """
-    from starlette.formparsers import MultiPartParser
+    from fastapi import FastAPI, Form
+
+    probe = FastAPI()
+
+    @probe.post("/probe")
+    async def probe_endpoint(text: str = Form(...)):
+        return {"length": len(text)}
 
     expected_bytes = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "10")) * 1024 * 1024
 
-    assert MultiPartParser.max_file_size == expected_bytes, (
-        f"MultiPartParser.max_file_size should be {expected_bytes} bytes "
-        f"(MAX_UPLOAD_SIZE_MB={expected_bytes // (1024*1024)}MB), "
-        f"got {MultiPartParser.max_file_size}"
-    )
-    assert MultiPartParser.max_part_size == expected_bytes, (
-        f"MultiPartParser.max_part_size should be {expected_bytes} bytes "
-        f"(MAX_UPLOAD_SIZE_MB={expected_bytes // (1024*1024)}MB), "
-        f"got {MultiPartParser.max_part_size}"
-    )
+    with TestClient(probe, raise_server_exceptions=False) as client:
+        # Over Starlette's built-in 1MB default, under our configured limit:
+        # must parse. This is the pasted-content path's contract.
+        over_default = "x" * (2 * 1024 * 1024)
+        response = client.post(
+            "/probe", data={"text": over_default}, files={"_pad": ("p", b"1")}
+        )
+        assert response.status_code == 200, (
+            f"2MB form field must parse under MAX_UPLOAD_SIZE_MB="
+            f"{expected_bytes // (1024 * 1024)}MB, got HTTP {response.status_code}: "
+            f"{response.text[:200]}"
+        )
+        assert response.json()["length"] == len(over_default)
+
+        # Over the configured limit: the parser must refuse.
+        over_limit = "x" * (expected_bytes + 1024)
+        response = client.post(
+            "/probe", data={"text": over_limit}, files={"_pad": ("p", b"1")}
+        )
+        assert response.status_code == 400, (
+            f"form field over the configured limit must be refused, "
+            f"got HTTP {response.status_code}"
+        )
 
 
 @pytest.mark.integration
