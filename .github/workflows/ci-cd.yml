@@ -469,60 +469,52 @@ jobs:
 
       - name: Install security tools
         run: |
-          pip install safety bandit
+          pip install pip-audit bandit
 
-      - name: Check dependencies for vulnerabilities
+      # Fail-closed dependency audit (#969). pip-audit exits non-zero on any
+      # finding — no report parser, no `|| true` — and audits the LOCKFILES
+      # (what actually ships in the image and CI), not the runner's venv.
+      #
+      # Ignore policy: every --ignore-vuln below MUST cite an entry in
+      # docs/operations/security/vulnerability-exceptions.md or a tracking
+      # issue; an ignore without a documented anchor should be rejected in
+      # review. Remove the ignore when its entry's escalation trigger fires.
+      - name: Audit locked dependencies (pip-audit)
         run: |
-          # Fail on critical/high severity vulnerabilities
-          safety check --json > safety-report.json 2>&1 || true
-          # Parse results: fail if any high/critical CVEs found
-          python -c "
-          import json, sys
-          try:
-              with open('safety-report.json') as f:
-                  data = json.load(f)
-              vulns = data if isinstance(data, list) else data.get('vulnerabilities', [])
-              if not vulns:
-                  print('✓ No known vulnerabilities found')
-                  sys.exit(0)
-              print(f'Found {len(vulns)} vulnerability(ies)')
-              # Safety v3 format: severity is in the vulnerability object
-              high_crit = [v for v in vulns if str(v.get('severity', '')).lower() in ('high', 'critical')]
-              if high_crit:
-                  print(f'✗ {len(high_crit)} high/critical vulnerabilities detected:')
-                  for v in high_crit:
-                      pkg = v.get('package_name', v.get('package', 'unknown'))
-                      vuln_id = v.get('vulnerability_id', v.get('id', 'N/A'))
-                      sev = v.get('severity', 'unknown')
-                      print(f'  - {pkg}: {vuln_id} ({sev})')
-                  sys.exit(1)
-              else:
-                  print(f'⚠ {len(vulns)} low/medium vulnerabilities (non-blocking)')
-          except (json.JSONDecodeError, FileNotFoundError):
-              print('⚠ Could not parse safety output (non-blocking)')
-          "
+          IGNORES=(
+            # chromadb pre-auth code injection — no patched release exists;
+            # unreachable in standalone, contained in cloud.
+            # → vulnerability-exceptions.md "chromadb" (fm#902)
+            --ignore-vuln GHSA-f4j7-r4q5-qw2c
+            # litellm proxy-server advisories — every patched release is
+            # blocked by our pydantic<2.10 ceiling; the proxy never runs here.
+            # → vulnerability-exceptions.md "litellm" (10 GHSAs)
+            --ignore-vuln GHSA-4xpc-pv4p-pm3w
+            --ignore-vuln GHSA-r75f-5x8p-qvmc
+            --ignore-vuln GHSA-7488-6r32-c95q
+            --ignore-vuln GHSA-qrc4-49gv-mv9m
+            --ignore-vuln GHSA-wpfp-gwwc-vwq6
+            --ignore-vuln GHSA-wxxx-gvqv-xp7p
+            --ignore-vuln GHSA-v4p8-mg3p-g94g
+            --ignore-vuln GHSA-xqmj-j6mv-4862
+            --ignore-vuln GHSA-5jmr-gcrj-2c9q
+            --ignore-vuln GHSA-4g5m-c9r5-49xf
+            # setuptools (medium): fix is 83.0.0, blocked by torch==2.11's
+            # setuptools<82 pin — tracked on fm#904.
+            --ignore-vuln GHSA-h35f-9h28-mq5c
+            # torch (low): fixed in 2.13.0; heavy runtime bump — fm#904.
+            --ignore-vuln GHSA-rrmf-rvhw-rf47
+          )
+          for f in requirements/test.txt requirements/cloud.txt requirements/dev.txt; do
+            echo "::group::pip-audit $f"
+            pip-audit -r "$f" --no-deps "${IGNORES[@]}"
+            echo "::endgroup::"
+          done
 
-      - name: Run security linter
+      - name: Run security linter (bandit)
+        # Gate on bandit's own exit code at HIGH severity + HIGH confidence —
+        # no report parser to fail open (#969). Same effective gate as before
+        # (the old parser only failed on HIGH/HIGH). B324 skipped: MD5 here is
+        # caching/fingerprinting, not security.
         run: |
-          # Fail on high-confidence, high-severity findings (-ll = medium+, -iii = high confidence)
-          # Skip B324 (weak MD5): all MD5 usage is for caching/fingerprinting, not security
-          bandit -r faultmaven/ -ll -iii --skip B324 -f json -o bandit-report.json || true
-          python -c "
-          import json, sys
-          try:
-              with open('bandit-report.json') as f:
-                  data = json.load(f)
-              results = data.get('results', [])
-              high_sev = [r for r in results if r.get('issue_severity') == 'HIGH' and r.get('issue_confidence') == 'HIGH']
-              if high_sev:
-                  print(f'✗ {len(high_sev)} high-severity/high-confidence findings:')
-                  for r in high_sev:
-                      print(f\"  - {r['filename']}:{r['line_number']}: {r['issue_text']} [{r['test_id']}]\")
-                  sys.exit(1)
-              elif results:
-                  print(f'⚠ {len(results)} lower-severity findings (non-blocking)')
-              else:
-                  print('✓ No security issues found')
-          except (json.JSONDecodeError, FileNotFoundError):
-              print('⚠ Could not parse bandit output (non-blocking)')
-          "
+          bandit -r faultmaven/ --severity-level high --confidence-level high --skip B324
