@@ -77,7 +77,7 @@ charset-normalizer==3.4.7
     # via requests
 chromadb==1.5.8
     # via faultmaven (pyproject.toml)
-click==8.3.2
+click==8.4.2
     # via
     #   black
     #   flask
