@@ -726,6 +726,8 @@ async def list_users(
 
         return {"users": users_list, "total": total_count}
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"List users failed: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(

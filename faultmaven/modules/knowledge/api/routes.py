@@ -441,6 +441,8 @@ async def list_documents(
             team_ids=team_ids,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to list documents: {e}")
         raise HTTPException(status_code=500, detail="Failed to list documents")

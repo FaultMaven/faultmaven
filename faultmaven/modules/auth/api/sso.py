@@ -21,10 +21,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
+from faultmaven.api.middleware.client_ip import UNKNOWN_CLIENT_IP, resolve_client_ip
 from faultmaven.modules.auth.api.rate_limiting import (
     require_sso_rate_limit_callback,
     require_sso_rate_limit_exchange,
     require_sso_rate_limit_login,
+    trusted_proxy_networks,
 )
 from faultmaven.modules.auth.domain.models.api_auth import (
     AuthTokenResponse,
@@ -123,16 +125,20 @@ async def sso_callback(
     The state cookie set at /login must accompany and match the ``state`` query
     param (browser binding), and is cleared here either way.
     """
-    # Transport metadata for the JIT-provisioning audit trail. Behind the
-    # ingress, request.client is the direct peer (the proxy) — uvicorn does not
-    # trust forwarding headers here; recorded as-is until the infra-wide
-    # proxy-IP fix (shared with the OAuth rate limiter).
+    # Transport metadata for the JIT-provisioning audit trail. The audit records
+    # the same resolved address the SSO rate limiter enforces on — resolved
+    # through the limiter's own trust list, so the two cannot drift. Forwarding
+    # headers are believed only when the socket peer is a configured trusted
+    # proxy, so a caller cannot write its own address into the audit trail.
+    # ``None`` when the transport exposes no peer: the column is nullable and
+    # the sentinel string is not an address.
+    peer = resolve_client_ip(request, trusted_proxy_networks())
     redirect_url = await service.complete_callback(
         code=code,
         state=state,
         error=error,
         browser_state=request.cookies.get(_STATE_COOKIE),
-        client_ip=request.client.host if request.client else None,
+        client_ip=None if peer == UNKNOWN_CLIENT_IP else peer,
         user_agent=request.headers.get("user-agent"),
     )
     response = RedirectResponse(redirect_url, status_code=302, headers=_NO_STORE)

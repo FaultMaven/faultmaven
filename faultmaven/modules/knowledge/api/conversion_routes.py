@@ -166,6 +166,12 @@ async def convert_document(
 
         return result.model_dump()
 
+    except HTTPException:
+        # The handler's own refusals (e.g. the 413 size check above) are
+        # already-final responses — re-raise them rather than letting the
+        # blanket ``except Exception`` below rewrite them into a 500.
+        raise
+
     except FaultMavenException:
         # Typed service exceptions (AuthorizationError for a team the caller
         # doesn't belong to, ValidationException for team publishing being
