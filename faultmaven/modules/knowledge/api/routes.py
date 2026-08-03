@@ -296,6 +296,21 @@ async def upload_document(
                 ),
             )
 
+        # Per-file size cap. Starlette >= 1.1 bounds only non-file form fields
+        # (see main.py); file parts arrive unbounded, so enforce the limit
+        # before reading the content into memory.
+        from faultmaven.config.settings import get_settings as _get_settings
+
+        _max_upload_bytes = _get_settings().upload.max_upload_size_mb * 1024 * 1024
+        if file.size is not None and file.size > _max_upload_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"File exceeds the {_max_upload_bytes // (1024 * 1024)}MB "
+                    f"upload limit."
+                ),
+            )
+
         # Read file content
         content = await file.read()
 

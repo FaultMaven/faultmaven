@@ -47,7 +47,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-from starlette.formparsers import MultiPartParser
+from starlette.requests import Request as StarletteRequest
 
 from faultmaven.api.middleware.tenant_scope import bind_request_org_context
 from faultmaven.utils.serialization import to_json_compatible
@@ -1016,14 +1016,36 @@ app = FastAPI(
     dependencies=[Depends(bind_request_org_context)],
 )
 
-# Override Starlette's default multipart form parser size limits.
-# Starlette defaults to 1MB per form part, but our upload limit is MAX_UPLOAD_SIZE_MB (default 10MB).
+# Override Starlette's default multipart form-field size limit.
+# Starlette defaults to 1MB per form field, but our upload limit is MAX_UPLOAD_SIZE_MB (default 10MB).
 # All three data submission paths (file upload, page injection, pasted text) go through
 # the same unified /turns endpoint as multipart form data and must respect the same limit.
+# Starlette >= 1.1 enforces the limit via Request.form()'s max_part_size keyword default —
+# a MultiPartParser class-attribute override is shadowed by it — so the override replaces
+# that default for every form parse in the app. max_part_size bounds non-file fields only;
+# file parts are unbounded at the parser, so each route accepting UploadFile enforces the
+# same limit per file via UploadFile.size.
 # See: docs/architecture/data-processing/data-preprocessing-design-specification.md Appendix A
 _upload_max_bytes = int(os.environ.get("MAX_UPLOAD_SIZE_MB", "10")) * 1024 * 1024
-MultiPartParser.max_file_size = _upload_max_bytes
-MultiPartParser.max_part_size = _upload_max_bytes
+_original_request_form = StarletteRequest.form
+
+
+def _form_with_configured_limits(
+    self: StarletteRequest,
+    *,
+    max_files: int | float = 1000,
+    max_fields: int | float = 1000,
+    max_part_size: int = _upload_max_bytes,
+):
+    return _original_request_form(
+        self,
+        max_files=max_files,
+        max_fields=max_fields,
+        max_part_size=max_part_size,
+    )
+
+
+StarletteRequest.form = _form_with_configured_limits
 
 
 # Add middleware in optimized order to prevent duplicates
