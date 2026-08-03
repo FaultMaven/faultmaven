@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -21,6 +21,7 @@ from ...models.protection import (
     ProtectionErrorResponse,
     ProtectionSettings,
     RateLimitError,
+    RateLimitResult,
 )
 from .client_ip import parse_trusted_proxies, resolve_client_ip
 
@@ -373,24 +374,35 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return False
 
     async def _check_rate_limits(self, request: Request) -> None:
-        """Perform all applicable rate limit checks"""
+        """Perform all applicable rate limit checks.
+
+        Every allowed result is stashed on ``request.state`` for
+        ``_add_rate_limit_headers``. The checks have already read the counts, so
+        advertising them costs nothing; asking Redis again on the way out would
+        be a second round trip per request to learn what is already in hand.
+        """
 
         session_id = self._extract_session_id(request)
         endpoint = request.url.path
         client_ip = self._get_client_ip(request)
 
+        results: List[RateLimitResult] = []
+        request.state.rate_limit_results = results
+
         # Always check global rate limit
-        await self._check_global_rate_limit(client_ip)
+        results.append(await self._check_global_rate_limit(client_ip))
 
         # Check session-based limits if session available
         if session_id:
-            await self._check_session_rate_limits(session_id, endpoint, request)
+            results.extend(
+                await self._check_session_rate_limits(session_id, endpoint, request)
+            )
 
         # Check endpoint-specific limits
         await self._check_endpoint_rate_limits(endpoint, session_id, request)
 
-    async def _check_global_rate_limit(self, client_ip: str) -> None:
-        """Check global rate limit"""
+    async def _check_global_rate_limit(self, client_ip: str) -> RateLimitResult:
+        """Check global rate limit, returning the result it was decided on."""
 
         result = await self.rate_limiter.check_rate_limit(
             key=client_ip, limit_type=LimitType.GLOBAL, identifier=f"global:{client_ip}"
@@ -404,40 +416,44 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 limit=result.limit,
             )
 
+        return result
+
     async def _check_session_rate_limits(
         self, session_id: str, endpoint: str, request: Request
-    ) -> None:
-        """Check session-based rate limits"""
+    ) -> List[RateLimitResult]:
+        """Check session-based rate limits, returning the results they used."""
 
         # Per-session per-minute limit
-        result = await self.rate_limiter.check_rate_limit(
+        per_minute = await self.rate_limiter.check_rate_limit(
             key=session_id,
             limit_type=LimitType.PER_SESSION,
             identifier=f"session:{session_id}",
         )
 
-        if not result.allowed:
+        if not per_minute.allowed:
             raise RateLimitError(
-                retry_after=result.retry_after or 60,
+                retry_after=per_minute.retry_after or 60,
                 limit_type="per_session",
-                current_count=result.current_count,
-                limit=result.limit,
+                current_count=per_minute.current_count,
+                limit=per_minute.limit,
             )
 
         # Per-session hourly limit
-        result = await self.rate_limiter.check_rate_limit(
+        hourly = await self.rate_limiter.check_rate_limit(
             key=session_id,
             limit_type=LimitType.PER_SESSION_HOURLY,
             identifier=f"session_hourly:{session_id}",
         )
 
-        if not result.allowed:
+        if not hourly.allowed:
             raise RateLimitError(
-                retry_after=result.retry_after or 3600,
+                retry_after=hourly.retry_after or 3600,
                 limit_type="per_session_hourly",
-                current_count=result.current_count,
-                limit=result.limit,
+                current_count=hourly.current_count,
+                limit=hourly.limit,
             )
+
+        return [per_minute, hourly]
 
     async def _check_endpoint_rate_limits(
         self, endpoint: str, session_id: Optional[str], request: Request
@@ -494,24 +510,45 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def _add_rate_limit_headers(
         self, request: Request, response: Response
     ) -> None:
-        """Add rate limit information to response headers"""
+        """Advertise, on a served response, the limit closest to being exhausted.
+
+        Emitted from the results ``_check_rate_limits`` already collected — no
+        extra Redis round trip on the request path.
+
+        Two defects are closed here. The old version was gated on a session id,
+        so unauthenticated traffic — the only traffic the ``global`` limit
+        exists for — was never told anything at all; and it was hardwired to
+        ``PER_SESSION``, so even an authenticated client was never told about
+        the global limit it might actually be hitting first.
+
+        "Closest to exhausted" (least remaining quota) is the right one to
+        report: a client that respects the tightest limit it is under respects
+        all of them, and reporting a roomier one would invite it to speed up
+        into the tighter one. Results with ``limit == 0`` carry no quota to
+        advertise — that is a disabled limit, and also what a check reports
+        after failing open — so they are skipped rather than published as a
+        limit of zero.
+        """
 
         try:
-            session_id = self._extract_session_id(request)
-            if session_id:
-                # Get current rate limit status
-                status = await self.rate_limiter.get_rate_limit_status(
-                    session_id, LimitType.PER_SESSION
-                )
+            results = [
+                result
+                for result in getattr(request.state, "rate_limit_results", ())
+                if result.limit > 0
+            ]
+            if not results:
+                return
 
-                if status:
-                    response.headers["X-RateLimit-Limit"] = str(status.limit)
-                    response.headers["X-RateLimit-Remaining"] = str(
-                        max(0, status.limit - status.current_count)
-                    )
-                    response.headers["X-RateLimit-Reset"] = str(
-                        int(status.reset_time.timestamp())
-                    )
+            tightest = min(results, key=lambda r: r.limit - r.current_count)
+
+            response.headers["X-RateLimit-Limit"] = str(tightest.limit)
+            response.headers["X-RateLimit-Remaining"] = str(
+                max(0, tightest.limit - tightest.current_count)
+            )
+            if tightest.reset_time is not None:
+                response.headers["X-RateLimit-Reset"] = str(
+                    int(tightest.reset_time.timestamp())
+                )
 
         except Exception as e:
             self.logger.debug(f"Failed to add rate limit headers: {e}")
@@ -536,10 +573,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Create response with appropriate headers
         response = JSONResponse(status_code=429, content=error_response.__dict__)
 
-        # Add rate limit headers
+        # Add rate limit headers. ``Retry-After`` is a duration and
+        # ``X-RateLimit-Reset`` the same instant as a timestamp — a 429 used to
+        # omit the second, so a client tracking reset instants across responses
+        # lost the value on precisely the response that mattered.
         response.headers["Retry-After"] = str(error.retry_after)
         response.headers["X-RateLimit-Limit"] = str(error.limit)
         response.headers["X-RateLimit-Remaining"] = "0"
+        response.headers["X-RateLimit-Reset"] = str(
+            int(time.time() + error.retry_after)
+        )
 
         return response
 

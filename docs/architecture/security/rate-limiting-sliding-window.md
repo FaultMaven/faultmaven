@@ -32,10 +32,63 @@ Check algorithm (atomic, one Lua script):
    `(now − window, now]`.
 2. **Count** the entries still in the set — the number of requests inside the
    window.
-3. If `count >= limit`: **blocked**; nothing is inserted (a blocked request
+3. **Read the oldest survivor's score** (`ZRANGE key 0 0 WITHSCORES`), before
+   any insert.
+4. If `count >= limit`: **blocked**; nothing is inserted (a blocked request
    must not consume quota or extend the window).
-4. Otherwise insert the new member with the new score, refresh the key TTL
+5. Otherwise insert the new member with the new score, refresh the key TTL
    (`window + 60`), and allow.
+
+The script returns **four** elements: `{count, limit, allowed, oldest_score}`.
+`oldest_score` is an empty string when the window held nothing — an empty
+string rather than nil, because a nil inside a Lua table truncates the array
+and the caller would receive a three-element reply indistinguishable from the
+pre-fm#931 contract.
+
+## Honest client signalling
+
+Everything the client is told is derived from `oldest_score`. The oldest entry
+ages out exactly one window after it arrived, so **`oldest_score + window` is
+the instant the next unit of quota frees**:
+
+- `reset_time` is that instant, on **both** the allowed and the blocked path.
+  It therefore names the same moment across a client's whole window instead of
+  marching forward with `now` on every request.
+- `Retry-After` on a 429 is `max(1, ceil(oldest_score + window − now))`. Not a
+  whole window: a client refused one second before its quota frees is told to
+  wait one second. Floored at 1 because a sub-second answer reads as "retry
+  immediately".
+- When the window is empty, both fall back to `now + window` — the truth in
+  that case, since the request that just went in is the entry that will age
+  out.
+
+`Retry-After` carries **no jitter and no cap**. The value is already
+per-client — each client's oldest entry arrived at its own time — so herd
+de-synchronization is a property of the data rather than something randomness
+has to add. The former 300-second cap actively caused the herd it was meant to
+prevent: an hourly limit's genuine wait was truncated to five minutes, so every
+capped client returned at five minutes to be refused again.
+
+Response headers:
+
+- A **429** carries `Retry-After`, `X-RateLimit-Limit`,
+  `X-RateLimit-Remaining: 0` and `X-RateLimit-Reset` (the same instant as
+  `Retry-After`, expressed as a timestamp).
+- A **served** response carries `X-RateLimit-Limit/Remaining/Reset` for
+  whichever checked limit has the **least remaining quota** — a client that
+  respects the tightest limit it is under respects all of them. These are
+  emitted from the `RateLimitResult`s the checks already produced, so they cost
+  no additional Redis round trip, and they are emitted whether or not the
+  request carried a session id. `global` is the only limit covering
+  unauthenticated traffic, so gating the headers on a session used to leave
+  precisely those callers with nothing to pace against.
+- Results reporting `limit == 0` are skipped: that is a disabled limit, and
+  also what a check reports after failing open on a Redis error. Publishing it
+  would tell every client it has no quota at all.
+
+All four header names are in the `cors_expose_headers` default. A header a
+cross-origin caller cannot read is a header not sent, and the responses that
+carry them are exactly the ones a browser client must act on.
 
 The invariant that fm#920 restored: after N back-to-back requests against a
 limit of L, exactly `min(N, L)` are allowed and the set holds `min(N, L)`
@@ -93,15 +146,18 @@ comparable across hosts. NTP-scale skew moves the window edge by the skew
 amount — acceptable for rate limiting; per-request uniqueness never depends
 on the clock (the uuid provides it even if time stands still).
 
-`get_rate_limit_status` (the status path, which backs the `X-RateLimit-*`
-headers) derives its bound from the same shared helper as enforcement, so the
-two cannot disagree on where the window begins. It is strictly read-only: a
-single `ZCOUNT` from the *exclusive* form of that bound to `+inf`. Exclusive is
-the exact complement of enforcement's inclusive prune — the prune removes
-scores at or below the bound, so the entries it would leave are those strictly
-above it. Counting rather than pruning-then-counting means reporting status
-never mutates a window a concurrent check is deciding against, and the call is
-safe to serve from a read replica.
+`get_rate_limit_status` (the read-only status path) derives its bound from the
+same shared helper as enforcement, so the two cannot disagree on where the
+window begins. It is strictly read-only: a `ZCOUNT` from the *exclusive* form
+of that bound to `+inf`, plus a `ZRANGEBYSCORE … LIMIT 0 1 WITHSCORES` for the
+oldest survivor, from which it derives the same `reset_time` enforcement
+derives. Exclusive is the exact complement of enforcement's inclusive prune —
+the prune removes scores at or below the bound, so the entries it would leave
+are those strictly above it. Counting rather than pruning-then-counting means
+reporting status never mutates a window a concurrent check is deciding against,
+and the call is safe to serve from a read replica. The two commands are not
+atomic with each other; an entry ageing out between them can only make the
+reported instant conservative, which is the safe direction for a status report.
 
 ## Test obligations
 
@@ -126,6 +182,16 @@ tests therefore must:
   request k ≤ limit → 200, request k > limit → 429
   (`tests/unit/api/middleware/test_redis_middleware_wiring.py`).
 
+The signalling contract carries its own obligations
+(`tests/unit/infrastructure/test_rate_limiter_honest_signalling.py`,
+`tests/unit/api/middleware/test_rate_limit_client_signalling.py`): a client
+refused near the window's edge is told to wait seconds rather than a window; an
+hourly limit's wait is not truncated; `reset_time` is the same instant on the
+allowed and the blocked path and does not move with the clock; a served
+response with no session id still advertises the `global` limit; and the header
+path performs no Redis call of its own.
+
 Mutation checks (each must turn at least one test red): reverting the member
 to the integer second; skipping the `ZREMRANGEBYSCORE` prune; inserting on
-the blocked path; making the prune bound exclusive.
+the blocked path; making the prune bound exclusive; reverting the script to a
+three-element return; restoring `now + window` on the blocked path.

@@ -6,7 +6,7 @@ Redis-backed storage (real or FakeRedis).
 """
 
 import logging
-import random
+import math
 import time
 import uuid
 from datetime import datetime, timezone
@@ -46,9 +46,17 @@ CHECK_FAILURE_DEMOTION_THRESHOLD = 3
 # catch-all logged once per check — up to four lines per request, indefinitely.
 CHECK_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 
-# The sliding-window check, as one atomic script: prune, count, refuse without
-# inserting, otherwise insert and refresh the TTL. It generates neither time nor
-# randomness — the caller passes both in, so the script stays deterministic.
+# The sliding-window check, as one atomic script: prune, count, read the oldest
+# survivor, refuse without inserting, otherwise insert and refresh the TTL. It
+# generates neither time nor randomness — the caller passes both in, so the
+# script stays deterministic.
+#
+# Four elements come back, not three. The fourth is the score of the oldest
+# entry still inside the window, and it is what makes the client-facing
+# signalling honest: that entry ages out exactly one window after it arrived,
+# so ``oldest + window`` is the instant the *next* unit of quota frees. Without
+# it the only answer available was "a whole window", which is the truth only
+# for a client refused at the instant its window opened.
 _WINDOW_SCRIPT = """
 local key = KEYS[1]
 local window_start = ARGV[1]
@@ -63,18 +71,28 @@ redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
 -- Count the requests still inside it
 local current_count = redis.call('ZCARD', key)
 
+-- The oldest survivor, read BEFORE any insert. On the allowed path that is
+-- deliberate: if the set was empty this request is the oldest entry, and
+-- ``now + window`` — the caller's fallback for an empty answer — is the same
+-- number, so reading first costs nothing and keeps one code path.
+local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+local oldest_score = ''
+if oldest[2] then
+    oldest_score = oldest[2]
+end
+
 -- Check if limit exceeded. Nothing is inserted on this path: a refused
 -- request must neither consume quota nor extend the window, or a client
 -- that keeps hammering a limit would hold its own quota shut.
 if current_count >= limit then
-    return {current_count, limit, 0}  -- blocked
+    return {current_count, limit, 0, oldest_score}  -- blocked
 end
 
 -- Add current request
 redis.call('ZADD', key, score, member)
 redis.call('EXPIRE', key, ttl)
 
-return {current_count + 1, limit, 1}  -- allowed
+return {current_count + 1, limit, 1, oldest_score}  -- allowed
 """
 
 
@@ -93,6 +111,26 @@ def _format_window_start(now: float, window: int) -> str:
     same bound so it sees exactly the entries the prune would have left.
     """
     return f"{now - window:.6f}"
+
+
+def _parse_oldest_score(raw) -> Optional[float]:
+    """The script's fourth element as a float, or ``None`` when the window is empty.
+
+    The script returns an empty string rather than nil for "no entries", because
+    a nil inside a Lua table truncates the array at that point and the caller
+    would see a three-element reply it could not distinguish from the old
+    contract. Anything that does not parse is treated as absent, which falls the
+    caller back to ``now + window`` — the conservative answer, never a shorter
+    wait than the truth.
+    """
+    if raw is None or raw == "" or raw == b"":
+        return None
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode()
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 class RedisRateLimiter:
@@ -504,6 +542,13 @@ class RedisRateLimiter:
 
         Both are computed here and passed to the script as arguments (fm#920; see
         ``docs/architecture/security/rate-limiting-sliding-window.md``).
+
+        What the caller is *told* is derived from the script's fourth element,
+        the oldest entry still in the window. That entry ages out one window
+        after it arrived, so ``oldest + window`` is the instant the next unit of
+        quota frees — the only honest answer to "when may I retry". Both
+        branches use it, so ``reset_time`` means the same thing whether the
+        request was allowed or refused.
         """
         current_time = time.time()
         member = uuid.uuid4().hex
@@ -519,10 +564,32 @@ class RedisRateLimiter:
             ],
         )
 
-        current_count, limit, allowed = result
+        current_count, limit, allowed, oldest_raw = result
+
+        oldest_score = _parse_oldest_score(oldest_raw)
+        if oldest_score is None:
+            # Nothing in the window to age out. On the allowed path this request
+            # is the entry that just went in, so a full window is exactly right;
+            # on the blocked path it cannot happen with a positive limit.
+            quota_frees_at = current_time + config.window
+        else:
+            quota_frees_at = oldest_score + config.window
+
+        reset_time = datetime.fromtimestamp(quota_frees_at, tz=timezone.utc)
 
         if not allowed:
-            retry_after = self._calculate_retry_after(config.window)
+            # Rounded up and floored at one second: a sub-second answer reads as
+            # "retry immediately", which is exactly what a refused client must
+            # not do.
+            #
+            # Deliberately uncapped and unjittered. The old value was a whole
+            # window plus random jitter, capped at 300s — three separate lies to
+            # a client that was one second away from quota. The honest value is
+            # already per-client (each client's oldest entry is its own), so
+            # herd de-synchronization comes free without randomness; and an
+            # hourly limit's honest wait may legitimately exceed 300s, where a
+            # cap would send the whole herd back at 300s to be refused again.
+            retry_after = max(1, math.ceil(quota_frees_at - current_time))
 
             return RateLimitResult(
                 allowed=False,
@@ -530,9 +597,7 @@ class RedisRateLimiter:
                 current_count=current_count,
                 limit=limit,
                 retry_after=retry_after,
-                reset_time=datetime.fromtimestamp(
-                    current_time + config.window, tz=timezone.utc
-                ),
+                reset_time=reset_time,
             )
 
         return RateLimitResult(
@@ -540,25 +605,23 @@ class RedisRateLimiter:
             limit_type=limit_type,
             current_count=current_count,
             limit=limit,
-            reset_time=datetime.fromtimestamp(
-                current_time + config.window, tz=timezone.utc
-            ),
+            reset_time=reset_time,
         )
-
-    def _calculate_retry_after(self, base_window: int) -> int:
-        """How long a refused client is told to wait."""
-        retry_after = base_window
-
-        # Add jitter to prevent thundering herd
-        jitter = random.uniform(0, retry_after * 0.1)
-        retry_after = int(retry_after + jitter)
-
-        return min(retry_after, 300)
 
     async def get_rate_limit_status(
         self, key: str, limit_type: LimitType
     ) -> Optional[RateLimitState]:
-        """Get current rate limit status without incrementing."""
+        """Report a window's state without touching it.
+
+        A read-only inspection path, alongside ``reset_rate_limit``: neither is
+        on the request path. The response headers used to be built from here,
+        which cost a Redis round trip per served request to re-read counts the
+        check had already returned; they now come from the check's own result.
+        What this reports must nonetheless stay the same answer enforcement
+        would give — a status call that disagreed with the limit it describes
+        would be worse than no status at all — so it derives both the count and
+        the reset instant from exactly the entries the prune would have left.
+        """
         config = self._configs.get(limit_type.value)
         if not config:
             return None
@@ -582,15 +645,34 @@ class RedisRateLimiter:
                 rate_limit_key, window_start, "+inf"
             )
 
+            # The oldest entry enforcement would still be counting, so the
+            # reported reset instant is derived the same way the enforcement
+            # path derives it rather than being a flat ``now + window``. One
+            # entry, not the whole window: a saturated production ``global`` key
+            # holds 500 of them. Two commands rather than one script, because
+            # this path must stay read-only — the cost is that an entry may age
+            # out between them, which can only make the reported instant
+            # slightly conservative.
+            oldest = await self._redis.zrangebyscore(
+                rate_limit_key,
+                window_start,
+                "+inf",
+                start=0,
+                num=1,
+                withscores=True,
+            )
+            if oldest:
+                quota_frees_at = float(oldest[0][1]) + config.window
+            else:
+                quota_frees_at = current_time + config.window
+
             return RateLimitState(
                 key=key,
                 limit_type=limit_type,
                 current_count=current_count,
                 limit=config.requests,
                 window=config.window,
-                reset_time=datetime.fromtimestamp(
-                    current_time + config.window, tz=timezone.utc
-                ),
+                reset_time=datetime.fromtimestamp(quota_frees_at, tz=timezone.utc),
             )
         except Exception as e:
             self.logger.error(f"Failed to get rate limit status: {e}")
