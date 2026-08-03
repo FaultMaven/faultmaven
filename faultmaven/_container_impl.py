@@ -655,9 +655,23 @@ class DIContainer(BaseDIContainer):
         return getattr(self, "config", None)
 
     def _create_minimal_session_service(self):
-        """Create a minimal session service for testing environments"""
+        """Create a minimal session service.
+
+        Reachable in PRODUCTION, not only under test: ``create_session_service``
+        falls back to this stand-in whenever the session store is unavailable
+        (Redis down), so its semantics must mirror ``AuthSessionService`` — a
+        degraded deployment must not answer differently from a healthy one.
+        """
         import uuid
-        from datetime import datetime
+        from datetime import datetime, timedelta
+
+        # Session TTL, sourced exactly as AuthSessionService.__init__ sources it
+        # (settings.session.ttl_hours when present, else the 24h default), so
+        # the stand-in expires sessions on the same clock as the real service.
+        _settings = getattr(self, "settings", None)
+        _session_ttl = timedelta(
+            hours=getattr(getattr(_settings, "session", None), "ttl_hours", 24)
+        )
 
         class MockSessionContext:
             def __init__(self, session_id, user_id=None, metadata=None):
@@ -666,6 +680,10 @@ class DIContainer(BaseDIContainer):
                 self.metadata = metadata or {}
                 self.created_at = datetime.now(timezone.utc)
                 self.last_activity = datetime.now(timezone.utc)
+                # Sessions carry an explicit expiry from creation: without one,
+                # `validate=True` could never distinguish a live session from an
+                # expired one and would silently behave as `validate=False`.
+                self.expires_at = self.created_at + _session_ttl
                 self.data_uploads = []
                 self.case_history = []
 
@@ -696,7 +714,31 @@ class DIContainer(BaseDIContainer):
                 return session
 
             async def get_session(self, session_id, validate=True):
-                return self.sessions.get(session_id)
+                """Get session by ID, optionally enforcing expiry.
+
+                Mirrors ``AuthSessionService.get_session``: ``validate=True``
+                treats an expired session as absent AND removes it;
+                ``validate=False`` returns the stored session as-is with no
+                expiry check and no delete side effect — a read must never
+                destroy what it reads.
+                """
+                session = self.sessions.get(session_id)
+                if not session:
+                    return None
+
+                if not validate:
+                    return session
+
+                expires_at = getattr(session, "expires_at", None)
+                if expires_at and datetime.now(timezone.utc) > expires_at:
+                    await self.delete_session(session_id)
+                    return None
+
+                return session
+
+            async def validate_session(self, session_id):
+                """Whether the session exists and has not expired."""
+                return await self.get_session(session_id) is not None
 
             async def list_sessions(self, user_id=None):
                 sessions = list(self.sessions.values())
