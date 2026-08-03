@@ -118,6 +118,30 @@ class OpenAIProvider(BaseLLMProvider):
             return False
         return bool(cls._COMPLETION_TOKENS_MODEL_RE.search(name))
 
+    # Model families with server-side DEFAULT reasoning on /v1/chat/completions
+    # (gpt-5.6+): they reject non-default ``temperature`` (only 1 accepted) and
+    # reject function tools unless ``reasoning_effort`` is explicitly ``"none"``
+    # ("use /v1/responses" otherwise). Earlier reasoning families don't share
+    # either constraint — gpt-5.4-mini accepts ``temperature: 0.2`` and tool
+    # calls without an effort param — so this family needs its own axis rather
+    # than reusing the completion-tokens regex.
+    _DEFAULT_REASONING_MODEL_FAMILIES = ("gpt-5.6",)
+    _DEFAULT_REASONING_MODEL_RE = re.compile(
+        r"(?:^|/)(?:"
+        + "|".join(re.escape(f) for f in _DEFAULT_REASONING_MODEL_FAMILIES)
+        + r")(?:[-.]|$)"
+    )
+
+    @classmethod
+    def _defaults_reasoning(cls, model_name: str) -> bool:
+        """Whether the model reasons by default on /v1/chat/completions.
+
+        These models take only default ``temperature`` (omit the param) and
+        need ``reasoning_effort: "none"`` whenever function tools are sent.
+        Overridable so a gateway subclass can opt out.
+        """
+        return bool(cls._DEFAULT_REASONING_MODEL_RE.search(model_name.lower()))
+
     @classmethod
     def _capability_for_model_name(cls, model_name: str) -> StructuredOutputCapability:
         """Classify an OpenAI model *name* (no config lookup).
@@ -215,14 +239,21 @@ class OpenAIProvider(BaseLLMProvider):
             "model": effective_model,
             "messages": messages if messages else [{"role": "user", "content": prompt}],
             token_limit_param: max_tokens,
-            "temperature": temperature,
         }
+        # Default-reasoning models (gpt-5.6+) accept only the default
+        # temperature and 400 on any other value; omission means default.
+        if not self._defaults_reasoning(effective_model):
+            payload["temperature"] = temperature
 
         # Add function calling support
         if tools:
             payload["tools"] = tools
             if tool_choice:
                 payload["tool_choice"] = tool_choice
+            # Default-reasoning models reject function tools on
+            # /v1/chat/completions unless reasoning is explicitly disabled.
+            if self._defaults_reasoning(effective_model):
+                payload["reasoning_effort"] = "none"
 
         # Add response format if specified in kwargs
         response_format = kwargs.pop("response_format", None)
