@@ -12,70 +12,12 @@ Design Reference: docs/FAULTMAVEN_PLATFORM_EVOLUTION_STRATEGY.md (Week 11)
 
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import List, Set
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-
-# Handle optional toml dependency
-# Python 3.11+ has tomllib in stdlib (read-only), but test needs read capability
-try:
-    import toml  # Full read/write support (preferred)
-except ImportError:
-    try:
-        # Python 3.11+ has tomllib in stdlib (read-only, requires binary mode)
-        import tomllib
-
-        # Create wrapper to match toml.load() API (text mode)
-        class TomlWrapper:
-            @staticmethod
-            def load(f):
-                # tomllib.load() requires binary mode
-                if hasattr(f, "read"):
-                    # File handle - check if it's binary or text
-                    if hasattr(f, "mode") and "b" in f.mode:
-                        return tomllib.load(f)
-                    else:
-                        # Text mode - read and decode
-                        content = f.read()
-                        if isinstance(content, str):
-                            content = content.encode("utf-8")
-                        import io
-
-                        return tomllib.load(io.BytesIO(content))
-                else:
-                    # Path object or string - open in binary mode
-                    with open(f, "rb") as fp:
-                        return tomllib.load(fp)
-
-        toml = TomlWrapper()
-    except ImportError:
-        try:
-            import tomli  # Read-only backport (also requires binary)
-
-            # tomli also needs binary mode, create similar wrapper
-            class TomliWrapper:
-                @staticmethod
-                def load(f):
-                    if hasattr(f, "read"):
-                        if hasattr(f, "mode") and "b" in f.mode:
-                            return tomli.load(f)
-                        else:
-                            content = f.read()
-                            if isinstance(content, str):
-                                content = content.encode("utf-8")
-                            import io
-
-                            return tomli.load(io.BytesIO(content))
-                    else:
-                        with open(f, "rb") as fp:
-                            return tomli.load(fp)
-
-            toml = TomliWrapper()
-        except ImportError:
-            pytest.skip("toml/tomli/tomllib not available", allow_module_level=True)
-
 
 # ============================================================================
 # TEST FIXTURES
@@ -91,8 +33,8 @@ def pyproject_path() -> Path:
 @pytest.fixture
 def pyproject_data(pyproject_path: Path) -> dict:
     """Load pyproject.toml data."""
-    with open(pyproject_path, "r") as f:
-        return toml.load(f)
+    with open(pyproject_path, "rb") as f:
+        return tomllib.load(f)
 
 
 @pytest.fixture
@@ -182,10 +124,10 @@ class TestDependencyCategorization:
                 pkg in dep for dep in base_dependencies
             ), f"Missing core dependency: {pkg}"
 
-    def test_base_has_llm_framework(self, base_dependencies: List[str]):
+    def test_base_has_llm_framework(
+        self, base_dependencies: List[str], pyproject_data: dict
+    ):
         """Verify base dependencies include LLM framework (required for core functionality)."""
-        base_str = " ".join(base_dependencies)
-
         required = ["openai", "anthropic"]
         for pkg in required:
             assert any(
@@ -193,10 +135,16 @@ class TestDependencyCategorization:
             ), f"Missing LLM dependency: {pkg}"
 
         # The Fireworks provider is REST-only (aiohttp); the fireworks-ai SDK
-        # must stay out — its exact protobuf pin blocked security bumps (#903).
-        assert not any(
-            "fireworks" in dep for dep in base_dependencies
-        ), "fireworks-ai SDK reintroduced — the Fireworks provider does not use it"
+        # must stay out of the WHOLE dependency graph — its exact protobuf pin
+        # blocked security bumps (#903). Sweep base plus every extra so a
+        # reintroduction in e.g. the cloud extra fails here, not at re-lock.
+        dependency_groups = {"base": base_dependencies}
+        dependency_groups.update(pyproject_data["project"]["optional-dependencies"])
+        for group, deps in dependency_groups.items():
+            assert not any("fireworks" in dep for dep in deps), (
+                f"fireworks-ai SDK reintroduced in '{group}' dependencies — "
+                f"the Fireworks provider does not use it"
+            )
 
     def test_enterprise_has_observability(self, enterprise_dependencies: List[str]):
         """Verify enterprise dependencies include observability tools."""
