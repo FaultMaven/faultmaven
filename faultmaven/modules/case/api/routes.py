@@ -2188,9 +2188,6 @@ async def create_case_for_session(
     **Title Auto-Generation**: If title is not provided or empty, the backend
     automatically generates a unique title in the format: Case-MMDD-N
     (e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.
-
-    Supports idempotency via 'idempotency-key' header to prevent duplicate case
-    creation on retry when using force_new=true.
     """
     try:
         # Validate session and derive user if not authenticated
