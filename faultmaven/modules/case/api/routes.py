@@ -2935,12 +2935,14 @@ async def get_report_recommendations(
         logger.warning(
             f"Report recommendations unavailable for case {case_id}: {e}",
             extra={"case_id": case_id},
+            exc_info=True,
         )
         raise HTTPException(
             status_code=503,
             detail=(
-                f"Runbook similarity search is unavailable, so duplicate "
-                f"runbooks cannot be ruled out: {e}"
+                "Runbook similarity search is unavailable, so duplicate "
+                "runbooks cannot be ruled out. Retry once the knowledge base "
+                "is available."
             ),
         )
     except Exception as e:
