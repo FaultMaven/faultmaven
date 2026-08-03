@@ -724,7 +724,14 @@ async def list_users(
             for user in users
         ]
 
-        return {"users": users_list, "total": total_count}
+        # The listing is capped at 1000 with no pagination parameters, while
+        # `total` counts every user. Say so rather than letting a caller read
+        # a short list as the whole population.
+        return {
+            "users": users_list,
+            "total": total_count,
+            "truncated": len(users_list) < total_count,
+        }
 
     except HTTPException:
         raise
@@ -732,7 +739,7 @@ async def list_users(
         logger.error(f"List users failed: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail={"error": "internal_error", "message": str(e)},
+            detail={"error": "internal_error", "message": "Failed to list users"},
         )
 
 
@@ -804,7 +811,10 @@ async def delete_user(
         logger.error(f"Delete user failed: {type(e).__name__}: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail={"error": "internal_error", "message": str(e)},
+            detail={
+                "error": "internal_error",
+                "message": "Failed to delete user",
+            },
         )
 
 
@@ -869,8 +879,10 @@ async def logout(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Logout failed: {e} (correlation: {correlation_id})")
-        raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
+        logger.error(
+            f"Logout failed: {e} (correlation: {correlation_id})", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Logout failed")
 
 
 @router.get("/me", response_model=UserInfoResponse)
@@ -907,10 +919,11 @@ async def get_current_user_profile(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Get user profile failed: {e} (correlation: {correlation_id})")
-        raise HTTPException(
-            status_code=500, detail=f"Could not retrieve user profile: {str(e)}"
+        logger.error(
+            f"Get user profile failed: {e} (correlation: {correlation_id})",
+            exc_info=True,
         )
+        raise HTTPException(status_code=500, detail="Could not retrieve user profile")
 
 
 class AvailableScopesResponse(BaseModel):
@@ -978,11 +991,11 @@ async def auth_health_check():
         return health_status["authentication"]
 
     except Exception as e:
-        logger.error(f"Auth health check failed: {e}")
+        logger.error(f"Auth health check failed: {e}", exc_info=True)
         return {
             "status": "unhealthy",
             "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "error": str(e),
+            "error": "Auth health check failed",
         }
 
 
@@ -1061,7 +1074,5 @@ async def revoke_user_tokens(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Token revocation failed: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Token revocation failed: {str(e)}"
-        )
+        logger.error(f"Token revocation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Token revocation failed")

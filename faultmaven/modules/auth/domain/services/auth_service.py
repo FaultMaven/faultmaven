@@ -1,12 +1,18 @@
 """JWT Authentication Service (TASK-017)
 
-Purpose: Handle JWT token generation, verification, refresh, and revocation.
+Purpose: Verify, revoke and read JWTs on the request path.
 
-This module provides production-ready JWT authentication using RS256 algorithm:
-- Access token generation (15 minutes expiry)
-- Refresh token generation (7 days expiry)
+This service does **not** mint tokens. It used to carry a second, independent
+signing surface that took a subject id and an ``organization_id`` string and
+signed them verbatim — bypassing ``resolve_organization_claim``, the org-claim
+guard every real mint funnels through (#850). That surface reached no route and
+was removed in #853; ``IJWTTokenGenerator`` (``jwt_token_generator``) is the one
+mint path.
+
+What remains here:
 - Token verification with signature, expiration, issuer, audience validation
 - Token revocation via the deployment-wide revocation store (#767)
+- Extraction of the request-path identity from verified claims
 
 Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 """
@@ -14,10 +20,9 @@ Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 from __future__ import annotations
 
 import logging
-import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import jwt
 
@@ -28,13 +33,8 @@ if TYPE_CHECKING:
         ITokenRevocationStore,
     )
 
-from faultmaven.exceptions import AuthorizationError, ServiceError, ValidationException
-from faultmaven.modules.auth.domain.models.auth import (
-    AuthenticatedUser,
-    TokenClaims,
-    TokenPair,
-)
-from faultmaven.modules.auth.domain.models.rbac import get_permissions_for_roles
+from faultmaven.exceptions import ServiceError
+from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     revocation_reason,
 )
@@ -59,17 +59,50 @@ class TokenRevocationError(Exception):
         super().__init__(message)
 
 
+class PartialKeyConfigurationError(RuntimeError):
+    """Raised when a deployment configures one half of the RSA key pair.
+
+    Half a key pair is an operator error, not a state to recover from. The only
+    recovery available here — generating a development pair — would discard the
+    half that *was* configured, so recovering is strictly worse than refusing:
+    the deployment would come up looking healthy and reject every genuinely
+    minted token.
+
+    A ``RuntimeError`` deliberately. ``compose_application`` re-raises
+    ``RuntimeError`` in every deployment mode while swallowing other exception
+    types into a degraded boot, and a security-configuration refusal must not be
+    the thing that degrades.
+    """
+
+
 class AuthService:
-    """JWT Authentication Service.
+    """JWT Authentication Service — the request-path side of JWT handling.
 
-    Handles all JWT token operations including:
-    - Token generation (access and refresh)
-    - Token verification
-    - Token revocation
+    Handles:
+    - Token verification (signature, expiry, issuer, audience, type, jti)
+    - Token revocation, per token and per user
+    - Extraction of the request-path identity from verified claims
 
-    Uses RS256 (RSA with SHA-256) for asymmetric signing:
-    - Private key: Used for token generation
-    - Public key: Used for token verification
+    It mints nothing. Tokens are minted by ``IJWTTokenGenerator``
+    (``jwt_token_generator``), which signs from a user object, refuses a
+    deactivated account and resolves the organization claim. ``AuthService``
+    carried a parallel mint until #853; it reached no route and was removed.
+
+    Under ``AUTH_MODE=oauth`` verification is RS256 against the configured public
+    key; under ``AUTH_MODE=local`` it is HS256 against the shared secret.
+    ``AuthMode`` admits only those two values, so the RSA-presence branch at the
+    end of ``_algorithm`` is unreachable and decides nothing.
+
+    **Both RSA keys must stay configured, even though nothing here signs.**
+    ``_load_keys`` runs on every construction and loads the private key as well
+    as the public one, and it refuses a half-configured pair rather than filling
+    the gap: ``_generate_dev_keys`` replaces **both** halves, so fabricating
+    would discard the half that *was* configured. Dropping ``JWT_PRIVATE_KEY``
+    from an ``AUTH_MODE=oauth`` deployment — on the reasonable-sounding grounds
+    that a verify-only service has no use for it — therefore raises
+    ``PartialKeyConfigurationError`` at construction instead of silently
+    replacing the configured public key and 401-ing every genuinely minted
+    token. Configure both halves, or neither.
 
     Token revocation is tracked via the deployment-wide revocation store
     (one key prefix, shared by every revoke path — #767) with TTL matching
@@ -100,14 +133,48 @@ class AuthService:
         self._load_keys()
 
     def _load_keys(self) -> None:
-        """Load RSA keys from configuration.
+        """Load the RSA key pair from configuration, or refuse.
 
-        Keys can be provided via:
-        1. Direct string in environment (JWT_PRIVATE_KEY, JWT_PUBLIC_KEY)
-        2. File path (JWT_PRIVATE_KEY_PATH, JWT_PUBLIC_KEY_PATH)
-        3. Generated for development (if neither is set)
+        Each key can be provided via:
+        1. A constructor argument
+        2. A direct string in the environment (JWT_PRIVATE_KEY, JWT_PUBLIC_KEY)
+        3. A file path (JWT_PRIVATE_KEY_PATH, JWT_PUBLIC_KEY_PATH)
+
+        Exactly three outcomes, and the middle one is the point:
+
+        * **Nothing requested** — no constructor argument, no string, no path,
+          for either half. This selects development keys, deliberately, and is
+          the genuine local path.
+        * **Something requested but the pair is incomplete** — raise
+          ``PartialKeyConfigurationError``. Never fabricate.
+        * **Both halves resolved** — use them verbatim.
+
+        "Requested" is measured on what the deployment *declared*, not on what
+        resolved. A key file that is named but missing from disk is a configured
+        key that failed, not an unconfigured one; collapsing those two is what
+        let a typo in ``JWT_PUBLIC_KEY_PATH`` fall through to fabrication.
+
+        This refusal exists because generating a development pair overwrites
+        **both** halves. Before #853's follow-up, ``AUTH_MODE=oauth`` with a
+        configured public key and a missing private key silently replaced the
+        configured public key with a random one, and every token minted by the
+        real signer then failed verification — a 401 storm whose only signal was
+        one log line. ``_check_cloud`` in ``config.deployment_coherence`` already
+        refuses this at boot, but only when ``DEPLOYMENT_MODE=cloud``; the check
+        here holds for every mode and does not depend on that gate having run.
         """
         security = self._settings.security
+
+        # Measured BEFORE loading, so a declared-but-unreadable source still
+        # counts as requested.
+        private_requested = bool(
+            self._private_key
+            or security.jwt_private_key
+            or security.jwt_private_key_path
+        )
+        public_requested = bool(
+            self._public_key or security.jwt_public_key or security.jwt_public_key_path
+        )
 
         # Load private key
         if not self._private_key:
@@ -131,9 +198,28 @@ class AuthService:
                 else:
                     logger.warning(f"Public key file not found: {key_path}")
 
-        # Generate development keys if none are configured
-        if not self._private_key or not self._public_key:
+        # Nothing was asked for: development keys are the deliberate selection.
+        if not private_requested and not public_requested:
             self._generate_dev_keys()
+            return
+
+        missing = []
+        if not self._private_key:
+            missing.append("private (JWT_PRIVATE_KEY / JWT_PRIVATE_KEY_PATH)")
+        if not self._public_key:
+            missing.append("public (JWT_PUBLIC_KEY / JWT_PUBLIC_KEY_PATH)")
+
+        if missing:
+            raise PartialKeyConfigurationError(
+                "JWT RSA key configuration is incomplete: no usable "
+                f"{' and '.join(missing)} key. Refusing to generate development "
+                "keys, because generation replaces BOTH halves — the configured "
+                "half would be discarded and every genuinely minted token would "
+                "then fail verification. Configure both halves of the pair, or "
+                "neither (which selects development keys deliberately). A named "
+                "key file that does not exist counts as configured-and-broken, "
+                "not as unconfigured."
+            )
 
     def _generate_dev_keys(self) -> None:
         """Generate RSA key pair for development.
@@ -214,168 +300,6 @@ class AuthService:
     def _audience(self) -> str:
         """Get JWT audience from settings."""
         return self._settings.security.jwt_audience
-
-    @property
-    def _access_token_expire_minutes(self) -> int:
-        """Access token expiry, from the single expiry source (#888)."""
-        return self._settings.auth.jwt_access_token_expire_minutes
-
-    @property
-    def _refresh_token_expire_days(self) -> int:
-        """Refresh token expiry in DAYS, from the single expiry source (#888)."""
-        return self._settings.auth.jwt_refresh_token_expire_days
-
-    def generate_access_token(
-        self,
-        user_id: str,
-        organization_id: str,
-        email: str,
-        roles: List[str],
-        permissions: Optional[List[str]] = None,
-    ) -> str:
-        """Generate JWT access token.
-
-        Claim-level primitive. It signs a subject id, never an account, so it
-        **cannot** enforce that the account is still active — there is nothing
-        here to test. This is a second JWT mint surface, independent of
-        ``IJWTTokenGenerator``, so the chokepoint in ``jwt_token_generator``
-        does not reach it either. A caller holding an account must go through
-        ``generate_token_pair`` and pass it, which does enforce the rule.
-
-        Args:
-            user_id: User UUID
-            organization_id: Organization UUID
-            email: User email
-            roles: User roles in organization (admin, member, viewer)
-            permissions: Granular permissions (auto-derived from roles if None)
-
-        Returns:
-            Signed JWT access token (valid for configured minutes)
-
-        Raises:
-            ServiceError: If token generation fails
-        """
-        if permissions is None:
-            permissions = [p.value for p in get_permissions_for_roles(roles)]
-
-        now = datetime.now(timezone.utc)
-        expire = now + timedelta(minutes=self._access_token_expire_minutes)
-
-        claims = TokenClaims(
-            sub=user_id,
-            organization_id=organization_id,
-            email=email,
-            roles=roles,
-            permissions=permissions,
-            iss=self._issuer,
-            aud=self._audience,
-            iat=int(now.timestamp()),
-            exp=int(expire.timestamp()),
-            jti=str(uuid.uuid4()),
-            token_type="access",
-        )
-
-        return self._encode_token(claims.to_dict())
-
-    def generate_refresh_token(
-        self,
-        user_id: str,
-        organization_id: str,
-    ) -> str:
-        """Generate JWT refresh token.
-
-        Claim-level primitive: see ``generate_access_token`` — it signs a
-        subject id and cannot enforce account rules.
-
-        Refresh tokens are long-lived and used to obtain new access tokens.
-        They contain minimal claims for security.
-
-        Args:
-            user_id: User UUID
-            organization_id: Organization UUID
-
-        Returns:
-            Signed JWT refresh token (valid for configured days)
-
-        Raises:
-            ServiceError: If token generation fails
-        """
-        now = datetime.now(timezone.utc)
-        expire = now + timedelta(days=self._refresh_token_expire_days)
-
-        claims = {
-            "sub": user_id,
-            "organization_id": organization_id,
-            "iss": self._issuer,
-            "aud": self._audience,
-            "iat": int(now.timestamp()),
-            "exp": int(expire.timestamp()),
-            "jti": str(uuid.uuid4()),
-            "type": "refresh",
-        }
-
-        return self._encode_token(claims)
-
-    def generate_token_pair(
-        self,
-        user_id: str,
-        organization_id: str,
-        email: str,
-        roles: List[str],
-        permissions: Optional[List[str]] = None,
-        account=None,
-    ) -> TokenPair:
-        """Generate both access and refresh tokens.
-
-        This is the only mint on this service that a caller holding an *account*
-        should use, and the only one that can enforce account rules — see the
-        note on ``generate_access_token`` for why the primitives below cannot.
-        Pass ``account`` and a deactivated one is refused here, by the same
-        predicate the ``IJWTTokenGenerator`` chokepoint uses.
-
-        Args:
-            user_id: User UUID
-            organization_id: Organization UUID
-            email: User email
-            roles: User roles in organization
-            permissions: Granular permissions (auto-derived from roles if None)
-            account: The user object these claims describe, when the caller has
-                one. Optional only because this signature predates the check and
-                some callers legitimately hold nothing but claims; supply it
-                whenever an account exists, or the refusal cannot be made here.
-
-        Returns:
-            TokenPair with access and refresh tokens
-
-        Raises:
-            InactiveAccountError: ``account`` is deactivated.
-        """
-        if account is not None:
-            from faultmaven.modules.auth.domain.services.jwt_token_generator import (
-                _refuse_if_deactivated,
-            )
-
-            _refuse_if_deactivated(account, "session")
-
-        access_token = self.generate_access_token(
-            user_id=user_id,
-            organization_id=organization_id,
-            email=email,
-            roles=roles,
-            permissions=permissions,
-        )
-
-        refresh_token = self.generate_refresh_token(
-            user_id=user_id,
-            organization_id=organization_id,
-        )
-
-        return TokenPair(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type="Bearer",
-            expires_in=self._access_token_expire_minutes * 60,
-        )
 
     def verify_token(
         self,
@@ -531,8 +455,9 @@ class AuthService:
         obvious one.
 
         Expiry has a single source (``settings.auth``, #888) and every minting
-        path — this service, the HS256/local generator, the RS256/cloud
-        generator — takes its lifetimes from it. So "the watermark outlives
+        path — the HS256/local generator and the RS256/cloud generator, which
+        since #853 are the only ones — takes its lifetimes from it. So "the
+        watermark outlives
         every mintable token" is structural rather than a reconciliation across
         configuration: reading that one source covers every mint path, and the
         field bounds are the only mintable range there is.
@@ -666,38 +591,6 @@ class AuthService:
             logger.error(f"Failed to check token revocation: {e}")
             # Fail open for availability, but log for monitoring
             return False
-
-    def _encode_token(self, claims: Dict[str, Any]) -> str:
-        """Encode claims into JWT token.
-
-        Args:
-            claims: Token claims dictionary
-
-        Returns:
-            Encoded JWT token string
-
-        Raises:
-            ServiceError: If encoding fails
-        """
-        try:
-            # Determine signing key based on algorithm
-            if self._algorithm == "RS256" and self._private_key:
-                key = self._private_key
-            elif self._settings.security.jwt_secret_key:
-                # Fallback to HS256 with secret key
-                key = self._settings.security.jwt_secret_key.get_secret_value()
-            else:
-                raise ServiceError("No JWT signing key configured")
-
-            return jwt.encode(
-                claims,
-                key,
-                algorithm=self._algorithm,
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to encode token: {e}")
-            raise ServiceError(f"Token generation failed: {e}")
 
     def extract_user_from_token(self, token: str) -> AuthenticatedUser:
         """Extract AuthenticatedUser from a valid access token.

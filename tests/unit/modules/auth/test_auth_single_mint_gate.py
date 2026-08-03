@@ -438,6 +438,48 @@ async def test_the_oauth_exchange_still_reports_its_own_protocol_error():
 
 
 # =============================================================================
+# The chokepoint is the only mint (#853)
+# =============================================================================
+
+#: The parallel mint path `AuthService` used to carry. Each took a `user_id` and
+#: an `organization_id` **string** and signed the latter verbatim, so a caller
+#: could put any value in the `organization_id` claim — bypassing
+#: `resolve_organization_claim`, the guard every real mint funnels through
+#: (#850). Its only caller passed `organization_id or "org-default"`: a truthy,
+#: non-sentinel, fabricated tenant that both layers of the #850 fix would have
+#: waved through. Nothing routed to it, so it was removed rather than gated.
+REMOVED_AUTH_SERVICE_MINTS = [
+    "generate_access_token",
+    "generate_refresh_token",
+    "generate_token_pair",
+]
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.parametrize("method", REMOVED_AUTH_SERVICE_MINTS)
+def test_auth_service_carries_no_mint_of_its_own(method):
+    """A tombstone, not a behavioural test: there is nothing left to exercise.
+
+    The names are cheap to reintroduce — `AuthService` is handed to the request
+    path everywhere, so a future change needing a token has it in reach, and a
+    three-line helper here would sign claims no guard inspects. Every mint goes
+    through `IJWTTokenGenerator`, which signs from a *user object* and resolves
+    the org claim; a new one added here instead must fail this test.
+
+    Note the same three names exist on `IJWTTokenGenerator` and are the live,
+    guarded path. This asserts only that `AuthService` does not carry them.
+    """
+    from faultmaven.modules.auth.domain.services.auth_service import AuthService
+
+    assert not hasattr(AuthService, method), (
+        f"AuthService.{method} is back. Mint through IJWTTokenGenerator instead: "
+        "it takes the account, refuses a deactivated one, and resolves the "
+        "organization claim rather than signing a caller-supplied string (#853)."
+    )
+
+
+# =============================================================================
 # Findings from code review on PR #957
 # =============================================================================
 
@@ -458,40 +500,6 @@ def test_the_refusal_does_not_disclose_the_account_id():
         jwt_token_generator._refuse_if_deactivated(_user(is_active=False), "access")
 
     assert "user_123" not in str(refusal.value)
-
-
-@pytest.mark.unit
-@pytest.mark.security
-@pytest.mark.asyncio
-async def test_the_account_aware_mint_on_auth_service_refuses_a_deactivated_account():
-    """The second signing surface, gated where it can see an account.
-
-    `AuthService` signs from a subject id and never touches
-    `IJWTTokenGenerator`, so the chokepoint does not reach it. Its one
-    account-aware composition does enforce the rule when handed the account.
-    """
-    from faultmaven.modules.auth.domain.services.auth_service import AuthService
-
-    service = AuthService(revocation_store=AsyncMock())
-
-    with pytest.raises(InactiveAccountError):
-        service.generate_token_pair(
-            user_id="user_123",
-            organization_id="org_acme",
-            email="testuser@acme.example",
-            roles=["user"],
-            account=_user(is_active=False),
-        )
-
-    # An active account is unaffected.
-    pair = service.generate_token_pair(
-        user_id="user_123",
-        organization_id="org_acme",
-        email="testuser@acme.example",
-        roles=["user"],
-        account=_user(is_active=True),
-    )
-    assert pair.access_token and pair.refresh_token
 
 
 @pytest.mark.unit
@@ -670,45 +678,6 @@ def test_the_refusal_really_answers_403_through_the_registered_handlers():
     response = TestClient(app, raise_server_exceptions=False).get("/mint")
     assert response.status_code == 403
     assert "user_123" not in response.text
-
-
-@pytest.mark.unit
-@pytest.mark.security
-@pytest.mark.asyncio
-async def test_the_authenticate_path_hands_the_account_to_the_mint():
-    """Pin the backstop the code comment claims.
-
-    `user_service.authenticate_user` checks `is_active` itself and would refuse
-    first, so removing `account=` from its call is invisible to a behavioural
-    test. The comment there says the argument is what survives someone deleting
-    that primary check — this asserts the argument is actually passed, which is
-    the only thing that makes the claim true.
-    """
-    from unittest.mock import MagicMock, patch
-
-    from faultmaven.modules.auth.domain.services.user_service import UserService
-
-    user = _user()
-    user.hashed_password = "x"
-
-    repo = AsyncMock()
-    repo.get_by_username = AsyncMock(return_value=user)
-    repo.get_by_email = AsyncMock(return_value=user)
-    repo.save = AsyncMock(return_value=user)
-
-    auth_service = MagicMock()
-    auth_service.generate_token_pair.return_value = MagicMock(
-        access_token="a", refresh_token="r"
-    )
-
-    service = UserService(user_repo=repo, auth_service=auth_service)
-    with patch(
-        "faultmaven.modules.auth.domain.services.user_service.verify_password",
-        return_value=True,
-    ):
-        await service.authenticate_user(email="testuser@acme.example", password="pw")
-
-    assert auth_service.generate_token_pair.call_args.kwargs["account"] is user
 
 
 @pytest.mark.unit

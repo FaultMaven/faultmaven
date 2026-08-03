@@ -56,13 +56,12 @@ def account_may_hold_credentials(user) -> bool:
 
     **Scope, stated precisely.** ``_refuse_if_deactivated`` enforces this at
     every ``IJWTTokenGenerator`` mint, which is every path that signs from a user
-    object. It does **not** reach ``AuthService.generate_access_token`` /
-    ``generate_refresh_token``: those are a second, independent signing surface
-    that takes a subject id and never sees an account, so there is nothing there
-    to test. Their only account-aware composition,
-    ``AuthService.generate_token_pair``, calls this predicate when handed the
-    account. Claiming blanket coverage would be worse than the gap — it would
-    stop the next reader from looking.
+    object — and, since #853, every path that signs at all. ``AuthService`` used
+    to carry a second, independent signing surface that took a subject id and
+    never saw an account, which this predicate could not reach; it was dead and
+    is gone, so the coverage claim here is now unqualified. It stays qualified in
+    one direction only: a *new* mint that does not go through
+    ``IJWTTokenGenerator`` would be outside it again.
 
     ``is_active`` alone is sufficient and complete for users.
     ``user_service.deactivate_user`` is the only writer of ``users.deleted_at``

@@ -524,3 +524,153 @@ async def asgi_request(app, method: str, path: str, **kwargs):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         return await client.request(method, path, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# JWT forging for AuthService verification tests (#853)
+# ---------------------------------------------------------------------------
+#
+# ``AuthService`` mints nothing. It used to carry a second, independent signing
+# surface — ``generate_access_token`` / ``generate_refresh_token`` /
+# ``generate_token_pair`` — that took a subject id and an ``organization_id``
+# string and signed them verbatim, bypassing ``resolve_organization_claim``
+# (#850). It reached no route and was removed in #853; ``IJWTTokenGenerator`` is
+# the one mint path.
+#
+# Its verification, revocation and identity-extraction half is very much alive
+# (the auth middleware, the tenant binder and the optional-auth dependency all
+# call it), and testing it needs tokens whose claims the test controls —
+# including claims no legitimate mint would ever emit. These helpers forge such
+# tokens directly, in test code, signed with whatever key the service under test
+# verifies against.
+#
+# They are deliberately NOT a mint: they are unreachable from production, take no
+# account object, and make no claim to be safe. Nothing in ``faultmaven/`` may
+# call them. A production caller that needs a token uses ``IJWTTokenGenerator``.
+#
+# **They MUST mirror the claim set the live generators emit.** A forger is a
+# stand-in for production, and a stand-in that emits a shape production never
+# emits makes every test built on it agree about a token no deployment will ever
+# see. The concrete trap this rule exists for: the removed mint emitted
+# ``permissions`` and `AuthenticatedUser.from_jwt_claims` reads ``permissions``,
+# but both live generators emit ``scopes`` and no ``permissions`` at all — so in
+# production ``AuthenticatedUser.permissions`` is always ``[]``. Forging
+# ``permissions`` would keep `require_permission` (defined, exported, wired to no
+# route today) green in every test and 403 on the first route that adopts it.
+# `test_token_forger_shape_parity.py` pins the key sets equal; keep both in step.
+
+
+#: The scopes both live generators put in every access token, verbatim
+#: (`jwt_token_generator.py`, HS256 and RS256 `generate_access_token`).
+LIVE_ACCESS_TOKEN_SCOPES = [
+    "openid",
+    "profile",
+    "email",
+    "cases:read",
+    "cases:write",
+    "knowledge:read",
+]
+
+
+def sign_claims_for(auth_service, claims: Dict[str, Any]) -> str:
+    """Sign an arbitrary claim dict with the key ``auth_service`` verifies with.
+
+    Mirrors the service's own key selection (RS256 private key when configured,
+    otherwise the HS256 secret) so a forged token passes signature validation
+    and the test can exercise what comes after it.
+    """
+    import jwt as _jwt
+
+    algorithm = auth_service._algorithm
+    if algorithm == "RS256" and auth_service._private_key:
+        key = auth_service._private_key
+    else:
+        key = auth_service._settings.security.jwt_secret_key.get_secret_value()
+    return _jwt.encode(claims, key, algorithm=algorithm)
+
+
+def forge_access_token(
+    auth_service,
+    *,
+    user_id: str,
+    organization_id: str,
+    email: str,
+    roles: List[str],
+    username: Optional[str] = None,
+    auth_mode: Optional[str] = None,
+    scopes: Optional[List[str]] = None,
+    expires_in_minutes: Optional[int] = None,
+) -> str:
+    """Forge an access token ``auth_service.verify_token`` accepts.
+
+    The claim set is the live generators' access payload, key for key. There is
+    deliberately **no** ``permissions`` claim and deliberately **is** a ``scopes``
+    one: that is what production emits, so that is what tests must see.
+
+    ``auth_mode`` follows the same split the generators hardcode — the HS256
+    generator is the local one and stamps ``"local"``, the RS256 generator is the
+    OAuth one and stamps ``"oauth"`` — derived here from the algorithm the
+    service verifies with. ``username`` defaults to ``user_id``; the live mint
+    takes ``user.username``, so pass it explicitly when a test reads that claim.
+
+    Unlike the live mint, the organization claim is whatever the caller passes:
+    forging exists to control claims, including ones
+    ``resolve_organization_claim`` would never produce.
+    """
+    from datetime import timedelta
+
+    if expires_in_minutes is None:
+        expires_in_minutes = auth_service._settings.auth.jwt_access_token_expire_minutes
+    if auth_mode is None:
+        auth_mode = "oauth" if auth_service._algorithm == "RS256" else "local"
+
+    now = datetime.now(timezone.utc)
+    return sign_claims_for(
+        auth_service,
+        {
+            "sub": user_id,
+            "username": user_id if username is None else username,
+            "email": email,
+            "organization_id": organization_id,
+            "roles": roles,
+            "scopes": (
+                list(LIVE_ACCESS_TOKEN_SCOPES) if scopes is None else list(scopes)
+            ),
+            "exp": int((now + timedelta(minutes=expires_in_minutes)).timestamp()),
+            "iat": int(now.timestamp()),
+            "iss": auth_service._settings.security.jwt_issuer,
+            "aud": auth_service._settings.security.jwt_audience,
+            "jti": str(uuid4()),
+            "type": "access",
+            "auth_mode": auth_mode,
+        },
+    )
+
+
+def forge_refresh_token(
+    auth_service,
+    *,
+    user_id: str,
+    organization_id: str,
+    expires_in_days: Optional[int] = None,
+) -> str:
+    """Forge a refresh token ``auth_service.verify_token`` accepts."""
+    from datetime import timedelta
+
+    if expires_in_days is None:
+        expires_in_days = auth_service._settings.auth.jwt_refresh_token_expire_days
+
+    now = datetime.now(timezone.utc)
+    return sign_claims_for(
+        auth_service,
+        {
+            "sub": user_id,
+            "organization_id": organization_id,
+            "iss": auth_service._settings.security.jwt_issuer,
+            "aud": auth_service._settings.security.jwt_audience,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(days=expires_in_days)).timestamp()),
+            "jti": str(uuid4()),
+            "type": "refresh",
+        },
+    )
