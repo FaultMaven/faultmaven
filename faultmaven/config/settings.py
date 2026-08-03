@@ -1008,6 +1008,12 @@ class SecuritySettings(BaseSettings):
     cors_allow_origins: List[str] = Field(
         default=["http://localhost:3333", "chrome-extension://*", "moz-extension://*"],
     )
+    # Headers a cross-origin caller is allowed to READ off a response. A header
+    # the server sets but does not expose is invisible to browser JS, so the
+    # whole rate-limit family belongs here: ``Retry-After`` tells a 429'd caller
+    # when to come back, and Limit/Remaining/Reset are what lets it slow down
+    # before it gets there. Emitting them while withholding them from the
+    # caller that must act on them is the same as not emitting them.
     cors_expose_headers: List[str] = Field(
         default=[
             "Location",
@@ -1017,7 +1023,9 @@ class SecuritySettings(BaseSettings):
             "Sunset",
             "X-Request-ID",
             "Retry-After",
+            "X-RateLimit-Limit",
             "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
         ],
     )
 

@@ -1069,7 +1069,255 @@ def setup_middleware():
             f"Initial middleware stack: {[type(m).__name__ for m in app.user_middleware]}"
         )
 
-    # 1. CORS middleware (first - handles preflight requests)
+    # 1. Trailing slash middleware (prevents 307 redirects)
+    try:
+        from .api.middleware.trailing_slash import TrailingSlashMiddleware
+
+        app.add_middleware(TrailingSlashMiddleware)
+        if logging_enabled:
+            logger.info("✅ Trailing slash middleware added")
+    except Exception as e:
+        logger.warning(f"Failed to add trailing slash middleware: {e}")
+
+    if logging_enabled:
+        logger.info(
+            f"After trailing slash middleware: {[type(m).__name__ for m in app.user_middleware]}"
+        )
+
+    # 2. Idempotency middleware (before protection) — skip when SKIP_SERVICE_CHECKS
+    try:
+        if not settings.server.skip_service_checks:
+            from .api.middleware.idempotency import IdempotencyMiddleware
+
+            # No client injected here: this runs at import time, before the
+            # lifespan creates Redis. The middleware resolves the client lazily
+            # from app.state (wired by the composition root) on the first request.
+            app.add_middleware(IdempotencyMiddleware)
+            if logging_enabled:
+                logger.info("✅ Idempotency middleware added")
+        else:
+            if logging_enabled:
+                logger.info(
+                    "Skipping Idempotency middleware (SKIP_SERVICE_CHECKS=True)"
+                )
+    except Exception as e:
+        logger.warning(f"Failed to add idempotency middleware: {e}")
+
+    if logging_enabled:
+        logger.info(
+            f"After Idempotency middleware: {[type(m).__name__ for m in app.user_middleware]}"
+        )
+
+    # 3. Request ID and Rate Limiting Headers middleware - skip in test environments
+    try:
+        if not settings.server.skip_service_checks and not _is_test_environment():
+            from .api.middleware.request_id import (
+                RateLimitHeaderMiddleware,
+                RequestIdMiddleware,
+            )
+
+            # Add Request ID middleware
+            app.add_middleware(RequestIdMiddleware)
+
+            # Add Rate Limiting Headers middleware
+            app.add_middleware(
+                RateLimitHeaderMiddleware, default_limit=1000, window_seconds=3600
+            )
+
+            if logging_enabled:
+                logger.info("✅ Request ID and Rate Limiting Headers middleware added")
+        else:
+            if logging_enabled:
+                logger.info(
+                    "Skipping Request ID middleware (test environment or SKIP_SERVICE_CHECKS=True)"
+                )
+
+    except Exception as e:
+        logger.warning(f"Failed to add request ID middleware: {e}")
+
+    if logging_enabled:
+        logger.info(
+            f"After Request ID middleware: {[type(m).__name__ for m in app.user_middleware]}"
+        )
+
+    # 4. Protection middleware (early in stack for security)
+    try:
+        from .api.protection import setup_protection_middleware
+
+        if not settings.server.skip_service_checks:
+            protection_info = setup_protection_middleware(
+                app,
+                environment=settings.server.environment,
+            )
+            if logging_enabled:
+                if protection_info.get("protection_enabled"):
+                    middleware_names = protection_info.get("middleware_added", [])
+                    logger.info(f"✅ Protection middleware enabled: {middleware_names}")
+                    if protection_info.get("warnings"):
+                        logger.warning(
+                            f"Protection warnings: {protection_info['warnings']}"
+                        )
+                else:
+                    logger.info("ℹ️ Protection middleware disabled")
+            app.extra["protection_info"] = protection_info
+        else:
+            if logging_enabled:
+                logger.info("Skipping Protection middleware (SKIP_SERVICE_CHECKS=True)")
+    except Exception as e:
+        if logging_enabled:
+            logger.warning(f"Failed to setup protection middleware: {e}")
+        if settings.server.environment != "development":
+            raise
+
+    if logging_enabled:
+        logger.info(
+            f"After Protection middleware: {[type(m).__name__ for m in app.user_middleware]}"
+        )
+
+    # 5. GZip middleware
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+    if logging_enabled:
+        logger.info(
+            f"After GZip middleware: {[type(m).__name__ for m in app.user_middleware]}"
+        )
+
+    # 6. New unified logging middleware (integrates with Phase 1 & 2 infrastructure)
+    if logging_enabled:
+        logger.info("Adding LoggingMiddleware to FastAPI app")
+    app.add_middleware(LoggingMiddleware)
+    if logging_enabled:
+        logger.info(
+            f"After LoggingMiddleware: {[type(m).__name__ for m in app.user_middleware]}"
+        )
+
+    # 7. Performance tracking middleware (Phase 2 enhancement)
+    from .api.middleware.performance import PerformanceTrackingMiddleware
+
+    if not settings.server.skip_service_checks:
+        if logging_enabled:
+            logger.info("Adding PerformanceTrackingMiddleware to FastAPI app")
+        # Same trusted-proxy list the limiter keys on, from the same single
+        # reader, so the address a request is *labelled* with and the address
+        # it is *limited* by cannot disagree.
+        #
+        # Read directly rather than via ``load_protection_settings``: that
+        # builds a whole ProtectionSettings down the ``_load_from_settings``
+        # path, which warns "rate limiting, deduplication and request timeouts
+        # are all disabled deployment-wide" whenever BASIC_PROTECTION_ENABLED is
+        # unset. Production installs those via ``get_production_protection_settings``,
+        # so calling the general loader here just to fetch one field would emit
+        # a warning that is false on exactly the deployment that reads it.
+        from .config.protection import get_trusted_proxies
+
+        app.add_middleware(
+            PerformanceTrackingMiddleware,
+            service_name="faultmaven_api",
+            trusted_proxies=get_trusted_proxies(),
+        )
+        if logging_enabled:
+            logger.info(
+                f"After PerformanceTrackingMiddleware: {[type(m).__name__ for m in app.user_middleware]}"
+            )
+    else:
+        if logging_enabled:
+            logger.info(
+                "Skipping PerformanceTrackingMiddleware (SKIP_SERVICE_CHECKS=True)"
+            )
+
+    # 8. System-wide optimization middleware (Phase 2 optimization) - skip in test environments
+    if not settings.server.skip_service_checks and not _is_test_environment():
+        from .api.middleware.system_optimization import SystemOptimizationMiddleware
+
+        if logging_enabled:
+            logger.info("Adding SystemOptimizationMiddleware to FastAPI app")
+        app.add_middleware(
+            SystemOptimizationMiddleware,
+            enable_compression=True,
+            enable_caching=True,
+            enable_background_optimization=True,
+            enable_resource_cleanup=True,
+            cache_ttl_seconds=300,
+            compression_threshold=1024,
+        )
+    else:
+        if logging_enabled:
+            logger.info(
+                "Skipping SystemOptimizationMiddleware (test environment or SKIP_SERVICE_CHECKS=True)"
+            )
+    if logging_enabled:
+        logger.info(
+            f"After SystemOptimizationMiddleware: {[type(m).__name__ for m in app.user_middleware]}"
+        )
+
+    # 9. Opik tracing middleware (if available) - skip in test environments
+    if (
+        OPIK_AVAILABLE
+        and OPIK_MIDDLEWARE_AVAILABLE
+        and not settings.server.skip_service_checks
+        and not _is_test_environment()
+    ):
+        if logging_enabled:
+            if settings.observability.opik_use_local:
+                logger.info("Adding OpikMiddleware for local Opik instance")
+            else:
+                logger.info("Adding OpikMiddleware for cloud instance")
+        app.add_middleware(OpikMiddleware)
+        if logging_enabled:
+            logger.info(
+                f"After Opik middleware: {[type(m).__name__ for m in app.user_middleware]}"
+            )
+    elif OPIK_AVAILABLE and logging_enabled:
+        if settings.server.skip_service_checks or _is_test_environment():
+            logger.info(
+                "Skipping OpikMiddleware (test environment or SKIP_SERVICE_CHECKS=True)"
+            )
+        else:
+            logger.info(
+                "Opik SDK available but middleware not found - tracing will work at function level"
+            )
+
+    # 10. Contract Probe middleware (for API compliance monitoring)
+    if not settings.server.skip_service_checks and not _is_test_environment():
+        try:
+            from .api.middleware.contract_probe import ContractProbeMiddleware
+
+            app.add_middleware(
+                ContractProbeMiddleware,
+                probe_enabled=True,
+                log_all_requests=False,  # Only log violations, not all requests
+                failure_sample_rate=1.0,
+            )
+            if logging_enabled:
+                logger.info(
+                    "✅ Contract Probe middleware added for API compliance monitoring"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to add contract probe middleware: {e}")
+
+    # 11. CORS middleware — registered LAST, which makes it the OUTERMOST layer.
+    #
+    # Starlette wraps in reverse registration order, so the last middleware
+    # added is the first to see a request and the last to touch a response.
+    # That placement is load-bearing rather than cosmetic, and it buys two
+    # things:
+    #
+    # - Every short-circuit response from every inner layer carries CORS
+    #   headers, from this one CORS authority. Registered first (innermost),
+    #   CORS only ever saw responses the route itself produced: the rate
+    #   limiter's 429, its fail-closed 503 and its dispatch catch-all 503 were
+    #   all synthesized above it and travelled straight past, reaching a
+    #   cross-origin caller with no ``Access-Control-Allow-Origin`` — so the
+    #   browser refused the response and the Copilot/Dashboard saw an opaque
+    #   network error instead of "you are being rate limited".
+    # - Preflight OPTIONS is answered here, before rate limiting or logging see
+    #   it at all. Innermost, a client whose limit was already tripped had its
+    #   *preflight* refused with a 429, so the real request was never sent and
+    #   the limit could not even report itself.
+    #
+    # The corollary: no inner middleware needs (or should grow) its own OPTIONS
+    # special-case or its own copy of the CORS configuration. Two CORS
+    # authorities can disagree; one cannot.
+    #
     # Use configurable origins from settings - production should specify
     # specific extension IDs instead of wildcards (e.g., chrome-extension://abc123)
     cors_origins = list(settings.security.cors_allow_origins)
@@ -1144,231 +1392,6 @@ def setup_middleware():
         logger.info(
             f"After CORS middleware: {[type(m).__name__ for m in app.user_middleware]}"
         )
-
-    # 2. Trailing slash middleware (after CORS, prevents 307 redirects)
-    try:
-        from .api.middleware.trailing_slash import TrailingSlashMiddleware
-
-        app.add_middleware(TrailingSlashMiddleware)
-        if logging_enabled:
-            logger.info("✅ Trailing slash middleware added")
-    except Exception as e:
-        logger.warning(f"Failed to add trailing slash middleware: {e}")
-
-    if logging_enabled:
-        logger.info(
-            f"After trailing slash middleware: {[type(m).__name__ for m in app.user_middleware]}"
-        )
-
-    # 3. Idempotency middleware (after CORS, before protection) — skip when SKIP_SERVICE_CHECKS
-    try:
-        if not settings.server.skip_service_checks:
-            from .api.middleware.idempotency import IdempotencyMiddleware
-
-            # No client injected here: this runs at import time, before the
-            # lifespan creates Redis. The middleware resolves the client lazily
-            # from app.state (wired by the composition root) on the first request.
-            app.add_middleware(IdempotencyMiddleware)
-            if logging_enabled:
-                logger.info("✅ Idempotency middleware added")
-        else:
-            if logging_enabled:
-                logger.info(
-                    "Skipping Idempotency middleware (SKIP_SERVICE_CHECKS=True)"
-                )
-    except Exception as e:
-        logger.warning(f"Failed to add idempotency middleware: {e}")
-
-    if logging_enabled:
-        logger.info(
-            f"After Idempotency middleware: {[type(m).__name__ for m in app.user_middleware]}"
-        )
-
-    # 4. Request ID and Rate Limiting Headers middleware - skip in test environments
-    try:
-        if not settings.server.skip_service_checks and not _is_test_environment():
-            from .api.middleware.request_id import (
-                RateLimitHeaderMiddleware,
-                RequestIdMiddleware,
-            )
-
-            # Add Request ID middleware
-            app.add_middleware(RequestIdMiddleware)
-
-            # Add Rate Limiting Headers middleware
-            app.add_middleware(
-                RateLimitHeaderMiddleware, default_limit=1000, window_seconds=3600
-            )
-
-            if logging_enabled:
-                logger.info("✅ Request ID and Rate Limiting Headers middleware added")
-        else:
-            if logging_enabled:
-                logger.info(
-                    "Skipping Request ID middleware (test environment or SKIP_SERVICE_CHECKS=True)"
-                )
-
-    except Exception as e:
-        logger.warning(f"Failed to add request ID middleware: {e}")
-
-    if logging_enabled:
-        logger.info(
-            f"After Request ID middleware: {[type(m).__name__ for m in app.user_middleware]}"
-        )
-
-    # 5. Protection middleware (early in stack for security)
-    try:
-        from .api.protection import setup_protection_middleware
-
-        if not settings.server.skip_service_checks:
-            protection_info = setup_protection_middleware(
-                app,
-                environment=settings.server.environment,
-            )
-            if logging_enabled:
-                if protection_info.get("protection_enabled"):
-                    middleware_names = protection_info.get("middleware_added", [])
-                    logger.info(f"✅ Protection middleware enabled: {middleware_names}")
-                    if protection_info.get("warnings"):
-                        logger.warning(
-                            f"Protection warnings: {protection_info['warnings']}"
-                        )
-                else:
-                    logger.info("ℹ️ Protection middleware disabled")
-            app.extra["protection_info"] = protection_info
-        else:
-            if logging_enabled:
-                logger.info("Skipping Protection middleware (SKIP_SERVICE_CHECKS=True)")
-    except Exception as e:
-        if logging_enabled:
-            logger.warning(f"Failed to setup protection middleware: {e}")
-        if settings.server.environment != "development":
-            raise
-
-    if logging_enabled:
-        logger.info(
-            f"After Protection middleware: {[type(m).__name__ for m in app.user_middleware]}"
-        )
-
-    # 3. GZip middleware
-    app.add_middleware(GZipMiddleware, minimum_size=1000)
-    if logging_enabled:
-        logger.info(
-            f"After GZip middleware: {[type(m).__name__ for m in app.user_middleware]}"
-        )
-
-    # 4. New unified logging middleware (integrates with Phase 1 & 2 infrastructure)
-    if logging_enabled:
-        logger.info("Adding LoggingMiddleware to FastAPI app")
-    app.add_middleware(LoggingMiddleware)
-    if logging_enabled:
-        logger.info(
-            f"After LoggingMiddleware: {[type(m).__name__ for m in app.user_middleware]}"
-        )
-
-    # 5. Performance tracking middleware (Phase 2 enhancement)
-    from .api.middleware.performance import PerformanceTrackingMiddleware
-
-    if not settings.server.skip_service_checks:
-        if logging_enabled:
-            logger.info("Adding PerformanceTrackingMiddleware to FastAPI app")
-        # Same trusted-proxy list the limiter keys on, from the same single
-        # reader, so the address a request is *labelled* with and the address
-        # it is *limited* by cannot disagree.
-        #
-        # Read directly rather than via ``load_protection_settings``: that
-        # builds a whole ProtectionSettings down the ``_load_from_settings``
-        # path, which warns "rate limiting, deduplication and request timeouts
-        # are all disabled deployment-wide" whenever BASIC_PROTECTION_ENABLED is
-        # unset. Production installs those via ``get_production_protection_settings``,
-        # so calling the general loader here just to fetch one field would emit
-        # a warning that is false on exactly the deployment that reads it.
-        from .config.protection import get_trusted_proxies
-
-        app.add_middleware(
-            PerformanceTrackingMiddleware,
-            service_name="faultmaven_api",
-            trusted_proxies=get_trusted_proxies(),
-        )
-        if logging_enabled:
-            logger.info(
-                f"After PerformanceTrackingMiddleware: {[type(m).__name__ for m in app.user_middleware]}"
-            )
-    else:
-        if logging_enabled:
-            logger.info(
-                "Skipping PerformanceTrackingMiddleware (SKIP_SERVICE_CHECKS=True)"
-            )
-
-    # 6. System-wide optimization middleware (Phase 2 optimization) - skip in test environments
-    if not settings.server.skip_service_checks and not _is_test_environment():
-        from .api.middleware.system_optimization import SystemOptimizationMiddleware
-
-        if logging_enabled:
-            logger.info("Adding SystemOptimizationMiddleware to FastAPI app")
-        app.add_middleware(
-            SystemOptimizationMiddleware,
-            enable_compression=True,
-            enable_caching=True,
-            enable_background_optimization=True,
-            enable_resource_cleanup=True,
-            cache_ttl_seconds=300,
-            compression_threshold=1024,
-        )
-    else:
-        if logging_enabled:
-            logger.info(
-                "Skipping SystemOptimizationMiddleware (test environment or SKIP_SERVICE_CHECKS=True)"
-            )
-    if logging_enabled:
-        logger.info(
-            f"After SystemOptimizationMiddleware: {[type(m).__name__ for m in app.user_middleware]}"
-        )
-
-    # 7. Opik tracing middleware (if available) - skip in test environments
-    if (
-        OPIK_AVAILABLE
-        and OPIK_MIDDLEWARE_AVAILABLE
-        and not settings.server.skip_service_checks
-        and not _is_test_environment()
-    ):
-        if logging_enabled:
-            if settings.observability.opik_use_local:
-                logger.info("Adding OpikMiddleware for local Opik instance")
-            else:
-                logger.info("Adding OpikMiddleware for cloud instance")
-        app.add_middleware(OpikMiddleware)
-        if logging_enabled:
-            logger.info(
-                f"After Opik middleware: {[type(m).__name__ for m in app.user_middleware]}"
-            )
-    elif OPIK_AVAILABLE and logging_enabled:
-        if settings.server.skip_service_checks or _is_test_environment():
-            logger.info(
-                "Skipping OpikMiddleware (test environment or SKIP_SERVICE_CHECKS=True)"
-            )
-        else:
-            logger.info(
-                "Opik SDK available but middleware not found - tracing will work at function level"
-            )
-
-    # 8. Contract Probe middleware (for API compliance monitoring)
-    if not settings.server.skip_service_checks and not _is_test_environment():
-        try:
-            from .api.middleware.contract_probe import ContractProbeMiddleware
-
-            app.add_middleware(
-                ContractProbeMiddleware,
-                probe_enabled=True,
-                log_all_requests=False,  # Only log violations, not all requests
-                failure_sample_rate=1.0,
-            )
-            if logging_enabled:
-                logger.info(
-                    "✅ Contract Probe middleware added for API compliance monitoring"
-                )
-        except Exception as e:
-            logger.warning(f"Failed to add contract probe middleware: {e}")
 
     if logging_enabled:
         logger.info(
