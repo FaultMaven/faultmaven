@@ -671,9 +671,6 @@ async def create_case(
     Returns CaseSummary with basic case info and milestone progress.
     """
     correlation_id = str(uuid.uuid4())
-    print(
-        f"DEBUG: create_case entered! Request title: {request.title}, User: {current_user.user_id if current_user else 'None'}"
-    )
     case_service = check_case_service_available(case_service)
 
     try:
@@ -1513,7 +1510,7 @@ async def generate_case_title(
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to persist generated title: {str(e)}",
+                detail="Failed to persist generated title",
                 headers={"x-correlation-id": correlation_id},
             )
         except Exception as e:
@@ -1524,7 +1521,7 @@ async def generate_case_title(
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to persist generated title: {str(e)}",
+                detail="Failed to persist generated title",
                 headers={"x-correlation-id": correlation_id},
             )
 
@@ -1569,7 +1566,7 @@ async def generate_case_title(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate title: {str(e)}",
+            detail="Failed to generate title",
             headers={"x-correlation-id": correlation_id},
         )
 
@@ -2054,9 +2051,10 @@ async def search_cases(
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
+        logger.error(f"Case search failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Search failed: {str(e)}",
+            detail="Search failed",
         )
 
 
@@ -2088,9 +2086,10 @@ async def get_case_analytics(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Failed to get case analytics: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get case analytics: {str(e)}",
+            detail="Failed to get case analytics",
         )
 
 
@@ -2159,7 +2158,7 @@ async def get_case_messages_enhanced(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get messages: {str(e)}",
+            detail="Failed to get messages",
             headers={"x-correlation-id": correlation_id},
         )
 
@@ -2189,6 +2188,8 @@ async def create_case_for_session(
     automatically generates a unique title in the format: Case-MMDD-N
     (e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.
     """
+    case_service = check_case_service_available(case_service)
+
     try:
         # Validate session and derive user if not authenticated
         session = await session_service.get_session(session_id, validate=True)
@@ -2212,14 +2213,17 @@ async def create_case_for_session(
                 detail="Failed to create case for session",
             )
 
-        return {"case_id": case_id, "created_new": force_new, "success": True}
+        return {"case_id": case_id, "success": True}
 
+    except HTTPException:
+        raise
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
+        logger.error(f"Failed to manage session case: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to manage session case: {str(e)}",
+            detail="Failed to manage session case",
         )
 
 
@@ -2237,6 +2241,8 @@ async def resume_case_in_session(
     Links the session to an existing case, allowing the user to continue
     a previous troubleshooting conversation.
     """
+    case_service = check_case_service_available(case_service)
+
     try:
         success = await case_service.resume_case_in_session(case_id, session_id)
 
@@ -2257,9 +2263,10 @@ async def resume_case_in_session(
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
+        logger.error(f"Failed to resume case: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to resume case: {str(e)}",
+            detail="Failed to resume case",
         )
 
 
@@ -2748,9 +2755,8 @@ async def get_case_data(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to retrieve case data: {str(e)}"
-        )
+        logger.error(f"Failed to retrieve case data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve case data")
 
 
 @router.post("/{case_id}/data")
@@ -2804,9 +2810,8 @@ async def delete_case_data(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to delete case data: {str(e)}"
-        )
+        logger.error(f"Failed to delete case data: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete case data")
 
 
 # =============================================================================
@@ -2936,7 +2941,7 @@ async def get_report_recommendations(
             exc_info=True,
         )
         raise HTTPException(
-            status_code=500, detail=f"Failed to get report recommendations: {str(e)}"
+            status_code=500, detail="Failed to get report recommendations"
         )
 
 
@@ -2993,7 +2998,7 @@ async def generate_case_reports(
         raise
     except Exception as e:
         logger.error(f"Report generation failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to generate reports")
 
 
 @router.get("/{case_id}/reports")
@@ -3076,7 +3081,7 @@ async def get_case_reports(
         logger.error(
             f"Failed to retrieve reports for case {case_id}: {e}", exc_info=True
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to retrieve reports")
 
 
 def _draft_to_runbook_report(case_id: str, draft: dict) -> dict:
@@ -3191,7 +3196,7 @@ async def download_case_report(
         raise
     except Exception as e:
         logger.error(f"Failed to download report {report_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to download report")
 
 
 # ============================================================
@@ -3368,13 +3373,15 @@ async def list_uploaded_files(
             files=files, total_count=total_count, limit=limit, offset=offset
         )
 
+    except HTTPException:
+        raise
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionDeniedException as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to list uploaded files: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to list uploaded files")
 
 
 # ============================================================
@@ -3482,7 +3489,7 @@ async def get_uploaded_file_details(
         raise
     except Exception as e:
         logger.error(f"Failed to get file details: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get file details")
 
 
 def _build_evidence_response(case, evidence, case_id: str) -> EvidenceDetailsResponse:
@@ -3579,7 +3586,7 @@ async def list_case_evidence(
         raise
     except Exception as e:
         logger.error(f"Failed to list evidence: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to list evidence")
 
 
 @router.get(
@@ -3625,7 +3632,7 @@ async def get_evidence_details(
         raise
     except Exception as e:
         logger.error(f"Failed to get evidence details: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to get evidence details")
 
 
 # ============================================================================
@@ -3672,9 +3679,10 @@ async def share_case_with_team(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error sharing case {case_id} with team: {e}")
+        logger.error(f"Error sharing case {case_id} with team: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to share case with team",
         )
 
 
@@ -3710,9 +3718,10 @@ async def unshare_case_from_team(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error unsharing case {case_id} from team: {e}")
+        logger.error(f"Error unsharing case {case_id} from team: {e}", exc_info=True)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to unshare case from team",
         )
 
 
@@ -3820,7 +3829,7 @@ async def extract_knowledge_from_case(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Knowledge extraction failed: {str(e)}",
+            detail="Knowledge extraction failed",
         )
 
 
