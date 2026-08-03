@@ -80,6 +80,43 @@ def _generator(store):
     )
 
 
+def _rs256_generator(store):
+    """The cloud/OAuth mint, the other half of the ``IJWTTokenGenerator`` set.
+
+    Built with an ephemeral key pair — never a hardcoded one — so nothing
+    committed here is a usable signing key.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        RS256JWTTokenGenerator,
+    )
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    public_pem = (
+        key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+
+    return RS256JWTTokenGenerator(
+        private_key=private_pem,
+        public_key=public_pem,
+        revocation_store=store,
+        access_token_expire_minutes=60,
+        refresh_token_expire_days=7,
+    )
+
+
 def _user(user_id: str = USER_ID):
     return SimpleNamespace(
         user_id=user_id,
@@ -312,36 +349,8 @@ class TestWatermarkCoversEveryMintPath:
         assert await generator.validate_refresh_token(refresh) is None
 
     async def test_rs256_generator_tokens_are_revoked(self):
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
-
-        from faultmaven.modules.auth.domain.services.jwt_token_generator import (
-            RS256JWTTokenGenerator,
-        )
-
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        private_pem = key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        ).decode()
-        public_pem = (
-            key.public_key()
-            .public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            .decode()
-        )
-
         store = _store()
-        generator = RS256JWTTokenGenerator(
-            private_key=private_pem,
-            public_key=public_pem,
-            revocation_store=store,
-            access_token_expire_minutes=60,
-            refresh_token_expire_days=7,
-        )
+        generator = _rs256_generator(store)
         auth_service = _auth_service(store)
 
         access = await generator.generate_access_token(_user())
@@ -363,17 +372,24 @@ class TestWatermarkCoversEveryMintPath:
         silently open a hole.
 
         Since #853 the ``IJWTTokenGenerator`` implementations are the whole set:
-        ``AuthService``'s parallel mint path was dead and was removed.
+        ``AuthService``'s parallel mint path was dead and was removed. So the
+        sweep covers BOTH of them. Covering HS256 alone would have let an RS256
+        mint that dropped ``iat`` survive ``revoke_user_tokens`` with this test
+        green — on the algorithm ``AUTH_MODE=oauth`` uses, i.e. the cloud
+        deployment where per-user revocation matters most.
         """
         import jwt as jwt_lib
 
         store = _store()
-        generator = _generator(store)
+        hs256 = _generator(store)
+        rs256 = _rs256_generator(store)
         user = _user()
 
         tokens = {
-            "hs256_access": await generator.generate_access_token(user),
-            "hs256_refresh": await generator.generate_refresh_token(user),
+            "hs256_access": await hs256.generate_access_token(user),
+            "hs256_refresh": await hs256.generate_refresh_token(user),
+            "rs256_access": await rs256.generate_access_token(user),
+            "rs256_refresh": await rs256.generate_refresh_token(user),
         }
 
         for name, token in tokens.items():
