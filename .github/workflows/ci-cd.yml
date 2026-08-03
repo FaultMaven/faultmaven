@@ -62,6 +62,9 @@ jobs:
 
       - name: Validate lockfiles install cleanly
         run: |
+          # pipefail: without it the step's status is tail's unconditional 0
+          # and a ResolutionImpossible scrolls past as a green step (#970).
+          set -o pipefail
           pip install -r requirements/test.txt --dry-run --quiet 2>&1 | tail -5
           echo "✓ Lockfile dependencies resolve correctly"
 
@@ -448,8 +451,10 @@ jobs:
 
   # ============================================================================
   # SECURITY SCANNING
-  # Fails on high/critical severity findings. Medium/low are reported but
-  # do not block the pipeline.
+  # Fail-closed (#969): pip-audit blocks on ANY unignored advisory in the
+  # lockfiles regardless of severity (accepted ones are ignored by anchored
+  # GHSA id); bandit blocks on HIGH-severity/HIGH-confidence code findings
+  # and reports nothing below that.
   # ============================================================================
   security-scan:
     needs: [env-check]
@@ -468,12 +473,18 @@ jobs:
           cache: 'pip'
 
       - name: Install security tools
+        # Pinned: both tools now gate on their raw exit codes, so an unpinned
+        # tool release could change what blocks with zero repo changes. bandit
+        # matches the lockfile pin; bump both deliberately.
         run: |
-          pip install pip-audit bandit
+          pip install pip-audit==2.10.1 bandit==1.9.4
 
       # Fail-closed dependency audit (#969). pip-audit exits non-zero on any
-      # finding — no report parser, no `|| true` — and audits the LOCKFILES
-      # (what actually ships in the image and CI), not the runner's venv.
+      # finding — no report parser, no `|| true` — and audits the declared
+      # locked dependency graph (requirements/*.txt: a superset of what any
+      # artifact installs; the Dockerfile strips GPU pins, so an advisory can
+      # fire on an audited-but-unshipped package — anchor those to a tracking
+      # issue), not the runner's venv.
       #
       # Ignore policy: every --ignore-vuln below MUST cite an entry in
       # docs/operations/security/vulnerability-exceptions.md or a tracking
@@ -486,9 +497,16 @@ jobs:
             # unreachable in standalone, contained in cloud.
             # → vulnerability-exceptions.md "chromadb" (fm#902)
             --ignore-vuln GHSA-f4j7-r4q5-qw2c
+            # lupa sandbox escape — no upstream fix; Lua bodies are module
+            # string constants, no user input reaches them. Staged: OSV's
+            # range stops at 2.6 today, but the doc records the bug observed
+            # in 2.8 ("advisory range may trail releases") — when the range
+            # extends, this must not red the gate for an accepted risk.
+            # → vulnerability-exceptions.md "lupa"
+            --ignore-vuln GHSA-69v7-xpr6-6gjm
             # litellm proxy-server advisories — every patched release is
             # blocked by our pydantic<2.10 ceiling; the proxy never runs here.
-            # → vulnerability-exceptions.md "litellm" (10 GHSAs)
+            # → vulnerability-exceptions.md "litellm" (all 10 ids listed there)
             --ignore-vuln GHSA-4xpc-pv4p-pm3w
             --ignore-vuln GHSA-r75f-5x8p-qvmc
             --ignore-vuln GHSA-7488-6r32-c95q
@@ -505,11 +523,17 @@ jobs:
             # torch (low): fixed in 2.13.0; heavy runtime bump — fm#904.
             --ignore-vuln GHSA-rrmf-rvhw-rf47
           )
-          for f in requirements/test.txt requirements/cloud.txt requirements/dev.txt; do
-            echo "::group::pip-audit $f"
-            pip-audit -r "$f" --no-deps "${IGNORES[@]}"
-            echo "::endgroup::"
-          done
+          # Glob-built so a future lockfile cannot silently escape the audit;
+          # one invocation so every file is reported even when one is red.
+          REQS=()
+          for f in requirements/*.txt; do REQS+=(-r "$f"); done
+          # One bounded retry: a transient OSV/PyPI error is otherwise
+          # indistinguishable from a finding. Real findings fail twice.
+          pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}" || {
+            echo "pip-audit failed — retrying once in case of transient service error"
+            sleep 30
+            pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}"
+          }
 
       - name: Run security linter (bandit)
         # Gate on bandit's own exit code at HIGH severity + HIGH confidence —
