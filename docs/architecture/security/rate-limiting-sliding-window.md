@@ -90,6 +90,17 @@ All four header names are in the `cors_expose_headers` default. A header a
 cross-origin caller cannot read is a header not sent, and the responses that
 carry them are exactly the ones a browser client must act on.
 
+**Only the component that enforced the limit writes these headers.** For the
+general limits that is `RateLimitMiddleware`; for the auth endpoints it is the
+OAuth limiter dependencies in `modules/auth/api/rate_limiting.py`, which attach
+`Retry-After` to the 429 they raise. Nothing else in the stack sets or defaults
+a rate-limit header, and `X-RateLimit-Window` is not emitted at all. Two writers
+can only agree by coincidence: the outer one wins, so a correlation layer with
+no knowledge of the enforcement would silently replace a measured wait with a
+constant. Whatever a limiter did not measure is simply absent — a client that
+reads no `Retry-After` backs off on its own policy, which is strictly better
+than backing off on a fabricated one.
+
 The invariant that fm#920 restored: after N back-to-back requests against a
 limit of L, exactly `min(N, L)` are allowed and the set holds `min(N, L)`
 entries — regardless of how the requests distribute across wall-clock seconds.

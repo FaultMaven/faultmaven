@@ -1108,24 +1108,21 @@ def setup_middleware():
             f"After Idempotency middleware: {[type(m).__name__ for m in app.user_middleware]}"
         )
 
-    # 3. Request ID and Rate Limiting Headers middleware - skip in test environments
+    # 3. Request ID middleware - skip in test environments
+    #
+    # Correlation only. No rate-limit headers are registered here: the
+    # enforcement layers (RateLimitMiddleware, the OAuth limiter dependencies)
+    # are the single authority for those, because they are the only components
+    # that know what was actually enforced.
     try:
         if not settings.server.skip_service_checks and not _is_test_environment():
-            from .api.middleware.request_id import (
-                RateLimitHeaderMiddleware,
-                RequestIdMiddleware,
-            )
+            from .api.middleware.request_id import RequestIdMiddleware
 
             # Add Request ID middleware
             app.add_middleware(RequestIdMiddleware)
 
-            # Add Rate Limiting Headers middleware
-            app.add_middleware(
-                RateLimitHeaderMiddleware, default_limit=1000, window_seconds=3600
-            )
-
             if logging_enabled:
-                logger.info("✅ Request ID and Rate Limiting Headers middleware added")
+                logger.info("✅ Request ID middleware added")
         else:
             if logging_enabled:
                 logger.info(

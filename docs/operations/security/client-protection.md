@@ -79,15 +79,18 @@ class RateLimitMiddleware:
     """
 ```
 
-**`Retry-After` is currently a flat window duration.** The penalty multipliers
-below are computed but never escalate — the violation counter they key off is
-read before its `INCR` has resolved, so every refusal takes the multiplier for a
-first violation. Escalation is tracked in #926.
+**`Retry-After` is the caller's own remaining wait**, not a flat window
+duration: it counts down to the moment that client's oldest in-window request
+ages out. There is no penalty escalation.
 
-**Headers Added**:
+**Headers Added** (by the limiter that enforced, and by nothing else):
 - `X-RateLimit-Limit`: Current limit
 - `X-RateLimit-Remaining`: Requests remaining
 - `X-RateLimit-Reset`: Window reset time
+
+A response that carries none of these was not rate-limit-checked, or was
+checked by a limiter with nothing to report (a disabled limit, or a check that
+failed open). That absence is deliberate — no layer substitutes a default.
 
 ### Client identity: what a limit is keyed on
 
