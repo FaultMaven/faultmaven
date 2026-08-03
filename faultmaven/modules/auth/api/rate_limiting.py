@@ -177,6 +177,18 @@ def reset_rate_limiter():
         _oauth_rate_limiter._trusted_proxies = None
 
 
+def trusted_proxy_networks() -> TrustedProxies:
+    """The lazily resolved trust list the OAuth/SSO limiters key on.
+
+    Exposed so that anything recording *who* a request came from — the SSO
+    JIT-provisioning audit trail, in particular — resolves the address through
+    the same list the limiter enforces on. Two independently resolved lists
+    could drift, and an audit row naming a different address than the limit was
+    applied to is worse than either alone.
+    """
+    return _oauth_rate_limiter.trusted_proxies
+
+
 async def require_oauth_rate_limit_authorize(request: Request) -> None:
     """Rate limiting dependency for /authorize endpoint.
 

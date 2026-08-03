@@ -14,16 +14,21 @@ once: the shared bucket must open up behind a configured proxy, and the header
 rotation fm#927 closed must stay closed everywhere else.
 """
 
+from unittest.mock import AsyncMock, Mock
+
 import pytest
 from fastapi import HTTPException
 from starlette.datastructures import Headers
 
+from faultmaven.api.middleware.client_ip import resolve_client_ip
 from faultmaven.modules.auth.api import rate_limiting as oauth_rate_limiting
 from faultmaven.modules.auth.api.rate_limiting import (
     OAuthRateLimiter,
     require_oauth_rate_limit_token,
     reset_rate_limiter,
+    trusted_proxy_networks,
 )
+from faultmaven.modules.auth.api.sso import sso_callback
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -50,6 +55,9 @@ class _StubRequest:
         self.headers = Headers(
             raw=[(name.lower().encode(), value.encode()) for name, value in items]
         )
+        # ``sso_callback`` reads the browser-binding state cookie off the same
+        # request object the limiter and the audit resolve their address from.
+        self.cookies: dict[str, str] = {}
 
 
 class _Peer:
@@ -321,3 +329,97 @@ class TestTheDependencyConsultsTheFixedLimiter:
         finally:
             monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
             reset_rate_limiter()
+
+
+class TestTheSSOAuditRecordsTheSameAddress:
+    """The JIT-provisioning audit trail and the SSO limit must name one client.
+
+    ``sso_callback`` recorded ``request.client.host``, which behind an ingress
+    is the ingress pod for every login on the deployment — an audit column that
+    says "10.42.0.7" for all of them answers no question anyone would ask of it.
+    It resolves through ``trusted_proxy_networks()``, the limiter's own list, so
+    the address the audit names is by construction the address the limit was
+    applied to.
+    """
+
+    @staticmethod
+    def _service():
+        service = Mock()
+        service.complete_callback = AsyncMock(
+            return_value="https://app.example.com/sso/callback?code=abc"
+        )
+        return service
+
+    async def _call(self, request, service):
+        return await sso_callback(
+            request=request,
+            code="idp-code",
+            state="idp-state",
+            error=None,
+            service=service,
+        )
+
+    async def test_it_records_the_forwarded_client_behind_a_trusted_proxy(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("PROTECTION_TRUSTED_PROXIES", INGRESS_RANGE)
+        reset_rate_limiter()
+        service = self._service()
+        try:
+            await self._call(_forwarded(CLIENT_A), service)
+        finally:
+            monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+            reset_rate_limiter()
+
+        assert service.complete_callback.call_args.kwargs["client_ip"] == CLIENT_A
+
+    async def test_a_forged_header_cannot_choose_what_the_audit_records(
+        self, monkeypatch
+    ):
+        """An attacker-selectable audit trail is not an audit trail."""
+        monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+        reset_rate_limiter()
+        attacker = "198.51.100.77"
+        service = self._service()
+        try:
+            await self._call(_forwarded("1.2.3.4", peer=attacker), service)
+        finally:
+            reset_rate_limiter()
+
+        assert service.complete_callback.call_args.kwargs["client_ip"] == attacker
+
+    async def test_no_transport_peer_records_null_not_the_sentinel(self, monkeypatch):
+        """``UNKNOWN_CLIENT_IP`` is a limiter key, never an audited address.
+
+        The service parameter and the audit column are both nullable; writing
+        the string "unknown" into an IP column would be a value that looks like
+        data and is not.
+        """
+        monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+        reset_rate_limiter()
+        service = self._service()
+        try:
+            await self._call(_StubRequest(None), service)
+        finally:
+            reset_rate_limiter()
+
+        assert service.complete_callback.call_args.kwargs["client_ip"] is None
+
+    async def test_the_audit_and_the_limit_agree_on_one_request(self, monkeypatch):
+        """One trust source, so the two answers cannot drift apart."""
+        monkeypatch.setenv("PROTECTION_TRUSTED_PROXIES", INGRESS_RANGE)
+        reset_rate_limiter()
+        request = _forwarded(CLIENT_B)
+        service = self._service()
+        try:
+            await self._call(request, service)
+            resolved_for_limits = resolve_client_ip(request, trusted_proxy_networks())
+        finally:
+            monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+            reset_rate_limiter()
+
+        assert (
+            service.complete_callback.call_args.kwargs["client_ip"]
+            == resolved_for_limits
+            == CLIENT_B
+        )

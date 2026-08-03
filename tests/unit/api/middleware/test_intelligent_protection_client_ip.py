@@ -201,7 +201,7 @@ class TestTheConstructionSitePassesThePolicy:
 
     async def test_the_middleware_actually_installed_gets_it_too(self):
         """``add_middleware`` builds the instance that serves requests; the
-        directly constructed one only ever answers status queries."""
+        directly constructed one is retained for status queries and shutdown."""
         system = self._system([INGRESS_RANGE])
 
         with patch("faultmaven.api.protection.IntelligentProtectionMiddleware"):
