@@ -422,10 +422,8 @@ async def create_session(
             "message": f"Session {action_verb} successfully",
         }
     except Exception as e:
-        logger.error(f"Failed to create session: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to create session: {str(e)}"
-        )
+        logger.error(f"Failed to create session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create session")
 
 
 @router.get("/{session_id}", response_model=SessionResponse)
@@ -469,8 +467,8 @@ async def get_session(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get session {session_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get session: {str(e)}")
+        logger.error(f"Failed to get session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get session")
 
 
 @router.get("")
@@ -587,10 +585,8 @@ async def list_sessions(
             "offset": offset,
         }
     except Exception as e:
-        logger.error(f"Failed to list sessions: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to list sessions: {str(e)}"
-        )
+        logger.error(f"Failed to list sessions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list sessions")
 
 
 @router.get("/{session_id}/cases")
@@ -754,10 +750,8 @@ async def delete_session(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to delete session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to delete session: {str(e)}"
-        )
+        logger.error(f"Failed to delete session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to delete session")
 
 
 @router.post("/cleanup", status_code=200, operation_id="cleanup_expired_sessions_v1")
@@ -787,9 +781,9 @@ async def cleanup_expired_sessions(
             "timestamp": to_json_compatible(datetime.now(timezone.utc)),
         }
     except Exception as e:
-        logger.error(f"Failed to cleanup expired sessions: {e}")
+        logger.error(f"Failed to cleanup expired sessions: {e}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail=f"Failed to cleanup expired sessions: {str(e)}"
+            status_code=500, detail="Failed to cleanup expired sessions"
         )
 
 
@@ -1017,10 +1011,10 @@ async def get_session_stats(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get session stats for {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get session stats: {str(e)}"
+        logger.error(
+            f"Failed to get session stats for {session_id}: {e}", exc_info=True
         )
+        raise HTTPException(status_code=500, detail="Failed to get session stats")
 
 
 @router.post("/{session_id}/cleanup")
@@ -1055,10 +1049,8 @@ async def cleanup_session(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to cleanup session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to cleanup session: {str(e)}"
-        )
+        logger.error(f"Failed to cleanup session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to cleanup session")
 
 
 @router.get("/{session_id}/recovery-info")
@@ -1110,10 +1102,10 @@ async def get_session_recovery_info(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get recovery info for session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to get recovery info: {str(e)}"
+        logger.error(
+            f"Failed to get recovery info for session {session_id}: {e}", exc_info=True
         )
+        raise HTTPException(status_code=500, detail="Failed to get recovery info")
 
 
 @router.post("/cleanup", operation_id="cleanup_expired_sessions_v2")
@@ -1140,10 +1132,8 @@ async def cleanup_expired_sessions(
             "message": f"Successfully cleaned up {cleaned_count} expired sessions",
         }
     except Exception as e:
-        logger.error(f"Failed to cleanup sessions: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to cleanup sessions: {str(e)}"
-        )
+        logger.error(f"Failed to cleanup sessions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to cleanup sessions")
 
 
 @router.post("/{session_id}/restore")
@@ -1186,10 +1176,8 @@ async def restore_session(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to restore session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to restore session: {str(e)}"
-        )
+        logger.error(f"Failed to restore session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to restore session")
 
 
 # =============================================================================
@@ -1261,10 +1249,8 @@ async def update_session(
     except ValidationException as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to update session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to update session: {str(e)}"
-        )
+        logger.error(f"Failed to update session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update session")
 
 
 @router.post("/search")
@@ -1326,10 +1312,8 @@ async def search_sessions(
         return {"sessions": sessions_response, "total": len(sessions)}
 
     except Exception as e:
-        logger.error(f"Failed to search sessions: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to search sessions: {str(e)}"
-        )
+        logger.error(f"Failed to search sessions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to search sessions")
 
 
 @router.post("/{session_id}/archive")
@@ -1386,7 +1370,5 @@ async def archive_session(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to archive session {session_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to archive session: {str(e)}"
-        )
+        logger.error(f"Failed to archive session {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to archive session")
