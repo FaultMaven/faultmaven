@@ -7,13 +7,19 @@ Tests verify:
 - Re-application after rollback
 - Helper script commands
 
+The suite is self-contained: it migrates a throwaway SQLite file via
+``sys.executable -m alembic``. No running services, no environment variables,
+and no ``alembic`` on PATH are required.
+
 Usage:
     pytest tests/integration/test_alembic_migrations.py -v
 """
 
 import os
+import shlex
 import sqlite3
 import subprocess
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -58,17 +64,29 @@ def database_url():
 
 
 def run_alembic(command: str, database_url: str) -> subprocess.CompletedProcess:
-    """Run alembic command with proper environment."""
+    """Run an alembic command against the interpreter running these tests.
+
+    Alembic is invoked as ``sys.executable -m alembic`` so it always comes from
+    the same environment as the test process. PATH is never consulted, so a
+    stale or broken ``alembic`` shim elsewhere on PATH cannot hijack the run,
+    and no ``.venv`` needs to exist next to this checkout (a git worktree has
+    none).
+
+    ``PYTHONPATH`` is prepended with the checkout root so ``alembic/env.py``'s
+    ``import faultmaven`` binds to the tree under test even when the
+    environment holds an editable install pointing at a different checkout.
+    """
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
-
-    # Try venv alembic first (local dev), fallback to PATH (CI)
-    alembic_path = PROJECT_ROOT / ".venv" / "bin" / "alembic"
-    alembic_cmd = str(alembic_path) if alembic_path.exists() else "alembic"
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        f"{PROJECT_ROOT}{os.pathsep}{existing_pythonpath}"
+        if existing_pythonpath
+        else str(PROJECT_ROOT)
+    )
 
     result = subprocess.run(
-        f"{alembic_cmd} {command}",
-        shell=True,
+        [sys.executable, "-m", "alembic", *shlex.split(command)],
         cwd=PROJECT_ROOT,
         env=env,
         capture_output=True,

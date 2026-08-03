@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import asyncio
 import io
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, AsyncGenerator, Dict
 from unittest.mock import AsyncMock, Mock
@@ -28,7 +29,6 @@ from uuid import uuid4
 
 # Import root conftest to load _ctypes and _sqlite3 mocks BEFORE any other imports
 import conftest as root_conftest  # noqa: F401
-import httpx
 import pytest
 import pytest_asyncio
 
@@ -73,7 +73,6 @@ pytest_asyncio.asyncio_default_fixture_loop_scope = "function"
 pytest_asyncio.asyncio_default_test_loop_scope = "function"
 
 # Test configuration
-BASE_URL = os.environ.get("TEST_BASE_URL", "http://localhost:8090")
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
@@ -82,25 +81,150 @@ REDIS_URL = (
     if REDIS_PASSWORD
     else f"redis://{REDIS_HOST}:{REDIS_PORT}"
 )
-TIMEOUT = 30.0  # seconds
 
 
-@pytest_asyncio.fixture(scope="function")
-async def http_client() -> AsyncGenerator[httpx.AsyncClient, None]:
-    """HTTP client for making requests to the API."""
-    async with httpx.AsyncClient(
-        base_url=BASE_URL, timeout=TIMEOUT, follow_redirects=True
-    ) as client:
-        yield client
+# ---------------------------------------------------------------------------
+# All-skipped guard
+#
+# A session that selects tests and then skips every one of them exits 0: green,
+# having verified nothing. That is the failure mode this suite was in — a
+# missing service silently turned the whole tree into no-ops. Treat it as a
+# failure instead: tally outcomes as they are reported and force a non-zero
+# exit when nothing actually ran.
+#
+# Individual fixtures may still skip legitimately (Redis, PostgreSQL). The
+# guard only fires when *every* selected test skipped, so a mixed run — some
+# passes, some environment-dependent skips — stays green.
+#
+# Scope is session-level by design: in a mixed whole-tree run, unit passes
+# suppress it, and that is intended — the CI shape that matters here
+# (`pytest tests/ -m postgres`) selects only integration tests, so it fires.
+# ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture(scope="function")
-async def test_client() -> AsyncGenerator[httpx.AsyncClient, None]:
-    """Alias for http_client for backwards compatibility with test_evidence_flow.py."""
-    async with httpx.AsyncClient(
-        base_url=BASE_URL, timeout=TIMEOUT, follow_redirects=True
-    ) as client:
-        yield client
+class _SessionOutcomes:
+    """Tally of per-test outcomes, used by the all-skipped guard."""
+
+    def __init__(self) -> None:
+        self.passed = 0
+        self.failed = 0
+        self.errored = 0
+        self.skipped = 0
+        self.skip_reasons: Counter = Counter()
+
+    @property
+    def ran_something(self) -> bool:
+        """True if at least one test body produced a real verdict."""
+        return bool(self.passed or self.failed or self.errored)
+
+    @property
+    def everything_skipped(self) -> bool:
+        """True if tests were selected and every one of them skipped."""
+        return self.skipped > 0 and not self.ran_something
+
+
+_session_outcomes = _SessionOutcomes()
+
+
+def _skip_reason(report) -> str:
+    """Extract a readable skip reason from a test report."""
+    longrepr = getattr(report, "longrepr", None)
+    if isinstance(longrepr, tuple) and len(longrepr) == 3:
+        reason = str(longrepr[2])
+    elif longrepr:
+        reason = str(longrepr)
+    else:
+        reason = "unknown"
+    return reason.replace("Skipped: ", "", 1).strip() or "unknown"
+
+
+def _reset_outcomes() -> None:
+    """Start a fresh tally.
+
+    The tally is module state, and this conftest stays in ``sys.modules``
+    across repeated in-process ``pytest.main()`` calls, so it must be cleared
+    per session or a later run inherits an earlier run's verdicts.
+    """
+    global _session_outcomes
+    _session_outcomes = _SessionOutcomes()
+
+
+def pytest_sessionstart(session):
+    """Reset the tally when this conftest is the initial one."""
+    _reset_outcomes()
+
+
+def pytest_collection_modifyitems(session, config, items):
+    """Reset the tally again, for the runs ``pytest_sessionstart`` cannot see.
+
+    ``pytest_sessionstart`` fires before collection, so a non-initial conftest
+    (``pytest tests/``, where this file is loaded while collecting) is not yet
+    registered and never receives it. This hook runs once collection is done,
+    by which point the conftest is always registered — so it is the reset that
+    actually covers every invocation shape.
+    """
+    _reset_outcomes()
+
+
+def pytest_runtest_logreport(report):
+    """Count per-test outcomes for the all-skipped guard."""
+    if hasattr(report, "wasxfail"):
+        # xfail/xpass means the test body ran; it is not "nothing ran".
+        if report.when == "call":
+            _session_outcomes.passed += 1
+        return
+
+    if report.skipped:
+        _session_outcomes.skipped += 1
+        _session_outcomes.skip_reasons[_skip_reason(report)] += 1
+    elif report.failed:
+        if report.when == "call":
+            _session_outcomes.failed += 1
+        else:
+            _session_outcomes.errored += 1
+    elif report.passed and report.when == "call":
+        _session_outcomes.passed += 1
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Fail a session that selected tests but skipped every single one."""
+    if not _session_outcomes.everything_skipped:
+        return
+
+    lines = [
+        "Every selected test was skipped, so this run verified nothing.",
+        "An all-skipped integration run is treated as a failure: green must not",
+        "mean that no test executed.",
+        "",
+        f"tests selected: {_session_outcomes.skipped} (all skipped)",
+        "skip reasons:",
+    ]
+    lines.extend(
+        f"  [{count}] {reason}"
+        for reason, count in _session_outcomes.skip_reasons.most_common()
+    )
+    lines.extend(
+        [
+            "",
+            "Give the skipped tests what they ask for — e.g. point DATABASE_URL at a",
+            "scratch PostgreSQL for the postgres-marked suites, or start a reachable",
+            "Redis — or narrow the selection so the run stops claiming to cover them.",
+        ]
+    )
+
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is not None:
+        reporter.write_sep("=", "ALL TESTS SKIPPED", red=True, bold=True)
+        for line in lines:
+            reporter.write_line(line)
+    else:  # pragma: no cover - terminal reporter is disabled only with -p no:terminal
+        print("\n".join(lines), file=sys.stderr)
+
+    # Only escalate a would-be-green run. A session that already failed for
+    # another reason — a collection error (exit 2), a user interrupt — keeps its
+    # more severe status; the banner is printed either way.
+    if session.exitstatus == 0:
+        session.exitstatus = 1
 
 
 @pytest.fixture
@@ -626,62 +750,6 @@ def sample_query_request() -> Dict[str, Any]:
     }
 
 
-@pytest_asyncio.fixture
-async def test_session(
-    http_client: httpx.AsyncClient, clean_redis: None
-) -> Dict[str, Any]:
-    """Create a test session for use in tests."""
-    response = await http_client.post("/api/v1/sessions")
-    assert response.status_code == 200
-
-    session_data = response.json()
-    assert "session_id" in session_data
-
-    return session_data
-
-
-@pytest_asyncio.fixture
-async def agent_test_session(
-    http_client: httpx.AsyncClient,
-    clean_redis: None,
-    mock_servers: MockServerManager,
-) -> Dict[str, Any]:
-    """Create a test session with agent capabilities enabled."""
-    # Create session
-    response = await http_client.post("/api/v1/sessions")
-    assert response.status_code == 200
-
-    session_data = response.json()
-    assert "session_id" in session_data
-
-    # Upload some test data to the session
-    test_log_content = """
-2024-01-15 14:30:25.123 [ERROR] DatabaseConnectionError: 
-Connection timeout after 30 seconds
-    at ConnectionPool.getConnection(ConnectionPool.java:245)
-    at DataService.executeQuery(DataService.java:89)
-    at UserController.getUserData(UserController.java:156)
-    at RequestHandler.handleRequest(RequestHandler.java:78)
-    
-2024-01-15 14:30:25.456 [WARN] RetryAttempt: Retrying connection (attempt 1/3)
-2024-01-15 14:30:28.345 [FATAL] SystemShutdown: 
-Maximum retry attempts exceeded. Shutting down service.
-"""
-
-    # Upload data to session
-    files = {"file": ("database_error.log", test_log_content, "text/plain")}
-    data = {
-        "session_id": session_data["session_id"],
-        "title": "Database Connection Failure",
-        "description": "Production database connection timeout issue",
-    }
-
-    upload_response = await http_client.post("/api/v1/data/", files=files, data=data)
-    assert upload_response.status_code == 200
-
-    return session_data
-
-
 @pytest.fixture
 def mock_file_upload() -> Dict[str, Any]:
     """Mock file upload data for testing."""
@@ -691,38 +759,6 @@ def mock_file_upload() -> Dict[str, Any]:
         "document_type": "troubleshooting_guide",
         "tags": "database,connection,error",
     }
-
-
-def wait_for_service(url: str, timeout: float = 30.0) -> bool:
-    """Wait for a service to be ready."""
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        try:
-            response = httpx.get(url, timeout=5.0)
-            if response.status_code == 200:
-                return True
-        except (httpx.ConnectError, httpx.TimeoutException):
-            time.sleep(1.0)
-    return False
-
-
-async def wait_for_redis(redis_url: str, timeout: float = 5.0) -> bool:
-    """Wait for Redis to be ready.
-
-    Requires enterprise edition with redis installed.
-    """
-    if not REDIS_AVAILABLE:
-        return False
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        try:
-            client = redis.from_url(redis_url)
-            await client.ping()
-            await client.aclose()
-            return True
-        except Exception:
-            time.sleep(1.0)
-    return False
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -811,30 +847,6 @@ async def mock_web_search_responses(mock_servers: MockServerManager) -> Dict[str
         "response_delay": 0.1,
         "custom_results": {},
     }
-
-
-@pytest_asyncio.fixture(scope="function", autouse=True)
-async def wait_for_services():
-    """Wait for all required services to be ready before running tests."""
-    import os
-
-    # Skip service checks if in test mode without real services
-    if os.environ.get("SKIP_SERVICE_CHECKS", "false").lower() == "true":
-        print("Skipping service checks (SKIP_SERVICE_CHECKS=true)")
-        return
-
-    # Wait for the backend API
-    if not wait_for_service(f"{BASE_URL}/health"):
-        pytest.skip(f"Backend API not ready at {BASE_URL}")
-
-    # Wait for Redis (only if available - enterprise edition)
-    if REDIS_AVAILABLE and not await wait_for_redis(REDIS_URL):
-        pytest.skip(f"Redis not ready at {REDIS_URL}")
-    elif not REDIS_AVAILABLE:
-        # Skip Redis-dependent setup in standalone (in-process FakeRedis)
-        pass
-
-    print("All services are ready")
 
 
 def create_test_file(content: str, filename: str = "test.log") -> io.BytesIO:
