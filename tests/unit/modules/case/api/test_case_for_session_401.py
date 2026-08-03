@@ -47,13 +47,18 @@ def _build_app(session, case_id="case-123"):
     app.include_router(case_router, prefix="/api/v1")
 
     async def _session_service():
-        async def get_session(session_id, validate=False):
+        async def get_session(session_id, validate=True):
             return session
 
         return SimpleNamespace(get_session=get_session)
 
     async def _case_service():
-        async def get_or_create_case_for_session(**kwargs):
+        # Signature mirrors CaseService.get_or_create_case_for_session exactly.
+        # A fake that accepts **kwargs would pass on arguments the real method
+        # rejects, letting a handler pass here and fail in production.
+        async def get_or_create_case_for_session(
+            session_id, user_id=None, force_new=False, title=None
+        ):
             return case_id
 
         return SimpleNamespace(
