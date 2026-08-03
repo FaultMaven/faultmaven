@@ -379,8 +379,10 @@ class UserService(BaseService):
             raise self._refuse_reset("user_not_found", user_id=user_id)
 
         # A deactivated account must not be recoverable through a reset link
-        # issued before it was deactivated — the same posture /auth/refresh and
-        # authenticate() already take (#829).
+        # issued before it was deactivated — the same posture /auth/refresh
+        # takes, and the same one `_refuse_if_deactivated` enforces at the
+        # `IJWTTokenGenerator` chokepoint every mint path funnels through
+        # (#829).
         if not user.is_active:
             raise self._refuse_reset("account_inactive", user_id=user_id)
 
