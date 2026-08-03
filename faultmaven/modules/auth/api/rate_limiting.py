@@ -45,18 +45,19 @@ class OAuthRateLimiter:
     """
 
     def __init__(self, trusted_proxies: Optional[Iterable[str]] = None):
-        # Trust policy for forwarding headers.
+        # Trust policy for forwarding headers, resolved once at construction:
+        # an explicit list when the caller supplies one, the environment
+        # otherwise. Pinned thereafter — re-reading per request would make the
+        # limit key depend on a mutable global.
         #
-        # An explicit list is parsed now and pinned. ``None`` — the module-level
-        # singleton's case — defers resolution to the first request instead,
-        # because this class is instantiated at *import* time and nothing
-        # guarantees that `.env` has reached ``os.environ`` by then. The first
-        # request does guarantee it. Resolved once, then cached.
-        self._trusted_proxies_pinned = trusted_proxies is not None
-        self._trusted_proxies: Optional[TrustedProxies] = (
-            parse_trusted_proxies(trusted_proxies)
-            if trusted_proxies is not None
-            else None
+        # Reading the environment here is safe even though the module-level
+        # singleton is built at *import* time: ``main`` runs ``load_dotenv()``
+        # at its own import, before any router (and therefore this module) is
+        # imported, so `.env` has already reached ``os.environ``. Post-boot the
+        # value does not change, which is why ``reset_rate_limiter`` — the test
+        # seam — is the only thing that re-reads it.
+        self.trusted_proxies: TrustedProxies = parse_trusted_proxies(
+            trusted_proxies if trusted_proxies is not None else get_trusted_proxies()
         )
 
         # Store: {(ip, endpoint): [(timestamp1, timestamp2, ...)]}
@@ -78,13 +79,6 @@ class OAuthRateLimiter:
         # Last cleanup time
         self._last_cleanup = time.time()
         self._cleanup_interval = 300  # 5 minutes
-
-    @property
-    def trusted_proxies(self) -> TrustedProxies:
-        """Networks whose forwarding headers may be believed, resolved lazily."""
-        if self._trusted_proxies is None:
-            self._trusted_proxies = parse_trusted_proxies(get_trusted_proxies())
-        return self._trusted_proxies
 
     def _cleanup_old_entries(self):
         """Remove entries older than window size."""
@@ -165,20 +159,19 @@ _oauth_rate_limiter = OAuthRateLimiter()
 def reset_rate_limiter():
     """Reset rate limiter state (for testing).
 
-    Clears all request history to prevent test interference, and drops the
-    lazily cached trust list so a test that varies ``PROTECTION_TRUSTED_PROXIES``
-    gets the value it just set rather than the one the first request pinned.
-    A limiter constructed with an explicit list keeps it — that list came from
-    its caller, not from the environment.
+    Clears all request history to prevent test interference, and re-reads the
+    trust list from the environment so a test that varies
+    ``PROTECTION_TRUSTED_PROXIES`` gets the value it just set rather than the
+    one construction pinned. Unconditional, because the singleton is
+    env-sourced by construction — it is never handed an explicit list.
     """
     _oauth_rate_limiter._requests.clear()
     _oauth_rate_limiter._last_cleanup = time.time()
-    if not _oauth_rate_limiter._trusted_proxies_pinned:
-        _oauth_rate_limiter._trusted_proxies = None
+    _oauth_rate_limiter.trusted_proxies = parse_trusted_proxies(get_trusted_proxies())
 
 
 def trusted_proxy_networks() -> TrustedProxies:
-    """The lazily resolved trust list the OAuth/SSO limiters key on.
+    """The trust list the OAuth/SSO limiters key on.
 
     Exposed so that anything recording *who* a request came from — the SSO
     JIT-provisioning audit trail, in particular — resolves the address through
