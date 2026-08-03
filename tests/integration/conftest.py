@@ -95,6 +95,10 @@ REDIS_URL = (
 # Individual fixtures may still skip legitimately (Redis, PostgreSQL). The
 # guard only fires when *every* selected test skipped, so a mixed run — some
 # passes, some environment-dependent skips — stays green.
+#
+# Scope is session-level by design: in a mixed whole-tree run, unit passes
+# suppress it, and that is intended — the CI shape that matters here
+# (`pytest tests/ -m postgres`) selects only integration tests, so it fires.
 # ---------------------------------------------------------------------------
 
 
@@ -132,6 +136,34 @@ def _skip_reason(report) -> str:
     else:
         reason = "unknown"
     return reason.replace("Skipped: ", "", 1).strip() or "unknown"
+
+
+def _reset_outcomes() -> None:
+    """Start a fresh tally.
+
+    The tally is module state, and this conftest stays in ``sys.modules``
+    across repeated in-process ``pytest.main()`` calls, so it must be cleared
+    per session or a later run inherits an earlier run's verdicts.
+    """
+    global _session_outcomes
+    _session_outcomes = _SessionOutcomes()
+
+
+def pytest_sessionstart(session):
+    """Reset the tally when this conftest is the initial one."""
+    _reset_outcomes()
+
+
+def pytest_collection_modifyitems(session, config, items):
+    """Reset the tally again, for the runs ``pytest_sessionstart`` cannot see.
+
+    ``pytest_sessionstart`` fires before collection, so a non-initial conftest
+    (``pytest tests/``, where this file is loaded while collecting) is not yet
+    registered and never receives it. This hook runs once collection is done,
+    by which point the conftest is always registered — so it is the reset that
+    actually covers every invocation shape.
+    """
+    _reset_outcomes()
 
 
 def pytest_runtest_logreport(report):
@@ -188,7 +220,11 @@ def pytest_sessionfinish(session, exitstatus):
     else:  # pragma: no cover - terminal reporter is disabled only with -p no:terminal
         print("\n".join(lines), file=sys.stderr)
 
-    session.exitstatus = 1
+    # Only escalate a would-be-green run. A session that already failed for
+    # another reason — a collection error (exit 2), a user interrupt — keeps its
+    # more severe status; the banner is printed either way.
+    if session.exitstatus == 0:
+        session.exitstatus = 1
 
 
 @pytest.fixture
