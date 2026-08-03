@@ -1746,10 +1746,24 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     """Custom HTTPException handler to ensure consistent error response format"""
     detail = exc.detail
 
-    # Structured detail: every dict-detail raise site in the tree is flat —
-    # {"error": "<code>", "message": "<text>"} — so pull the message out of it.
+    # Two dict-detail shapes reach here, and both must yield the human message
+    # because clients render `detail` verbatim as user-facing text:
+    #
+    #   nested — `ErrorResponse.model_dump()`, built at runtime by the case
+    #            router: {"schema_version": ..., "error": {"code", "message"}}
+    #   flat   — written literally: {"error": "<code>", "message": "<text>"}
+    #
+    # The `error` value is a str in the flat shape, so the nested branch must
+    # test the *type* before subscripting: `"message" in detail["error"]` alone
+    # is a substring test over the error code, and a code such as
+    # "message_send_failed" would take the branch and raise TypeError here,
+    # inside the exception handler.
     if isinstance(detail, dict):
-        message = detail.get("message") or detail.get("detail") or str(detail)
+        nested = detail.get("error")
+        if isinstance(nested, dict) and "message" in nested:
+            message = nested["message"]
+        else:
+            message = detail.get("message") or detail.get("detail") or str(detail)
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": message},
