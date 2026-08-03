@@ -1,8 +1,8 @@
 """
 Rate limiting middleware
 
-FastAPI middleware for multi-level rate limiting with Redis backend,
-progressive penalties, and graceful degradation.
+FastAPI middleware for multi-level rate limiting with Redis backend and
+graceful degradation.
 """
 
 import asyncio
@@ -51,7 +51,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     Features:
     - Global, per-session, and per-endpoint rate limits
-    - Progressive penalties for repeated violations
     - Redis-backed with in-memory fallback
     - Detailed metrics and logging
     - Security headers in responses

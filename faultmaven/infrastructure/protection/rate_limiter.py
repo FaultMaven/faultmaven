@@ -1,11 +1,10 @@
 """
 Redis-backed rate limiting implementation
 
-Provides sliding window rate limiting with multiple bucket types,
-progressive penalties, and Redis-backed storage (real or FakeRedis).
+Provides sliding window rate limiting with multiple bucket types and
+Redis-backed storage (real or FakeRedis).
 """
 
-import asyncio
 import logging
 import random
 import time
@@ -103,7 +102,6 @@ class RedisRateLimiter:
     Features:
     - Multiple limit types (global, per-session, per-endpoint)
     - Sliding window algorithm for smooth rate limiting
-    - Progressive penalties for repeated violations
     - Lua scripts for atomic operations
     """
 
@@ -168,14 +166,6 @@ class RedisRateLimiter:
 
         # Rate limit configurations
         self._configs: Dict[str, RateLimitConfig] = {}
-
-        # Penalty tracking
-        self._penalty_multipliers = {
-            "first_violation": 2.0,
-            "second_violation": 4.0,
-            "third_violation": 8.0,
-            "persistent_violation": 16.0,
-        }
 
     @property
     def is_degraded(self) -> bool:
@@ -532,7 +522,7 @@ class RedisRateLimiter:
         current_count, limit, allowed = result
 
         if not allowed:
-            retry_after = self._calculate_retry_after(key, config.window)
+            retry_after = self._calculate_retry_after(config.window)
 
             return RateLimitResult(
                 allowed=False,
@@ -555,30 +545,9 @@ class RedisRateLimiter:
             ),
         )
 
-    def _calculate_retry_after(self, key: str, base_window: int) -> int:
-        """Calculate retry after time with penalties and jitter."""
-        violation_key = f"{key}:violations"
-        base_retry = base_window
-
-        try:
-            violation_count = asyncio.create_task(self._redis.incr(violation_key))
-            asyncio.create_task(self._redis.expire(violation_key, base_window * 4))
-            violation_count = violation_count.result() if violation_count.done() else 1
-        except Exception:
-            violation_count = 1
-
-        if violation_count <= 1:
-            multiplier = 1.0
-        elif violation_count == 2:
-            multiplier = self._penalty_multipliers["first_violation"]
-        elif violation_count == 3:
-            multiplier = self._penalty_multipliers["second_violation"]
-        elif violation_count == 4:
-            multiplier = self._penalty_multipliers["third_violation"]
-        else:
-            multiplier = self._penalty_multipliers["persistent_violation"]
-
-        retry_after = int(base_retry * multiplier)
+    def _calculate_retry_after(self, base_window: int) -> int:
+        """How long a refused client is told to wait."""
+        retry_after = base_window
 
         # Add jitter to prevent thundering herd
         jitter = random.uniform(0, retry_after * 0.1)
@@ -629,12 +598,17 @@ class RedisRateLimiter:
         return None
 
     async def reset_rate_limit(self, key: str, limit_type: LimitType) -> bool:
-        """Reset rate limit for a specific key (admin function)."""
+        """Reset rate limit for a specific key (admin function).
+
+        The window key is the only key a limit owns. A companion
+        ``:violations`` counter used to be deleted alongside it; nothing writes
+        one any more, so deleting it would only ever inflate the returned count
+        by zero and imply state that does not exist.
+        """
         rate_limit_key = f"{self.key_prefix}:{limit_type.value}:{key}"
-        violation_key = f"{rate_limit_key}:violations"
 
         try:
-            deleted = await self._redis.delete(rate_limit_key, violation_key)
+            deleted = await self._redis.delete(rate_limit_key)
             self.logger.info(
                 f"Reset rate limit for {key}:{limit_type.value} (deleted {deleted} keys)"
             )

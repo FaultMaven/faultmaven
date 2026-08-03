@@ -238,17 +238,11 @@ ENDPOINT_RATE_LIMITS = {
     "/api/v1/sessions/": 20,
     "title_generation": 1,  # Special case: 1 per 5 minutes
 }
-
-# Progressive penalty multipliers. Configured but not yet reached: the
-# violation counter is always read as 1, so the effective multiplier is 1.0
-# and `Retry-After` is the window duration plus jitter (#926).
-PENALTY_MULTIPLIERS = {
-    "first_violation": 2.0,    # 2x longer wait
-    "second_violation": 4.0,   # 4x longer wait
-    "third_violation": 8.0,    # 8x longer wait
-    "persistent_violation": 16.0  # 16x longer wait
-}
 ```
+
+There is no progressive penalty ladder. A refused client is told how long its
+own window actually takes to free quota, and nothing longer: repeat offenders
+are not punished with escalating waits.
 
 ## Monitoring and Alerting
 
