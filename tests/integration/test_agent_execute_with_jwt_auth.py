@@ -185,9 +185,25 @@ def client(auth_service, mock_session):
     app.dependency_overrides[get_agent_orchestration_service] = get_mock_agent_service
     app.dependency_overrides[get_session_service] = get_mock_session_service
 
+    # Bind THIS test's AuthService explicitly, rather than relying on
+    # `app.state` not having one. `get_auth_service` prefers `app.state` and
+    # only falls back to constructing a service, so any earlier test that ran
+    # the real lifespan against this same module-level `app` — e.g.
+    # `tests/unit/api/test_composition_root.py`, which does
+    # `with TestClient(app)` — leaves a REAL AuthService attached, built from
+    # unpatched settings and therefore a different HS256 secret. The forged
+    # token is then verified with the wrong key and every request 401s.
+    #
+    # Depending on the absence of leaked state is a hidden ordering
+    # requirement; asserting the state we need is not. Restored on teardown so
+    # this fixture does not become the next test's leak.
+    previous_auth_service = getattr(app.state, "auth_service", None)
+    app.state.auth_service = auth_service
+
     yield TestClient(app)
 
     # Cleanup
+    app.state.auth_service = previous_auth_service
     app.dependency_overrides.clear()
 
 
