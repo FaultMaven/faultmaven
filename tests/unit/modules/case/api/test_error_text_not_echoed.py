@@ -32,6 +32,7 @@ sites and is knowingly not covered here; it is queued with the remaining
 unswept modules.
 """
 
+import ast
 import pathlib
 
 import pytest
@@ -93,6 +94,20 @@ async def test_500_body_does_not_echo_the_exception(build_app, call_api):
     assert response.json()["detail"] == "Failed to manage session case"
 
 
+def _routes_source() -> pathlib.Path:
+    """The guarded file, with a floor so an empty parse cannot pass vacuously."""
+    path = pathlib.Path(routes_module.__file__)
+    handlers = sum(
+        isinstance(node, ast.ExceptHandler) and bool(node.name)
+        for node in ast.walk(ast.parse(path.read_text()))
+    )
+    assert handlers >= 20, (
+        f"case router unexpectedly has only {handlers} bound except handlers — "
+        "the guards below would pass without inspecting anything"
+    )
+    return path
+
+
 @pytest.mark.unit
 def test_no_500_site_interpolates_the_exception():
     """Class guard: no 5xx in the router carries ``e`` into the response.
@@ -114,7 +129,7 @@ def test_no_500_site_interpolates_the_exception():
     nodes rather than unparsed substrings, which is what closes that gap (and
     ``repr(e)``, ``f"{e!s}"`` and ``e.args[0]`` with it).
     """
-    offenders = http_exception_leak_sites(pathlib.Path(routes_module.__file__))
+    offenders = http_exception_leak_sites(_routes_source())
 
     assert offenders == [], (
         "5xx HTTPException sites carrying the caught exception into the "
@@ -132,7 +147,7 @@ def test_no_except_handler_returns_the_exception():
     ``GET /cases/health`` by returning ``{"error": str(e)}`` with a 200. Same
     leak, different wire shape.
     """
-    offenders = returned_body_leak_sites(pathlib.Path(routes_module.__file__))
+    offenders = returned_body_leak_sites(_routes_source())
 
     assert offenders == [], (
         "return statements inside except handlers carrying the caught "

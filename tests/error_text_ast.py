@@ -41,14 +41,41 @@ _MAX_ALIAS_DEPTH = 5
 
 
 def _mentions(node: ast.AST, name: str) -> bool:
-    """Does ``node`` read the variable ``name`` anywhere inside it?"""
-    return any(
-        isinstance(child, ast.Name) and child.id == name for child in ast.walk(node)
-    )
+    """Can the *value* of ``node`` carry text from the exception bound to ``name``?
+
+    Not a plain ``ast.walk`` for ``Name``: reading the exception is not the same
+    as putting it on the wire, and two positions read it without carrying it.
+
+    * ``ast.Compare`` evaluates to a bool. ``getattr(e, "error_code", None) in
+      (...)`` inspects the exception; no text can travel through a boolean.
+    * ``ast.IfExp`` carries only its branches. ``"A" if e.code == X else "B"``
+      selects between two literals — the exception steers the choice without
+      appearing in the result.
+
+    Both shapes are live: ``modules/knowledge/api/routes.py`` picks one of two
+    static sentences from ``e.error_code``, and a walk-for-``Name`` guard reports
+    it as a leak. A guard that cries wolf on a non-leak gets weakened by the
+    next person to hit it, so the precision is part of the guard working.
+
+    Everything else over-approximates deliberately: an unrecognised call that
+    receives the exception is assumed to carry it.
+    """
+    if isinstance(node, ast.Name):
+        return node.id == name
+    if isinstance(node, ast.Compare):
+        return False
+    if isinstance(node, ast.IfExp):
+        return _mentions(node.body, name) or _mentions(node.orelse, name)
+    return any(_mentions(child, name) for child in ast.iter_child_nodes(node))
 
 
 def _local_assignments(handler: ast.ExceptHandler) -> dict[str, list[ast.AST]]:
-    """Every ``x = <expr>`` bound to a plain name inside this except handler."""
+    """Every binding of a plain name inside this except handler.
+
+    Covers ``x = ...``, ``x: T = ...``, ``x += ...`` and ``(x := ...)``. The
+    last two bind just as effectively as the first, so leaving them out would
+    give the alias-following two silent blind spots.
+    """
     assigns: dict[str, list[ast.AST]] = {}
     for node in ast.walk(handler):
         if isinstance(node, ast.Assign):
@@ -58,6 +85,10 @@ def _local_assignments(handler: ast.ExceptHandler) -> dict[str, list[ast.AST]]:
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             if node.value is not None:
                 assigns.setdefault(node.target.id, []).append(node.value)
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            assigns.setdefault(node.target.id, []).append(node.value)
+        elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            assigns.setdefault(node.target.id, []).append(node.value)
     return assigns
 
 
@@ -82,13 +113,27 @@ def _carries_exception(
 
 
 def _is_server_error(call: ast.Call) -> bool:
-    """Is this ``HTTPException`` a 5xx?"""
+    """Is this ``HTTPException`` a 5xx?
+
+    A bare integer literal is checked by *range*, not by spelling. Matching only
+    ``500``/``INTERNAL_SERVER_ERROR``/``HTTP_5`` let ``raise HTTPException(
+    status_code=503, detail=f"...: {e}")`` through — a live leak sitting inside
+    a file the guard reported clean, which is worse than no guard at all.
+
+    The 4xx side must keep falling through: ``detail=str(e)`` on a
+    ``ValidationException`` arm is a domain message written for the caller, and
+    a range test is what keeps that exclusion principled rather than accidental.
+    """
     candidates: list[ast.AST] = [
         kw.value for kw in call.keywords if kw.arg == "status_code"
     ]
     if not candidates and len(call.args) > _STATUS_POSITION:
         candidates.append(call.args[_STATUS_POSITION])
     for node in candidates:
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            if 500 <= node.value <= 599:
+                return True
+            continue
         text = ast.unparse(node)
         if "500" in text or "INTERNAL_SERVER_ERROR" in text or "HTTP_5" in text:
             return True
