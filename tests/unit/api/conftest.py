@@ -1042,30 +1042,6 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                         return True
                     return False
 
-                async def mock_cleanup_session_data(session_id, *args, **kwargs):
-                    session = test_sessions.get(session_id)
-                    if session:
-                        data_uploads_count = len(session.data_uploads)
-                        case_history_count = len(session.case_history)
-
-                        # Clear session data but keep session active
-                        session.data_uploads.clear()
-                        session.case_history.clear()
-                        session.agent_state = None
-
-                        return {
-                            "success": True,
-                            "session_id": session_id,
-                            "status": "cleaned",
-                            "message": "Session data cleaned successfully",
-                            "cleaned_items": {
-                                "data_uploads": data_uploads_count,
-                                "case_history": case_history_count,
-                                "temp_files": 0,
-                            },
-                        }
-                    return {"success": False, "error": "Session not found"}
-
                 # Add operation tracking methods for realistic session behavior
                 async def mock_record_query_operation(
                     session_id,
@@ -1191,7 +1167,6 @@ if PYTEST_AVAILABLE and FASTAPI_AVAILABLE:
                 mock_service.list_sessions = mock_list_sessions
                 mock_service.delete_session = mock_delete_session
                 mock_service.update_last_activity = mock_update_last_activity
-                mock_service.cleanup_session_data = mock_cleanup_session_data
                 mock_service.record_query_operation = mock_record_query_operation
                 mock_service.record_data_upload_operation = (
                     mock_record_data_upload_operation

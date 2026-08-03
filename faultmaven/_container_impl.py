@@ -722,17 +722,6 @@ class DIContainer(BaseDIContainer):
                     "active_sessions": len(self.sessions),
                 }
 
-            async def cleanup_session_data(self, session_id):
-                return {
-                    "session_id": session_id,
-                    "success": True,
-                    "cleaned_items": {
-                        "data_uploads": 0,
-                        "case_history": 0,
-                        "temp_files": 0,
-                    },
-                }
-
             async def get_or_create_current_case_id(
                 self, session_id, force_new_case=False
             ):
