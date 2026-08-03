@@ -15,7 +15,6 @@ from typing import Dict, Optional
 from ...models.protection import (
     LimitType,
     RateLimitConfig,
-    RateLimitError,
     RateLimitResult,
     RateLimitState,
 )
@@ -513,13 +512,19 @@ class RedisRateLimiter:
                 return RateLimitResult(
                     allowed=True, limit_type=limit_type, current_count=0, limit=0
                 )
-            else:
-                raise RateLimitError(
-                    retry_after=60,
-                    limit_type=limit_type.value,
-                    current_count=0,
-                    limit=0,
-                )
+
+            # Fail closed means "refuse the request", not "claim the client
+            # exceeded a limit". This used to manufacture a
+            # ``RateLimitError(retry_after=60, current_count=0, limit=0)``,
+            # which the middleware rendered as a 429 reading "0/0 requests",
+            # counted in ``requests_blocked``, and WARN-logged with the caller's
+            # address as a rate-limit violator — a fabricated accusation, up to
+            # three times per client death before the demotion threshold even
+            # engages. Re-raising the original error sends it to the
+            # middleware's dispatch catch-all instead: the 503 rung, the
+            # ``errors`` counter, and no violator log. The cause also survives,
+            # so the log names the Redis failure rather than a limit nobody hit.
+            raise
 
     async def _check_redis_rate_limit(
         self, script, key: str, config: RateLimitConfig, limit_type: LimitType
