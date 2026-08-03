@@ -1746,17 +1746,9 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     """Custom HTTPException handler to ensure consistent error response format"""
     detail = exc.detail
 
-    # If detail is a structured error response dict, extract the message
-    if isinstance(detail, dict) and "error" in detail and "message" in detail["error"]:
-        error_message = detail["error"]["message"]
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": error_message},
-            headers=getattr(exc, "headers", None),
-        )
-    # If detail is a dict but not our standard format, try to extract meaningful text
-    elif isinstance(detail, dict):
-        # Try to find message in various places
+    # Structured detail: every dict-detail raise site in the tree is flat —
+    # {"error": "<code>", "message": "<text>"} — so pull the message out of it.
+    if isinstance(detail, dict):
         message = detail.get("message") or detail.get("detail") or str(detail)
         return JSONResponse(
             status_code=exc.status_code,
