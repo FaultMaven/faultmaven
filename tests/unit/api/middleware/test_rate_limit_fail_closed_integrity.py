@@ -193,7 +193,7 @@ async def test_the_limiter_re_raises_the_original_exception():
 
     limiter = RedisRateLimiter(fallback_enabled=False)
     boom = ConnectionError("connection reset by peer")
-    limiter._adopt(_FailingClient(boom), owns=False, degraded=False)
+    await limiter._adopt(_FailingClient(boom), owns=False, degraded=False)
     limiter.configure_limits(
         {LimitType.GLOBAL.value: RateLimitConfig(enabled=True, requests=5, window=60)}
     )

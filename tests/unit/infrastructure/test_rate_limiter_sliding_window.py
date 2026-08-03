@@ -46,10 +46,10 @@ def redis_client():
     return fakeredis_aio.FakeRedis(decode_responses=True)
 
 
-def _limiter(client, *, requests: int, window: int = 60) -> RedisRateLimiter:
+async def _limiter(client, *, requests: int, window: int = 60) -> RedisRateLimiter:
     """A limiter enforcing one ``global`` limit against ``client``."""
     limiter = RedisRateLimiter()
-    limiter._adopt(client, owns=False, degraded=False)
+    await limiter._adopt(client, owns=False, degraded=False)
     limiter.configure_limits(
         {
             LimitType.GLOBAL.value: RateLimitConfig(
@@ -94,7 +94,7 @@ async def test_the_window_counts_requests_not_seconds(redis_client, monkeypatch,
     clock = _Clock(1_700_000_000.0)
     monkeypatch.setattr(rate_limiter_module, "time", clock)
 
-    limiter = _limiter(redis_client, requests=limit, window=60)
+    limiter = await _limiter(redis_client, requests=limit, window=60)
     key = f"10.1.0.{limit}"
     overshoot = 7
 
@@ -110,7 +110,7 @@ async def test_two_requests_in_the_same_second_are_two_entries(redis_client):
     ZADD with the whole-second timestamp as member updated a score rather than
     adding an element, so the set stayed at one entry.
     """
-    limiter = _limiter(redis_client, requests=2, window=60)
+    limiter = await _limiter(redis_client, requests=2, window=60)
     key = "10.1.1.1"
 
     assert await _verdicts(limiter, key, 2) == [True, True]
@@ -122,7 +122,7 @@ async def test_the_window_slides_as_entries_age_out(redis_client, monkeypatch):
     clock = _Clock(1_700_000_000.0)
     monkeypatch.setattr(rate_limiter_module, "time", clock)
 
-    limiter = _limiter(redis_client, requests=3, window=10)
+    limiter = await _limiter(redis_client, requests=3, window=10)
     key = "10.1.2.1"
 
     assert await _verdicts(limiter, key, 4) == [True, True, True, False]
@@ -145,7 +145,7 @@ async def test_blocked_requests_consume_no_quota(redis_client, monkeypatch):
     clock = _Clock(1_700_000_000.0)
     monkeypatch.setattr(rate_limiter_module, "time", clock)
 
-    limiter = _limiter(redis_client, requests=2, window=10)
+    limiter = await _limiter(redis_client, requests=2, window=10)
     key = "10.1.3.1"
     window_key = _window_key(limiter, key)
 
@@ -176,7 +176,7 @@ async def test_status_and_enforcement_agree_on_the_window_edge(
     clock = _Clock(1_700_000_000.4)
     monkeypatch.setattr(rate_limiter_module, "time", clock)
 
-    limiter = _limiter(redis_client, requests=2, window=10)
+    limiter = await _limiter(redis_client, requests=2, window=10)
     key = "10.1.4.1"
 
     assert await _verdicts(limiter, key, 1) == [True]
@@ -211,7 +211,7 @@ async def test_an_entry_exactly_one_window_old_is_outside_the_window(
     clock = _Clock(1_700_000_000.0)
     monkeypatch.setattr(rate_limiter_module, "time", clock)
 
-    limiter = _limiter(redis_client, requests=1, window=10)
+    limiter = await _limiter(redis_client, requests=1, window=10)
     key = "10.1.5.1"
     window_key = _window_key(limiter, key)
 

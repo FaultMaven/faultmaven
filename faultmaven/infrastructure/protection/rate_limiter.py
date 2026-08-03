@@ -5,6 +5,7 @@ Provides sliding window rate limiting with multiple bucket types and
 Redis-backed storage (real or FakeRedis).
 """
 
+import asyncio
 import logging
 import math
 import time
@@ -360,7 +361,7 @@ class RedisRateLimiter:
         if client is not None and (
             not verify_client or await self._client_answers(client)
         ):
-            self._adopt(client, owns=False, degraded=False)
+            await self._adopt(client, owns=False, degraded=False)
             self.logger.info(
                 "Redis rate limiter using the shared application Redis client"
             )
@@ -388,7 +389,7 @@ class RedisRateLimiter:
                 "FakeRedis — rate limits are per-replica until Redis is reachable"
             )
             # Process-wide singleton, shared with every other subsystem.
-            self._adopt(get_fakeredis_client(), owns=False, degraded=True)
+            await self._adopt(get_fakeredis_client(), owns=False, degraded=True)
             return
         except Exception as e:
             self.logger.error(f"Failed to initialize Redis rate limiter: {e}")
@@ -402,7 +403,7 @@ class RedisRateLimiter:
         # FakeRedis by design and that rung is terminal; the same return value
         # after a real client died means the factory fell back, and the limiter
         # must keep retrying so it can be promoted when Redis recovers.
-        self._adopt(
+        await self._adopt(
             resolved,
             owns=not stand_in,
             degraded=stand_in and self._had_real_client,
@@ -415,7 +416,7 @@ class RedisRateLimiter:
         else:
             self.logger.info("Redis rate limiter initialized successfully")
 
-    def _adopt(self, client, *, owns: bool, degraded: bool) -> None:
+    async def _adopt(self, client, *, owns: bool, degraded: bool) -> None:
         """Install a client and clear the liveness state tracked against the old one.
 
         Every rung goes through here so no rung can forget to re-arm the
@@ -430,8 +431,37 @@ class RedisRateLimiter:
         client stop counting: it is monotonic rather than an identity test, so
         re-adopting the *same* object after a recovery still opens a new epoch
         and the previous life's stragglers cannot reach into it.
+
+        The outgoing client is closed **only when this limiter owned it**, and
+        the invariant behind that word is narrow: owned means a real connection
+        pool this limiter had the factory build for it. Never the composition
+        root's shared client (sessions, revocation, deduplication and
+        idempotency all hold it) and never the process-wide FakeRedis stand-in.
+        ``_owns_client`` already encodes both exclusions; the ``is_fakeredis``
+        test is belt and braces, because closing the stand-in would break every
+        other subsystem in the process and the cost of the extra check is one
+        function call per adoption.
+
+        Without the close, a flapping Redis leaked one pool (``max_connections``
+        20) per demotion cycle — the ladder is re-entered on every death, and
+        nothing else ever dropped the previous pool.
         """
         from faultmaven.infrastructure.redis_client import is_fakeredis
+
+        outgoing = self._redis
+        if (
+            self._owns_client
+            and outgoing is not None
+            and outgoing is not client
+            and not is_fakeredis(outgoing)
+        ):
+            try:
+                await outgoing.close()
+            except Exception as e:
+                # A pool that is already dead is exactly the case this runs in,
+                # so a failure to close it is expected and not worth failing an
+                # adoption over — the replacement client is what matters.
+                self.logger.debug(f"Closing the replaced Redis client failed: {e}")
 
         self._redis = client
         self._window_script = client.register_script(_WINDOW_SCRIPT)
@@ -499,6 +529,27 @@ class RedisRateLimiter:
 
             self._record_check_success(epoch)
             return result
+
+        except asyncio.CancelledError as e:
+            # ``CancelledError`` has been a ``BaseException`` since 3.8, so the
+            # generic handler below never saw it. The shape that matters: a
+            # check stalled against a dead pool, cancelled by an outer
+            # per-request timeout, left the failure run untouched — so a pool
+            # that only ever stalls could never reach the demotion threshold and
+            # the ladder was never re-entered. Counting it is what makes a
+            # stalling death indistinguishable from a raising one.
+            #
+            # This must sit ABOVE the generic ``except Exception``: cancellation
+            # is not an Exception, and moving it below would delete it.
+            #
+            # Accepted trade-off: a client that aborts its own request also
+            # cancels the check in flight and contributes a spurious failure.
+            # The counter is consecutive and resets on any success, so it takes
+            # three back-to-back aborts with no successful check in between to
+            # matter, and the cost of being wrong is one ping and one epoch bump
+            # against a healthy client that immediately re-adopts.
+            self._record_check_failure(e, epoch)
+            raise
 
         except Exception as e:
             # A client can die long after initialization. Counting the failures

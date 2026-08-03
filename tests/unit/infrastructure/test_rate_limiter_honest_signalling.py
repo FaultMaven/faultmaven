@@ -57,9 +57,9 @@ def redis_client():
     return fakeredis_aio.FakeRedis(decode_responses=True)
 
 
-def _limiter(client, *, requests: int, window: int) -> RedisRateLimiter:
+async def _limiter(client, *, requests: int, window: int) -> RedisRateLimiter:
     limiter = RedisRateLimiter()
-    limiter._adopt(client, owns=False, degraded=False)
+    await limiter._adopt(client, owns=False, degraded=False)
     limiter.configure_limits(
         {
             LimitType.GLOBAL.value: RateLimitConfig(
@@ -80,7 +80,7 @@ async def test_a_client_refused_near_the_window_edge_waits_seconds_not_a_window(
     clock, redis_client
 ):
     """The defect itself: the wait is until quota frees, not a full window."""
-    limiter = _limiter(redis_client, requests=2, window=60)
+    limiter = await _limiter(redis_client, requests=2, window=60)
     key = "10.2.0.1"
 
     assert (await _check(limiter, key)).allowed
@@ -96,7 +96,7 @@ async def test_a_client_refused_near_the_window_edge_waits_seconds_not_a_window(
 
 async def test_the_wait_never_rounds_down_to_zero(clock, redis_client):
     """A sub-second answer reads as "retry immediately", which is not a wait."""
-    limiter = _limiter(redis_client, requests=1, window=60)
+    limiter = await _limiter(redis_client, requests=1, window=60)
     key = "10.2.0.2"
 
     assert (await _check(limiter, key)).allowed
@@ -114,7 +114,7 @@ async def test_an_hourly_limit_is_not_truncated_to_five_minutes(clock, redis_cli
     A client that obeys a truncated Retry-After returns to be refused again,
     which is the thundering herd the cap was supposed to prevent.
     """
-    limiter = _limiter(redis_client, requests=1, window=3600)
+    limiter = await _limiter(redis_client, requests=1, window=3600)
     key = "10.2.0.3"
 
     assert (await _check(limiter, key)).allowed
@@ -131,7 +131,7 @@ async def test_two_refusals_at_the_same_instant_agree(clock, redis_client):
     entry arrived at its own time — so randomness bought nothing and cost the
     caller a number it could not reconcile with the reset timestamp.
     """
-    limiter = _limiter(redis_client, requests=1, window=60)
+    limiter = await _limiter(redis_client, requests=1, window=60)
     key = "10.2.0.4"
 
     assert (await _check(limiter, key)).allowed
@@ -146,7 +146,7 @@ async def test_two_clients_are_told_different_waits_at_the_same_instant(
     clock, redis_client
 ):
     """The per-client de-synchronization the jitter was approximating."""
-    limiter = _limiter(redis_client, requests=1, window=60)
+    limiter = await _limiter(redis_client, requests=1, window=60)
 
     assert (await _check(limiter, "10.2.0.5")).allowed
     clock.advance(20)
@@ -163,7 +163,7 @@ async def test_the_blocked_reset_time_is_the_oldest_entry_plus_one_window(
     clock, redis_client
 ):
     """``reset_time`` and ``Retry-After`` must name the same instant."""
-    limiter = _limiter(redis_client, requests=1, window=60)
+    limiter = await _limiter(redis_client, requests=1, window=60)
     key = "10.2.0.7"
 
     assert (await _check(limiter, key)).allowed
@@ -184,7 +184,7 @@ async def test_the_allowed_reset_time_is_the_oldest_entry_plus_one_window(
     A client tracking the reset instant across responses saw it march forward on
     every request and could never plan against it.
     """
-    limiter = _limiter(redis_client, requests=5, window=60)
+    limiter = await _limiter(redis_client, requests=5, window=60)
     key = "10.2.0.8"
 
     first = await _check(limiter, key)
@@ -201,7 +201,7 @@ async def test_the_allowed_reset_time_is_the_oldest_entry_plus_one_window(
 
 async def test_an_empty_window_reports_a_full_window(clock, redis_client):
     """The fallback: nothing to age out, so a full window is the truth."""
-    limiter = _limiter(redis_client, requests=5, window=60)
+    limiter = await _limiter(redis_client, requests=5, window=60)
 
     first = await _check(limiter, "10.2.0.9")
 
@@ -210,7 +210,7 @@ async def test_an_empty_window_reports_a_full_window(clock, redis_client):
 
 async def test_the_status_path_reports_the_same_instant(clock, redis_client):
     """Status backs the same headers, so it must not disagree with enforcement."""
-    limiter = _limiter(redis_client, requests=5, window=60)
+    limiter = await _limiter(redis_client, requests=5, window=60)
     key = "10.2.0.10"
 
     enforced = await _check(limiter, key)
@@ -227,7 +227,7 @@ async def test_the_status_path_reports_the_same_instant(clock, redis_client):
 
 
 async def test_the_status_path_falls_back_when_the_window_is_empty(clock, redis_client):
-    limiter = _limiter(redis_client, requests=5, window=60)
+    limiter = await _limiter(redis_client, requests=5, window=60)
 
     status = await limiter.get_rate_limit_status("10.2.0.11", LimitType.GLOBAL)
 
@@ -242,7 +242,7 @@ async def test_the_script_returns_the_oldest_score_on_both_paths(clock, redis_cl
     Reverting the script to a three-element return would otherwise fail with an
     unpacking error somewhere far from the change that caused it.
     """
-    limiter = _limiter(redis_client, requests=1, window=60)
+    limiter = await _limiter(redis_client, requests=1, window=60)
     key = f"{limiter.key_prefix}:{LimitType.GLOBAL.value}:10.2.0.12"
 
     allowed = await limiter._window_script(
