@@ -3353,6 +3353,8 @@ async def list_uploaded_files(
             files=files, total_count=total_count, limit=limit, offset=offset
         )
 
+    except HTTPException:
+        raise
     except NotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except PermissionDeniedException as e:
