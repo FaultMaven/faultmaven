@@ -438,9 +438,17 @@ def create_auth_service(
     Returns:
         AuthService instance
     """
-    try:
-        from faultmaven.modules.auth.domain.services.auth_service import AuthService
+    # Imported before the try, not inside it: the handler below names
+    # PartialKeyConfigurationError, and a name bound inside the try is not
+    # guaranteed to exist when the handler runs. A failed import here would
+    # otherwise turn a key-configuration refusal into a NameError raised while
+    # matching the handler.
+    from faultmaven.modules.auth.domain.services.auth_service import (
+        AuthService,
+        PartialKeyConfigurationError,
+    )
 
+    try:
         # Load keys from settings if available
         private_key = None
         public_key = None
@@ -463,6 +471,15 @@ def create_auth_service(
                 "✅ AuthService initialized without revocation store (token revocation disabled)"
             )
         return service
+    except PartialKeyConfigurationError:
+        # Half an RSA key pair is an operator error, not an infrastructure
+        # hiccup. Never degrade to the fallback below: it constructs the same
+        # service off the same settings, so it cannot succeed where this failed
+        # — it would only re-raise from inside an exception handler and bury the
+        # cause under a chained traceback. Fail closed on EVERY container path,
+        # jobs and CLI workers included, not just the web lifespan that also
+        # runs the coherence gate.
+        raise
     except Exception as e:
         logger.warning(f"AuthService initialization failed: {e}")
         # Return a minimal AuthService without a revocation store

@@ -29,6 +29,7 @@ from faultmaven.modules.auth.domain.models.auth import (
 from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
+    PartialKeyConfigurationError,
     TokenRevocationError,
 )
 from tests.utils import (
@@ -698,9 +699,19 @@ class TestKeyLoading:
         assert "-----BEGIN PRIVATE KEY-----" in service._private_key
         assert "-----BEGIN PUBLIC KEY-----" in service._public_key
 
-    def test_load_keys_warns_on_missing_key_file(self, mock_settings, tmp_path):
-        """Warning is logged when key file does not exist."""
-        # Point to non-existent file
+    def test_load_keys_refuses_when_named_key_files_are_missing(
+        self, mock_settings, tmp_path
+    ):
+        """Named-but-missing key files warn AND refuse.
+
+        This used to assert "dev keys should still be generated as fallback" —
+        it pinned the fail-open behaviour itself. A deployment that names two
+        key files it cannot read has misconfigured its keys; booting on a
+        fabricated pair makes it look healthy while rejecting every genuinely
+        minted token. The per-file warnings stay: they name *which* path failed,
+        which the refusal message does not.
+        """
+        # Point to non-existent files
         mock_settings.security.jwt_private_key = None
         mock_settings.security.jwt_public_key = None
         mock_settings.security.jwt_private_key_path = "/nonexistent/private.pem"
@@ -713,7 +724,8 @@ class TestKeyLoading:
             with patch(
                 "faultmaven.modules.auth.domain.services.auth_service.logger"
             ) as mock_logger:
-                service = AuthService()
+                with pytest.raises(PartialKeyConfigurationError):
+                    AuthService()
 
                 # Verify warnings were logged for missing files
                 warning_calls = [
@@ -725,9 +737,10 @@ class TestKeyLoading:
                 assert any(
                     "Public key file not found" in call for call in warning_calls
                 )
-
-        # Dev keys should still be generated as fallback
-        assert service._private_key is not None
+                # And nothing was fabricated on the way out.
+                assert not any(
+                    "Generated development RSA keys" in call for call in warning_calls
+                )
 
     def test_generated_keys_are_valid_rsa_2048(self, mock_settings):
         """Generated development keys are valid 2048-bit RSA keys."""

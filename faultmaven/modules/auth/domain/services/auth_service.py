@@ -59,6 +59,22 @@ class TokenRevocationError(Exception):
         super().__init__(message)
 
 
+class PartialKeyConfigurationError(RuntimeError):
+    """Raised when a deployment configures one half of the RSA key pair.
+
+    Half a key pair is an operator error, not a state to recover from. The only
+    recovery available here — generating a development pair — would discard the
+    half that *was* configured, so recovering is strictly worse than refusing:
+    the deployment would come up looking healthy and reject every genuinely
+    minted token.
+
+    A ``RuntimeError`` deliberately. ``compose_application`` re-raises
+    ``RuntimeError`` in every deployment mode while swallowing other exception
+    types into a degraded boot, and a security-configuration refusal must not be
+    the thing that degrades.
+    """
+
+
 class AuthService:
     """JWT Authentication Service — the request-path side of JWT handling.
 
@@ -79,13 +95,14 @@ class AuthService:
 
     **Both RSA keys must stay configured, even though nothing here signs.**
     ``_load_keys`` runs on every construction and loads the private key as well
-    as the public one. If *either* is missing it calls ``_generate_dev_keys``,
-    which overwrites **both** with a freshly generated random pair — it does not
-    fill in only the missing one. So dropping ``JWT_PRIVATE_KEY`` from an
-    ``AUTH_MODE=oauth`` deployment on the reasoning that a verify-only service
-    has no use for it silently replaces the configured *public* key too, and
-    every genuinely minted token then fails signature verification with a 401.
-    The only warning is a log line.
+    as the public one, and it refuses a half-configured pair rather than filling
+    the gap: ``_generate_dev_keys`` replaces **both** halves, so fabricating
+    would discard the half that *was* configured. Dropping ``JWT_PRIVATE_KEY``
+    from an ``AUTH_MODE=oauth`` deployment — on the reasonable-sounding grounds
+    that a verify-only service has no use for it — therefore raises
+    ``PartialKeyConfigurationError`` at construction instead of silently
+    replacing the configured public key and 401-ing every genuinely minted
+    token. Configure both halves, or neither.
 
     Token revocation is tracked via the deployment-wide revocation store
     (one key prefix, shared by every revoke path — #767) with TTL matching
@@ -116,14 +133,48 @@ class AuthService:
         self._load_keys()
 
     def _load_keys(self) -> None:
-        """Load RSA keys from configuration.
+        """Load the RSA key pair from configuration, or refuse.
 
-        Keys can be provided via:
-        1. Direct string in environment (JWT_PRIVATE_KEY, JWT_PUBLIC_KEY)
-        2. File path (JWT_PRIVATE_KEY_PATH, JWT_PUBLIC_KEY_PATH)
-        3. Generated for development (if neither is set)
+        Each key can be provided via:
+        1. A constructor argument
+        2. A direct string in the environment (JWT_PRIVATE_KEY, JWT_PUBLIC_KEY)
+        3. A file path (JWT_PRIVATE_KEY_PATH, JWT_PUBLIC_KEY_PATH)
+
+        Exactly three outcomes, and the middle one is the point:
+
+        * **Nothing requested** — no constructor argument, no string, no path,
+          for either half. This selects development keys, deliberately, and is
+          the genuine local path.
+        * **Something requested but the pair is incomplete** — raise
+          ``PartialKeyConfigurationError``. Never fabricate.
+        * **Both halves resolved** — use them verbatim.
+
+        "Requested" is measured on what the deployment *declared*, not on what
+        resolved. A key file that is named but missing from disk is a configured
+        key that failed, not an unconfigured one; collapsing those two is what
+        let a typo in ``JWT_PUBLIC_KEY_PATH`` fall through to fabrication.
+
+        This refusal exists because generating a development pair overwrites
+        **both** halves. Before #853's follow-up, ``AUTH_MODE=oauth`` with a
+        configured public key and a missing private key silently replaced the
+        configured public key with a random one, and every token minted by the
+        real signer then failed verification — a 401 storm whose only signal was
+        one log line. ``_check_cloud`` in ``config.deployment_coherence`` already
+        refuses this at boot, but only when ``DEPLOYMENT_MODE=cloud``; the check
+        here holds for every mode and does not depend on that gate having run.
         """
         security = self._settings.security
+
+        # Measured BEFORE loading, so a declared-but-unreadable source still
+        # counts as requested.
+        private_requested = bool(
+            self._private_key
+            or security.jwt_private_key
+            or security.jwt_private_key_path
+        )
+        public_requested = bool(
+            self._public_key or security.jwt_public_key or security.jwt_public_key_path
+        )
 
         # Load private key
         if not self._private_key:
@@ -147,9 +198,28 @@ class AuthService:
                 else:
                     logger.warning(f"Public key file not found: {key_path}")
 
-        # Generate development keys if none are configured
-        if not self._private_key or not self._public_key:
+        # Nothing was asked for: development keys are the deliberate selection.
+        if not private_requested and not public_requested:
             self._generate_dev_keys()
+            return
+
+        missing = []
+        if not self._private_key:
+            missing.append("private (JWT_PRIVATE_KEY / JWT_PRIVATE_KEY_PATH)")
+        if not self._public_key:
+            missing.append("public (JWT_PUBLIC_KEY / JWT_PUBLIC_KEY_PATH)")
+
+        if missing:
+            raise PartialKeyConfigurationError(
+                "JWT RSA key configuration is incomplete: no usable "
+                f"{' and '.join(missing)} key. Refusing to generate development "
+                "keys, because generation replaces BOTH halves — the configured "
+                "half would be discarded and every genuinely minted token would "
+                "then fail verification. Configure both halves of the pair, or "
+                "neither (which selects development keys deliberately). A named "
+                "key file that does not exist counts as configured-and-broken, "
+                "not as unconfigured."
+            )
 
     def _generate_dev_keys(self) -> None:
         """Generate RSA key pair for development.
