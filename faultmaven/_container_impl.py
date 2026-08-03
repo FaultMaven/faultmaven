@@ -1084,20 +1084,6 @@ class DIContainer(BaseDIContainer):
                     "created_at": datetime.now(timezone.utc),
                 }
 
-            async def check_idempotency_key(self, idempotency_key: str):
-                # Minimal implementation - no actual idempotency checking for testing
-                return None
-
-            async def store_idempotency_result(
-                self,
-                idempotency_key: str,
-                status_code: int,
-                content: dict,
-                headers: dict,
-            ):
-                # Minimal implementation - no actual storage for testing
-                return True
-
             async def list_user_cases(
                 self, user_id=None, filters=None, limit=20, offset=0
             ):

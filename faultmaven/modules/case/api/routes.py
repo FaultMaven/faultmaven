@@ -2171,7 +2171,6 @@ async def get_case_messages_enhanced(
 @trace("api_create_case_for_session")
 async def create_case_for_session(
     session_id: str,
-    request: Request,
     title: Optional[str] = Query(
         None, description="Case title (optional, auto-generated if not provided)"
     ),
@@ -2189,9 +2188,6 @@ async def create_case_for_session(
     **Title Auto-Generation**: If title is not provided or empty, the backend
     automatically generates a unique title in the format: Case-MMDD-N
     (e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.
-
-    Supports idempotency via 'idempotency-key' header to prevent duplicate case
-    creation on retry when using force_new=true.
     """
     try:
         # Validate session and derive user if not authenticated
@@ -2205,18 +2201,6 @@ async def create_case_for_session(
         # Get user_id from auth or session
         user_id = current_user.user_id if current_user else session.user_id
 
-        # Check for idempotency key (prevents duplicate case creation on retry)
-        idempotency_key = request.headers.get("idempotency-key")
-
-        if idempotency_key and force_new:
-            # Check if we already processed this request
-            existing_result = await case_service.check_idempotency_key(idempotency_key)
-            if existing_result:
-                logger.info(
-                    f"Returning cached result for idempotency key: {idempotency_key}"
-                )
-                return existing_result.get("content", existing_result)
-
         # Create or get case for session
         case_id = await case_service.get_or_create_case_for_session(
             session_id=session_id, user_id=user_id, force_new=force_new, title=title
@@ -2228,15 +2212,7 @@ async def create_case_for_session(
                 detail="Failed to create case for session",
             )
 
-        result = {"case_id": case_id, "created_new": force_new, "success": True}
-
-        # Store idempotency result if key provided (only for force_new to prevent duplicates)
-        if idempotency_key and force_new:
-            await case_service.store_idempotency_result(
-                idempotency_key, 200, result, {}
-            )
-
-        return result
+        return {"case_id": case_id, "created_new": force_new, "success": True}
 
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -2296,7 +2272,6 @@ async def resume_case_in_session(
 @trace("api_submit_turn")
 async def submit_turn(
     case_id: str,
-    fastapi_request: Request,
     query: Optional[str] = Form(None),
     files: List[UploadFile] = File(default=[]),
     pasted_content: Optional[str] = Form(None),
@@ -2489,16 +2464,6 @@ async def submit_turn(
                 ),
                 timeout=agent_timeout,
             )
-
-            # Store idempotency result if key provided
-            idempotency_key = fastapi_request.headers.get("idempotency-key")
-            if idempotency_key:
-                await case_service.store_idempotency_result(
-                    idempotency_key,
-                    200,
-                    response.model_dump(),
-                    {"x-correlation-id": correlation_id},
-                )
 
             return response
 
