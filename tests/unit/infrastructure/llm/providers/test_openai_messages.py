@@ -449,3 +449,91 @@ def test_token_param_classifier_is_pure_and_case_insensitive():
     assert uses("accounts/fireworks/models/deepseek-v3") is False
     # OpenRouter opts out unconditionally (gateway normalizes the param).
     assert OpenRouterProvider._uses_completion_tokens_param("openai/gpt-5") is False
+
+
+@pytest.mark.unit
+class TestOpenAIDefaultReasoningFamily:
+    """gpt-5.6+ reason by DEFAULT on /v1/chat/completions: they 400 on any
+    non-default ``temperature`` (only the default is accepted — omission means
+    default) and 400 on function tools unless ``reasoning_effort`` is
+    explicitly ``"none"`` ('use /v1/responses' otherwise). Earlier reasoning
+    families share neither constraint — gpt-5.4-mini accepts ``temperature:
+    0.2`` and effort-less tool calls — so the accommodation is scoped to the
+    ``gpt-5.6`` family predicate and must not leak to other models."""
+
+    @pytest.mark.parametrize(
+        "model,expected",
+        [
+            ("gpt-5.6-luna", True),
+            ("gpt-5.6", True),
+            ("GPT-5.6-Luna", True),  # uppercase operator config shape
+            ("openai/gpt-5.6-luna", True),  # vendor-prefixed id
+            ("gpt-5.4-mini", False),  # earlier gpt-5.x: neither constraint
+            ("gpt-5.60-exp", False),  # anchored: 5.6 must not match 5.60
+            ("o3-mini", False),
+            ("gpt-4o", False),
+        ],
+    )
+    def test_defaults_reasoning_scope(self, model, expected):
+        assert OpenAIProvider._defaults_reasoning(model) is expected
+
+    async def test_gpt56_omits_temperature(self):
+        provider = OpenAIProvider(_config_for("gpt-5.6-luna"))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi", temperature=0.2)
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert "temperature" not in request_body
+
+    async def test_gpt56_tool_call_sends_effort_none(self):
+        provider = OpenAIProvider(_config_for("gpt-5.6-luna"))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate(
+                "hi",
+                tools=[
+                    {"type": "function", "function": {"name": "f", "parameters": {}}}
+                ],
+            )
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert request_body["reasoning_effort"] == "none"
+            assert "tools" in request_body
+            assert "temperature" not in request_body
+
+    async def test_gpt56_structured_call_keeps_low_cap(self):
+        """The ``response_format``-without-tools starvation cap still applies
+        (gpt-5.6 accepts ``"low"`` there — probe-verified); only the tool path
+        needs ``"none"``."""
+        provider = OpenAIProvider(_config_for("gpt-5.6-luna"))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi", response_format={"type": "json_object"})
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert request_body["reasoning_effort"] == "low"
+            assert "temperature" not in request_body
+
+    async def test_gpt54_mini_behavior_unchanged(self):
+        """Regression pin: the gpt-5.6 accommodation must not leak to earlier
+        reasoning families — gpt-5.4-mini keeps its temperature and still gets
+        no ``reasoning_effort`` on tool calls (it 400s on that combo)."""
+        provider = OpenAIProvider(_config_for("gpt-5.4-mini"))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate(
+                "hi",
+                temperature=0.2,
+                tools=[
+                    {"type": "function", "function": {"name": "f", "parameters": {}}}
+                ],
+            )
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert request_body["temperature"] == 0.2
+            assert "reasoning_effort" not in request_body
