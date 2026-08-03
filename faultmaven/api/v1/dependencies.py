@@ -132,6 +132,8 @@ async def get_oauth_service(request: Request):
             raise HTTPException(
                 status_code=503, detail="OAuth authentication not configured"
             )
+    except HTTPException:
+        raise
     except Exception:
         pass  # If settings unavailable, just return None
 
