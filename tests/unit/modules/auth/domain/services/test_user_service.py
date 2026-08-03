@@ -2,7 +2,6 @@
 
 Tests for:
 - User registration with validation
-- User authentication with JWT tokens
 - Password reset workflow
 - Password change
 - Profile updates
@@ -32,9 +31,15 @@ from faultmaven.utils.password import verify_password
 def mock_auth_service():
     """Create a mock AuthService."""
     auth_service = MagicMock(spec=AuthService)
+    # Read by `_generate_reset_token` / `_verify_reset_token`, which sign and
+    # verify the password-reset JWT off the service's keys.
     auth_service._private_key = "test-key-for-jwt-min-32-bytes!!!"
     auth_service._public_key = "test-key-for-jwt-min-32-bytes!!!"
-    auth_service._access_token_expire_minutes = 15
+    # `spec=` rather than `spec_set=`, which would have caught the stale
+    # `_access_token_expire_minutes` stub #853 left here: both keys above are
+    # INSTANCE attributes assigned in `AuthService.__init__`, so they are absent
+    # from the class `spec_set` builds its allowlist from and setting either
+    # raises. Tightening here would refuse two live stubs to catch one dead one.
     # Returns the revocation watermark (#769), not a token count.
     auth_service.revoke_user_tokens = AsyncMock(
         return_value=datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
