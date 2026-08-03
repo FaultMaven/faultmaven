@@ -84,7 +84,6 @@ def jwt_token(auth_service):
         organization_id="org_456",
         email="test@example.com",
         roles=["admin"],
-        permissions=["sessions:execute", "executions:read"],
     )
 
 

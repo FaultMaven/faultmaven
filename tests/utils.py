@@ -528,6 +528,29 @@ class InMemoryRevocationStore(ITokenRevocationStore):
 # They are deliberately NOT a mint: they are unreachable from production, take no
 # account object, and make no claim to be safe. Nothing in ``faultmaven/`` may
 # call them. A production caller that needs a token uses ``IJWTTokenGenerator``.
+#
+# **They MUST mirror the claim set the live generators emit.** A forger is a
+# stand-in for production, and a stand-in that emits a shape production never
+# emits makes every test built on it agree about a token no deployment will ever
+# see. The concrete trap this rule exists for: the removed mint emitted
+# ``permissions`` and `AuthenticatedUser.from_jwt_claims` reads ``permissions``,
+# but both live generators emit ``scopes`` and no ``permissions`` at all — so in
+# production ``AuthenticatedUser.permissions`` is always ``[]``. Forging
+# ``permissions`` would keep `require_permission` (defined, exported, wired to no
+# route today) green in every test and 403 on the first route that adopts it.
+# `test_token_forger_shape_parity.py` pins the key sets equal; keep both in step.
+
+
+#: The scopes both live generators put in every access token, verbatim
+#: (`jwt_token_generator.py`, HS256 and RS256 `generate_access_token`).
+LIVE_ACCESS_TOKEN_SCOPES = [
+    "openid",
+    "profile",
+    "email",
+    "cases:read",
+    "cases:write",
+    "knowledge:read",
+]
 
 
 def sign_claims_for(auth_service, claims: Dict[str, Any]) -> str:
@@ -554,35 +577,55 @@ def forge_access_token(
     organization_id: str,
     email: str,
     roles: List[str],
-    permissions: Optional[List[str]] = None,
+    username: Optional[str] = None,
+    auth_mode: Optional[str] = None,
+    scopes: Optional[List[str]] = None,
     expires_in_minutes: Optional[int] = None,
 ) -> str:
-    """Forge an access token ``auth_service.verify_token`` accepts."""
+    """Forge an access token ``auth_service.verify_token`` accepts.
+
+    The claim set is the live generators' access payload, key for key. There is
+    deliberately **no** ``permissions`` claim and deliberately **is** a ``scopes``
+    one: that is what production emits, so that is what tests must see.
+
+    ``auth_mode`` follows the same split the generators hardcode — the HS256
+    generator is the local one and stamps ``"local"``, the RS256 generator is the
+    OAuth one and stamps ``"oauth"`` — derived here from the algorithm the
+    service verifies with. ``username`` defaults to ``user_id``; the live mint
+    takes ``user.username``, so pass it explicitly when a test reads that claim.
+
+    Unlike the live mint, the organization claim is whatever the caller passes:
+    forging exists to control claims, including ones
+    ``resolve_organization_claim`` would never produce.
+    """
     from datetime import timedelta
 
-    from faultmaven.modules.auth.domain.models.auth import TokenClaims
-    from faultmaven.modules.auth.domain.models.rbac import get_permissions_for_roles
-
-    if permissions is None:
-        permissions = [p.value for p in get_permissions_for_roles(roles)]
     if expires_in_minutes is None:
         expires_in_minutes = auth_service._settings.auth.jwt_access_token_expire_minutes
+    if auth_mode is None:
+        auth_mode = "oauth" if auth_service._algorithm == "RS256" else "local"
 
     now = datetime.now(timezone.utc)
-    claims = TokenClaims(
-        sub=user_id,
-        organization_id=organization_id,
-        email=email,
-        roles=roles,
-        permissions=permissions,
-        iss=auth_service._settings.security.jwt_issuer,
-        aud=auth_service._settings.security.jwt_audience,
-        iat=int(now.timestamp()),
-        exp=int((now + timedelta(minutes=expires_in_minutes)).timestamp()),
-        jti=str(uuid4()),
-        token_type="access",
+    return sign_claims_for(
+        auth_service,
+        {
+            "sub": user_id,
+            "username": user_id if username is None else username,
+            "email": email,
+            "organization_id": organization_id,
+            "roles": roles,
+            "scopes": (
+                list(LIVE_ACCESS_TOKEN_SCOPES) if scopes is None else list(scopes)
+            ),
+            "exp": int((now + timedelta(minutes=expires_in_minutes)).timestamp()),
+            "iat": int(now.timestamp()),
+            "iss": auth_service._settings.security.jwt_issuer,
+            "aud": auth_service._settings.security.jwt_audience,
+            "jti": str(uuid4()),
+            "type": "access",
+            "auth_mode": auth_mode,
+        },
     )
-    return sign_claims_for(auth_service, claims.to_dict())
 
 
 def forge_refresh_token(
