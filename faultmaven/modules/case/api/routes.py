@@ -735,10 +735,13 @@ async def create_case(
         logger.error(
             f"Service error in create_case: {e}",
             extra={"correlation_id": correlation_id},
+            exc_info=True,
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
-            error=ErrorDetail(code="CASE_SERVICE_ERROR", message=str(e)),
+            error=ErrorDetail(
+                code="CASE_SERVICE_ERROR", message="Failed to create case"
+            ),
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -865,10 +868,13 @@ async def list_cases(
         logger.error(
             f"Service error in list_cases: {e}",
             extra={"correlation_id": correlation_id},
+            exc_info=True,
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
-            error=ErrorDetail(code="CASE_SERVICE_ERROR", message=str(e)),
+            error=ErrorDetail(
+                code="CASE_SERVICE_ERROR", message="Case service unavailable"
+            ),
         )
         return JSONResponse(
             status_code=503,
@@ -927,11 +933,12 @@ async def get_case_service_health(
         }
 
     except Exception as e:
+        logger.error(f"Case service health check failed: {e}", exc_info=True)
         return {
             "service": "case_management",
             "status": "unhealthy",
             "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "error": str(e),
+            "error": "Case service health check failed",
         }
 
 
@@ -1209,11 +1216,12 @@ async def update_case(
         logger.error(
             f"Unexpected error in update_case: {e}",
             extra={"correlation_id": correlation_id},
+            exc_info=True,
         )
         error_response = ErrorResponse(
             schema_version="3.1.0",
             error=ErrorDetail(
-                code="UPDATE_CASE_ERROR", message=f"Failed to update case: {str(e)}"
+                code="UPDATE_CASE_ERROR", message="Failed to update case"
             ),
         )
         raise HTTPException(
