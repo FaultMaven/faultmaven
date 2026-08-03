@@ -2214,6 +2214,8 @@ async def create_case_for_session(
 
         return {"case_id": case_id, "created_new": force_new, "success": True}
 
+    except HTTPException:
+        raise
     except ValidationException as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
