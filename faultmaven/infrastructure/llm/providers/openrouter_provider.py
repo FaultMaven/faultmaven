@@ -48,6 +48,16 @@ class OpenRouterProvider(OpenAIProvider):
         belongs in the gateway's own knob, not this OpenAI-specific param."""
         return False
 
+    @classmethod
+    def _defaults_reasoning(cls, model_name: str) -> bool:
+        """The direct-OpenAI gpt-5.6 accommodation (omit ``temperature``, send
+        ``reasoning_effort: "none"`` with tools) must not leak onto
+        ``openai/gpt-5.6-*`` routes: the gateway normalizes ``temperature``
+        itself and rejects-or-ignores the top-level ``reasoning_effort`` (see
+        ``_caps_reasoning_effort``). Opt out, mirroring the sibling
+        predicates."""
+        return False
+
     def get_structured_output_capability(
         self, model: Optional[str] = None
     ) -> StructuredOutputCapability:

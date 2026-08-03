@@ -8,8 +8,9 @@ on every optional-auth endpoint (and on the ``require_authentication`` /
 middleware and the tenant binder use.
 
 These tests run the real ``AuthService`` (HS256 local mode) against FakeRedis:
-they mint a genuine access token, then prove revocation flips the optional
-path to unauthenticated — plus the two hardenings the convergence brings for
+they forge an access token the service accepts (``AuthService`` mints nothing —
+#853 removed its dead parallel mint path), then prove revocation flips the
+optional path to unauthenticated — plus the two hardenings the convergence brings for
 free (refresh tokens and ``jti``-less tokens are not valid identities).
 """
 
@@ -28,6 +29,7 @@ from faultmaven.modules.auth.domain.services.auth_service import AuthService
 from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import (
     RedisTokenRevocationStore,
 )
+from tests.utils import forge_access_token, forge_refresh_token
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
 ORG_ID = "22222222-2222-2222-2222-222222222222"
@@ -66,7 +68,8 @@ def auth_service():
 
 
 def _mint_access_token(auth_service: AuthService) -> str:
-    return auth_service.generate_access_token(
+    return forge_access_token(
+        auth_service,
         user_id=USER_ID,
         organization_id=ORG_ID,
         email="user@example.com",
@@ -133,8 +136,8 @@ async def test_revoked_token_gets_401_on_mandatory_wrapper(auth_service):
 async def test_refresh_token_is_not_an_identity(auth_service):
     """Convergence hardening: a refresh token (type != access) is rejected —
     the old bare decode never checked the ``type`` claim."""
-    refresh_token = auth_service.generate_refresh_token(
-        user_id=USER_ID, organization_id=ORG_ID
+    refresh_token = forge_refresh_token(
+        auth_service, user_id=USER_ID, organization_id=ORG_ID
     )
 
     user = await _resolve(auth_service, refresh_token)

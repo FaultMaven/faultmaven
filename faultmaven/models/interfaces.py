@@ -282,10 +282,10 @@ class ITracer(ABC):
             Basic operation tracing:
 
             >>> tracer = OpikTracer()
-            >>> with tracer.trace("user.authenticate") as span:
+            >>> with tracer.trace("auth.mint_access_token") as span:
                 # Operation code here
-                result = authenticate_user(credentials)
-                span.set_attribute("user_id", result.user_id)
+                token = await token_generator.generate_access_token(user)
+                span.set_attribute("user_id", user.user_id)
                 span.set_attribute("auth_method", "oauth")
 
             Async operation tracing:

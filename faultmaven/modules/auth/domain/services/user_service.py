@@ -1,11 +1,14 @@
 """User Management Service (TASK-018, TASK-019)
 
-Purpose: Handle user registration, authentication, profile management,
-password operations, and admin user management.
+Purpose: Handle user registration, profile management, password operations,
+and admin user management.
+
+This service mints no tokens. Its `authenticate_user` — the only caller of the
+parallel token-mint path on `AuthService` — reached no route and was removed
+with that path in #853; sign-in mints through `IJWTTokenGenerator`.
 
 This service provides:
 - User registration with email/password
-- User authentication with JWT token generation
 - Password reset via token-based flow
 - Password change (authenticated)
 - User profile management
@@ -46,7 +49,6 @@ from faultmaven.infrastructure.persistence.user_repository import (
 )
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.models.rbac import Role, get_permissions_for_roles
-from faultmaven.modules.auth.domain.models.auth import TokenPair
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
     hash_password,
@@ -85,11 +87,10 @@ RESET_TOKEN_PREFIX = "password_reset:"
 # Distinguishing them tells whoever submitted the link whether an account exists
 # and what state it is in — the enumeration `_generate_dummy_reset_token` exists
 # to prevent, since a dummy token is otherwise identifiable by the error it
-# provokes. Account state stays visible where the caller PROVED ownership by
-# presenting a password (`authenticate_user` still answers ACCOUNT_INACTIVE); a
-# reset link proves nothing, because it can be captured in transit. `/auth/refresh`
-# draws the same line, collapsing "no longer exists or is inactive" into one
-# response.
+# provokes. A reset link proves nothing about who is holding it — it can be
+# captured in transit — so nothing about the account may be inferred from the
+# refusal. `/auth/refresh` draws the same line, collapsing "no longer exists or
+# is inactive" into one response.
 RESET_REFUSED_CODE = "INVALID_RESET_TOKEN"
 RESET_REFUSED_MESSAGE = (
     "Password reset link is invalid or has expired. Please request a new one."
@@ -218,100 +219,6 @@ class UserService(BaseService):
         except Exception as e:
             self.logger.error(f"Failed to register user: {e}")
             raise
-
-    # ============================================================
-    # User Authentication
-    # ============================================================
-
-    async def authenticate_user(
-        self,
-        email: str,
-        password: str,
-        organization_id: Optional[str] = None,
-    ) -> Tuple[RepositoryUser, str, str]:
-        """Authenticate user with email and password.
-
-        Args:
-            email: User's email address
-            password: Plain text password
-            organization_id: Optional organization context (defaults to default org)
-
-        Returns:
-            Tuple of (User, access_token, refresh_token)
-
-        Raises:
-            AuthenticationError: Invalid credentials or inactive account
-
-        Workflow:
-            1. Get user by email
-            2. Verify user exists
-            3. Verify user is active
-            4. Verify password matches
-            5. Update last_login_at timestamp
-            6. Get user's roles/permissions
-            7. Generate JWT tokens via AuthService
-            8. Return (user, access_token, refresh_token)
-        """
-        # Lazy import of AuthenticationError
-        AuthenticationError = _get_authentication_error()
-
-        self.logger.debug(f"Authenticating user: {email}")
-
-        # Get user by email
-        user = await self.user_repo.get_by_email(email)
-        if not user:
-            self.logger.debug(f"User not found: {email}")
-            raise AuthenticationError(
-                "Invalid email or password",
-                error_code="INVALID_CREDENTIALS",
-            )
-
-        # Verify user is active
-        if not user.is_active:
-            self.logger.debug(f"Inactive user attempted login: {email}")
-            raise AuthenticationError(
-                "Account is deactivated. Please contact support.",
-                error_code="ACCOUNT_INACTIVE",
-            )
-
-        # Verify password
-        if not user.hashed_password or not verify_password(
-            password, user.hashed_password
-        ):
-            self.logger.debug(f"Invalid password for user: {email}")
-            raise AuthenticationError(
-                "Invalid email or password",
-                error_code="INVALID_CREDENTIALS",
-            )
-
-        # Update last login timestamp
-        user.last_login_at = datetime.now(timezone.utc)
-        user.updated_at = datetime.now(timezone.utc)
-        await self.user_repo.save(user)
-
-        # Use default organization if not specified
-        organization_id = organization_id or "org-default"
-
-        # Get user's roles and permissions
-        roles = user.roles if user.roles else ["member"]
-        permissions = [p.value for p in get_permissions_for_roles(roles)]
-
-        # Generate JWT tokens
-        token_pair = self.auth_service.generate_token_pair(
-            user_id=user.user_id,
-            organization_id=organization_id,
-            email=user.email,
-            roles=roles,
-            permissions=permissions,
-            # The account, so the mint can refuse a deactivated one itself. The
-            # is_active check above stays — this is the backstop that survives
-            # someone reordering or removing it.
-            account=user,
-        )
-
-        self.logger.info(f"User authenticated successfully: {user.user_id}")
-
-        return user, token_pair.access_token, token_pair.refresh_token
 
     # ============================================================
     # Password Reset
@@ -472,8 +379,10 @@ class UserService(BaseService):
             raise self._refuse_reset("user_not_found", user_id=user_id)
 
         # A deactivated account must not be recoverable through a reset link
-        # issued before it was deactivated — the same posture /auth/refresh and
-        # authenticate() already take (#829).
+        # issued before it was deactivated — the same posture /auth/refresh
+        # takes, and the same one `_refuse_if_deactivated` enforces at the
+        # `IJWTTokenGenerator` chokepoint every mint path funnels through
+        # (#829).
         if not user.is_active:
             raise self._refuse_reset("account_inactive", user_id=user_id)
 

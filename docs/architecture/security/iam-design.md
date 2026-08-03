@@ -313,10 +313,9 @@ pastes a username or mistypes an id would otherwise get a revocation
 confirmation while the real account kept authenticating.
 
 The watermark is used instead of an index of issued JTIs because it is
-complete by construction: FaultMaven mints tokens from three implementations
-(`AuthService.generate_access_token`, plus the RS256 and HS256 generators),
-one of them synchronous, and a watermark covers all of them — including any
-added later — with no bookkeeping at mint time. An index would silently
+complete by construction: FaultMaven mints tokens from the RS256 and HS256
+`IJWTTokenGenerator` implementations, and a watermark covers both — including
+any added later — with no bookkeeping at mint time. An index would silently
 under-revoke whenever a mint path forgot to register, while still reporting a
 complete revocation. The trade-off is that there is no count of revoked
 tokens to report, so the endpoint returns the watermark
@@ -1955,7 +1954,6 @@ audience but no expiry field. Every minter takes the same two values:
 |--------|----------------|
 | `HS256JWTTokenGenerator` (local) | explicit constructor args, wired from `settings.auth` |
 | `RS256JWTTokenGenerator` (cloud/OAuth) | explicit constructor args, wired from `settings.auth` |
-| `AuthService.generate_*` | `settings.auth` |
 | `OAuthService` / SSO `expires_in` | `settings.auth` |
 
 The generators take the lifetimes as constructor parameters rather than reading a

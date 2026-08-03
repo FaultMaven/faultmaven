@@ -1769,18 +1769,24 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     """Custom HTTPException handler to ensure consistent error response format"""
     detail = exc.detail
 
-    # If detail is a structured error response dict, extract the message
-    if isinstance(detail, dict) and "error" in detail and "message" in detail["error"]:
-        error_message = detail["error"]["message"]
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": error_message},
-            headers=getattr(exc, "headers", None),
-        )
-    # If detail is a dict but not our standard format, try to extract meaningful text
-    elif isinstance(detail, dict):
-        # Try to find message in various places
-        message = detail.get("message") or detail.get("detail") or str(detail)
+    # Two dict-detail shapes reach here, and both must yield the human message
+    # because clients render `detail` verbatim as user-facing text:
+    #
+    #   nested — `ErrorResponse.model_dump()`, built at runtime by the case
+    #            router: {"schema_version": ..., "error": {"code", "message"}}
+    #   flat   — written literally: {"error": "<code>", "message": "<text>"}
+    #
+    # The `error` value is a str in the flat shape, so the nested branch must
+    # test the *type* before subscripting: `"message" in detail["error"]` alone
+    # is a substring test over the error code, and a code such as
+    # "message_send_failed" would take the branch and raise TypeError here,
+    # inside the exception handler.
+    if isinstance(detail, dict):
+        nested = detail.get("error")
+        if isinstance(nested, dict) and "message" in nested:
+            message = nested["message"]
+        else:
+            message = detail.get("message") or detail.get("detail") or str(detail)
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": message},

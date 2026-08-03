@@ -4796,16 +4796,14 @@ class MilestoneEngine:
                 )
 
             # Append the synthesized summary (or skip / failure note) so it
-            # appears in chat at the moment of generation. Update the
-            # already-recorded turn_record in place and re-save so chat
-            # history persists the composed reply, not just the LLM's text.
+            # appears in chat at the moment of generation. The composed reply
+            # is persisted by the caller (investigation_service step 4) from
+            # the returned ``agent_response`` — turn_history records are
+            # frozen and carry only a summary, never the chat text.
             if summary_payload:
                 agent_response_text = (
                     f"{agent_response_text}\n\n{summary_payload}".strip()
                 )
-                if case_updated.turn_history:
-                    case_updated.turn_history[-1].agent_response = agent_response_text
-                    await self.repository.save(case_updated)
 
             # INV-40 (§7.9): narration-truth coherence guard. The narration
             # channel (agent_response) is LLM free text and sits outside every
@@ -4832,9 +4830,6 @@ class MilestoneEngine:
                 agent_response_text = _prose_with_gate_notice(
                     agent_response_text, _overclaim_notice
                 )
-                if case_updated.turn_history:
-                    case_updated.turn_history[-1].agent_response = agent_response_text
-                    await self.repository.save(case_updated)
                 narration_overclaim_total.labels(
                     provider=_resolve_chat_provider_name(self.llm_provider)
                 ).inc()
@@ -4845,6 +4840,30 @@ class MilestoneEngine:
                         "turn": case_updated.current_turn,
                         "state": case_updated.state.value,
                     },
+                )
+
+            # The turn record (step 6) summarized the RAW LLM text; the gate,
+            # summary, and INV-40 compositions above changed only the returned
+            # reply. Re-record the summary channel when they diverge: the
+            # next-turn prompt (context_builder) and the turn_outcome
+            # heuristics read ``agent_response_summary``, so without this the
+            # model is replayed its own uncorrected over-claim (the #668 loop
+            # INV-40 exists to break) and terminal summaries vanish from
+            # long-case state prompts. TurnProgress is frozen — replace the
+            # record, never mutate; the caller's step-4 save persists it
+            # alongside the messages.
+            if (
+                case_updated.turn_history
+                and agent_response_text != response_obj.agent_response
+            ):
+                case_updated.turn_history[-1] = case_updated.turn_history[
+                    -1
+                ].model_copy(
+                    update={
+                        "agent_response_summary": self._summarize_text(
+                            agent_response_text, 500
+                        )
+                    }
                 )
 
             # Compliance instrumentation: per-turn signal on whether the LLM
