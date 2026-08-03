@@ -2188,6 +2188,8 @@ async def create_case_for_session(
     automatically generates a unique title in the format: Case-MMDD-N
     (e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.
     """
+    case_service = check_case_service_available(case_service)
+
     try:
         # Validate session and derive user if not authenticated
         session = await session_service.get_session(session_id, validate=True)
@@ -2239,6 +2241,8 @@ async def resume_case_in_session(
     Links the session to an existing case, allowing the user to continue
     a previous troubleshooting conversation.
     """
+    case_service = check_case_service_available(case_service)
+
     try:
         success = await case_service.resume_case_in_session(case_id, session_id)
 
