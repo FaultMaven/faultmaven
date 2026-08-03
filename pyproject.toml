@@ -36,9 +36,10 @@ dependencies = [
     "sse-starlette>=2.0.0",
 
     # LLM Framework (REQUIRED - core functionality)
+    # NOTE: no fireworks-ai SDK — the Fireworks provider speaks REST via
+    # aiohttp (infrastructure/llm/providers/fireworks_provider.py).
     "openai>=1.0.0",
     "anthropic>=0.25.0",
-    "fireworks-ai>=0.19.20",
     "tiktoken>=0.5.0",
 
     # Database (SQLite in base, PostgreSQL drivers in cloud)
@@ -79,10 +80,9 @@ dependencies = [
     "pylogrus>=0.1.2",
     "scikit-learn>=1.5.0",
     "pyod>=2.0.1",
-    # fireworks-ai 0.19.20 pins protobuf==5.29.3 exactly; the 5.29.6
-    # fix for GHSA-7gcm-g887-7qv7 is unavailable until fireworks-ai
-    # loosens their pin. See docs/operations/security/vulnerability-exceptions.md
-    "protobuf>=4.25.0,<6",
+    # >=5.29.6: GHSA-7gcm-g887-7qv7 + GHSA-8qvm-5x2c-j2w7 fixes; <6 until
+    # transitive consumers (onnxruntime, opentelemetry-proto) support 6.x
+    "protobuf>=5.29.6,<6",
 
     # Web utilities
     "beautifulsoup4>=4.12.3",
@@ -163,6 +163,7 @@ test = [
     # Code quality (for CI checks)
     "black==26.3.1",  # Pinned for consistent formatting across environments
     "isort==5.13.2",   # Pinned for consistent import sorting across environments
+    "ruff==0.9.10",    # Pinned — CI env-check gates on this exact version in the lockfile
     "flake8>=7.0.0",
 ]
 
@@ -172,7 +173,7 @@ test = [
 # ============================================================================
 dev = [
     # Code quality and formatting
-    "ruff>=0.2.0",              # Fast Python linter and formatter
+    "ruff==0.9.10",             # Fast Python linter and formatter (pinned to match CI)
     "black==26.3.1",           # Code formatter (pinned to match CI)
     "isort==5.13.2",            # Import sorting (pinned to match CI)
     "mypy>=1.8.0",              # Type checking
