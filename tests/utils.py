@@ -505,3 +505,110 @@ class InMemoryRevocationStore(ITokenRevocationStore):
 
     async def cleanup_expired(self) -> int:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# JWT forging for AuthService verification tests (#853)
+# ---------------------------------------------------------------------------
+#
+# ``AuthService`` mints nothing. It used to carry a second, independent signing
+# surface — ``generate_access_token`` / ``generate_refresh_token`` /
+# ``generate_token_pair`` — that took a subject id and an ``organization_id``
+# string and signed them verbatim, bypassing ``resolve_organization_claim``
+# (#850). It reached no route and was removed in #853; ``IJWTTokenGenerator`` is
+# the one mint path.
+#
+# Its verification, revocation and identity-extraction half is very much alive
+# (the auth middleware, the tenant binder and the optional-auth dependency all
+# call it), and testing it needs tokens whose claims the test controls —
+# including claims no legitimate mint would ever emit. These helpers forge such
+# tokens directly, in test code, signed with whatever key the service under test
+# verifies against.
+#
+# They are deliberately NOT a mint: they are unreachable from production, take no
+# account object, and make no claim to be safe. Nothing in ``faultmaven/`` may
+# call them. A production caller that needs a token uses ``IJWTTokenGenerator``.
+
+
+def sign_claims_for(auth_service, claims: Dict[str, Any]) -> str:
+    """Sign an arbitrary claim dict with the key ``auth_service`` verifies with.
+
+    Mirrors the service's own key selection (RS256 private key when configured,
+    otherwise the HS256 secret) so a forged token passes signature validation
+    and the test can exercise what comes after it.
+    """
+    import jwt as _jwt
+
+    algorithm = auth_service._algorithm
+    if algorithm == "RS256" and auth_service._private_key:
+        key = auth_service._private_key
+    else:
+        key = auth_service._settings.security.jwt_secret_key.get_secret_value()
+    return _jwt.encode(claims, key, algorithm=algorithm)
+
+
+def forge_access_token(
+    auth_service,
+    *,
+    user_id: str,
+    organization_id: str,
+    email: str,
+    roles: List[str],
+    permissions: Optional[List[str]] = None,
+    expires_in_minutes: Optional[int] = None,
+) -> str:
+    """Forge an access token ``auth_service.verify_token`` accepts."""
+    from datetime import timedelta
+
+    from faultmaven.modules.auth.domain.models.auth import TokenClaims
+    from faultmaven.modules.auth.domain.models.rbac import get_permissions_for_roles
+
+    if permissions is None:
+        permissions = [p.value for p in get_permissions_for_roles(roles)]
+    if expires_in_minutes is None:
+        expires_in_minutes = auth_service._settings.auth.jwt_access_token_expire_minutes
+
+    now = datetime.now(timezone.utc)
+    claims = TokenClaims(
+        sub=user_id,
+        organization_id=organization_id,
+        email=email,
+        roles=roles,
+        permissions=permissions,
+        iss=auth_service._settings.security.jwt_issuer,
+        aud=auth_service._settings.security.jwt_audience,
+        iat=int(now.timestamp()),
+        exp=int((now + timedelta(minutes=expires_in_minutes)).timestamp()),
+        jti=str(uuid4()),
+        token_type="access",
+    )
+    return sign_claims_for(auth_service, claims.to_dict())
+
+
+def forge_refresh_token(
+    auth_service,
+    *,
+    user_id: str,
+    organization_id: str,
+    expires_in_days: Optional[int] = None,
+) -> str:
+    """Forge a refresh token ``auth_service.verify_token`` accepts."""
+    from datetime import timedelta
+
+    if expires_in_days is None:
+        expires_in_days = auth_service._settings.auth.jwt_refresh_token_expire_days
+
+    now = datetime.now(timezone.utc)
+    return sign_claims_for(
+        auth_service,
+        {
+            "sub": user_id,
+            "organization_id": organization_id,
+            "iss": auth_service._settings.security.jwt_issuer,
+            "aud": auth_service._settings.security.jwt_audience,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(days=expires_in_days)).timestamp()),
+            "jti": str(uuid4()),
+            "type": "refresh",
+        },
+    )

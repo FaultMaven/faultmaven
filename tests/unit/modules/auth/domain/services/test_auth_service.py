@@ -1,11 +1,12 @@
 """Unit tests for AuthService (TASK-017)
 
-Tests JWT token generation, verification, and revocation.
+Tests JWT verification and revocation. AuthService mints nothing: its parallel
+token-mint path was dead and was removed in #853, so tokens here are forged by
+``tests.utils`` (see the note there) rather than produced by the service.
 
 Test Categories:
-1. Token Generation Tests - Access and refresh token creation
-2. Token Verification Tests - Signature, expiration, claims validation
-3. Token Revocation Tests - revocation via the deployment-wide store (#767)
+1. Token Verification Tests - Signature, expiration, claims validation
+2. Token Revocation Tests - revocation via the deployment-wide store (#767)
 
 Coverage Target: 90%+
 """
@@ -30,7 +31,12 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     AuthService,
     TokenRevocationError,
 )
-from tests.utils import InMemoryRevocationStore
+from tests.utils import (
+    InMemoryRevocationStore,
+    forge_access_token,
+    forge_refresh_token,
+    sign_claims_for,
+)
 
 # ============================================================
 # Test Fixtures
@@ -99,224 +105,6 @@ def sample_user_data() -> Dict[str, Any]:
 
 
 # ============================================================
-# Token Generation Tests
-# ============================================================
-
-
-class TestTokenGeneration:
-    """Tests for JWT token generation."""
-
-    def test_generate_access_token_creates_valid_jwt(
-        self, auth_service, sample_user_data
-    ):
-        """Access token generation creates a valid JWT."""
-        token = auth_service.generate_access_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-            email=sample_user_data["email"],
-            roles=sample_user_data["roles"],
-        )
-
-        assert token is not None
-        assert isinstance(token, str)
-        assert len(token) > 50  # JWTs are long
-        assert token.count(".") == 2  # JWT has 3 parts
-
-    def test_access_token_contains_required_claims(
-        self, auth_service, sample_user_data
-    ):
-        """Access token contains all required JWT claims."""
-        token = auth_service.generate_access_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-            email=sample_user_data["email"],
-            roles=sample_user_data["roles"],
-        )
-
-        claims = auth_service.verify_token(token, token_type="access")
-
-        assert claims["sub"] == sample_user_data["user_id"]
-        assert claims["organization_id"] == sample_user_data["organization_id"]
-        assert claims["email"] == sample_user_data["email"]
-        assert claims["roles"] == sample_user_data["roles"]
-        assert claims["iss"] == "faultmaven-api"
-        assert claims["aud"] == "faultmaven-app"
-        assert "jti" in claims  # Unique token ID
-        assert "iat" in claims  # Issued at
-        assert "exp" in claims  # Expiration
-        assert claims["type"] == "access"
-
-    def test_access_token_permissions_auto_derived_from_roles(
-        self, auth_service, sample_user_data
-    ):
-        """Permissions are auto-derived from roles when not explicitly provided."""
-        token = auth_service.generate_access_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-            email=sample_user_data["email"],
-            roles=["admin"],
-            permissions=None,  # Should be auto-derived
-        )
-
-        claims = auth_service.verify_token(token, token_type="access")
-
-        # Admin should have all permissions
-        expected_permissions = [p.value for p in get_permissions_for_roles(["admin"])]
-        assert set(claims["permissions"]) == set(expected_permissions)
-
-    def test_access_token_explicit_permissions(self, auth_service, sample_user_data):
-        """Explicit permissions override auto-derived ones."""
-        explicit_permissions = ["cases:read", "sessions:read"]
-
-        token = auth_service.generate_access_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-            email=sample_user_data["email"],
-            roles=["admin"],
-            permissions=explicit_permissions,
-        )
-
-        claims = auth_service.verify_token(token, token_type="access")
-
-        assert claims["permissions"] == explicit_permissions
-
-    def test_access_token_expires_in_15_minutes(self, auth_service, sample_user_data):
-        """Access token expires in configured minutes (default 15)."""
-        token = auth_service.generate_access_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-            email=sample_user_data["email"],
-            roles=sample_user_data["roles"],
-        )
-
-        claims = auth_service.verify_token(token, token_type="access")
-
-        now = int(datetime.now(timezone.utc).timestamp())
-        exp = claims["exp"]
-
-        # Should expire roughly 15 minutes from now (with some tolerance)
-        expected_exp = now + (15 * 60)
-        assert abs(exp - expected_exp) < 5  # 5 second tolerance
-
-    def test_generate_refresh_token_creates_valid_jwt(
-        self, auth_service, sample_user_data
-    ):
-        """Refresh token generation creates a valid JWT."""
-        token = auth_service.generate_refresh_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-        )
-
-        assert token is not None
-        assert isinstance(token, str)
-        assert token.count(".") == 2
-
-    def test_refresh_token_contains_minimal_claims(
-        self, auth_service, sample_user_data
-    ):
-        """Refresh token contains only minimal claims for security."""
-        token = auth_service.generate_refresh_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-        )
-
-        claims = auth_service.verify_token(token, token_type="refresh")
-
-        assert claims["sub"] == sample_user_data["user_id"]
-        assert claims["organization_id"] == sample_user_data["organization_id"]
-        assert "jti" in claims
-        assert claims["type"] == "refresh"
-        # Refresh tokens don't have email, roles, permissions
-        assert "email" not in claims
-        assert "roles" not in claims
-        assert "permissions" not in claims
-
-    def test_refresh_token_expires_in_7_days(self, auth_service, sample_user_data):
-        """Refresh token expires in configured days (default 7)."""
-        token = auth_service.generate_refresh_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-        )
-
-        claims = auth_service.verify_token(token, token_type="refresh")
-
-        now = int(datetime.now(timezone.utc).timestamp())
-        exp = claims["exp"]
-
-        # Should expire roughly 7 days from now
-        expected_exp = now + (7 * 24 * 60 * 60)
-        assert abs(exp - expected_exp) < 5
-
-    def test_different_users_get_different_tokens(self, auth_service):
-        """Different users get different tokens."""
-        token1 = auth_service.generate_access_token(
-            user_id="user-1",
-            organization_id="org-1",
-            email="user1@example.com",
-            roles=["member"],
-        )
-
-        token2 = auth_service.generate_access_token(
-            user_id="user-2",
-            organization_id="org-1",
-            email="user2@example.com",
-            roles=["member"],
-        )
-
-        assert token1 != token2
-
-    def test_token_includes_jti_for_revocation(self, auth_service, sample_user_data):
-        """Each token has a unique jti for revocation tracking."""
-        token1 = auth_service.generate_access_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-            email=sample_user_data["email"],
-            roles=sample_user_data["roles"],
-        )
-
-        token2 = auth_service.generate_access_token(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-            email=sample_user_data["email"],
-            roles=sample_user_data["roles"],
-        )
-
-        claims1 = auth_service.verify_token(token1, token_type="access")
-        claims2 = auth_service.verify_token(token2, token_type="access")
-
-        assert claims1["jti"] != claims2["jti"]
-        assert len(claims1["jti"]) == 36  # UUID format
-
-    def test_generate_token_pair_creates_both_tokens(
-        self, auth_service, sample_user_data
-    ):
-        """generate_token_pair creates both access and refresh tokens."""
-        pair = auth_service.generate_token_pair(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-            email=sample_user_data["email"],
-            roles=sample_user_data["roles"],
-        )
-
-        assert isinstance(pair, TokenPair)
-        assert pair.access_token is not None
-        assert pair.refresh_token is not None
-        assert pair.token_type == "Bearer"
-        assert pair.expires_in == 15 * 60  # 15 minutes in seconds
-
-    def test_token_pair_tokens_are_different(self, auth_service, sample_user_data):
-        """Access and refresh tokens in a pair are different."""
-        pair = auth_service.generate_token_pair(
-            user_id=sample_user_data["user_id"],
-            organization_id=sample_user_data["organization_id"],
-            email=sample_user_data["email"],
-            roles=sample_user_data["roles"],
-        )
-
-        assert pair.access_token != pair.refresh_token
-
-
-# ============================================================
 # Token Verification Tests
 # ============================================================
 
@@ -326,7 +114,8 @@ class TestTokenVerification:
 
     def test_verify_valid_access_token(self, auth_service, sample_user_data):
         """verify_token decodes a valid access token."""
-        token = auth_service.generate_access_token(
+        token = forge_access_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -340,7 +129,8 @@ class TestTokenVerification:
 
     def test_verify_valid_refresh_token(self, auth_service, sample_user_data):
         """verify_token decodes a valid refresh token."""
-        token = auth_service.generate_refresh_token(
+        token = forge_refresh_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
         )
@@ -369,7 +159,7 @@ class TestTokenVerification:
         }
 
         # Encode with the service's key
-        expired_token = auth_service._encode_token(expired_claims)
+        expired_token = sign_claims_for(auth_service, expired_claims)
 
         with pytest.raises(AuthenticationError) as exc_info:
             auth_service.verify_token(expired_token, token_type="access")
@@ -408,7 +198,8 @@ class TestTokenVerification:
     ):
         """verify_token raises AuthenticationError when refresh token used as access."""
         # Generate refresh token
-        token = auth_service.generate_refresh_token(
+        token = forge_refresh_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
         )
@@ -422,7 +213,8 @@ class TestTokenVerification:
     def test_verify_raises_on_wrong_token_type(self, auth_service, sample_user_data):
         """verify_token raises AuthenticationError on wrong token type."""
         # Generate refresh token
-        token = auth_service.generate_refresh_token(
+        token = forge_refresh_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
         )
@@ -455,7 +247,7 @@ class TestTokenVerification:
             ),
         }
 
-        incomplete_token = auth_service._encode_token(incomplete_claims)
+        incomplete_token = sign_claims_for(auth_service, incomplete_claims)
 
         with pytest.raises(AuthenticationError):
             auth_service.verify_token(incomplete_token, token_type="access")
@@ -474,7 +266,8 @@ class TestTokenVerificationWithRevocation:
         self, auth_service_with_store, sample_user_data
     ):
         """Valid non-revoked token passes verification."""
-        token = auth_service_with_store.generate_access_token(
+        token = forge_access_token(
+            auth_service_with_store,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -493,7 +286,8 @@ class TestTokenVerificationWithRevocation:
         self, auth_service_with_store, sample_user_data, revocation_store
     ):
         """Revoked token raises TokenRevocationError."""
-        token = auth_service_with_store.generate_access_token(
+        token = forge_access_token(
+            auth_service_with_store,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -516,7 +310,8 @@ class TestTokenVerificationWithRevocation:
         Access tokens are short-lived; availability wins on the per-request
         check. Refresh validation in the generators fails closed instead.
         """
-        token = auth_service_with_store.generate_access_token(
+        token = forge_access_token(
+            auth_service_with_store,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -572,7 +367,8 @@ class TestTokenRevocation:
         self, auth_service_with_store, sample_user_data
     ):
         """A token revoked via revoke_token fails the request-path check."""
-        token = auth_service_with_store.generate_access_token(
+        token = forge_access_token(
+            auth_service_with_store,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -594,14 +390,16 @@ class TestTokenRevocation:
         self, auth_service_with_store, sample_user_data, revocation_store
     ):
         """Multiple tokens can be revoked independently."""
-        token1 = auth_service_with_store.generate_access_token(
+        token1 = forge_access_token(
+            auth_service_with_store,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
             roles=sample_user_data["roles"],
         )
 
-        token2 = auth_service_with_store.generate_access_token(
+        token2 = forge_access_token(
+            auth_service_with_store,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -652,7 +450,8 @@ class TestExtractUser:
 
     def test_extract_user_from_token(self, auth_service, sample_user_data):
         """extract_user_from_token returns AuthenticatedUser."""
-        token = auth_service.generate_access_token(
+        token = forge_access_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -669,7 +468,8 @@ class TestExtractUser:
 
     def test_extract_user_includes_jti(self, auth_service, sample_user_data):
         """Extracted user includes token jti for revocation."""
-        token = auth_service.generate_access_token(
+        token = forge_access_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -686,7 +486,8 @@ class TestExtractUser:
         self, auth_service_with_store, sample_user_data
     ):
         """extract_user_from_token_with_revocation_check works correctly."""
-        token = auth_service_with_store.generate_access_token(
+        token = forge_access_token(
+            auth_service_with_store,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -712,7 +513,8 @@ class TestEdgeCases:
 
     def test_empty_roles_list(self, auth_service, sample_user_data):
         """Token can be generated with empty roles list."""
-        token = auth_service.generate_access_token(
+        token = forge_access_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -724,7 +526,8 @@ class TestEdgeCases:
 
     def test_special_characters_in_email(self, auth_service, sample_user_data):
         """Token handles special characters in email."""
-        token = auth_service.generate_access_token(
+        token = forge_access_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email="test+tag@example.com",
@@ -736,7 +539,8 @@ class TestEdgeCases:
 
     def test_unicode_in_claims(self, auth_service, sample_user_data):
         """Token handles unicode characters."""
-        token = auth_service.generate_access_token(
+        token = forge_access_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email="тест@example.com",
@@ -748,7 +552,8 @@ class TestEdgeCases:
 
     def test_multiple_roles(self, auth_service, sample_user_data):
         """Token handles multiple roles."""
-        token = auth_service.generate_access_token(
+        token = forge_access_token(
+            auth_service,
             user_id=sample_user_data["user_id"],
             organization_id=sample_user_data["organization_id"],
             email=sample_user_data["email"],
@@ -1015,7 +820,8 @@ class TestKeyLoading:
             service = AuthService()
 
             # Generate a token
-            token = service.generate_access_token(
+            token = forge_access_token(
+                service,
                 user_id="user-123",
                 organization_id="org-456",
                 email="test@example.com",
@@ -1174,7 +980,8 @@ class TestAlgorithmSelection:
             service = AuthService()
 
             # Generate token
-            token = service.generate_access_token(
+            token = forge_access_token(
+                service,
                 user_id="user-123",
                 organization_id="org-456",
                 email="test@example.com",
@@ -1236,7 +1043,8 @@ class TestAlgorithmSelection:
             service = AuthService()
 
             # Generate token
-            token = service.generate_access_token(
+            token = forge_access_token(
+                service,
                 user_id="user-123",
                 organization_id="org-456",
                 email="test@example.com",

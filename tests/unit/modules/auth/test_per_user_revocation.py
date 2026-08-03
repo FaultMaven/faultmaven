@@ -352,33 +352,6 @@ class TestWatermarkCoversEveryMintPath:
         assert await generator.validate_access_token(access) is None
         assert await generator.validate_refresh_token(refresh) is None
 
-    async def test_auth_service_own_synchronous_mint_is_revoked(self):
-        """AuthService.generate_access_token is sync and mints its own jti.
-
-        It could not write a per-user index without becoming async, so this
-        is the mint path an index-based fix would most likely have missed.
-        """
-        store = _store()
-        auth_service = _auth_service(store)
-
-        with patch(
-            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
-            return_value=_auth_service_settings(),
-        ):
-            token = auth_service.generate_access_token(
-                user_id=USER_ID,
-                organization_id="org-769",
-                email="revoked@local.faultmaven",
-                roles=["user"],
-            )
-
-            await auth_service.revoke_user_tokens(USER_ID)
-
-            with pytest.raises(TokenRevocationError):
-                await auth_service.verify_token_with_revocation_check(
-                    token, token_type="access"
-                )
-
     async def test_every_minter_emits_the_claims_the_watermark_needs(self):
         """The watermark matches on ``sub`` + ``iat``; a token missing either
         skips the per-user arm entirely and survives revocation.
@@ -388,28 +361,20 @@ class TestWatermarkCoversEveryMintPath:
         under. Nothing in the type system enforces that, so pin it here: a new
         or altered minter that drops ``iat`` must fail this test rather than
         silently open a hole.
+
+        Since #853 the ``IJWTTokenGenerator`` implementations are the whole set:
+        ``AuthService``'s parallel mint path was dead and was removed.
         """
         import jwt as jwt_lib
 
         store = _store()
         generator = _generator(store)
-        auth_service = _auth_service(store)
         user = _user()
 
         tokens = {
             "hs256_access": await generator.generate_access_token(user),
             "hs256_refresh": await generator.generate_refresh_token(user),
         }
-        with patch(
-            "faultmaven.modules.auth.domain.services.auth_service.get_settings",
-            return_value=_auth_service_settings(),
-        ):
-            tokens["auth_service_access"] = auth_service.generate_access_token(
-                user_id=USER_ID,
-                organization_id="org-769",
-                email="revoked@local.faultmaven",
-                roles=["user"],
-            )
 
         for name, token in tokens.items():
             claims = jwt_lib.decode(

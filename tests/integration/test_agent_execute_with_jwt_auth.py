@@ -32,6 +32,7 @@ from faultmaven.modules.case.contracts import (
     AgentType,
     ExecutionStatus,
 )
+from tests.utils import forge_access_token
 
 # ============================================================
 # Fixtures
@@ -72,15 +73,19 @@ def auth_service():
 
 @pytest.fixture
 def jwt_token(auth_service):
-    """Generate a real JWT token for testing."""
-    token = auth_service.generate_access_token(
+    """A real, signature-valid JWT the middleware accepts.
+
+    Forged in test code: ``AuthService`` verifies but does not mint (#853
+    removed its dead parallel mint path).
+    """
+    return forge_access_token(
+        auth_service,
         user_id="user_123",
         organization_id="org_456",
         email="test@example.com",
         roles=["admin"],
         permissions=["sessions:execute", "executions:read"],
     )
-    return token
 
 
 @pytest.fixture
