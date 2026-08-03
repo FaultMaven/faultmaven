@@ -20,6 +20,7 @@ Rate limits (per resolved client IP, per minute):
 """
 
 import logging
+import math
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -134,10 +135,17 @@ class OAuthRateLimiter:
                 f"Rate limit exceeded for {client_ip} on {endpoint_name}: "
                 f"{len(requests)}/{limit} requests in last {self._window_seconds}s"
             )
+            # The window is sliding, so the wait is until the oldest surviving
+            # timestamp ages out — not a flat minute. ``requests`` is pruned and
+            # in arrival order, so its first element is that timestamp. A
+            # hardcoded 60 told a caller one second from quota to wait sixty,
+            # which is the difference between a client that backs off correctly
+            # and one that gives up.
+            retry_after = max(1, math.ceil(requests[0] + self._window_seconds - now))
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"Rate limit exceeded. Maximum {limit} requests per minute.",
-                headers={"Retry-After": "60"},
+                headers={"Retry-After": str(retry_after)},
             )
 
         # Add current request timestamp
