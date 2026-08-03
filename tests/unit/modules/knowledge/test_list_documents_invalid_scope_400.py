@@ -19,7 +19,6 @@ convention used by the other API-layer regression tests in this suite.
 
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from fastapi import FastAPI
 
@@ -30,6 +29,7 @@ from faultmaven.modules.knowledge.api.routes import (
 from faultmaven.modules.knowledge.api.routes import (
     router as knowledge_router,
 )
+from tests.utils import asgi_request
 
 LISTED = {"documents": [{"document_id": "doc-1"}], "total_count": 1}
 
@@ -57,10 +57,12 @@ def _build_app():
     return app
 
 
+# Built once: the app is immutable across these cases.
+APP = _build_app()
+
+
 async def _list_documents(params):
-    transport = httpx.ASGITransport(app=_build_app())
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.get("/api/v1/knowledge/documents", params=params)
+    return await asgi_request(APP, "GET", "/api/v1/knowledge/documents", params=params)
 
 
 @pytest.mark.unit

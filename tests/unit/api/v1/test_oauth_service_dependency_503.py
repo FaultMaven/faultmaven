@@ -44,12 +44,12 @@ resolved by FastAPI the way a route resolves it.
 
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from fastapi import Depends, FastAPI
 
 import faultmaven.config.settings as settings_module
 from faultmaven.api.v1.dependencies import get_oauth_service
+from tests.utils import asgi_request
 
 
 def _build_app(oauth_service):
@@ -76,9 +76,7 @@ def _patch_settings(monkeypatch, *, oauth_enabled):
 
 
 async def _probe(app):
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.get("/probe")
+    return await asgi_request(app, "GET", "/probe")
 
 
 @pytest.mark.unit
