@@ -941,6 +941,44 @@ def _is_context_length_error(exc: Exception) -> bool:
     return any(p in msg for p in CONTEXT_OVERFLOW_PHRASES)
 
 
+def _evidence_coverage(
+    case: "Case", source_file_id: str | None
+) -> "tuple[datetime | None, datetime | None]":
+    """The time span this evidence's CONTENT covers, inherited from its file.
+
+    ``Evidence.coverage_start_ts`` / ``coverage_end_ts`` have existed (with a
+    DB index) since the case-timeline work, and the model docstring has always
+    said the system fills them — but no writer ever did, so every LLM-authored
+    row landed with NULL coverage. The only temporal signal left on an Evidence
+    row was ``collected_at_turn``, i.e. WHEN THE AGENT LOOKED, which says
+    nothing about how old the observation is. That is how a two-hour-old alert
+    read as a live symptom.
+
+    The file's coverage is the right source: it is parsed from the content by
+    the extractor (or seeded from a forwarding caller's declared observation
+    time when the content carries no timestamps of its own), and the evidence
+    is a slice of that file. Inheriting the file's span is an over-estimate for
+    a slice — the extract may cover a narrower window than the whole file — but
+    it is sound for the question that matters, "could this be stale?", because
+    it can only make evidence look OLDER (wider), never fresher. Narrowing it
+    to the extract's own timestamps would need a second parse pass and is not
+    required for a staleness read.
+
+    Returns ``(None, None)`` for fileless (chat-quoted) evidence and for files
+    whose content had no parseable timestamps: unknown coverage stays unknown
+    rather than defaulting to now, so a reader can tell "old" from "unknown".
+    """
+    if source_file_id is None:
+        return None, None
+    uploaded = case.find_uploaded_file(source_file_id)
+    if uploaded is None:
+        return None, None
+    return (
+        getattr(uploaded, "coverage_start_ts", None),
+        getattr(uploaded, "coverage_end_ts", None),
+    )
+
+
 def _resolve_evidence_source(
     case: "Case", source_file_id: str | None, source_type: "EvidenceSourceType"
 ) -> "tuple[str | None, EvidenceSourceType]":
@@ -8197,6 +8235,7 @@ class MilestoneEngine:
                     case, ev_item.source_file_id, ev_item.source_type
                 )
 
+                coverage_start, coverage_end = _evidence_coverage(case, source_file_id)
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
@@ -8209,6 +8248,8 @@ class MilestoneEngine:
                     collected_at_turn=case.current_turn,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
+                    coverage_start_ts=coverage_start,
+                    coverage_end_ts=coverage_end,
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)

@@ -151,6 +151,83 @@ def _safe_enum_value(value):
     return str(value)
 
 
+def resolve_paste_source_meta(
+    input_type: Optional[str], source_url: Optional[str]
+) -> tuple[dict, str]:
+    """Source metadata + filename prefix for a ``pasted_content`` attachment.
+
+    Returns ``(source_meta, filename_prefix)``. The origin discrimination feeds
+    the classifier's confidence boost downstream:
+
+    - ``page_capture`` — the browser extension captured a web page
+    - ``text_paste``   — raw text pasted by a user, or relayed by an agent
+
+    ``source_url`` is recorded for BOTH: provenance is channel-agnostic. It
+    used to be kept only under ``page_capture``, so every other caller's URL
+    was accepted over the wire and silently discarded — the Slack agent
+    resolves a permalink back to the alert it is forwarding, sends it, and it
+    was dropped because ``input_type`` said "paste". A link back to where
+    evidence came from is worth keeping whatever produced it.
+
+    This is a module-level function rather than inline branching because the
+    test suite previously kept its own hand-copied mirror of the logic, which
+    meant a change to the route left the mirror stale and the tests green.
+    Tests import THIS.
+    """
+
+    if input_type == "page_capture":
+        meta = {"source_type": "page_capture"}
+        prefix = "page-capture-"
+    else:
+        meta = {"source_type": "text_paste"}
+        prefix = "pasted-content-"
+    if source_url:
+        meta["source_url"] = source_url
+    return meta, prefix
+
+
+def _parse_observed_at(raw: Optional[str], correlation_id: str) -> Optional[datetime]:
+    """Parse the caller-supplied ``observed_at`` into an aware UTC instant.
+
+    Fails to ``None`` — never to "now" and never to a 4xx. This field is a
+    voluntary provenance hint from a forwarding caller; a client that sends a
+    malformed one should still get its turn processed, just without a claim
+    about when the content was observed. Substituting the current time would
+    manufacture the exact false currency the field exists to prevent.
+
+    A naive timestamp is read as UTC (the wire contract is UTC) and a future
+    one is rejected: content cannot have been observed after it was submitted,
+    so a future value means a broken clock or a bad conversion, and trusting it
+    would make stale evidence look fresher than it is — the unsafe direction.
+    """
+
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        logger.warning(
+            "Ignoring un-parseable observed_at %r (correlation_id=%s)",
+            raw[:64],
+            correlation_id,
+        )
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    # Small tolerance so ordinary clock skew between the caller and this host
+    # doesn't discard a legitimate just-now observation.
+    if parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
+        logger.warning(
+            "Ignoring future observed_at %s (correlation_id=%s)",
+            parsed.isoformat(),
+            correlation_id,
+        )
+        return None
+    return parsed
+
+
 def _resolve_agent_timeout(settings) -> tuple[float, str]:
     """Resolve the per-provider agent-level timeout for the active CHAT_PROVIDER.
 
@@ -2294,6 +2371,7 @@ async def submit_turn(
     intent_data: Optional[str] = Form(None),
     input_type: Optional[str] = Form(None),
     source_url: Optional[str] = Form(None),
+    observed_at: Optional[str] = Form(None),
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     investigation_service=Depends(get_investigation_service),
     current_user: UserDTO = Depends(require_authentication),
@@ -2416,6 +2494,15 @@ async def submit_turn(
         if pasted_content:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
+            # When the caller says the content was OBSERVED. Distinct from the
+            # `ts` above, which is ingestion time and is all the synthetic
+            # filename can ever carry. A caller forwarding something it did not
+            # just witness (the Slack agent relaying an alert posted hours ago)
+            # is the only party that knows this, so an unparseable value is
+            # dropped to None rather than guessed at: unknown is honest, and
+            # "now" would be the exact false claim this field exists to stop.
+            observed_at_dt = _parse_observed_at(observed_at, correlation_id)
+
             # Determine source type from the explicit `input_type` form field.
             # The frontend (UnifiedInputBar.tsx) always sets this since the
             # text_paste pathway shipped — see faultmaven-copilot:
@@ -2426,14 +2513,10 @@ async def submit_turn(
             # around (a paste shaped that way bypassed Tier-1 extraction by
             # entering the page-capture passthrough), and the explicit
             # `input_type` field has fully replaced it.
-            if input_type == "page_capture":
-                source_meta = {"source_type": "page_capture"}
-                if source_url:
-                    source_meta["source_url"] = source_url
-                filename = f"page-capture-{ts}.txt"
-            else:
-                source_meta = {"source_type": "text_paste"}
-                filename = f"pasted-content-{ts}.txt"
+            source_meta, filename_prefix = resolve_paste_source_meta(
+                input_type, source_url
+            )
+            filename = f"{filename_prefix}{ts}.txt"
 
             attachments.append(
                 Attachment(
@@ -2441,6 +2524,7 @@ async def submit_turn(
                     filename=filename,
                     content_type="text/plain",
                     source_metadata=source_meta,
+                    observed_at=observed_at_dt,
                 )
             )
 

@@ -26,7 +26,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.causal_graph import (
@@ -1180,6 +1180,41 @@ def _fresh_this_turn_attr(item_turn: Optional[int], current_turn: int) -> str:
     return ""
 
 
+def _observed_attr(ev) -> str:
+    """XML attributes for WHEN the evidence's content was observed.
+
+    Distinct from ``fresh_this_turn``, which is about when the AGENT saw the
+    row — a two-hour-old alert pasted this turn is ``fresh_this_turn="true"``
+    and two hours stale at the same time. Reading turn-recency as currency is
+    exactly the confusion this attribute exists to break, so both are rendered
+    and they answer different questions.
+
+    ``age`` is precomputed rather than left as timestamp arithmetic for the
+    model: the staleness judgement should not depend on it doing date math
+    correctly under load. Emitted only when the coverage span is known —
+    absence means unknown, never fresh, and the model must not read a missing
+    attribute as an assurance.
+    """
+    end_ts = getattr(ev, "coverage_end_ts", None)
+    if end_ts is None:
+        return ""
+    if end_ts.tzinfo is None:
+        end_ts = end_ts.replace(tzinfo=timezone.utc)
+    delta = datetime.now(timezone.utc) - end_ts
+    total_minutes = int(delta.total_seconds() // 60)
+    if total_minutes < 0:
+        # Future coverage: a clock skew or a mis-parsed year. Show the instant
+        # and withhold the age rather than printing a negative one.
+        return f' observed_through="{end_ts.isoformat()}"'
+    if total_minutes < 60:
+        age = f"{total_minutes}m"
+    elif total_minutes < 60 * 24:
+        age = f"{total_minutes // 60}h"
+    else:
+        age = f"{total_minutes // (60 * 24)}d"
+    return f' observed_through="{end_ts.isoformat()}" age="{age}"'
+
+
 def _evidence_label(ev, file_lookup: dict, case=None) -> str:
     """Build a short user-facing label for evidence.
 
@@ -1651,8 +1686,9 @@ def _build_evidence_context(
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, confidence_advisory = _confidence_marker(ev)
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
+        observed_attr = _observed_attr(ev)
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
-        result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{duplicate_attr}>\n'
+        result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
         if file_extract.strip() and suppress_extract:
             # DA index-only: elide the extract body, keep the file addressable.
@@ -1709,8 +1745,9 @@ def _build_evidence_context(
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, _ = _confidence_marker(ev)
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
+        observed_attr = _observed_attr(ev)
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
-        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{duplicate_attr}>'
+        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         # Skip (not break) over-budget summaries so a single large item never
         # drops every lower-ranked item behind it (INV-EC-2).
@@ -1734,11 +1771,12 @@ def _build_evidence_context(
         label = _evidence_label(ev, file_lookup, case)
         label_attr = f' label="{label}"'
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
+        observed_attr = _observed_attr(ev)
         quote_block = ""
         if ev.extract and ev.extract.strip():
             quote_block = f"<verbatim_quote>{ev.extract.strip()}</verbatim_quote>"
         entry = (
-            f'  <evidence id="{ev.evidence_id}"{label_attr}{fresh_attr}>'
+            f'  <evidence id="{ev.evidence_id}"{label_attr}{fresh_attr}{observed_attr}>'
             f"<summary>{ev.summary}</summary>{quote_block}</evidence>\n"
         )
         if total_chars + len(entry) > effective_total_chars:
@@ -2756,7 +2794,16 @@ def build_investigation_context(
     )
 
     # 1. Identity & Status (Gap #8: XML tags for better LLM attention)
+    #
+    # CURRENT_TIME anchors every other timestamp in this prompt. Without it the
+    # model has no way to tell a live reading from a stale one — an alert
+    # stamped 19:36 is just a number, and "is this still happening?" is not a
+    # question it can even ask. It cannot be inferred from the conversation
+    # (the model's own sense of "now" is its training cutoff), so it has to be
+    # stated. Whether the model may TRUST a symptom is decided by the engine's
+    # gates; this only gives it the arithmetic to reason about age at all.
     identity = f"<case_identity>\n"
+    identity += f"CURRENT_TIME: {datetime.now(timezone.utc).isoformat()}\n"
     identity += f"CASE_ID: {case.case_id}\n"
     identity += f"STATE: {case.state.value.upper()}\n"
     if case.state == CaseState.INVESTIGATING and case.current_stage:

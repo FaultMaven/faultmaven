@@ -34,6 +34,7 @@ Applied to 23 list fields across all schemas (see git blame for specific changes
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, ClassVar, Dict, List, Literal, Optional
 
@@ -95,6 +96,21 @@ class Attachment:
     filename: str
     content_type: str
     source_metadata: Optional[Dict[str, Any]] = None
+    observed_at: Optional[datetime] = None
+    """When this content was OBSERVED, if the caller knows — distinct from when
+    it was submitted.
+
+    A caller that forwards something it did not just witness knows this and the
+    backend cannot infer it: the Slack agent forwards an alert posted hours
+    earlier, and without this the only timestamp on the evidence is ingestion
+    time, which asserts the alert is current. Seeds
+    ``UploadedFile.coverage_*`` when the content carries no parseable
+    timestamps of its own (an alert notification usually doesn't).
+
+    ``None`` means *unknown*, not *now* — a caller that genuinely observed the
+    content at submission time simply leaves it unset, and downstream treats
+    unknown as unknown rather than fabricating currency.
+    """
 
 
 @dataclass
