@@ -23,10 +23,8 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-
-import jwt
 
 from faultmaven.config.settings import get_settings
 
@@ -40,6 +38,7 @@ if TYPE_CHECKING:
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
+    InactiveAccountError,
     NotFoundError,
     ValidationException,
 )
@@ -49,6 +48,9 @@ from faultmaven.infrastructure.persistence.user_repository import (
 )
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.models.rbac import Role, get_permissions_for_roles
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    PASSWORD_RESET_TOKEN_EXPIRY_HOURS,
+)
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
     hash_password,
@@ -74,8 +76,9 @@ logger = logging.getLogger(__name__)
 # Email validation regex
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
-# Password reset token expiry (1 hour)
-PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
+# Password reset token expiry (PASSWORD_RESET_TOKEN_EXPIRY_HOURS) is imported
+# from the generator that signs the token — one home for the constant, so the
+# Redis TTL below and the token's own `exp` cannot drift (#959).
 
 # Redis key prefix for password reset tokens
 RESET_TOKEN_PREFIX = "password_reset:"
@@ -85,7 +88,7 @@ RESET_TOKEN_PREFIX = "password_reset:"
 # differ only in the log line.
 #
 # Distinguishing them tells whoever submitted the link whether an account exists
-# and what state it is in — the enumeration `_generate_dummy_reset_token` exists
+# and what state it is in — the enumeration `generate_dummy_reset_token` exists
 # to prevent, since a dummy token is otherwise identifiable by the error it
 # provokes. A reset link proves nothing about who is holding it — it can be
 # captured in transit — so nothing about the account may be inferred from the
@@ -106,7 +109,9 @@ class UserService(BaseService):
 
     Attributes:
         user_repo: User repository for persistence
-        auth_service: Auth service for JWT token operations
+        auth_service: Auth service for token revocation operations
+        token_generator: The deployment's IJWTTokenGenerator — the only thing
+            in the process that signs (#959)
         redis_client: Redis client for token tracking (optional)
     """
 
@@ -114,13 +119,18 @@ class UserService(BaseService):
         self,
         user_repo: UserRepository,
         auth_service: Any,
+        token_generator: Any,
         redis_client: Optional[Redis] = None,
     ):
         """Initialize user service.
 
         Args:
             user_repo: User repository for persistence
-            auth_service: Auth service for JWT token operations (required)
+            auth_service: Auth service for revocation operations (required)
+            token_generator: IJWTTokenGenerator for the reset-token surface
+                (required). Demanded at construction rather than at reset time
+                so a wiring site that forgets it fails at startup, not on the
+                first password-reset request months later.
             redis_client: Redis client for token tracking (optional)
 
         Raises:
@@ -132,8 +142,11 @@ class UserService(BaseService):
         # Require explicit dependency injection
         if auth_service is None:
             raise ValueError("auth_service is required for UserService")
+        if token_generator is None:
+            raise ValueError("token_generator is required for UserService")
 
         self.auth_service = auth_service
+        self.token_generator = token_generator
 
         self.redis_client = redis_client
         self._settings = get_settings()
@@ -243,9 +256,18 @@ class UserService(BaseService):
         Workflow:
             1. Get user by email
             2. If user not found, return dummy token (prevent enumeration)
-            3. Generate reset token (JWT with 1 hour expiry)
-            4. Store reset token in Redis with TTL
+            3. Mint the reset token through the deployment's token generator
+            4. Store the token's jti in Redis with TTL (single-use tracking)
             5. Return reset token
+
+        The three outcomes — real account, unknown email, deactivated account —
+        must be indistinguishable to the caller: all three return a token of the
+        same shape, signed with the same key. A deactivated account is refused
+        at the mint chokepoint (`_refuse_if_deactivated`) and falls back to the
+        same decoy an unknown email gets; its holder is then refused at
+        redemption by the active-account check in `reset_password`, which is
+        where the refusal belongs — a reset link proves nothing about who holds
+        it.
         """
         self.logger.debug(f"Password reset requested for: {email}")
 
@@ -256,28 +278,27 @@ class UserService(BaseService):
             # Return a dummy token to prevent email enumeration
             # In production, this would still trigger a "check your email" message
             self.logger.debug(f"Password reset for non-existent email: {email}")
-            return self._generate_dummy_reset_token()
+            return await self.token_generator.generate_dummy_reset_token()
 
-        # Generate reset token
-        now = datetime.now(timezone.utc)
-        expire = now + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS)
-        jti = str(uuid.uuid4())
+        try:
+            reset_token = await self.token_generator.generate_password_reset_token(user)
+        except InactiveAccountError:
+            # No live credential for a deactivated account — and no observable
+            # that says so. The decoy is not tracked in Redis: it names a
+            # subject that does not exist, so there is nothing to redeem.
+            self.logger.info(
+                "Password reset refused at mint",
+                extra={"refusal_reason": "account_inactive", "user_id": user.user_id},
+            )
+            return await self.token_generator.generate_dummy_reset_token()
 
-        claims = {
-            "sub": user.user_id,
-            "email": user.email,
-            "type": "password_reset",
-            "iss": self._settings.security.jwt_issuer,
-            "aud": self._settings.security.jwt_audience,
-            "iat": int(now.timestamp()),
-            "exp": int(expire.timestamp()),
-            "jti": jti,
-        }
-
-        # Encode token using the auth service's private key
-        reset_token = self._encode_reset_token(claims)
-
-        # Store token jti in Redis for single-use tracking
+        # Store the token's jti in Redis for single-use tracking. The jti is
+        # read back through the generator's own verification rather than
+        # decoded here: this service holds no key and no algorithm, and the
+        # round-trip means a mint that its own verifier would reject fails now,
+        # loudly, instead of at redemption with a bewildered user.
+        claims = await self.token_generator.verify_password_reset_token(reset_token)
+        jti = claims["jti"]
         key = f"{RESET_TOKEN_PREFIX}{jti}"
         ttl_seconds = PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600
         await self.redis_client.setex(key, ttl_seconds, user.user_id)
@@ -335,25 +356,18 @@ class UserService(BaseService):
         """
         self.logger.debug("Processing password reset")
 
-        # Lazy import of AuthenticationError
-        AuthenticationError = _get_authentication_error()
-
-        # Verify reset token
+        # Verify reset token. Signature, issuer, audience, expiry AND the
+        # `password_reset` type are all the generator's answer (#959) — this
+        # service holds no key, so a wrong-type token arrives here as the same
+        # InvalidTokenError as a forged one and collapses into the one refusal
+        # every unusable link produces.
         try:
-            claims = self._verify_reset_token(reset_token)
+            claims = await self.token_generator.verify_password_reset_token(reset_token)
         except Exception as e:
             raise self._refuse_reset("token_unverifiable", error=str(e))
 
         user_id = claims.get("sub")
         jti = claims.get("jti")
-        token_type = claims.get("type")
-
-        # Verify token type
-        if token_type != "password_reset":
-            raise AuthenticationError(
-                "Invalid token type",
-                error_code="INVALID_TOKEN_TYPE",
-            )
 
         # Apply the SAME revocation rule as access and refresh tokens: reset
         # tokens carry `sub`, `iat` and `jti`, so both arms work unchanged, and
@@ -933,64 +947,11 @@ class UserService(BaseService):
         if not email or not EMAIL_REGEX.match(email):
             raise ValidationException("Invalid email format")
 
-    def _generate_dummy_reset_token(self) -> str:
-        """Generate a dummy reset token for non-existent emails.
-
-        This prevents email enumeration by returning a valid-looking
-        token even when the email doesn't exist.
-
-        Returns:
-            Dummy token string
-        """
-        # Generate a random token that looks valid but won't verify
-        now = datetime.now(timezone.utc)
-        expire = now + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS)
-
-        claims = {
-            "sub": str(uuid.uuid4()),  # Random user ID
-            "email": "dummy@dummy.local",
-            "type": "password_reset",
-            "iss": self._settings.security.jwt_issuer,
-            "aud": self._settings.security.jwt_audience,
-            "iat": int(now.timestamp()),
-            "exp": int(expire.timestamp()),
-            "jti": str(uuid.uuid4()),
-        }
-
-        return self._encode_reset_token(claims)
-
-    def _encode_reset_token(self, claims: Dict[str, Any]) -> str:
-        """Encode reset token claims into JWT.
-
-        Args:
-            claims: Token claims
-
-        Returns:
-            Encoded JWT token
-        """
-        # Use the auth service's key for consistency
-        return jwt.encode(
-            claims,
-            self.auth_service._private_key,
-            algorithm=self._settings.security.jwt_algorithm,
-        )
-
-    def _verify_reset_token(self, token: str) -> Dict[str, Any]:
-        """Verify and decode reset token.
-
-        Args:
-            token: JWT token
-
-        Returns:
-            Decoded claims
-
-        Raises:
-            jwt.InvalidTokenError: Invalid token
-        """
-        return jwt.decode(
-            token,
-            self.auth_service._public_key,
-            algorithms=[self._settings.security.jwt_algorithm],
-            issuer=self._settings.security.jwt_issuer,
-            audience=self._settings.security.jwt_audience,
-        )
+    # `_encode_reset_token`, `_verify_reset_token` and
+    # `_generate_dummy_reset_token` lived here until #959. They signed with
+    # `auth_service._private_key` — another service's private attribute —
+    # paired with `security.jwt_algorithm`, a combination nothing kept
+    # coherent: under `JWT_ALGORITHM=HS256` that is an RSA PEM handed to an
+    # HMAC signer, which PyJWT refuses. The reset surface now lives on
+    # `IJWTTokenGenerator`, where the key and the algorithm are the same
+    # object's.

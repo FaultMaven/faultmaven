@@ -14,6 +14,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable, Dict, Optional
 
 import jwt
@@ -42,6 +43,72 @@ def _max_revocation_entry_ttl() -> int:
 #: Emitted for an org-less user under multi-tenant. Falsy, so
 #: ``bind_request_org_context`` refuses the request instead of binding a tenant.
 _NO_ORG_CLAIM = ""
+
+#: Lifetime of a password-reset token. Declared here because this module is the
+#: only thing that signs one; ``user_service`` imports it for the Redis TTL of
+#: the matching single-use key, so the token and the key it is redeemed against
+#: cannot expire at different times (#959).
+PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
+
+#: ``type`` claim discriminating a reset token from access/refresh tokens.
+PASSWORD_RESET_TOKEN_TYPE = "password_reset"
+
+#: Subject email of the enumeration decoy. A reset request for an unknown
+#: address must produce a token indistinguishable from a real one, so the decoy
+#: is signed with the same key and differs only in claims nobody but this
+#: deployment can read.
+DUMMY_RESET_TOKEN_EMAIL = "dummy@dummy.local"
+
+
+class SigningKeyUnavailableError(RuntimeError):
+    """The deployment's configured signing key is missing.
+
+    Raised by the builders below rather than deferring to PyJWT, whose error for
+    a ``None`` key names neither the setting nor the mode that needed it.
+    """
+
+
+def _password_reset_claims(
+    *,
+    subject: str,
+    email: str,
+    issuer: str,
+    audience: str,
+) -> Dict:
+    """Build the claim set for a password-reset token — one shape, one place.
+
+    Shared by the real mint and the enumeration decoy, and by both algorithms:
+    a decoy that differs from a real token in any observable claim is not a
+    decoy. ``iat``/``exp`` are integers (not datetimes) because
+    ``revocation_reason`` compares ``iat`` against a Unix-timestamp watermark.
+    """
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS)
+    return {
+        "sub": subject,
+        "email": email,
+        "type": PASSWORD_RESET_TOKEN_TYPE,
+        "iss": issuer,
+        "aud": audience,
+        "iat": int(now.timestamp()),
+        "exp": int(expire.timestamp()),
+        "jti": str(uuid.uuid4()),
+    }
+
+
+def _require_password_reset_type(claims: Dict) -> Dict:
+    """Refuse a verified token that was not minted as a reset token.
+
+    Raises ``jwt.InvalidTokenError`` — the class every other rejection on this
+    path already raises — so a caller has exactly one thing to catch and cannot
+    accidentally treat "wrong type" as success.
+    """
+    token_type = claims.get("type")
+    if token_type != PASSWORD_RESET_TOKEN_TYPE:
+        raise jwt.InvalidTokenError(
+            f"Expected a {PASSWORD_RESET_TOKEN_TYPE} token, got {token_type!r}"
+        )
+    return claims
 
 
 def account_may_hold_credentials(user) -> bool:
@@ -186,6 +253,67 @@ class IJWTTokenGenerator(ABC):
 
         Returns:
             JWT refresh token string
+        """
+        ...
+
+    @abstractmethod
+    async def generate_password_reset_token(self, user: User) -> str:
+        """Generate a single-use password-reset token (1 hour).
+
+        Signed with the same key as every other token this deployment mints —
+        the reason this method exists here at all. ``UserService`` used to sign
+        reset tokens itself, reaching into ``AuthService._private_key`` and
+        pairing it with the configured ``jwt_algorithm``; with
+        ``JWT_ALGORITHM=HS256`` that is an RSA PEM handed to an HMAC signer,
+        which PyJWT refuses outright (#959). An implementation holds its own
+        key and cannot make that pairing.
+
+        Args:
+            user: Account the reset is for. A deactivated one is refused at the
+                same chokepoint as an access-token mint.
+
+        Returns:
+            Signed JWT reset token string
+
+        Raises:
+            InactiveAccountError: The account may not hold live credentials.
+        """
+        ...
+
+    @abstractmethod
+    async def generate_dummy_reset_token(self) -> str:
+        """Generate an enumeration decoy for a reset request with no account.
+
+        Same claim shape, same key, same algorithm as a real reset token, over a
+        random subject — so "this email has no account", "this account is
+        deactivated" and "here is your link" are one observable. The token
+        verifies; it simply names a user that does not exist, and is refused at
+        redemption like any other unusable link.
+
+        Returns:
+            Signed JWT reset token string
+        """
+        ...
+
+    @abstractmethod
+    async def verify_password_reset_token(self, token: str) -> Dict:
+        """Verify a password-reset token's signature, issuer, audience and type.
+
+        Revocation and single-use consumption are deliberately NOT checked here:
+        both are storage-coupled policy owned by ``UserService`` (the shared
+        revocation store and the one-time Redis key). This method answers only
+        "did this deployment sign this, as a reset token, and is it still
+        within its hour".
+
+        Args:
+            token: JWT reset token
+
+        Returns:
+            The verified claims.
+
+        Raises:
+            jwt.InvalidTokenError: Bad signature, wrong issuer/audience,
+                expired, or not a ``password_reset`` token.
         """
         ...
 
@@ -418,6 +546,66 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             },
         )
         return token
+
+    async def generate_password_reset_token(self, user: User) -> str:
+        """Generate an RS256-signed password-reset token (see interface).
+
+        Args:
+            user: Account the reset is for
+
+        Returns:
+            JWT reset token string
+        """
+        _refuse_if_deactivated(user, PASSWORD_RESET_TOKEN_TYPE)
+
+        claims = _password_reset_claims(
+            subject=user.user_id,
+            email=getattr(user, "email", "") or "",
+            issuer=self.issuer,
+            audience=self.audience,
+        )
+        token = jwt.encode(claims, self.private_key, algorithm="RS256")
+
+        logger.info(
+            "Password reset token generated",
+            extra={"user_id": user.user_id, "jti": claims["jti"]},
+        )
+        return token
+
+    async def generate_dummy_reset_token(self) -> str:
+        """Generate an RS256-signed enumeration decoy (see interface).
+
+        Returns:
+            JWT reset token string
+        """
+        claims = _password_reset_claims(
+            subject=str(uuid.uuid4()),
+            email=DUMMY_RESET_TOKEN_EMAIL,
+            issuer=self.issuer,
+            audience=self.audience,
+        )
+        return jwt.encode(claims, self.private_key, algorithm="RS256")
+
+    async def verify_password_reset_token(self, token: str) -> Dict:
+        """Verify an RS256-signed reset token using the public key.
+
+        Args:
+            token: JWT reset token
+
+        Returns:
+            The verified claims
+
+        Raises:
+            jwt.InvalidTokenError: Token is not a valid reset token.
+        """
+        claims = jwt.decode(
+            token,
+            self.public_key,
+            algorithms=["RS256"],
+            issuer=self.issuer,
+            audience=self.audience,
+        )
+        return _require_password_reset_type(claims)
 
     async def validate_access_token(self, token: str) -> Optional[Dict]:
         """Validate access token using public key.
@@ -920,6 +1108,66 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return token
 
+    async def generate_password_reset_token(self, user: User) -> str:
+        """Generate an HS256-signed password-reset token (see interface).
+
+        Args:
+            user: Account the reset is for
+
+        Returns:
+            JWT reset token string
+        """
+        _refuse_if_deactivated(user, PASSWORD_RESET_TOKEN_TYPE)
+
+        claims = _password_reset_claims(
+            subject=user.user_id,
+            email=getattr(user, "email", "") or "",
+            issuer=self.issuer,
+            audience=self.audience,
+        )
+        token = jwt.encode(claims, self.secret_key, algorithm="HS256")
+
+        logger.info(
+            "Password reset token generated (HS256)",
+            extra={"user_id": user.user_id, "jti": claims["jti"]},
+        )
+        return token
+
+    async def generate_dummy_reset_token(self) -> str:
+        """Generate an HS256-signed enumeration decoy (see interface).
+
+        Returns:
+            JWT reset token string
+        """
+        claims = _password_reset_claims(
+            subject=str(uuid.uuid4()),
+            email=DUMMY_RESET_TOKEN_EMAIL,
+            issuer=self.issuer,
+            audience=self.audience,
+        )
+        return jwt.encode(claims, self.secret_key, algorithm="HS256")
+
+    async def verify_password_reset_token(self, token: str) -> Dict:
+        """Verify an HS256-signed reset token using the shared secret.
+
+        Args:
+            token: JWT reset token
+
+        Returns:
+            The verified claims
+
+        Raises:
+            jwt.InvalidTokenError: Token is not a valid reset token.
+        """
+        claims = jwt.decode(
+            token,
+            self.secret_key,
+            algorithms=["HS256"],
+            issuer=self.issuer,
+            audience=self.audience,
+        )
+        return _require_password_reset_type(claims)
+
     async def validate_access_token(self, token: str) -> Optional[Dict]:
         """Validate access token using secret key.
 
@@ -1113,6 +1361,136 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             token_kind="refresh",
             decode_verified=self._decode_for_revocation,
         )
+
+
+def _auth_mode_name(settings) -> str:
+    """Return the configured auth mode as a plain lowercase name.
+
+    ``AuthMode`` is a ``(str, Enum)``, so ``str(member)`` is ``'AuthMode.LOCAL'``
+    — matching on that is how a mode check silently selects the wrong branch
+    (#881). Read ``.value`` when present so a plain-string override matches too.
+    """
+    mode = getattr(getattr(settings, "auth", None), "auth_mode", None)
+    if mode is None:
+        return "local"
+    return str(getattr(mode, "value", mode)).strip().lower()
+
+
+def _resolve_rsa_keys(security) -> tuple:
+    """Resolve the RSA pair from a direct value or a file path.
+
+    Both spellings are configured deployments — ``config.deployment_coherence``
+    accepts either — so reading only the direct value silently yields a
+    ``None`` key on a path-configured cloud install, and every mint from it
+    fails inside PyJWT. Keys are never fabricated here: ``AuthService`` owns
+    that decision, and generating a pair to paper over a missing half is the
+    failure mode ``_load_keys`` documents at length.
+    """
+    private_key = None
+    public_key = None
+
+    if getattr(security, "jwt_private_key", None):
+        private_key = security.jwt_private_key.get_secret_value()
+    elif getattr(security, "jwt_private_key_path", None):
+        key_path = Path(security.jwt_private_key_path)
+        if key_path.exists():
+            private_key = key_path.read_text()
+        else:
+            logger.warning("Private key file not found: %s", key_path)
+
+    if getattr(security, "jwt_public_key", None):
+        public_key = security.jwt_public_key
+    elif getattr(security, "jwt_public_key_path", None):
+        key_path = Path(security.jwt_public_key_path)
+        if key_path.exists():
+            public_key = key_path.read_text()
+        else:
+            logger.warning("Public key file not found: %s", key_path)
+
+    return private_key, public_key
+
+
+def build_hs256_token_generator(settings, revocation_store) -> HS256JWTTokenGenerator:
+    """Build the HS256 generator from settings (local-mode signing).
+
+    Args:
+        settings: FaultMavenSettings (or an equivalent) carrying ``auth`` and
+            ``security`` sections.
+        revocation_store: The deployment-wide revocation store (#767).
+
+    Raises:
+        SigningKeyUnavailableError: ``JWT_SECRET_KEY`` is unset. In local mode
+            ``get_settings()`` generates and persists one, so this means the
+            secret was explicitly cleared or the persist failed.
+    """
+    secret = getattr(settings.security, "jwt_secret_key", None)
+    if not secret:
+        raise SigningKeyUnavailableError(
+            "JWT_SECRET_KEY not configured for local mode authentication"
+        )
+
+    return HS256JWTTokenGenerator(
+        secret_key=secret.get_secret_value(),
+        revocation_store=revocation_store,
+        # Lifetimes come from the single expiry source (#888); the security half
+        # carries only the secret, issuer and audience.
+        access_token_expire_minutes=settings.auth.jwt_access_token_expire_minutes,
+        refresh_token_expire_days=settings.auth.jwt_refresh_token_expire_days,
+        issuer=settings.security.jwt_issuer,
+        audience=settings.security.jwt_audience,
+    )
+
+
+def build_rs256_token_generator(settings, revocation_store) -> RS256JWTTokenGenerator:
+    """Build the RS256 generator from settings (cloud/OAuth signing).
+
+    Args:
+        settings: FaultMavenSettings (or an equivalent) carrying ``auth`` and
+            ``security`` sections.
+        revocation_store: The deployment-wide revocation store (#767).
+    """
+    private_key, public_key = _resolve_rsa_keys(settings.security)
+
+    return RS256JWTTokenGenerator(
+        private_key=private_key,
+        public_key=public_key,
+        revocation_store=revocation_store,
+        # Lifetimes come from the single expiry source on the auth half (#888) —
+        # the same values the local HS256 generator is built with, so the
+        # documented knob governs cloud tokens too. Keys, issuer and audience
+        # remain the security half's, which is where they are declared.
+        access_token_expire_minutes=settings.auth.jwt_access_token_expire_minutes,
+        refresh_token_expire_days=settings.auth.jwt_refresh_token_expire_days,
+        issuer=settings.security.jwt_issuer,
+        audience=settings.security.jwt_audience,
+    )
+
+
+def build_jwt_token_generator(settings, revocation_store) -> IJWTTokenGenerator:
+    """THE answer to "which generator does this deployment sign with" (#959).
+
+    Selection is on ``AUTH_MODE``, not ``JWT_ALGORITHM``: ``jwt_algorithm``
+    defaults to ``RS256`` and is left there by every standalone install, while
+    local mode signs HS256 with the auto-generated secret — so keying off it
+    would hand a standalone deployment an RS256 generator with no RSA key at
+    all. ``AuthService._algorithm`` resolves the same way, from the same
+    setting, which is what makes the two agree.
+
+    Callers that are already gated to one mode (``/auth/login`` behind
+    ``require_local_mode``, the OAuth service behind ``oauth_enabled``) may call
+    the specific builder above; anything that must work in either mode calls
+    this.
+
+    Args:
+        settings: FaultMavenSettings (or an equivalent).
+        revocation_store: The deployment-wide revocation store (#767).
+
+    Raises:
+        SigningKeyUnavailableError: The selected mode's key is not configured.
+    """
+    if _auth_mode_name(settings) == "local":
+        return build_hs256_token_generator(settings, revocation_store)
+    return build_rs256_token_generator(settings, revocation_store)
 
 
 class ITokenRevocationStore(ABC):

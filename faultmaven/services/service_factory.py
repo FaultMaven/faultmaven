@@ -186,32 +186,12 @@ class ServiceFactory:
             # LLM client will be created lazily by the service
         )
 
-    def create_user_service(self) -> "UserService":  # noqa: F821
-        """Create user management service.
-
-        Returns:
-            UserService instance with injected dependencies
-
-        Note:
-            UserService uses InMemoryUserRepository for development.
-            In production, this should use PostgreSQLUserRepository.
-        """
-        from faultmaven.api.middleware.auth import get_auth_service
-        from faultmaven.infrastructure.persistence.user_repository import (
-            InMemoryUserRepository,
-            PostgreSQLUserRepository,
-        )
-        from faultmaven.modules.auth.domain.services.user_service import UserService
-
-        # Use PostgreSQL for production, InMemory for development
-        # For now, default to InMemory
-        user_repo = InMemoryUserRepository()
-        auth_service = get_auth_service()
-
-        return UserService(
-            user_repo=user_repo,
-            auth_service=auth_service,
-        )
+    # `create_user_service` lived here and had no caller: `UserService` reaches
+    # the API through `app.state.user_service`, which the Composition Root fills
+    # from `container.providers.services.create_user_service`. It built the
+    # service against an in-memory repository — a second, divergent wiring that
+    # would have silently served an empty user store had anything ever called
+    # it. Removed with #959 rather than taught about the token generator.
 
     # Future service factory methods:
 

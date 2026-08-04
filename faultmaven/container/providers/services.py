@@ -490,25 +490,32 @@ def create_auth_service(
 
 def create_user_service(
     auth_service: Any,
+    token_generator: Any,
     redis_client: Any | None,
     settings: FaultMavenSettings,
 ) -> Any | None:
     """Create user service for user management.
 
     Follows Composition Root principle: UserService receives its auth_service
-    dependency via constructor injection, not a service-locator lookup.
+    and token_generator dependencies via constructor injection, not a
+    service-locator lookup.
 
     Args:
-        auth_service: Auth service for JWT token operations (REQUIRED)
+        auth_service: Auth service for token revocation operations (REQUIRED)
+        token_generator: The deployment's IJWTTokenGenerator — the one signing
+            surface, used here for password-reset tokens (REQUIRED, #959)
         redis_client: Redis client for token tracking
-        db_session: Database session for persistence
         settings: Application settings
 
     Returns:
-        UserService instance, or None if auth_service not available
+        UserService instance, or None if a required dependency is missing
     """
     if not auth_service:
         logger.warning("UserService skipped (no auth_service available)")
+        return None
+
+    if not token_generator:
+        logger.warning("UserService skipped (no token generator available)")
         return None
 
     try:
@@ -534,6 +541,7 @@ def create_user_service(
         service = UserService(
             user_repo=user_repo,
             auth_service=auth_service,  # Composition Root: injected, not fetched
+            token_generator=token_generator,
             redis_client=redis_client,
         )
         logger.info("✅ UserService initialized with proper DI")
@@ -695,7 +703,13 @@ def create_jwt_token_generator(
     settings: FaultMavenSettings,
     revocation_store: Any,
 ) -> Any:
-    """Create JWT token generator with RS256 signing.
+    """Create the RS256 JWT token generator used by the OAuth service.
+
+    RS256 unconditionally, not by auth mode: OAuth is an asymmetric protocol and
+    this call site exists only inside the ``oauth_enabled`` branch. The key,
+    lifetime, issuer and audience plumbing is the generator module's — the same
+    builder ``/auth/login`` and the UserService wiring use — so there is one
+    place that knows how a generator is assembled from settings (#959).
 
     Args:
         settings: FaultMavenSettings instance
@@ -705,30 +719,10 @@ def create_jwt_token_generator(
         RS256JWTTokenGenerator instance
     """
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
-        RS256JWTTokenGenerator,
+        build_rs256_token_generator,
     )
 
-    # Load RSA key pair from settings (from security section, not auth)
-    private_key = None
-    public_key = None
-    if settings.security.jwt_private_key:
-        private_key = settings.security.jwt_private_key.get_secret_value()
-    if settings.security.jwt_public_key:
-        public_key = settings.security.jwt_public_key
-
-    return RS256JWTTokenGenerator(
-        private_key=private_key,
-        public_key=public_key,
-        revocation_store=revocation_store,
-        # Lifetimes come from the single expiry source on the auth half (#888) —
-        # the same values the local HS256 generator is built with, so the
-        # documented knob governs cloud tokens too. Keys, issuer and audience
-        # remain the security half's, which is where they are declared.
-        access_token_expire_minutes=settings.auth.jwt_access_token_expire_minutes,
-        refresh_token_expire_days=settings.auth.jwt_refresh_token_expire_days,
-        issuer=settings.security.jwt_issuer,
-        audience=settings.security.jwt_audience,
-    )
+    return build_rs256_token_generator(settings, revocation_store)
 
 
 def create_sso_identity_provider(
@@ -900,8 +894,29 @@ def register_services(container: BaseDIContainer) -> None:
     container.auth_service = auth_service
     container._register_service("auth_service", auth_service)
 
-    # User Service (Composition Root: auth_service injected via constructor)
-    user_service = create_user_service(auth_service, redis_client, settings)
+    # The deployment's signing surface. Mode-aware and built once here, so the
+    # answer to "which generator does this deployment sign with" has a single
+    # home rather than one copy per consumer (#959).
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        SigningKeyUnavailableError,
+        build_jwt_token_generator,
+    )
+
+    try:
+        signing_generator = build_jwt_token_generator(settings, token_revocation_store)
+        container.signing_token_generator = signing_generator
+        container._register_service("signing_token_generator", signing_generator)
+    except SigningKeyUnavailableError as e:
+        # The same misconfiguration already breaks sign-in, which reports it at
+        # the request the operator is looking at. Named here so the cause is in
+        # the startup log too, rather than only surfacing as an absent service.
+        logger.error("JWT signing key unavailable: %s", e)
+        signing_generator = None
+
+    # User Service (Composition Root: dependencies injected via constructor)
+    user_service = create_user_service(
+        auth_service, signing_generator, redis_client, settings
+    )
     container.user_service = user_service
     if user_service:
         container._register_service("user_service", user_service)
