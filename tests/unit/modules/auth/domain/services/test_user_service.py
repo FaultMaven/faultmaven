@@ -26,15 +26,39 @@ from faultmaven.modules.auth.domain.services.auth_service import (
 from faultmaven.modules.auth.domain.services.user_service import UserService
 from faultmaven.utils.password import verify_password
 
+RESET_TEST_SECRET = "unit-test-secret-key-please-ignore"
+
+
+def _hs256_generator():
+    """The real local-mode signer, holding its own secret.
+
+    A real generator rather than a mock: the reset surface moved onto it in
+    #959 precisely because a fabricated key state (an RSA PEM on an HMAC
+    algorithm) is unreachable in production but trivially constructible in a
+    fixture, and the mismatch it hides only shows up when something signs.
+    """
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        HS256JWTTokenGenerator,
+    )
+    from tests.utils import InMemoryRevocationStore
+
+    return HS256JWTTokenGenerator(
+        secret_key=RESET_TEST_SECRET,
+        revocation_store=InMemoryRevocationStore(),
+        access_token_expire_minutes=60,
+        refresh_token_expire_days=7,
+        issuer="faultmaven",
+        audience="faultmaven-api",
+    )
+
 
 @pytest.fixture
 def mock_auth_service():
     """Create a mock AuthService."""
     auth_service = MagicMock(spec=AuthService)
-    # Read by `_generate_reset_token` / `_verify_reset_token`, which sign and
-    # verify the password-reset JWT off the service's keys.
-    auth_service._private_key = "test-key-for-jwt-min-32-bytes!!!"
-    auth_service._public_key = "test-key-for-jwt-min-32-bytes!!!"
+    # No signing keys stubbed here: since #959 nothing outside
+    # `IJWTTokenGenerator` signs, so the auth service is asked only about
+    # revocation. A key on this double would be fixture state nothing reads.
     # `spec=` rather than `spec_set=`, which would have caught the stale
     # `_access_token_expire_minutes` stub #853 left here: both keys above are
     # INSTANCE attributes assigned in `AuthService.__init__`, so they are absent
@@ -70,6 +94,7 @@ def user_service(user_repo, mock_auth_service):
         service = UserService(
             user_repo=user_repo,
             auth_service=mock_auth_service,
+            token_generator=_hs256_generator(),
         )
         # Redis is always available (FakeRedis for tests)
         service.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
@@ -237,15 +262,21 @@ class TestRequestPasswordReset:
             full_name="Reset User",
         )
 
-        with patch.object(user_service, "_encode_reset_token") as mock_encode:
-            mock_encode.return_value = "reset-token"
-            token = await user_service.request_password_reset(email="reset@example.com")
-            assert token == "reset-token"
+        token = await user_service.request_password_reset(email="reset@example.com")
+
+        # Verified through the generator that signed it, which is the only
+        # thing holding the key (#959).
+        claims = await user_service.token_generator.verify_password_reset_token(token)
+        assert claims["type"] == "password_reset"
 
     @pytest.mark.asyncio
     async def test_reset_request_returns_token_for_nonexistent(self, user_service):
         """Reset request should return token even for non-existent email (enumeration prevention)."""
-        with patch.object(user_service, "_generate_dummy_reset_token") as mock_dummy:
+        with patch.object(
+            user_service.token_generator,
+            "generate_dummy_reset_token",
+            new_callable=AsyncMock,
+        ) as mock_dummy:
             mock_dummy.return_value = "dummy-token"
             token = await user_service.request_password_reset(
                 email="nonexistent@example.com"
@@ -357,7 +388,11 @@ class TestResetPassword:
         )
 
         # Mock token verification
-        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+        with patch.object(
+            user_service.token_generator,
+            "verify_password_reset_token",
+            new_callable=AsyncMock,
+        ) as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
                 "type": "password_reset",
@@ -383,7 +418,11 @@ class TestResetPassword:
         await user_service.redis_client.setex(
             "password_reset:test-jti", 3600, user.user_id
         )
-        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+        with patch.object(
+            user_service.token_generator,
+            "verify_password_reset_token",
+            new_callable=AsyncMock,
+        ) as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
                 "type": "password_reset",
@@ -410,7 +449,11 @@ class TestResetPassword:
         await user_service.redis_client.setex(
             "password_reset:test-jti", 3600, user.user_id
         )
-        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+        with patch.object(
+            user_service.token_generator,
+            "verify_password_reset_token",
+            new_callable=AsyncMock,
+        ) as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
                 "type": "password_reset",
@@ -427,7 +470,11 @@ class TestResetPassword:
     @pytest.mark.asyncio
     async def test_reset_password_rejects_invalid_token(self, user_service):
         """Password reset should reject invalid token."""
-        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+        with patch.object(
+            user_service.token_generator,
+            "verify_password_reset_token",
+            new_callable=AsyncMock,
+        ) as mock_verify:
             mock_verify.side_effect = Exception("Invalid token")
 
             with pytest.raises(AuthenticationError) as excinfo:
@@ -449,7 +496,11 @@ class TestResetPassword:
         await user_service.redis_client.setex(
             "password_reset:test-jti", 3600, user.user_id
         )
-        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+        with patch.object(
+            user_service.token_generator,
+            "verify_password_reset_token",
+            new_callable=AsyncMock,
+        ) as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
                 "type": "password_reset",
@@ -477,7 +528,11 @@ class TestResetPassword:
         await user_service.redis_client.setex(
             "password_reset:test-jti", 3600, user.user_id
         )
-        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+        with patch.object(
+            user_service.token_generator,
+            "verify_password_reset_token",
+            new_callable=AsyncMock,
+        ) as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
                 "type": "password_reset",
@@ -511,7 +566,11 @@ class TestResetPassword:
         await user_service.redis_client.setex(
             "password_reset:test-jti", 3600, user.user_id
         )
-        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+        with patch.object(
+            user_service.token_generator,
+            "verify_password_reset_token",
+            new_callable=AsyncMock,
+        ) as mock_verify:
             mock_verify.return_value = {
                 "sub": user.user_id,
                 "type": "password_reset",
@@ -531,7 +590,11 @@ class TestResetPassword:
         await user_service.redis_client.setex(
             "password_reset:test-jti", 3600, "nonexistent-user-id"
         )
-        with patch.object(user_service, "_verify_reset_token") as mock_verify:
+        with patch.object(
+            user_service.token_generator,
+            "verify_password_reset_token",
+            new_callable=AsyncMock,
+        ) as mock_verify:
             mock_verify.return_value = {
                 "sub": "nonexistent-user-id",
                 "type": "password_reset",
