@@ -15,7 +15,9 @@ Endpoints:
 - DELETE /knowledge/conversions/{id}/drafts/{draft_id}         Delete draft
 """
 
+import asyncio
 import logging
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -138,21 +140,37 @@ async def convert_document(
             ),
         )
 
-    # Save upload to temp file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        contents = await file.read()
-        tmp.write(contents)
-        tmp_path = Path(tmp.name)
+    # Per-file size cap, from settings rather than a local literal. Starlette
+    # bounds only non-file form fields (see main.py); file parts arrive
+    # unbounded, so the ceiling has to be enforced here.
+    from faultmaven.config.settings import get_settings as _get_settings
 
+    max_upload_mb = _get_settings().upload.max_upload_size_mb
+    max_upload_bytes = max_upload_mb * 1024 * 1024
+
+    def _too_large() -> ConversionRejectedError:
+        """The canonical refusal: the except-branch maps it to 413."""
+        return ConversionRejectedError(
+            f"File exceeds maximum size of {max_upload_mb}MB",
+            error_code=ConversionErrorCode.FILE_TOO_LARGE,
+        )
+
+    tmp_path: Optional[Path] = None
     try:
-        # Check file size (use existing MAX_UPLOAD_SIZE_MB setting)
-        file_size = tmp_path.stat().st_size
-        max_size = 10 * 1024 * 1024  # 10 MB default
-        if file_size > max_size:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File exceeds maximum size of {max_size // (1024*1024)}MB",
-            )
+        # Refuse before reading anything. Starlette populates file.size for
+        # spooled uploads, so the common case never touches memory or disk.
+        if file.size is not None and file.size > max_upload_bytes:
+            raise _too_large()
+
+        # Save upload to temp file. Streamed off the event loop rather than
+        # read() into a bytes object, so the whole upload is never resident.
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            await asyncio.to_thread(shutil.copyfileobj, file.file, tmp)
+            tmp_path = Path(tmp.name)
+
+        # Fallback for uploads that arrive without a declared size.
+        if file.size is None and tmp_path.stat().st_size > max_upload_bytes:
+            raise _too_large()
 
         result = await service.convert_document(
             file_path=tmp_path,
@@ -167,9 +185,10 @@ async def convert_document(
         return result.model_dump()
 
     except HTTPException:
-        # The handler's own refusals (e.g. the 413 size check above) are
-        # already-final responses — re-raise them rather than letting the
-        # blanket ``except Exception`` below rewrite them into a 500.
+        # Defensive: no in-try raiser remains today (the size refusal is now a
+        # typed ConversionRejectedError), but the blanket handler below returns
+        # a 500 for anything it catches, so a future HTTPException raised here
+        # would be silently rewritten without this clause.
         raise
 
     except FaultMavenException:
@@ -213,11 +232,13 @@ async def convert_document(
         )
 
     finally:
-        # Clean up temp file
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        # Clean up temp file. Unset when the pre-read size refusal fired, in
+        # which case there is nothing on disk to remove.
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 # =============================================================================
