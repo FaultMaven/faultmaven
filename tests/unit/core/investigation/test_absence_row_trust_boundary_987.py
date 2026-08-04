@@ -834,3 +834,66 @@ def test_rcc_mirror_does_not_satisfy_the_backstop_leg():
     # The conclusion is retracted this turn; the mirror is still last turn's.
     case.root_cause_conclusion = None
     assert cause_identification_leg(case) is None
+
+
+def test_undatable_legacy_acceptance_is_labeled_apart_from_no_fix_applied():
+    """A pre-#987 acceptance carries no `accepted_in_turn`, so it still refuses
+    — but it must not be counted as "nothing was ever tried".
+
+    While that series is nonzero it marks a REAL, bounded suppression of
+    legitimate failed-fix demotions on in-flight cases. Folding it into the
+    benign baseline would teach operators to read the suppression window as
+    normal.
+    """
+    legacy = _case()
+    legacy.proposed_actions.append(
+        ProposedAction(
+            case_id=legacy.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="Correct the OIDC provider ClientIDList",
+            proposed_in_turn=7,
+            state="accepted",  # accepted_in_turn left None, as pre-#987 rows are
+        )
+    )
+    with patch(
+        "faultmaven.core.investigation.causal_graph.m6_demotion_refused_total"
+    ) as counter:
+        assert m6_disconfirmation_basis(legacy) is None
+    counter.labels.assert_called_once_with(reason="undatable_acceptance")
+
+    # ...and a case where nothing was ever tried keeps the benign label.
+    untouched = _case()
+    with patch(
+        "faultmaven.core.investigation.causal_graph.m6_demotion_refused_total"
+    ) as counter:
+        assert m6_disconfirmation_basis(untouched) is None
+    counter.labels.assert_called_once_with(reason="no_fix_applied")
+
+
+def test_undatable_label_ignores_mitigations_and_pending_offers():
+    """The label tracks accepted SOLUTIONs specifically — a pending offer or an
+    accepted MITIGATION is not a fix of the cause that we merely cannot date."""
+    case = _case()
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.MITIGATION,
+            description="fail over",
+            proposed_in_turn=7,
+            state="accepted",
+        )
+    )
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="not run yet",
+            proposed_in_turn=7,
+            state="pending",
+        )
+    )
+    with patch(
+        "faultmaven.core.investigation.causal_graph.m6_demotion_refused_total"
+    ) as counter:
+        assert m6_disconfirmation_basis(case) is None
+    counter.labels.assert_called_once_with(reason="no_fix_applied")

@@ -254,8 +254,15 @@ cause_identification_held_mece_total = Counter(
 # an inferred one. This counts the refusals, labeled by which precondition was
 # missing, so the gate's own liveness is observable:
 #
-# - ``no_fix_applied``   — no accepted actionable ProposedAction and no
-#   compliance gate recording that the user executed a fix.
+# - ``no_fix_applied``   — nothing was ever tried: no accepted SOLUTION
+#   ProposedAction on the case.
+# - ``undatable_acceptance`` — a SOLUTION WAS accepted but carries no
+#   ``accepted_in_turn``, so "after the fix" cannot be dated. Only reachable on
+#   acceptances stamped before that field existed, so this is a TRANSITION
+#   series that drains as in-flight cases close — and while it is nonzero it
+#   marks a real, bounded suppression of legitimate failed-fix demotions. Kept
+#   separate from ``no_fix_applied`` precisely so that window is visible rather
+#   than hidden inside the benign baseline.
 # - ``no_persistence``   — a fix was applied but nothing observes the problem
 #   still present afterwards (no symptom_evidence at/after the fix turn).
 # - ``resolution_confirmed`` — a QUALIFYING resolution-confirmation row stands
@@ -266,6 +273,8 @@ cause_identification_held_mece_total = Counter(
 # A sustained ``no_persistence`` rate means the model refutes causes without
 # recording the failed outcome the prompt's FAILURE PATH mandates. A nonzero
 # ``resolution_confirmed`` rate is a defect signal, not an elicitation one.
+# ``undatable_acceptance`` should trend to zero; if it does not, acceptances are
+# being written somewhere that does not stamp the execution turn.
 m6_demotion_refused_total = Counter(
     "faultmaven_m6_demotion_refused_total",
     "An M6 counterfactual demotion was refused because its preconditions "

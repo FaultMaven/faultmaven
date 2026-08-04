@@ -2156,10 +2156,12 @@ def _fix_application_turn(case: Case) -> int | None:
     when no such record exists — M6's first precondition (#987).
 
     The authoritative record is a ``ProposedAction`` in state ``accepted`` whose
-    type is actionable (SOLUTION/MITIGATION, not an engine-downgraded
-    DIAGNOSTIC): per ``classify_solution_outcome``, ``accepted`` means the user
-    *executed* it. The NEWEST such turn wins — a failed fix is disconfirmed by
-    what happened after the LAST fix, not the first.
+    type is **SOLUTION** — a MITIGATION is by definition not a fix of the cause
+    (INV-42), so a failed workaround must never establish that the cause was
+    addressed. Per ``classify_solution_outcome``, ``accepted`` means the user
+    *executed* it, and the turn is read from ``accepted_in_turn`` (EXECUTION),
+    never ``proposed_in_turn`` (the OFFER). The NEWEST such turn wins — a failed
+    fix is disconfirmed by what happened after the LAST fix, not the first.
 
     Deliberately NO compliance-gate fallback: ``solution_accepted`` records
     THAT a fix was executed but not WHEN, and flooring the window at 0 made
@@ -2252,6 +2254,28 @@ def _evidence_disconfirmation_provenance(hyp) -> str:
     return f"the identified cause no longer stands — {detail}"[:400]
 
 
+def _has_undatable_solution_acceptance(case: Case) -> bool:
+    """An accepted SOLUTION carrying NO ``accepted_in_turn`` — a fix the case
+    records as executed but cannot date (#987).
+
+    Only reachable on acceptances stamped before ``accepted_in_turn`` existed,
+    so this is a TRANSITION signal that drains as in-flight cases close, not a
+    steady-state one. It exists purely so the refusal metric can separate "a
+    fix ran, we just can't date it" from "nothing was ever tried" — the former
+    is a real (bounded) suppression of legitimate failed-fix demotions and
+    should be visible as such.
+    """
+    return any(
+        getattr(a, "state", None) == "accepted"
+        and getattr(
+            getattr(a, "action_type", None), "value", getattr(a, "action_type", None)
+        )
+        == InvestigationActionType.SOLUTION.value
+        and getattr(a, "accepted_in_turn", None) is None
+        for a in (getattr(case, "proposed_actions", None) or [])
+    )
+
+
 def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     """M6's ESTABLISHED preconditions, or ``None`` (metered by refusal reason).
 
@@ -2297,7 +2321,20 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     """
     fix_turn = _fix_application_turn(case)
     if fix_turn is None:
-        m6_demotion_refused_total.labels(reason="no_fix_applied").inc()
+        # Two different worlds, separately labeled: nothing was ever tried, vs
+        # a fix WAS executed but carries no execution turn — an acceptance
+        # stamped before ``accepted_in_turn`` existed. Both refuse (an undatable
+        # precondition establishes nothing about "after the fix"), but only the
+        # second is a TRANSITION artifact that drains as in-flight cases close.
+        # Folding them into one series would teach operators to read a real
+        # suppression window as the benign "nothing was tried" baseline.
+        m6_demotion_refused_total.labels(
+            reason=(
+                "undatable_acceptance"
+                if _has_undatable_solution_acceptance(case)
+                else "no_fix_applied"
+            )
+        ).inc()
         return None
     if any(
         (getattr(row, "collected_at_turn", 0) or 0) >= fix_turn

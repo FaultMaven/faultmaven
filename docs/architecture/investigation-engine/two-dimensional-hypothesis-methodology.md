@@ -763,6 +763,56 @@ still counts as *ordinary* refuting evidence (feeding `refutes > supports` and
 `_net_refuted`). The engine's own M6 links carry no declared confidence and are
 decisive by construction.
 
+**M6 establishes its preconditions; it does not infer them (INV-42, #987).**
+The demotion trigger carries two materially different claims and the engine
+records only what it can substantiate:
+
+- **Evidence-based** — the hypothesis is REFUTED or net-refuted by its OWN
+  links. This asserts nothing about any fix, is grounded in the graph, and
+  demotes **unconditionally**. Its durable record names the tally it derived
+  from. (Gating *this* arm on fix evidence was the over-broad first cut of the
+  #987 fix, and it left a net-refuted cause standing as identified with its
+  conclusion intact — the NO-INCORRECT-CONCLUSION breach in the opposite
+  direction.)
+- **Counterfactual** — "a fix was applied and the problem persisted". This is a
+  claim about events *outside* the graph, so it fires only on preconditions the
+  case record establishes: an executed **SOLUTION** (a MITIGATION is by
+  definition not a fix of the cause, so a failed workaround must never
+  establish that the cause was addressed), dated by its **execution** turn and
+  not the turn it was offered; a **positive** persistence observation at/after
+  it (a `symptom_evidence` row — "nothing said it was fixed" is not an
+  observation that it stayed broken); and **no** qualifying gone⇒gone
+  confirmation at/after that turn, which would be direct evidence the problem
+  did not persist. Refusals are labeled (`m6_demotion_refused_total{reason}`);
+  a nonzero `resolution_confirmed` rate is a *defect* signal, not elicitation
+  drift.
+
+Refusing the counterfactual arm never leaves a disproven cause standing — the
+hypothesis's own state still governs, so a refuted cause stops grounding
+`cause_state` regardless. What is withheld is only the durable engine
+refutation.
+
+Whatever the arm, **the engine never mints an observation row for something it
+inferred.** M6's durable record previously asserted "the cause was addressed or
+confirmed correct, yet the problem persisted" — a first-person observation
+nothing had checked, and false in the #987 incident. It now states an engine
+*inference with provenance*. The general rule, which explains both halves of
+this design:
+
+> **Constructive transitions may be derived from confirmation plus evidence
+> with recorded provenance; destructive transitions require established
+> preconditions.**
+
+The constructive half is §9.5's confirm-stamp: it promotes a cause the user
+explicitly confirmed and records *how* (`RootCauseConclusion.established_by`
+plus the node link's reasoning), which the resolution report renders beside the
+assurance grade. Resolution is **reconciled, never refused** — a
+refuse-on-divergence gate would convert an engine defect into a deadlock no
+user action can clear (NO COLLAPSE). And "no root cause established" is a
+nameable state: before it had a rendering, the resolution recap reached for the
+early-stage working-conclusion placeholder and told the user the investigation
+had not begun.
+
 Distinguish two failure modes before resuming:
 
 - **Implementation error** (right theory, wrong command/step) → correct the
