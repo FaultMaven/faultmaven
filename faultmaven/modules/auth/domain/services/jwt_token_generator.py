@@ -14,8 +14,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, NamedTuple, Optional
 
 import jwt
 
@@ -53,11 +52,20 @@ PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
 #: ``type`` claim discriminating a reset token from access/refresh tokens.
 PASSWORD_RESET_TOKEN_TYPE = "password_reset"
 
-#: Subject email of the enumeration decoy. A reset request for an unknown
-#: address must produce a token indistinguishable from a real one, so the decoy
-#: is signed with the same key and differs only in claims nobody but this
-#: deployment can read.
-DUMMY_RESET_TOKEN_EMAIL = "dummy@dummy.local"
+
+class PasswordResetMint(NamedTuple):
+    """A minted reset token and the ``jti`` its single-use key is filed under.
+
+    The ``jti`` is returned rather than left to be read back out of the token,
+    because the only two ways to read it are decoding without verifying (which
+    puts a second, unverified claim reader into the codebase) or verifying a
+    token this process signed microseconds ago (a mint path checking its own
+    output on every request). Neither buys anything the minter does not already
+    know.
+    """
+
+    token: str
+    jti: str
 
 
 class SigningKeyUnavailableError(RuntimeError):
@@ -77,16 +85,31 @@ def _password_reset_claims(
 ) -> Dict:
     """Build the claim set for a password-reset token — one shape, one place.
 
-    Shared by the real mint and the enumeration decoy, and by both algorithms:
-    a decoy that differs from a real token in any observable claim is not a
-    decoy. ``iat``/``exp`` are integers (not datetimes) because
-    ``revocation_reason`` compares ``iat`` against a Unix-timestamp watermark.
+    Shared by the real mint and the enumeration decoy, and by both algorithms.
+    A JWT payload is base64, not ciphertext: whoever holds the token reads
+    every claim in it, so "indistinguishable" has to mean indistinguishable to
+    them. That rules out a marker value in the decoy — the caller supplies the
+    address, the caller gets it back, in both cases.
+
+    ``email`` is casefolded so the two paths cannot be told apart by it either:
+    account lookup is case-insensitive, so a real token would otherwise carry
+    the stored spelling while a decoy carried the submitted one, and the
+    difference between them would answer the question the decoy exists to
+    refuse. Nothing reads this claim — ``reset_password`` uses ``sub`` and
+    ``jti`` — so normalizing costs nothing.
+
+    ``sub`` is the one claim that genuinely differs (a real ``user_id`` vs a
+    fresh uuid4), and it cannot distinguish them: both are uuid4 strings, and
+    an id the holder could recognise is one they already had.
+
+    ``iat``/``exp`` are integers (not datetimes) because ``revocation_reason``
+    compares ``iat`` against a Unix-timestamp watermark.
     """
     now = datetime.now(timezone.utc)
     expire = now + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS)
     return {
         "sub": subject,
-        "email": email,
+        "email": (email or "").strip().lower(),
         "type": PASSWORD_RESET_TOKEN_TYPE,
         "iss": issuer,
         "aud": audience,
@@ -257,7 +280,7 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def generate_password_reset_token(self, user: User) -> str:
+    async def generate_password_reset_token(self, user: User) -> PasswordResetMint:
         """Generate a single-use password-reset token (1 hour).
 
         Signed with the same key as every other token this deployment mints —
@@ -273,7 +296,8 @@ class IJWTTokenGenerator(ABC):
                 same chokepoint as an access-token mint.
 
         Returns:
-            Signed JWT reset token string
+            The signed token and its ``jti``, so the caller can file the
+            single-use key without reading claims back off the token.
 
         Raises:
             InactiveAccountError: The account may not hold live credentials.
@@ -281,14 +305,22 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def generate_dummy_reset_token(self) -> str:
-        """Generate an enumeration decoy for a reset request with no account.
+    async def generate_dummy_reset_token(self, email: str) -> str:
+        """Generate an enumeration decoy for a request that mints nothing.
 
-        Same claim shape, same key, same algorithm as a real reset token, over a
-        random subject — so "this email has no account", "this account is
-        deactivated" and "here is your link" are one observable. The token
-        verifies; it simply names a user that does not exist, and is refused at
-        redemption like any other unusable link.
+        Same claim shape, same claim VALUES bar the subject, same key and same
+        algorithm as a real reset token — so "this address has no account",
+        "this account is deactivated" and "here is your link" are one
+        observable to whoever submitted the form. That is why the submitted
+        address is a parameter: a payload is base64, and a decoy carrying a
+        marker address announces itself to anyone who decodes it.
+
+        The token verifies; it simply names a subject that does not exist, and
+        is refused at redemption like any other unusable link. No single-use
+        key is filed for it — there is nothing to redeem.
+
+        Args:
+            email: The address the caller asked about, echoed into the claims.
 
         Returns:
             Signed JWT reset token string
@@ -547,14 +579,14 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return token
 
-    async def generate_password_reset_token(self, user: User) -> str:
+    async def generate_password_reset_token(self, user: User) -> PasswordResetMint:
         """Generate an RS256-signed password-reset token (see interface).
 
         Args:
             user: Account the reset is for
 
         Returns:
-            JWT reset token string
+            The signed token and its ``jti``
         """
         _refuse_if_deactivated(user, PASSWORD_RESET_TOKEN_TYPE)
 
@@ -570,17 +602,20 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             "Password reset token generated",
             extra={"user_id": user.user_id, "jti": claims["jti"]},
         )
-        return token
+        return PasswordResetMint(token=token, jti=claims["jti"])
 
-    async def generate_dummy_reset_token(self) -> str:
+    async def generate_dummy_reset_token(self, email: str) -> str:
         """Generate an RS256-signed enumeration decoy (see interface).
+
+        Args:
+            email: The address the caller asked about
 
         Returns:
             JWT reset token string
         """
         claims = _password_reset_claims(
             subject=str(uuid.uuid4()),
-            email=DUMMY_RESET_TOKEN_EMAIL,
+            email=email,
             issuer=self.issuer,
             audience=self.audience,
         )
@@ -1108,14 +1143,14 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return token
 
-    async def generate_password_reset_token(self, user: User) -> str:
+    async def generate_password_reset_token(self, user: User) -> PasswordResetMint:
         """Generate an HS256-signed password-reset token (see interface).
 
         Args:
             user: Account the reset is for
 
         Returns:
-            JWT reset token string
+            The signed token and its ``jti``
         """
         _refuse_if_deactivated(user, PASSWORD_RESET_TOKEN_TYPE)
 
@@ -1131,17 +1166,20 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "Password reset token generated (HS256)",
             extra={"user_id": user.user_id, "jti": claims["jti"]},
         )
-        return token
+        return PasswordResetMint(token=token, jti=claims["jti"])
 
-    async def generate_dummy_reset_token(self) -> str:
+    async def generate_dummy_reset_token(self, email: str) -> str:
         """Generate an HS256-signed enumeration decoy (see interface).
+
+        Args:
+            email: The address the caller asked about
 
         Returns:
             JWT reset token string
         """
         claims = _password_reset_claims(
             subject=str(uuid.uuid4()),
-            email=DUMMY_RESET_TOKEN_EMAIL,
+            email=email,
             issuer=self.issuer,
             audience=self.audience,
         )
@@ -1376,40 +1414,6 @@ def _auth_mode_name(settings) -> str:
     return str(getattr(mode, "value", mode)).strip().lower()
 
 
-def _resolve_rsa_keys(security) -> tuple:
-    """Resolve the RSA pair from a direct value or a file path.
-
-    Both spellings are configured deployments — ``config.deployment_coherence``
-    accepts either — so reading only the direct value silently yields a
-    ``None`` key on a path-configured cloud install, and every mint from it
-    fails inside PyJWT. Keys are never fabricated here: ``AuthService`` owns
-    that decision, and generating a pair to paper over a missing half is the
-    failure mode ``_load_keys`` documents at length.
-    """
-    private_key = None
-    public_key = None
-
-    if getattr(security, "jwt_private_key", None):
-        private_key = security.jwt_private_key.get_secret_value()
-    elif getattr(security, "jwt_private_key_path", None):
-        key_path = Path(security.jwt_private_key_path)
-        if key_path.exists():
-            private_key = key_path.read_text()
-        else:
-            logger.warning("Private key file not found: %s", key_path)
-
-    if getattr(security, "jwt_public_key", None):
-        public_key = security.jwt_public_key
-    elif getattr(security, "jwt_public_key_path", None):
-        key_path = Path(security.jwt_public_key_path)
-        if key_path.exists():
-            public_key = key_path.read_text()
-        else:
-            logger.warning("Public key file not found: %s", key_path)
-
-    return private_key, public_key
-
-
 def build_hs256_token_generator(settings, revocation_store) -> HS256JWTTokenGenerator:
     """Build the HS256 generator from settings (local-mode signing).
 
@@ -1441,15 +1445,48 @@ def build_hs256_token_generator(settings, revocation_store) -> HS256JWTTokenGene
     )
 
 
-def build_rs256_token_generator(settings, revocation_store) -> RS256JWTTokenGenerator:
-    """Build the RS256 generator from settings (cloud/OAuth signing).
+def build_rs256_token_generator(
+    settings,
+    revocation_store,
+    *,
+    private_key: Optional[str],
+    public_key: Optional[str],
+) -> RS256JWTTokenGenerator:
+    """Build the RS256 generator (cloud/OAuth signing) from a RESOLVED pair.
+
+    The pair is a parameter, never read from settings here. ``AuthService``
+    resolves keys — direct value, file path, or deliberately-selected
+    development pair, refusing a half-configured one — and a second resolver in
+    this module would disagree with it in exactly the cases that matter: a
+    path-configured install (settings alone yields ``None``) and an
+    unconfigured one (two independent dev pairs in one process, so tokens
+    minted by one fail verification by the other). One resolver, passed around.
 
     Args:
         settings: FaultMavenSettings (or an equivalent) carrying ``auth`` and
-            ``security`` sections.
+            ``security`` sections — read for lifetimes, issuer and audience.
         revocation_store: The deployment-wide revocation store (#767).
+        private_key: Resolved RSA private key (PEM).
+        public_key: Resolved RSA public key (PEM).
+
+    Raises:
+        SigningKeyUnavailableError: Either half is missing. This is a caller
+            error, not a configuration state: ``AuthService`` always holds a
+            complete pair by the time it can be asked for one, so on the
+            container path it cannot fire. It exists so a keyless generator is
+            refused at construction rather than discovered by PyJWT at the
+            first mint, with a raw ``TypeError``.
     """
-    private_key, public_key = _resolve_rsa_keys(settings.security)
+    if not private_key or not public_key:
+        missing = " and ".join(
+            name
+            for name, value in (("private", private_key), ("public", public_key))
+            if not value
+        )
+        raise SigningKeyUnavailableError(
+            f"RS256 generator requested with no {missing} key. Keys are "
+            "resolved by AuthService and passed in; nothing else resolves them."
+        )
 
     return RS256JWTTokenGenerator(
         private_key=private_key,
@@ -1466,7 +1503,13 @@ def build_rs256_token_generator(settings, revocation_store) -> RS256JWTTokenGene
     )
 
 
-def build_jwt_token_generator(settings, revocation_store) -> IJWTTokenGenerator:
+def build_jwt_token_generator(
+    settings,
+    revocation_store,
+    *,
+    private_key: Optional[str] = None,
+    public_key: Optional[str] = None,
+) -> IJWTTokenGenerator:
     """THE answer to "which generator does this deployment sign with" (#959).
 
     Selection is on ``AUTH_MODE``, not ``JWT_ALGORITHM``: ``jwt_algorithm``
@@ -1484,13 +1527,25 @@ def build_jwt_token_generator(settings, revocation_store) -> IJWTTokenGenerator:
     Args:
         settings: FaultMavenSettings (or an equivalent).
         revocation_store: The deployment-wide revocation store (#767).
+        private_key: RSA private key resolved by ``AuthService``. Ignored under
+            local mode, which signs with the HMAC secret.
+        public_key: RSA public key resolved by ``AuthService``. Ignored under
+            local mode.
 
     Raises:
-        SigningKeyUnavailableError: The selected mode's key is not configured.
+        SigningKeyUnavailableError: Local mode with no ``JWT_SECRET_KEY``
+            (``get_settings()`` normally generates and persists one, so this
+            means it was explicitly cleared or the persist failed), or OAuth
+            mode called without the resolved RSA pair.
     """
     if _auth_mode_name(settings) == "local":
         return build_hs256_token_generator(settings, revocation_store)
-    return build_rs256_token_generator(settings, revocation_store)
+    return build_rs256_token_generator(
+        settings,
+        revocation_store,
+        private_key=private_key,
+        public_key=public_key,
+    )
 
 
 class ITokenRevocationStore(ABC):

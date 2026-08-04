@@ -702,18 +702,29 @@ def create_token_revocation_store(
 def create_jwt_token_generator(
     settings: FaultMavenSettings,
     revocation_store: Any,
+    *,
+    private_key: str | None,
+    public_key: str | None,
 ) -> Any:
     """Create the RS256 JWT token generator used by the OAuth service.
 
     RS256 unconditionally, not by auth mode: OAuth is an asymmetric protocol and
-    this call site exists only inside the ``oauth_enabled`` branch. The key,
+    this call site exists only inside the ``oauth_enabled`` branch. The
     lifetime, issuer and audience plumbing is the generator module's — the same
     builder ``/auth/login`` and the UserService wiring use — so there is one
     place that knows how a generator is assembled from settings (#959).
 
+    Keys are passed in, not read from settings: ``AuthService`` is the single
+    key-resolution authority (see ``AuthService.signing_private_key``), and a
+    second resolution here would hand OAuth a different pair than the request
+    path verifies with whenever keys come from a file path or from the
+    development fallback.
+
     Args:
         settings: FaultMavenSettings instance
         revocation_store: Token revocation tracking store
+        private_key: RSA private key resolved by AuthService
+        public_key: RSA public key resolved by AuthService
 
     Returns:
         RS256JWTTokenGenerator instance
@@ -722,7 +733,12 @@ def create_jwt_token_generator(
         build_rs256_token_generator,
     )
 
-    return build_rs256_token_generator(settings, revocation_store)
+    return build_rs256_token_generator(
+        settings,
+        revocation_store,
+        private_key=private_key,
+        public_key=public_key,
+    )
 
 
 def create_sso_identity_provider(
@@ -902,8 +918,17 @@ def register_services(container: BaseDIContainer) -> None:
         build_jwt_token_generator,
     )
 
+    # Keys come from the auth service, which resolved them (value, path, or a
+    # deliberately-selected development pair) — never resolved a second time.
+    # Two resolutions mean two dev pairs in one process, and then the request
+    # path rejects every token this generator mints.
     try:
-        signing_generator = build_jwt_token_generator(settings, token_revocation_store)
+        signing_generator = build_jwt_token_generator(
+            settings,
+            token_revocation_store,
+            private_key=auth_service.signing_private_key,
+            public_key=auth_service.verification_public_key,
+        )
         container.signing_token_generator = signing_generator
         container._register_service("signing_token_generator", signing_generator)
     except SigningKeyUnavailableError as e:
@@ -938,6 +963,8 @@ def register_services(container: BaseDIContainer) -> None:
         jwt_token_generator = create_jwt_token_generator(
             settings,
             revocation_store=token_revocation_store,
+            private_key=auth_service.signing_private_key,
+            public_key=auth_service.verification_public_key,
         )
         container.jwt_token_generator = jwt_token_generator
         container._register_service("jwt_token_generator", jwt_token_generator)

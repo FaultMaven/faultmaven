@@ -261,13 +261,14 @@ class UserService(BaseService):
             5. Return reset token
 
         The three outcomes — real account, unknown email, deactivated account —
-        must be indistinguishable to the caller: all three return a token of the
-        same shape, signed with the same key. A deactivated account is refused
-        at the mint chokepoint (`_refuse_if_deactivated`) and falls back to the
-        same decoy an unknown email gets; its holder is then refused at
-        redemption by the active-account check in `reset_password`, which is
-        where the refusal belongs — a reset link proves nothing about who holds
-        it.
+        must be indistinguishable to the caller, who can read every claim in the
+        token they were handed: all three return a token of the same shape, with
+        the same claim values (including the address they submitted), signed with
+        the same key. A deactivated account is refused at the mint chokepoint
+        (`_refuse_if_deactivated`) and falls back to the same decoy an unknown
+        address gets; its holder is then refused at redemption by the
+        active-account check in `reset_password`, which is where the refusal
+        belongs — a reset link proves nothing about who holds it.
         """
         self.logger.debug(f"Password reset requested for: {email}")
 
@@ -278,10 +279,10 @@ class UserService(BaseService):
             # Return a dummy token to prevent email enumeration
             # In production, this would still trigger a "check your email" message
             self.logger.debug(f"Password reset for non-existent email: {email}")
-            return await self.token_generator.generate_dummy_reset_token()
+            return await self.token_generator.generate_dummy_reset_token(email)
 
         try:
-            reset_token = await self.token_generator.generate_password_reset_token(user)
+            mint = await self.token_generator.generate_password_reset_token(user)
         except InactiveAccountError:
             # No live credential for a deactivated account — and no observable
             # that says so. The decoy is not tracked in Redis: it names a
@@ -290,21 +291,19 @@ class UserService(BaseService):
                 "Password reset refused at mint",
                 extra={"refusal_reason": "account_inactive", "user_id": user.user_id},
             )
-            return await self.token_generator.generate_dummy_reset_token()
+            return await self.token_generator.generate_dummy_reset_token(email)
 
-        # Store the token's jti in Redis for single-use tracking. The jti is
-        # read back through the generator's own verification rather than
-        # decoded here: this service holds no key and no algorithm, and the
-        # round-trip means a mint that its own verifier would reject fails now,
-        # loudly, instead of at redemption with a bewildered user.
-        claims = await self.token_generator.verify_password_reset_token(reset_token)
-        jti = claims["jti"]
-        key = f"{RESET_TOKEN_PREFIX}{jti}"
+        # File the single-use key under the jti the minter reports. Not read
+        # back off the token: this service holds no key, and the alternatives
+        # are decoding without verification or verifying something signed
+        # microseconds ago — a per-request signature check that asserts nothing
+        # the mint did not already know.
+        key = f"{RESET_TOKEN_PREFIX}{mint.jti}"
         ttl_seconds = PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600
         await self.redis_client.setex(key, ttl_seconds, user.user_id)
 
         self.logger.info(f"Password reset token generated for user: {user.user_id}")
-        return reset_token
+        return mint.token
 
     def _refuse_reset(self, reason: str, **log_context) -> Exception:
         """Return the one refusal every unusable reset link produces.
