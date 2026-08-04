@@ -16,6 +16,8 @@ from typing import Callable, Optional
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from faultmaven.api.middleware.client_ip import parse_trusted_proxies, resolve_client_ip
+from faultmaven.config.protection import get_trusted_proxies
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.logging.config import get_logger
 from faultmaven.infrastructure.logging.coordinator import LoggingCoordinator
@@ -52,6 +54,17 @@ class LoggingMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)
         self.coordinator = LoggingCoordinator()
+        # The same trust policy every limiter enforces on, parsed once. Behind
+        # an ingress the socket peer is the ingress pod for every request, so a
+        # log line stamped with it names the proxy rather than the client and
+        # forensics attribute a flood to the wrong party — while the limit that
+        # refused it was applied to somebody else entirely.
+        #
+        # Eager is safe here: middleware instances are constructed when
+        # Starlette builds the stack, which is after ``main`` has run
+        # ``load_dotenv()`` at import, so the environment is already populated
+        # and immutable from then on.
+        self._trusted_proxies = parse_trusted_proxies(get_trusted_proxies())
         logger.info("LoggingMiddleware initialized with session context management")
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
@@ -79,10 +92,14 @@ class LoggingMiddleware(BaseHTTPMiddleware):
 
         # Initialize request context through coordinator with business context
         # HTTP-specific context goes in attributes dict
+        # ``client_ip`` is the *resolved* client — the same address the limiters
+        # key on — not the socket peer. The raw ``x_forwarded_for``/``x_real_ip``
+        # fields logged below are kept alongside it deliberately: they record
+        # what the request *claimed*, against what was *believed*.
         http_context = {
             "method": request.method,
             "path": request.url.path,
-            "client_ip": request.client.host if request.client else "unknown",
+            "client_ip": resolve_client_ip(request, self._trusted_proxies),
             "user_agent": request.headers.get("user-agent", "unknown"),
             "query_params": str(request.query_params),
         }

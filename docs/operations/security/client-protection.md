@@ -79,15 +79,18 @@ class RateLimitMiddleware:
     """
 ```
 
-**`Retry-After` is currently a flat window duration.** The penalty multipliers
-below are computed but never escalate — the violation counter they key off is
-read before its `INCR` has resolved, so every refusal takes the multiplier for a
-first violation. Escalation is tracked in #926.
+**`Retry-After` is the caller's own remaining wait**, not a flat window
+duration: it counts down to the moment that client's oldest in-window request
+ages out. There is no penalty escalation.
 
-**Headers Added**:
+**Headers Added** (by the limiter that enforced, and by nothing else):
 - `X-RateLimit-Limit`: Current limit
 - `X-RateLimit-Remaining`: Requests remaining
 - `X-RateLimit-Reset`: Window reset time
+
+A response that carries none of these was not rate-limit-checked, or was
+checked by a limiter with nothing to report (a disabled limit, or a check that
+failed open). That absence is deliberate — no layer substitutes a default.
 
 ### Client identity: what a limit is keyed on
 
@@ -238,17 +241,11 @@ ENDPOINT_RATE_LIMITS = {
     "/api/v1/sessions/": 20,
     "title_generation": 1,  # Special case: 1 per 5 minutes
 }
-
-# Progressive penalty multipliers. Configured but not yet reached: the
-# violation counter is always read as 1, so the effective multiplier is 1.0
-# and `Retry-After` is the window duration plus jitter (#926).
-PENALTY_MULTIPLIERS = {
-    "first_violation": 2.0,    # 2x longer wait
-    "second_violation": 4.0,   # 4x longer wait
-    "third_violation": 8.0,    # 8x longer wait
-    "persistent_violation": 16.0  # 16x longer wait
-}
 ```
+
+There is no progressive penalty ladder. A refused client is told how long its
+own window actually takes to free quota, and nothing longer: repeat offenders
+are not punished with escalating waits.
 
 ## Monitoring and Alerting
 

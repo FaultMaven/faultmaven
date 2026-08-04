@@ -1,26 +1,30 @@
 """Request ID Middleware
 
-Purpose: Generate and track X-Request-ID for request correlation and rate limiting headers
+Purpose: Generate and track X-Request-ID for request correlation
 
 This middleware:
-- Generates unique X-Request-ID for each request
-- Adds rate limiting headers (X-RateLimit-Remaining, Retry-After)
-- Integrates with logging system for correlation tracking
-- Follows FastAPI middleware patterns
+- Generates a unique X-Request-ID for each request
+- Binds it into structlog contextvars so every log line correlates
+- Echoes it back to the caller alongside a processing-time header
+
+It deliberately produces **no** rate-limit headers. Rate limiting has exactly
+one header authority — the component that performed the enforcement
+(``api/middleware/rate_limiting.RateLimitMiddleware`` for the general limits,
+the OAuth limiter dependencies for the auth endpoints). A second writer can
+only ever agree by coincidence, and when it disagrees the client believes the
+outer one. See ``docs/architecture/security/rate-limiting-sliding-window.md``.
 
 Architecture Integration:
 - Works with existing logging system for correlation IDs
-- Integrates with protection middleware for rate limiting
 - Supports observability and tracing requirements
 """
 
 import logging
 import time
-from typing import Optional
 from uuid import uuid4
 
 import structlog
-from fastapi import Request, Response
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
@@ -28,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    """Middleware to add X-Request-ID and rate limiting headers."""
+    """Middleware to add X-Request-ID for request correlation."""
 
     def __init__(self, app: ASGIApp):
         super().__init__(app)
@@ -63,22 +67,10 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Processing-Time"] = f"{processing_time:.3f}s"
 
-        # Add rate limiting headers if available from protection middleware
-        if hasattr(request.state, "rate_limit_remaining"):
-            response.headers["X-RateLimit-Remaining"] = str(
-                request.state.rate_limit_remaining
-            )
-
-        if hasattr(request.state, "rate_limit_reset"):
-            response.headers["X-RateLimit-Reset"] = str(request.state.rate_limit_reset)
-
-        # Add Retry-After header for 429 responses
-        if response.status_code == 429:
-            if hasattr(request.state, "retry_after"):
-                response.headers["Retry-After"] = str(request.state.retry_after)
-            else:
-                # Default retry after 60 seconds
-                response.headers["Retry-After"] = "60"
+        # No rate-limit headers here — not even a default on a 429. This layer
+        # has no idea which limiter refused the request or how long its window
+        # takes to free quota, so anything it wrote would be a guess overwriting
+        # a measurement.
 
         # Log request completion with correlation
         logger.debug(
@@ -90,42 +82,6 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class RateLimitHeaderMiddleware(BaseHTTPMiddleware):
-    """Enhanced middleware specifically for rate limiting headers."""
-
-    def __init__(
-        self, app: ASGIApp, default_limit: int = 1000, window_seconds: int = 3600
-    ):
-        super().__init__(app)
-        self.default_limit = default_limit
-        self.window_seconds = window_seconds
-
-    async def dispatch(self, request: Request, call_next):
-        """Add rate limiting information to requests."""
-
-        # Set default rate limit info if not set by protection middleware
-        if not hasattr(request.state, "rate_limit_remaining"):
-            current_time = int(time.time())
-            request.state.rate_limit_remaining = self.default_limit - 1
-            request.state.rate_limit_reset = current_time + self.window_seconds
-            request.state.retry_after = 60
-
-        response = await call_next(request)
-
-        # Always add rate limit headers
-        response.headers["X-RateLimit-Limit"] = str(self.default_limit)
-        response.headers["X-RateLimit-Window"] = f"{self.window_seconds}s"
-
-        return response
-
-
 def create_request_id_middleware(app: ASGIApp) -> RequestIdMiddleware:
     """Factory function to create request ID middleware."""
     return RequestIdMiddleware(app)
-
-
-def create_rate_limit_header_middleware(
-    app: ASGIApp, default_limit: int = 1000, window_seconds: int = 3600
-) -> RateLimitHeaderMiddleware:
-    """Factory function to create rate limit header middleware."""
-    return RateLimitHeaderMiddleware(app, default_limit, window_seconds)

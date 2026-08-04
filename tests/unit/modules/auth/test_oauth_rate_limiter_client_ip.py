@@ -14,6 +14,7 @@ once: the shared bucket must open up behind a configured proxy, and the header
 rotation fm#927 closed must stay closed everywhere else.
 """
 
+import time
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -228,27 +229,37 @@ class TestAMistypedTrustEntryNarrowsTrust:
         assert not await _refused(limiter, _forwarded(CLIENT_B))
 
 
-class TestTheTrustListIsResolvedLazily:
-    """``_oauth_rate_limiter = OAuthRateLimiter()`` runs at *import* time.
-
-    Nothing guarantees that `.env` has reached ``os.environ`` by then; the first
-    request does guarantee it. So the singleton must read the environment on
-    first use, not on construction — otherwise the setting is silently empty on
-    exactly the deployments that configured it.
+class TestTheTrustListComesFromTheEnvironmentAtConstruction:
+    """``_oauth_rate_limiter = OAuthRateLimiter()`` runs at *import* time, and
+    that is late enough: ``main`` calls ``load_dotenv()`` at its own import,
+    before any router — and therefore this module — is imported, so `.env` has
+    already reached ``os.environ``. Post-boot the value does not change, so
+    resolving once at construction is equivalent to resolving on first use and
+    carries no sentinel to get wrong.
     """
 
-    async def test_the_env_is_read_after_construction_not_before(self, monkeypatch):
-        monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
-        limiter = OAuthRateLimiter()  # constructed while the key is unset
-
+    async def test_the_configured_range_reaches_the_limiter(self, monkeypatch):
         monkeypatch.setenv("PROTECTION_TRUSTED_PROXIES", INGRESS_RANGE)
+        limiter = OAuthRateLimiter()
 
-        # First use is now. If construction had read the environment, the
-        # ingress would be untrusted and both clients would share one budget.
+        # Two clients arriving through the same trusted ingress hold separate
+        # budgets — which they only do if the environment was actually read.
         await _spend(limiter, lambda: _forwarded(CLIENT_A), TOKEN_LIMIT)
 
         assert await _refused(limiter, _forwarded(CLIENT_A))
         assert not await _refused(limiter, _forwarded(CLIENT_B))
+
+    async def test_an_unset_key_trusts_nothing(self, monkeypatch):
+        """The safe default: no entry means no header influences the key."""
+        monkeypatch.delenv("PROTECTION_TRUSTED_PROXIES", raising=False)
+        limiter = OAuthRateLimiter()
+
+        # Untrusted peer, so the forwarded addresses are ignored and all five
+        # requests land on the peer's single budget.
+        for n in range(TOKEN_LIMIT):
+            await limiter.check_rate_limit(_forwarded(f"203.0.113.{n}"), "/token")
+
+        assert await _refused(limiter, _forwarded("203.0.113.99"))
 
     async def test_it_is_resolved_once_and_then_pinned(self, monkeypatch):
         """Re-reading per request would make the key depend on a mutable global."""
@@ -290,6 +301,54 @@ class TestTheTrustListIsResolvedLazily:
 
         assert await _refused(singleton, _forwarded("203.0.113.99"))
         reset_rate_limiter()
+
+
+class TestTheAdvertisedWaitIsTheRealOne:
+    """``Retry-After: 60`` was hardcoded under a *sliding* window.
+
+    The wait is until the oldest surviving timestamp ages out, which for a
+    client that filled its budget nearly a minute ago is seconds. Telling it to
+    wait a full minute is the difference between a client that backs off
+    correctly and one that gives up.
+    """
+
+    async def _refusal(self, limiter, request, endpoint="/token"):
+        with pytest.raises(HTTPException) as refusal:
+            await limiter.check_rate_limit(request, endpoint)
+        assert refusal.value.status_code == 429
+        return refusal.value
+
+    async def test_a_nearly_aged_out_window_advertises_seconds(self, monkeypatch):
+        limiter = OAuthRateLimiter()
+        peer = "198.51.100.11"
+        # A budget spent ~55 seconds ago: five seconds from the oldest ageing out.
+        now = time.time()
+        limiter._requests[(peer, "/token")] = [now - 55 + n * 0.1 for n in range(5)]
+
+        refusal = await self._refusal(limiter, _StubRequest(peer))
+
+        assert 1 <= int(refusal.headers["Retry-After"]) <= 6, refusal.headers
+
+    async def test_a_freshly_spent_window_still_advertises_a_full_minute(self):
+        """Not "always small": the honest answer is large when the wait is."""
+        limiter = OAuthRateLimiter()
+        peer = "198.51.100.12"
+
+        await _spend(limiter, lambda: _StubRequest(peer), TOKEN_LIMIT)
+        refusal = await self._refusal(limiter, _StubRequest(peer))
+
+        assert int(refusal.headers["Retry-After"]) == 60, refusal.headers
+
+    async def test_the_wait_never_rounds_down_to_zero(self, monkeypatch):
+        """A sub-second answer reads as "retry immediately", which is no wait."""
+        limiter = OAuthRateLimiter()
+        peer = "198.51.100.13"
+        now = time.time()
+        limiter._requests[(peer, "/token")] = [now - 59.9] * TOKEN_LIMIT
+
+        refusal = await self._refusal(limiter, _StubRequest(peer))
+
+        assert int(refusal.headers["Retry-After"]) >= 1
 
 
 class TestTheDependencyConsultsTheFixedLimiter:
