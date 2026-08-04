@@ -2,7 +2,6 @@
 
 Tests for:
 - User registration with validation
-- User authentication with JWT tokens
 - Password reset workflow
 - Password change
 - Profile updates
@@ -25,19 +24,22 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     AuthService,
 )
 from faultmaven.modules.auth.domain.services.user_service import UserService
+from faultmaven.utils.password import verify_password
 
 
 @pytest.fixture
 def mock_auth_service():
     """Create a mock AuthService."""
     auth_service = MagicMock(spec=AuthService)
+    # Read by `_generate_reset_token` / `_verify_reset_token`, which sign and
+    # verify the password-reset JWT off the service's keys.
     auth_service._private_key = "test-key-for-jwt-min-32-bytes!!!"
     auth_service._public_key = "test-key-for-jwt-min-32-bytes!!!"
-    auth_service._access_token_expire_minutes = 15
-    auth_service.generate_token_pair.return_value = MagicMock(
-        access_token="access-token",
-        refresh_token="refresh-token",
-    )
+    # `spec=` rather than `spec_set=`, which would have caught the stale
+    # `_access_token_expire_minutes` stub #853 left here: both keys above are
+    # INSTANCE attributes assigned in `AuthService.__init__`, so they are absent
+    # from the class `spec_set` builds its allowlist from and setting either
+    # raises. Tightening here would refuse two live stubs to catch one dead one.
     # Returns the revocation watermark (#769), not a token count.
     auth_service.revoke_user_tokens = AsyncMock(
         return_value=datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
@@ -220,114 +222,6 @@ class TestRegisterUser:
                 full_name="Second User",
             )
         assert "Email already registered" in str(excinfo.value)
-
-
-class TestAuthenticateUser:
-    """Tests for UserService.authenticate_user()."""
-
-    @pytest.mark.asyncio
-    async def test_authenticate_returns_user_and_tokens(
-        self, user_service, user_repo, mock_auth_service
-    ):
-        """Authentication should return user and JWT tokens."""
-        # Register user first
-        await user_service.register_user(
-            email="auth@example.com",
-            password="TestP@ssw0rd!",
-            full_name="Auth User",
-        )
-
-        user, access_token, refresh_token = await user_service.authenticate_user(
-            email="auth@example.com",
-            password="TestP@ssw0rd!",
-        )
-
-        assert user is not None
-        assert user.email == "auth@example.com"
-        assert access_token == "access-token"
-        assert refresh_token == "refresh-token"
-
-    @pytest.mark.asyncio
-    async def test_authenticate_updates_last_login(self, user_service, user_repo):
-        """Authentication should update last_login_at timestamp."""
-        # Register user
-        await user_service.register_user(
-            email="auth@example.com",
-            password="TestP@ssw0rd!",
-            full_name="Auth User",
-        )
-
-        # Authenticate
-        user, _, _ = await user_service.authenticate_user(
-            email="auth@example.com",
-            password="TestP@ssw0rd!",
-        )
-
-        assert user.last_login_at is not None
-
-    @pytest.mark.asyncio
-    async def test_authenticate_rejects_wrong_password(self, user_service, user_repo):
-        """Authentication should reject wrong password."""
-        await user_service.register_user(
-            email="auth@example.com",
-            password="TestP@ssw0rd!",
-            full_name="Auth User",
-        )
-
-        with pytest.raises(AuthenticationError) as excinfo:
-            await user_service.authenticate_user(
-                email="auth@example.com",
-                password="WrongP@ssw0rd!",
-            )
-        assert "INVALID_CREDENTIALS" in excinfo.value.error_code
-
-    @pytest.mark.asyncio
-    async def test_authenticate_rejects_nonexistent_email(self, user_service):
-        """Authentication should reject non-existent email."""
-        with pytest.raises(AuthenticationError) as excinfo:
-            await user_service.authenticate_user(
-                email="nonexistent@example.com",
-                password="TestP@ssw0rd!",
-            )
-        assert "INVALID_CREDENTIALS" in excinfo.value.error_code
-
-    @pytest.mark.asyncio
-    async def test_authenticate_rejects_inactive_user(self, user_service, user_repo):
-        """Authentication should reject inactive users."""
-        # Register and deactivate
-        await user_service.register_user(
-            email="inactive@example.com",
-            password="TestP@ssw0rd!",
-            full_name="Inactive User",
-        )
-        user = await user_repo.get_by_email("inactive@example.com")
-        user.is_active = False
-        await user_repo.save(user)
-
-        with pytest.raises(AuthenticationError) as excinfo:
-            await user_service.authenticate_user(
-                email="inactive@example.com",
-                password="TestP@ssw0rd!",
-            )
-        assert "ACCOUNT_INACTIVE" in excinfo.value.error_code
-
-    @pytest.mark.asyncio
-    async def test_authenticate_calls_generate_token_pair(
-        self, user_service, user_repo, mock_auth_service
-    ):
-        """Authentication should call AuthService.generate_token_pair."""
-        await user_service.register_user(
-            email="auth@example.com",
-            password="TestP@ssw0rd!",
-            full_name="Auth User",
-        )
-
-        await user_service.authenticate_user(
-            email="auth@example.com",
-            password="TestP@ssw0rd!",
-        )
-
-        mock_auth_service.generate_token_pair.assert_called_once()
 
 
 class TestRequestPasswordReset:
@@ -567,12 +461,9 @@ class TestResetPassword:
                 new_password="NewP@ssw0rd!",
             )
 
-        # Should be able to authenticate with new password
-        authed_user, _, _ = await user_service.authenticate_user(
-            email="resetlogin@example.com",
-            password="NewP@ssw0rd!",
-        )
-        assert authed_user is not None
+        # The stored credential is now the new password.
+        stored = await user_repo.get_by_email("resetlogin@example.com")
+        assert verify_password("NewP@ssw0rd!", stored.hashed_password)
 
     @pytest.mark.asyncio
     async def test_reset_password_old_password_fails(self, user_service, user_repo):
@@ -598,12 +489,9 @@ class TestResetPassword:
                 new_password="NewP@ssw0rd!",
             )
 
-        # Old password should fail
-        with pytest.raises(AuthenticationError):
-            await user_service.authenticate_user(
-                email="resetoldfail@example.com",
-                password="OldP@ssw0rd!",
-            )
+        # The old password no longer matches the stored credential.
+        stored = await user_repo.get_by_email("resetoldfail@example.com")
+        assert not verify_password("OldP@ssw0rd!", stored.hashed_password)
 
     @pytest.mark.asyncio
     async def test_reset_password_updates_updated_at(self, user_service, user_repo):
