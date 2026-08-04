@@ -33,6 +33,7 @@ from faultmaven.core.investigation.causal_graph import (
     m6_disconfirmation_basis,
     seed_problem_node,
 )
+from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -897,3 +898,242 @@ def test_undatable_label_ignores_mitigations_and_pending_offers():
     ) as counter:
         assert m6_disconfirmation_basis(case) is None
     counter.labels.assert_called_once_with(reason="no_fix_applied")
+
+
+# =============================================================================
+# The incident replayed through the REAL turn pipeline (#987)
+#
+# Every test above enters at an internal seam — ingest_emitted_chain,
+# _apply_hypothesis_evidence_links, demote_disconfirmed_cause_via_evidence.
+# Those pin the PREDICATE. They cannot pin the WIRING: that an LLM emission
+# arriving at process_turn actually reaches the guard. #987 was exactly a
+# wiring defect — the boundary existed on the node axis while a second entry
+# point routed around it — so a seam-only suite would have passed throughout
+# the incident.
+#
+# This drives the incident emission verbatim (a causal_absence SUCCESS row,
+# REFUTES-linked to the very root it confirms, on BOTH axes) through
+# MilestoneEngine.process_turn with only the LLM boundary stubbed, and asserts
+# the cascade does not start. It is the deterministic replacement for waiting
+# on a ~1-in-3 simulator run to re-emit the shape.
+# =============================================================================
+
+
+def _incident_emission(root_node_id: str, hypothesis_id: str):
+    """The turn-9 emission from case_e7d4f551d87b, verbatim in shape."""
+    return {
+        "agent_response": (
+            "The ClientIDList fix worked — post-fix authentication succeeded."
+        ),
+        "state_updates": {
+            "evidence_to_add": [
+                {
+                    "summary": (
+                        "After replacing the source-account OIDC provider "
+                        "audience with sts.amazonaws.com, web-identity "
+                        "credentials and chained role assumption succeeded."
+                    ),
+                    "extract": "AssumeRoleWithWebIdentity 200; S3 processing OK",
+                    "category": "causal_absence_evidence",
+                    # Verbal post-fix confirmation, as in the incident (the
+                    # schema requires a file id for file-backed source types).
+                    "source_type": "user_description",
+                },
+                # POSITIVE CONTROL, same emission, ORDINARY category: its link
+                # MUST land. Without it every assertion below is negative, so
+                # a wiring defect that drops the emission before the guard —
+                # the very defect class this file exists for — would pass. It
+                # also proves the refusal is category-scoped rather than the
+                # pipeline silently discarding all links.
+                {
+                    "summary": (
+                        "CloudTrail shows AssumeRoleWithWebIdentity calls "
+                        "with recipientAccountId 444455556666."
+                    ),
+                    "extract": "recipientAccountId=444455556666",
+                    "category": "causal_evidence",
+                    "source_type": "user_description",
+                },
+            ],
+            # The inversion: the model REFUTES-links its own success
+            # confirmation to the root that success proves, at full
+            # confidence — on both belief axes.
+            "node_evidence_links": [
+                {
+                    "node_ref": root_node_id,
+                    "evidence_id_ref": "new_index_0",
+                    "stance": "refutes",
+                    "reasoning": (
+                        "The corrected ClientIDList removed the identified "
+                        "wrong audience registration, and post-fix "
+                        "authentication succeeded."
+                    ),
+                    "stance_confidence": 1.0,
+                },
+                # The positive control's link — ordinary category, must land.
+                {
+                    "node_ref": root_node_id,
+                    "evidence_id_ref": "new_index_1",
+                    "stance": "supports",
+                    "reasoning": "CloudTrail confirms the caller account.",
+                    "stance_confidence": 0.9,
+                },
+            ],
+            "hypothesis_evidence_links": [
+                {
+                    "hypothesis_id_ref": hypothesis_id,
+                    "evidence_id_ref": "new_index_0",
+                    "stance": "refutes",
+                    "reasoning": "Post-fix authentication succeeded.",
+                    "stance_confidence": 1.0,
+                }
+            ],
+        },
+    }
+
+
+def _engine_for_incident(emission: dict):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.schemas import (
+        InvestigationResponse_Diagnosis,
+    )
+
+    llm = MagicMock()
+    # Real strings on the two attributes the turn path reads off the provider
+    # (a bare MagicMock leaks a non-str metric label and makes the
+    # model-budget .startswith() truthy for every registry key).
+    llm.provider_name = "test-provider"
+    llm.config.default_model = "test-model"
+    repo = MagicMock()
+    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.get = AsyncMock(side_effect=lambda cid: None)
+    engine = MilestoneEngine(llm, repo, investigation_tools=MagicMock())
+    engine._generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis.model_validate(emission)
+    )
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_incident_emission_through_process_turn_does_not_start_the_cascade():
+    """THE gate: the #987 turn, driven through the real pipeline.
+
+    Pre-#987 this exact emission drove the true root to REFUTED at belief 0,
+    fired M6, minted a false persistence row, and cleared the conclusion.
+    """
+    case = _case()
+    seed_problem_node(case)
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_root_spec(_TRUE_ROOT)],
+        edges_to_add=[],
+        node_evidence=[],
+        current_turn=3,
+    )
+    root = case.causal_nodes[created[0]]
+    hypothesis = _hypothesis(
+        "hyp_421fd53b5fd7", HypothesisState.ACTIVE, root_node_id=root.node_id
+    )
+    case.hypotheses[hypothesis.hypothesis_id] = hypothesis
+
+    engine = _engine_for_incident(
+        _incident_emission(root.node_id, hypothesis.hypothesis_id)
+    )
+    result = await engine.process_turn(
+        case=case, user_message="Fixed the ClientIDList — auth works now."
+    )
+
+    updated = result["case_updated"]
+    root_after = updated.causal_nodes[root.node_id]
+
+    # 1. The root the fix CONFIRMED is not refuted, and keeps belief.
+    assert root_after.node_state is not NodeState.REFUTED
+    assert root_after.belief > 0
+
+    # 2. The hypothesis is not refuted off the back of its own confirmation.
+    assert (
+        updated.hypotheses[hypothesis.hypothesis_id].state
+        is not HypothesisState.REFUTED
+    )
+
+    # 3. M6 never fired: NO engine-authored row exists at all. (Asserting the
+    #    retired fabrication sentence is absent would be vacuous — the current
+    #    mint writes "Engine inference (M6), not an observation: …", so that
+    #    string cannot appear whether or not the cascade regresses; its absence
+    #    is separately pinned where M6 legitimately fires.)
+    assert not [e for e in updated.evidence if e.collected_by == ENGINE_EVIDENCE_AUTHOR]
+
+    # 4. No refuting stance survives on EITHER axis. Scanning the node axis
+    #    alone left the hypothesis axis unguarded: removing that guard kept
+    #    this test green while a confidence-1.0 REFUTES landed on the
+    #    hypothesis and eroded its likelihood.
+    assert not [
+        link
+        for link in root_after.evidence_links
+        if link.stance is EvidenceStance.REFUTES
+    ]
+    hypothesis_after = updated.hypotheses[hypothesis.hypothesis_id]
+    assert not [
+        link
+        for link in hypothesis_after.evidence_links
+        if link.stance is EvidenceStance.REFUTES
+    ]
+    assert (
+        hypothesis_after.likelihood >= hypothesis.likelihood
+    ), "the hypothesis must not be eroded by its own success confirmation"
+
+    # 5. POSITIVE CONTROL — the emission genuinely reached the link-application
+    #    path, and the refusal is CATEGORY-scoped rather than the pipeline
+    #    discarding links wholesale. Without this, assertions 1-4 are all
+    #    negative, so a wiring defect that drops the emission before the guard
+    #    — the very defect class this file exists for — passes silently.
+    ordinary = [
+        e for e in updated.evidence if e.category is EvidenceCategory.CAUSAL_EVIDENCE
+    ]
+    assert ordinary, "the ordinary evidence row from the same emission must land"
+    assert [
+        link
+        for link in root_after.evidence_links
+        if link.evidence_id == ordinary[-1].evidence_id
+        and link.stance is EvidenceStance.SUPPORTS
+    ], "the ordinary row's link must land — only ABSENCE links are refused"
+
+
+@pytest.mark.asyncio
+async def test_incident_emission_is_metered_on_both_axes_through_the_pipeline():
+    """The refusal is observable end-to-end, not just at the seam — the
+    counter is how a model that routinely mis-links absence rows stays
+    distinguishable from one that follows the contract."""
+    case = _case()
+    seed_problem_node(case)
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_root_spec(_TRUE_ROOT)],
+        edges_to_add=[],
+        node_evidence=[],
+        current_turn=3,
+    )
+    root = case.causal_nodes[created[0]]
+    hypothesis = _hypothesis(
+        "hyp_421fd53b5fd7", HypothesisState.ACTIVE, root_node_id=root.node_id
+    )
+    case.hypotheses[hypothesis.hypothesis_id] = hypothesis
+
+    engine = _engine_for_incident(
+        _incident_emission(root.node_id, hypothesis.hypothesis_id)
+    )
+    with patch(
+        "faultmaven.core.investigation.cause_assurance."
+        "absence_row_link_refused_total"
+    ) as counter:
+        await engine.process_turn(
+            case=case, user_message="Fixed the ClientIDList — auth works now."
+        )
+
+    axes = {c.kwargs.get("axis") for c in counter.labels.call_args_list}
+    assert axes == {
+        "node",
+        "hypothesis",
+    }, f"both belief axes must refuse and meter the incident emission; got {axes}"
