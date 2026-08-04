@@ -326,20 +326,30 @@ class TestTheHonestWaitSurvivesTheMiddlewareStack:
         )
         assert 1 <= advertised <= 6, advertised
 
-    def test_no_fabricated_quota_accompanies_the_refusal(self, limited_app):
-        """The OAuth limiter publishes only ``Retry-After``.
+    def test_the_refusal_advertises_the_limit_that_refused_it(self, limited_app):
+        """The enforcer publishes its own state, and only the enforcer does.
 
-        Anything else in the family on this response was invented by a layer
-        that enforced nothing — ``X-RateLimit-Remaining: 999`` beside a 429 is
-        a contradiction the client has to resolve, and it resolves it wrongly.
+        ``Retry-After`` alone tells a client when to come back but not what it
+        came up against, so it cannot tell this 5/min endpoint limit from the
+        roomy global one and cannot pace itself before the next refusal. The
+        quartet comes from the limiter that measured it — the invariant is one
+        writer, not one header. ``X-RateLimit-Window`` is emitted by nobody.
         """
         response = self._refusal(limited_app)
 
         assert response.status_code == 429
-        for header in RATE_LIMIT_HEADERS:
-            if header == "Retry-After":
-                continue
-            assert header not in response.headers, (header, dict(response.headers))
+        assert response.headers["X-RateLimit-Limit"] == "5"
+        assert response.headers["X-RateLimit-Remaining"] == "0"
+        assert "X-RateLimit-Window" not in response.headers
+
+        # Reset and Retry-After are two renderings of one measurement, so they
+        # must reconcile exactly — not merely both be present.
+        retry_after = int(response.headers["Retry-After"])
+        reset = int(response.headers["X-RateLimit-Reset"])
+        assert reset - int(time.time()) == pytest.approx(retry_after, abs=1), (
+            reset,
+            retry_after,
+        )
 
     def test_a_served_request_through_the_same_stack_is_equally_quiet(
         self, limited_app

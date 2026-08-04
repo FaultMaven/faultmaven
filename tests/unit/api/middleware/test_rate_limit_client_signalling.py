@@ -14,6 +14,7 @@ so nothing here costs an extra Redis round trip.
 
 import itertools
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import fakeredis.aioredis as fakeredis_aio
@@ -23,7 +24,7 @@ from starlette.responses import PlainTextResponse
 
 from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
 from faultmaven.config.protection import get_development_protection_settings
-from faultmaven.models.protection import RateLimitConfig
+from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitResult
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -141,8 +142,71 @@ async def test_the_reset_instant_does_not_march_with_the_clock():
     assert first.headers["X-RateLimit-Reset"] == second.headers["X-RateLimit-Reset"]
 
 
-async def test_a_429_carries_a_reset_consistent_with_retry_after():
-    """The two express the same instant; a client may use either."""
+async def test_a_429_carries_the_reset_instant_the_limiter_measured():
+    """The header is the limiter's own measurement, not a re-derivation.
+
+    ``int(time.time() + retry_after)`` looked equivalent and was not: it reads
+    the clock a second time — after the check, the raise and the response
+    construction — so the timestamp disagreed with the wait beside it by however
+    long that took, and disagreed with the ``reset_time`` the same limiter had
+    just put on the served responses. Driven from a controlled result so the
+    assertion is exact rather than a tolerance wide enough to hide the defect.
+    """
+    mw = _middleware(_settings(global_requests=7))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+    measured = datetime(2033, 5, 18, 3, 33, 20, tzinfo=timezone.utc)
+
+    async def _refuse(**kwargs):
+        return RateLimitResult(
+            allowed=False,
+            limit_type=LimitType.GLOBAL,
+            current_count=7,
+            limit=7,
+            retry_after=41,
+            reset_time=measured,
+        )
+
+    mw.rate_limiter.check_rate_limit = _refuse
+
+    refused = await mw.dispatch(_request(app, _unique_client()), _call_next)
+
+    assert refused.status_code == 429
+    assert refused.headers["X-RateLimit-Limit"] == "7"
+    assert refused.headers["X-RateLimit-Remaining"] == "0"
+    assert refused.headers["Retry-After"] == "41"
+    assert refused.headers["X-RateLimit-Reset"] == str(int(measured.timestamp()))
+
+
+async def test_a_429_omits_the_reset_header_when_nothing_measured_one():
+    """An unmeasured value is absent, never invented.
+
+    A client that reads no reset instant backs off on its own policy, which is
+    strictly better than planning against a fabricated one.
+    """
+    mw = _middleware(_settings(global_requests=7))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+
+    async def _refuse(**kwargs):
+        return RateLimitResult(
+            allowed=False,
+            limit_type=LimitType.GLOBAL,
+            current_count=7,
+            limit=7,
+            retry_after=41,
+            reset_time=None,
+        )
+
+    mw.rate_limiter.check_rate_limit = _refuse
+
+    refused = await mw.dispatch(_request(app, _unique_client()), _call_next)
+
+    assert refused.status_code == 429
+    assert refused.headers["Retry-After"] == "41"
+    assert "X-RateLimit-Reset" not in refused.headers
+
+
+async def test_a_429_reset_and_retry_after_name_one_instant_end_to_end():
+    """Through the real limiter, the two must still reconcile."""
     mw = _middleware(_settings(global_requests=1))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
     ip = _unique_client()
@@ -158,6 +222,36 @@ async def test_a_429_carries_a_reset_consistent_with_retry_after():
     assert refused.headers["X-RateLimit-Limit"] == "1"
     # Same instant, allowing for the second that may tick during the check.
     assert abs(reset - (int(time.time()) + retry_after)) <= 1, (reset, retry_after)
+
+
+async def test_the_measured_wait_reaches_the_header_however_small():
+    """No floor is defaulted in on the way out.
+
+    The raise sites carried ``or 60`` / ``or 3600`` fallbacks. They were
+    unreachable — a blocked result always carries ``max(1, ceil(...))`` — but
+    had a limiter regression ever made one reachable it would have quietly
+    resurrected the flat-window answer on the one response a client acts on.
+    A one-second wait must render as one second.
+    """
+    mw = _middleware(_settings(global_requests=3))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+
+    async def _refuse(**kwargs):
+        return RateLimitResult(
+            allowed=False,
+            limit_type=LimitType.GLOBAL,
+            current_count=3,
+            limit=3,
+            retry_after=1,
+            reset_time=datetime.now(timezone.utc) + timedelta(seconds=1),
+        )
+
+    mw.rate_limiter.check_rate_limit = _refuse
+
+    refused = await mw.dispatch(_request(app, _unique_client()), _call_next)
+
+    assert refused.status_code == 429
+    assert refused.headers["Retry-After"] == "1", refused.headers["Retry-After"]
 
 
 async def test_the_headers_report_the_tightest_limit():

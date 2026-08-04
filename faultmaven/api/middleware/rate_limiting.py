@@ -410,10 +410,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not result.allowed:
             raise RateLimitError(
-                retry_after=result.retry_after or 60,
+                retry_after=result.retry_after,
                 limit_type="global",
                 current_count=result.current_count,
                 limit=result.limit,
+                reset_time=result.reset_time,
             )
 
         return result
@@ -421,7 +422,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def _check_session_rate_limits(
         self, session_id: str, endpoint: str, request: Request
     ) -> List[RateLimitResult]:
-        """Check session-based rate limits, returning the results they used."""
+        """Check session-based rate limits, returning the results they used.
+
+        A blocked result always carries the wait and the instant the limiter
+        measured — ``_check_redis_rate_limit`` sets both on the refusal path —
+        so neither is defaulted here. The old ``or 60`` / ``or 3600`` fallbacks
+        were unreachable, and unreachable is the point: had a limiter regression
+        ever made them reachable they would have quietly resurrected the
+        flat-window answer the honest formula replaced, on the one response
+        where the client acts on it. Passing the measured value through
+        unguarded means such a regression fails loudly at render instead.
+        """
 
         # Per-session per-minute limit
         per_minute = await self.rate_limiter.check_rate_limit(
@@ -432,10 +443,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not per_minute.allowed:
             raise RateLimitError(
-                retry_after=per_minute.retry_after or 60,
+                retry_after=per_minute.retry_after,
                 limit_type="per_session",
                 current_count=per_minute.current_count,
                 limit=per_minute.limit,
+                reset_time=per_minute.reset_time,
             )
 
         # Per-session hourly limit
@@ -447,10 +459,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not hourly.allowed:
             raise RateLimitError(
-                retry_after=hourly.retry_after or 3600,
+                retry_after=hourly.retry_after,
                 limit_type="per_session_hourly",
                 current_count=hourly.current_count,
                 limit=hourly.limit,
+                reset_time=hourly.reset_time,
             )
 
         return [per_minute, hourly]
@@ -577,12 +590,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # ``X-RateLimit-Reset`` the same instant as a timestamp — a 429 used to
         # omit the second, so a client tracking reset instants across responses
         # lost the value on precisely the response that mattered.
+        #
+        # The instant is the one the limiter measured, carried on the error. It
+        # is never re-derived from ``time.time() + retry_after``: that reads the
+        # clock again, after the check, the raise and this construction, so the
+        # timestamp a client received disagreed with the wait beside it by
+        # however long that took. Absent means the limiter measured nothing, and
+        # an unmeasured value is omitted rather than invented — a client reading
+        # no reset falls back to its own policy, which beats planning against a
+        # fabricated instant.
         response.headers["Retry-After"] = str(error.retry_after)
         response.headers["X-RateLimit-Limit"] = str(error.limit)
         response.headers["X-RateLimit-Remaining"] = "0"
-        response.headers["X-RateLimit-Reset"] = str(
-            int(time.time() + error.retry_after)
-        )
+        if error.reset_time is not None:
+            response.headers["X-RateLimit-Reset"] = str(
+                int(error.reset_time.timestamp())
+            )
 
         return response
 

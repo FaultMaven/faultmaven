@@ -7,12 +7,15 @@ This middleware:
 - Binds it into structlog contextvars so every log line correlates
 - Echoes it back to the caller alongside a processing-time header
 
-It deliberately produces **no** rate-limit headers. Rate limiting has exactly
-one header authority — the component that performed the enforcement
-(``api/middleware/rate_limiting.RateLimitMiddleware`` for the general limits,
-the OAuth limiter dependencies for the auth endpoints). A second writer can
-only ever agree by coincidence, and when it disagrees the client believes the
-outer one. See ``docs/architecture/security/rate-limiting-sliding-window.md``.
+It deliberately produces **no** rate-limit headers. Within the request-protection
+stack, rate limiting has exactly one header authority — the component that
+performed the enforcement (``api/middleware/rate_limiting.RateLimitMiddleware``
+for the general limits, the OAuth limiter dependencies for the auth endpoints).
+A second writer can only ever agree by coincidence, and when it disagrees the
+client believes the outer one. (``api/exception_handlers`` also writes
+``Retry-After``, on the LLM-provider-error responses it synthesises — a separate
+authority over responses no limiter refused, never these ones.) See
+``docs/architecture/security/rate-limiting-sliding-window.md``.
 
 Architecture Integration:
 - Works with existing logging system for correlation IDs

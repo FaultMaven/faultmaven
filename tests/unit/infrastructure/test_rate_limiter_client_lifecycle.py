@@ -136,6 +136,123 @@ async def test_a_failure_to_close_does_not_break_the_adoption():
     assert limiter._owns_client is True
 
 
+class _ObservingClient(_RecordingClient):
+    """Records what the limiter looked like at the moment it was closed."""
+
+    def __init__(self, limiter, name="outgoing"):
+        super().__init__(name)
+        self._limiter = limiter
+        self.observed_redis = "not closed"
+        self.observed_script = "not closed"
+
+    async def close(self):
+        self.observed_redis = self._limiter._redis
+        self.observed_script = self._limiter._window_script
+        await super().close()
+
+
+async def test_the_replacement_is_installed_before_the_outgoing_pool_is_closed():
+    """Order, asserted from inside the close itself.
+
+    ``await outgoing.close()`` is a yield point. With the close first, everything
+    that runs during it — including a concurrent ``check_rate_limit`` snapshotting
+    ``_window_script`` — sees the limiter still pointing at the client being torn
+    down. Observing the limiter's state from within ``close`` is the only way to
+    pin the ordering directly rather than infer it from an outcome.
+    """
+    limiter = RedisRateLimiter()
+    outgoing = _ObservingClient(limiter)
+    replacement = _RecordingClient("replacement")
+
+    await limiter._adopt(outgoing, owns=True, degraded=False)
+    outgoing_script = limiter._window_script
+    await limiter._adopt(replacement, owns=True, degraded=False)
+
+    assert outgoing.closes == 1, "the outgoing pool was not closed at all"
+    assert outgoing.observed_redis is replacement, "closed before installing"
+    assert (
+        outgoing.observed_script is not outgoing_script
+    ), "the script still pointed at the client being closed"
+
+
+async def test_a_check_racing_the_teardown_lands_on_the_replacement():
+    """The consequence the ordering exists to prevent.
+
+    A check that interleaves with a slow teardown must be issued against the
+    installed client, not the closing one. Driven through the real check path so
+    the assertion is about where the command went, not about a flag.
+    """
+    import fakeredis.aioredis as fakeredis_aio
+
+    limiter = _configured(RedisRateLimiter())
+    landed = []
+
+    class _SlowClosingClient(_RecordingClient):
+        async def close(self):
+            # Yield control while the teardown is in progress.
+            await asyncio.sleep(0)
+            result = await limiter.check_rate_limit("10.5.0.9", LimitType.GLOBAL)
+            landed.append(result)
+            await super().close()
+
+    await limiter._adopt(_SlowClosingClient("outgoing"), owns=True, degraded=False)
+    await limiter._adopt(
+        fakeredis_aio.FakeRedis(decode_responses=True), owns=True, degraded=False
+    )
+
+    # The outgoing stand-in's script raises on use, so a check that reached it
+    # would have failed open with limit 0 rather than deciding.
+    assert landed, "the racing check never ran; the test is vacuous"
+    assert landed[0].allowed
+    assert landed[0].limit == 5, "the check was issued against the closing client"
+
+
+async def test_a_stalling_teardown_does_not_stall_the_install():
+    """Closing a dead pool can block; adoption must not wait behind it.
+
+    The replacement is what ends the outage. A teardown that hangs against a
+    dead socket used to hold the install behind it for as long as it took.
+    """
+    limiter = RedisRateLimiter()
+    released = asyncio.Event()
+    replacement = _RecordingClient("replacement")
+
+    class _HangingClient(_RecordingClient):
+        async def close(self):
+            await released.wait()
+            await super().close()
+
+    await limiter._adopt(_HangingClient("outgoing"), owns=True, degraded=False)
+    adoption = asyncio.ensure_future(
+        limiter._adopt(replacement, owns=True, degraded=False)
+    )
+    await asyncio.sleep(0)
+
+    try:
+        assert limiter._redis is replacement, "the install waited on the teardown"
+        assert limiter._owns_client is True
+    finally:
+        released.set()
+        await adoption
+
+
+async def test_the_ownership_test_reads_the_outgoing_client_s_own_flag():
+    """Not its successor's.
+
+    ``_owns_client`` is overwritten by the install, so a post-install read would
+    decide the outgoing client's fate from the incoming one's provenance — and
+    close the composition root's shared client the moment an owned one replaced
+    it.
+    """
+    limiter = RedisRateLimiter()
+    shared = _RecordingClient("shared")
+
+    await limiter._adopt(shared, owns=False, degraded=False)
+    await limiter._adopt(_RecordingClient("owned"), owns=True, degraded=False)
+
+    assert shared.closes == 0, "closed a client this limiter never owned"
+
+
 async def test_a_cancelled_check_propagates_and_counts_as_a_failure():
     """``CancelledError`` is a ``BaseException``: ``except Exception`` misses it.
 

@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
-from starlette.datastructures import Headers
+from starlette.datastructures import Headers, State
 
 from faultmaven.api.middleware.client_ip import resolve_client_ip
 from faultmaven.modules.auth.api import rate_limiting as oauth_rate_limiting
@@ -48,7 +48,7 @@ class _StubRequest:
     fixture that cannot represent the input can never fail on it.
     """
 
-    def __init__(self, peer, headers=None):
+    def __init__(self, peer, headers=None, rate_limit_results=None):
         self.client = _Peer(peer) if peer is not None else None
         items = (
             list(headers.items()) if isinstance(headers, dict) else list(headers or [])
@@ -59,6 +59,15 @@ class _StubRequest:
         # ``sso_callback`` reads the browser-binding state cookie off the same
         # request object the limiter and the audit resolve their address from.
         self.cookies: dict[str, str] = {}
+        # A real ``State``, not a namespace: the limiter offers its result to
+        # ``rate_limit_results`` through the same attribute lookup Starlette
+        # provides, and a stand-in with different lookup semantics would let a
+        # regression there pass. Seeded only when a test asks for it — an
+        # absent key is the reduced-stack case, where the middleware that owns
+        # the list is not installed.
+        self.state = State()
+        if rate_limit_results is not None:
+            self.state.rate_limit_results = rate_limit_results
 
 
 class _Peer:
