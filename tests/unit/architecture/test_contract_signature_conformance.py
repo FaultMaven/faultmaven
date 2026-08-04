@@ -225,14 +225,33 @@ def compare_to_interface(
     return out
 
 
-def compare_standin_subset(
+def compare_binding_compatibility(
     *,
     interface_name: str,
     member: str,
-    standin: Any,
-    real: Any,
+    source: Any,
+    target: Any,
+    source_label: str,
+    target_label: str,
+    hazard: str,
 ) -> List[Divergence]:
-    """Rule C: every call binding on the stand-in must bind on the real class."""
+    """Every call that binds on ``source`` must also bind on ``target``.
+
+    Direction-agnostic, because a degraded-mode stand-in has to satisfy this in
+    BOTH directions and each direction fails differently:
+
+    * source=stand-in, target=real — the stand-in must not accept what the real
+      rejects, or a caller shaped against the stand-in 500s once the real
+      service is wired in (this is how fm#964 and the dead
+      ``cleanup_session_data`` route stayed invisible).
+    * source=real, target=stand-in — the stand-in must serve every call the
+      real service serves, or the DEGRADED path 500s on calls the healthy path
+      handles. ``CaseService.create_case`` takes ``source``; the route passes
+      it unconditionally; a stand-in without that parameter raises TypeError.
+
+    ``hazard`` is the one-line consequence rendered into each message so a
+    reviewer can read the direction straight off the failure.
+    """
     out: List[Divergence] = []
 
     def add(detail: str) -> None:
@@ -241,64 +260,63 @@ def compare_standin_subset(
                 rule="C",
                 interface=interface_name,
                 member=member,
-                left=_describe(standin, "stand-in"),
-                right=_describe(real, "real"),
-                detail=detail,
+                left=_describe(source, source_label),
+                right=_describe(target, target_label),
+                detail=f"{detail} — {hazard}",
             )
         )
 
-    if _is_coroutine(standin) != _is_coroutine(real):
+    if _is_coroutine(source) != _is_coroutine(target):
         add(
-            f"coroutine mismatch: stand-in is "
-            f"{'async' if _is_coroutine(standin) else 'sync'}, real is "
-            f"{'async' if _is_coroutine(real) else 'sync'} — the same call site "
+            f"coroutine mismatch: {source_label} is "
+            f"{'async' if _is_coroutine(source) else 'sync'}, {target_label} is "
+            f"{'async' if _is_coroutine(target) else 'sync'}; the same call site "
             f"cannot serve both"
         )
         return out
 
     try:
-        standin_sig = _signature_of(standin)
-        real_sig = _signature_of(real)
+        source_sig = _signature_of(source)
+        target_sig = _signature_of(target)
     except (TypeError, ValueError) as exc:  # pragma: no cover - exotic callables
         add(f"signature not introspectable: {exc}")
         return out
 
-    standin_params = _named_params(standin_sig)
-    real_params = _named_params(real_sig)
-    real_kwargs = _has_var_keyword(real_sig)
-    real_args = _has_var_positional(real_sig)
+    source_params = _named_params(source_sig)
+    target_params = _named_params(target_sig)
+    target_kwargs = _has_var_keyword(target_sig)
+    target_args = _has_var_positional(target_sig)
 
-    for name, sparam in standin_params.items():
-        rparam = real_params.get(name)
-        if rparam is None:
-            absorbed = real_kwargs or (
-                real_args and sparam.kind is inspect.Parameter.POSITIONAL_ONLY
+    for name, sparam in source_params.items():
+        tparam = target_params.get(name)
+        if tparam is None:
+            absorbed = target_kwargs or (
+                target_args and sparam.kind is inspect.Parameter.POSITIONAL_ONLY
             )
             if not absorbed:
                 add(
-                    f"stand-in accepts parameter '{name}' that the real class "
-                    f"rejects — a caller shaped against the stand-in 500s in "
-                    f"production"
+                    f"{source_label} accepts parameter '{name}' that "
+                    f"{target_label} rejects"
                 )
             continue
-        if not _kinds_compatible(sparam, rparam):
+        if not _kinds_compatible(sparam, tparam):
             add(
-                f"parameter '{name}': real kind {rparam.kind.name} cannot serve "
-                f"stand-in kind {sparam.kind.name}"
+                f"parameter '{name}': {target_label} kind {tparam.kind.name} "
+                f"cannot serve {source_label} kind {sparam.kind.name}"
             )
-        if sparam.default is not _EMPTY and rparam.default is _EMPTY:
+        if sparam.default is not _EMPTY and tparam.default is _EMPTY:
             add(
-                f"parameter '{name}' is optional on the stand-in but REQUIRED "
-                f"on the real class — a call omitting it binds on one, not the other"
+                f"parameter '{name}' is optional on {source_label} but REQUIRED "
+                f"on {target_label}; a call omitting it binds on one, not the other"
             )
 
-    for name, rparam in real_params.items():
-        if name in standin_params:
+    for name, tparam in target_params.items():
+        if name in source_params:
             continue
-        if rparam.default is _EMPTY:
+        if tparam.default is _EMPTY:
             add(
-                f"real class REQUIRES parameter '{name}' the stand-in does not "
-                f"accept — a call shaped against the stand-in cannot bind on the real"
+                f"{target_label} REQUIRES parameter '{name}' that {source_label} "
+                f"does not accept"
             )
 
     return out
@@ -959,22 +977,29 @@ def test_rule_c_standin_surface_is_subset_of_real(
     dead ``POST /{session_id}/cleanup`` route called
     ``cleanup_session_data`` which only ever existed on the stand-in, so every
     production call 500'd while the suite stayed green.
+
+    EVERY public member the stand-in exposes is compared against the real
+    class, contract-declared or not. An earlier revision of this guard compared
+    only the members the contract does NOT declare, which left the exact fm#964
+    shape uncovered: a stand-in and a real implementation can both satisfy the
+    contract (Rule B) and still disagree with each other on a contract-declared
+    method — the stand-in taking an extra optional keyword the real service
+    rejects is enough to 500 in production, and Rule B permits it because the
+    contract never mentioned that keyword. Rule B asks "does the stand-in
+    satisfy the contract?"; Rule C asks "can the real class serve every call
+    the stand-in accepts?". They are different questions and neither implies
+    the other.
     """
     registry = _registry_or_fail()
     entry = registry[interface_name]
     factory = next(f for label, f in entry.standins if label == standin_name)
     standin = factory()
 
-    contract_members = set(interface_members(entry.interface))
-    extras = {
-        name: func
-        for name, func in public_callables(standin).items()
-        if name not in contract_members
-    }
+    exposed = public_callables(standin)
 
     divergences: List[Divergence] = []
     for real in entry.reals:
-        for member_name, standin_func in sorted(extras.items()):
+        for member_name, standin_func in sorted(exposed.items()):
             real_func = _lookup_member(real, member_name)
             if real_func is None:
                 divergences.append(
@@ -1004,16 +1029,37 @@ def test_rule_c_standin_surface_is_subset_of_real(
                     )
                 )
                 continue
+            # C1 — the stand-in must not accept what the real class rejects.
             divergences.extend(
-                compare_standin_subset(
+                compare_binding_compatibility(
                     interface_name=interface_name,
                     member=member_name,
-                    standin=standin_func,
-                    real=real_func,
+                    source=standin_func,
+                    target=real_func,
+                    source_label="stand-in",
+                    target_label="real",
+                    hazard=(
+                        "a caller shaped against the stand-in 500s once the "
+                        "real service is wired in"
+                    ),
+                )
+            )
+            # C2 — the stand-in must serve every call the real class serves.
+            divergences.extend(
+                compare_binding_compatibility(
+                    interface_name=interface_name,
+                    member=member_name,
+                    source=real_func,
+                    target=standin_func,
+                    source_label="real",
+                    target_label="stand-in",
+                    hazard=(
+                        "the DEGRADED path 500s on a call the healthy path " "serves"
+                    ),
                 )
             )
 
     assert not divergences, (
-        f"{standin_name} exposes surface its real counterpart cannot serve:\n"
+        f"{standin_name} and its real counterpart cannot serve the same calls:\n"
         + _render(divergences)
     )
