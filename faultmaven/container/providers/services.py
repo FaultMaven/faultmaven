@@ -760,6 +760,12 @@ def create_jwt_token_generator(
 
     Returns:
         RS256JWTTokenGenerator instance
+
+    Raises:
+        SigningKeyUnavailableError: The auth service holds no complete RSA
+            pair, so nothing here can sign. Callers must handle it — see
+            ``register_services``, which degrades OAuth rather than aborting
+            composition for services that have nothing to do with it.
     """
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
         build_rs256_token_generator,
@@ -988,20 +994,32 @@ def register_services(container: BaseDIContainer) -> None:
 
         # Create JWT token generator (shares the deployment-wide revocation
         # store, so tokens revoked here are seen by the request-path check)
-        jwt_token_generator = create_jwt_token_generator(
-            settings,
-            revocation_store=token_revocation_store,
-            private_key=auth_service.signing_private_key,
-            public_key=auth_service.verification_public_key,
-        )
+        try:
+            jwt_token_generator = create_jwt_token_generator(
+                settings,
+                revocation_store=token_revocation_store,
+                auth_service=auth_service,
+            )
+        except SigningKeyUnavailableError as e:
+            # Handled the same way as the signing generator above rather than
+            # left to abort composition: everything registered after this point
+            # — the tenant provider, the case service, the investigation engine
+            # — is unrelated to OAuth, and taking the whole application down
+            # with them turns one unusable auth mode into a CrashLoop. The
+            # OAuth dependency answers 503 when the service is absent, which is
+            # the failure the operator can act on.
+            logger.error("OAuth JWT generator unavailable: %s", e)
+            jwt_token_generator = None
+
         container.jwt_token_generator = jwt_token_generator
-        container._register_service("jwt_token_generator", jwt_token_generator)
+        if jwt_token_generator:
+            container._register_service("jwt_token_generator", jwt_token_generator)
 
         # Create OAuth service (uses user_store for dev-login compatibility)
         # Note: user_store is the same store used by dev-login authentication
         # This ensures OAuth can find users created via dev-login
         user_store = getattr(container, "user_store", None)
-        if user_store:
+        if user_store and jwt_token_generator:
             oauth_service = create_oauth_service(
                 settings,
                 user_repository=user_store,  # Use user_store, not user_repo
@@ -1016,7 +1034,10 @@ def register_services(container: BaseDIContainer) -> None:
                 "Redis" if redis_client else "in-memory",
             )
         else:
-            logger.warning("OAuth service skipped (no user_store available)")
+            logger.warning(
+                "OAuth service skipped (%s)",
+                "no user_store available" if jwt_token_generator else "no signing key",
+            )
     else:
         logger.info("OAuth service disabled (using dev-login mode)")
 

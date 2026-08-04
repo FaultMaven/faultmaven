@@ -91,15 +91,19 @@ def _password_reset_claims(
     them. That rules out a marker value in the decoy — the caller supplies the
     address, the caller gets it back, in both cases.
 
-    ``email`` is casefolded so the two paths cannot be told apart by it either:
+    ``email`` is lowercased so the two paths cannot be told apart by it either:
     account lookup is case-insensitive, so a real token would otherwise carry
     the stored spelling while a decoy carried the submitted one, and the
     difference between them would answer the question the decoy exists to
-    refuse. Nothing reads this claim — ``reset_password`` uses ``sub`` and
-    ``jti`` — so normalizing costs nothing.
+    refuse. ``.lower()`` and not ``.casefold()`` deliberately — the repository
+    matches on ``func.lower()`` in SQL and ``.lower()`` in memory, and
+    casefolding would diverge from both on characters like ``ß``. Nothing reads
+    this claim — ``reset_password`` uses ``sub`` and ``jti`` — so normalizing
+    costs nothing.
 
-    ``sub`` is the one claim that genuinely differs (a real ``user_id`` vs a
-    fresh uuid4), and it cannot distinguish them: both are uuid4 strings, and
+    ``sub`` and ``jti`` are the claims that genuinely differ between a real
+    token and a decoy (a real ``user_id`` and a tracked jti, vs two fresh
+    uuid4s), and neither can distinguish them: all four are uuid4 strings, and
     an id the holder could recognise is one they already had.
 
     ``iat``/``exp`` are integers (not datetimes) because ``revocation_reason``
@@ -308,12 +312,16 @@ class IJWTTokenGenerator(ABC):
     async def generate_dummy_reset_token(self, email: str) -> str:
         """Generate an enumeration decoy for a request that mints nothing.
 
-        Same claim shape, same claim VALUES bar the subject, same key and same
-        algorithm as a real reset token — so "this address has no account",
-        "this account is deactivated" and "here is your link" are one
-        observable to whoever submitted the form. That is why the submitted
+        Same claim shape, same claim VALUES bar ``sub``/``jti``, same key and
+        same algorithm as a real reset token — so "this address has no
+        account", "this account is deactivated" and "here is your link" are one
+        observable to whoever receives the token. That is why the requested
         address is a parameter: a payload is base64, and a decoy carrying a
         marker address announces itself to anyone who decodes it.
+
+        (No HTTP route reaches this flow today — ``request_password_reset`` has
+        no endpoint and no caller outside tests. The property is maintained
+        because the flow is maintained, not because a form is live.)
 
         The token verifies; it simply names a subject that does not exist, and
         is refused at redemption like any other unusable link. No single-use
