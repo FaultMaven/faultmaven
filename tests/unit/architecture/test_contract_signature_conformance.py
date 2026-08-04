@@ -631,6 +631,7 @@ EXCLUDED_INTERFACES: Dict[str, str] = {
 # Completeness tripwire
 # ============================================================
 
+
 def _loaded_faultmaven_classes() -> List[type]:
     """Every class currently reachable under the ``faultmaven`` namespace.
 
