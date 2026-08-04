@@ -2666,7 +2666,26 @@ def get_fallback_prompt_for_case(
 # =============================================================================
 
 
-def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
+def _symptom_verification_is_stale(case) -> bool:
+    """Whether the symptom verification no longer speaks to the present.
+
+    Thin adapter over ``symptom_currency`` so the emphasis text has one reason
+    to change. False when no case is supplied (the ``progress``-only callers),
+    and false for UNDATED — an unknown observation time is not evidence of
+    staleness, and driving a re-verification demand off it would fire on the
+    ordinary case of evidence that simply has no timestamps to parse.
+    """
+    if case is None:
+        return False
+    from faultmaven.core.investigation.symptom_currency import (
+        SymptomCurrency,
+        assess_symptom_currency,
+    )
+
+    return assess_symptom_currency(case) == SymptomCurrency.STALE
+
+
+def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) -> str:
     """Compute focus zone from progress milestones (Framework §8.5).
 
     Returns a contextual status signal injected at the top of DIAGNOSIS
@@ -2679,6 +2698,12 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
     - Zone 3: cause_state == IDENTIFIED, solution_proposed=False — propose fix
     - Zone 3 pending: solution_proposed=True — awaiting execution, NON-suppressive
       hold that yields to root-cause analysis on new evidence/dispute (INV-33)
+
+    ``case`` is optional so existing ``progress``-only callers keep working
+    unchanged; when supplied, Zone 2 is qualified by how current the symptom
+    verification is (it otherwise asserts "Symptoms are confirmed" as settled
+    fact on every turn for the rest of the case, which is what kept an
+    investigation hunting the cause of a condition that had already stopped).
     """
     if not progress.symptom_verified:
         return """
@@ -2686,13 +2711,37 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
 No symptoms have been formally confirmed. When analyzing data, look for
 evidence the problem exists — errors, anomalies, user impact — to advance
 symptom_verified.
+
+Verification is about the problem's CURRENT state when the case says it is
+ongoing. Data that shows the problem at some earlier time establishes that it
+occurred, not that it is occurring; when the only evidence is from the past,
+say so and ask for a current check rather than treating the question as
+settled.
 """
     elif progress.symptom_verified and progress.cause_state != CauseState.IDENTIFIED:
+        stale = _symptom_verification_is_stale(case)
+        if stale:
+            return """
+**INVESTIGATION PROGRESS: Root cause analysis — re-confirm the symptom first**
+The problem was verified to have EXISTED, but the newest observation behind
+that is old and this case records the problem as ongoing. Nothing on record
+establishes it is still happening.
+
+Confirm the problem is still occurring before spending further turns on cause.
+If a current check shows it is NOT occurring, state that plainly, record the
+current reading as evidence, and set symptom_verified=False with a
+justification — do not keep hunting a cause for a condition that has stopped.
+Whether to investigate why it stopped is the user's call; ask.
+"""
         return """
 **INVESTIGATION PROGRESS: Root cause analysis**
 Symptoms are confirmed. When evaluating evidence, focus on hypotheses
 explaining the root cause. Two independent causal observations grounding a
 hypothesis's chain root are what let the engine mark the cause identified.
+
+If new data contradicts the symptom — a current check shows the problem is not
+occurring — do not absorb it as noise. Say so, record it, and set
+symptom_verified=False with a justification.
 """
     elif (
         progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed
@@ -2778,7 +2827,7 @@ def _select_diagnosis_block(case: Case) -> str:
     directive, so the seeded turn sees a single coherent instruction. Flag off
     (or no seeds this case): byte-identical to before.
     """
-    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
+    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
     # Teach lazy backward expansion (the engine ingests the emitted chain).
     block += _CHAIN_EMISSION_BLOCK

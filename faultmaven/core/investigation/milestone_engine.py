@@ -941,6 +941,71 @@ def _is_context_length_error(exc: Exception) -> bool:
     return any(p in msg for p in CONTEXT_OVERFLOW_PHRASES)
 
 
+def _apply_symptom_retraction(
+    case: "Case", milestones, response_obj, metadata: dict
+) -> bool:
+    """Honor an explicit, justified ``symptom_verified=False``.
+
+    The symptom claim was a one-way latch: nothing could lower it once set, so
+    a verification that later proved not to hold — the problem had already
+    stopped, the reading was misread, the data was from the wrong window —
+    stayed on the case and kept the investigation pointed at a cause for a
+    condition that was not occurring.
+
+    The LLM is already the authority for this milestone (it is the only party
+    that sets it), so retraction goes through the same authority rather than a
+    parallel engine-side rule. The downstream layers were built for this: the
+    ``rcc`` / ``working_conclusion`` backstop legs in ``cause_identification_leg``
+    are explicitly gated on a verified symptom precisely so a conclusion
+    "left behind after a symptom claim is withdrawn" stops counting, and
+    ``verification_status._is_grounded`` reads the same anchor. Withdrawal was
+    designed for; it was simply unreachable.
+
+    TWO GUARDS, because a spurious retraction is worse than a missed one — it
+    would discard real progress and could oscillate:
+
+    1. Only an EXPLICIT ``False`` counts. The field is ``Optional[bool]``, so
+       "absent" and "false" are distinguishable; a model that omits it (the
+       overwhelmingly common case) changes nothing.
+    2. A justification for the retraction must be present in
+       ``internal_reasoning.milestone_justifications``. Providers differ in how
+       eagerly they populate optional booleans, and some will emit ``false`` by
+       habit rather than by judgement; requiring the model to also write down
+       WHY separates a decision from a default. This reuses the justification
+       channel the prompt already mandates for milestone changes.
+
+    Returns True when a retraction was applied.
+    """
+    claimed = getattr(milestones, "symptom_verified", None)
+    if claimed is not False:
+        return False
+    if not case.progress or not case.progress.symptom_verified:
+        return False  # nothing to retract
+
+    reasoning = getattr(response_obj, "internal_reasoning", None)
+    justifications = getattr(reasoning, "milestone_justifications", None) or {}
+    rationale = justifications.get("symptom_verified")
+    if not rationale or not str(rationale).strip():
+        logger.warning(
+            "Case %s: ignoring unjustified symptom_verified=False. Retraction "
+            "discards established progress, so it requires an explicit "
+            "justification — an unexplained false is treated as a provider "
+            "default, not a judgement.",
+            case.case_id,
+        )
+        return False
+
+    case.progress.symptom_verified = False
+    metadata.setdefault("milestones_retracted", []).append("symptom_verified")
+    logger.info(
+        "Case %s: symptom_verified RETRACTED at turn %s — %s",
+        case.case_id,
+        case.current_turn,
+        str(rationale)[:200],
+    )
+    return True
+
+
 def _evidence_coverage(
     case: "Case", source_file_id: str | None
 ) -> "tuple[datetime | None, datetime | None]":
@@ -8150,6 +8215,8 @@ class MilestoneEngine:
                     if not getattr(p, field, False):
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
+
+            _apply_symptom_retraction(case, m, response_obj, metadata)
 
             if m.root_cause_likelihood is not None:
                 p.root_cause_likelihood = m.root_cause_likelihood

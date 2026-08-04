@@ -1180,6 +1180,49 @@ def _fresh_this_turn_attr(item_turn: Optional[int], current_turn: int) -> str:
     return ""
 
 
+def _symptom_currency_note(case, indicator: str) -> str:
+    """Qualify the ``symptom_verified`` indicator with how current it is.
+
+    A bare ``- symptom_verified`` states a conclusion while withholding
+    everything needed to weigh it: what established the problem, when it was
+    observed, and whether that still speaks to now. Read as settled fact, it
+    sends the investigation looking for a cause of something that may have
+    stopped. The flag is unchanged — this only stops it being reported as more
+    than it is.
+
+    Empty for every other indicator, and for cases where currency does not
+    arise (see ``assess_symptom_currency``).
+    """
+    if indicator != "symptom_verified":
+        return ""
+
+    from faultmaven.core.investigation.symptom_currency import (
+        SymptomCurrency,
+        assess_symptom_currency,
+        newest_symptom_observation,
+    )
+
+    currency = assess_symptom_currency(case)
+    if currency == SymptomCurrency.NOT_APPLICABLE:
+        return ""
+    if currency == SymptomCurrency.UNDATED:
+        return (
+            " — the evidence behind this carries no observation time, so how "
+            "recently the problem was seen is UNKNOWN (not confirmed recent)"
+        )
+
+    observed = newest_symptom_observation(case)
+    stamp = observed.isoformat() if observed else "unknown"
+    if currency == SymptomCurrency.CURRENT:
+        return f" — symptom last observed {stamp}"
+    return (
+        f" — symptom last observed {stamp}, and this case records the problem "
+        "as ONGOING. That the problem EXISTED is established; that it is "
+        "STILL HAPPENING is not. Confirm it is still occurring before treating "
+        "the cause as the open question, and say so plainly if it is not"
+    )
+
+
 def _observed_attr(ev) -> str:
     """XML attributes for WHEN the evidence's content was observed.
 
@@ -2857,7 +2900,7 @@ def build_investigation_context(
         if active_indicators:
             milestones_str += "<progress_indicators>\n"
             for ind in active_indicators:
-                milestones_str += f"- {ind}\n"
+                milestones_str += f"- {ind}{_symptom_currency_note(case, ind)}\n"
             milestones_str += "</progress_indicators>"
         else:
             milestones_str += "<progress_indicators>None yet</progress_indicators>"
