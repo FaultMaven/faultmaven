@@ -33,6 +33,7 @@ from faultmaven.core.investigation.causal_graph import (
     m6_disconfirmation_basis,
     seed_problem_node,
 )
+from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -937,7 +938,22 @@ def _incident_emission(root_node_id: str, hypothesis_id: str):
                     # Verbal post-fix confirmation, as in the incident (the
                     # schema requires a file id for file-backed source types).
                     "source_type": "user_description",
-                }
+                },
+                # POSITIVE CONTROL, same emission, ORDINARY category: its link
+                # MUST land. Without it every assertion below is negative, so
+                # a wiring defect that drops the emission before the guard —
+                # the very defect class this file exists for — would pass. It
+                # also proves the refusal is category-scoped rather than the
+                # pipeline silently discarding all links.
+                {
+                    "summary": (
+                        "CloudTrail shows AssumeRoleWithWebIdentity calls "
+                        "with recipientAccountId 444455556666."
+                    ),
+                    "extract": "recipientAccountId=444455556666",
+                    "category": "causal_evidence",
+                    "source_type": "user_description",
+                },
             ],
             # The inversion: the model REFUTES-links its own success
             # confirmation to the root that success proves, at full
@@ -953,7 +969,15 @@ def _incident_emission(root_node_id: str, hypothesis_id: str):
                         "authentication succeeded."
                     ),
                     "stance_confidence": 1.0,
-                }
+                },
+                # The positive control's link — ordinary category, must land.
+                {
+                    "node_ref": root_node_id,
+                    "evidence_id_ref": "new_index_1",
+                    "stance": "supports",
+                    "reasoning": "CloudTrail confirms the caller account.",
+                    "stance_confidence": 0.9,
+                },
             ],
             "hypothesis_evidence_links": [
                 {
@@ -1034,17 +1058,47 @@ async def test_incident_emission_through_process_turn_does_not_start_the_cascade
         is not HypothesisState.REFUTED
     )
 
-    # 3. No engine row asserts a persistence nobody observed.
-    assert not [
-        e for e in updated.evidence if "yet the problem persisted" in (e.summary or "")
-    ]
+    # 3. M6 never fired: NO engine-authored row exists at all. (Asserting the
+    #    retired fabrication sentence is absent would be vacuous — the current
+    #    mint writes "Engine inference (M6), not an observation: …", so that
+    #    string cannot appear whether or not the cascade regresses; its absence
+    #    is separately pinned where M6 legitimately fires.)
+    assert not [e for e in updated.evidence if e.collected_by == ENGINE_EVIDENCE_AUTHOR]
 
-    # 4. The refused links left no stance behind on either axis.
+    # 4. No refuting stance survives on EITHER axis. Scanning the node axis
+    #    alone left the hypothesis axis unguarded: removing that guard kept
+    #    this test green while a confidence-1.0 REFUTES landed on the
+    #    hypothesis and eroded its likelihood.
     assert not [
         link
         for link in root_after.evidence_links
         if link.stance is EvidenceStance.REFUTES
     ]
+    hypothesis_after = updated.hypotheses[hypothesis.hypothesis_id]
+    assert not [
+        link
+        for link in hypothesis_after.evidence_links
+        if link.stance is EvidenceStance.REFUTES
+    ]
+    assert (
+        hypothesis_after.likelihood >= hypothesis.likelihood
+    ), "the hypothesis must not be eroded by its own success confirmation"
+
+    # 5. POSITIVE CONTROL — the emission genuinely reached the link-application
+    #    path, and the refusal is CATEGORY-scoped rather than the pipeline
+    #    discarding links wholesale. Without this, assertions 1-4 are all
+    #    negative, so a wiring defect that drops the emission before the guard
+    #    — the very defect class this file exists for — passes silently.
+    ordinary = [
+        e for e in updated.evidence if e.category is EvidenceCategory.CAUSAL_EVIDENCE
+    ]
+    assert ordinary, "the ordinary evidence row from the same emission must land"
+    assert [
+        link
+        for link in root_after.evidence_links
+        if link.evidence_id == ordinary[-1].evidence_id
+        and link.stance is EvidenceStance.SUPPORTS
+    ], "the ordinary row's link must land — only ABSENCE links are refused"
 
 
 @pytest.mark.asyncio
