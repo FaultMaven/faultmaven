@@ -273,7 +273,8 @@ skew clamp from `quota_frees_at`; re-deriving `X-RateLimit-Reset` on a 429 from
 `time.time() + retry_after`; dropping the `X-RateLimit-*` headers from the OAuth
 429; closing the outgoing client before installing its replacement in `_adopt`;
 awaiting the close instead of dispatching it; removing either early return from
-`_add_rate_limit_headers`; defaulting an absent `Retry-After` to `60` in
-`_create_rate_limit_response` (the raise sites pass the measured value through
-verbatim, so a default there is unreachable and cannot be the mutation);
-registering a middleware after CORS.
+`_add_rate_limit_headers`; writing `Retry-After` unconditionally in
+`_create_rate_limit_response`, or restoring a `or 60` / `or 3600` default at the
+raise sites — the state a default fires on is unreachable in production, but the
+"unmeasured is absent" contract is what makes it *testable*, so both spellings
+of the regression turn a test red; registering a middleware after CORS.

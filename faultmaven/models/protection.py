@@ -200,14 +200,20 @@ class RateLimitError(ProtectionError):
 
     def __init__(
         self,
-        retry_after: int,
+        retry_after: Optional[int],
         limit_type: str,
         current_count: int,
         limit: int,
         correlation_id: str = "",
         reset_time: Optional[datetime] = None,
     ):
-        message = f"Rate limit exceeded: {current_count}/{limit} requests. Retry after {retry_after} seconds."
+        # The message obeys the same contract as the headers: a wait nobody
+        # measured is left out of the sentence rather than rendered as the word
+        # "None" for a client to read as a duration. The header path already
+        # omits it; the body is as much the wire as the header is.
+        message = f"Rate limit exceeded: {current_count}/{limit} requests."
+        if retry_after is not None:
+            message += f" Retry after {retry_after} seconds."
         super().__init__(message, "RATE_LIMIT_EXCEEDED", correlation_id)
         self.retry_after = retry_after
         self.limit_type = limit_type

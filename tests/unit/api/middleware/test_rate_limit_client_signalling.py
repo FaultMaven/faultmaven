@@ -13,6 +13,7 @@ so nothing here costs an extra Redis round trip.
 """
 
 import itertools
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -270,6 +271,14 @@ async def test_an_unmeasured_wait_is_absent_not_defaulted():
     )
     assert "Retry-After" not in refused.headers, dict(refused.headers)
     assert refused.headers["X-RateLimit-Limit"] == "7"
+
+    # The body is as much the wire as the header is. Omitting the header while
+    # the message still read "Retry after None seconds." would hand the client
+    # the same garbage one layer down, and a client parsing the body rather
+    # than the headers would be no better off than before the omission.
+    body = json.loads(refused.body)
+    assert "None" not in body["message"], body["message"]
+    assert body["retry_after"] is None, body
 
 
 async def test_the_measured_wait_reaches_the_header_however_small():
