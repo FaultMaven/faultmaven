@@ -218,3 +218,45 @@ async def test_note_recomputes_grade_ignoring_stale_persisted_default():
     service = ReportGenerationService()
     summary = await service._generate_resolution_summary(case, {"duration": "2h"})
     assert "Assurance:" not in summary
+
+
+@pytest.mark.asyncio
+async def test_established_by_provenance_is_rendered_under_root_cause():
+    """#987: when the engine PROMOTED a cause from the user's confirmation plus
+    a cited absence row rather than from chain validation alone, the report says
+    so. The assurance note grades how strongly the cause is held; this says how
+    it came to be held — and a provenance field nothing reads is not provenance.
+    """
+    case = _resolved_case(with_root=True, confirmed=True)
+    # object.__setattr__: the fixture stamps closure_reason on a RESOLVED case,
+    # so any assignment that revalidates the Case would trip that unrelated
+    # invariant. We are exercising the RENDERER, not Case validation.
+    object.__setattr__(
+        case,
+        "root_cause_conclusion",
+        case.root_cause_conclusion.model_copy(
+            update={
+                "established_by": (
+                    "engine: user-confirmed resolution at turn 11 — "
+                    "causal-absence ev_47b2f3337ffc bears on root "
+                    "cn_aaaaaaaaaaaa (M2 gone⇒gone)"
+                )
+            }
+        ),
+    )
+    service = ReportGenerationService()
+    summary = await service._generate_resolution_summary(case, {"duration": "2h"})
+    assert "Established by:" in summary
+    assert "user-confirmed resolution at turn 11" in summary
+    assert "ev_47b2f3337ffc" in summary
+
+
+@pytest.mark.asyncio
+async def test_no_provenance_line_when_none_recorded():
+    """The line is absent — not empty — on a conclusion with no recorded
+    provenance (an LLM-authored one: its provenance is the transcript)."""
+    case = _resolved_case(with_root=True, confirmed=True)
+    assert case.root_cause_conclusion.established_by is None
+    service = ReportGenerationService()
+    summary = await service._generate_resolution_summary(case, {"duration": "2h"})
+    assert "Established by:" not in summary
