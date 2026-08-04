@@ -7,38 +7,43 @@ re-record ``turn_history[-1].agent_response_summary`` via frozen-safe
 the original defect survived: the pre-#978 writes crashed every turn they
 were reached while all detector tests stayed green.
 
-This drives ``process_turn`` through the real ``_process_turn_impl`` with the
-LLM seam stubbed to return a REAL ``InvestigationResponse_General`` (never a
-mock stand-in — a fake response type would pass a dead gate) whose narration
-over-claims disposition on a non-terminal case, and asserts both surfaces:
-
-- the returned ``agent_response`` carries the corrective notice APPENDED
-  below the LLM prose (composition, never substitution — the DF-4 lesson);
-- the turn record's ``agent_response_summary`` reflects the COMPOSED text,
-  so the next-turn prompt and turn_outcome heuristics do not replay the
-  model its own uncorrected over-claim (the #668 loop).
+These tests drive ``process_turn`` through the real ``_process_turn_impl``
+with only the LLM seam stubbed, returning a REAL
+``InvestigationResponse_Diagnosis`` — the schema production selects for an
+INVESTIGATING case at the default DIAGNOSIS stage (a ``_General`` stand-in
+would drift from the dispatch the real turn takes). Assertions use the
+imported notice constants, never re-typed fragments, so a wording edit can't
+silently detach them from the engine; both notice variants are covered (the
+source names the pending shape "the guard's most probable real-world shape").
 """
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-from faultmaven.core.investigation.schemas import InvestigationResponse_General
-from faultmaven.modules.case.domain.models import (
-    Case,
-    CaseState,
-    InvestigationProgress,
-    ProblemVerification,
+from faultmaven.core.investigation.milestone_engine import (
+    _NARRATION_OVERCLAIM_NOTICE,
+    _NARRATION_OVERCLAIM_NOTICE_PENDING,
+    MilestoneEngine,
+    _narration_asserts_disposition,
 )
+from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
+from faultmaven.modules.case.domain.models import Case, CaseState, InquiryData
 
-pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+pytestmark = pytest.mark.unit
 
-# Fires _narration_asserts_disposition (same phrase the detector tests pin).
+# Must stay in _COMPLETION_PHRASES' narrow scan; the module-scope detector
+# guard below turns a phrase-list narrowing into a loud failure here instead
+# of a silent false-green on the apply tests.
 _OVERCLAIM_PROSE = "Case resolved. The nameserver fix took care of it."
-# Stable fragment of _NARRATION_OVERCLAIM_NOTICE.
-_NOTICE_FRAGMENT = "has not been resolved or closed"
+_CLEAN_PROSE = "Let's check the pod events next."
+
+
+def test_overclaim_prose_still_fires_detector():
+    """If _COMPLETION_PHRASES is ever narrowed past this phrase, the apply
+    tests below would degrade to vacuous greens — fail loudly here instead."""
+    assert _narration_asserts_disposition(_OVERCLAIM_PROSE) is True
+    assert _narration_asserts_disposition(_CLEAN_PROSE) is False
 
 
 def _make_repo():
@@ -56,78 +61,118 @@ def _make_investigating_case() -> Case:
         user_id="user_test",
         organization_id="org_test",
         description="INV-40 apply-path test description",
-        problem_verification=ProblemVerification(
-            symptom_statement="Pods crashlooping",
-            severity="HIGH",
-            temporal_state="ongoing",
-            urgency_level="high",
+        inquiry=InquiryData(
+            proposed_problem_statement="INV-40 apply-path test",
+            problem_statement_confirmed=True,
+            decided_to_investigate=True,
         ),
     )
-    case.inquiry.proposed_problem_statement = "INV-40 apply-path test"
-    case.inquiry.problem_statement_confirmed = True
-    case.inquiry.problem_statement_confirmed_at = datetime.now(timezone.utc)
-    case.inquiry.decided_to_investigate = True
-    case.inquiry.decision_made_at = datetime.now(timezone.utc)
     case.state = CaseState.INVESTIGATING
-    case.progress = InvestigationProgress()
+    # Real callers (investigation_service) increment before handing the case
+    # to the engine — a turn-0 record is a shape no production turn has.
+    case.current_turn = 3
     return case
 
 
-def _make_engine() -> MilestoneEngine:
+def _make_engine(prose: str) -> MilestoneEngine:
     llm = MagicMock()
-    # Real string: the metric label (narration_overclaim_total) requires one,
-    # and a bare MagicMock would leak through _resolve_chat_provider_name.
+    # Real strings on the two attributes the turn path reads off the provider:
+    # - provider_name feeds the narration_overclaim_total metric label, and
+    #   _resolve_chat_provider_name's settings-chain fallback returns a bare
+    #   MagicMock for an unspecced mock (verified) — a non-str label.
+    #   Deliberately NOT "openai"/"anthropic": those route token estimation to
+    #   tiktoken, which downloads its BPE vocab on a cold cache (offline CI).
+    # - config.default_model feeds resolve_model_budget, where a MagicMock
+    #   makes .startswith() truthy for every registry key.
     llm.provider_name = "test-provider"
+    llm.config.default_model = "test-model"
     engine = MilestoneEngine(llm, _make_repo(), investigation_tools=MagicMock())
     engine._generate_structured_output = AsyncMock(
-        return_value=InvestigationResponse_General.model_validate(
-            {"agent_response": _OVERCLAIM_PROSE, "state_updates": {}}
+        return_value=InvestigationResponse_Diagnosis.model_validate(
+            {"agent_response": prose, "state_updates": {}}
         )
     )
     return engine
 
 
+@pytest.mark.asyncio
 async def test_overclaim_notice_is_appended_to_reply_and_turn_summary():
-    engine = _make_engine()
+    engine = _make_engine(_OVERCLAIM_PROSE)
     case = _make_investigating_case()
+    assert case.pending_transition is None  # precondition: plain variant fires
 
     result = await engine.process_turn(
         case=case, user_message="Thanks, everything looks good on my side now."
     )
 
-    # Reply surface: notice APPENDED below the preserved LLM prose.
+    # Reply surface: the FULL notice is APPENDED below the preserved prose —
+    # composition, never substitution (the DF-4 lesson), via the "---"
+    # separator _prose_with_gate_notice owns.
     reply = result["agent_response"]
-    assert reply.startswith("Case resolved.")
-    assert _NOTICE_FRAGMENT in reply
+    assert _OVERCLAIM_PROSE in reply
+    assert _NARRATION_OVERCLAIM_NOTICE in reply
+    assert reply.index(_OVERCLAIM_PROSE) < reply.index(_NARRATION_OVERCLAIM_NOTICE)
+    assert "\n\n---\n\n" in reply
 
-    # Turn-record surface: agent_response_summary reflects the COMPOSED text.
-    updated = result["case_updated"]
-    assert updated.turn_history, "turn record was not created"
-    summary = updated.turn_history[-1].agent_response_summary or ""
-    assert _NOTICE_FRAGMENT in summary
-    # And the case stayed non-terminal — the notice corrected, not transitioned.
-    assert updated.state is CaseState.INVESTIGATING
+    # Turn-record surface: agent_response_summary reflects the COMPOSED text
+    # (this is what the next-turn prompt and turn_outcome heuristics read —
+    # the #668 loop breaker). Composed length sits under the 500-char cap, so
+    # the full notice must survive.
+    summary = result["case_updated"].turn_history[-1].agent_response_summary
+    assert summary is not None
+    assert _NARRATION_OVERCLAIM_NOTICE in summary
 
 
-async def test_clean_narration_leaves_turn_summary_as_raw_text():
-    """Control: no over-claim → no notice, and the summary is the raw reply
-    (the re-record block must not fire when composition changed nothing)."""
-    engine = _make_engine()
+@pytest.mark.asyncio
+async def test_overclaim_with_pending_transition_uses_pending_variant():
+    """The suggestions-only/pending shape — the source comment's 'most
+    probable real-world shape': the SAME turn's LLM response both narrates
+    'resolved' and emits proposed_transition (a pre-set pending would be
+    withdrawn by the escape lane before the guard runs). Must apply the
+    PENDING wording to both surfaces."""
+    engine = _make_engine(_OVERCLAIM_PROSE)
     engine._generate_structured_output = AsyncMock(
-        return_value=InvestigationResponse_General.model_validate(
+        return_value=InvestigationResponse_Diagnosis.model_validate(
             {
-                "agent_response": "Let's check the pod events next.",
-                "state_updates": {},
+                "agent_response": _OVERCLAIM_PROSE,
+                "state_updates": {"proposed_transition": {"to_state": "resolved"}},
             }
         )
     )
     case = _make_investigating_case()
 
     result = await engine.process_turn(
+        case=case, user_message="Thanks, everything looks good on my side now."
+    )
+
+    reply = result["agent_response"]
+    assert _NARRATION_OVERCLAIM_NOTICE_PENDING in reply
+    assert _NARRATION_OVERCLAIM_NOTICE not in reply
+    summary = result["case_updated"].turn_history[-1].agent_response_summary
+    assert summary is not None
+    assert _NARRATION_OVERCLAIM_NOTICE_PENDING in summary
+
+
+@pytest.mark.asyncio
+async def test_clean_narration_leaves_turn_summary_as_raw_text():
+    """Control: no over-claim → no notice on either surface, the summary is
+    EXACTLY the raw reply, and the re-record block does not fire (observed
+    via the _summarize_text spy: record creation is the only 500-cap call —
+    a silent extra re-record on clean turns is the #978 failure class)."""
+    engine = _make_engine(_CLEAN_PROSE)
+    engine._summarize_text = MagicMock(wraps=engine._summarize_text)
+    case = _make_investigating_case()
+
+    result = await engine.process_turn(
         case=case, user_message="What should we look at next?"
     )
 
-    assert _NOTICE_FRAGMENT not in result["agent_response"]
-    summary = result["case_updated"].turn_history[-1].agent_response_summary or ""
-    assert _NOTICE_FRAGMENT not in summary
-    assert "pod events" in summary
+    reply = result["agent_response"]
+    assert _NARRATION_OVERCLAIM_NOTICE not in reply
+    assert _NARRATION_OVERCLAIM_NOTICE_PENDING not in reply
+    summary = result["case_updated"].turn_history[-1].agent_response_summary
+    assert summary == _CLEAN_PROSE
+    agent_summary_calls = [
+        c for c in engine._summarize_text.call_args_list if 500 in c.args
+    ]
+    assert len(agent_summary_calls) == 1, "re-record fired on a clean turn"
