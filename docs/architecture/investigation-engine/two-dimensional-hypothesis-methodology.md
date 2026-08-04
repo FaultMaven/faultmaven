@@ -122,7 +122,7 @@ LLM-owned gate milestone on the LLM's behalf.
 | **M3** | Every **hypothesis is a causal chain** terminating in a (possibly-candidate) **root-cause node** proposing a mechanism — distinct from `D` and from its intermediate states. A bare intermediate state / symptom-restatement is not a hypothesis. *(Successor to retired INV-17.)* | Enforced at the **validation / solution-attach checkpoint**, not at creation — a partial chain may exist with no root yet (lazy expansion, §8.2). | Schema (checkpoint) |
 | **M4** | A node transitions to **validated** only via empirical evidence (§7.1) **or** deduction over a *certified-exhaustive* set (§7.1.1) — never by assertion, inference, or correlation. | Unobservable + non-exhaustive → node stays candidate; keep searching or escalate. | Engine-guard (extends INV-23) |
 | **M5** | A **remediation `Solution`** may not exist before its root is at least *mechanistically validated*; a diagnostic action is never a Solution. *(Mitigation / defensive state-interceptions are exempt — they precede a known root by design.)* | Pre-validation actions are recorded as **tests / mitigations**, not solutions; flow continues. | Engine-guard (veto, extends INV-23) |
-| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists / cause already absent) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
+| **M6** | **Counterfactual disconfirmation** (fix applied, `D` persists) **demotes** the chain root `validated → candidate`, attaches refuting evidence, and recomputes `cause_state` — **deterministically, in the engine**, not awaiting an LLM signal. No "verified" conclusion survives its own disproof. Its FAILED-FIX arm is **destructive and extra-graphical**, so that arm fires only on preconditions the case record ESTABLISHES — an executed SOLUTION, an observed persistence after it, and no standing resolution confirmation (INV-42). The EVIDENCE arm (a hypothesis refuted/net-refuted by its own links) is graph-grounded and demotes unconditionally. Either way the durable record states an engine *inference with provenance*, never an observation it did not make. | New evidence required before re-validating (§7.3); exhaustion → re-expand (R6) / escalate. | Engine (deterministic, derive lane) |
 | **M7** | An **AND-node** is `validated` ⇔ *all* co-necessary members are validated; refuting *any one* member refutes the chain. | Withholds validation until members prove out (normal flow); any refutation prunes. | Schema + engine |
 
 Each F / S / R rule in §4–§7 exists to make one or more of these hold; §9
@@ -732,17 +732,86 @@ unrelated new theory. (This is the precise failure in [§10](#10-worked-example)
 the user disproved the NetworkPolicy chain at turn 28 and the agent neither
 demoted it nor refuted it — it pivoted to an unrelated log warning.)
 
-A counterfactual REFUTES link carries this **decisive** force only when the
-model declares it at `stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN` — the
-refute-side twin of the §7.1 support filter (INV-30): every stance is an LLM
-self-claim, and a self-hedged "I think the fix didn't work" must not
-single-handedly refute a node, zero a sibling's belief for proof-by-exclusion
-(§7.1.1 guard #3), or demote the identified cause (M6). A hedged
-absence-REFUTES still counts as *ordinary* refuting evidence (it feeds the
-`refutes > supports` tally and `_net_refuted`); the engine's own M6 refutation
-links carry no declared confidence and are decisive by construction. Hedged
-arrivals are counted at ingest (`counterfactual_refute_hedged_total`) — an
-elicitation signal, not a truth problem.
+**A `causal_absence` row carries no model-authored stance at all (INV-42,
+#987).** The row is a stand-alone audit record, so every LLM-emitted link on
+one is refused — on BOTH belief axes, whatever the stance. The invariant is a
+property of the evidence *category*, not of the link target: enforced on the
+chain axis alone, it is a rule a single stance choice routes around via the
+flat hypothesis axis. Counterfactual links on absence rows are therefore
+**engine-minted only** (the §9.5 confirm-stamp's SUPPORTS, M6's REFUTES).
+
+This replaced an earlier boundary that stripped only SUPPORTS, keeping REFUTES
+"to feed M6" — self-refuting under this document's own contract, since an
+absence row records a **CONFIRMED** fix and a failed fix emits no absence row
+at all (§7.3: the failed outcome is recorded by refuting the hypothesis). An
+absence-REFUTES was thus never a sanctioned emission, and reading one as a
+failed-fix disconfirmation *inverts the row's own meaning* — the #987 incident,
+where a model's success confirmation ("post-fix authentication succeeded"),
+REFUTES-linked to the root it confirmed, refuted that root at belief 0, fired
+M6, retracted a correct conclusion, and terminated a RESOLVED case asserting no
+cause was ever known. Refusals are metered (`absence_row_link_refused_total`) —
+a prompt-adherence signal, not a truth problem; refusing silently would make a
+model that mis-links absence rows indistinguishable from one that does not.
+
+The **decisive-force** bar below therefore now scopes the ENGINE's own links
+plus persisted history: a counterfactual REFUTES carries decisive force only at
+`stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN` — the refute-side twin of
+the §7.1 support filter (INV-30). A self-hedged "I think the fix didn't work"
+must not single-handedly refute a node, zero a sibling's belief for
+proof-by-exclusion (§7.1.1 guard #3), or demote the identified cause (M6); it
+still counts as *ordinary* refuting evidence (feeding `refutes > supports` and
+`_net_refuted`). The engine's own M6 links carry no declared confidence and are
+decisive by construction.
+
+**M6 establishes its preconditions; it does not infer them (INV-42, #987).**
+The demotion trigger carries two materially different claims and the engine
+records only what it can substantiate:
+
+- **Evidence-based** — the hypothesis is REFUTED or net-refuted by its OWN
+  links. This asserts nothing about any fix, is grounded in the graph, and
+  demotes **unconditionally**. Its durable record names the tally it derived
+  from. (Gating *this* arm on fix evidence was the over-broad first cut of the
+  #987 fix, and it left a net-refuted cause standing as identified with its
+  conclusion intact — the NO-INCORRECT-CONCLUSION breach in the opposite
+  direction.)
+- **Counterfactual** — "a fix was applied and the problem persisted". This is a
+  claim about events *outside* the graph, so it fires only on preconditions the
+  case record establishes: an executed **SOLUTION** (a MITIGATION is by
+  definition not a fix of the cause, so a failed workaround must never
+  establish that the cause was addressed), dated by its **execution** turn and
+  not the turn it was offered; a **positive** persistence observation at/after
+  it (a `symptom_evidence` row — "nothing said it was fixed" is not an
+  observation that it stayed broken); and **no** qualifying gone⇒gone
+  confirmation at/after that turn, which would be direct evidence the problem
+  did not persist. Refusals are labeled (`m6_demotion_refused_total{reason}`);
+  a nonzero `resolution_confirmed` rate is a *defect* signal, not elicitation
+  drift.
+
+Refusing the counterfactual arm never leaves a disproven cause standing — the
+hypothesis's own state still governs, so a refuted cause stops grounding
+`cause_state` regardless. What is withheld is only the durable engine
+refutation.
+
+Whatever the arm, **the engine never mints an observation row for something it
+inferred.** M6's durable record previously asserted "the cause was addressed or
+confirmed correct, yet the problem persisted" — a first-person observation
+nothing had checked, and false in the #987 incident. It now states an engine
+*inference with provenance*. The general rule, which explains both halves of
+this design:
+
+> **Constructive transitions may be derived from confirmation plus evidence
+> with recorded provenance; destructive transitions require established
+> preconditions.**
+
+The constructive half is §9.5's confirm-stamp: it promotes a cause the user
+explicitly confirmed and records *how* (`RootCauseConclusion.established_by`
+plus the node link's reasoning), which the resolution report renders beside the
+assurance grade. Resolution is **reconciled, never refused** — a
+refuse-on-divergence gate would convert an engine defect into a deadlock no
+user action can clear (NO COLLAPSE). And "no root cause established" is a
+nameable state: before it had a rendering, the resolution recap reached for the
+early-stage working-conclusion placeholder and told the user the investigation
+had not begun.
 
 Distinguish two failure modes before resuming:
 

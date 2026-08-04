@@ -322,6 +322,35 @@ def test_unlinked_llm_rcc_survives_refutation_documented_residual():
 # ---------------------------------------------------------------------------
 
 
+def _record_failed_fix(case, *, fix_turn=2, persist_turn=3):
+    """Record the FAILED TREATMENT these M6 tests narrate but never persisted.
+
+    Since #987 M6 establishes its preconditions rather than inferring them: an
+    accepted actionable ProposedAction (the user executed a fix) plus a
+    SYMPTOM_EVIDENCE row at/after it (the problem observed still present).
+    "fix applied, symptom persists" living only in a reasoning string is the
+    gap that let M6 mint that sentence as a fact on a SUCCESSFULLY fixed case.
+    """
+    from faultmaven.modules.case.contracts import (
+        InvestigationActionType,
+        ProposedAction,
+    )
+
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="apply the fix",
+            proposed_in_turn=fix_turn,
+            state="accepted",
+        )
+    )
+    row = _evidence("still_failing", EvidenceCategory.SYMPTOM_EVIDENCE)
+    row.collected_at_turn = persist_turn
+    case.evidence.append(row)
+    return case
+
+
 def _identified_case():
     """A case grounded to IDENTIFIED via a validated root (X)."""
     root = _root("cn_0000000000a1", _POOL_LEAK, support_labels=["s1", "s2"])
@@ -342,6 +371,7 @@ def test_recompute_keeps_regrounded_conclusion_on_other_standing_cause():
     each recompute) points the demotion trigger at Y — X's own root refutation
     demotes X via derive, and the RCC(Y) survives the full recompute."""
     case, root_x, hyp_x = _identified_case()
+    _record_failed_fix(case)
     # A second standing cause Y the LLM has now concluded on (flat — no node).
     hyp_y = _hyp(None, _TRAFFIC_SPIKE, hypothesis_id="hyp_0000000000bb")
     case.hypotheses[hyp_y.hypothesis_id] = hyp_y
@@ -349,7 +379,12 @@ def test_recompute_keeps_regrounded_conclusion_on_other_standing_cause():
         _TRAFFIC_SPIKE
     )  # unlinked; recompute links it
     # X's fix failed — a counterfactual absence refute lands on X's root.
-    _attach_engine_refutation(case, root_x.node_id, "fix applied, symptom persists")
+    _attach_engine_refutation(
+        case,
+        root_x.node_id,
+        "fix applied, symptom persists",
+        "engine inference (M6): a fix recorded as executed at turn 2 did not hold",
+    )
 
     _recompute_cause_state_from_chain(case)
 
@@ -362,6 +397,7 @@ def test_recompute_keeps_regrounded_conclusion_on_other_standing_cause():
 
 def test_m6_clears_conclusion_naming_the_disconfirmed_cause():
     case, root_x, hyp_x = _identified_case()
+    _record_failed_fix(case)
     case.root_cause_conclusion = _llm_rcc(_POOL_LEAK, vhid=hyp_x.hypothesis_id)
     hyp_x.evidence_links.append(
         HypothesisEvidenceLink(
@@ -386,6 +422,7 @@ def test_m6_clears_unlinked_conclusion_on_sole_disconfirmed_cause():
     unlinkable, M6's max-likelihood proxy resolves to it and clears it (safe
     blanket — NO-INCORRECT-CONCLUSION over a preserved guess)."""
     case, root_x, hyp_x = _identified_case()
+    _record_failed_fix(case)
     case.root_cause_conclusion = _llm_rcc(_POOL_LEAK)  # no vhid
     hyp_x.evidence_links.append(
         HypothesisEvidenceLink(

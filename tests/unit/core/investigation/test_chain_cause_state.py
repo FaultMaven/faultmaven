@@ -176,6 +176,38 @@ def _case(nodes=None, edges=None, evidence=None, hyps=None) -> Case:
     return case
 
 
+def _record_failed_fix(case, *, fix_turn=2, persist_turn=3):
+    """Record the FAILED TREATMENT these M6 tests narrate but never persisted.
+
+    M6 is a destructive transition and since #987 it establishes its
+    preconditions rather than inferring them: an accepted actionable
+    ProposedAction (the user executed a fix) plus a SYMPTOM_EVIDENCE row
+    at/after it (the problem is observed still present). Before #987 the
+    fixtures asserted "fix applied, D persists" only in a reasoning string,
+    which is precisely the gap that let M6 mint that sentence as a fact on a
+    case where the fix had SUCCEEDED.
+    """
+    from faultmaven.modules.case.contracts import (
+        InvestigationActionType,
+        ProposedAction,
+    )
+
+    case.proposed_actions.append(
+        ProposedAction(
+            case_id=case.case_id,
+            action_type=InvestigationActionType.SOLUTION,
+            description="apply the fix",
+            proposed_in_turn=fix_turn,
+            state="accepted",
+        )
+    )
+    case.evidence.append(
+        _evidence("ev_still_failing", EvidenceCategory.SYMPTOM_EVIDENCE)
+    )
+    case.evidence[-1].collected_at_turn = persist_turn
+    return case
+
+
 def _chain_case():
     """A case with a root→D chain and TWO independent CAUSAL_EVIDENCE SUPPORTS
     on the root (the INV-29 validation bar)."""
@@ -345,19 +377,27 @@ def test_activate_queued_promotes_only_captured():
 def test_attach_engine_refutation_creates_durable_absence_evidence():
     root = _root()
     case = _case(nodes=[root])
-    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    _attach_engine_refutation(
+        case,
+        root.node_id,
+        "failed treatment",
+        "engine inference: fix at turn 2 did not hold",
+    )
     assert len(case.evidence) == 1
     ev = case.evidence[0]
     assert ev.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
     assert root.evidence_links[-1].stance == EvidenceStance.REFUTES
     assert root.evidence_links[-1].evidence_id == ev.evidence_id
     # idempotent — a second call adds nothing (node already has a refuting link)
-    _attach_engine_refutation(case, root.node_id, "again")
+    _attach_engine_refutation(
+        case, root.node_id, "again", "engine inference: fix at turn 2 did not hold"
+    )
     assert len(case.evidence) == 1
 
 
 def test_demote_via_evidence_refutes_and_retracts():
     case, root, hyp = _chain_case()
+    _record_failed_fix(case)
     _recompute_cause_state_from_chain(case)  # grounds it → IDENTIFIED
     assert case.progress.cause_state == CauseState.IDENTIFIED
     # failed treatment: the hypothesis is net-refuted
@@ -383,6 +423,7 @@ def test_turn28_no_resurrection_chain_derived():
     stays REFUTED on the NEXT recompute — it is not re-validated from the stale
     supporting evidence. (The turn-28 bug was exactly this resurrection.)"""
     case, root, hyp = _chain_case()
+    _record_failed_fix(case)
     _recompute_cause_state_from_chain(case)
     assert case.progress.cause_state == CauseState.IDENTIFIED
 
@@ -492,7 +533,12 @@ def test_ordinary_refute_does_not_suppress_decisive_attach():
         )
     )
     case = _case(nodes=[root], evidence=[_evidence("ev_root_support"), ordinary])
-    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    _attach_engine_refutation(
+        case,
+        root.node_id,
+        "failed treatment",
+        "engine inference: fix at turn 2 did not hold",
+    )
     # a CAUSAL_ABSENCE row was added despite the pre-existing ordinary refute
     assert any(
         e.category == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE for e in case.evidence
@@ -548,11 +594,21 @@ def test_hedged_counterfactual_does_not_suppress_decisive_attach():
         )
     )
     case = _case(nodes=[root], evidence=[_evidence("ev_root_support"), hedged_row])
-    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    _attach_engine_refutation(
+        case,
+        root.node_id,
+        "failed treatment",
+        "engine inference: fix at turn 2 did not hold",
+    )
     engine_rows = [e for e in case.evidence if e.collected_by == "engine"]
     assert len(engine_rows) == 1  # attached its own decisive refutation
     # And that decisive engine link now suppresses a SECOND attach (idempotent).
-    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    _attach_engine_refutation(
+        case,
+        root.node_id,
+        "failed treatment",
+        "engine inference: fix at turn 2 did not hold",
+    )
     assert len([e for e in case.evidence if e.collected_by == "engine"]) == 1
 
 
@@ -580,11 +636,21 @@ def test_llm_decisive_refute_does_not_suppress_engine_marker():
     )
     case = _case(nodes=[root], evidence=[_evidence("ev_root_support"), llm_fail])
     assert latest_disconfirmation_turn(case) == -1  # no engine marker yet
-    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    _attach_engine_refutation(
+        case,
+        root.node_id,
+        "failed treatment",
+        "engine inference: fix at turn 2 did not hold",
+    )
     engine_rows = [e for e in case.evidence if e.collected_by == "engine"]
     assert len(engine_rows) == 1
     assert latest_disconfirmation_turn(case) == case.current_turn  # window set
-    _attach_engine_refutation(case, root.node_id, "failed treatment")
+    _attach_engine_refutation(
+        case,
+        root.node_id,
+        "failed treatment",
+        "engine inference: fix at turn 2 did not hold",
+    )
     assert len([e for e in case.evidence if e.collected_by == "engine"]) == 1
 
 

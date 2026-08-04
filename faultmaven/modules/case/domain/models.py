@@ -3503,6 +3503,20 @@ class ProposedAction(BaseModel):
         description="pending | accepted | rejected | superseded",
     )
 
+    accepted_in_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Turn in which compliance detection observed the user EXECUTE this "
+            "action (state='accepted'). Distinct from ``proposed_in_turn``, "
+            "which is when the action was OFFERED — the user executes it a "
+            "turn later in the ordinary flow (#987). Anything reasoning about "
+            "what happened *after the fix* must key on this, not on the "
+            "proposal turn, or pre-execution evidence from the offering turn "
+            "reads as a post-fix outcome. None while pending/superseded, and "
+            "on actions accepted before this field existed."
+        ),
+    )
+
     superseded_in_turn: Optional[int] = Field(
         default=None,
         description=(
@@ -4004,6 +4018,23 @@ class WorkingConclusion(BaseModel):
         default_factory=list, description="Limitations or uncertainties"
     )
 
+    mirrors_root_cause_conclusion: bool = Field(
+        default=False,
+        description=(
+            "True when this working conclusion is a MIRROR of the case's "
+            "RootCauseConclusion rather than an independent read of the live "
+            "hypothesis differential (#987). Load-bearing: the working "
+            "conclusion is one of `cause_identification_leg`'s BACKSTOP legs, "
+            "and it is read from the PREVIOUS turn (it regenerates after the "
+            "recompute). A mirror carries the RCC's likelihood, so without this "
+            "flag a retracted conclusion would keep satisfying the backstop for "
+            "one further turn through its own stale mirror — the retraction is "
+            "supposed to make every consumer see one truth. A mirror is never "
+            "an independent signal anyway: whenever one exists the `rcc` leg "
+            "already governs."
+        ),
+    )
+
     # ============================================================
     # Metadata
     # ============================================================
@@ -4079,6 +4110,22 @@ class RootCauseConclusion(BaseModel):
 
     determined_by: str = Field(
         default="agent", description="Who determined: 'agent' or user_id"
+    )
+
+    established_by: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "PROVENANCE (#987): how this conclusion came to be established, in "
+            "human-readable form — e.g. 'user-confirmed resolution at turn 11; "
+            "causal-absence ev_47b2f3337ffc bears on root cn_29ff828f55b3'. "
+            "Set when the engine PROMOTES a cause from confirmation plus "
+            "evidence rather than from chain validation alone, so the "
+            "structured record carries how it was established instead of a "
+            "bare assertion. None on conclusions the LLM authored directly "
+            "(their provenance is the transcript) and on the per-turn chain "
+            "mirror (its provenance is the validated chain itself)."
+        ),
     )
 
     # ============================================================

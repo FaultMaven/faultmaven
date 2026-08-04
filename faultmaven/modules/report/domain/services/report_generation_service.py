@@ -521,6 +521,15 @@ class ReportGenerationService:
             assurance_note = self._assurance_note(case)
             if assurance_note:
                 parts.append(assurance_note)
+            # Provenance (#987): when the engine PROMOTED this cause from the
+            # user's confirmation plus a cited absence row rather than from
+            # chain validation alone, say so. The assurance note above grades
+            # how strongly the cause is held; this says how it came to be held.
+            # Recorded and rendered together — a provenance field nothing reads
+            # is not provenance, it is a comment in a database column.
+            established_by = getattr(rcc, "established_by", None)
+            if established_by:
+                parts.append(f"_Established by: {established_by}._\n")
             if getattr(rcc, "mechanism", None):
                 parts.append(f"**How it produced the symptom:** {rcc.mechanism}\n")
             if getattr(rcc, "contributing_factors", None):
