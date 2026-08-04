@@ -4081,6 +4081,22 @@ class RootCauseConclusion(BaseModel):
         default="agent", description="Who determined: 'agent' or user_id"
     )
 
+    established_by: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "PROVENANCE (#987): how this conclusion came to be established, in "
+            "human-readable form — e.g. 'user-confirmed resolution at turn 11; "
+            "causal-absence ev_47b2f3337ffc bears on root cn_29ff828f55b3'. "
+            "Set when the engine PROMOTES a cause from confirmation plus "
+            "evidence rather than from chain validation alone, so the "
+            "structured record carries how it was established instead of a "
+            "bare assertion. None on conclusions the LLM authored directly "
+            "(their provenance is the transcript) and on the per-turn chain "
+            "mirror (its provenance is the validated chain itself)."
+        ),
+    )
+
     # ============================================================
     # Validation
     # ============================================================

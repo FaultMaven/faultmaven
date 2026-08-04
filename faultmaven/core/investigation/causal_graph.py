@@ -40,8 +40,10 @@ from faultmaven.core.investigation.cause_assurance import (
     ENGINE_EVIDENCE_AUTHOR,
     MECHANISTIC_RCC_LIKELIHOOD,
     _stem,  # noqa: F401
+    absence_row_link_refused,
     counterfactual_link_decisive,
     register_graph_hooks,
+    resolution_confirmation_rows,
     root_counterfactually_confirmed,
 )
 from faultmaven.core.investigation.cause_assurance import (
@@ -61,12 +63,11 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
-    absence_confirmation_link_stripped_total,
-    counterfactual_refute_hedged_total,
     hypothesis_support_mirrored_to_root_total,
     llm_rcc_cause_linked_total,
     llm_rcc_cause_named_total,
     llm_rcc_retracted_disconfirmed_total,
+    m6_demotion_refused_total,
     rcc_precedence_inversion_total,
     root_validation_blocked_restatement_total,
     root_validation_blocked_support_count_total,
@@ -81,6 +82,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceSourceType,
     EvidenceStance,
     HypothesisState,
+    InvestigationActionType,
     NodeEvidenceLink,
     NodeState,
     NodeType,
@@ -1196,22 +1198,24 @@ def ingest_emitted_chain(
         stance = getattr(link, "stance", None)
         if node is None or ev_id not in existing_ev or stance is None:
             continue
-        # M2 trust boundary: counterfactual CONFIRMATION is engine-reserved.
-        # A SUPPORTS link on a causal_absence row would satisfy
-        # ``root_counterfactually_confirmed`` and mint the CONFIRMED grade —
-        # "verified", the harvest bar, and the grounded disposition axis —
-        # from a pure LLM self-claim, bypassing the RESOLVED handshake that is
-        # the grade's only sanctioned producer. Strip it (the INV-23 surgical-
-        # strip lane; the prompt contract already says absence rows are
-        # stand-alone). REFUTES-on-absence stays accepted: counterfactual
-        # DISCONFIRMATION feeds M6, and refusing it would suppress legitimate
-        # failed-fix signals.
-        if (
-            cat_by_id.get(ev_id) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-            and str(getattr(stance, "value", stance)).lower()
-            == EvidenceStance.SUPPORTS.value
+        # M2 trust boundary (#987), category-gated: NO model-authored stance on
+        # a causal_absence row is accepted — absence rows are stand-alone audit
+        # records and every counterfactual link on one is engine-minted. The
+        # rule, its rationale, and its metering live in ONE place
+        # (``cause_assurance.absence_row_link_refused``), shared verbatim with
+        # the flat hypothesis axis in
+        # ``milestone_engine._apply_hypothesis_evidence_links`` — enforcing it
+        # here alone would leave a boundary a single stance choice routes
+        # around (the #987 second finding).
+        if absence_row_link_refused(
+            cat_by_id.get(ev_id),
+            stance,
+            axis="node",
+            evidence_id=ev_id,
+            node_or_hypothesis_id=nid,
+            case_id=getattr(case, "case_id", None),
+            turn=current_turn,
         ):
-            absence_confirmation_link_stripped_total.inc()
             continue
         # Upsert by (node, evidence) — matching the junction table's ON
         # CONFLICT DO UPDATE. A re-emission is a genuine re-assessment (a
@@ -1219,16 +1223,15 @@ def ingest_emitted_chain(
         # first-write-wins would freeze a link's confidence forever, which is
         # load-bearing now that the §7.1 filter reads it — the model's only
         # escape would be minting a duplicate evidence row that the
-        # independence mirror then collapses. Links on CAUSAL_ABSENCE rows are
-        # never overwritten: the two engine-authored link kinds (the RESOLVED
-        # confirm stamp's SUPPORTS, the M6 refutation) both live on absence
-        # rows, and an LLM re-emission must not launder away an engine verdict
-        # (the strip above already blocks absence-SUPPORTS creation; this
-        # blocks the REFUTES-overwrite of a standing confirmation). Scope:
-        # this protects IN-PLACE overwrites only — a fresh link on a different
-        # node, or a new absence row, is a first emission and lands at its
-        # declared confidence (the §7.2 bar filters hedges, not confident
-        # claims; that is the stated trust posture).
+        # independence mirror then collapses.
+        #
+        # Engine verdicts on absence rows are safe from LLM overwrite by
+        # CONSTRUCTION now, not by a clause here: the category gate above
+        # refuses every model-authored link on a causal_absence row before
+        # this point, so neither a create nor an in-place overwrite of the
+        # confirm-stamp's SUPPORTS or M6's REFUTES can be reached from an
+        # emission.
+        #
         # An OMITTED stance_confidence (schema default None) means "full
         # confidence" on a NEW link but "keep the existing value" on an
         # upsert — otherwise a routine graph re-listing that omits the field
@@ -1251,18 +1254,8 @@ def ingest_emitted_chain(
             stance_confidence=emitted_confidence,
         )
         if existing_idx is None:
-            # §7.2 refute-side calibration signal: a hedged counterfactual is
-            # kept (ordinary refuting evidence) but will not carry decisive
-            # force — count it once, at creation (absence-row links are never
-            # overwritten, so create-time is the one stable event).
-            if (
-                fresh.stance == EvidenceStance.REFUTES
-                and cat_by_id.get(ev_id) == EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE
-                and not counterfactual_link_decisive(fresh)
-            ):
-                counterfactual_refute_hedged_total.inc()
             node.evidence_links.append(fresh)
-        elif cat_by_id.get(ev_id) != EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
+        else:
             node.evidence_links[existing_idx] = fresh
 
     return created
@@ -2135,12 +2128,134 @@ def _node_has_engine_counterfactual_refute(node: CausalNode, case: Case) -> bool
     )
 
 
-def _attach_engine_refutation(case: Case, node_id: str, reason: str) -> None:
-    """Attach a DURABLE engine-authored REFUTES link (+ backing
-    ``CAUSAL_ABSENCE_EVIDENCE`` row) to ``node_id`` — the Option-(c) mechanism
-    that makes M6 evidence-driven. Without a persisted refuting fact,
-    ``derive_node_states`` would re-validate the root next turn from the stale
-    supporting evidence and resurrect the disconfirmed cause (the turn-28 bug).
+def _fix_application_turn(case: Case) -> int | None:
+    """The turn at which the case RECORDS that a fix was executed, or ``None``
+    when no such record exists — M6's first precondition (#987).
+
+    The authoritative record is a ``ProposedAction`` in state ``accepted`` whose
+    type is actionable (SOLUTION/MITIGATION, not an engine-downgraded
+    DIAGNOSTIC): per ``classify_solution_outcome``, ``accepted`` means the user
+    *executed* it. The NEWEST such turn wins — a failed fix is disconfirmed by
+    what happened after the LAST fix, not the first.
+
+    Fallback for deployments/cases with no compliance chain: the forward-only
+    gate ladder (``solution_accepted`` / ``mitigation_accepted``) records THAT a
+    fix was executed but not WHEN, so it floors the window at 0 — any
+    persistence observation on the case then qualifies. This keeps the gate
+    establishable rather than vacuously unsatisfiable on the no-ProposedAction
+    shape, at the cost of a wider window there (stated, not hidden).
+    """
+    turns = [
+        a.proposed_in_turn
+        for a in (getattr(case, "proposed_actions", None) or [])
+        if getattr(a, "state", None) == "accepted"
+        and getattr(getattr(a, "action_type", None), "value", None)
+        in (
+            InvestigationActionType.SOLUTION.value,
+            InvestigationActionType.MITIGATION.value,
+        )
+        and getattr(a, "proposed_in_turn", None) is not None
+    ]
+    if turns:
+        return max(turns)
+    p = getattr(case, "progress", None)
+    if p is None:
+        return None
+    mitigation = getattr(p, "mitigation", None)
+    if getattr(p, "solution_accepted", False) or bool(
+        mitigation is not None and getattr(mitigation, "accepted", False)
+    ):
+        return 0
+    return None
+
+
+def _problem_persistence_observed_after(case: Case, fix_turn: int) -> bool:
+    """Does the case OBSERVE the problem still present at/after ``fix_turn``? —
+    M6's second precondition (#987).
+
+    The observation is a ``SYMPTOM_EVIDENCE`` row collected at/after the fix
+    turn: that is exactly the encoding the prompt's TREATMENT FAILURE PATH
+    mandates for a fix that did not hold ("symptom_evidence: New symptoms that
+    emerge after a failed fix"). ``>=`` and not ``>`` because turn granularity
+    cannot order within-turn events — the user's "I ran it, still failing"
+    lands the executed fix and the persisting symptom in ONE turn.
+
+    Deliberately a POSITIVE observation, not the absence of a resolution: M6 is
+    a destructive transition (it refutes the standing cause, zeroes its root's
+    belief, and retracts the conclusion), so it must be established from
+    something the case actually recorded. "Nothing said it was fixed" is not an
+    observation that it stayed broken.
+    """
+    return any(
+        getattr(e, "category", None) == EvidenceCategory.SYMPTOM_EVIDENCE
+        and (getattr(e, "collected_at_turn", 0) or 0) >= fix_turn
+        for e in (getattr(case, "evidence", None) or [])
+    )
+
+
+def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
+    """M6's ESTABLISHED preconditions, or ``None`` (metered by refusal reason).
+
+    Returns ``(fix_turn, provenance)`` when the case record establishes BOTH
+    halves of "the cause was addressed, yet the problem persisted":
+
+    1. a RECORDED fix application (``_fix_application_turn``), and
+    2. an OBSERVED persistence of the problem at/after it
+       (``_problem_persistence_observed_after``), with
+    3. NO qualifying resolution-confirmation row at/after the fix turn — a
+       standing gone⇒gone confirmation is direct evidence the problem did NOT
+       persist, so the failed-fix premise is false on the case's own record.
+
+    Why this gate exists (#987): M6 previously fired on the mere presence of a
+    counterfactual refute and then MINTED a row asserting "the cause was
+    addressed or confirmed correct, yet the problem persisted" — a fact it had
+    never checked. In the incident it was false: the fix had SUCCEEDED, the LLM
+    had mis-linked its own success-confirmation row as a REFUTES, and M6
+    laundered that into a fabricated observation which refuted the true root at
+    belief 0 and retracted a correct conclusion.
+
+    The rule, stated once: **constructive transitions may be derived from
+    confirmation plus evidence with recorded provenance; DESTRUCTIVE
+    transitions require established preconditions.** M6 is destructive, so it
+    establishes. The category gate at ingest closes the specific #987 route;
+    this closes the mechanism, which stays reachable from any future path that
+    can put a refutation on a cause.
+
+    Refusing M6 does NOT leave a disproven cause standing: the hypothesis keeps
+    whatever state the model gave it, a REFUTED hypothesis stops being STANDING
+    (so ``any_chain_root_validated`` no longer grounds ``cause_state``), and
+    ``retract_disconfirmed_rcc`` still clears a conclusion naming it. What is
+    withheld is only the DURABLE engine refutation on the root node.
+    """
+    fix_turn = _fix_application_turn(case)
+    if fix_turn is None:
+        m6_demotion_refused_total.labels(reason="no_fix_applied").inc()
+        return None
+    if any(
+        (getattr(row, "collected_at_turn", 0) or 0) >= fix_turn
+        for row in resolution_confirmation_rows(case)
+    ):
+        m6_demotion_refused_total.labels(reason="resolution_confirmed").inc()
+        return None
+    if not _problem_persistence_observed_after(case, fix_turn):
+        m6_demotion_refused_total.labels(reason="no_persistence").inc()
+        return None
+    return fix_turn, (
+        f"engine inference (M6): a fix recorded as executed at turn {fix_turn} "
+        f"did not hold — symptom evidence at/after that turn observes the "
+        f"problem still present, and no resolution confirmation stands"
+    )
+
+
+def _attach_engine_refutation(
+    case: Case, node_id: str, reason: str, provenance: str
+) -> None:
+    """Attach a DURABLE engine-authored REFUTES link (+ backing row) to
+    ``node_id`` — the Option-(c) mechanism that makes M6 evidence-driven.
+    Without a persisted refuting fact, ``derive_node_states`` would re-validate
+    the root next turn from the stale supporting evidence and resurrect the
+    disconfirmed cause (the turn-28 bug).
+
     Idempotent on the ENGINE's own refutation specifically: skips only when
     the node already carries an ENGINE-authored CAUSAL_ABSENCE refute. An
     LLM-recorded decisive refute on the node deliberately does NOT suppress
@@ -2150,9 +2265,25 @@ def _attach_engine_refutation(case: Case, node_id: str, reason: str) -> None:
     disconfirmation" must hold even when the model already recorded the
     failure itself (reviewed: suppressing it left the window at -1 and let a
     stale premature 'stable' row re-qualify as the resolution confirmation).
-    The backing row is ``CAUSAL_ABSENCE_EVIDENCE`` (the honest counterfactual
-    category) so it does not inflate the flat ``CAUSAL_EVIDENCE`` grounding
-    count.
+
+    The row records an ENGINE INFERENCE WITH PROVENANCE, never an observation
+    (#987). It is engine-authored (``collected_by=ENGINE_EVIDENCE_AUTHOR`` —
+    the marker every reader already keys on, and the reason
+    ``resolution_confirmation_rows`` excludes it from ever reading as a
+    confirmation), and its text now states what the engine DERIVED and the
+    case records it derived it FROM — supplied by ``m6_disconfirmation_basis``,
+    which is the only caller and which fires only on ESTABLISHED preconditions.
+    It previously asserted a first-person observation ("the cause was addressed
+    ... yet the problem persisted") that no one had checked; that sentence was
+    false in the #987 incident and is what made a fabrication durable.
+
+    Residual, stated: the row still lives in the evidence table under
+    ``CAUSAL_ABSENCE_EVIDENCE`` because the whole disconfirmation-window
+    machinery (``_engine_absence_row_ids``, ``latest_disconfirmation_turn``,
+    ``_disconfirmation_row_ids``) is keyed on that category × engine
+    authorship. Its authorship already excludes it from every observation
+    reader; giving engine inferences their own category is a larger,
+    separately-reviewable change.
     """
     node = case.causal_nodes.get(node_id)
     if node is None or _node_has_engine_counterfactual_refute(node, case):
@@ -2161,11 +2292,8 @@ def _attach_engine_refutation(case: Case, node_id: str, reason: str) -> None:
     case.evidence.append(
         Evidence(
             evidence_id=ev_id,
-            summary=(
-                "Counterfactual disconfirmation (M6): the cause was addressed or "
-                "confirmed correct, yet the problem persisted."
-            ),
-            primary_purpose="failed-treatment disconfirmation",
+            summary=f"Engine inference (M6), not an observation: {provenance}."[:500],
+            primary_purpose="engine inference: failed-treatment disconfirmation",
             category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
             # USER_DESCRIPTION is the only source_type the evidence_source_invariant
             # CHECK permits with no source_file_id (this engine-authored fact has no
@@ -2196,24 +2324,40 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     REFUTED instead of re-validating it from the now-stale supporting evidence.
 
     Shares the M6 trigger with the flat path (``_disconfirmed_cause_trigger``),
-    which ALSO fires when the disconfirmation lands on the root NODE (the
-    counterfactual refute the prompt mandates) rather than the flat hypothesis —
-    so the conclusion is retracted even when only the node was refuted, closing
-    the truth-split where ``cause_state`` drops but a stale ``RootCauseConclusion``
-    lingers. Returns True if it acted.
+    which ALSO fires when the disconfirmation lands on the root NODE rather than
+    the flat hypothesis — so the conclusion is retracted even when only the node
+    was refuted, closing the truth-split where ``cause_state`` drops but a stale
+    ``RootCauseConclusion`` lingers. Returns True if it acted.
+
+    PRECONDITION-GATED (#987): the trigger says a refutation is RECORDED; it does
+    not establish that a fix was applied and the problem persisted. M6 is a
+    DESTRUCTIVE transition — it refutes the cause, drives its root's belief to 0
+    via the durable engine refutation, and retracts the conclusion — so it fires
+    only on preconditions the case record ESTABLISHES
+    (``m6_disconfirmation_basis``). When they cannot be established the demotion
+    is refused and metered; the hypothesis's own state still governs, so a
+    genuinely disproven cause stops grounding ``cause_state`` regardless.
     """
     p = case.progress
     # Chain path: a counterfactual refute on the root NODE also disconfirms the
-    # cause (the prompt mandates the failed-treatment fact land on the rung).
+    # cause. After #987 the only producer of such a link is the engine's own
+    # durable marker (the category gate at ingest refuses model-authored links
+    # on absence rows), so this arm is what keeps a prior M6 LATCHED across
+    # turns rather than a fresh LLM-driven entry point.
     trigger = _disconfirmed_cause_trigger(case, node_side=True)
     if trigger is None:
         return False
     hyp, reason = trigger
 
+    basis = m6_disconfirmation_basis(case)
+    if basis is None:
+        return False
+    _, provenance = basis
+
     if hyp.state != HypothesisState.REFUTED:
         HypothesisManager().refute_hypothesis(hyp, case.current_turn, [], reason)
     if hyp.root_node_id:
-        _attach_engine_refutation(case, hyp.root_node_id, reason)
+        _attach_engine_refutation(case, hyp.root_node_id, reason, provenance)
     # Retract the conclusion so the disposition layer cannot keep treating the
     # cause as known; the cause_state itself is re-derived from the (now refuted)
     # root by the caller's derive + recompute.

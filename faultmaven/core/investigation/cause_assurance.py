@@ -24,11 +24,13 @@ imports and re-exports it.
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.lifecycle_metrics import (
     absence_confirmation_bearing_rejected_total,
+    absence_row_link_refused_total,
 )
 from faultmaven.modules.case.contracts import (
     CauseAssuranceGrade,
@@ -53,6 +55,7 @@ __all__ = [
     "ENGINE_RCC_AUTHOR",
     "MECHANISTIC_RCC_LIKELIHOOD",
     "CauseAssuranceGrade",
+    "absence_row_link_refused",
     "cached_content_tokens",
     "conclusion_overclaims",
     "confirm_root_from_resolution_absence",
@@ -110,6 +113,87 @@ CAUSAL_STANCE_CONFIDENCE_MIN = 0.6
 # ``causal_graph._STANDING_HYP_STATES`` — kept literal here to avoid the
 # import cycle; the two must not drift).
 _STANDING_HYP_STATES = (HypothesisState.ACTIVE, HypothesisState.VALIDATED)
+
+
+logger = logging.getLogger(__name__)
+
+
+def absence_row_link_refused(
+    category,
+    stance,
+    *,
+    axis: str,
+    evidence_id: str | None = None,
+    node_or_hypothesis_id: str | None = None,
+    case_id: str | None = None,
+    turn: int | None = None,
+) -> bool:
+    """The M2 trust boundary (#987): is this LLM-emitted evidence link refused?
+
+    TRUE iff the backing evidence row is ``causal_absence_evidence`` — whatever
+    the stance, whichever axis. Absence rows are STAND-ALONE audit records and
+    carry NO model-authored stance; every counterfactual link on one is
+    engine-minted (the resolution confirm-stamp's SUPPORTS,
+    ``causal_graph._attach_engine_refutation``'s REFUTES).
+
+    **The invariant is a property of the EVIDENCE CATEGORY, not of the link
+    target.** That is why this predicate exists at all rather than being
+    inlined: the two belief axes — chain ``node_evidence_links``
+    (``causal_graph.ingest_emitted_chain``) and flat ``hypothesis_evidence_links``
+    (``milestone_engine._apply_hypothesis_evidence_links``) — are separate entry
+    points into the same truth, so a rule enforced on one is a rule a single
+    stance choice routes around. Both call THIS function; neither owns a copy.
+
+    Why REFUTES is refused, not just SUPPORTS (the pre-#987 boundary): the
+    prompt contract emits ``causal_absence_evidence`` ONLY for a CONFIRMED fix
+    (templates.py, TREATMENT "EVIDENCE TYPES FOR THIS STAGE"), and its FAILURE
+    PATH explicitly forbids an absence row for a failed fix — "a failure is not
+    an 'absence' (the cause persists)" — recording that outcome by REFUTING the
+    hypothesis instead. So an absence-REFUTES link is never a sanctioned
+    emission, and reading one as a failed-fix disconfirmation inverts the row's
+    own meaning: in #987 the LLM's SUCCESS-confirmation row ("post-fix
+    authentication succeeded") was REFUTES-linked to the true root, which drove
+    that root to REFUTED at belief 0, fired M6, retracted the conclusion, and
+    left a RESOLVED case asserting no cause was ever known. The old "accept
+    REFUTES to feed M6" rationale was self-refuting: under its own contract
+    there is no failed-fix absence row to feed M6 with. M6's sanctioned trigger
+    — the hypothesis REFUTED with a refutation_reason — is untouched by this.
+
+    Refusal is METERED AND LOGGED, never silent: the strip hides the emission,
+    so without the counter a model that routinely mis-links absence rows is
+    indistinguishable from one that follows the contract. This is a
+    prompt-adherence signal, not a truth signal — the engine is correct either
+    way.
+
+    ``category`` is the row's ``EvidenceCategory`` (a missing/dangling row reads
+    ``None`` and is NOT refused here — the callers already drop unresolvable
+    evidence refs). The identifiers are for the log line only.
+    """
+    if category != EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
+        return False
+    stance_label = str(getattr(stance, "value", stance) or "unset").lower()
+    absence_row_link_refused_total.labels(axis=axis, stance=stance_label).inc()
+    logger.warning(
+        "Absence-row link refused (%s axis): case=%s turn=%s evidence=%s "
+        "target=%s stance=%s — causal_absence rows are stand-alone audit "
+        "records; counterfactual links on them are engine-minted only (#987)",
+        axis,
+        case_id,
+        turn,
+        evidence_id,
+        node_or_hypothesis_id,
+        stance_label,
+        extra={
+            "event": "absence_row_link_refused",
+            "axis": axis,
+            "case_id": case_id,
+            "turn": turn,
+            "evidence_id": evidence_id,
+            "target_id": node_or_hypothesis_id,
+            "stance": stance_label,
+        },
+    )
+    return True
 
 
 def evidence_category_map(case: "Case") -> dict:
@@ -607,10 +691,25 @@ def _chain_descendant_ids(case: "Case", root_id: str) -> set[str]:
     return descendants
 
 
-_CONFIRMATION_REASON = (
-    "engine: user-confirmed resolution — the recorded causal-absence outcome "
-    "bears on the sole standing validated root (M2 gone⇒gone)"
-)
+def _confirmation_provenance(case: "Case", root: "CausalNode", evidence_id: str) -> str:
+    """How a resolution-confirmed cause was ESTABLISHED, in one line (#987).
+
+    The constructive half of the rule this campaign writes down: *constructive
+    transitions may be derived from confirmation plus evidence with recorded
+    provenance; destructive transitions require established preconditions.* The
+    confirm-stamp is constructive — it promotes a cause the user explicitly
+    confirmed — so what it owes is not a stricter gate but an honest record of
+    WHY the promotion happened. Written onto both the durable node link
+    (``reasoning``) and the conclusion (``established_by``), so a reader of
+    either surface can see that the cause rests on the user's handshake plus a
+    named causal-absence row rather than on a bare engine assertion.
+    """
+    return (
+        f"engine: user-confirmed resolution at turn {case.current_turn} — "
+        f"causal-absence {evidence_id} bears on root {root.node_id} "
+        f"(M2 gone⇒gone)"
+    )[:500]
+
 
 # Graph hooks — inversion seam. ``causal_graph`` (the higher layer: it imports
 # this module) REGISTERS its primitives at import time so the confirm-stamp can
@@ -829,11 +928,12 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
     if absence_row is None:
         return False
 
+    provenance = _confirmation_provenance(case, root, absence_row.evidence_id)
     root.evidence_links.append(
         NodeEvidenceLink(
             evidence_id=absence_row.evidence_id,
             stance=EvidenceStance.SUPPORTS,
-            reasoning=_CONFIRMATION_REASON,
+            reasoning=provenance,
             linked_at_turn=case.current_turn,
         )
     )
@@ -859,7 +959,7 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         # the report/harvest layers to read. Mint the minimal faithful
         # mirror for the root the user just confirmed; an LLM-authored
         # conclusion, had one existed, is never touched.
-        _mint_confirmed_mirror(case, root)
+        _mint_confirmed_mirror(case, root, provenance)
     elif (
         getattr(rcc, "determined_by", None) == ENGINE_RCC_AUTHOR
         and prior_hyp is not None
@@ -875,19 +975,24 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         # mirror shape the upgrade exists to prevent). LLM-authored
         # conclusions are never touched.
         case.root_cause_conclusion = None
-        _mint_confirmed_mirror(case, root)
+        _mint_confirmed_mirror(case, root, provenance)
     else:
-        _upgrade_engine_mirror(case, root, absence_row.evidence_id)
+        _upgrade_engine_mirror(case, root, absence_row.evidence_id, provenance)
     return True
 
 
-def _mint_confirmed_mirror(case: "Case", root: "CausalNode") -> None:
+def _mint_confirmed_mirror(case: "Case", root: "CausalNode", provenance: str) -> None:
     """Mint the engine conclusion mirror for a just-confirmed root when NO
     conclusion exists (the count-held-at-RESOLVED shape). Mechanism text
     follows the standing hypothesis's chain when one names this root (same
     shape as the per-turn synthesis); the hypothesis-less fallback states the
     degenerate mechanism. Confidence is grade-derived: the root is
-    counterfactually CONFIRMED, so VERIFIED at the floor."""
+    counterfactually CONFIRMED, so VERIFIED at the floor.
+
+    ``provenance`` records HOW the cause was established (#987) — this mint is
+    a promotion from the user's confirmation plus the cited absence row, not a
+    chain validation, and the conclusion must say so rather than assert the
+    cause bare."""
     hyp = next(
         (
             h
@@ -923,11 +1028,12 @@ def _mint_confirmed_mirror(case: "Case", root: "CausalNode") -> None:
             if link.stance == EvidenceStance.SUPPORTS
         ],
         determined_by=ENGINE_RCC_AUTHOR,
+        established_by=provenance,
     )
 
 
 def _upgrade_engine_mirror(
-    case: "Case", root: "CausalNode", absence_evidence_id: str
+    case: "Case", root: "CausalNode", absence_evidence_id: str, provenance: str
 ) -> None:
     """Scoped re-mint at the stamp site: terminal cases never run the per-turn
     recompute (and ``terminal_transitions`` cannot import ``causal_graph``'s
@@ -936,7 +1042,11 @@ def _upgrade_engine_mirror(
     would never cite the gone⇒gone row — beside a CONFIRMED terminal grade. The
     upgrade keeps the mirror's text/root and raises only the grade-derived
     fields. LLM-authored conclusions are never touched (their retraction and
-    refresh lifecycle is a separate correction tracked on #656)."""
+    refresh lifecycle is a separate correction tracked on #656).
+
+    ``provenance`` (#987) records that the upgrade to VERIFIED rests on the
+    user's confirmation plus the cited gone⇒gone row — the grade jump is a
+    promotion from confirmation, and the record says so."""
     rcc = case.root_cause_conclusion
     if rcc is None or getattr(rcc, "determined_by", None) != ENGINE_RCC_AUTHOR:
         return
@@ -956,6 +1066,7 @@ def _upgrade_engine_mirror(
         evidence_basis=evidence_basis,
         contributing_factors=list(rcc.contributing_factors or []),
         determined_by=ENGINE_RCC_AUTHOR,
+        established_by=provenance,
     )
 
 

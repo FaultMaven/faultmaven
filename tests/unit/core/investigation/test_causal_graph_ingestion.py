@@ -488,12 +488,16 @@ def test_ingest_dedup_does_not_merge_distinct_siblings():
     assert len(roots) == 2
 
 
-def test_ingest_strips_llm_supports_link_on_absence_evidence():
-    """M2 trust boundary: counterfactual CONFIRMATION is engine-reserved. An
-    LLM-emitted SUPPORTS link on a causal_absence row is stripped at ingest
-    (it would mint the CONFIRMED grade — 'verified', the harvest bar, the
-    grounded axis — from a self-claim); REFUTES-on-absence stays accepted
-    (counterfactual disconfirmation feeds M6)."""
+def test_ingest_refuses_every_llm_link_on_absence_evidence():
+    """M2 trust boundary (#987), category-gated: NO model-authored stance on a
+    causal_absence row is accepted — SUPPORTS or REFUTES alike.
+
+    SUPPORTS would mint the CONFIRMED grade from a self-claim. REFUTES was
+    accepted before #987 "to feed M6", but the prompt contract emits absence
+    rows ONLY for a CONFIRMED fix and forbids one for a failed fix, so an
+    absence-REFUTES is never a sanctioned emission — and reading one as a
+    failed-fix disconfirmation inverted the row's own meaning, refuting the
+    true root of a successfully-fixed case at belief 0."""
     from datetime import datetime, timezone
 
     from faultmaven.modules.case.contracts import (
@@ -544,86 +548,9 @@ def test_ingest_strips_llm_supports_link_on_absence_evidence():
         current_turn=case.current_turn,
     )
     root = case.causal_nodes[created[0]]
-    stances = [link.stance for link in root.evidence_links]
-    assert EvidenceStance.SUPPORTS not in stances  # confirmation stripped
-    assert EvidenceStance.REFUTES in stances  # disconfirmation accepted
-
-
-def test_ingest_counts_hedged_counterfactual_refutes_once():
-    """INV-30 refute side: a REFUTES link on an absence row arriving below the
-    stance-confidence bar is KEPT (ordinary refuting evidence) but metered —
-    once, at creation (absence-row links are never overwritten, so a
-    re-emission is a no-op that must not double count). A confident
-    counterfactual is never counted."""
-    from datetime import datetime, timezone
-    from unittest.mock import patch
-
-    from faultmaven.modules.case.contracts import (
-        Evidence,
-        EvidenceCategory,
-        EvidenceSourceType,
-        EvidenceStance,
-    )
-
-    case = _case()
-    seed_problem_node(case)
-    for i, ev_id in enumerate(["ev_aaaaaaaaaaa2", "ev_aaaaaaaaaaa3"]):
-        case.evidence.append(
-            Evidence(
-                evidence_id=ev_id,
-                summary=f"fix attempt {i} outcome observation",
-                primary_purpose="diagnosis",
-                category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
-                source_type=EvidenceSourceType.USER_DESCRIPTION,
-                collected_by="llm",
-                collected_at_turn=2,
-                collected_at=datetime.now(timezone.utc),
-            )
-        )
-
-    def _emit(confidence):
-        return ingest_emitted_chain(
-            case,
-            nodes_to_add=[
-                SimpleNamespace(
-                    statement="kernel conntrack table saturation drops packets",
-                    node_type="root",
-                    produces="D",
-                    and_group=None,
-                )
-            ],
-            edges_to_add=[],
-            node_evidence=[
-                SimpleNamespace(
-                    node_ref="new_index_0",
-                    evidence_id="ev_aaaaaaaaaaa2",
-                    stance="refutes",
-                    reasoning="fix applied, unsure it took",
-                    stance_confidence=confidence,
-                ),
-                SimpleNamespace(
-                    node_ref="new_index_0",
-                    evidence_id="ev_aaaaaaaaaaa3",
-                    stance="refutes",
-                    reasoning="second fix failed for sure",
-                    stance_confidence=0.9,
-                ),
-            ],
-            current_turn=case.current_turn,
-        )
-
-    with patch(
-        "faultmaven.core.investigation.causal_graph."
-        "counterfactual_refute_hedged_total"
-    ) as counter:
-        _emit(0.4)  # hedged -> counted once; confident sibling link -> not
-        _emit(0.4)  # re-emission: absence links never overwritten, no event
-    assert counter.inc.call_count == 1
-    node = next(n for n in case.causal_nodes.values() if n.node_type == NodeType.ROOT)
-    kept = [
-        link for link in node.evidence_links if link.stance == EvidenceStance.REFUTES
-    ]
-    assert len(kept) == 2  # both links kept — the hedge only demotes force
+    # Neither stance survives: the row is a stand-alone audit record.
+    assert root.evidence_links == []
+    assert EvidenceStance.SUPPORTS is not None  # (import kept meaningful)
 
 
 def _causal_row(ev_id, summary):
@@ -696,9 +623,12 @@ def test_ingest_reemission_upserts_stance_confidence():
 
 def test_ingest_never_overwrites_absence_row_links():
     """Links on causal_absence rows are engine-verdict territory: an LLM
-    REFUTES re-emission must not launder away a standing confirmation link
-    (the strip already blocks SUPPORTS creation; this pins the overwrite
-    side)."""
+    REFUTES re-emission must not launder away a standing confirmation link.
+
+    Post-#987 the category gate refuses the emission outright, so the engine
+    verdict is protected by construction rather than by an overwrite clause.
+    This pins the OUTCOME (the confirmation survives untouched) so the
+    protection is asserted independently of which mechanism provides it."""
     from datetime import datetime, timezone
 
     from faultmaven.modules.case.contracts import (

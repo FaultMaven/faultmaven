@@ -57,6 +57,7 @@ from faultmaven.core.investigation.causal_graph import (
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
+    absence_row_link_refused,
     conclusion_overclaims,
     grade_cause_assurance,
     runbook_conversion_ready,
@@ -112,6 +113,7 @@ from faultmaven.core.investigation.verification_status import (
 from faultmaven.core.investigation.working_conclusion_generator import (
     calculate_progress_metrics,
     generate_working_conclusion,
+    is_early_stage_conclusion,
 )
 from faultmaven.exceptions import TOKEN_LIMIT
 from faultmaven.infrastructure.llm.metering import (
@@ -1246,17 +1248,43 @@ def _post_process_llm_response(
 # =============================================================================
 
 
+# The honest rendering of "the engine holds no established root cause" (#987).
+# This state is REAL and legitimate — a case can be stabilized, or resolved
+# out-of-band, without the cause ever being established — and before this
+# string existed there was no sanctioned way to SAY it, so the recap reached
+# for whatever text was lying around and rendered the early-stage placeholder
+# ("Investigating potential causes - awaiting hypothesis generation") at the
+# most trust-sensitive moment of the case. Naming the state is the fix; the
+# placeholder leak was the symptom.
+NO_ROOT_CAUSE_ESTABLISHED = "No root cause established"
+
+
 def _get_root_cause_summary(case) -> str:
-    """Extract a brief root cause description from the case for confirmation prompts."""
+    """A brief root-cause description for confirmation prompts.
+
+    Precedence: the recorded ``RootCauseConclusion`` → the working conclusion,
+    but ONLY when it carries a real finding → the honest
+    ``NO_ROOT_CAUSE_ESTABLISHED``.
+
+    The working-conclusion leg is gated on
+    ``is_early_stage_conclusion`` (#987): that fallback exists to surface a
+    cause the engine holds outside the conclusion record, and the early-stage
+    PLACEHOLDER is definitionally not that. Rendering it here told the user
+    "Root cause: Investigating potential causes - awaiting hypothesis
+    generation" in the resolution recap of a case whose preceding ten turns had
+    identified, fixed, and verified the cause. Saying nothing was established
+    is honest; saying the investigation has not begun is false.
+    """
     if case.root_cause_conclusion and getattr(
         case.root_cause_conclusion, "root_cause", None
     ):
         cause = case.root_cause_conclusion.root_cause
         return cause[:200] + "..." if len(cause) > 200 else cause
-    if case.working_conclusion and getattr(case.working_conclusion, "statement", None):
-        stmt = case.working_conclusion.statement
+    wc = case.working_conclusion
+    if wc and getattr(wc, "statement", None) and not is_early_stage_conclusion(wc):
+        stmt = wc.statement
         return stmt[:200] + "..." if len(stmt) > 200 else stmt
-    return "Not yet identified"
+    return NO_ROOT_CAUSE_ESTABLISHED
 
 
 def _get_solution_summary(case) -> str:
@@ -8620,7 +8648,17 @@ class MilestoneEngine:
         evidence IDs that don't resolve (timing issue), so failed links
         are logged and skipped. The emitted stance is carried through
         verbatim — NEUTRAL links attach without any likelihood effect
-        (#514).
+        (#514) — EXCEPT on ``causal_absence`` rows, which carry no
+        model-authored stance at all (the M2 trust boundary, #987; see
+        ``cause_assurance.absence_row_link_refused``).
+
+        This is the FLAT belief axis. It shares that boundary verbatim with the
+        chain axis in ``causal_graph.ingest_emitted_chain`` because the
+        invariant belongs to the evidence ROW, not to the link target: a
+        REFUTES on a success-confirmation absence row reaches
+        ``_net_refuted`` → ``_hypothesis_disconfirmed`` → M6 from here just as
+        it reached ``derive_node_states`` from there, so guarding one axis only
+        would leave the #987 cascade one stance choice away.
         """
         for link in links:
             # Resolve partial IDs like 'new_index_0' to actual IDs if we just created them
@@ -8646,7 +8684,8 @@ class MilestoneEngine:
                 continue
 
             # Check evidence existence (scan list)
-            ev_exists = any(e.evidence_id == e_id for e in case.evidence)
+            ev_row = next((e for e in case.evidence if e.evidence_id == e_id), None)
+            ev_exists = ev_row is not None
             if not ev_exists:
                 # Evidence reference failed to resolve
                 # This is only a problem if LLM tried to link evidence but used wrong format/ID
@@ -8663,6 +8702,19 @@ class MilestoneEngine:
                     f"Recent evidence IDs: {all_evidence_ids[-5:] if len(all_evidence_ids) > 5 else all_evidence_ids}. "
                     f"Note: This is expected if no evidence was created (user_text messages)."
                 )
+                continue
+
+            # M2 trust boundary (#987), category-gated — the SAME predicate the
+            # chain axis applies, so the two entry points cannot drift.
+            if absence_row_link_refused(
+                getattr(ev_row, "category", None),
+                link.stance,
+                axis="hypothesis",
+                evidence_id=e_id,
+                node_or_hypothesis_id=h_id,
+                case_id=case.case_id,
+                turn=case.current_turn,
+            ):
                 continue
 
             self.hypothesis_manager.link_evidence(

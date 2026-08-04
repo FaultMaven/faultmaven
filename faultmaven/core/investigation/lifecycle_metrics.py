@@ -189,13 +189,32 @@ hypothesis_likelihood_capped_no_evidence_total = Counter(
     "cap requires linked case evidence (#573 B1).",
 )
 
-absence_confirmation_link_stripped_total = Counter(
-    "faultmaven_absence_confirmation_link_stripped_total",
-    "An LLM-emitted SUPPORTS link on a causal_absence evidence row was "
-    "stripped at chain-emission ingest — counterfactual CONFIRMATION is "
-    "engine-reserved (the resolution confirm-stamp), so a self-claimed "
-    "confirmation must never mint the CONFIRMED grade. One increment per "
-    "stripped link.",
+# M2 trust boundary (#987), category-gated. The invariant is a property of the
+# EVIDENCE ROW, not of the link target: a causal_absence row is a STAND-ALONE
+# audit record (prompt contract: "do NOT link"), so NO LLM-emitted stance on one
+# is accepted on EITHER belief axis. Counterfactual links on absence rows are
+# engine-minted only (the resolution confirm-stamp's SUPPORTS, M6's REFUTES).
+#
+# This counts a PROMPT-ADHERENCE violation, not a truth problem — the engine
+# refuses the link either way. It is metered (and logged) rather than dropped
+# silently precisely because the refusal masks the emission: without this
+# counter, a model that routinely mis-links absence rows looks identical to one
+# that follows the contract. A sustained rate on either axis means the stage
+# instructions are not landing and the prompt needs work.
+#
+# Labels: ``axis`` — ``node`` (chain-emission ``node_evidence_links``) or
+# ``hypothesis`` (flat ``hypothesis_evidence_links``); ``stance`` — the stance
+# the model asserted. The refutes/node combination is the #987 incident shape: a
+# SUCCESS-confirmation row REFUTES-linked to the very cause it confirms, which
+# the engine previously read as a failed-fix counterfactual disconfirmation and
+# used to refute the true root at belief 0.
+absence_row_link_refused_total = Counter(
+    "faultmaven_absence_row_link_refused_total",
+    "An LLM-emitted evidence link on a causal_absence row was refused at "
+    "apply time — absence rows are stand-alone audit records and carry no "
+    "model-authored stance on either belief axis (#987). One increment per "
+    "refused link.",
+    ["axis", "stance"],
 )
 
 hypothesis_support_mirrored_to_root_total = Counter(
@@ -228,17 +247,31 @@ cause_identification_held_mece_total = Counter(
     "transition into the contest.",
 )
 
-# §7.2 refute-side confidence discipline (#656). A hedged counterfactual
-# is ingested and kept as ORDINARY refuting evidence — this counts how often
-# the model itself hedges the strongest evidence grade. A sustained rate is an
-# elicitation signal (the model reports failed fixes it does not trust), not a
-# truth problem: the decisive-power gate is what protects the conclusion.
-counterfactual_refute_hedged_total = Counter(
-    "faultmaven_counterfactual_refute_hedged_total",
-    "A REFUTES link on a causal_absence evidence row arrived below the "
-    "stance-confidence bar at chain-emission ingest — kept as ordinary "
-    "refuting evidence but denied decisive (§7.2) force. One increment per "
-    "link created.",
+# M6 precondition discipline (#987). M6 is a DESTRUCTIVE transition: it refutes
+# the standing cause, drives its root's belief to 0, and retracts the
+# conclusion. It may therefore only fire on ESTABLISHED preconditions — a
+# recorded fix application AND an observed persistence of the problem — never on
+# an inferred one. This counts the refusals, labeled by which precondition was
+# missing, so the gate's own liveness is observable:
+#
+# - ``no_fix_applied``   — no accepted actionable ProposedAction and no
+#   compliance gate recording that the user executed a fix.
+# - ``no_persistence``   — a fix was applied but nothing observes the problem
+#   still present afterwards (no symptom_evidence at/after the fix turn).
+# - ``resolution_confirmed`` — a QUALIFYING resolution-confirmation row stands
+#   at/after the fix turn: the problem demonstrably did NOT persist. This is the
+#   #987 incident shape, and a nonzero rate here means something upstream is
+#   still routing a successful fix into the failed-fix path.
+#
+# A sustained ``no_persistence`` rate means the model refutes causes without
+# recording the failed outcome the prompt's FAILURE PATH mandates. A nonzero
+# ``resolution_confirmed`` rate is a defect signal, not an elicitation one.
+m6_demotion_refused_total = Counter(
+    "faultmaven_m6_demotion_refused_total",
+    "An M6 counterfactual demotion was refused because its preconditions "
+    "(recorded fix application + observed problem persistence) could not be "
+    "established from the case record (#987). One increment per refusal.",
+    ["reason"],
 )
 
 # #656 bearing check at the resolution confirm-stamp. One increment per
