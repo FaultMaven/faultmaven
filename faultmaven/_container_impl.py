@@ -776,12 +776,14 @@ class DIContainer(BaseDIContainer):
                 owner_id=None,
                 session_id=None,
                 initial_message=None,
-                initial_query=None,
-                priority=None,
-                user_id=None,
-                organization_id=None,
-                metadata=None,
+                source="copilot",
             ):
+                # Signature mirrors CaseService.create_case. `source` is not
+                # optional in practice: modules/case/api/routes.py passes it on
+                # every POST /api/v1/cases, so a stand-in without it raised
+                # TypeError -> 500 whenever the degraded fallback was active.
+                # The dropped parameters (initial_query, priority, user_id,
+                # organization_id, metadata) had no caller anywhere.
                 # Generate case_id matching required pattern ^case_[a-f0-9]{12}$
                 case_id = f"case_{uuid.uuid4().hex[:12]}"
 
@@ -792,10 +794,8 @@ class DIContainer(BaseDIContainer):
                     raise ValidationException("Owner ID is required")
 
                 # Create case with proper Case model structure
-                final_user_id = user_id or owner_id
-                final_org_id = (
-                    organization_id or owner_id
-                )  # Use owner_id as organization_id if not provided
+                final_user_id = owner_id
+                final_org_id = owner_id
 
                 # Phase 2: Handle initial_message transactionally
                 current_time = datetime.now(timezone.utc)
@@ -830,6 +830,11 @@ class DIContainer(BaseDIContainer):
                     organization_id=final_org_id,
                     status=CaseState.INQUIRY,
                     message_count=message_count,
+                    # Mirrors CaseService: an unrecognised source falls back to
+                    # "copilot" rather than being stored verbatim.
+                    source=(
+                        source if source in ("copilot", "slack", "api") else "copilot"
+                    ),
                 )
 
                 self.cases[case_id] = case
@@ -901,18 +906,26 @@ class DIContainer(BaseDIContainer):
                 execute_user_closure(case, user_id)
                 return case
 
-            async def list_user_cases(
-                self, user_id=None, filters=None, limit=20, offset=0
-            ):
-                """List cases for a user with pagination - Phase 1: Core filtering implementation"""
-                # Filter cases by user_id if provided
-                if user_id:
-                    user_cases = [
-                        case for case in self.cases.values() if case.user_id == user_id
-                    ]
-                else:
-                    # Return all cases if no user filter
-                    user_cases = list(self.cases.values())
+            async def list_user_cases(self, user_id, filters=None):
+                """List cases for a user with pagination.
+
+                Signature mirrors CaseService.list_user_cases: ``user_id`` is
+                REQUIRED and pagination comes from ``filters`` only. The
+                stand-in previously also took ``limit``/``offset`` directly,
+                which the real service rejects, and defaulted ``user_id`` to
+                None where the real service raises.
+                """
+                if not user_id:
+                    from faultmaven.exceptions import ValidationException
+
+                    raise ValidationException("User ID cannot be empty")
+
+                # Defaults mirror CaseListFilter when no filters are given.
+                limit = 50
+                offset = 0
+                user_cases = [
+                    case for case in self.cases.values() if case.user_id == user_id
+                ]
 
                 # Phase 1: Apply core filtering - exclude deleted/archived/empty by default
                 if filters:
