@@ -186,6 +186,9 @@ def test_hypothesis_axis_refuses_any_llm_stance_on_an_absence_row(stance):
     """
     from types import SimpleNamespace
 
+    from faultmaven.core.investigation.hypothesis_manager import (
+        create_hypothesis_manager,
+    )
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
     case = _case()
@@ -194,6 +197,11 @@ def test_hypothesis_axis_refuses_any_llm_stance_on_an_absence_row(stance):
     case.hypotheses[hyp.hypothesis_id] = hyp
 
     engine = MilestoneEngine.__new__(MilestoneEngine)
+    # A REAL manager, so removing the gate makes this test fail by the link
+    # LANDING — not by an AttributeError on the way there. A mutation that
+    # trips over missing wiring proves the call site is reached; it does not
+    # prove the gate is what refuses the link.
+    engine.hypothesis_manager = create_hypothesis_manager()
     MilestoneEngine._apply_hypothesis_evidence_links(
         engine,
         case,

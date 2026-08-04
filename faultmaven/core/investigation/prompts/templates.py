@@ -932,8 +932,11 @@ an evidence row.
    symptom_absence — that case CLOSES with the solution documented, it does
    not resolve.
    Both absence categories are STAND-ALONE audit rows — do NOT link them to a
-   hypothesis: a successful fix CONFIRMS the root-cause hypothesis, so a
-   confidence-bearing link would erode the very hypothesis it proves.
+   hypothesis (`hypothesis_evidence_links`) OR to a causal node
+   (`node_evidence_links`): a successful fix CONFIRMS the root-cause
+   hypothesis, so a confidence-bearing link would erode the very hypothesis it
+   proves. A REFUTES on an absence row is read as a FAILED fix — the opposite
+   of what the row records. The engine refuses these links on both axes.
 
 CREATING EVIDENCE RECORDS (evidence_to_add):
 When your analysis discovers a claim-relevant slice not already
@@ -1318,10 +1321,12 @@ confirm the symptom (or cause) it captured is no longer present.
   `category=symptom_absence_evidence` (or `causal_absence_evidence`
   when re-checking a cause) and `source_file_id` pointing at the file
   you re-checked. Both absence categories are STAND-ALONE audit rows —
-  do NOT link them to a hypothesis. A successful fix confirms the
-  root-cause hypothesis, so a confidence-bearing link would erode the
-  very hypothesis it proves; re-verification records that the fix held,
-  not a change to the diagnosis. The absence row is the audit record
+  do NOT link them to a hypothesis OR to a causal node (neither
+  `hypothesis_evidence_links` nor `node_evidence_links`). A successful fix
+  confirms the root-cause hypothesis, so a confidence-bearing link would
+  erode the very hypothesis it proves; re-verification records that the fix
+  held, not a change to the diagnosis. A REFUTES on one of these rows reads
+  as a FAILED fix — the opposite of what it records. The absence row is the audit record
   that the fix
   held — without it the case has no positive proof of resolution.
 - If the original signature REAPPEARS, the fix did not hold —
@@ -1943,7 +1948,8 @@ goal is to stabilize the situation, NOT to find or fix the root cause.
         summary: "Symptom no longer present after the mitigation: [key indicators]"
         category: symptom_absence_evidence
         source_type: logs | metrics | text (use text for verbal confirmation only)
-        Stand-alone audit row — do NOT link it to a hypothesis. Skip this step
+        Stand-alone audit row — do NOT link it to a hypothesis or a causal
+        node. Skip this step
         if a `symptom_absence_evidence` row was already recorded in a prior turn.
      3. Set `mitigation_verified=True` in your state updates. The return to DIAGNOSIS
         happens only when this is set — do not narrate the transition without setting it.
@@ -1986,7 +1992,8 @@ Do NOT continue proposing further variants after offering this choice.
   `causal_absence_evidence` is recorded only in TREATMENT, when the PERMANENT
   fix has eliminated the cause — and only that row qualifies a case for
   RESOLVED. A stabilized case CLOSES (with the fix documented), it does not
-  resolve. Stand-alone audit row; do NOT link it to a hypothesis.
+  resolve. Stand-alone audit row; do NOT link it to a hypothesis or a causal
+  node.
 
 **CRITICAL REMINDERS:**
 - This is a TEMPORARY fix — always communicate this to the user
@@ -2032,7 +2039,8 @@ verify the outcome.
        summary: "Root cause no longer present after the fix: [what resolved and how]"
        category: causal_absence_evidence
        source_type: logs | metrics | text (use text for verbal confirmation only)
-     Stand-alone audit row — do NOT link it to a hypothesis. If only the symptom
+     Stand-alone audit row — do NOT link it to a hypothesis or a causal node
+     (a REFUTES on it reads as a FAILED fix). If only the symptom
      was relieved while the cause persists, record `symptom_absence_evidence`
      instead and propose CLOSED (see COMPLETION). Then → Proceed to COMPLETION
    - Partial success: → Identify what remains and provide specific next steps to complete
@@ -2217,7 +2225,9 @@ The process:
   symptom_absence while the cause persists. Pair it with causal_absence only
   when the cause itself was eliminated.
   Both absence categories are stand-alone audit rows; do NOT link them to a
-  hypothesis (a fix confirms the cause; a confidence-bearing link would erode it).
+  hypothesis or to a causal node (a fix confirms the cause; a
+  confidence-bearing link would erode it, and a REFUTES reads as a FAILED
+  fix — the opposite of what the row records).
 - **symptom_evidence**: New symptoms that emerge after a failed fix
   (new errors, changed behavior, unexpected side effects)
 - **causal_evidence**: Data revealing the actual root cause after a theory is disproven

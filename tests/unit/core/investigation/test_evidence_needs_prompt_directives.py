@@ -268,12 +268,22 @@ class TestReVerificationSuccessCaseDirective:
         erode the very hypothesis the fix proves. (The apply layer now
         carries NEUTRAL through without a likelihood effect — #514 — but
         the prompt keeps absence rows stand-alone until the follow-up
-        attach-without-erosion work lands.)"""
+        attach-without-erosion work lands.)
+
+        #987: the prohibition must name BOTH belief axes. Naming only the
+        hypothesis axis is what left the node axis open — the model linked its
+        success-confirmation row there, and the engine read that REFUTES as a
+        failed fix and refuted the true cause.
+        """
         addendum = _EVIDENCE_NEEDS_REVERIFICATION_ADDENDUM
         assert "STAND-ALONE" in addendum
         assert "do NOT link" in addendum
-        # The backwards-semantics link must be gone.
-        assert "hypothesis_evidence_links" not in addendum
+        # Both axes named inside ONE prohibition, so neither reads as the
+        # permitted one. Asserted on the prohibition sentence rather than on
+        # bare field-name absence: the field names are legitimate here — what
+        # must never return is an instruction TO link.
+        assert "do NOT link them to a hypothesis OR to a causal node" in addendum
+        assert "node_evidence_links" in addendum
         assert "CONTRADICTS" not in addendum
 
 
