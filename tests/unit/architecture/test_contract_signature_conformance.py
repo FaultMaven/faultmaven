@@ -631,14 +631,6 @@ EXCLUDED_INTERFACES: Dict[str, str] = {
 # Completeness tripwire
 # ============================================================
 
-_CONTRACT_MODULES = (
-    "faultmaven.modules.auth.contracts",
-    "faultmaven.modules.case.contracts",
-    "faultmaven.modules.knowledge.contracts",
-    "faultmaven.models.interfaces_case",
-)
-
-
 def _loaded_faultmaven_classes() -> List[type]:
     """Every class currently reachable under the ``faultmaven`` namespace.
 
