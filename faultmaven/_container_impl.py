@@ -700,13 +700,44 @@ class DIContainer(BaseDIContainer):
                 self.session_manager.sessions = self.sessions  # Share session storage
 
             async def create_session(self, user_id, client_id=None, metadata=None):
-                # Signature mirrors AuthSessionService.create_session so a call
-                # shaped against the stand-in also binds on the real service.
+                """Create or resume a session.
+
+                Mirrors ``AuthSessionService.create_session``, including the
+                RETURN SHAPE: ``(SessionContext, resumed)``. Callers unpack that
+                pair unconditionally — ``sso_login_service`` does
+                ``session, _resumed = await ...create_session(...)`` — so a bare
+                session raised TypeError and 500'd SSO login whenever the
+                degraded fallback was active.
+                """
+                if not user_id or not str(user_id).strip():
+                    from faultmaven.exceptions import ValidationException
+
+                    raise ValidationException(
+                        "user_id is required for session creation"
+                    )
+
+                # Session resumption for a known (user_id, client_id) pair,
+                # mirroring the real service: extend the existing session and
+                # report it as resumed rather than minting a second one.
+                if client_id:
+                    for existing in self.sessions.values():
+                        if (
+                            existing.user_id == user_id
+                            and getattr(existing, "client_id", None) == client_id
+                        ):
+                            existing.expires_at = (
+                                datetime.now(timezone.utc) + _session_ttl
+                            )
+                            existing.last_activity = datetime.now(timezone.utc)
+                            existing.session_resumed = True
+                            return existing, True
+
                 session_id = str(uuid.uuid4())
                 session = MockSessionContext(session_id, user_id, metadata)
                 session.client_id = client_id
+                session.session_resumed = False
                 self.sessions[session_id] = session
-                return session
+                return session, False
 
             async def get_session(self, session_id, validate=True):
                 """Get session by ID, optionally enforcing expiry.
