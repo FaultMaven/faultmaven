@@ -779,10 +779,23 @@ class DIContainer(BaseDIContainer):
                 return False
 
             async def update_last_activity(self, session_id):
-                if session_id in self.sessions:
-                    self.sessions[session_id].last_activity = datetime.now(timezone.utc)
-                    return True
-                return False
+                """Touch a session's last_activity, honouring expiry.
+
+                Resolves through ``get_session`` exactly as
+                ``AuthSessionService.update_last_activity`` does, so an EXPIRED
+                session answers False (and is evicted) instead of being
+                silently refreshed. Reading the store directly bypassed the
+                expiry semantics and let a heartbeat on a dead session return
+                200 in degraded mode where the real service returns 404.
+                """
+                session = await self.get_session(session_id)
+                if not session:
+                    return False
+
+                now = datetime.now(timezone.utc)
+                session.last_activity = now
+                session.updated_at = now
+                return True
 
         return MinimalSessionService()
 

@@ -155,3 +155,34 @@ class TestMinimalSessionServiceCreateSession:
         assert resumed is False
         assert second.session_id != first.session_id
         assert len(service.sessions) == 2
+
+
+@pytest.mark.unit
+class TestMinimalSessionServiceUpdateLastActivity:
+    """Rider C — heartbeat must honour expiry the way the real service does."""
+
+    async def test_live_session_is_touched(self) -> None:
+        service = _minimal_session_service()
+        session, _ = await service.create_session("user-1")
+        before = session.last_activity
+
+        assert await service.update_last_activity(session.session_id) is True
+        assert session.last_activity >= before
+        assert session.session_id in service.sessions
+
+    async def test_expired_session_is_refused_and_evicted(self) -> None:
+        """Expired heartbeat answers False and does not resurrect the session.
+
+        The store assertion is the point: an implementation that returned
+        False but left the dead session in place would still drift from the
+        real service, whose get_session deletes on expiry.
+        """
+        service = _minimal_session_service()
+        session, _ = await service.create_session("user-1")
+        session.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+
+        assert await service.update_last_activity(session.session_id) is False
+        assert session.session_id not in service.sessions
+
+    async def test_unknown_session_is_refused(self) -> None:
+        assert await _minimal_session_service().update_last_activity("nope") is False
