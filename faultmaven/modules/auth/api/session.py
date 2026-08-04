@@ -1017,42 +1017,6 @@ async def get_session_stats(
         raise HTTPException(status_code=500, detail="Failed to get session stats")
 
 
-@router.post("/{session_id}/cleanup")
-async def cleanup_session(
-    session_id: str,
-    session_service: AuthSessionService = Depends(get_session_service),
-):
-    """
-    Clean up session data and temporary files.
-
-    Args:
-        session_id: Session identifier
-
-    Returns:
-        Cleanup confirmation
-    """
-    try:
-        # Perform cleanup operations via service
-        result = await session_service.cleanup_session_data(session_id)
-
-        if not result.get("success"):
-            if "not found" in result.get("error", "").lower():
-                raise HTTPException(status_code=404, detail="Session not found")
-            else:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Cleanup failed: {result.get('error', 'Unknown error')}",
-                )
-
-        return result
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to cleanup session {session_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to cleanup session")
-
-
 @router.get("/{session_id}/recovery-info")
 async def get_session_recovery_info(
     session_id: str,

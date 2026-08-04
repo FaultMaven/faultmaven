@@ -507,6 +507,25 @@ class InMemoryRevocationStore(ITokenRevocationStore):
         return 0
 
 
+async def asgi_request(app, method: str, path: str, **kwargs):
+    """Issue one request against an ASGI app over httpx's in-process transport.
+
+    Used by the API-layer regression modules instead of
+    ``fastapi.testclient.TestClient``, which creates a fresh event loop per
+    request; async fakeredis-backed infrastructure elsewhere in this suite then
+    raises "bound to a different event loop", surfacing as a confusing
+    unrelated error rather than as the behaviour under test.
+
+    (Multipart uploads are the documented exception — TESTING_STANDARDS.md
+    calls for ``TestClient`` there.)
+    """
+    import httpx
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.request(method, path, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # JWT forging for AuthService verification tests (#853)
 # ---------------------------------------------------------------------------

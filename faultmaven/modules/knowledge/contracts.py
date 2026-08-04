@@ -31,10 +31,6 @@ class IKnowledgeService(Protocol):
     See: modules/agent/tools/kb_qa.py, kb_tool_adapter.py.
     """
 
-    async def add_document(self, document: dict) -> str:
-        """Add a document to the knowledge base."""
-        ...
-
     async def delete_document(self, document_id: str) -> bool:
         """Delete a document from the knowledge base."""
         ...

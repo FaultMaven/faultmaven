@@ -26,12 +26,12 @@ absent on ``app.state`` so the genuine ``get_user_store`` helper produces the
 
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from fastapi import FastAPI
 
 from faultmaven.api.v1.auth_dependencies import require_platform_admin
 from faultmaven.modules.auth.api.auth import router as auth_router
+from tests.utils import asgi_request
 
 UNAVAILABLE_DETAIL = (
     "User management service unavailable. Please check server startup logs."
@@ -65,9 +65,7 @@ def _build_app(user_store):
 
 
 async def _list_users(app):
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.get("/api/v1/auth/users")
+    return await asgi_request(app, "GET", "/api/v1/auth/users")
 
 
 @pytest.mark.unit
@@ -80,11 +78,9 @@ async def test_absent_user_store_surfaces_as_503_not_500():
     # handler fails here rather than passing vacuously.
     assert response.status_code == 503, response.text
 
-    detail = response.json()["detail"]
-    assert detail == UNAVAILABLE_DETAIL
-    # The 500 branch built its body from str(e), embedding the inner status.
-    assert "503:" not in str(detail)
-    assert "internal_error" not in str(detail)
+    # Exact equality: the 500 branch built its body from str(e), which would
+    # embed the inner status and the internal_error envelope.
+    assert response.json()["detail"] == UNAVAILABLE_DETAIL
 
 
 @pytest.mark.unit

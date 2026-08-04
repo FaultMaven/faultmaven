@@ -415,11 +415,13 @@ async def list_documents(
     logger = logging.getLogger(__name__)
 
     try:
-        # Validate scope if provided
+        # Validate scope if provided. The detail must not echo the submitted
+        # value: this endpoint takes optional auth, so an anonymous caller
+        # would otherwise get arbitrary input reflected back in the body.
         if scope and scope not in ("global", "team", "personal"):
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid scope: {scope}. Allowed: global, team, personal",
+                detail="Invalid scope. Allowed: global, team, personal",
             )
 
         # Parse tags filter
