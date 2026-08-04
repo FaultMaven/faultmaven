@@ -699,12 +699,46 @@ def create_token_revocation_store(
     )
 
 
+def create_signing_token_generator(
+    settings: FaultMavenSettings,
+    revocation_store: Any,
+    auth_service: Any,
+) -> Any:
+    """Create the generator THIS deployment signs with (mode-aware, #959).
+
+    The one place that answers both halves of the question — which algorithm
+    this deployment mints under, and which key it mints with. The key half is
+    deliberately not a parameter: a caller free to supply its own pair is a
+    second key authority, and this function exists so there is only one (see
+    ``AuthService.signing_private_key``).
+
+    Args:
+        settings: FaultMavenSettings instance
+        revocation_store: Token revocation tracking store
+        auth_service: The service that resolved this deployment's RSA pair
+
+    Returns:
+        An IJWTTokenGenerator (HS256 under local mode, RS256 otherwise)
+
+    Raises:
+        SigningKeyUnavailableError: The selected mode has no usable key.
+    """
+    from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+        build_jwt_token_generator,
+    )
+
+    return build_jwt_token_generator(
+        settings,
+        revocation_store,
+        private_key=auth_service.signing_private_key,
+        public_key=auth_service.verification_public_key,
+    )
+
+
 def create_jwt_token_generator(
     settings: FaultMavenSettings,
     revocation_store: Any,
-    *,
-    private_key: str | None,
-    public_key: str | None,
+    auth_service: Any,
 ) -> Any:
     """Create the RS256 JWT token generator used by the OAuth service.
 
@@ -714,17 +748,15 @@ def create_jwt_token_generator(
     builder ``/auth/login`` and the UserService wiring use — so there is one
     place that knows how a generator is assembled from settings (#959).
 
-    Keys are passed in, not read from settings: ``AuthService`` is the single
-    key-resolution authority (see ``AuthService.signing_private_key``), and a
-    second resolution here would hand OAuth a different pair than the request
-    path verifies with whenever keys come from a file path or from the
-    development fallback.
+    Keys come from ``AuthService``, the single key-resolution authority (see
+    ``AuthService.signing_private_key``). Resolving them here instead would
+    hand OAuth a different pair than the request path verifies with whenever
+    keys come from a file path or from the development fallback.
 
     Args:
         settings: FaultMavenSettings instance
         revocation_store: Token revocation tracking store
-        private_key: RSA private key resolved by AuthService
-        public_key: RSA public key resolved by AuthService
+        auth_service: The service that resolved this deployment's RSA pair
 
     Returns:
         RS256JWTTokenGenerator instance
@@ -736,8 +768,8 @@ def create_jwt_token_generator(
     return build_rs256_token_generator(
         settings,
         revocation_store,
-        private_key=private_key,
-        public_key=public_key,
+        private_key=auth_service.signing_private_key,
+        public_key=auth_service.verification_public_key,
     )
 
 
@@ -915,7 +947,6 @@ def register_services(container: BaseDIContainer) -> None:
     # home rather than one copy per consumer (#959).
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
         SigningKeyUnavailableError,
-        build_jwt_token_generator,
     )
 
     # Keys come from the auth service, which resolved them (value, path, or a
@@ -923,11 +954,8 @@ def register_services(container: BaseDIContainer) -> None:
     # Two resolutions mean two dev pairs in one process, and then the request
     # path rejects every token this generator mints.
     try:
-        signing_generator = build_jwt_token_generator(
-            settings,
-            token_revocation_store,
-            private_key=auth_service.signing_private_key,
-            public_key=auth_service.verification_public_key,
+        signing_generator = create_signing_token_generator(
+            settings, token_revocation_store, auth_service
         )
         container.signing_token_generator = signing_generator
         container._register_service("signing_token_generator", signing_generator)

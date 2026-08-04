@@ -144,6 +144,20 @@ def _configured_settings(monkeypatch, minutes: int, days: int) -> FaultMavenSett
     return FaultMavenSettings(_env_file=None)
 
 
+def _auth_service(private_pem: str, public_pem: str):
+    """The key authority the container passes to the factory (#959).
+
+    A real ``AuthService`` holding the same PEMs the environment carries, so
+    what this file asserts — which settings half supplies the LIFETIMES — is
+    unchanged by where the keys come from.
+    """
+    from faultmaven.modules.auth.domain.services.auth_service import AuthService
+
+    return AuthService(
+        revocation_store=None, private_key=private_pem, public_key=public_pem
+    )
+
+
 def _lifetime(payload: dict) -> timedelta:
     return timedelta(seconds=payload["exp"] - payload["iat"])
 
@@ -174,8 +188,7 @@ class TestCloudMintHonoursTheKnob:
         generator = create_jwt_token_generator(
             settings,
             _revocation_store(),
-            private_key=private_pem,
-            public_key=public_pem,
+            _auth_service(private_pem, public_pem),
         )
         token = await generator.generate_access_token(_user())
 
@@ -203,8 +216,7 @@ class TestCloudMintHonoursTheKnob:
         generator = create_jwt_token_generator(
             settings,
             _revocation_store(),
-            private_key=private_pem,
-            public_key=public_pem,
+            _auth_service(private_pem, public_pem),
         )
         token = await generator.generate_refresh_token(_user())
 

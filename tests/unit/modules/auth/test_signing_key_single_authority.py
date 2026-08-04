@@ -29,13 +29,13 @@ import pytest
 
 from faultmaven.container.providers.services import (
     create_jwt_token_generator,
+    create_signing_token_generator,
     create_user_service,
 )
 from faultmaven.modules.auth.domain.services.auth_service import AuthService
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     RS256JWTTokenGenerator,
     SigningKeyUnavailableError,
-    build_jwt_token_generator,
     build_rs256_token_generator,
 )
 from faultmaven.utils.password import verify_password
@@ -92,13 +92,14 @@ def _auth_service(settings, store):
 
 
 def _wire(settings, store, auth_service):
-    """The two lines the Composition Root runs, with the same arguments."""
-    return build_jwt_token_generator(
-        settings,
-        store,
-        private_key=auth_service.signing_private_key,
-        public_key=auth_service.verification_public_key,
-    )
+    """THE wiring, called — not a local copy of it.
+
+    ``create_signing_token_generator`` is what ``register_services`` invokes,
+    and it takes the auth service rather than a key pair precisely so that no
+    caller — including this test — can supply keys of its own and prove
+    something about a wiring nobody runs.
+    """
+    return create_signing_token_generator(settings, store, auth_service)
 
 
 class TestUnconfiguredOAuthStandalone:
@@ -171,12 +172,7 @@ class TestUnconfiguredOAuthStandalone:
         store = InMemoryRevocationStore()
         auth_service = _auth_service(settings, store)
 
-        oauth_generator = create_jwt_token_generator(
-            settings,
-            store,
-            private_key=auth_service.signing_private_key,
-            public_key=auth_service.verification_public_key,
-        )
+        oauth_generator = create_jwt_token_generator(settings, store, auth_service)
 
         assert oauth_generator.private_key == auth_service.signing_private_key
         assert (
