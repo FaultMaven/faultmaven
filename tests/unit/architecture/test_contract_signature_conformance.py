@@ -17,12 +17,31 @@ Three rule families
 -------------------
 Rule A — a real implementation conforms to its contract.
 Rule B — a container stand-in conforms to the same contract.
-Rule C — the stand-in's surface is a SUBSET of the real class's surface: for
-    every public method the stand-in exposes beyond the contract, the real
-    class must have it, and every call that binds against the stand-in's
-    signature must also bind against the real one. A stand-in that accepts
-    what the real class rejects hides live 500s — that is exactly how fm#964
-    and the dead ``cleanup_session_data`` route stayed invisible.
+Rule C — a stand-in and its real counterpart can serve THE SAME CALLS. Checked
+    over every public member the stand-in exposes (contract-declared or not),
+    in BOTH directions:
+
+    * stand-in → real: the stand-in must not accept what the real class
+      rejects, or a caller shaped against the stand-in 500s once the real
+      service is wired in. This is how fm#964 and the dead
+      ``cleanup_session_data`` route stayed invisible.
+    * real → stand-in: the stand-in must serve every call the real service
+      serves, or the DEGRADED path 500s on calls the healthy path handles.
+      ``CaseService.create_case`` takes ``source`` and the route always passes
+      it; a stand-in without that parameter raised TypeError.
+
+    Rule B and Rule C ask different questions — "does the stand-in satisfy the
+    contract?" versus "can these two serve the same calls?" — and neither
+    implies the other. An earlier revision of this guard checked Rule C only
+    over members the contract does NOT declare and only in the first
+    direction, which left the very shape it exists to catch uncovered.
+
+Anti-staleness
+--------------
+Suppressions expire on their own. A PENDING member that stops diverging is
+RED; an EXCLUDED interface whose stated reason stops holding (something
+subclasses it, or some class provides all of its members) is RED. Without
+that, a suppression is a permanent blind spot.
 
 A completeness tripwire scans ``faultmaven/modules/*/contracts.py`` and
 ``faultmaven/models/interfaces_case.py`` for ``I*`` interfaces so a newly
@@ -225,14 +244,33 @@ def compare_to_interface(
     return out
 
 
-def compare_standin_subset(
+def compare_binding_compatibility(
     *,
     interface_name: str,
     member: str,
-    standin: Any,
-    real: Any,
+    source: Any,
+    target: Any,
+    source_label: str,
+    target_label: str,
+    hazard: str,
 ) -> List[Divergence]:
-    """Rule C: every call binding on the stand-in must bind on the real class."""
+    """Every call that binds on ``source`` must also bind on ``target``.
+
+    Direction-agnostic, because a degraded-mode stand-in has to satisfy this in
+    BOTH directions and each direction fails differently:
+
+    * source=stand-in, target=real — the stand-in must not accept what the real
+      rejects, or a caller shaped against the stand-in 500s once the real
+      service is wired in (this is how fm#964 and the dead
+      ``cleanup_session_data`` route stayed invisible).
+    * source=real, target=stand-in — the stand-in must serve every call the
+      real service serves, or the DEGRADED path 500s on calls the healthy path
+      handles. ``CaseService.create_case`` takes ``source``; the route passes
+      it unconditionally; a stand-in without that parameter raises TypeError.
+
+    ``hazard`` is the one-line consequence rendered into each message so a
+    reviewer can read the direction straight off the failure.
+    """
     out: List[Divergence] = []
 
     def add(detail: str) -> None:
@@ -241,64 +279,63 @@ def compare_standin_subset(
                 rule="C",
                 interface=interface_name,
                 member=member,
-                left=_describe(standin, "stand-in"),
-                right=_describe(real, "real"),
-                detail=detail,
+                left=_describe(source, source_label),
+                right=_describe(target, target_label),
+                detail=f"{detail} — {hazard}",
             )
         )
 
-    if _is_coroutine(standin) != _is_coroutine(real):
+    if _is_coroutine(source) != _is_coroutine(target):
         add(
-            f"coroutine mismatch: stand-in is "
-            f"{'async' if _is_coroutine(standin) else 'sync'}, real is "
-            f"{'async' if _is_coroutine(real) else 'sync'} — the same call site "
+            f"coroutine mismatch: {source_label} is "
+            f"{'async' if _is_coroutine(source) else 'sync'}, {target_label} is "
+            f"{'async' if _is_coroutine(target) else 'sync'}; the same call site "
             f"cannot serve both"
         )
         return out
 
     try:
-        standin_sig = _signature_of(standin)
-        real_sig = _signature_of(real)
+        source_sig = _signature_of(source)
+        target_sig = _signature_of(target)
     except (TypeError, ValueError) as exc:  # pragma: no cover - exotic callables
         add(f"signature not introspectable: {exc}")
         return out
 
-    standin_params = _named_params(standin_sig)
-    real_params = _named_params(real_sig)
-    real_kwargs = _has_var_keyword(real_sig)
-    real_args = _has_var_positional(real_sig)
+    source_params = _named_params(source_sig)
+    target_params = _named_params(target_sig)
+    target_kwargs = _has_var_keyword(target_sig)
+    target_args = _has_var_positional(target_sig)
 
-    for name, sparam in standin_params.items():
-        rparam = real_params.get(name)
-        if rparam is None:
-            absorbed = real_kwargs or (
-                real_args and sparam.kind is inspect.Parameter.POSITIONAL_ONLY
+    for name, sparam in source_params.items():
+        tparam = target_params.get(name)
+        if tparam is None:
+            absorbed = target_kwargs or (
+                target_args and sparam.kind is inspect.Parameter.POSITIONAL_ONLY
             )
             if not absorbed:
                 add(
-                    f"stand-in accepts parameter '{name}' that the real class "
-                    f"rejects — a caller shaped against the stand-in 500s in "
-                    f"production"
+                    f"{source_label} accepts parameter '{name}' that "
+                    f"{target_label} rejects"
                 )
             continue
-        if not _kinds_compatible(sparam, rparam):
+        if not _kinds_compatible(sparam, tparam):
             add(
-                f"parameter '{name}': real kind {rparam.kind.name} cannot serve "
-                f"stand-in kind {sparam.kind.name}"
+                f"parameter '{name}': {target_label} kind {tparam.kind.name} "
+                f"cannot serve {source_label} kind {sparam.kind.name}"
             )
-        if sparam.default is not _EMPTY and rparam.default is _EMPTY:
+        if sparam.default is not _EMPTY and tparam.default is _EMPTY:
             add(
-                f"parameter '{name}' is optional on the stand-in but REQUIRED "
-                f"on the real class — a call omitting it binds on one, not the other"
+                f"parameter '{name}' is optional on {source_label} but REQUIRED "
+                f"on {target_label}; a call omitting it binds on one, not the other"
             )
 
-    for name, rparam in real_params.items():
-        if name in standin_params:
+    for name, tparam in target_params.items():
+        if name in source_params:
             continue
-        if rparam.default is _EMPTY:
+        if tparam.default is _EMPTY:
             add(
-                f"real class REQUIRES parameter '{name}' the stand-in does not "
-                f"accept — a call shaped against the stand-in cannot bind on the real"
+                f"{target_label} REQUIRES parameter '{name}' that {source_label} "
+                f"does not accept"
             )
 
     return out
@@ -542,28 +579,50 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     return {entry.interface.__name__: entry for entry in entries}
 
 
-#: Interfaces deliberately outside the guard. Every entry needs a one-line
-#: reason; the tripwire below fails RED for any interface in neither this dict
-#: nor the registry. Exclusions are the exception, not the default.
+#: Interfaces deliberately outside the guard. The tripwire fails RED for any
+#: interface in neither this dict nor the registry, and
+#: ``test_exclusion_reasons_still_hold`` fails RED once an exclusion's stated
+#: reason stops being true — an exclusion without that second gate is a
+#: permanent blind spot, which is what PENDING members already avoid.
+#:
+#: Every reason here asserts the SAME machine-checkable claim: nothing
+#: subclasses the port, and no class provides ALL of its members. Some of these
+#: ports do share method NAMES with a real service — that is called out
+#: explicitly, because "no concrete implementation" read on its own invites the
+#: reader to assume none of the surface exists anywhere, which is not true.
 EXCLUDED_INTERFACES: Dict[str, str] = {
     "IUserQuery": (
-        "Declared read-only query port with no concrete implementation in the "
-        "repo (no class exposes get_user + get_by_email over User)."
+        "No subclass and no full implementation: no class exposes both "
+        "get_user and get_by_email over User (RedisUserStore returns DevUser "
+        "and names its lookup get_user_by_email)."
     ),
     "IPermissionChecker": (
-        "Declared port with no concrete implementation — nothing defines "
+        "No subclass and no full implementation — nothing anywhere defines "
         "can_access(user_id, resource)."
     ),
     "ILocalAuthService": (
-        "Declared port with no concrete implementation — no class defines "
-        "login/register per this contract."
+        "No subclass and no full implementation: nothing defines login/"
+        "refresh_access_token per this contract. Unrelated classes own a "
+        "'register' name, which is not this port."
     ),
-    "ICaseStore": "Declared storage port with no concrete implementation.",
+    "ICaseStore": (
+        "No subclass and no full implementation. CaseService shares 9 of its "
+        "15 method names (create_case, get_case, update_case, search_cases, "
+        "add_message_to_case, get_case_messages, get_case_messages_enhanced, "
+        "cleanup_expired_cases, get_case_analytics) but is not a store and "
+        "implements none of the persistence members."
+    ),
     "ICaseNotificationService": (
-        "Declared notification port with no concrete implementation."
+        "No subclass and no full implementation — no class provides any of "
+        "its notification members."
     ),
     "ICaseIntegrationService": (
-        "Declared integration port with no concrete implementation."
+        "No subclass and no full implementation. CaseService shares 2 of its "
+        "5 method names (list_cases_by_session, count_cases_by_session) but "
+        "implements none of export_case, sync_to_knowledge_base or "
+        "create_external_ticket, so registering it as the implementation "
+        "would assert a relationship that does not exist and manufacture "
+        "three permanent PENDING entries."
     ),
 }
 
@@ -572,12 +631,27 @@ EXCLUDED_INTERFACES: Dict[str, str] = {
 # Completeness tripwire
 # ============================================================
 
-_CONTRACT_MODULES = (
-    "faultmaven.modules.auth.contracts",
-    "faultmaven.modules.case.contracts",
-    "faultmaven.modules.knowledge.contracts",
-    "faultmaven.models.interfaces_case",
-)
+
+def _loaded_faultmaven_classes() -> List[type]:
+    """Every class currently reachable under the ``faultmaven`` namespace.
+
+    Used by the exclusion-staleness gate to look for a class that structurally
+    satisfies a port we claim nothing implements. Only sees loaded modules, so
+    callers must import the implementation modules first (building the registry
+    does that).
+    """
+    import sys
+
+    seen: Dict[int, type] = {}
+    for module_name, module in list(sys.modules.items()):
+        if module is None or not module_name.startswith("faultmaven"):
+            continue
+        for value in list(vars(module).values()):
+            if inspect.isclass(value) and getattr(value, "__module__", "").startswith(
+                "faultmaven"
+            ):
+                seen[id(value)] = value
+    return list(seen.values())
 
 
 def _package_root() -> Path:
@@ -739,6 +813,77 @@ class TestContractRegistry:
             name for name, reason in EXCLUDED_INTERFACES.items() if not reason.strip()
         )
         assert not blank, f"EXCLUDED_INTERFACES entries with no reason: {blank}"
+
+    def test_exclusion_reasons_still_hold(self) -> None:
+        """An exclusion whose stated reason stopped being true is RED.
+
+        PENDING members already self-expire; without the same gate an
+        exclusion is a PERMANENT blind spot — the interface silently stays
+        unchecked long after someone implements it.
+
+        Every reason in EXCLUDED_INTERFACES asserts the same claim: nothing
+        subclasses the port and no class provides ALL of its members. This
+        enforces exactly that. Sharing SOME member names is expected and does
+        not trip the gate (CaseService shares 9 of ICaseStore's 15); providing
+        all of them means the port now has an implementation and belongs in
+        the registry.
+
+        Scope, stated honestly: the sweep covers classes reachable through
+        ``sys.modules`` under the ``faultmaven`` namespace after the registry
+        import has pulled in the service and repository modules. A class in a
+        module nothing has imported is not visible to it.
+        """
+        _registry_or_fail()  # force the implementation modules to load
+
+        try:
+            discovered = discover_interfaces()
+        except Exception as exc:  # noqa: BLE001 - fail closed, never skip
+            pytest.fail(
+                f"Interface enumeration failed (fail-closed): "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        candidates = _loaded_faultmaven_classes()
+        assert candidates, (
+            "Class sweep found ZERO faultmaven classes — this gate would pass "
+            "while checking nothing."
+        )
+
+        violations: List[str] = []
+        for name, reason in EXCLUDED_INTERFACES.items():
+            interface = discovered.get(name)
+            if interface is None:
+                continue  # the stale-entry check above owns this case
+            members = set(interface_members(interface))
+
+            subclasses = [
+                cls.__name__
+                for cls in interface.__subclasses__()
+                if cls is not interface
+            ]
+            if subclasses:
+                violations.append(
+                    f"{name}: now subclassed by {sorted(subclasses)} — the "
+                    f"exclusion reason ({reason!r}) no longer holds; register it"
+                )
+
+            if not members:
+                continue
+            satisfiers = sorted(
+                cls.__name__
+                for cls in candidates
+                if cls is not interface and members <= set(dir(cls))
+            )
+            if satisfiers:
+                violations.append(
+                    f"{name}: fully provided by {satisfiers} — the exclusion "
+                    f"reason ({reason!r}) no longer holds; register it"
+                )
+
+        assert not violations, (
+            "These exclusions are stale — something now implements the port:\n"
+            + "\n".join(f"  - {v}" for v in violations)
+        )
 
     def test_pending_members_are_declared_and_labelled(self) -> None:
         """Every pending member must name a real contract member, with a reason."""
@@ -959,22 +1104,29 @@ def test_rule_c_standin_surface_is_subset_of_real(
     dead ``POST /{session_id}/cleanup`` route called
     ``cleanup_session_data`` which only ever existed on the stand-in, so every
     production call 500'd while the suite stayed green.
+
+    EVERY public member the stand-in exposes is compared against the real
+    class, contract-declared or not. An earlier revision of this guard compared
+    only the members the contract does NOT declare, which left the exact fm#964
+    shape uncovered: a stand-in and a real implementation can both satisfy the
+    contract (Rule B) and still disagree with each other on a contract-declared
+    method — the stand-in taking an extra optional keyword the real service
+    rejects is enough to 500 in production, and Rule B permits it because the
+    contract never mentioned that keyword. Rule B asks "does the stand-in
+    satisfy the contract?"; Rule C asks "can the real class serve every call
+    the stand-in accepts?". They are different questions and neither implies
+    the other.
     """
     registry = _registry_or_fail()
     entry = registry[interface_name]
     factory = next(f for label, f in entry.standins if label == standin_name)
     standin = factory()
 
-    contract_members = set(interface_members(entry.interface))
-    extras = {
-        name: func
-        for name, func in public_callables(standin).items()
-        if name not in contract_members
-    }
+    exposed = public_callables(standin)
 
     divergences: List[Divergence] = []
     for real in entry.reals:
-        for member_name, standin_func in sorted(extras.items()):
+        for member_name, standin_func in sorted(exposed.items()):
             real_func = _lookup_member(real, member_name)
             if real_func is None:
                 divergences.append(
@@ -1004,16 +1156,37 @@ def test_rule_c_standin_surface_is_subset_of_real(
                     )
                 )
                 continue
+            # C1 — the stand-in must not accept what the real class rejects.
             divergences.extend(
-                compare_standin_subset(
+                compare_binding_compatibility(
                     interface_name=interface_name,
                     member=member_name,
-                    standin=standin_func,
-                    real=real_func,
+                    source=standin_func,
+                    target=real_func,
+                    source_label="stand-in",
+                    target_label="real",
+                    hazard=(
+                        "a caller shaped against the stand-in 500s once the "
+                        "real service is wired in"
+                    ),
+                )
+            )
+            # C2 — the stand-in must serve every call the real class serves.
+            divergences.extend(
+                compare_binding_compatibility(
+                    interface_name=interface_name,
+                    member=member_name,
+                    source=real_func,
+                    target=standin_func,
+                    source_label="real",
+                    target_label="stand-in",
+                    hazard=(
+                        "the DEGRADED path 500s on a call the healthy path " "serves"
+                    ),
                 )
             )
 
     assert not divergences, (
-        f"{standin_name} exposes surface its real counterpart cannot serve:\n"
+        f"{standin_name} and its real counterpart cannot serve the same calls:\n"
         + _render(divergences)
     )

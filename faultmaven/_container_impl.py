@@ -700,13 +700,44 @@ class DIContainer(BaseDIContainer):
                 self.session_manager.sessions = self.sessions  # Share session storage
 
             async def create_session(self, user_id, client_id=None, metadata=None):
-                # Signature mirrors AuthSessionService.create_session so a call
-                # shaped against the stand-in also binds on the real service.
+                """Create or resume a session.
+
+                Mirrors ``AuthSessionService.create_session``, including the
+                RETURN SHAPE: ``(SessionContext, resumed)``. Callers unpack that
+                pair unconditionally — ``sso_login_service`` does
+                ``session, _resumed = await ...create_session(...)`` — so a bare
+                session raised TypeError and 500'd SSO login whenever the
+                degraded fallback was active.
+                """
+                if not user_id or not str(user_id).strip():
+                    from faultmaven.exceptions import ValidationException
+
+                    raise ValidationException(
+                        "user_id is required for session creation"
+                    )
+
+                # Session resumption for a known (user_id, client_id) pair,
+                # mirroring the real service: extend the existing session and
+                # report it as resumed rather than minting a second one.
+                if client_id:
+                    for existing in self.sessions.values():
+                        if (
+                            existing.user_id == user_id
+                            and getattr(existing, "client_id", None) == client_id
+                        ):
+                            existing.expires_at = (
+                                datetime.now(timezone.utc) + _session_ttl
+                            )
+                            existing.last_activity = datetime.now(timezone.utc)
+                            existing.session_resumed = True
+                            return existing, True
+
                 session_id = str(uuid.uuid4())
                 session = MockSessionContext(session_id, user_id, metadata)
                 session.client_id = client_id
+                session.session_resumed = False
                 self.sessions[session_id] = session
-                return session
+                return session, False
 
             async def get_session(self, session_id, validate=True):
                 """Get session by ID, optionally enforcing expiry.
@@ -748,10 +779,23 @@ class DIContainer(BaseDIContainer):
                 return False
 
             async def update_last_activity(self, session_id):
-                if session_id in self.sessions:
-                    self.sessions[session_id].last_activity = datetime.now(timezone.utc)
-                    return True
-                return False
+                """Touch a session's last_activity, honouring expiry.
+
+                Resolves through ``get_session`` exactly as
+                ``AuthSessionService.update_last_activity`` does, so an EXPIRED
+                session answers False (and is evicted) instead of being
+                silently refreshed. Reading the store directly bypassed the
+                expiry semantics and let a heartbeat on a dead session return
+                200 in degraded mode where the real service returns 404.
+                """
+                session = await self.get_session(session_id)
+                if not session:
+                    return False
+
+                now = datetime.now(timezone.utc)
+                session.last_activity = now
+                session.updated_at = now
+                return True
 
         return MinimalSessionService()
 
@@ -776,12 +820,14 @@ class DIContainer(BaseDIContainer):
                 owner_id=None,
                 session_id=None,
                 initial_message=None,
-                initial_query=None,
-                priority=None,
-                user_id=None,
-                organization_id=None,
-                metadata=None,
+                source="copilot",
             ):
+                # Signature mirrors CaseService.create_case. `source` is not
+                # optional in practice: modules/case/api/routes.py passes it on
+                # every POST /api/v1/cases, so a stand-in without it raised
+                # TypeError -> 500 whenever the degraded fallback was active.
+                # The dropped parameters (initial_query, priority, user_id,
+                # organization_id, metadata) had no caller anywhere.
                 # Generate case_id matching required pattern ^case_[a-f0-9]{12}$
                 case_id = f"case_{uuid.uuid4().hex[:12]}"
 
@@ -792,10 +838,8 @@ class DIContainer(BaseDIContainer):
                     raise ValidationException("Owner ID is required")
 
                 # Create case with proper Case model structure
-                final_user_id = user_id or owner_id
-                final_org_id = (
-                    organization_id or owner_id
-                )  # Use owner_id as organization_id if not provided
+                final_user_id = owner_id
+                final_org_id = owner_id
 
                 # Phase 2: Handle initial_message transactionally
                 current_time = datetime.now(timezone.utc)
@@ -830,6 +874,11 @@ class DIContainer(BaseDIContainer):
                     organization_id=final_org_id,
                     status=CaseState.INQUIRY,
                     message_count=message_count,
+                    # Mirrors CaseService: an unrecognised source falls back to
+                    # "copilot" rather than being stored verbatim.
+                    source=(
+                        source if source in ("copilot", "slack", "api") else "copilot"
+                    ),
                 )
 
                 self.cases[case_id] = case
@@ -901,18 +950,26 @@ class DIContainer(BaseDIContainer):
                 execute_user_closure(case, user_id)
                 return case
 
-            async def list_user_cases(
-                self, user_id=None, filters=None, limit=20, offset=0
-            ):
-                """List cases for a user with pagination - Phase 1: Core filtering implementation"""
-                # Filter cases by user_id if provided
-                if user_id:
-                    user_cases = [
-                        case for case in self.cases.values() if case.user_id == user_id
-                    ]
-                else:
-                    # Return all cases if no user filter
-                    user_cases = list(self.cases.values())
+            async def list_user_cases(self, user_id, filters=None):
+                """List cases for a user with pagination.
+
+                Signature mirrors CaseService.list_user_cases: ``user_id`` is
+                REQUIRED and pagination comes from ``filters`` only. The
+                stand-in previously also took ``limit``/``offset`` directly,
+                which the real service rejects, and defaulted ``user_id`` to
+                None where the real service raises.
+                """
+                if not user_id:
+                    from faultmaven.exceptions import ValidationException
+
+                    raise ValidationException("User ID cannot be empty")
+
+                # Defaults mirror CaseListFilter when no filters are given.
+                limit = 50
+                offset = 0
+                user_cases = [
+                    case for case in self.cases.values() if case.user_id == user_id
+                ]
 
                 # Phase 1: Apply core filtering - exclude deleted/archived/empty by default
                 if filters:
