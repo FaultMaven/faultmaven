@@ -2145,15 +2145,24 @@ def _fix_application_turn(case: Case) -> int | None:
     establishable rather than vacuously unsatisfiable on the no-ProposedAction
     shape, at the cost of a wider window there (stated, not hidden).
     """
+    actionable = {
+        InvestigationActionType.SOLUTION.value,
+        InvestigationActionType.MITIGATION.value,
+    }
     turns = [
         a.proposed_in_turn
         for a in (getattr(case, "proposed_actions", None) or [])
         if getattr(a, "state", None) == "accepted"
-        and getattr(getattr(a, "action_type", None), "value", None)
-        in (
-            InvestigationActionType.SOLUTION.value,
-            InvestigationActionType.MITIGATION.value,
+        # Enum OR raw string, the same read ``classify_solution_outcome`` does
+        # (its ``_action_type_value`` is private to the domain module, so the
+        # one-line equivalent is inlined rather than crossing the contracts
+        # boundary): reading only ``.value`` would silently miss a string-typed
+        # action and refuse M6 forever on that deployment. Failing closed is the
+        # right DIRECTION for this gate, but not by accident.
+        and getattr(
+            getattr(a, "action_type", None), "value", getattr(a, "action_type", None)
         )
+        in actionable
         and getattr(a, "proposed_in_turn", None) is not None
     ]
     if turns:
