@@ -277,7 +277,3 @@ class RedisSessionStore(ISessionStore):
             "active_sessions": 0,
             "timestamp": to_json_compatible(datetime.now(timezone.utc)),
         }
-
-    async def cleanup_session_data(self, session_id: str) -> bool:
-        """Clean up session data."""
-        return await self.delete_session(session_id)
