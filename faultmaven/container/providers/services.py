@@ -822,7 +822,11 @@ def create_sso_login_service(
     """Create the SSO login orchestration service, or None when SSO is off.
 
     Only constructed when the identity provider exists (i.e. ``sso_configured``),
-    which also guarantees oauth mode — so the RS256 token generator is present.
+    which also guarantees oauth mode. That no longer guarantees a *usable* token
+    generator: when the RS256 signing key is unavailable the caller registers no
+    generator and passes ``None`` here, rather than aborting composition. Hence
+    the explicit refusal below — SSO cannot mint without a signer, and returning
+    None leaves the route answering 503 instead of failing at exchange time.
     User lookup uses a sessionless repository (per-operation sessions), the same
     pattern the user store uses.
 
