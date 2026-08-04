@@ -62,7 +62,11 @@ dependencies = [
     "anyio>=4.3.0",
     "requests>=2.31.0",
     "PyJWT>=2.13.0",  # >=2.13.0: GHSA key-confusion (HS256 forgery) fix
-    "cryptography>=48.0.1",  # RS256 JWT keys; >=48.0.1 bundles patched OpenSSL
+    # RS256 JWT keys; >=48.0.1 bundles patched OpenSSL. Floor stays below 50
+    # deliberately: the cloud extra's workos pins cryptography~=49.0, so >=50
+    # here makes `pip install faultmaven[cloud]` unresolvable. dev/test lock
+    # 50.0.0 anyway. Raise to >=50.0.0 when fm#980 closes.
+    "cryptography>=48.0.1",
     "bcrypt>=4.0.0",
     "email-validator>=2.0.0",
     "python-dotenv>=1.0.1",
