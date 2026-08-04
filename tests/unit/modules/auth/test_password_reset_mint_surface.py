@@ -13,10 +13,14 @@ services are built the way a deployment builds them: the auth service carries
 its dev RSA pair *and* the generator carries the HMAC secret, simultaneously.
 
 **Three request outcomes, one observable.** A real account, an unknown address
-and a deactivated account must be indistinguishable to whoever submitted the
-form — who can base64-decode the payload they were handed, so the comparison
+and a deactivated account must be indistinguishable to whoever receives the
+token — who can base64-decode the payload they were handed, so the comparison
 that matters is real-vs-decoy on every claim, not decoy-vs-decoy. Only the
 redemption differs, and only in that the two decoys never redeem.
+
+No HTTP route reaches ``request_password_reset`` today: there is no endpoint
+and no caller outside tests. These properties are pinned because the flow is
+maintained and tested, not because a form is live.
 """
 
 from __future__ import annotations
@@ -211,8 +215,8 @@ class TestDeactivatedAccountsAreNotEnumerable:
     async def test_a_decoy_is_not_distinguishable_from_a_real_token(self):
         """The comparison that matters: what the holder can decode.
 
-        A payload is base64, so every claim is readable by whoever submitted
-        the form. A decoy that carried a marker address — the pre-#959
+        A payload is base64, so every claim is readable by whoever receives the
+        token. A decoy that carried a marker address — the pre-#959
         ``dummy@dummy.local`` — announced itself to one decode, which is the
         whole anti-enumeration measure undone.
         """
@@ -261,12 +265,32 @@ class TestDeactivatedAccountsAreNotEnumerable:
         assert real["email"] == EMAIL.lower()
         assert unknown["email"] == EMAIL_UNKNOWN.lower()
 
-        # sub is the only difference, and it discloses nothing: a real user_id
-        # is itself a uuid4, so both are uuid4 strings.
+        # sub and jti are the only differences, and neither discloses anything:
+        # a real user_id is itself a uuid4, so all four are uuid4 strings.
         assert deactivated["sub"] != deactivated_user.user_id
-        uuid.UUID(deactivated["sub"])
-        uuid.UUID(real["sub"])
+        for claim_value in (
+            real["sub"],
+            real["jti"],
+            deactivated["sub"],
+            deactivated["jti"],
+            unknown["sub"],
+            unknown["jti"],
+        ):
+            uuid.UUID(claim_value)
         assert real["sub"] == real_user.user_id
+        assert len({real["jti"], deactivated["jti"], unknown["jti"]}) == 3
+
+        # Exactly which claims differ, asserted rather than asserted-about: any
+        # claim that starts differing shows up here. iat/exp are excluded
+        # because these three tokens are minted seconds apart by this test —
+        # they carry request time, which the holder knows anyway; their
+        # LIFETIME is asserted equal above.
+        time_claims = {"iat", "exp"}
+        assert {
+            claim
+            for claim in real
+            if claim not in time_claims and real[claim] != deactivated[claim]
+        } == {"sub", "jti"}
 
         # Lifetimes agree, so exp/iat cannot separate them either.
         assert real["exp"] - real["iat"] == deactivated["exp"] - deactivated["iat"]
