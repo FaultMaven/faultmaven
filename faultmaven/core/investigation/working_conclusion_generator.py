@@ -408,6 +408,10 @@ def _conclusion_from_root_cause(case: Case) -> WorkingConclusion | None:
         supporting_evidence_ids=list(getattr(rcc, "evidence_basis", None) or []),
         caveats=[],
         updated_at=datetime.now(timezone.utc),
+        # Marks this as a MIRROR, not an independent finding — so a retracted
+        # conclusion cannot keep satisfying the working-conclusion backstop leg
+        # for one more turn through its own stale mirror (#987).
+        mirrors_root_cause_conclusion=True,
     )
 
 

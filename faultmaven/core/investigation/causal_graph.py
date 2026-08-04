@@ -1537,7 +1537,25 @@ def _disconfirmed_cause_trigger(
     ``node_side`` is FALSE for the flat path so its behavior is exactly as
     before: a persisted root (reloaded regardless of the flag, e.g. after the
     flag is flipped off) with a counterfactual refute must NOT demote a healthy
-    flat hypothesis — node-derived disconfirmation is a chain-mode concept."""
+    flat hypothesis — node-derived disconfirmation is a chain-mode concept.
+
+    Returns ``(hypothesis, reason, kind)``. **``kind`` distinguishes two
+    materially different claims that share this trigger (#987):**
+
+    - ``"evidence"`` — the hypothesis is REFUTED or net-refuted by its OWN
+      evidence links. This asserts nothing about any fix; it is grounded in the
+      links themselves and needs no external precondition.
+    - ``"counterfactual"`` — the FAILED-FIX claim: the root carries a
+      counterfactual (CAUSAL_ABSENCE) refutation, i.e. "the cause was addressed
+      yet the problem persisted". That claim is about events outside the graph,
+      so it is the one M6 must ESTABLISH rather than infer.
+
+    Conflating them is what made the first #987 fix over-broad: gating the whole
+    trigger on fix-application evidence silently blocked ordinary evidence-based
+    disconfirmation, leaving a net-refuted cause standing as IDENTIFIED with its
+    conclusion intact. When BOTH hold, ``"evidence"`` wins — it is the live,
+    unconditional path, and it lets the engine record what it can actually
+    substantiate instead of the stronger failed-fix story."""
     p = case.progress
     if p.cause_state != CauseState.IDENTIFIED:
         return None
@@ -1545,14 +1563,19 @@ def _disconfirmed_cause_trigger(
     if hyp is None:
         return None
     root = case.causal_nodes.get(hyp.root_node_id) if hyp.root_node_id else None
-    disconfirmed = _hypothesis_disconfirmed(hyp) or (
+    evidence_side = _hypothesis_disconfirmed(hyp)
+    counterfactual_side = (
         node_side
         and root is not None
         and _node_has_counterfactual_refute(root, _evidence_category_map(case))
     )
-    if not disconfirmed:
+    if not (evidence_side or counterfactual_side):
         return None
-    return hyp, (hyp.refutation_reason or _DISCONFIRMATION_REASON)[:200]
+    return (
+        hyp,
+        (hyp.refutation_reason or _DISCONFIRMATION_REASON)[:200],
+        "evidence" if evidence_side else "counterfactual",
+    )
 
 
 # A hypothesis is a STANDING cause only while ACTIVE or VALIDATED — a REFUTED,
@@ -2138,21 +2161,25 @@ def _fix_application_turn(case: Case) -> int | None:
     *executed* it. The NEWEST such turn wins — a failed fix is disconfirmed by
     what happened after the LAST fix, not the first.
 
-    Fallback for deployments/cases with no compliance chain: the forward-only
-    gate ladder (``solution_accepted`` / ``mitigation_accepted``) records THAT a
-    fix was executed but not WHEN, so it floors the window at 0 — any
-    persistence observation on the case then qualifies. This keeps the gate
-    establishable rather than vacuously unsatisfiable on the no-ProposedAction
-    shape, at the cost of a wider window there (stated, not hidden).
+    Deliberately NO compliance-gate fallback: ``solution_accepted`` records
+    THAT a fix was executed but not WHEN, and flooring the window at 0 made
+    every pre-fix symptom row on the case read as a post-fix persistence
+    observation. A precondition that cannot be dated cannot establish "what
+    happened after the fix", so it establishes nothing. On the no-ProposedAction
+    shape M6's counterfactual arm simply does not fire — the evidence-based arm
+    is unaffected and still demotes a genuinely refuted cause.
     """
-    actionable = {
-        InvestigationActionType.SOLUTION.value,
-        InvestigationActionType.MITIGATION.value,
-    }
     turns = [
-        a.proposed_in_turn
+        a.accepted_in_turn
         for a in (getattr(case, "proposed_actions", None) or [])
         if getattr(a, "state", None) == "accepted"
+        # SOLUTION only — a MITIGATION is by definition NOT a fix of the cause
+        # (the prompt: a mitigation "does NOT eliminate the root cause, so the
+        # cause is still present"). A workaround that failed to relieve the
+        # symptom says nothing about whether the cause was addressed, so it must
+        # never establish "the cause was addressed yet the problem persisted"
+        # and refute the root at belief 0.
+        #
         # Enum OR raw string, the same read ``classify_solution_outcome`` does
         # (its ``_action_type_value`` is private to the domain module, so the
         # one-line equivalent is inlined rather than crossing the contracts
@@ -2162,19 +2189,17 @@ def _fix_application_turn(case: Case) -> int | None:
         and getattr(
             getattr(a, "action_type", None), "value", getattr(a, "action_type", None)
         )
-        in actionable
-        and getattr(a, "proposed_in_turn", None) is not None
+        == InvestigationActionType.SOLUTION.value
+        # ``accepted_in_turn`` (EXECUTION), never ``proposed_in_turn`` (the
+        # OFFER): keying on the proposal turn let evidence recorded in the very
+        # turn the fix was offered — before it was ever run — satisfy "the
+        # problem persisted afterwards". Actions accepted before this field
+        # existed carry None and simply do not establish the precondition,
+        # which is the fail-closed direction.
+        and getattr(a, "accepted_in_turn", None) is not None
     ]
     if turns:
         return max(turns)
-    p = getattr(case, "progress", None)
-    if p is None:
-        return None
-    mitigation = getattr(p, "mitigation", None)
-    if getattr(p, "solution_accepted", False) or bool(
-        mitigation is not None and getattr(mitigation, "accepted", False)
-    ):
-        return 0
     return None
 
 
@@ -2200,6 +2225,31 @@ def _problem_persistence_observed_after(case: Case, fix_turn: int) -> bool:
         and (getattr(e, "collected_at_turn", 0) or 0) >= fix_turn
         for e in (getattr(case, "evidence", None) or [])
     )
+
+
+def _evidence_disconfirmation_provenance(hyp) -> str:
+    """Provenance for an EVIDENCE-based M6 demotion (#987).
+
+    The honest record when the cause fell to its own links rather than to a
+    failed fix: what the engine derived, and the tally it derived it from. It
+    deliberately makes NO claim about a fix having been applied — that is the
+    counterfactual arm's claim, and asserting it here unestablished is exactly
+    the fabrication this campaign removed.
+    """
+    links = getattr(hyp, "evidence_links", None) or []
+    refuting = sum(1 for link in links if link.stance == EvidenceStance.REFUTES)
+    supporting = sum(1 for link in links if link.stance == EvidenceStance.SUPPORTS)
+    if getattr(hyp, "state", None) == HypothesisState.REFUTED:
+        detail = (
+            f"the hypothesis was refuted "
+            f"({hyp.refutation_reason or 'no reason recorded'})"
+        )
+    else:
+        detail = (
+            f"its evidence links net-refute it "
+            f"({refuting} refuting vs {supporting} supporting)"
+        )
+    return f"the identified cause no longer stands — {detail}"[:400]
 
 
 def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
@@ -2230,11 +2280,20 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
     this closes the mechanism, which stays reachable from any future path that
     can put a refutation on a cause.
 
-    Refusing M6 does NOT leave a disproven cause standing: the hypothesis keeps
-    whatever state the model gave it, a REFUTED hypothesis stops being STANDING
-    (so ``any_chain_root_validated`` no longer grounds ``cause_state``), and
-    ``retract_disconfirmed_rcc`` still clears a conclusion naming it. What is
-    withheld is only the DURABLE engine refutation on the root node.
+    **SCOPE — the counterfactual (failed-fix) arm ONLY.** This is a precondition
+    for the CLAIM "a fix was applied and the problem persisted", which is about
+    events outside the graph. It is NOT a precondition for demotion in general:
+    an EVIDENCE-based disconfirmation (the hypothesis REFUTED or net-refuted by
+    its own links) is grounded in the graph and demotes unconditionally — see
+    ``_disconfirmed_cause_trigger``'s ``kind``. Gating both on fix-application
+    evidence was the over-broad first cut of this fix, and it left a net-refuted
+    cause standing as IDENTIFIED with its conclusion intact.
+
+    Refusing the counterfactual arm does NOT leave a disproven cause standing:
+    the hypothesis keeps whatever state the model gave it, a REFUTED hypothesis
+    stops being STANDING (so ``any_chain_root_validated`` no longer grounds
+    ``cause_state``), and ``retract_disconfirmed_rcc`` still clears a conclusion
+    naming it. What is withheld is only the DURABLE engine refutation.
     """
     fix_turn = _fix_application_turn(case)
     if fix_turn is None:
@@ -2250,9 +2309,9 @@ def m6_disconfirmation_basis(case: Case) -> tuple[int, str] | None:
         m6_demotion_refused_total.labels(reason="no_persistence").inc()
         return None
     return fix_turn, (
-        f"engine inference (M6): a fix recorded as executed at turn {fix_turn} "
-        f"did not hold — symptom evidence at/after that turn observes the "
-        f"problem still present, and no resolution confirmation stands"
+        f"a fix recorded as EXECUTED at turn {fix_turn} did not hold — symptom "
+        f"evidence at/after that turn observes the problem still present, and "
+        f"no resolution confirmation stands"
     )
 
 
@@ -2338,13 +2397,21 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     was refuted, closing the truth-split where ``cause_state`` drops but a stale
     ``RootCauseConclusion`` lingers. Returns True if it acted.
 
-    PRECONDITION-GATED (#987): the trigger says a refutation is RECORDED; it does
-    not establish that a fix was applied and the problem persisted. M6 is a
-    DESTRUCTIVE transition — it refutes the cause, drives its root's belief to 0
-    via the durable engine refutation, and retracts the conclusion — so it fires
-    only on preconditions the case record ESTABLISHES
-    (``m6_disconfirmation_basis``). When they cannot be established the demotion
-    is refused and metered; the hypothesis's own state still governs, so a
+    Each disconfirmation KIND records only what the engine can substantiate
+    (#987):
+
+    - ``evidence`` — the hypothesis is refuted/net-refuted by its OWN links.
+      Fires unconditionally (it was always evidence-grounded) and records an
+      evidence-based inference. Gating THIS on fix-application evidence was the
+      over-broad first cut of the #987 fix: it left a net-refuted cause standing
+      as IDENTIFIED with its conclusion intact.
+    - ``counterfactual`` — the FAILED-FIX claim, about events outside the graph.
+      Fires only on preconditions the case record ESTABLISHES
+      (``m6_disconfirmation_basis``); otherwise the demotion is refused and
+      metered. The engine must never assert a failed fix it did not establish —
+      that assertion, minted as a durable row, is what made #987 permanent.
+
+    Either way the hypothesis's own state still governs downstream, so a
     genuinely disproven cause stops grounding ``cause_state`` regardless.
     """
     p = case.progress
@@ -2356,12 +2423,15 @@ def demote_disconfirmed_cause_via_evidence(case: Case) -> bool:
     trigger = _disconfirmed_cause_trigger(case, node_side=True)
     if trigger is None:
         return False
-    hyp, reason = trigger
+    hyp, reason, kind = trigger
 
-    basis = m6_disconfirmation_basis(case)
-    if basis is None:
-        return False
-    _, provenance = basis
+    if kind == "counterfactual":
+        basis = m6_disconfirmation_basis(case)
+        if basis is None:
+            return False
+        provenance = basis[1]
+    else:
+        provenance = _evidence_disconfirmation_provenance(hyp)
 
     if hyp.state != HypothesisState.REFUTED:
         HypothesisManager().refute_hypothesis(hyp, case.current_turn, [], reason)

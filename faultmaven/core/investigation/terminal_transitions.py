@@ -166,6 +166,14 @@ def cause_identification_leg(case: "Case") -> "str | None":
         and getattr(case.working_conclusion, "statement", None)
         and getattr(case.working_conclusion, "likelihood", 0)
         >= CAUSE_IDENTIFIED_LIKELIHOOD
+        # #987: a MIRROR of the RootCauseConclusion is not an independent
+        # signal — whenever one exists the `rcc` leg above already governs. The
+        # working conclusion is read from the PREVIOUS turn (it regenerates
+        # after the recompute), so counting a mirror here would let a conclusion
+        # retracted THIS turn keep satisfying the backstop through its own
+        # stale reflection, for one turn after retraction cleared every other
+        # consumer.
+        and not getattr(case.working_conclusion, "mirrors_root_cause_conclusion", False)
     ):
         return "working_conclusion"
     return None

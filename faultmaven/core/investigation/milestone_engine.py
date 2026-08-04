@@ -635,6 +635,12 @@ def _apply_stage_gate_side_effects(
         if pending_action is None:
             continue
         pending_action.state = "accepted"
+        # #987: stamp WHEN the user executed it. `proposed_in_turn` is the OFFER
+        # turn; anything reasoning about what happened *after the fix* (M6's
+        # persistence precondition) must key on execution, or evidence from the
+        # offering turn — recorded before the fix was ever run — reads as a
+        # post-fix outcome.
+        pending_action.accepted_in_turn = case.current_turn
         # INV-33: a SOLUTION acceptance moves the case to TREATMENT (verify the
         # executed fix). Retire the DIAGNOSTIC asks the offer shadowed so an
         # earlier pre-fix ask cannot resurface in <pending_action> once the

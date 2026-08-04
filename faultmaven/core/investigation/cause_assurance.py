@@ -130,11 +130,20 @@ def absence_row_link_refused(
 ) -> bool:
     """The M2 trust boundary (#987): is this LLM-emitted evidence link refused?
 
-    TRUE iff the backing evidence row is ``causal_absence_evidence`` — whatever
-    the stance, whichever axis. Absence rows are STAND-ALONE audit records and
-    carry NO model-authored stance; every counterfactual link on one is
-    engine-minted (the resolution confirm-stamp's SUPPORTS,
-    ``causal_graph._attach_engine_refutation``'s REFUTES).
+    TRUE iff the backing evidence row is an ABSENCE row — ``causal_absence`` or
+    ``symptom_absence`` — whatever the stance, whichever axis. Absence rows are
+    STAND-ALONE audit records and carry NO model-authored stance; every
+    counterfactual link on one is engine-minted (the resolution confirm-stamp's
+    SUPPORTS, ``causal_graph._attach_engine_refutation``'s REFUTES).
+
+    BOTH categories, because the prompt says so for both and the erosion
+    argument is identical: "a fix confirms the cause, so a confidence-bearing
+    link would erode the very hypothesis it proves". ``symptom_absence`` carries
+    no counterfactual force (only ``causal_absence`` feeds
+    ``root_counterfactually_confirmed`` / the M6 node-side trigger), but it does
+    move likelihood and node tallies — and a rule the engine states to the model
+    must be a rule the engine actually enforces, or the prompt is lying about
+    the boundary.
 
     **The invariant is a property of the EVIDENCE CATEGORY, not of the link
     target.** That is why this predicate exists at all rather than being
@@ -169,7 +178,10 @@ def absence_row_link_refused(
     ``None`` and is NOT refused here — the callers already drop unresolvable
     evidence refs). The identifiers are for the log line only.
     """
-    if category != EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE:
+    if category not in (
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+    ):
         return False
     stance_label = str(getattr(stance, "value", stance) or "unset").lower()
     absence_row_link_refused_total.labels(axis=axis, stance=stance_label).inc()

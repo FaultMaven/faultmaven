@@ -340,13 +340,21 @@ def test_success_confirmation_no_longer_refutes_the_true_root():
 # ---------------------------------------------------------------------------
 
 
-def _fix_applied(case, turn=8):
+def _fix_applied(case, turn=8, action_type=InvestigationActionType.SOLUTION):
+    """A fix the user EXECUTED at ``turn``.
+
+    ``accepted_in_turn`` is the execution turn — ``proposed_in_turn`` is the
+    OFFER, one turn earlier in the ordinary flow. Keying the persistence window
+    on the proposal let evidence from the offering turn (recorded before the fix
+    ever ran) read as a post-fix outcome.
+    """
     case.proposed_actions.append(
         ProposedAction(
             case_id=case.case_id,
-            action_type=InvestigationActionType.SOLUTION,
+            action_type=action_type,
             description="Correct the OIDC provider ClientIDList",
-            proposed_in_turn=turn,
+            proposed_in_turn=turn - 1,
+            accepted_in_turn=turn,
             state="accepted",
         )
     )
@@ -405,19 +413,23 @@ def test_m6_fires_on_a_genuine_failed_fix():
     assert basis is not None
     fix_turn, provenance = basis
     assert fix_turn == 8
-    assert "turn 8" in provenance
+    assert "executed at turn 8" in provenance.lower()
 
 
 def test_m6_engine_row_records_inference_with_provenance_not_an_observation():
     """The fabrication itself: the minted row must not assert a first-person
-    observation the engine never made."""
+    observation the engine never made.
+
+    Exercised on the arm that actually MINTS a fresh row. Post-#987 the
+    counterfactual arm can only fire on a node that already carries the engine's
+    marker (the ingest gate leaves the engine as the sole producer of a
+    node-side counterfactual refute), so its mint is always idempotent-skipped —
+    that arm is the LATCH. The counterfactual provenance TEXT is pinned at its
+    source in ``test_m6_fires_on_a_genuine_failed_fix``.
+    """
+    from faultmaven.core.investigation.causal_graph import _attach_engine_refutation
+
     case = _case()
-    _fix_applied(case, turn=8)
-    case.evidence.append(
-        _evidence(
-            "ev_a1b2c3d4e5f6", EvidenceCategory.SYMPTOM_EVIDENCE, 9, "still failing"
-        )
-    )
     seed_problem_node(case)
     created = ingest_emitted_chain(
         case,
@@ -426,30 +438,107 @@ def test_m6_engine_row_records_inference_with_provenance_not_an_observation():
         node_evidence=[],
         current_turn=case.current_turn,
     )
-    hyp = _hypothesis(
-        "hyp_421fd53b5fd7",
-        HypothesisState.REFUTED,
-        root_node_id=created[0],
-        refutation_reason="fix had no effect",
+    _attach_engine_refutation(
+        case,
+        created[0],
+        "failed treatment",
+        "a fix recorded as EXECUTED at turn 8 did not hold",
     )
-    case.hypotheses[hyp.hypothesis_id] = hyp
-    case.progress.cause_state = CauseState.IDENTIFIED
-
-    assert demote_disconfirmed_cause_via_evidence(case) is True
     engine_rows = [e for e in case.evidence if e.collected_by == "engine"]
     assert len(engine_rows) == 1
     summary = engine_rows[0].summary
-    assert "Engine inference" in summary
+    assert summary.startswith("Engine inference (M6), not an observation:")
     # The retired fabrication, verbatim — it must never come back.
     assert "yet the problem persisted." not in summary
-    assert "turn 8" in summary
+    assert "EXECUTED at turn 8" in summary
+    # Engine authorship is what keeps this out of every observation reader.
+    assert engine_rows[0].primary_purpose.startswith("engine inference")
 
 
-def test_m6_does_not_fire_when_preconditions_are_unestablished():
-    """Same setup, minus the persistence observation: no engine refutation is
-    minted and the root is not driven to belief 0."""
+def _counterfactual_case(*, with_persistence: bool):
+    """A case whose ONLY disconfirmation is a counterfactual refute on the root
+    (an engine-authored absence REFUTES) — the arm that CLAIMS a failed fix.
+
+    The hypothesis is deliberately left ACTIVE and un-refuted so the
+    unconditional evidence arm cannot fire and mask the gate under test.
+    """
+    from faultmaven.modules.case.contracts import NodeEvidenceLink
+
     case = _case()
     _fix_applied(case, turn=8)
+    if with_persistence:
+        case.evidence.append(
+            _evidence(
+                "ev_a1b2c3d4e5f6",
+                EvidenceCategory.SYMPTOM_EVIDENCE,
+                9,
+                "AssumeRoleWithWebIdentity still returns AccessDenied after the fix",
+            )
+        )
+    seed_problem_node(case)
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_root_spec(_TRUE_ROOT)],
+        edges_to_add=[],
+        node_evidence=[],
+        current_turn=case.current_turn,
+    )
+    engine_row = _evidence(
+        "ev_0e0e0e0e0e0e",
+        EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+        9,
+        "prior engine disconfirmation",
+        collected_by="engine",
+    )
+    case.evidence.append(engine_row)
+    case.causal_nodes[created[0]].evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=engine_row.evidence_id,
+            stance=EvidenceStance.REFUTES,
+            reasoning="counterfactual",
+            linked_at_turn=9,
+        )
+    )
+    hyp = _hypothesis(
+        "hyp_421fd53b5fd7", HypothesisState.ACTIVE, root_node_id=created[0]
+    )
+    case.hypotheses[hyp.hypothesis_id] = hyp
+    case.progress.cause_state = CauseState.IDENTIFIED
+    return case
+
+
+def test_m6_counterfactual_arm_refuses_when_preconditions_are_unestablished():
+    """The failed-fix CLAIM without an observed persistence: refused."""
+    case = _counterfactual_case(with_persistence=False)
+    before = {e.evidence_id for e in case.evidence}
+    assert demote_disconfirmed_cause_via_evidence(case) is False
+    assert {e.evidence_id for e in case.evidence} == before  # nothing minted
+
+
+def test_m6_counterfactual_arm_fires_when_preconditions_hold():
+    """...and the same shape WITH the persistence observation fires."""
+    case = _counterfactual_case(with_persistence=True)
+    assert demote_disconfirmed_cause_via_evidence(case) is True
+
+
+def test_evidence_based_disconfirmation_demotes_without_any_fix_record():
+    """REGRESSION (review finding 1): an ordinary evidence-based
+    disconfirmation must NOT require a fix record.
+
+    `_disconfirmed_cause_trigger` fires on `_net_refuted` — the cause outweighed
+    by its own contradicting evidence — which asserts nothing about any fix.
+    The first cut of the #987 precondition gate covered the whole trigger, so a
+    net-refuted cause with no ProposedAction stayed VALIDATED at
+    cause_state=IDENTIFIED with its conclusion intact: a disproven cause left
+    standing, the NO-INCORRECT-CONCLUSION breach in the opposite direction.
+    """
+    from faultmaven.modules.case.contracts import (
+        ConfidenceLevel,
+        HypothesisEvidenceLink,
+        RootCauseConclusion,
+    )
+
+    case = _case()
     seed_problem_node(case)
     created = ingest_emitted_chain(
         case,
@@ -459,16 +548,40 @@ def test_m6_does_not_fire_when_preconditions_are_unestablished():
         current_turn=case.current_turn,
     )
     hyp = _hypothesis(
-        "hyp_421fd53b5fd7",
-        HypothesisState.REFUTED,
-        root_node_id=created[0],
-        refutation_reason="fix had no effect",
+        "hyp_421fd53b5fd7", HypothesisState.ACTIVE, root_node_id=created[0]
+    )
+    # Net-refuted by its own links — no fix, no ProposedAction anywhere.
+    case.evidence.append(
+        _evidence("ev_c0ffee000001", EvidenceCategory.CAUSAL_EVIDENCE, 7, "contra")
+    )
+    hyp.evidence_links.append(
+        HypothesisEvidenceLink(
+            hypothesis_id=hyp.hypothesis_id,
+            evidence_id="ev_c0ffee000001",
+            stance=EvidenceStance.REFUTES,
+            reasoning="the provider record contradicts this cause",
+            stance_confidence=0.9,
+        )
     )
     case.hypotheses[hyp.hypothesis_id] = hyp
     case.progress.cause_state = CauseState.IDENTIFIED
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=_TRUE_ROOT,
+        mechanism="m",
+        confidence_level=ConfidenceLevel.CONFIDENT,
+        likelihood=0.8,
+        validated_hypothesis_id=hyp.hypothesis_id,
+    )
+    assert not case.proposed_actions  # nothing establishes a fix
 
-    assert demote_disconfirmed_cause_via_evidence(case) is False
-    assert [e for e in case.evidence if e.collected_by == "engine"] == []
+    assert demote_disconfirmed_cause_via_evidence(case) is True
+    assert hyp.state == HypothesisState.REFUTED
+    assert case.root_cause_conclusion is None
+    # ...and the durable record makes NO failed-fix claim it cannot substantiate.
+    engine_rows = [e for e in case.evidence if e.collected_by == "engine"]
+    assert len(engine_rows) == 1
+    assert "net-refute" in engine_rows[0].summary
+    assert "fix" not in engine_rows[0].summary
 
 
 # ---------------------------------------------------------------------------
@@ -612,3 +725,112 @@ def test_resolved_case_truth_surfaces_agree_with_the_confirmed_cause():
     established = case.root_cause_conclusion.established_by
     assert established and "user-confirmed resolution at turn 11" in established
     assert "ev_47b2f3337ffc" in established
+
+
+# ---------------------------------------------------------------------------
+# Review-round hardening (#987 round 2).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stance", ["refutes", "supports"])
+def test_symptom_absence_rows_are_refused_too(stance):
+    """Both absence categories, because the prompt states the rule for both.
+
+    ``symptom_absence`` carries no counterfactual force, but it moves likelihood
+    and node tallies — and a rule the engine tells the model must be a rule the
+    engine enforces, or the prompt is lying about the boundary.
+    """
+    case = _case()
+    seed_problem_node(case)
+    case.evidence.append(
+        _evidence(
+            "ev_5a5a5a5a5a5a",
+            EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
+            9,
+            "errors stopped after the failover",
+        )
+    )
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_root_spec(_TRUE_ROOT)],
+        edges_to_add=[],
+        node_evidence=[_link("new_index_0", "ev_5a5a5a5a5a5a", stance)],
+        current_turn=case.current_turn,
+    )
+    assert case.causal_nodes[created[0]].evidence_links == []
+
+
+def test_mitigation_never_establishes_that_the_cause_was_addressed():
+    """A workaround is by definition NOT a fix of the cause, so a failed
+    mitigation must never establish "the cause was addressed yet the problem
+    persisted" and refute the root at belief 0."""
+    case = _case()
+    _fix_applied(case, turn=8, action_type=InvestigationActionType.MITIGATION)
+    case.evidence.append(
+        _evidence(
+            "ev_a1b2c3d4e5f6", EvidenceCategory.SYMPTOM_EVIDENCE, 9, "still failing"
+        )
+    )
+    assert m6_disconfirmation_basis(case) is None
+
+    # ...and the identical shape with a SOLUTION does establish it.
+    case2 = _case()
+    _fix_applied(case2, turn=8, action_type=InvestigationActionType.SOLUTION)
+    case2.evidence.append(
+        _evidence(
+            "ev_a1b2c3d4e5f6", EvidenceCategory.SYMPTOM_EVIDENCE, 9, "still failing"
+        )
+    )
+    assert m6_disconfirmation_basis(case2) is not None
+
+
+def test_persistence_window_keys_on_execution_not_the_offer_turn():
+    """`proposed_in_turn` is when the fix was OFFERED; the user executes it a
+    turn later. Keying the window on the offer let evidence recorded in the
+    offering turn — before the fix ever ran — read as a post-fix outcome."""
+    case = _case()
+    _fix_applied(case, turn=8)  # proposed turn 7, executed turn 8
+    # Symptom evidence from the OFFERING turn: pre-execution, so it observes
+    # nothing about whether the fix held.
+    case.evidence.append(
+        _evidence(
+            "ev_a1b2c3d4e5f6",
+            EvidenceCategory.SYMPTOM_EVIDENCE,
+            7,
+            "errors at the time the fix was proposed",
+        )
+    )
+    assert m6_disconfirmation_basis(case) is None
+
+
+def test_rcc_mirror_does_not_satisfy_the_backstop_leg():
+    """A retracted conclusion must not keep reading as identified for one more
+    turn through its own stale working-conclusion mirror.
+
+    `cause_identification_leg` reads the PREVIOUS turn's working conclusion.
+    Before the mirror existed that path always yielded the 0.0 placeholder,
+    which could never clear the backstop threshold; the mirror carries the RCC's
+    likelihood, which can.
+    """
+    from faultmaven.core.investigation.terminal_transitions import (
+        cause_identification_leg,
+    )
+    from faultmaven.core.investigation.working_conclusion_generator import (
+        generate_working_conclusion,
+    )
+    from faultmaven.modules.case.contracts import ConfidenceLevel, RootCauseConclusion
+
+    case = _case()
+    case.root_cause_conclusion = RootCauseConclusion(
+        root_cause=_TRUE_ROOT,
+        mechanism="m",
+        confidence_level=ConfidenceLevel.from_score(0.9),
+        likelihood=0.9,
+    )
+    case.working_conclusion = generate_working_conclusion(case, case.current_turn)
+    assert case.working_conclusion.mirrors_root_cause_conclusion is True
+    assert cause_identification_leg(case) == "rcc"
+
+    # The conclusion is retracted this turn; the mirror is still last turn's.
+    case.root_cause_conclusion = None
+    assert cause_identification_leg(case) is None

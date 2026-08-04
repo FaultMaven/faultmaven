@@ -936,7 +936,8 @@ an evidence row.
    (`node_evidence_links`): a successful fix CONFIRMS the root-cause
    hypothesis, so a confidence-bearing link would erode the very hypothesis it
    proves. A REFUTES on an absence row is read as a FAILED fix — the opposite
-   of what the row records. The engine refuses these links on both axes.
+   of what the row records. The engine REFUSES any link you emit on either
+   absence category, on either axis, and records the violation.
 
 CREATING EVIDENCE RECORDS (evidence_to_add):
 When your analysis discovers a claim-relevant slice not already
