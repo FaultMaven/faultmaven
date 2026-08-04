@@ -155,6 +155,10 @@ class TestCloudMintHonoursTheKnob:
     container factory that wires it in production — because the defect lived in
     that wiring, not in the generator. A hand-built generator would prove
     nothing about which settings half the cloud path reaches.
+
+    Keys are passed in because the container passes AuthService's resolved pair
+    (#959); here they are the same PEMs the env carries, so what this asserts —
+    which settings half supplies the LIFETIMES — is unchanged.
     """
 
     @pytest.mark.parametrize("minutes,days", LIFETIME_PAIRS)
@@ -167,7 +171,12 @@ class TestCloudMintHonoursTheKnob:
 
         from faultmaven.container.providers.services import create_jwt_token_generator
 
-        generator = create_jwt_token_generator(settings, _revocation_store())
+        generator = create_jwt_token_generator(
+            settings,
+            _revocation_store(),
+            private_key=private_pem,
+            public_key=public_pem,
+        )
         token = await generator.generate_access_token(_user())
 
         payload = jwt.decode(
@@ -191,7 +200,12 @@ class TestCloudMintHonoursTheKnob:
 
         from faultmaven.container.providers.services import create_jwt_token_generator
 
-        generator = create_jwt_token_generator(settings, _revocation_store())
+        generator = create_jwt_token_generator(
+            settings,
+            _revocation_store(),
+            private_key=private_pem,
+            public_key=public_pem,
+        )
         token = await generator.generate_refresh_token(_user())
 
         payload = jwt.decode(

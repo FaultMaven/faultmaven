@@ -14,11 +14,14 @@ its dev RSA pair *and* the generator carries the HMAC secret, simultaneously.
 
 **Three request outcomes, one observable.** A real account, an unknown address
 and a deactivated account must be indistinguishable to whoever submitted the
-form; only the redemption differs, and only in that the two decoys never redeem.
+form — who can base64-decode the payload they were handed, so the comparison
+that matters is real-vs-decoy on every claim, not decoy-vs-decoy. Only the
+redemption differs, and only in that the two decoys never redeem.
 """
 
 from __future__ import annotations
 
+import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -49,6 +52,7 @@ SECRET = "unit-test-secret-key-please-ignore"
 ISSUER = "faultmaven-api"
 AUDIENCE = "faultmaven-app"
 EMAIL = "reset-mint@local.faultmaven"
+EMAIL_UNKNOWN = "nobody-here@local.faultmaven"
 OLD_PASSWORD = "Str0ng-P4ssw0rd!"
 NEW_PASSWORD = "An0ther-P4ssw0rd!"
 
@@ -204,14 +208,93 @@ class TestDeactivatedAccountsAreNotEnumerable:
         stored.is_active = False
         await user_service.user_repo.save(stored)
 
-    async def test_the_response_has_the_shape_of_the_unknown_email_decoy(self):
+    async def test_a_decoy_is_not_distinguishable_from_a_real_token(self):
+        """The comparison that matters: what the holder can decode.
+
+        A payload is base64, so every claim is readable by whoever submitted
+        the form. A decoy that carried a marker address — the pre-#959
+        ``dummy@dummy.local`` — announced itself to one decode, which is the
+        whole anti-enumeration measure undone.
+        """
+        real_service, real_user = await _build("HS256")
+        real_token = await real_service.request_password_reset(email=EMAIL)
+
+        # Same address, same submitted spelling; the account is deactivated in
+        # one deployment and absent from the other.
+        deactivated_service, deactivated_user = await _build("HS256")
+        await self._deactivate(deactivated_service, deactivated_user)
+        deactivated_token = await deactivated_service.request_password_reset(
+            email=EMAIL
+        )
+
+        unknown_service, _ = await _build("HS256")
+        unknown_token = await unknown_service.request_password_reset(
+            email=EMAIL_UNKNOWN
+        )
+
+        real = await real_service.token_generator.verify_password_reset_token(
+            real_token
+        )
+        deactivated = (
+            await (
+                deactivated_service.token_generator.verify_password_reset_token(
+                    deactivated_token
+                )
+            )
+        )
+        unknown = await unknown_service.token_generator.verify_password_reset_token(
+            unknown_token
+        )
+
+        # Same header and same claim NAMES across all three.
+        headers = {
+            pyjwt.get_unverified_header(t)["alg"]
+            for t in (real_token, deactivated_token, unknown_token)
+        }
+        assert headers == {"HS256"}
+        assert sorted(real) == sorted(deactivated) == sorted(unknown)
+
+        # Same claim VALUES for everything the holder could compare, including
+        # the address they submitted.
+        for claim in ("type", "iss", "aud", "email"):
+            assert real[claim] == deactivated[claim], claim
+        assert real["email"] == EMAIL.lower()
+        assert unknown["email"] == EMAIL_UNKNOWN.lower()
+
+        # sub is the only difference, and it discloses nothing: a real user_id
+        # is itself a uuid4, so both are uuid4 strings.
+        assert deactivated["sub"] != deactivated_user.user_id
+        uuid.UUID(deactivated["sub"])
+        uuid.UUID(real["sub"])
+        assert real["sub"] == real_user.user_id
+
+        # Lifetimes agree, so exp/iat cannot separate them either.
+        assert real["exp"] - real["iat"] == deactivated["exp"] - deactivated["iat"]
+
+    async def test_the_submitted_spelling_does_not_leak_through_case(self):
+        """Lookup is case-insensitive; the claim must be too.
+
+        Otherwise a real token carries the STORED spelling while a decoy
+        carries the SUBMITTED one, and the difference answers "does this
+        account exist" for any address registered in mixed case.
+        """
+        user_service, _user = await _build("HS256")
+        generator = user_service.token_generator
+
+        real_token = await user_service.request_password_reset(email=EMAIL.upper())
+        decoy = await generator.generate_dummy_reset_token(EMAIL.upper())
+
+        real_claims = await generator.verify_password_reset_token(real_token)
+        decoy_claims = await generator.verify_password_reset_token(decoy)
+        assert real_claims["email"] == decoy_claims["email"] == EMAIL.lower()
+
+    async def test_the_decoys_still_agree_with_each_other(self):
+        """Deactivated and unknown differ only in the address each was asked."""
         user_service, user = await _build("HS256")
         await self._deactivate(user_service, user)
 
         deactivated_token = await user_service.request_password_reset(email=EMAIL)
-        unknown_token = await user_service.request_password_reset(
-            email="nobody@local.faultmaven"
-        )
+        unknown_token = await user_service.request_password_reset(email=EMAIL_UNKNOWN)
 
         generator = user_service.token_generator
         deactivated = await generator.verify_password_reset_token(deactivated_token)
@@ -221,12 +304,13 @@ class TestDeactivatedAccountsAreNotEnumerable:
             pyjwt.get_unverified_header(unknown_token)
         )
         assert sorted(deactivated) == sorted(unknown)
-        assert deactivated["type"] == unknown["type"] == "password_reset"
-        assert deactivated["iss"] == unknown["iss"]
-        assert deactivated["aud"] == unknown["aud"]
-        # Both are decoys: neither names the account that was asked about.
+        assert deactivated["exp"] - deactivated["iat"] == (
+            unknown["exp"] - unknown["iat"]
+        )
+        # Each echoes the address it was asked about, and nothing else.
+        assert deactivated["email"] == EMAIL.lower()
+        assert unknown["email"] == EMAIL_UNKNOWN.lower()
         assert deactivated["sub"] != user.user_id
-        assert deactivated["email"] == unknown["email"]
 
     async def test_the_deactivated_accounts_token_does_not_redeem(self):
         user_service, user = await _build("HS256")

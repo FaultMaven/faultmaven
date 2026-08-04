@@ -17,7 +17,19 @@ no guard was positioned to notice (#959). A guard that ranges over the callers
 that exist today cannot catch the caller added tomorrow.
 
 Detection is AST-based and import-aware, so it survives renaming: ``import jwt as
-j; j.encode(...)`` and ``from jwt import encode; encode(...)`` both count.
+j; j.encode(...)``, ``from jwt import encode; encode(...)`` and any reference to
+PyJWT's ``PyJWT`` class (``jwt.PyJWT().encode(...)``) all count. What it does not
+chase — a module rebound at runtime, ``getattr(jwt, "enc" + "ode")``, a signer
+imported from a third-party wrapper — are deliberate-evasion shapes, not
+plausible accidents; this guard is aimed at the colleague who adds a mint in good
+faith, and a reviewer is the control for the rest.
+
+**The boundary is the shipped package, deliberately.**
+``scripts/generate_oauth_keys.py:95`` signs a throwaway token to self-test a
+freshly generated key pair. It is out of the set because ``scripts/`` is
+excluded from the wheel (``pyproject.toml`` ``[tool.setuptools.packages.find]``)
+and never copied into the image, so it is not a mint surface any deployment can
+reach — it was seen, not missed.
 """
 
 from __future__ import annotations
@@ -51,6 +63,11 @@ class _JWTEncodeFinder(ast.NodeVisitor):
         self.module_aliases: Set[str] = set()
         # Direct bindings: ``from jwt import encode`` / ``... as sign``
         self.encode_aliases: Set[str] = set()
+        # Names PyJWT's own class is bound to. Any mention counts: the class
+        # exists to encode and decode, the allowlist is a single file, and a
+        # false positive here costs one conversation while a false negative
+        # costs the property.
+        self.pyjwt_class_aliases: Set[str] = set()
         self.hits: List[int] = []
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -64,9 +81,24 @@ class _JWTEncodeFinder(ast.NodeVisitor):
             for alias in node.names:
                 if alias.name == "encode":
                     self.encode_aliases.add(alias.asname or alias.name)
-                elif alias.name == "api_jws" or alias.name == "api_jwt":
+                elif alias.name == "PyJWT":
+                    self.pyjwt_class_aliases.add(alias.asname or alias.name)
+                elif alias.name in ("api_jws", "api_jwt"):
                     # ``from jwt import api_jwt; api_jwt.encode(...)``
                     self.module_aliases.add(alias.asname or alias.name)
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        # ``jwt.PyJWT`` — the encoder class reached through the module.
+        if node.attr == "PyJWT" and isinstance(node.value, ast.Name):
+            if node.value.id in self.module_aliases:
+                self.hits.append(node.lineno)
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        # ``PyJWT`` imported directly and used anywhere.
+        if node.id in self.pyjwt_class_aliases:
+            self.hits.append(node.lineno)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -140,6 +172,8 @@ def test_the_finder_sees_every_spelling_of_the_call(tmp_path):
         "aliased_module.py": "import jwt as j\nT = j.encode(C, K, algorithm='HS256')\n",
         "direct_name.py": "from jwt import encode\nT = encode(C, K)\n",
         "aliased_name.py": "from jwt import encode as sign_it\nT = sign_it(C, K)\n",
+        "pyjwt_class.py": "import jwt\nT = jwt.PyJWT().encode(C, K)\n",
+        "pyjwt_imported.py": "from jwt import PyJWT\nT = PyJWT().encode(C, K)\n",
         # Not a JWT mint: a same-named method on something that is not PyJWT.
         "innocent.py": "def to_bytes(text):\n    return text.encode('utf-8')\n",
     }
@@ -148,10 +182,12 @@ def test_the_finder_sees_every_spelling_of_the_call(tmp_path):
 
     offenders, scanned = find_jwt_encode_calls(tmp_path)
 
-    assert scanned == 5
+    assert scanned == 7
     assert set(offenders) == {
         "plain.py",
         "aliased_module.py",
         "direct_name.py",
         "aliased_name.py",
+        "pyjwt_class.py",
+        "pyjwt_imported.py",
     }
