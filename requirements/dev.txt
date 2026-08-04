@@ -97,7 +97,7 @@ coverage==7.13.5
     #   faultmaven (pyproject.toml)
     #   codecov
     #   pytest-cov
-cryptography==49.0.0
+cryptography==50.0.0
     # via faultmaven (pyproject.toml)
 cuda-bindings==13.2.0
     # via torch

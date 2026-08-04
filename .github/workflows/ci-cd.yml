@@ -490,9 +490,14 @@ jobs:
       # docs/operations/security/vulnerability-exceptions.md or a tracking
       # issue; an ignore without a documented anchor should be rejected in
       # review. Remove the ignore when its entry's escalation trigger fires.
+      # An ignore is also scoped to the narrowest set of lockfiles it is
+      # actually needed for (see CLOUD_IGNORES) — a global ignore for a
+      # finding that only one lockfile is stuck on would hide a regression
+      # in the others.
       - name: Audit locked dependencies (pip-audit)
         run: |
-          IGNORES=(
+          # Apply to every lockfile.
+          COMMON_IGNORES=(
             # chromadb pre-auth code injection — no patched release exists;
             # unreachable in standalone, contained in cloud.
             # → vulnerability-exceptions.md "chromadb" (fm#902)
@@ -523,17 +528,57 @@ jobs:
             # torch (low): fixed in 2.13.0; heavy runtime bump — fm#904.
             --ignore-vuln GHSA-rrmf-rvhw-rf47
           )
-          # Glob-built so a future lockfile cannot silently escape the audit;
-          # one invocation so every file is reported even when one is red.
-          REQS=()
-          for f in requirements/*.txt; do REQS+=(-r "$f"); done
-          # One bounded retry: a transient OSV/PyPI error is otherwise
-          # indistinguishable from a finding. Real findings fail twice.
-          pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}" || {
-            echo "pip-audit failed — retrying once in case of transient service error"
-            sleep 30
-            pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}"
+          # Applies to requirements/cloud.txt ONLY.
+          CLOUD_IGNORES=(
+            # cryptography PKCS#7 EnvelopedData Bleichenbacher oracle, fixed
+            # in 50.0.0. dev.txt/test.txt are already on 50.0.0; cloud.txt is
+            # pinned to 49.0.0 by workos's cryptography~=49.0, which every
+            # workos release through 10.1.0 declares. We never decrypt PKCS#7
+            # — the only cryptography surface here is RS256 JWT keygen.
+            # Scoped to cloud so a regression of dev/test back below 50 still
+            # reds the gate. pip-audit prints the CVE alias (CVE-2026-69247);
+            # it matches aliases, so the GHSA id below suppresses it.
+            # → vulnerability-exceptions.md "cryptography" (fm#980)
+            --ignore-vuln GHSA-g6cj-pr64-35w5
+          )
+          # Glob-built so a future lockfile cannot silently escape the audit.
+          # Partitioned by ignore scope, with STRICT as the default: a new
+          # requirements file is audited with no per-file exception unless it
+          # is explicitly moved into the cloud group here.
+          STRICT_REQS=()
+          CLOUD_REQS=()
+          for f in requirements/*.txt; do
+            case "$f" in
+              requirements/cloud.txt) CLOUD_REQS+=(-r "$f") ;;
+              *)                      STRICT_REQS+=(-r "$f") ;;
+            esac
+          done
+          # Fail closed if the partition no longer matches the lockfile
+          # layout: pip-audit with no -r audits the runner's venv and would
+          # report a cheerful green having checked nothing.
+          if [ ${#STRICT_REQS[@]} -eq 0 ] || [ ${#CLOUD_REQS[@]} -eq 0 ]; then
+            echo "::error::lockfile partition is empty on one side (cloud=$(( ${#CLOUD_REQS[@]} / 2 )) files, strict=$(( ${#STRICT_REQS[@]} / 2 )) files) — update this step to match requirements/"
+            exit 1
+          fi
+          # One bounded retry per group: a transient OSV/PyPI error is
+          # otherwise indistinguishable from a finding. Real findings fail
+          # twice. Both groups always run and both always report — a red group
+          # must not mask the other's findings — and the step fails if either
+          # is red.
+          rc=0
+          audit() {
+            local label=$1; shift
+            echo "::group::pip-audit — ${label}"
+            pip-audit --no-deps "$@" || {
+              echo "pip-audit (${label}) failed — retrying once in case of transient service error"
+              sleep 30
+              pip-audit --no-deps "$@" || rc=1
+            }
+            echo "::endgroup::"
           }
+          audit "dev+test (no cryptography exception)" "${STRICT_REQS[@]}" "${COMMON_IGNORES[@]}"
+          audit "cloud" "${CLOUD_REQS[@]}" "${COMMON_IGNORES[@]}" "${CLOUD_IGNORES[@]}"
+          exit "$rc"
 
       - name: Run security linter (bandit)
         # Gate on bandit's own exit code at HIGH severity + HIGH confidence —
