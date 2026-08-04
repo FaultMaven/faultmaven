@@ -12,6 +12,8 @@ Redis-backed enforcer uses — so ``limit - current_count`` is the remaining quo
 whichever limiter produced the result.
 """
 
+from contextlib import asynccontextmanager
+
 import fakeredis.aioredis as fakeredis_aio
 import pytest
 from fastapi import Depends, FastAPI
@@ -176,7 +178,18 @@ class TestAnAllowedRequestOffersItsStateToTheHeaderPath:
 
 
 class TestThroughTheFullMiddlewareStack:
-    """The surface a client reads, with the middleware that writes it installed."""
+    """The surface a client reads, with the middleware that writes it installed.
+
+    Every test here runs the client as a context manager so the app's lifespan
+    executes, and the FakeRedis is built *inside* that lifespan. Building it at
+    test scope binds its internal queues to whichever loop imported it, and the
+    middleware's checks then raise "bound to a different event loop", fail open,
+    and report ``limit == 0`` — which the header path skips. The whole class
+    would pass while asserting nothing about a healthy limiter, which is exactly
+    how the overwrite defect below survived a green local run and was caught
+    only by CI. ``_assert_middleware_limiter_is_healthy`` re-establishes the
+    precondition per test rather than trusting the fixture to have held.
+    """
 
     @staticmethod
     def _settings(global_requests):
@@ -189,7 +202,14 @@ class TestThroughTheFullMiddlewareStack:
         return settings
 
     def _app(self, global_requests):
-        app = FastAPI()
+        @asynccontextmanager
+        async def lifespan(app):
+            # Created in the loop that will serve the requests, so the
+            # middleware's checks actually reach it.
+            app.state.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
+            yield
+
+        app = FastAPI(lifespan=lifespan)
 
         @app.post(
             "/api/v1/auth/oauth/token",
@@ -205,8 +225,24 @@ class TestThroughTheFullMiddlewareStack:
         app.add_middleware(
             RateLimitMiddleware, settings=self._settings(global_requests)
         )
-        app.state.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
         return app
+
+    @staticmethod
+    def _assert_middleware_limiter_is_healthy(client, global_requests):
+        """Prove the middleware holds a real result before asserting on it.
+
+        A route the OAuth limiter does not guard advertises the general limit
+        and nothing else. If the middleware's limiter had failed open the result
+        would carry ``limit == 0``, the header path would skip it, and no
+        ``X-RateLimit-Limit`` would appear at all — so this distinguishes
+        "healthy" from "silently vacuous" in one assertion.
+        """
+        probe = client.get("/api/v1/cases")
+        assert probe.status_code == 200
+        assert probe.headers.get("X-RateLimit-Limit") == str(global_requests), (
+            "the middleware's limiter is not healthy — its results carry no "
+            f"quota, so this test asserts nothing: {dict(probe.headers)}"
+        )
 
     @pytest.fixture(autouse=True)
     def _clean(self):
@@ -220,44 +256,127 @@ class TestThroughTheFullMiddlewareStack:
 
     def test_the_served_response_advertises_the_oauth_limit_when_it_is_tightest(self):
         """The defect: the roomy global limit was the only one a client saw."""
-        client = TestClient(self._app(global_requests=1000))
+        with TestClient(self._app(global_requests=1000)) as client:
+            self._assert_middleware_limiter_is_healthy(client, 1000)
 
-        response = client.post("/api/v1/auth/oauth/token")
+            response = client.post("/api/v1/auth/oauth/token")
 
-        assert response.status_code == 200
-        assert response.headers["X-RateLimit-Limit"] == str(TOKEN_LIMIT)
-        assert response.headers["X-RateLimit-Remaining"] == str(TOKEN_LIMIT - 1)
+            assert response.status_code == 200
+            assert response.headers["X-RateLimit-Limit"] == str(TOKEN_LIMIT)
+            assert response.headers["X-RateLimit-Remaining"] == str(TOKEN_LIMIT - 1)
 
     def test_a_tighter_general_limit_still_wins(self):
         """ "Tightest" is a comparison, not a preference for the new entrant."""
-        client = TestClient(self._app(global_requests=2))
+        with TestClient(self._app(global_requests=3)) as client:
+            self._assert_middleware_limiter_is_healthy(client, 3)
 
-        response = client.post("/api/v1/auth/oauth/token")
+            response = client.post("/api/v1/auth/oauth/token")
 
-        assert response.status_code == 200
-        assert response.headers["X-RateLimit-Limit"] == "2"
-        assert response.headers["X-RateLimit-Remaining"] == "1"
+            # The probe above spent one of the 3 and this request spends a
+            # second, leaving the general limit 1 from exhaustion against the
+            # OAuth limit's 4.
+            assert response.status_code == 200
+            assert response.headers["X-RateLimit-Limit"] == "3"
+            assert response.headers["X-RateLimit-Remaining"] == "1"
 
     def test_an_unlimited_route_is_unaffected(self):
         """Only the endpoints the OAuth limiter guards contribute its result."""
-        client = TestClient(self._app(global_requests=1000))
+        with TestClient(self._app(global_requests=1000)) as client:
+            response = client.get("/api/v1/cases")
 
-        response = client.get("/api/v1/cases")
+            assert response.status_code == 200
+            assert response.headers["X-RateLimit-Limit"] == "1000"
 
-        assert response.status_code == 200
-        assert response.headers["X-RateLimit-Limit"] == "1000"
+    def test_the_oauth_refusal_survives_the_middleware_on_the_way_out(self):
+        """The overwrite defect, on the stack production actually serves.
 
-    def test_the_oauth_refusal_still_carries_its_own_quartet(self):
-        """The dependency's 429 short-circuits the route, not the headers."""
-        client = TestClient(self._app(global_requests=1000))
+        The dependency's 429 comes back up through ``call_next``, so
+        ``_add_rate_limit_headers`` runs on it holding the middleware's own
+        healthy global result. Stamping that over the OAuth quartet advertised
+        ``Remaining: 994`` beside a refusal — telling the caller the limit it
+        just hit is nowhere near exhausted. The middleware must yield: an inner
+        enforcer's headers stand, and no refusal is ever given a remaining quota.
+        """
+        with TestClient(self._app(global_requests=1000)) as client:
+            self._assert_middleware_limiter_is_healthy(client, 1000)
 
-        for _ in range(TOKEN_LIMIT):
-            assert client.post("/api/v1/auth/oauth/token").status_code == 200
+            for _ in range(TOKEN_LIMIT):
+                assert client.post("/api/v1/auth/oauth/token").status_code == 200
 
-        refused = client.post("/api/v1/auth/oauth/token")
+            refused = client.post("/api/v1/auth/oauth/token")
 
-        assert refused.status_code == 429
-        assert refused.headers["X-RateLimit-Limit"] == str(TOKEN_LIMIT)
-        assert refused.headers["X-RateLimit-Remaining"] == "0"
-        assert int(refused.headers["Retry-After"]) >= 1
-        assert int(refused.headers["X-RateLimit-Reset"]) > 0
+            assert refused.status_code == 429
+            assert refused.headers["X-RateLimit-Limit"] == str(TOKEN_LIMIT), (
+                "the middleware overwrote the enforcer's limit with its own: "
+                f"{dict(refused.headers)}"
+            )
+            assert refused.headers["X-RateLimit-Remaining"] == "0", (
+                "a refusal was given remaining quota: " f"{dict(refused.headers)}"
+            )
+            assert int(refused.headers["Retry-After"]) >= 1
+            assert int(refused.headers["X-RateLimit-Reset"]) > 0
+
+    def _scratch_app(self, route):
+        """The middleware over one route that writes its own response."""
+
+        @asynccontextmanager
+        async def lifespan(app):
+            app.state.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
+            yield
+
+        app = FastAPI(lifespan=lifespan)
+        app.get("/api/v1/probe")(route)
+        app.get("/api/v1/cases")(lambda: {"cases": []})
+        app.add_middleware(RateLimitMiddleware, settings=self._settings(1000))
+        return app
+
+    def test_a_refusal_carrying_no_limit_headers_is_still_left_alone(self):
+        """The 429 condition, isolated from the already-written one.
+
+        A refusal with no ``X-RateLimit-*`` on it — anything that 429s for a
+        reason other than one of these windows — must not be handed the
+        middleware's remaining quota. Remaining beside a refusal is a
+        contradiction whatever produced the refusal.
+        """
+        from fastapi.responses import JSONResponse
+
+        async def _bare_429():
+            return JSONResponse(status_code=429, content={"error": "elsewhere"})
+
+        with TestClient(self._scratch_app(_bare_429)) as client:
+            self._assert_middleware_limiter_is_healthy(client, 1000)
+
+            refused = client.get("/api/v1/probe")
+
+            assert refused.status_code == 429
+            assert "X-RateLimit-Remaining" not in refused.headers, dict(refused.headers)
+            assert "X-RateLimit-Limit" not in refused.headers, dict(refused.headers)
+
+    def test_an_inner_writers_headers_on_a_200_are_left_alone(self):
+        """The already-written condition, isolated from the 429 one.
+
+        An enforcer that advertises its own quota on a *served* response is
+        authoritative for that response: it measured the limit it wrote, and the
+        middleware holds results only for the general limits. No enforcer in the
+        tree currently writes on a 200 — the OAuth limiter contributes a result
+        instead — so this pins the rule rather than a present caller, and it is
+        the case the 429 condition alone would let through.
+        """
+
+        async def _self_advertising():
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(
+                status_code=200,
+                content={"ok": True},
+                headers={"X-RateLimit-Limit": "7", "X-RateLimit-Remaining": "2"},
+            )
+
+        with TestClient(self._scratch_app(_self_advertising)) as client:
+            self._assert_middleware_limiter_is_healthy(client, 1000)
+
+            response = client.get("/api/v1/probe")
+
+            assert response.status_code == 200
+            assert response.headers["X-RateLimit-Limit"] == "7", dict(response.headers)
+            assert response.headers["X-RateLimit-Remaining"] == "2"

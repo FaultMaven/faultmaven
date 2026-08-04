@@ -224,6 +224,54 @@ async def test_a_429_reset_and_retry_after_name_one_instant_end_to_end():
     assert abs(reset - (int(time.time()) + retry_after)) <= 1, (reset, retry_after)
 
 
+async def test_an_unmeasured_wait_is_absent_not_defaulted():
+    """The raise sites pass the limiter's value through; nothing substitutes.
+
+    They used to carry ``or 60`` / ``or 3600``. Those were unreachable — a
+    blocked result always carries ``max(1, ceil(...))`` — but unreachable is
+    exactly why removing them needed a test that can *see* the difference: a
+    default only fires on a falsy value, so every test driving a real refusal
+    stays green either way. Driving a blocked result with no wait at all is the
+    one input that separates "passed through" from "defaulted", and it also pins
+    the rendering: an absent wait is an absent header, never ``str(None)``
+    putting the literal text "None" where a duration belongs.
+    """
+    mw = _middleware(_settings(global_requests=7))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+    captured = []
+
+    async def _refuse(**kwargs):
+        return RateLimitResult(
+            allowed=False,
+            limit_type=LimitType.GLOBAL,
+            current_count=7,
+            limit=7,
+            retry_after=None,
+            reset_time=None,
+        )
+
+    mw.rate_limiter.check_rate_limit = _refuse
+
+    original = mw._create_rate_limit_response
+
+    def _capture(error, request):
+        captured.append(error)
+        return original(error, request)
+
+    mw._create_rate_limit_response = _capture
+
+    refused = await mw.dispatch(_request(app, _unique_client()), _call_next)
+
+    assert refused.status_code == 429
+    assert captured, "the refusal never reached the response builder"
+    assert captured[0].retry_after is None, (
+        "a fallback substituted a fabricated wait for the one the limiter did "
+        f"not measure: {captured[0].retry_after}"
+    )
+    assert "Retry-After" not in refused.headers, dict(refused.headers)
+    assert refused.headers["X-RateLimit-Limit"] == "7"
+
+
 async def test_the_measured_wait_reaches_the_header_however_small():
     """No floor is defaulted in on the way out.
 

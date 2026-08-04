@@ -202,6 +202,11 @@ class RedisRateLimiter:
         # makes a failure attributable to one specific client.
         self._adoption_epoch = 0
 
+        # Background closes of replaced clients, held only so the event loop's
+        # weak reference to a running task is not the only one — an unreferenced
+        # task can be collected mid-close, and the pool it was dropping leaks.
+        self._teardown_tasks: set = set()
+
         # Rate limit configurations
         self._configs: Dict[str, RateLimitConfig] = {}
 
@@ -446,16 +451,33 @@ class RedisRateLimiter:
         20) per demotion cycle — the ladder is re-entered on every death, and
         nothing else ever dropped the previous pool.
 
-        The close happens **after** the install, and the order is load-bearing.
-        ``await outgoing.close()`` is a yield point: while it runs, a concurrent
-        ``check_rate_limit`` snapshots whatever ``_window_script`` currently
-        holds, and with the close first that snapshot is the script bound to the
-        client being torn down — issued against a pool that is closing or
-        already closed. Closing the outgoing pool is best-effort cleanup of a
-        connection that is usually already dead, whereas installing the
-        replacement is what ends the outage; the cleanup must therefore never be
-        something the install waits on, or a teardown that stalls against a dead
-        socket stalls the adoption with it for as long as it takes.
+        Everything from the ownership capture to the last assignment runs with no
+        ``await`` in it, and the close is dispatched rather than awaited. The two
+        properties are related: it is the *absence of a yield point*, not the
+        relative position of the dispatch, that makes the install atomic.
+
+        - **No await between capture and install.** Any ``await`` in that span is
+          a point at which a concurrent ``check_rate_limit`` can snapshot
+          ``_window_script`` — and when the close was awaited *first*, that
+          snapshot was the script bound to the client being torn down, so the
+          check went to a pool that was closing or already closed. Awaiting the
+          close after the install fixed that instance; dispatching it removes the
+          yield point altogether, so no observer can see a half-installed
+          limiter regardless of where the dispatch sits.
+        - **Close off the adoption path.** Closing the outgoing pool is
+          best-effort cleanup of a connection that is usually already dead;
+          installing the replacement is what ends the outage. Awaiting the close
+          put an unbounded teardown *on* that path — and not only on the adopting
+          request: ``RateLimitMiddleware._initialize`` serialises re-entry behind
+          one lock, so every request queued on it waited for a socket that may
+          never answer. Dispatching it means adoption returns as soon as the
+          replacement is installed, whatever the dead pool does afterwards.
+
+        The task reference is held in ``_teardown_tasks`` until it completes.
+        ``asyncio`` keeps only a weak reference to a running task, so a
+        fire-and-forget task with no strong reference anywhere can be garbage
+        collected mid-flight and the close silently never happens — which would
+        reinstate the pool leak this close exists to fix.
 
         The ownership test reads the values ``self`` held *before* the install,
         captured first: ``_owns_client`` is about to be overwritten with the
@@ -484,13 +506,29 @@ class RedisRateLimiter:
             and outgoing is not client
             and not is_fakeredis(outgoing)
         ):
-            try:
-                await outgoing.close()
-            except Exception as e:
-                # A pool that is already dead is exactly the case this runs in,
-                # so a failure to close it is expected and not worth failing an
-                # adoption over — the replacement client is what matters.
-                self.logger.debug(f"Closing the replaced Redis client failed: {e}")
+            self._dispatch_teardown(outgoing)
+
+    def _dispatch_teardown(self, outgoing) -> None:
+        """Close a replaced client in the background, holding a reference to it.
+
+        The reference is the whole point: ``asyncio`` holds tasks weakly, so a
+        task nothing else names may be collected before it finishes and the close
+        would silently not happen. Discarded on completion so the set does not
+        grow with the process's uptime.
+        """
+        task = asyncio.ensure_future(self._close_outgoing(outgoing))
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+
+    async def _close_outgoing(self, outgoing) -> None:
+        """Best-effort close of a pool that is usually already dead."""
+        try:
+            await outgoing.close()
+        except Exception as e:
+            # A pool that is already dead is exactly the case this runs in, so a
+            # failure to close it is expected and not worth surfacing — nothing
+            # is waiting on the outcome, and the replacement is already serving.
+            self.logger.debug(f"Closing the replaced Redis client failed: {e}")
 
     async def close(self) -> None:
         """Close the Redis connection — only one this limiter opened itself.

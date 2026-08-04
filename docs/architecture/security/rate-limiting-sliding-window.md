@@ -70,6 +70,18 @@ the instant the next unit of quota frees**:
   the measured value untouched whenever the clocks agree, which is every entry a
   host wrote itself.
 
+  The clamp **bounds** the error; it does not remove it. A future-dated entry
+  genuinely ages out at `oldest_score + window` — that is the score the prune
+  compares against, on whichever replica next reads the key — so the clamped
+  answer is *early* by the skew amount, and a client that obeys it can be
+  refused again on arrival. That re-refusal carries a freshly measured wait,
+  itself bounded by one window, so the client converges rather than looping
+  unboundedly. Early-and-bounded is the direction to be wrong in: the
+  alternative is a single wait longer than the window it describes, which no
+  client can reconcile with the `X-RateLimit-Reset` beside it. NTP-scale skew
+  makes the error sub-second; a replica minutes out of sync is a monitoring
+  problem this clamp only keeps from becoming a client-facing one.
+
 Both numbers come from a single `frees_at`, computed once per check, so
 `reset_time` and `Retry-After` cannot name different instants. The formula lives
 in one place — `infrastructure/protection/window_math.py` (`quota_frees_at`,
@@ -121,17 +133,36 @@ limiter did not measure is simply absent — a client that reads no `Retry-After
 backs off on its own policy, which is strictly better than backing off on a
 fabricated one.
 
+Two enforcers can both be on one request — the middleware for the general
+limits, an OAuth limiter dependency inside it — so "one writer" is enforced on
+the way out, by `_add_rate_limit_headers` **yielding**:
+
+- It returns immediately on a **429**. Remaining quota beside a refusal is a
+  contradiction the client resolves wrongly (`Remaining: 994` next to "you are
+  being rate limited" reads as "not this limit, carry on"). The middleware's own
+  refusals never reach it — those short-circuit in `dispatch` — so a 429 arriving
+  through `call_next` was written by an inner enforcer that has already said what
+  it measured.
+- It returns immediately when the response **already carries
+  `X-RateLimit-Limit`**. The inner enforcer wrote the limit *it* enforced; the
+  middleware holds results for the general limits only, and stamping them over
+  would replace a measured tighter quota with a roomier one nobody hit. It does
+  not attempt to reconcile the two: "tightest wins" is computable only over
+  results it holds, and an already-written header is not one of them.
+
+Neither condition is redundant. A refusal can arrive without any `X-RateLimit-*`
+(a non-limit 429), and an allowed response can carry an inner enforcer's headers
+with no refusal anywhere.
+
 The invariant is scoped to that stack, not to the process. One other authority
 writes `Retry-After`: `api/exception_handlers.py` (`_llm_http`) stamps a
 heuristic backoff hint — 60, 30 or 10 seconds by mapped condition — on the
 responses it *synthesises* for LLM-provider errors (429/503/504/500). That is a
 separate concern from request protection: nothing was rate-limited here by
 FaultMaven, and the number is an in-house guess about an upstream provider's
-recovery rather than a measurement of one of our windows. The two never write
-the same response — a protection 429 never reaches the LLM handler, and a
-provider error never carries `X-RateLimit-*`. Passing the *provider's own*
-`Retry-After` through, so that hint stops being a guess, belongs to the fm#509
-cluster and is tracked there.
+recovery rather than a measurement of one of our windows. Passing the
+*provider's own* `Retry-After` through, so that hint stops being a guess, belongs
+to the fm#509 cluster and is tracked there.
 
 The invariant that fm#920 restored: after N back-to-back requests against a
 limit of L, exactly `min(N, L)` are allowed and the set holds `min(N, L)`
@@ -241,5 +272,8 @@ three-element return; restoring `now + window` on the blocked path; removing the
 skew clamp from `quota_frees_at`; re-deriving `X-RateLimit-Reset` on a 429 from
 `time.time() + retry_after`; dropping the `X-RateLimit-*` headers from the OAuth
 429; closing the outgoing client before installing its replacement in `_adopt`;
-restoring an `or 60` default on a raise site; registering a middleware after
-CORS.
+awaiting the close instead of dispatching it; removing either early return from
+`_add_rate_limit_headers`; defaulting an absent `Retry-After` to `60` in
+`_create_rate_limit_response` (the raise sites pass the measured value through
+verbatim, so a default there is unreachable and cannot be the mutation);
+registering a middleware after CORS.
