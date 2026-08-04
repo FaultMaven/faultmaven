@@ -536,3 +536,79 @@ def test_working_conclusion_mirrors_a_standing_conclusion_over_the_placeholder()
     wc = generate_working_conclusion(case, case.current_turn)
     assert wc.statement == _TRUE_ROOT
     assert wc.likelihood == 0.9
+
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 1 — the resolved case's truth surfaces AGREE.
+# ---------------------------------------------------------------------------
+
+
+def test_resolved_case_truth_surfaces_agree_with_the_confirmed_cause():
+    """The incident replayed end to end through the real recompute and the real
+    RESOLVED finalizer.
+
+    Before #987 this case terminated with ``cause_state=unknown``,
+    ``cause_assurance=no_root``, ``root_cause_conclusion=None``, and the true
+    cause REFUTED at belief 0 — while the transcript read correct throughout.
+    All three structured surfaces must now agree with the cause the user
+    confirmed, and the record must say HOW it was established.
+    """
+    from faultmaven.core.investigation.milestone_engine import (
+        _recompute_cause_state_from_chain,
+    )
+    from faultmaven.core.investigation.terminal_transitions import (
+        finalize_resolution_truth_surface,
+    )
+    from faultmaven.modules.case.contracts import CauseAssuranceGrade
+
+    case = _case()
+    seed_problem_node(case)
+    for eid, turn, summary in (
+        ("ev_bf208c13b2b7", 6, "Provider record contains only sts.amazonaws.com.cn"),
+        ("ev_6159eb53665c", 8, "Issuer URL and cluster ID match the provider URL"),
+    ):
+        case.evidence.append(
+            _evidence(eid, EvidenceCategory.CAUSAL_EVIDENCE, turn, summary)
+        )
+
+    created = ingest_emitted_chain(
+        case,
+        nodes_to_add=[_root_spec(_TRUE_ROOT)],
+        edges_to_add=[],
+        node_evidence=[
+            _link("new_index_0", "ev_bf208c13b2b7", "supports", confidence=0.98),
+            _link("new_index_0", "ev_6159eb53665c", "supports", confidence=0.94),
+        ],
+        current_turn=case.current_turn,
+    )
+    root_id = created[0]
+    hyp = _hypothesis("hyp_421fd53b5fd7", HypothesisState.ACTIVE, root_node_id=root_id)
+    hyp.path = [root_id]
+    case.hypotheses[hyp.hypothesis_id] = hyp
+
+    # Turn 9: the fix worked. The model records its success confirmation AND
+    # (contract violation) REFUTES-links it to the very root it confirms.
+    case.evidence.append(_success_absence_row(turn=9))
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[],
+        node_evidence=[_link(root_id, "ev_47b2f3337ffc", "refutes", confidence=1.0)],
+        current_turn=9,
+    )
+    _recompute_cause_state_from_chain(case)
+
+    # Turn 11: the user confirms; the RESOLVED finalizer reconciles.
+    case.current_turn = 11
+    finalize_resolution_truth_surface(case)
+
+    root = case.causal_nodes[root_id]
+    assert root.node_state == NodeState.VALIDATED
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
+    assert case.root_cause_conclusion is not None
+    assert case.root_cause_conclusion.root_cause == _TRUE_ROOT
+    # ...and the record carries HOW it was established, not a bare assertion.
+    established = case.root_cause_conclusion.established_by
+    assert established and "user-confirmed resolution at turn 11" in established
+    assert "ev_47b2f3337ffc" in established
