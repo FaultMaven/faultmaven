@@ -11,17 +11,32 @@ honour it — but the raise sits inside a ``try`` whose only handler is
 being unavailable; it also swallowed the dependency's own refusal, so the
 function fell through to ``return oauth_service`` and handed callers ``None``.
 
-The contract in the docstring was therefore never enforced. Instead of a clean
-503 naming the misconfiguration, every OAuth route resolved its service to
-``None`` and failed later on attribute access — a 500 pointing at the route
-rather than at the missing wiring.
+The contract in the docstring was therefore never enforced by the dependency
+that documents it.
 
-Reachability is a real deployment state, not a contrivance:
-``validate_oauth_consistency`` forces ``oauth_enabled=True`` whenever
-``auth_mode=oauth``, while the container only assigns ``container.oauth_service``
-``if user_store:`` — otherwise it logs "OAuth service skipped (no user_store
-available)" and ``app.state.oauth_service`` stays ``None``. That is exactly
-``oauth_enabled and oauth_service is None``.
+**This is a no-op for route behaviour, and the tests below are a synthetic
+probe rather than a reproduction of a production failure.** All four OAuth
+routes consume this dependency through the wrapper in
+``modules/auth/api/oauth.py`` (~193-213), which calls it and then independently
+converts ``None`` into a byte-identical
+``HTTPException(503, "OAuth authentication not configured")``. No route ever
+surfaced a 500 from attribute access: enforcement simply lived one layer above
+the place where the contract is written down. The change makes the dependency
+honour its own ``Raises:`` contract and protects any future direct
+``Depends(get_oauth_service)`` consumer that does not go through the wrapper.
+
+Both checks are load-bearing and neither replaces the other — the wrapper's
+``None`` check is the only 503 guard in the oauth-disabled and
+settings-unavailable states, where this dependency deliberately returns
+``None``.
+
+The underlying state is a real deployment state, not a contrivance:
+``validate_oauth_consistency`` raises ``ValueError`` at startup if
+``auth_mode=oauth`` without ``oauth_enabled=true``, so any running oauth-mode
+deployment has ``oauth_enabled=True``; meanwhile the container only assigns
+``container.oauth_service`` ``if user_store:`` — otherwise it logs "OAuth
+service skipped (no user_store available)" and ``app.state.oauth_service``
+stays ``None``. That is exactly ``oauth_enabled and oauth_service is None``.
 
 Driven through a real request over ``httpx.ASGITransport`` so the dependency is
 resolved by FastAPI the way a route resolves it.
@@ -29,12 +44,12 @@ resolved by FastAPI the way a route resolves it.
 
 from types import SimpleNamespace
 
-import httpx
 import pytest
 from fastapi import Depends, FastAPI
 
 import faultmaven.config.settings as settings_module
 from faultmaven.api.v1.dependencies import get_oauth_service
+from tests.utils import asgi_request
 
 
 def _build_app(oauth_service):
@@ -61,9 +76,7 @@ def _patch_settings(monkeypatch, *, oauth_enabled):
 
 
 async def _probe(app):
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.get("/probe")
+    return await asgi_request(app, "GET", "/probe")
 
 
 @pytest.mark.unit
@@ -74,8 +87,10 @@ async def test_oauth_enabled_without_service_surfaces_as_503(monkeypatch):
 
     response = await _probe(_build_app(oauth_service=None))
 
-    # Exact status. Before the fix this was 200 {"resolved": false} — the
-    # refusal vanished and the route ran with a None service.
+    # Exact status. Against this bare probe route — which depends on the
+    # dependency directly, with no wrapper in front — the pre-fix behaviour was
+    # 200 {"resolved": false}. Real OAuth routes were unaffected; see module
+    # docstring.
     assert response.status_code == 503, response.text
     assert response.json()["detail"] == "OAuth authentication not configured"
 

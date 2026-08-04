@@ -655,9 +655,23 @@ class DIContainer(BaseDIContainer):
         return getattr(self, "config", None)
 
     def _create_minimal_session_service(self):
-        """Create a minimal session service for testing environments"""
+        """Create a minimal session service.
+
+        Reachable in PRODUCTION, not only under test: ``create_session_service``
+        falls back to this stand-in whenever the session store is unavailable
+        (Redis down), so its semantics must mirror ``AuthSessionService`` — a
+        degraded deployment must not answer differently from a healthy one.
+        """
         import uuid
-        from datetime import datetime
+        from datetime import datetime, timedelta
+
+        # Session TTL, sourced exactly as AuthSessionService.__init__ sources it
+        # (settings.session.ttl_hours when present, else the 24h default), so
+        # the stand-in expires sessions on the same clock as the real service.
+        _settings = getattr(self, "settings", None)
+        _session_ttl = timedelta(
+            hours=getattr(getattr(_settings, "session", None), "ttl_hours", 24)
+        )
 
         class MockSessionContext:
             def __init__(self, session_id, user_id=None, metadata=None):
@@ -666,6 +680,10 @@ class DIContainer(BaseDIContainer):
                 self.metadata = metadata or {}
                 self.created_at = datetime.now(timezone.utc)
                 self.last_activity = datetime.now(timezone.utc)
+                # Sessions carry an explicit expiry from creation: without one,
+                # `validate=True` could never distinguish a live session from an
+                # expired one and would silently behave as `validate=False`.
+                self.expires_at = self.created_at + _session_ttl
                 self.data_uploads = []
                 self.case_history = []
 
@@ -681,22 +699,41 @@ class DIContainer(BaseDIContainer):
                 self.session_manager = MockSessionManager()  # Add mock session manager
                 self.session_manager.sessions = self.sessions  # Share session storage
 
-            async def create_session(
-                self,
-                user_id=None,
-                session_id=None,
-                metadata=None,
-                client_id=None,
-                initial_context=None,
-            ):
-                if not session_id:
-                    session_id = str(uuid.uuid4())
+            async def create_session(self, user_id, client_id=None, metadata=None):
+                # Signature mirrors AuthSessionService.create_session so a call
+                # shaped against the stand-in also binds on the real service.
+                session_id = str(uuid.uuid4())
                 session = MockSessionContext(session_id, user_id, metadata)
+                session.client_id = client_id
                 self.sessions[session_id] = session
                 return session
 
             async def get_session(self, session_id, validate=True):
-                return self.sessions.get(session_id)
+                """Get session by ID, optionally enforcing expiry.
+
+                Mirrors ``AuthSessionService.get_session``: ``validate=True``
+                treats an expired session as absent AND removes it;
+                ``validate=False`` returns the stored session as-is with no
+                expiry check and no delete side effect — a read must never
+                destroy what it reads.
+                """
+                session = self.sessions.get(session_id)
+                if not session:
+                    return None
+
+                if not validate:
+                    return session
+
+                expires_at = getattr(session, "expires_at", None)
+                if expires_at and datetime.now(timezone.utc) > expires_at:
+                    await self.delete_session(session_id)
+                    return None
+
+                return session
+
+            async def validate_session(self, session_id):
+                """Whether the session exists and has not expired."""
+                return await self.get_session(session_id) is not None
 
             async def list_sessions(self, user_id=None):
                 sessions = list(self.sessions.values())
@@ -713,103 +750,6 @@ class DIContainer(BaseDIContainer):
             async def update_last_activity(self, session_id):
                 if session_id in self.sessions:
                     self.sessions[session_id].last_activity = datetime.now(timezone.utc)
-                    return True
-                return False
-
-            async def get_session_stats(self):
-                return {
-                    "total_sessions": len(self.sessions),
-                    "active_sessions": len(self.sessions),
-                }
-
-            async def cleanup_session_data(self, session_id):
-                return {
-                    "session_id": session_id,
-                    "success": True,
-                    "cleaned_items": {
-                        "data_uploads": 0,
-                        "case_history": 0,
-                        "temp_files": 0,
-                    },
-                }
-
-            async def get_or_create_current_case_id(
-                self, session_id, force_new_case=False
-            ):
-                """Get or create a case ID for the session"""
-                if session_id in self.sessions:
-                    session = self.sessions[session_id]
-                    if not hasattr(session, "current_case_id") or force_new_case:
-                        session.current_case_id = str(uuid.uuid4())
-                    return session.current_case_id
-                else:
-                    # Create session if it doesn't exist
-                    await self.create_session()
-                    return str(uuid.uuid4())
-
-            async def format_conversation_context(self, session_id, case_id, limit=5):
-                """Format conversation context for a case"""
-                if session_id in self.sessions:
-                    # Return empty context for mock implementation
-                    return ""
-                return ""
-
-            async def record_query_operation(
-                self, session_id, query, case_id, context=None, confidence_score=1.0
-            ):
-                """Record a query operation in the session"""
-                if session_id in self.sessions:
-                    session = self.sessions[session_id]
-                    if not hasattr(session, "operations"):
-                        session.operations = []
-                    session.operations.append(
-                        {
-                            "query": query,
-                            "case_id": case_id,
-                            "context": context,
-                            "confidence_score": confidence_score,
-                            "timestamp": datetime.now(timezone.utc),
-                        }
-                    )
-                    return True
-                return False
-
-            async def record_case_message(
-                self,
-                session_id: str,
-                message_content: str,
-                message_type=None,  # Use Any to avoid import issues in container
-                author_id=None,
-                metadata=None,
-            ) -> bool:
-                """
-                Record a message in the current case for this session
-
-                Args:
-                    session_id: Session identifier
-                    message_content: Message content
-                    message_type: Type of message (ignored in minimal impl)
-                    author_id: Optional message author (ignored in minimal impl)
-                    metadata: Optional message metadata (ignored in minimal impl)
-
-                Returns:
-                    True if message was recorded successfully
-                """
-                if session_id in self.sessions:
-                    session = self.sessions[session_id]
-                    if not hasattr(session, "case_messages"):
-                        session.case_messages = []
-                    session.case_messages.append(
-                        {
-                            "content": message_content,
-                            "message_type": (
-                                str(message_type) if message_type else "user_query"
-                            ),
-                            "author_id": author_id,
-                            "metadata": metadata or {},
-                            "timestamp": datetime.now(timezone.utc),
-                        }
-                    )
                     return True
                 return False
 
@@ -914,120 +854,29 @@ class DIContainer(BaseDIContainer):
             async def get_case(self, case_id, user_id=None):
                 return self.cases.get(case_id)
 
-            async def list_cases_for_session(self, session_id, limit=20, offset=0):
-                # Filter cases by checking if session_id matches case.current_session_id
-                session_cases = [
+            def _active_session_cases(self, session_id):
+                """Non-terminal, non-empty cases for a session.
+
+                CaseService.list_cases_by_session/count_cases_by_session take no
+                filters, so neither does this stand-in; the default exclusions
+                below are the only behaviour a caller can reach.
+                """
+                return [
                     case
                     for case in self.cases.values()
                     if case.current_session_id == session_id
-                ]
-                total = len(session_cases)
-                paginated = session_cases[offset : offset + limit]
-                return paginated, total
-
-            async def list_cases_by_session(
-                self, session_id, limit=50, offset=0, filters=None
-            ):
-                """List cases by session_id - Phase 1: Apply default filtering like list_user_cases"""
-                session_cases = [
-                    case
-                    for case in self.cases.values()
-                    if case.current_session_id == session_id
+                    and case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
+                    and getattr(case, "message_count", 1) > 0
                 ]
 
-                # Phase 1: Apply same core filtering as list_user_cases
-                if filters:
-                    # Phase 1: Default filtering behavior (exclude terminal cases)
-                    if not getattr(filters, "include_deleted", False):
-                        # Exclude closed cases
-                        session_cases = [
-                            case
-                            for case in session_cases
-                            if case.state != CaseState.CLOSED
-                        ]
-
-                    if not getattr(filters, "include_terminal", False):
-                        # Exclude terminal cases (resolved and closed)
-                        session_cases = [
-                            case
-                            for case in session_cases
-                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
-                        ]
-
-                    if not getattr(filters, "include_empty", False):
-                        # Exclude empty cases (message_count == 0)
-                        session_cases = [
-                            case
-                            for case in session_cases
-                            if getattr(case, "message_count", 1) > 0
-                        ]
-                else:
-                    # Phase 1: No filters provided - apply default exclusions (same as list_user_cases)
-                    # Only show active (non-terminal) cases by default
-                    session_cases = [
-                        case
-                        for case in session_cases
-                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
-                    ]
-                    # Exclude empty cases by default
-                    session_cases = [
-                        case
-                        for case in session_cases
-                        if getattr(case, "message_count", 1) > 0
-                    ]
-
+            async def list_cases_by_session(self, session_id, limit=50, offset=0):
+                """List active cases for a session (mirrors CaseService)."""
+                session_cases = self._active_session_cases(session_id)
                 return session_cases[offset : offset + limit]
 
-            async def count_cases_by_session(self, session_id, filters=None):
-                """Count cases by session_id - Phase 1: Apply default filtering like list_cases_by_session"""
-                session_cases = [
-                    case
-                    for case in self.cases.values()
-                    if case.current_session_id == session_id
-                ]
-
-                # Phase 1: Apply same core filtering as list_cases_by_session
-                if filters:
-                    # Phase 1: Default filtering behavior (exclude terminal cases)
-                    if not getattr(filters, "include_deleted", False):
-                        # Exclude closed cases
-                        session_cases = [
-                            case
-                            for case in session_cases
-                            if case.state != CaseState.CLOSED
-                        ]
-
-                    if not getattr(filters, "include_terminal", False):
-                        # Exclude terminal cases (resolved and closed)
-                        session_cases = [
-                            case
-                            for case in session_cases
-                            if case.state not in [CaseState.RESOLVED, CaseState.CLOSED]
-                        ]
-
-                    if not getattr(filters, "include_empty", False):
-                        # Exclude empty cases (message_count == 0)
-                        session_cases = [
-                            case
-                            for case in session_cases
-                            if getattr(case, "message_count", 1) > 0
-                        ]
-                else:
-                    # Phase 1: No filters provided - apply default exclusions (same as list_cases_by_session)
-                    # Only show active (non-terminal) cases by default
-                    session_cases = [
-                        case
-                        for case in session_cases
-                        if case.state in [CaseState.INQUIRY, CaseState.INVESTIGATING]
-                    ]
-                    # Exclude empty cases by default
-                    session_cases = [
-                        case
-                        for case in session_cases
-                        if getattr(case, "message_count", 1) > 0
-                    ]
-
-                return len(session_cases)
+            async def count_cases_by_session(self, session_id):
+                """Count active cases for a session (mirrors CaseService)."""
+                return len(self._active_session_cases(session_id))
 
             async def close_case(self, case_id, user_id):
                 # Mirrors CaseService.close_case: one closure rule — the
@@ -1051,38 +900,6 @@ class DIContainer(BaseDIContainer):
                     )
                 execute_user_closure(case, user_id)
                 return case
-
-            async def add_case_query(self, case_id, query, priority=None):
-                # Phase 2 & 3: Update message_count, updated_at, and handle auto-title generation
-                if case_id in self.cases:
-                    case = self.cases[case_id]
-                    current_time = datetime.now(timezone.utc)
-
-                    # Phase 2: Update message count and timestamp
-                    case.message_count = getattr(case, "message_count", 0) + 1
-                    case.updated_at = current_time
-
-                    # Phase 3: Auto-title generation after first message
-                    # Only generate auto-title if title is "New Chat" AND not manually set
-                    if (
-                        case.title == "New Chat"
-                        and not getattr(case, "title_manually_set", False)
-                        and case.message_count == 1
-                    ):  # This is the first query
-
-                        # Generate auto-title: chat-<UTC_ISO8601_Z_timestamp>
-                        auto_title = f"chat-{current_time.isoformat()}Z"
-                        case.title = auto_title
-                        # Keep title_manually_set as False since this is auto-generated
-
-                # Mock implementation - return a simple query response
-                return {
-                    "query_id": str(uuid.uuid4()),
-                    "case_id": case_id,
-                    "query": query,
-                    "priority": priority or "medium",
-                    "created_at": datetime.now(timezone.utc),
-                }
 
             async def list_user_cases(
                 self, user_id=None, filters=None, limit=20, offset=0
@@ -1194,8 +1011,12 @@ class DIContainer(BaseDIContainer):
                         pass
                 return summaries, total
 
-            async def count_user_cases(self, user_id=None, filters=None):
-                """Count cases for a user with filters - Phase 1: Mirror filtering from list_user_cases"""
+            async def count_user_cases(self, user_id: str, filters=None):
+                """Count cases for a user with filters - Phase 1: Mirror filtering from list_user_cases
+
+                ``user_id`` is REQUIRED, matching CaseService.count_user_cases:
+                a call that omitted it bound here and failed on the real service.
+                """
                 # Filter cases by user_id if provided
                 if user_id:
                     user_cases = [
@@ -1412,9 +1233,15 @@ class DIContainer(BaseDIContainer):
                 )
 
             async def add_case_query(
-                self, case_id: str, query: str, user_id: str = None
-            ):
-                """Add a query message to a case"""
+                self, case_id: str, query_text: str, user_id: Optional[str] = None
+            ) -> bool:
+                """Add a query message to a case.
+
+                Parameter is ``query_text``, matching
+                ``CaseService.add_case_query`` — the stand-in previously named
+                it ``query``, so a keyword call that bound here failed on the
+                real service.
+                """
                 if case_id not in self.cases:
                     return False
 
@@ -1426,44 +1253,11 @@ class DIContainer(BaseDIContainer):
                     "message_id": f"query_{len(self.case_messages[case_id])}_{case_id}",
                     "case_id": case_id,
                     "message_type": "user_query",
-                    "content": query.strip(),
+                    "content": query_text.strip(),
                     "timestamp": datetime.now(timezone.utc),
                     "user_id": user_id or "anonymous",
                 }
                 self.case_messages[case_id].append(query_msg)
-
-                # Update case metadata
-                case = self.cases[case_id]
-                case.message_count = len(self.case_messages[case_id])
-                case.updated_at = datetime.now(timezone.utc)
-
-                return True
-
-            async def add_assistant_response(
-                self,
-                case_id: str,
-                response_content: str,
-                response_type: str = "ANSWER",
-                user_id: str = None,
-            ):
-                """Add an assistant response message to a case"""
-                if case_id not in self.cases:
-                    return False
-
-                if case_id not in self.case_messages:
-                    self.case_messages[case_id] = []
-
-                # Add assistant response message
-                response_msg = {
-                    "message_id": f"response_{len(self.case_messages[case_id])}_{case_id}",
-                    "case_id": case_id,
-                    "message_type": "agent_response",
-                    "content": response_content.strip() if response_content else "",
-                    "response_type": response_type,
-                    "timestamp": datetime.now(timezone.utc),
-                    "user_id": user_id or "anonymous",
-                }
-                self.case_messages[case_id].append(response_msg)
 
                 # Update case metadata
                 case = self.cases[case_id]
