@@ -7040,6 +7040,7 @@ class MilestoneEngine:
                 "max_tokens": current_max_tokens,
                 "temperature": 0.2,  # Lower temperature for structured output
                 "case_id": case.case_id if case is not None else None,
+                "bypass_cache": max_tokens_state.get("bumped", False),
             }
 
             # Tier 2 — route schema-bound calls to STRUCTURED_OUTPUT_PROVIDER
@@ -7169,6 +7170,7 @@ class MilestoneEngine:
                     # Double max_tokens for next retry attempt
                     old_max = max_tokens_state["value"]
                     max_tokens_state["value"] = min(old_max * 2, 16000)  # Cap at 16k
+                    max_tokens_state["bumped"] = True
                     logger.warning(
                         f"JSON truncation detected, increasing max_tokens: "
                         f"{old_max} → {max_tokens_state['value']}"

@@ -116,14 +116,24 @@ class TestErrorClassification:
             "bad request: too many tokens",  # Cohere-style overflow (was lost
             # when bare "token" was dropped; shared with _is_context_length_error)
             "exceeds the maximum context (8192)",
+        ],
+    )
+    def test_real_overflow_detected(self, handler, msg):
+        """Genuine context overflow still triggers compress."""
+        assert handler.is_token_limit_error(Exception(msg)) is True
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
             "EOF while parsing a value",  # truncated JSON output
             "Unterminated string starting at line 3",
             "finishReason=MAX_TOKENS",  # Gemini output cap
         ],
     )
-    def test_real_overflow_and_truncation_detected(self, handler, msg):
-        """Genuine context overflow / output truncation still triggers compress."""
-        assert handler.is_token_limit_error(Exception(msg)) is True
+    def test_real_truncation_is_retryable(self, handler, msg):
+        """Output truncation is retryable, not a compress-memory error."""
+        assert handler.is_token_limit_error(Exception(msg)) is False
+        assert handler.is_retryable_error(Exception(msg)) is True
 
     @pytest.mark.parametrize(
         "msg",

@@ -48,8 +48,8 @@ CONTEXT_OVERFLOW_PHRASES: Tuple[str, ...] = (
 )
 
 # Output truncated at the generation cap: the response body is cut off, so the
-# JSON fails to parse. Distinct from input overflow but also COMPRESS_MEMORY-
-# class (freeing budget lets the retry complete the output).
+# JSON fails to parse. Distinct from input overflow; this is a RETRY-class error
+# where the engine bumps max_tokens and retries the generation.
 _OUTPUT_TRUNCATION_PHRASES: Tuple[str, ...] = (
     "truncated",
     "unterminated",  # truncated JSON string
@@ -134,6 +134,8 @@ class RetryConfig:
         "overloaded",
         "truncated",
         "finishreason=max_tokens",
+        "unterminated",
+        "eof while parsing",
     )
 
 
@@ -220,26 +222,23 @@ class LLMErrorHandler:
         )
 
     def is_token_limit_error(self, error: Exception) -> bool:
-        """Check if an error is a context-window overflow or output truncation.
+        """Check if an error is a context-window overflow.
 
-        These are the only token-related failures that COMPRESS_MEMORY can
-        recover (the prompt is too large for the context window, or the JSON
-        output was cut off at the generation cap). A request-shape 400 that
+        This is the only token-related failure that COMPRESS_MEMORY can
+        recover (the prompt is too large for the context window). A request-shape 400 that
         merely *names* a token parameter — e.g. OpenAI's "Unsupported parameter:
         'max_tokens' is not supported with this model. Use
         'max_completion_tokens' instead." — is a non-retryable config error, NOT
         a context overflow. Matching it here masked the real cause as "Context
         too large" and sent the engine into a futile compression loop, so we key
-        on specific overflow/truncation signatures and never on the bare word
+        on specific overflow signatures and never on the bare word
         "token"/"max_tokens", and bail early on unsupported-parameter errors.
         """
         error_str = str(error).lower()
         # A wrong/unsupported request parameter is a config error, not a limit.
         if any(guard in error_str for guard in _PARAM_ERROR_GUARD_PHRASES):
             return False
-        return any(p in error_str for p in CONTEXT_OVERFLOW_PHRASES) or any(
-            p in error_str for p in _OUTPUT_TRUNCATION_PHRASES
-        )
+        return any(p in error_str for p in CONTEXT_OVERFLOW_PHRASES)
 
     def calculate_delay(self, retry_count: int) -> float:
         """Calculate delay for next retry using exponential backoff."""

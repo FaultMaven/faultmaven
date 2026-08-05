@@ -136,6 +136,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         case_id: Optional[str] = None,
         provider_override: Optional[str] = None,
         cache_prompt: bool = False,
+        bypass_cache: bool = False,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -171,7 +172,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Multi-turn `messages` calls are skipped outright — an identical
         # message list is not a thing that recurs, so there is nothing to hit.
         cache_model = model  # Use the requested model for cache lookup
-        if cache_model and not messages and sanitized_prompt:
+        if cache_model and not messages and sanitized_prompt and not bypass_cache:
             cached_response = self.cache.check(
                 sanitized_prompt, cache_model, case_id=case_id
             )
@@ -241,6 +242,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 and not messages
                 and sanitized_prompt
                 and response.confidence >= self.confidence_threshold
+                and not bypass_cache
             ):
                 self.cache.store(sanitized_prompt, model, response, case_id=case_id)
 
@@ -389,6 +391,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         case_id = kwargs.get("case_id")
         provider_override = kwargs.get("provider_override")
         cache_prompt = kwargs.get("cache_prompt", False)
+        bypass_cache = kwargs.get("bypass_cache", False)
 
         # Call existing route method with all the robust functionality
         response = await self.route(
@@ -404,6 +407,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             case_id=case_id,
             provider_override=provider_override,
             cache_prompt=cache_prompt,
+            bypass_cache=bypass_cache,
         )
 
         # Return the full LLMResponse (milestone_engine expects this)
