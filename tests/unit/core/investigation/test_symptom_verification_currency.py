@@ -1,14 +1,15 @@
-"""Problem verification must speak to the PRESENT when the case claims ongoing.
+"""The symptom's observation window must survive as a tracked fact.
 
-``symptom_verified`` recorded that the problem was shown to exist, never when,
-and never fell once set. Any observation of the past — a log excerpt from
-yesterday, a screenshot from last week, a notification captured hours ago —
-satisfied it exactly as a live measurement would, and the investigation
-proceeded as though the problem were happening now.
+The prompt has always said the symptom timeline "becomes the anchor for all
+Zone 2 searches — every evidence request in Zone 2 references this window", and
+in the same breath called it "an extracted fact, not a tracked variable". So it
+lived in prose for one turn and vanished, and evidence requests defaulted to
+the present: an investigation of a symptom observed two hours ago asks for
+`--since=30m`, inspects a period the problem was never in, finds nothing.
 
-The currency read is keyed on the CASE'S OWN temporal claim, not on the kind of
-evidence: for a problem recorded HISTORICAL, old evidence is correct and there
-is nothing to say.
+This is a reading about WHERE TO LOOK. A problem is investigable while it
+EXISTS — evidence collectible, cause unidentified, solution unknown —
+regardless of whether it is firing right now.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -114,24 +115,29 @@ def test_boundary_is_not_stale_until_past_the_window():
     assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.STALE
 
 
-# -- scoping: not evidence-shaped, case-claim-shaped --------------------------
-def test_historical_problems_are_never_flagged():
-    """A post-mortem's symptom evidence is old BY DESIGN. Flagging it would
-    nag on every retrospective case — and is why this keys on the case's
-    temporal claim rather than on how old the evidence happens to be."""
+# -- scoping: keyed on being under investigation ------------------------------
+def test_a_historical_incident_still_needs_its_window():
+    """An inactive incident is investigable while it EXISTS, and it needs the
+    anchor MORE than a live one — there is no current state to fall back on."""
 
     case = _case(
         temporal=TemporalState.HISTORICAL,
         evidence=[_symptom(NOW - timedelta(days=30))],
     )
-    assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.NOT_APPLICABLE
+    assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.STALE
 
 
-def test_no_recorded_temporal_state_is_left_alone():
-    """Inventing an ongoing claim would impose a re-verification demand on a
-    case that never made one."""
+def test_unset_temporal_state_does_not_drop_the_anchor():
+    """``temporal_state`` is populated only when the LLM happened to emit
+    preliminary_urgency during INQUIRY — unrelated to whether a window exists."""
 
     case = _case(temporal=None, evidence=[_symptom(NOW - timedelta(days=1))])
+    assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.STALE
+
+
+def test_a_case_not_under_investigation_has_no_window_to_anchor():
+    case = _case(evidence=[_symptom(NOW - timedelta(days=1))])
+    case.state = CaseState.INQUIRY
     assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.NOT_APPLICABLE
 
 
@@ -201,8 +207,9 @@ def test_progress_indicator_no_longer_reports_a_bare_flag_when_stale():
 
     case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(hours=2))])
     note = _symptom_currency_note(case, "symptom_verified")
-    assert "ONGOING" in note
-    assert "STILL HAPPENING is not" in note
+    assert "investigation window" in note
+    assert "--since=30m" in note  # names the concrete failure mode
+    assert "not read a clean current-state reading as counter-evidence" in note
 
 
 def test_undated_is_reported_as_unknown_not_as_recent():
@@ -225,21 +232,20 @@ def test_other_indicators_are_untouched():
     assert _symptom_currency_note(case, "solution_proposed") == ""
 
 
-def test_historical_case_gets_no_note_at_all():
+def test_inquiry_case_gets_no_note_at_all():
     from faultmaven.core.investigation.prompts.context_builder import (
         _symptom_currency_note,
     )
 
-    case = _case(
-        temporal=TemporalState.HISTORICAL,
-        evidence=[_symptom(datetime.now(timezone.utc) - timedelta(days=30))],
-    )
+    case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(days=30))])
+    case.state = CaseState.INQUIRY
     assert _symptom_currency_note(case, "symptom_verified") == ""
 
 
-def test_zone2_emphasis_asks_for_re_confirmation_when_stale():
-    """Zone 2 asserted "Symptoms are confirmed" flatly on every turn for the
-    rest of the case."""
+def test_zone2_emphasis_anchors_the_window_without_calling_the_case_dead():
+    """Zone 2 asserted "Symptoms are confirmed" flatly on every remaining turn,
+    with nothing to say about WHERE to look. It must now name the window — and
+    must not imply a non-firing problem is not worth investigating."""
 
     from faultmaven.core.investigation.prompts.templates import (
         _get_diagnosis_focus_emphasis,
@@ -247,8 +253,11 @@ def test_zone2_emphasis_asks_for_re_confirmation_when_stale():
 
     case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(hours=2))])
     text = _get_diagnosis_focus_emphasis(case.progress, case)
-    assert "re-confirm the symptom first" in text.lower()
-    assert "symptom_verified=False" in text
+    assert "anchor to the symptom's window" in text.lower()
+    assert "ABSOLUTE timestamps" in text
+    assert "not counter-evidence" in text
+    assert "while it EXISTS" in text
+    assert "do not retract on it" in text
 
 
 def test_zone2_emphasis_is_unchanged_when_current():

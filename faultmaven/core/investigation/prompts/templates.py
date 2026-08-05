@@ -2722,16 +2722,28 @@ settled.
         stale = _symptom_verification_is_stale(case)
         if stale:
             return """
-**INVESTIGATION PROGRESS: Root cause analysis — re-confirm the symptom first**
-The problem was verified to have EXISTED, but the newest observation behind
-that is old and this case records the problem as ongoing. Nothing on record
-establishes it is still happening.
+**INVESTIGATION PROGRESS: Root cause analysis — anchor to the symptom's window**
+The symptom was observed some time ago (see the observation time on
+symptom_verified above). That period, not the present, is where this
+investigation looks.
 
-Confirm the problem is still occurring before spending further turns on cause.
-If a current check shows it is NOT occurring, state that plainly, record the
-current reading as evidence, and set symptom_verified=False with a
-justification — do not keep hunting a cause for a condition that has stopped.
-Whether to investigate why it stopped is the user's call; ask.
+This does NOT mean the problem is stale or not worth pursuing — a problem is
+worth investigating while it EXISTS: evidence still collectible, root cause
+unidentified, solution unknown. Whether it happens to be firing right now
+changes how you work it, not whether you do.
+
+It does mean two things about evidence:
+  1. Scope every request to the symptom's window using ABSOLUTE timestamps.
+     Relative windows silently drift to the present — asking for `--since=30m`
+     about a symptom seen two hours ago inspects a period the problem was never
+     claimed to be in.
+  2. A clean current-state reading is not counter-evidence. It looks at a
+     different window and says nothing about what happened in the symptom's.
+     Do not treat it as refuting the symptom, and do not retract on it.
+
+Retract symptom_verified only if the symptom CLAIM itself turns out to be
+wrong — misread data, the wrong system, an artefact — not because the problem
+is not occurring at this moment.
 """
         return """
 **INVESTIGATION PROGRESS: Root cause analysis**
@@ -2739,9 +2751,11 @@ Symptoms are confirmed. When evaluating evidence, focus on hypotheses
 explaining the root cause. Two independent causal observations grounding a
 hypothesis's chain root are what let the engine mark the cause identified.
 
-If new data contradicts the symptom — a current check shows the problem is not
-occurring — do not absorb it as noise. Say so, record it, and set
-symptom_verified=False with a justification.
+If new data shows the symptom claim itself was wrong — misread data, the wrong
+system, an artefact — do not absorb it as noise. Say so, record it, and set
+symptom_verified=False with a justification. (The problem merely not occurring
+right now is NOT that: an existing problem is investigable whether or not it is
+currently firing.)
 """
     elif (
         progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed
