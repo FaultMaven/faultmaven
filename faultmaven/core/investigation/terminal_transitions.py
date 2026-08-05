@@ -52,6 +52,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CauseState,
     InvestigationActionType,
+    SolutionFeasible,
     SolutionState,
     VerificationStatus,
 )
@@ -387,6 +388,26 @@ def _mitigation_verified(case: "Case") -> bool:
     return bool(mitigation is not None and getattr(mitigation, "verified", False))
 
 
+def _solution_deferred(case: "Case") -> bool:
+    """Whether a fix is documented but its implementation happens out-of-band.
+
+    Mirrors ``_maybe_propose_deferred_close``'s own guard — ``DEFERRED`` plus a
+    solution actually on record — so the label and the disposition that creates
+    it cannot disagree. The record check matters: ``solution_feasible`` can be
+    set before any fix exists, and "deferred" with nothing deferred describes
+    no outcome.
+    """
+    progress = getattr(case, "progress", None)
+    if progress is None:
+        return False
+    if getattr(progress, "solution_feasible", None) != SolutionFeasible.DEFERRED:
+        return False
+    return bool(
+        getattr(progress, "solution_proposed", False)
+        or getattr(case, "solutions", None)
+    )
+
+
 def derive_closure_reason(case: "Case") -> str:
     """Engine-only derivation of closure_reason from case state.
 
@@ -394,6 +415,12 @@ def derive_closure_reason(case: "Case") -> str:
     Derived most-specific-first:
 
     - ``inquiry_only`` — case is still in INQUIRY (no investigation started).
+    - ``solution_deferred`` — the cause is identified and a fix is documented,
+      but implementation happens out-of-band (a change request, a maintenance
+      window, another team). The most complete non-resolved outcome there is:
+      nothing was missing, the fix simply was not applied this session. First
+      among the INVESTIGATING reasons because where several hold, the one
+      carrying the most established knowledge should win.
     - ``closed_rca_infeasible`` — the cause is structurally unreachable (an
       uncontrollable external dependency, an EOL system), declared via
       ``rca_infeasible`` WITH a rationale. Ranked above ``mitigation_sufficient``
@@ -427,6 +454,9 @@ def derive_closure_reason(case: "Case") -> str:
     """
     if case.state == CaseState.INQUIRY:
         return "inquiry_only"
+
+    if _solution_deferred(case):
+        return "solution_deferred"
 
     if _rca_declared_infeasible(case):
         return "closed_rca_infeasible"

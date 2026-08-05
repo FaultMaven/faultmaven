@@ -326,6 +326,14 @@ class InvestigationStrategy(str, Enum):
 # order below, most specific first:
 #
 #   - inquiry_only: INQUIRY → CLOSED (no investigation started)
+#   - solution_deferred: the cause is IDENTIFIED and a fix is documented, but
+#     implementation happens out-of-band (a change request, a maintenance
+#     window, another team) — `solution_feasible == DEFERRED` with a solution on
+#     record, the disposition `_maybe_propose_deferred_close` proposes. The most
+#     complete non-resolved outcome there is: nothing was missing, the fix
+#     simply was not applied this session. Ranked first among the INVESTIGATING
+#     reasons for that reason — where several hold, the one carrying the most
+#     established knowledge wins.
 #   - closed_rca_infeasible: the cause is STRUCTURALLY unreachable — an
 #     uncontrollable external dependency, an EOL system, a known intractable
 #     condition — as declared by `problem_verification.rca_infeasible` WITH a
@@ -352,26 +360,24 @@ class InvestigationStrategy(str, Enum):
 #     flywheel. The engine never nudges toward this close (no SUGGEST_CLOSE);
 #     see insufficient-evidence-handling.md §5.4.
 #
-#   - closed_after_investigation: LEGACY — accepted on read so already-closed
-#     cases still load, never derived. It named the state a case closed FROM
-#     rather than why it closed, and covered three unrelated situations at once
-#     (a successful mitigation, an intractable cause, and a plain failure to
-#     establish anything). Its former INSUFFICIENT_EVIDENCE-cell restriction
-#     also made closed_insufficient_evidence unreachable for a case that never
-#     verified its symptom: that cell requires work_gate_passed (>=2 hypotheses
-#     across >=2 categories), which is CAUSE work a case stuck at symptom
-#     verification never does, so every such close fell here instead.
+# REMOVED: closed_after_investigation. It named the state a case closed FROM
+# rather than why it ended, and covered four unrelated situations at once — a
+# documented-but-deferred fix, a successful mitigation, an intractable cause,
+# and a plain failure to establish anything. Its former INSUFFICIENT_EVIDENCE-
+# cell restriction also made closed_insufficient_evidence unreachable for a case
+# that never verified its symptom: that cell requires work_gate_passed (>=2
+# hypotheses across >=2 categories), which is CAUSE work a case stuck at symptom
+# verification never does, so every such close fell into the generic bucket.
 #
 # The LLM does NOT emit closure_reason; user-motivation context (e.g., "we're
 # escalating") lives in the LLM-authored persistent Report's free-form summary.
 
 VALID_CLOSURE_REASONS: set[str] = {
     "inquiry_only",
+    "solution_deferred",
     "closed_rca_infeasible",
     "mitigation_sufficient",
     "closed_insufficient_evidence",
-    # Legacy — see above. Accepted on read, never derived.
-    "closed_after_investigation",
 }
 
 

@@ -368,17 +368,44 @@ class TestClosureReasonsAreReasons:
         ):
             assert reason in VALID_CLOSURE_REASONS
 
-    def test_the_retired_reason_still_loads_but_is_never_derived(self):
-        """Already-closed cases carry it. Dropping it from the accepted set
-        would fail their Pydantic validation on read."""
+    def test_the_retired_reason_is_gone_entirely(self):
+        """No legacy, no back-compat: the system is still under development, so
+        an obsolete value is removed rather than carried."""
 
         from faultmaven.modules.case.domain.models import VALID_CLOSURE_REASONS
 
-        assert "closed_after_investigation" in VALID_CLOSURE_REASONS
-        for case in (
-            _case(verified=False),
-            _case(verified=True),
-            self._mitigated(_case()),
-            self._infeasible(self._mitigated(_case())),
-        ):
-            assert self._derive(case) != "closed_after_investigation"
+        assert "closed_after_investigation" not in VALID_CLOSURE_REASONS
+
+    def test_a_documented_but_deferred_fix_is_not_an_evidence_failure(self):
+        """The fourth situation the generic bucket was hiding: the cause IS
+        identified and the fix IS documented — implementation just happens
+        out-of-band. Nothing was missing."""
+
+        from faultmaven.modules.case.contracts import SolutionFeasible
+
+        case = _case()
+        case.progress.solution_feasible = SolutionFeasible.DEFERRED
+        case.progress.solution_proposed = True
+        assert self._derive(case) == "solution_deferred"
+
+    def test_deferred_without_a_fix_on_record_describes_no_outcome(self):
+        """`solution_feasible` can be set before any fix exists; "deferred" with
+        nothing deferred is not an outcome."""
+
+        from faultmaven.modules.case.contracts import SolutionFeasible
+
+        case = _case()
+        case.progress.solution_feasible = SolutionFeasible.DEFERRED
+        case.progress.solution_proposed = False
+        assert self._derive(case) == "closed_insufficient_evidence"
+
+    def test_a_documented_fix_outranks_a_mitigation(self):
+        """Both can hold — an interim workaround plus a known permanent fix.
+        The label carrying the most established knowledge wins."""
+
+        from faultmaven.modules.case.contracts import SolutionFeasible
+
+        case = self._mitigated(_case())
+        case.progress.solution_feasible = SolutionFeasible.DEFERRED
+        case.progress.solution_proposed = True
+        assert self._derive(case) == "solution_deferred"

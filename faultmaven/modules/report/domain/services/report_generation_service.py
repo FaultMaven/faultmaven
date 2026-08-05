@@ -294,11 +294,19 @@ class ReportGenerationService:
 
     _CLOSURE_REASON_LABELS = {
         "inquiry_only": "Inquiry only — no investigation started",
-        "closed_after_investigation": (
-            "Closed after investigation — root cause not confirmed"
+        "solution_deferred": (
+            "Closed — cause identified and fix documented, implementation deferred"
+        ),
+        "closed_rca_infeasible": (
+            "Closed — root cause structurally unreachable; mitigation is the "
+            "accepted strategy"
+        ),
+        "mitigation_sufficient": (
+            "Closed — stabilized by a verified mitigation, root-cause analysis "
+            "deferred"
         ),
         "closed_insufficient_evidence": (
-            "Closed — insufficient evidence to ground a cause"
+            "Closed — insufficient evidence to establish the problem or its cause"
         ),
     }
 
@@ -696,7 +704,7 @@ class ReportGenerationService:
         - Leading Hypotheses (top 5 by confidence)
         - Mitigation Status (when a mitigation was inserted)
         - Timeline
-        - Recommendation (for closed_after_investigation only)
+        - Recommendation (for closed_insufficient_evidence only)
         """
         title = case.title or "Untitled Case"
         description = case.description or "No description provided."
@@ -790,7 +798,11 @@ class ReportGenerationService:
         # Recommendation — fires when investigation ran but didn't conclude.
         # The prior "escalated"/"abandoned" guard was dead code: those
         # values are not in VALID_CLOSURE_REASONS.
-        if closure_reason_raw == "closed_after_investigation":
+        # Only the insufficient-evidence close leaves an open lead worth
+        # naming. A deferred fix, an unreachable cause, and a sufficient
+        # mitigation each already carry their own next step, so a
+        # "start here next time" block would misdescribe them.
+        if closure_reason_raw == "closed_insufficient_evidence":
             parts.append("## Recommendation\n")
             if hypotheses:
                 top_hyp = max(hypotheses, key=lambda h: getattr(h, "likelihood", 0))

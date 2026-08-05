@@ -289,7 +289,7 @@ class TestUpdateCase:
         mock_repo.get.return_value = self._make_closed_case()
         result = await service.update_case(
             "case_abc123abc123",
-            {"closure_reason": "closed_after_investigation"},
+            {"closure_reason": "mitigation_sufficient"},
         )
         assert result is True
         mock_repo.save.assert_awaited()
@@ -301,7 +301,7 @@ class TestUpdateCase:
         mock_repo.get.return_value = self._make_closed_case()
         result = await service.update_case(
             "case_abc123abc123",
-            {"title": "New", "closure_reason": "closed_after_investigation"},
+            {"title": "New", "closure_reason": "mitigation_sufficient"},
         )
         assert result is True
         mock_repo.save.assert_awaited()
@@ -1321,7 +1321,8 @@ class TestCloseCase:
         self, service, mock_repo
     ):
         """Nothing established -> insufficient evidence. Previously
-        `closed_after_investigation`, which named the state the case closed FROM
+        `closed_after_investigation`, a retired value that named the state the
+        case closed FROM
         rather than why it ended."""
 
         case = _make_case(user_id="user_123", state=CaseState.INVESTIGATING)

@@ -720,7 +720,7 @@ def _apply_stage_gate_side_effects(
             logger.info(
                 f"Proposed CLOSED transition for case {case.case_id} "
                 f"(rca_infeasible=True; closure_reason derived as "
-                f"closed_after_investigation, rationale: {rationale})"
+                f"closed_rca_infeasible, rationale: {rationale})"
             )
 
     metadata["compliance_detected"] = True
@@ -1886,7 +1886,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     drive to close on its own when implementation is deferred. The user still
     confirms via the standard disposition handshake, and the documented
     root cause + solution are preserved on the closed case
-    (``closure_reason=closed_after_investigation``).
+    (``closure_reason=solution_deferred``).
     """
     p = case.progress
     if p.solution_feasible != SolutionFeasible.DEFERRED:
@@ -2545,8 +2545,21 @@ def _terminal_confirmation_response(case) -> str:
             "Residual candidates and the missing data are preserved in the "
             "closure summary."
         )
-    if closure_reason == "closed_after_investigation":
-        return "Case closed without resolution. Investigation history preserved."
+    if closure_reason == "solution_deferred":
+        return (
+            "Case closed — cause identified and fix documented; implementation "
+            "is deferred out-of-band."
+        )
+    if closure_reason == "closed_rca_infeasible":
+        return (
+            "Case closed — the root cause is not reachable for this problem; "
+            "the mitigation stands as the accepted strategy."
+        )
+    if closure_reason == "mitigation_sufficient":
+        return (
+            "Case closed — stabilized by a verified mitigation; root-cause "
+            "analysis was deferred."
+        )
     return "Case closed."
 
 
