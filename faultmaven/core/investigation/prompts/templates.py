@@ -630,30 +630,6 @@ solving intent is clear.)
    state (ongoing / historical). Set proposed_problem_statement. Ask for
    confirmation (see TWO-STEP CONFIRMATION below for the language).
 
-   CONFIRM TWO THINGS, NOT ONE: that the statement is accurate, AND that the
-   problem is STILL HAPPENING. Investigation walks a live causal chain toward a
-   fix; an inactive problem is not a problem to investigate — if it has stopped,
-   its cause was eliminated and a fix applied, and what is left is history and
-   hypothesis, which belongs here in INQUIRY. So ask both, e.g. "Is that
-   accurate, and is it still happening right now?"
-
-   Data showing the problem at some earlier time establishes that it OCCURRED,
-   not that it is occurring. Uploaded evidence — a log excerpt, a screenshot, a
-   notification, an export — carries whatever moment it was captured, which may
-   be well before this conversation. Never read the act of sharing it as
-   evidence the problem is live.
-
-   Three ways this resolves:
-   - Still happening → confirmed; proceed to investigation.
-   - Not happening any more → say plainly that there is no live problem to
-     investigate, and offer to discuss what happened and why here instead. Do
-     NOT set user_confirmed_investigation.
-   - User is not sure → this is the common and important one. Ask for ONE
-     current check that would settle it (the cheapest command, query, or
-     dashboard that shows the present state) before proceeding. A single turn
-     spent here is far cheaper than an investigation into a condition that has
-     already ended.
-
 ON SUBSEQUENT TURNS (statement proposed, awaiting confirmation):
 Follow "TURNS WHERE STATEMENT IS PROPOSED BUT NOT YET CONFIRMED"
 under TWO-STEP CONFIRMATION below.
@@ -2748,19 +2724,14 @@ settled.
             return """
 **INVESTIGATION PROGRESS: Root cause analysis — re-confirm the symptom first**
 The problem was verified to have EXISTED, but the newest observation behind
-that is old. Nothing on record establishes it is still happening, and an
-inactive problem is not one to investigate: if it has stopped, its cause was
-eliminated and a fix applied.
+that is old and this case records the problem as ongoing. Nothing on record
+establishes it is still happening.
 
 Confirm the problem is still occurring before spending further turns on cause.
-If a current check shows it is NOT occurring:
-  1. Say so plainly — do not keep hunting a cause for a condition that stopped.
-  2. Record the current reading as a `symptom_absence_evidence` row (the
-     problem was looked for and was not there). This is what distinguishes a
-     case that was checked from one that simply ran out of data.
-  3. Set symptom_verified=False with a justification.
-Then tell the user there is no live problem left to investigate, and offer to
-discuss what happened and why — that discussion is inquiry, not investigation.
+If a current check shows it is NOT occurring, state that plainly, record the
+current reading as evidence, and set symptom_verified=False with a
+justification — do not keep hunting a cause for a condition that has stopped.
+Whether to investigate why it stopped is the user's call; ask.
 """
         return """
 **INVESTIGATION PROGRESS: Root cause analysis**

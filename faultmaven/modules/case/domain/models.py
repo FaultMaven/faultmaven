@@ -333,21 +333,6 @@ class InvestigationStrategy(str, Enum):
 #     already persisted on the case) is signal for calibration and the flywheel.
 #     The engine never nudges toward this close (no SUGGEST_CLOSE); see
 #     insufficient-evidence-handling.md §5.4.
-#   - closed_not_reproduced: INVESTIGATING → CLOSED without the reported problem
-#     ever being observed occurring — it was never established, or it was
-#     established and a later check found it no longer happening (the symptom
-#     claim was withdrawn). This is a finding, not a failure to find one, and it
-#     is a DIFFERENT outcome from closed_insufficient_evidence: that one says
-#     "there was a real problem and we could not ground its CAUSE", one question
-#     later than "we could not show the problem was happening".
-#
-#     Without it the same situation closed under whichever of the two generic
-#     reasons the hypothesis count happened to select — under the work gate
-#     (<2 hypotheses / categories / evidence) it fell through to
-#     closed_after_investigation, which says nothing; over it, a stall read as
-#     closed_insufficient_evidence, which asserts a cause hunt failed when in
-#     truth there was nothing to hunt. The label tracked speculative effort
-#     rather than what was established.
 #
 # The LLM does NOT emit closure_reason; user-motivation context (e.g., "we're
 # escalating") lives in the LLM-authored persistent Report's free-form summary.
@@ -356,7 +341,6 @@ VALID_CLOSURE_REASONS: set[str] = {
     "inquiry_only",
     "closed_after_investigation",
     "closed_insufficient_evidence",
-    "closed_not_reproduced",
 }
 
 
@@ -978,19 +962,12 @@ class TemporalState(str, Enum):
 
     HISTORICAL = "historical"
     """
-    Problem occurred in the past and is not occurring now.
+    Problem occurred in the past.
 
-    An inactive problem is not a problem to investigate: if it is no longer
-    happening, its cause was eliminated and a fix applied. What remains is
-    history and hypothesis, which is INQUIRY work — answering questions about
-    what happened, not walking a live causal chain toward a fix.
-
-    This value therefore marks a case as OUT of the investigation flow, not as
-    a slower variety of it. (It previously read "post-mortem investigation —
-    can take time for thorough RCA", which described a second, retrospective
-    investigation path; there is no such path. FaultMaven runs one flow aimed
-    at root-cause analysis, into which mitigation may be INSERTED as an
-    interception step when a live incident has active user impact.)
+    Characteristics:
+    - No current impact
+    - Post-mortem investigation
+    - Can take time for thorough RCA
     """
 
 

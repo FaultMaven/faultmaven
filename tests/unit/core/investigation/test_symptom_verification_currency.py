@@ -1,4 +1,4 @@
-"""Problem verification must speak to the PRESENT while a case is investigated.
+"""Problem verification must speak to the PRESENT when the case claims ongoing.
 
 ``symptom_verified`` recorded that the problem was shown to exist, never when,
 and never fell once set. Any observation of the past — a log excerpt from
@@ -6,9 +6,9 @@ yesterday, a screenshot from last week, a notification captured hours ago —
 satisfied it exactly as a live measurement would, and the investigation
 proceeded as though the problem were happening now.
 
-The read is keyed on the case being UNDER INVESTIGATION, not on the kind of
-evidence and not on ``temporal_state``: an inactive problem is not a problem to
-investigate, so investigating one presupposes it is live.
+The currency read is keyed on the CASE'S OWN temporal claim, not on the kind of
+evidence: for a problem recorded HISTORICAL, old evidence is correct and there
+is nothing to say.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -114,35 +114,24 @@ def test_boundary_is_not_stale_until_past_the_window():
     assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.STALE
 
 
-# -- scoping: keyed on being under investigation, not on temporal_state -------
-def test_historical_tag_does_not_switch_the_question_off():
-    """An inactive problem is not investigable at all — if it stopped, its cause
-    was eliminated and a fix applied, and what remains is inquiry. So a
-    HISTORICAL tag on a case that is nonetheless being INVESTIGATED is a
-    contradiction to surface, not a reason to go quiet."""
+# -- scoping: not evidence-shaped, case-claim-shaped --------------------------
+def test_historical_problems_are_never_flagged():
+    """A post-mortem's symptom evidence is old BY DESIGN. Flagging it would
+    nag on every retrospective case — and is why this keys on the case's
+    temporal claim rather than on how old the evidence happens to be."""
 
     case = _case(
         temporal=TemporalState.HISTORICAL,
         evidence=[_symptom(NOW - timedelta(days=30))],
     )
-    assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.STALE
+    assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.NOT_APPLICABLE
 
 
-def test_unset_temporal_state_does_not_silently_opt_out():
-    """``temporal_state`` is populated only when the LLM happened to emit
-    preliminary_urgency during INQUIRY. Keying on it would let live cases skip
-    the check for a reason that has nothing to do with the problem."""
+def test_no_recorded_temporal_state_is_left_alone():
+    """Inventing an ongoing claim would impose a re-verification demand on a
+    case that never made one."""
 
     case = _case(temporal=None, evidence=[_symptom(NOW - timedelta(days=1))])
-    assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.STALE
-
-
-def test_a_case_not_under_investigation_has_no_currency_question():
-    """INQUIRY is where history and hypothesis are discussed; there is no live
-    chain being walked, so there is nothing to keep current."""
-
-    case = _case(evidence=[_symptom(NOW - timedelta(days=1))])
-    case.state = CaseState.INQUIRY
     assert assess_symptom_currency(case, now=NOW) is SymptomCurrency.NOT_APPLICABLE
 
 
@@ -212,8 +201,8 @@ def test_progress_indicator_no_longer_reports_a_bare_flag_when_stale():
 
     case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(hours=2))])
     note = _symptom_currency_note(case, "symptom_verified")
+    assert "ONGOING" in note
     assert "STILL HAPPENING is not" in note
-    assert "not one to investigate" in note
 
 
 def test_undated_is_reported_as_unknown_not_as_recent():
@@ -236,13 +225,15 @@ def test_other_indicators_are_untouched():
     assert _symptom_currency_note(case, "solution_proposed") == ""
 
 
-def test_inquiry_case_gets_no_note_at_all():
+def test_historical_case_gets_no_note_at_all():
     from faultmaven.core.investigation.prompts.context_builder import (
         _symptom_currency_note,
     )
 
-    case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(days=30))])
-    case.state = CaseState.INQUIRY
+    case = _case(
+        temporal=TemporalState.HISTORICAL,
+        evidence=[_symptom(datetime.now(timezone.utc) - timedelta(days=30))],
+    )
     assert _symptom_currency_note(case, "symptom_verified") == ""
 
 
@@ -279,87 +270,3 @@ def test_progress_only_callers_keep_working():
 
     case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(hours=9))])
     assert "Symptoms are confirmed" in _get_diagnosis_focus_emphasis(case.progress)
-
-
-# -- the exit: a stopped problem must close as a FINDING, not a failed hunt ---
-class TestClosedNotReproduced:
-    """`closed_insufficient_evidence` says "a real problem, cause not grounded",
-    which presupposes the problem. Before this, a case whose problem turned out
-    not to be occurring landed on whichever generic reason the hypothesis count
-    happened to select — under the work gate `closed_after_investigation`
-    (which says nothing), over it `closed_insufficient_evidence` (which credits
-    a cause hunt that had nothing to find).
-    """
-
-    @staticmethod
-    def _absence():
-        from faultmaven.modules.case.contracts import Evidence, EvidenceSourceType
-
-        return Evidence(
-            summary="etcd reports three started members; all endpoints healthy",
-            category=EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE,
-            source_type=EvidenceSourceType.USER_DESCRIPTION,
-            primary_purpose="p",
-            collected_by="u",
-            collected_at_turn=9,
-        )
-
-    def test_checked_and_absent_yields_the_finding(self):
-        from faultmaven.core.investigation.terminal_transitions import (
-            derive_closure_reason,
-        )
-
-        case = _case(verified=False, evidence=[self._absence()])
-        assert derive_closure_reason(case) == "closed_not_reproduced"
-
-    def test_never_looked_is_not_a_finding(self):
-        """A case closed because the user stopped supplying data never verified
-        its symptom either. Reporting that as "not reproduced" would assert a
-        conclusion nobody reached — it must keep its previous generic reason."""
-
-        from faultmaven.core.investigation.terminal_transitions import (
-            derive_closure_reason,
-        )
-
-        case = _case(verified=False, evidence=[])
-        assert derive_closure_reason(case) != "closed_not_reproduced"
-
-    def test_a_still_verified_symptom_is_never_not_reproduced(self):
-        """An absence row alongside a STANDING symptom claim is the ordinary
-        post-fix re-verification, not a case that failed to reproduce."""
-
-        from faultmaven.core.investigation.terminal_transitions import (
-            derive_closure_reason,
-        )
-
-        case = _case(verified=True, evidence=[self._absence()])
-        assert derive_closure_reason(case) != "closed_not_reproduced"
-
-    def test_the_finding_outranks_the_insufficient_evidence_cell(self):
-        """Both can hold at once; the finding is the more specific truth."""
-
-        from faultmaven.core.investigation.terminal_transitions import (
-            derive_closure_reason,
-        )
-        from faultmaven.modules.case.contracts import VerificationStatus
-
-        case = _case(verified=False, evidence=[self._absence()])
-        case.progress.verification_status = VerificationStatus.INSUFFICIENT_EVIDENCE
-        assert derive_closure_reason(case) == "closed_not_reproduced"
-
-    def test_inquiry_close_is_unaffected(self):
-        from faultmaven.core.investigation.terminal_transitions import (
-            derive_closure_reason,
-        )
-
-        case = _case(verified=False, evidence=[self._absence()])
-        case.state = CaseState.INQUIRY
-        assert derive_closure_reason(case) == "inquiry_only"
-
-    def test_the_reason_is_accepted_by_the_case_validator(self):
-        """VALID_CLOSURE_REASONS is enforced by a Pydantic validator; the DB
-        column is a plain String(100) with no CHECK, so no migration."""
-
-        from faultmaven.modules.case.domain.models import VALID_CLOSURE_REASONS
-
-        assert "closed_not_reproduced" in VALID_CLOSURE_REASONS
