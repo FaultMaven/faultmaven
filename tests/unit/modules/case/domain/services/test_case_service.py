@@ -1320,27 +1320,46 @@ class TestCloseCase:
     async def test_closes_investigating_case_with_derived_reason(
         self, service, mock_repo
     ):
+        """Nothing established -> insufficient evidence. Previously
+        `closed_after_investigation`, which named the state the case closed FROM
+        rather than why it ended."""
+
         case = _make_case(user_id="user_123", state=CaseState.INVESTIGATING)
         mock_repo.get.return_value = case
 
         closed = await service.close_case(case.case_id, "user_123")
 
         assert closed.state == CaseState.CLOSED
-        assert closed.closure_reason == "closed_after_investigation"
+        assert closed.closure_reason == "closed_insufficient_evidence"
 
     @pytest.mark.asyncio
-    async def test_insufficient_evidence_close_keeps_honest_reason(
-        self, service, mock_repo
-    ):
-        from faultmaven.modules.case.domain.models import VerificationStatus
+    async def test_close_discriminates_between_dispositions(self, service, mock_repo):
+        """The service must DERIVE the reason, not hardcode one.
 
-        case = _make_case(user_id="user_123", state=CaseState.INVESTIGATING)
-        case.progress.verification_status = VerificationStatus.INSUFFICIENT_EVIDENCE
-        mock_repo.get.return_value = case
+        This replaces a test that set `verification_status` and asserted
+        `closed_insufficient_evidence`. That reason is now the default and the
+        derivation no longer reads the status, so the test passed regardless of
+        its own setup — it would have survived deleting the line it was about.
+        Contrasting two dispositions through the same call path is what can
+        actually fail.
+        """
 
-        closed = await service.close_case(case.case_id, "user_123")
+        from faultmaven.modules.case.contracts import MitigationRecord
 
-        assert closed.closure_reason == "closed_insufficient_evidence"
+        mitigated = _make_case(user_id="user_123", state=CaseState.INVESTIGATING)
+        mitigated.progress.mitigation = MitigationRecord(
+            proposed_at_turn=1, accepted=True, verified=True, completed_at_turn=2
+        )
+        mock_repo.get.return_value = mitigated
+        assert (
+            await service.close_case(mitigated.case_id, "user_123")
+        ).closure_reason == "mitigation_sufficient"
+
+        bare = _make_case(user_id="user_123", state=CaseState.INVESTIGATING)
+        mock_repo.get.return_value = bare
+        assert (
+            await service.close_case(bare.case_id, "user_123")
+        ).closure_reason == "closed_insufficient_evidence"
 
     @pytest.mark.asyncio
     async def test_already_terminal_case_conflicts(self, service, mock_repo):
