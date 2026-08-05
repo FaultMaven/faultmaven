@@ -320,27 +320,58 @@ class InvestigationStrategy(str, Enum):
 # Sub-categorization of CLOSED state. Engine-derived from case state at
 # transition time. None for non-terminal and RESOLVED cases.
 #
-# Both values are programmatic — derived from the state the case was closed from
-# (unified opportunistic flow, no path fork):
+# All values are programmatic — derived from the state the case was closed from
+# (unified opportunistic flow, no path fork). Every close carries a REASON: a
+# closure_reason must say why the case ended, never merely when. Derived in the
+# order below, most specific first:
+#
 #   - inquiry_only: INQUIRY → CLOSED (no investigation started)
-#   - closed_after_investigation: INVESTIGATING → CLOSED. Folds in the former
-#     `mitigation_sufficient`: a case stabilized then closed is simply an
-#     investigation that closed; the documented mitigation is preserved.
-#   - closed_insufficient_evidence: INVESTIGATING → CLOSED from the
-#     INSUFFICIENT_EVIDENCE verification-status cell (not grounded, work-gated,
-#     stalled — often a declared data wall). Capture-on-close only: the honest
-#     partial (residual candidates + the specific unmet/unobtainable need,
-#     already persisted on the case) is signal for calibration and the flywheel.
-#     The engine never nudges toward this close (no SUGGEST_CLOSE); see
-#     insufficient-evidence-handling.md §5.4.
+#   - closed_rca_infeasible: the cause is STRUCTURALLY unreachable — an
+#     uncontrollable external dependency, an EOL system, a known intractable
+#     condition — as declared by `problem_verification.rca_infeasible` WITH a
+#     rationale. Distinct from insufficient evidence, which is contingent: there
+#     the evidence may well exist and someone with more access could get it, so
+#     it is a signal to improve observability. Here nothing can be improved and
+#     the right artefact is a documented workaround; a future reader should know
+#     not to re-open this expecting to find a cause. Ranked ABOVE
+#     mitigation_sufficient because the engine's only path to it fires on
+#     `mitigation_verified` (milestone_engine, "propose closure as stabilized
+#     rather than push RCA"), so both hold on essentially every such close and
+#     the more informative label must win — it already implies a verified
+#     mitigation AND explains why RCA stopped.
+#   - mitigation_sufficient: a verified mitigation on record; the symptom is
+#     relieved and RCA was deferred BY CHOICE, with the cause still reachable if
+#     anyone returns to it. This is the one closure in the set that is not a
+#     failure of any kind, which is why it is not folded into a generic bucket.
+#   - closed_insufficient_evidence: the default for any other close from
+#     INVESTIGATING — what was needed was never established, whether at the
+#     SYMPTOM level (the problem could not be verified) or at the CAUSE level
+#     (verified, but no cause could be grounded). Capture-on-close only: the
+#     honest partial (residual candidates + the specific unmet/unobtainable
+#     need, already persisted on the case) is signal for calibration and the
+#     flywheel. The engine never nudges toward this close (no SUGGEST_CLOSE);
+#     see insufficient-evidence-handling.md §5.4.
+#
+#   - closed_after_investigation: LEGACY — accepted on read so already-closed
+#     cases still load, never derived. It named the state a case closed FROM
+#     rather than why it closed, and covered three unrelated situations at once
+#     (a successful mitigation, an intractable cause, and a plain failure to
+#     establish anything). Its former INSUFFICIENT_EVIDENCE-cell restriction
+#     also made closed_insufficient_evidence unreachable for a case that never
+#     verified its symptom: that cell requires work_gate_passed (>=2 hypotheses
+#     across >=2 categories), which is CAUSE work a case stuck at symptom
+#     verification never does, so every such close fell here instead.
 #
 # The LLM does NOT emit closure_reason; user-motivation context (e.g., "we're
 # escalating") lives in the LLM-authored persistent Report's free-form summary.
 
 VALID_CLOSURE_REASONS: set[str] = {
     "inquiry_only",
-    "closed_after_investigation",
+    "closed_rca_infeasible",
+    "mitigation_sufficient",
     "closed_insufficient_evidence",
+    # Legacy — see above. Accepted on read, never derived.
+    "closed_after_investigation",
 }
 
 

@@ -133,12 +133,15 @@ class TestINV03_DispositionHandshake:
 
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
-        # closure_reason is engine-derived at propose time (one of the two
-        # canonical values: inquiry_only | closed_after_investigation)
+        # closure_reason is engine-derived at propose time. Every value says
+        # WHY the case ended, never merely when — this case established
+        # nothing, so it is an insufficient-evidence close.
         assert "closure_reason" in case.pending_transition
         assert case.pending_transition["closure_reason"] in (
             "inquiry_only",
-            "closed_after_investigation",
+            "closed_rca_infeasible",
+            "mitigation_sufficient",
+            "closed_insufficient_evidence",
         )
         # Status unchanged
         assert case.state == CaseState.INVESTIGATING

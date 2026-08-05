@@ -235,7 +235,7 @@ async def test_ui_dropdown_resolve_pivots_to_close_when_thin():
     assert pending is not None
     assert pending["to_state"] == "closed"
     # closure_reason engine-derived: investigating + no mitigation
-    assert pending.get("closure_reason") == "closed_after_investigation"
+    assert pending.get("closure_reason") == "closed_insufficient_evidence"
     _assert_canonical_confirm_pair(result["suggested_follow_ups"], "close")
 
 
@@ -406,8 +406,10 @@ async def test_check_automatic_transitions_sets_override_for_closed():
     assert case.pending_transition["to_state"] == "closed"
     # Regression guard: closure_reason is engine-derived from
     # (case.state, mitigation_verified). Investigating + no mitigation
-    # → closed_after_investigation.
-    assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
+    # → closed_insufficient_evidence.
+    assert (
+        case.pending_transition.get("closure_reason") == "closed_insufficient_evidence"
+    )
     _assert_canonical_confirm_pair(metadata["override_suggestions"], "close")
 
 
@@ -441,7 +443,7 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
 @pytest.mark.asyncio
 async def test_check_automatic_transitions_closure_reason_stabilized_investigation():
     """A case stabilized then closed from INVESTIGATING yields the unified
-    closure reason 'closed_after_investigation' (the redesign folds the
+    closure reason 'closed_insufficient_evidence' (the redesign folds the
     former 'mitigation_sufficient' reason into this one). The mitigation
     record marks the case as stabilized; closure_reason is engine-derived
     from case.state."""
@@ -473,7 +475,7 @@ async def test_check_automatic_transitions_closure_reason_stabilized_investigati
 
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "closed"
-    assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
+    assert case.pending_transition.get("closure_reason") == "mitigation_sufficient"
 
 
 @pytest.mark.asyncio
@@ -504,7 +506,9 @@ async def test_llm_emit_resolved_pivots_to_close_when_thin():
 
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "closed"
-    assert case.pending_transition.get("closure_reason") == "closed_after_investigation"
+    assert (
+        case.pending_transition.get("closure_reason") == "closed_insufficient_evidence"
+    )
     # NEEDS_INFO first-pass flag must NOT be set on a SUGGEST_CLOSE pivot —
     # the response builder distinguishes the two paths.
     assert not metadata.get("resolution_needs_info_first_pass")
@@ -685,7 +689,7 @@ class TestDeriveClosureReasonInsufficientEvidence:
 
         assert derive_closure_reason(case) == "closed_insufficient_evidence"
 
-    def test_other_investigating_status_yields_after_investigation(self):
+    def test_other_investigating_status_yields_insufficient_evidence(self):
         from faultmaven.core.investigation.terminal_transitions import (
             derive_closure_reason,
         )
@@ -694,7 +698,7 @@ class TestDeriveClosureReasonInsufficientEvidence:
         case = _make_investigating_case()
         # Any non-insufficient status closes as the generic investigated reason.
         case.progress.verification_status = VerificationStatus.OPEN
-        assert derive_closure_reason(case) == "closed_after_investigation"
+        assert derive_closure_reason(case) == "closed_insufficient_evidence"
 
     def test_inquiry_still_wins_over_status(self):
         from faultmaven.core.investigation.terminal_transitions import (

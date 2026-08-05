@@ -358,29 +358,69 @@ def derive_solution_surface(case: "Case") -> None:
     p.solution_state = SolutionState.SELECTED if offer_live else SolutionState.UNKNOWN
 
 
+def _rca_declared_infeasible(case: "Case") -> bool:
+    """Whether the cause was declared STRUCTURALLY unreachable, with a reason.
+
+    Requires the rationale, not just the flag. ``rca_infeasible`` is an LLM
+    self-declared boolean, and this label is consequential in a way the others
+    are not: it tells a future reader the cause cannot be found and not to try.
+    A model that set it to excuse a hard case would convert a contingent
+    evidence gap into a permanent one — worse than a vague label, because it
+    forecloses the work rather than merely failing to describe it.
+
+    Requiring a non-empty rationale makes the label carry its own justification
+    (the same shape as the symptom-retraction guard). Note the closure-proposal
+    path substitutes a generic string when the rationale is missing; that
+    fallback is fine for a user-facing sentence but must NOT satisfy this gate,
+    so the raw field is read here rather than the message.
+    """
+    verification = getattr(case, "problem_verification", None)
+    if verification is None or not getattr(verification, "rca_infeasible", False):
+        return False
+    rationale = getattr(verification, "rca_infeasible_rationale", None)
+    return bool(rationale and rationale.strip())
+
+
+def _mitigation_verified(case: "Case") -> bool:
+    """Whether a mitigation is on record as verified (the symptom is relieved)."""
+    mitigation = getattr(case.progress, "mitigation", None) if case.progress else None
+    return bool(mitigation is not None and getattr(mitigation, "verified", False))
+
+
 def derive_closure_reason(case: "Case") -> str:
     """Engine-only derivation of closure_reason from case state.
 
-    Three outcomes, keyed on the state the case was closed from and its
-    verification status:
+    Every close carries a REASON — why the case ended, never merely when.
+    Derived most-specific-first:
 
     - ``inquiry_only`` — case is still in INQUIRY (no investigation started).
-    - ``closed_insufficient_evidence`` — closed from INVESTIGATING while in the
-      INSUFFICIENT_EVIDENCE verification-status cell (not grounded, work-gated,
-      stalled — often a declared data wall). Capture-on-close: the honest
-      partial is recorded for calibration and the flywheel. The residual
-      candidates (non-refuted/retired hypotheses) and the specific unmet
-      (unobtainable) need are already persisted on the case and are surfaced by
-      the closure report — no separate snapshot is stored. This reads the
-      engine's own last persisted assessment (``progress.verification_status``,
-      fresh at propose time) rather than re-deriving grounding at the terminal
-      boundary. It is capture-ONLY: the engine never nudges toward this close
-      (no ``SUGGEST_CLOSE``); the structured handoff already lists pause/close as
-      a user option (insufficient-evidence-handling.md §5.4 / D4).
-    - ``closed_after_investigation`` — any other close from INVESTIGATING. Folds
-      in the former ``mitigation_sufficient`` reason: a case stabilized and then
-      closed is simply an investigation that closed. The documented mitigation /
-      solution is preserved on the closed case.
+    - ``closed_rca_infeasible`` — the cause is structurally unreachable (an
+      uncontrollable external dependency, an EOL system), declared via
+      ``rca_infeasible`` WITH a rationale. Ranked above ``mitigation_sufficient``
+      because the engine's only path to it fires on ``mitigation_verified``, so
+      both hold on essentially every such close; this label already implies the
+      verified mitigation and additionally explains why RCA stopped, so letting
+      the other win would shadow the more informative fact every time.
+    - ``mitigation_sufficient`` — a verified mitigation on record: the symptom is
+      relieved and RCA was deferred BY CHOICE, the cause still reachable if
+      anyone returns to it. The one closure here that is not a failure of any
+      kind, which is why it is not folded into a generic bucket.
+    - ``closed_insufficient_evidence`` — the default for any other close from
+      INVESTIGATING: what was needed was never established, at the SYMPTOM level
+      (the problem could not be verified) or at the CAUSE level (verified, but
+      no cause grounded). Capture-on-close: the honest partial is recorded for
+      calibration and the flywheel. The residual candidates (non-refuted /
+      retired hypotheses) and the specific unmet (unobtainable) need are already
+      persisted on the case and surfaced by the closure report — no separate
+      snapshot is stored. It is capture-ONLY: the engine never nudges toward
+      this close (no ``SUGGEST_CLOSE``); the structured handoff already lists
+      pause/close as a user option (insufficient-evidence-handling.md §5.4 / D4).
+
+    This no longer keys on the ``INSUFFICIENT_EVIDENCE`` verification-status
+    cell. That cell sits behind ``work_gate_passed`` (>=2 hypotheses across >=2
+    categories) — CAUSE work that a case stuck at symptom verification never
+    does — so the label was unreachable for exactly the population it best
+    described, and every such close fell to the generic bucket instead.
 
     The LLM never authors closure_reason; it's purely engine-derived from
     structured case state.
@@ -388,14 +428,13 @@ def derive_closure_reason(case: "Case") -> str:
     if case.state == CaseState.INQUIRY:
         return "inquiry_only"
 
-    if (
-        case.progress
-        and case.progress.verification_status
-        == VerificationStatus.INSUFFICIENT_EVIDENCE
-    ):
-        return "closed_insufficient_evidence"
+    if _rca_declared_infeasible(case):
+        return "closed_rca_infeasible"
 
-    return "closed_after_investigation"
+    if _mitigation_verified(case):
+        return "mitigation_sufficient"
+
+    return "closed_insufficient_evidence"
 
 
 # ============================================================

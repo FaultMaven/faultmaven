@@ -279,3 +279,106 @@ def test_progress_only_callers_keep_working():
 
     case = _case(evidence=[_symptom(datetime.now(timezone.utc) - timedelta(hours=9))])
     assert "Symptoms are confirmed" in _get_diagnosis_focus_emphasis(case.progress)
+
+
+# -- closure reasons: every close must say WHY, never merely when -------------
+class TestClosureReasonsAreReasons:
+    """`closed_after_investigation` named the state a case closed FROM, and hid
+    three unrelated situations behind one label: a successful mitigation, a
+    structurally unreachable cause, and a plain failure to establish anything.
+    """
+
+    @staticmethod
+    def _derive(case):
+        from faultmaven.core.investigation.terminal_transitions import (
+            derive_closure_reason,
+        )
+
+        return derive_closure_reason(case)
+
+    @staticmethod
+    def _mitigated(case):
+        from faultmaven.modules.case.contracts import MitigationRecord
+
+        case.progress.mitigation = MitigationRecord(
+            proposed_at_turn=1, accepted=True, verified=True, completed_at_turn=2
+        )
+        return case
+
+    @staticmethod
+    def _infeasible(case, rationale="Black-box 3rd-party API, no internal telemetry"):
+        case.problem_verification.rca_infeasible = True
+        case.problem_verification.rca_infeasible_rationale = rationale
+        return case
+
+    def test_nothing_established_is_insufficient_evidence(self):
+        """The case the old derivation could not express: a problem entered
+        investigation and could not be verified. `closed_insufficient_evidence`
+        sat behind the INSUFFICIENT_EVIDENCE cell, which needs work_gate_passed
+        (>=2 hypotheses across >=2 categories) — CAUSE work a case stuck at
+        symptom verification never does — so it fell to the generic bucket."""
+
+        assert self._derive(_case(verified=False)) == "closed_insufficient_evidence"
+
+    def test_verified_symptom_but_no_grounded_cause_is_also_insufficient_evidence(self):
+        """Same reason, later gap. Insufficient evidence covers the shortfall
+        wherever it sits."""
+
+        assert self._derive(_case(verified=True)) == "closed_insufficient_evidence"
+
+    def test_verified_mitigation_is_not_a_failure(self):
+        """The one closure in the set that is not a failure of any kind: the
+        symptom is relieved and RCA was deferred BY CHOICE."""
+
+        assert self._derive(self._mitigated(_case())) == "mitigation_sufficient"
+
+    def test_structural_infeasibility_outranks_the_mitigation(self):
+        """Not hypothetical: the engine's only path to an rca-infeasible close
+        fires on mitigation_verified, so both always hold. The label that also
+        explains why RCA stopped must win, or it is shadowed every time."""
+
+        case = self._infeasible(self._mitigated(_case()))
+        assert self._derive(case) == "closed_rca_infeasible"
+
+    def test_infeasibility_without_a_rationale_is_not_honored(self):
+        """A self-declared boolean that forecloses future work has to carry its
+        own justification. Unjustified, it must fall through rather than tell a
+        future reader the cause cannot be found."""
+
+        case = self._infeasible(self._mitigated(_case()), rationale=None)
+        assert self._derive(case) == "mitigation_sufficient"
+
+    def test_blank_rationale_is_not_a_rationale(self):
+        case = self._infeasible(_case(verified=False), rationale="   ")
+        assert self._derive(case) == "closed_insufficient_evidence"
+
+    def test_inquiry_still_outranks_everything(self):
+        case = self._infeasible(self._mitigated(_case()))
+        case.state = CaseState.INQUIRY
+        assert self._derive(case) == "inquiry_only"
+
+    def test_every_derivable_reason_passes_the_case_validator(self):
+        from faultmaven.modules.case.domain.models import VALID_CLOSURE_REASONS
+
+        for reason in (
+            "inquiry_only",
+            "closed_rca_infeasible",
+            "mitigation_sufficient",
+            "closed_insufficient_evidence",
+        ):
+            assert reason in VALID_CLOSURE_REASONS
+
+    def test_the_retired_reason_still_loads_but_is_never_derived(self):
+        """Already-closed cases carry it. Dropping it from the accepted set
+        would fail their Pydantic validation on read."""
+
+        from faultmaven.modules.case.domain.models import VALID_CLOSURE_REASONS
+
+        assert "closed_after_investigation" in VALID_CLOSURE_REASONS
+        for case in (
+            _case(verified=False),
+            _case(verified=True),
+            self._mitigated(_case()),
+            self._infeasible(self._mitigated(_case())),
+        ):
+            assert self._derive(case) != "closed_after_investigation"
