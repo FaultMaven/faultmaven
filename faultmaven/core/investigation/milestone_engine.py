@@ -5793,9 +5793,8 @@ class MilestoneEngine:
                 return bool(getattr(ev, "vectorized", False))
         return False
 
-    #: Re-exported from the tool that owns it so all four emission sites —
-    #: two here, two in AgentOrchestrationService — carry the same text and the
-    #: same rule. They used to hold three separate copies (#941).
+    #: Re-exported from the tool that owns it so all emission sites
+    #: carry the same text and the same rule. They used to hold separate copies (#941).
     _VECTORIZED_SYSTEM_MESSAGE = VECTORIZED_SYSTEM_MESSAGE
 
     async def _track_da_result(

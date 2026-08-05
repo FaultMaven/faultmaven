@@ -730,7 +730,6 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 |--------|----------|-------------|
 | Cases | `GET/POST /cases` | Case management CRUD |
 | Cases | `GET /cases/{id}` | Get case details |
-| Agent | `POST /cases/{id}/sessions/{sid}/execute` | Start AI investigation |
 | Knowledge | `GET/POST /knowledge/documents` | Knowledge base CRUD |
 | Knowledge | `POST /knowledge/search` | Semantic search |
 | Knowledge | `POST /knowledge/convert` | Convert document to runbook drafts |

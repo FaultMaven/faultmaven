@@ -60,19 +60,13 @@ faultmaven/modules/agent/
 
 ---
 
-## Key Components
+### Domain Models & Tools
 
-### Services (2-Tier Architecture)
+The Agent module provides tools and execution domain models for AI investigations.
 
-The Agent module maintains **two separate services** with clear separation of concerns by abstraction level:
-
-#### 1. AgentOrchestrationService (Low-Level)
-- **Responsibility**: LLM calls, streaming, tool execution primitives, orchestration hardening
-- **Size**: ~1,350 LOC
-- **Dependencies**: LLM providers, tool registry, coverage metadata utilities
-- **Key Operations**:
-  - Execute agent with streaming responses
-  - Coordinate tool invocations
+#### Tools & Execution Models
+- **Tools**: `AgentTool`, `ToolContext`, and specialized tool implementations (e.g. `vectorize_file_tool`).
+- **Domain Models**: Execution tracking models (`AgentExecution`, `ExecutionEvent`).
   - Handle LLM provider interactions
   - Token budget tracking
   - **Coverage gap detection** (R3): Extract entities from user queries (timestamps, services, error codes, IPs), compare against evidence coverage metadata, inject advisories into LLM context
@@ -191,34 +185,6 @@ from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
 ---
 
-## API Endpoints
-
-### Agent Execution
-
-- `POST /api/v1/cases/{case_id}/sessions/{session_id}/execute` - Execute agent with streaming
-- `POST /api/v1/cases/{case_id}/sessions/{session_id}/execute/non-streaming` - Execute without streaming
-
-**Request Body**:
-```json
-{
-  "user_message": "string",
-  "agent_type": "investigator",
-  "max_iterations": 10
-}
-```
-
-**Response** (Streaming):
-Server-Sent Events (SSE) with event types:
-- `started` - Execution started
-- `thinking` - Agent reasoning
-- `tool_call` - Tool invocation
-- `tool_result` - Tool execution result
-- `response` - Incremental response chunk
-- `completed` - Execution finished
-- `error` - Error occurred
-
----
-
 ## Usage Examples
 
 ### Importing from Agent Module
@@ -237,35 +203,16 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEventType,
 )
 
-# Services
-from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
-    AgentOrchestrationService,
-)
-
 # Tools
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
 # Tools are constructed explicitly via DI during container initialization.
 ```
-
-### Backward Compatibility
-
-For gradual migration, backward-compatible re-exports are available:
-
-```python
-# These still work (temporary, will be removed in future)
-from faultmaven.models import AgentExecution
-from faultmaven.domain import ExecutionEvent
-from faultmaven.services import AgentOrchestrationService
-```
-
-**Note**: New code should use the `modules/agent/*` paths.
 
 ---
 
 ## Testing
 
 ### Unit Tests
-- Service logic tests (AgentOrchestrationService, InvestigationService)
 - Tool tests (each tool class)
 - Model validation tests
 

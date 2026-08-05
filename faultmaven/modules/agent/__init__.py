@@ -11,7 +11,6 @@ Public API:
         - QueryIntent, SuggestedAction
 
     From domain.services (import directly):
-        - AgentOrchestrationService
         - InvestigationService
 
     From tools:
@@ -19,7 +18,6 @@ Public API:
 
 Usage:
     from faultmaven.modules.case.contracts import AgentType
-    from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 
 Note: This module does NOT eagerly import components to avoid circular dependencies.
 Import components directly from their submodules as shown above.
