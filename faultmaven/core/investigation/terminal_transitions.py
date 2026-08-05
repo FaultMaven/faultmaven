@@ -51,6 +51,7 @@ from faultmaven.modules.case.contracts import (
     CaseAction,
     CaseState,
     CauseState,
+    EvidenceCategory,
     InvestigationActionType,
     SolutionState,
     VerificationStatus,
@@ -358,6 +359,34 @@ def derive_solution_surface(case: "Case") -> None:
     p.solution_state = SolutionState.SELECTED if offer_live else SolutionState.UNKNOWN
 
 
+def _symptom_checked_and_absent(case: "Case") -> bool:
+    """Whether the case positively established the problem was NOT occurring.
+
+    Requires BOTH: the symptom is not verified now, AND a
+    ``symptom_absence_evidence`` row is on record — someone looked at the
+    present state and wrote down that the problem was not there.
+
+    The absence row is what makes this a finding rather than a gap. An
+    unverified symptom on its own is ambiguous and mostly means the opposite:
+    a case closed because the user stopped supplying data never verified its
+    symptom either, and reporting that as "not reproduced" would assert a
+    conclusion nobody reached. Requiring the row separates "we checked and it
+    was not happening" from "we never got to look" — and leaves the latter on
+    whichever generic reason it had before, so nothing regresses.
+
+    Deliberately does NOT require the symptom to have been verified first. The
+    problem can be found already-stopped on the very first check, before it was
+    ever established; that is the same finding arrived at sooner.
+    """
+    progress = getattr(case, "progress", None)
+    if progress is None or progress.symptom_verified:
+        return False
+    return any(
+        ev.category == EvidenceCategory.SYMPTOM_ABSENCE_EVIDENCE
+        for ev in getattr(case, "evidence", []) or []
+    )
+
+
 def derive_closure_reason(case: "Case") -> str:
     """Engine-only derivation of closure_reason from case state.
 
@@ -377,6 +406,14 @@ def derive_closure_reason(case: "Case") -> str:
       boundary. It is capture-ONLY: the engine never nudges toward this close
       (no ``SUGGEST_CLOSE``); the structured handoff already lists pause/close as
       a user option (insufficient-evidence-handling.md §5.4 / D4).
+    - ``closed_not_reproduced`` — the case positively established the problem
+      was NOT occurring: no verified symptom AND a ``symptom_absence_evidence``
+      row on record (see ``_symptom_checked_and_absent`` — the row is what makes
+      this a finding rather than a gap). Checked BEFORE the
+      insufficient-evidence cell because it answers an earlier question and is
+      the more specific finding: that cell says "a real problem, cause not
+      grounded", which presupposes the problem. Reporting a stopped problem as a
+      failed cause hunt would credit a hunt that had nothing to find.
     - ``closed_after_investigation`` — any other close from INVESTIGATING. Folds
       in the former ``mitigation_sufficient`` reason: a case stabilized and then
       closed is simply an investigation that closed. The documented mitigation /
@@ -387,6 +424,9 @@ def derive_closure_reason(case: "Case") -> str:
     """
     if case.state == CaseState.INQUIRY:
         return "inquiry_only"
+
+    if _symptom_checked_and_absent(case):
+        return "closed_not_reproduced"
 
     if (
         case.progress

@@ -9,18 +9,22 @@ problem is happening now.
 
 This module answers the question the flag omits: **as of now, how old is the
 newest observation that the symptom was actually present?** It is compute-only
-and reads existing durable state (symptom-evidence coverage timestamps +
-``ProblemVerification.temporal_state``). It changes no state and blocks no
-transition; the assessment is surfaced to the model, which remains the
-authority over the milestone.
+and reads existing durable state (symptom-evidence coverage timestamps). It
+changes no state and blocks no transition; the assessment is surfaced to the
+model, which remains the authority over the milestone.
 
-SCOPING — this is deliberately keyed on the case's OWN temporal claim, not on
-the kind of evidence. For a problem the case records as HISTORICAL (a
-post-mortem, a retrospective), old symptom evidence is exactly right and there
-is nothing to flag; the currency question only means something when the case
-claims the problem is ONGOING. Keying on evidence shape instead — treating some
-source types as inherently suspect — would both miss the stale-log case and
-nag on legitimately retrospective ones.
+SCOPING — the question applies to any case under investigation, and is keyed on
+neither the kind of evidence nor ``temporal_state``:
+
+- Not on evidence shape. Treating some source types as inherently suspect would
+  both miss the stale-log case and nag on legitimate ones; what matters is when
+  the observation was made, whatever produced it.
+- Not on ``temporal_state``. FaultMaven runs one flow aimed at root-cause
+  analysis, and an inactive problem is not a problem — if it is no longer
+  happening, the cause was eliminated and a fix applied, and what remains is
+  history and hypothesis, i.e. inquiry. A case under investigation therefore
+  presupposes a live problem. A HISTORICAL tag on an INVESTIGATING case is a
+  contradiction to surface, not a switch that turns the question off.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from faultmaven.modules.case.contracts import EvidenceCategory, TemporalState
+from faultmaven.modules.case.contracts import CaseState, EvidenceCategory
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case
@@ -121,14 +125,21 @@ def assess_symptom_currency(
     if progress is None or not progress.symptom_verified:
         return SymptomCurrency.NOT_APPLICABLE
 
-    verification = getattr(case, "problem_verification", None)
-    # Only an ONGOING claim makes currency meaningful. A case with no recorded
-    # temporal state is left alone rather than assumed ongoing: inventing the
-    # claim would put a re-verification demand on cases that never made one.
-    if (
-        verification is None
-        or getattr(verification, "temporal_state", None) != TemporalState.ONGOING
-    ):
+    # Keyed on the case being UNDER INVESTIGATION, not on ``temporal_state``.
+    #
+    # FaultMaven runs one flow aimed at root-cause analysis, and an inactive
+    # problem is not a problem: if it is no longer happening, the cause was
+    # eliminated and a fix applied. A past incident is history and hypothesis,
+    # which is inquiry. So a case being investigated at all presupposes a live
+    # problem, and "is it still occurring?" is always a fair question of it.
+    #
+    # This is not a presumption about case state — it is what INVESTIGATING
+    # MEANS. Reading ``temporal_state`` here instead would be strictly worse in
+    # both directions: it is populated only when the LLM happened to emit
+    # ``preliminary_urgency`` during INQUIRY, so live cases would silently opt
+    # out; and a case tagged HISTORICAL while under investigation is a
+    # contradiction that should be surfaced, not used to switch the check off.
+    if getattr(case, "state", None) != CaseState.INVESTIGATING:
         return SymptomCurrency.NOT_APPLICABLE
 
     observed = newest_symptom_observation(case)

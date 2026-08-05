@@ -1216,10 +1216,11 @@ def _symptom_currency_note(case, indicator: str) -> str:
     if currency == SymptomCurrency.CURRENT:
         return f" — symptom last observed {stamp}"
     return (
-        f" — symptom last observed {stamp}, and this case records the problem "
-        "as ONGOING. That the problem EXISTED is established; that it is "
-        "STILL HAPPENING is not. Confirm it is still occurring before treating "
-        "the cause as the open question, and say so plainly if it is not"
+        f" — symptom last observed {stamp}. That the problem EXISTED is "
+        "established; that it is STILL HAPPENING is not, and an inactive "
+        "problem is not one to investigate. Confirm it is still occurring "
+        "before treating the cause as the open question, and say so plainly "
+        "if it is not"
     )
 
 
