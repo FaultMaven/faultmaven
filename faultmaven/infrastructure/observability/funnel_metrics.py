@@ -143,7 +143,7 @@ class FunnelMetricsCollector:
         buckets: dict = {to_state: [] for to_state in _EFFORT_TO_STATES}
         for state, reason, turn in rows:
             # Resolved keys on state; closes key on their closure_reason (the
-            # effort query admits only the two effort-bearing close reasons).
+            # effort query admits every close reason except inquiry_only).
             to_state = "resolved" if state == "resolved" else reason
             if to_state not in buckets:
                 continue

@@ -911,7 +911,7 @@ Root cause analysis is sometimes infeasible — uncontrollable external dependen
 - Does not select an investigation path — there is no path fork (unified opportunistic flow)
 - Does not force closure — user can still request RCA
 - Does not skip hypothesis formulation — lightweight hypotheses still have diagnostic value
-- Does not create a new terminal state — uses existing `CLOSED(solution_deferred)`
+- Does not create a new terminal state — uses existing `CLOSED(closed_rca_infeasible)`
 
 See [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) for behavioral specification.
 

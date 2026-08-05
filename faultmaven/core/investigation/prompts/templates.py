@@ -1123,7 +1123,9 @@ internal_reasoning:
 
   conclusions: [step-by-step reasoning from evidence to conclusions]
 
-  milestone_justifications: MANDATORY dictionary — EVERY milestone set to True MUST have an entry.
+  milestone_justifications: MANDATORY dictionary — EVERY milestone you CHANGE
+    must have an entry, whether you set it True or False. A retraction
+    (symptom_verified=False) without one is REFUSED and the claim stands.
     * Format: {{milestone_name: "justification describing the evidence"}}
     * ⚠️ Empty {{}} when completing milestones = validation error
 
@@ -1176,7 +1178,9 @@ You MUST respond with valid JSON matching these fields:
     * Historical evidence (from a prior turn): use turn references ["turn_2", "turn_5"]
     * Do NOT use ev_ IDs here — turn references only for historical evidence.
   - conclusions: Step-by-step reasoning from observations to inferences.
-  - milestone_justifications: MANDATORY dictionary — EVERY milestone set to True MUST have an entry.
+  - milestone_justifications: MANDATORY dictionary — EVERY milestone you CHANGE
+    must have an entry, whether you set it True or False. A retraction
+    (symptom_verified=False) without one is REFUSED and the claim stands.
     * Format: {{milestone_name: "plain-text justification describing the supporting evidence"}}
     * ⚠️ Empty {{}} when completing milestones = validation error
     * Example: {{symptom_verified: "47 connection errors in nginx log between 14:02–16:45 UTC"}}

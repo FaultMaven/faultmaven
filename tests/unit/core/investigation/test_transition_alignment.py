@@ -442,11 +442,11 @@ async def test_check_automatic_transitions_closure_reason_inquiry_only():
 
 @pytest.mark.asyncio
 async def test_check_automatic_transitions_closure_reason_stabilized_investigation():
-    """A case stabilized then closed from INVESTIGATING yields the unified
-    closure reason 'closed_insufficient_evidence' (the redesign folds the
-    former 'mitigation_sufficient' reason into this one). The mitigation
-    record marks the case as stabilized; closure_reason is engine-derived
-    from case.state."""
+    """A case stabilized then closed from INVESTIGATING yields
+    'mitigation_sufficient'. A verified mitigation is the one closure that is
+    not a failure of any kind — the symptom is relieved and RCA was deferred BY
+    CHOICE — so it is not folded into a generic bucket. closure_reason stays
+    engine-derived."""
     engine = MilestoneEngine(
         MagicMock(),
         _make_repo(),

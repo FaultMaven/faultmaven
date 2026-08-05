@@ -48,6 +48,11 @@ def _case(verified=True) -> Case:
     return case
 
 
+# The engine deliberately does not judge the CONTENT of a justification, so any
+# non-blank string exercises the guard. The exemplar is still a claim-was-wrong
+# rationale rather than "it is not happening right now": the latter is exactly
+# what the prompt forbids retracting on (a problem is investigable while it
+# EXISTS), and a canonical example should not model the banned case.
 def _response(justification=None):
     reasoning = SimpleNamespace(
         milestone_justifications=(
@@ -71,7 +76,11 @@ def _apply(case, claimed, justification=None):
 # -- the retraction ----------------------------------------------------------
 def test_justified_false_retracts_the_claim():
     case = _case()
-    applied, meta = _apply(case, False, "Current check shows the service healthy.")
+    applied, meta = _apply(
+        case,
+        False,
+        "Misread the dashboard — those 500s were the staging cluster, not prod.",
+    )
     assert applied is True
     assert case.progress.symptom_verified is False
     assert meta["milestones_retracted"] == ["symptom_verified"]
@@ -145,7 +154,11 @@ def test_retraction_withdraws_the_backstop_cause_legs():
     )
     assert cause_identification_leg(case) == "rcc"
 
-    _apply(case, False, "Current check shows the service healthy.")
+    _apply(
+        case,
+        False,
+        "Misread the dashboard — those 500s were the staging cluster, not prod.",
+    )
     assert cause_identification_leg(case) is None
 
 
@@ -155,5 +168,9 @@ def test_retraction_makes_the_case_not_grounded():
     from faultmaven.core.investigation.verification_status import _is_grounded
 
     case = _case()
-    _apply(case, False, "Current check shows the service healthy.")
+    _apply(
+        case,
+        False,
+        "Misread the dashboard — those 500s were the staging cluster, not prod.",
+    )
     assert _is_grounded(case) is False

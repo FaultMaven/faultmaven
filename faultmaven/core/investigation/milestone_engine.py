@@ -704,11 +704,6 @@ def _apply_stage_gate_side_effects(
                 declared_rationale
                 or "root cause analysis is not feasible for this problem"
             )
-            derived_reason = (
-                "closed_rca_infeasible"
-                if declared_rationale and declared_rationale.strip()
-                else "mitigation_sufficient"
-            )
             closure_message = (
                 "The mitigation is verified and stable. "
                 f"Since {rationale}, shall we close this case as stabilized?"
@@ -730,10 +725,19 @@ def _apply_stage_gate_side_effects(
             metadata["transition_proposed_this_turn"] = True
             metadata["override_suggestions"] = _close_confirmation_suggestions()
             metadata["rca_infeasible_closure_message"] = closure_message
+            # Read the reason propose_transition just STORED rather than
+            # re-deriving it here. Mirroring the derivation meant reproducing 2
+            # of its 5 branches, which diverges whenever another branch wins —
+            # an rca_infeasible declaration alongside a standing working
+            # conclusion and a solution record derives `solution_deferred`,
+            # which a two-branch mirror cannot express.
+            stored_reason = (getattr(case, "pending_transition", None) or {}).get(
+                "closure_reason"
+            )
             logger.info(
                 f"Proposed CLOSED transition for case {case.case_id} "
-                f"(rca_infeasible=True; closure_reason will derive as "
-                f"{derived_reason}, rationale: {rationale})"
+                f"(rca_infeasible=True; closure_reason derived as "
+                f"{stored_reason}, rationale: {rationale})"
             )
 
     metadata["compliance_detected"] = True
