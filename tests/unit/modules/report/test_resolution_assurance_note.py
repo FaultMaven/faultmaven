@@ -113,7 +113,7 @@ def _resolved_case(*, with_root: bool, confirmed: bool) -> Case:
     object.__setattr__(case, "state", CaseState.RESOLVED)
     object.__setattr__(case, "resolved_at", terminal_at)
     object.__setattr__(case, "closed_at", terminal_at)
-    object.__setattr__(case, "closure_reason", "closed_after_investigation")
+    object.__setattr__(case, "closure_reason", "closed_insufficient_evidence")
     return case
 
 
