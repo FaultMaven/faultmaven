@@ -17,14 +17,18 @@ first, so a migrated row gets the label it would get if it closed today:
   1. a verified mitigation on record   -> mitigation_sufficient
   2. otherwise                         -> closed_insufficient_evidence
 
-The two richer reasons are deliberately NOT inferred here. `solution_deferred`
-needs an established cause plus a solution record, and `closed_rca_infeasible`
-needs a declared rationale; both live in JSON blobs whose shape has changed over
-the life of these rows, so guessing would fabricate an outcome. Landing an
-honest `closed_insufficient_evidence` understates those cases rather than
-inventing a conclusion for them.
+The two richer reasons are deliberately NOT inferred, so this is a SUBSET of the
+engine's precedence rather than a reproduction of it. `solution_deferred` needs
+an established cause plus a solution record, spread across blobs whose shape has
+changed over the life of these rows. `closed_rca_infeasible` would be as cheap
+to read as the mitigation flag, but a row carrying both it and a verified
+mitigation would land on `mitigation_sufficient` here while the engine ranks
+rca-infeasible higher — so inferring one and not the other would look like the
+engine's ordering while not being it. Both omissions understate rather than
+fabricate, which is the direction to err.
 """
 
+import json
 from typing import Sequence, Union
 
 import sqlalchemy as sa
@@ -42,18 +46,31 @@ _RETIRED = "closed_after_investigation"
 def upgrade() -> None:
     bind = op.get_bind()
 
-    # A verified mitigation is recorded on the progress JSON blob. Read it in
-    # Python rather than with a JSON operator: the column is JSON on SQLite and
-    # JSONB on PostgreSQL, and the accessor syntax differs between them.
+    # A verified mitigation is recorded on the progress blob. Read it in Python
+    # rather than with a JSON operator, because the accessor syntax differs
+    # between backends — but the value's TYPE differs too, and that is the trap:
+    # `progress` is `JsonBlob = Text().with_variant(JSONB, "postgresql")`, so
+    # psycopg2 hands back a dict on PostgreSQL while SQLite hands back the raw
+    # JSON string. A textual SELECT bypasses SQLAlchemy's result coercion, so an
+    # `isinstance(progress, dict)` test alone is False for EVERY SQLite row —
+    # silently mapping every verified-mitigation case to
+    # `closed_insufficient_evidence` on the default standalone backend, and
+    # persisting a false statement about the user's case.
     rows = bind.execute(
         sa.text("SELECT case_id, progress FROM cases WHERE closure_reason = :retired"),
         {"retired": _RETIRED},
     ).fetchall()
 
     for case_id, progress in rows:
-        mitigation = (
-            (progress or {}).get("mitigation") if isinstance(progress, dict) else None
-        )
+        if isinstance(progress, (str, bytes)):
+            try:
+                progress = json.loads(progress)
+            except (ValueError, TypeError):
+                # Unparseable blob: fall through to the bare mapping rather than
+                # failing the migration. Understating is recoverable; a stuck
+                # upgrade on a user's database is not.
+                progress = None
+        mitigation = progress.get("mitigation") if isinstance(progress, dict) else None
         verified = bool(mitigation and mitigation.get("verified"))
         bind.execute(
             sa.text("UPDATE cases SET closure_reason = :reason WHERE case_id = :cid"),
