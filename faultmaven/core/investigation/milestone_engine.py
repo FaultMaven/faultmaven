@@ -947,10 +947,14 @@ def _apply_symptom_retraction(
     """Honor an explicit, justified ``symptom_verified=False``.
 
     The symptom claim was a one-way latch: nothing could lower it once set, so
-    a verification that later proved not to hold — the problem had already
-    stopped, the reading was misread, the data was from the wrong window —
-    stayed on the case and kept the investigation pointed at a cause for a
-    condition that was not occurring.
+    a verification that later proved WRONG — misread data, the wrong system, an
+    artefact — stayed on the case and kept the investigation pointed at a cause
+    for something that was never really the symptom.
+
+    This is about the CLAIM being mistaken, not about the problem being quiet.
+    A problem is investigable while it EXISTS (evidence collectible, cause
+    unidentified, solution unknown), so "not firing right now" is never grounds
+    to retract; the prompt says so explicitly.
 
     The LLM is already the authority for this milestone (it is the only party
     that sets it), so retraction goes through the same authority rather than a

@@ -2667,13 +2667,13 @@ def get_fallback_prompt_for_case(
 
 
 def _symptom_verification_is_stale(case) -> bool:
-    """Whether the symptom verification no longer speaks to the present.
+    """Whether the symptom's observation window sits away from the present.
 
     Thin adapter over ``symptom_currency`` so the emphasis text has one reason
     to change. False when no case is supplied (the ``progress``-only callers),
-    and false for UNDATED — an unknown observation time is not evidence of
-    staleness, and driving a re-verification demand off it would fire on the
-    ordinary case of evidence that simply has no timestamps to parse.
+    and false for UNDATED — an unknown observation time gives nothing to anchor
+    to, so a window directive built on it would name no window while firing on
+    the ordinary case of evidence with no timestamps to parse.
     """
     if case is None:
         return False
@@ -2700,10 +2700,11 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) 
       hold that yields to root-cause analysis on new evidence/dispute (INV-33)
 
     ``case`` is optional so existing ``progress``-only callers keep working
-    unchanged; when supplied, Zone 2 is qualified by how current the symptom
-    verification is (it otherwise asserts "Symptoms are confirmed" as settled
-    fact on every turn for the rest of the case, which is what kept an
-    investigation hunting the cause of a condition that had already stopped).
+    unchanged; when supplied, Zone 2 additionally names the symptom's
+    observation window. Without it the zone says "Symptoms are confirmed" and
+    nothing about WHERE to look, so evidence requests drift to the present —
+    the failure mode in which an investigation queries the last 30 minutes for
+    a symptom observed two hours earlier.
     """
     if not progress.symptom_verified:
         return """
