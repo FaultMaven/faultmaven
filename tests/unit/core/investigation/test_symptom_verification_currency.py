@@ -306,6 +306,24 @@ class TestClosureReasonsAreReasons:
         return case
 
     @staticmethod
+    def _with_cause(case):
+        """A documented fix presupposes an established cause — the license
+        `_maybe_propose_deferred_close` requires via `_solution_cause_validated`."""
+        from faultmaven.modules.case.contracts import (
+            ConfidenceLevel,
+            RootCauseConclusion,
+        )
+
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="connection pool exhausted",
+            mechanism="m",
+            evidence_basis=[],
+            likelihood=0.8,
+            confidence_level=ConfidenceLevel.from_score(0.8),
+        )
+        return case
+
+    @staticmethod
     def _infeasible(case, rationale="Black-box 3rd-party API, no internal telemetry"):
         case.problem_verification.rca_infeasible = True
         case.problem_verification.rca_infeasible_rationale = rationale
@@ -383,7 +401,7 @@ class TestClosureReasonsAreReasons:
 
         from faultmaven.modules.case.contracts import SolutionFeasible
 
-        case = _case()
+        case = self._with_cause(_case())
         case.progress.solution_feasible = SolutionFeasible.DEFERRED
         case.progress.solution_proposed = True
         assert self._derive(case) == "solution_deferred"
@@ -405,7 +423,237 @@ class TestClosureReasonsAreReasons:
 
         from faultmaven.modules.case.contracts import SolutionFeasible
 
-        case = self._mitigated(_case())
+        case = self._with_cause(self._mitigated(_case()))
         case.progress.solution_feasible = SolutionFeasible.DEFERRED
         case.progress.solution_proposed = True
         assert self._derive(case) == "solution_deferred"
+
+
+# -- review findings ----------------------------------------------------------
+class TestEvidenceCoverageResolution:
+    """`_evidence_coverage` inherited the whole FILE's span, and the docstring's
+    justification was inverted: it claimed widening "can only make evidence look
+    OLDER", but `coverage_end_ts` is what the staleness read consults, and
+    widening moves the END LATER. A dump spanning 12:00-19:45 containing a 17:36
+    symptom reported "last observed 19:45" and read CURRENT — masking exactly the
+    staleness this machinery exists to surface.
+    """
+
+    @staticmethod
+    def _case_with_file(start, end):
+        from faultmaven.modules.case.contracts import UploadedFile
+
+        case = _case()
+        f = UploadedFile(
+            file_id="file_0123456789ab",
+            filename="app.log",
+            size_bytes=10,
+            uploaded_at_turn=1,
+        )
+        f.coverage_start_ts = start
+        f.coverage_end_ts = end
+        case.uploaded_files = [f]
+        return case, f.file_id
+
+    def test_a_ranged_file_is_not_inherited(self):
+        """The reported bug. Unknown is honest; a fabricated recent end is not."""
+        from faultmaven.core.investigation.milestone_engine import _evidence_coverage
+
+        case, fid = self._case_with_file(
+            datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 4, 19, 45, tzinfo=timezone.utc),
+        )
+        assert _evidence_coverage(case, fid) == (None, None)
+
+    def test_a_point_in_time_file_is_inherited(self):
+        """The motivating path: an alert stamped from a forwarding caller's
+        observed_at describes ONE moment, so the slice can only be that moment."""
+        from faultmaven.core.investigation.milestone_engine import _evidence_coverage
+
+        instant = datetime(2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc)
+        case, fid = self._case_with_file(instant, instant)
+        assert _evidence_coverage(case, fid) == (instant, instant)
+
+    def test_the_extract_beats_the_file(self):
+        """An evidence row is a SLICE; its own quoted lines are the authority."""
+        from faultmaven.core.investigation.milestone_engine import _evidence_coverage
+
+        case, fid = self._case_with_file(
+            datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 4, 19, 45, tzinfo=timezone.utc),
+        )
+        extract = "2026-08-04 17:36:17 ERROR etcdserver: no leader\n"
+        start, end = _evidence_coverage(case, fid, extract)
+        assert end is not None and end.hour == 17
+        # ...and crucially NOT the file's 19:45 end.
+        assert end.hour != 19
+
+
+class TestFixDocumentedNotApplied:
+    """Two findings at once: the predicate omitted the established-cause license
+    that `_maybe_propose_deferred_close` requires, and a FEASIBLE (not deferred)
+    documented fix closed without executing fell to insufficient_evidence."""
+
+    @staticmethod
+    def _derive(case):
+        from faultmaven.core.investigation.terminal_transitions import (
+            derive_closure_reason,
+        )
+
+        return derive_closure_reason(case)
+
+    @staticmethod
+    def _with_cause(case):
+        from faultmaven.modules.case.contracts import (
+            ConfidenceLevel,
+            RootCauseConclusion,
+        )
+
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="connection pool exhausted",
+            mechanism="m",
+            evidence_basis=[],
+            likelihood=0.8,
+            confidence_level=ConfidenceLevel.from_score(0.8),
+        )
+        return case
+
+    def test_a_stale_deferred_flag_without_a_cause_is_not_solution_deferred(self):
+        """Solution records are monotone and never withdrawn, so the flag
+        outlives the cause it describes. Reporting "cause identified and fix
+        documented" for a case with no cause would be a fabricated claim."""
+        from faultmaven.modules.case.contracts import SolutionFeasible
+
+        case = _case()
+        case.progress.solution_feasible = SolutionFeasible.DEFERRED
+        case.progress.solution_proposed = True
+        assert self._derive(case) == "closed_insufficient_evidence"
+
+    def test_a_deferred_fix_with_an_established_cause_is_solution_deferred(self):
+        from faultmaven.modules.case.contracts import SolutionFeasible
+
+        case = self._with_cause(_case())
+        case.progress.solution_feasible = SolutionFeasible.DEFERRED
+        case.progress.solution_proposed = True
+        assert self._derive(case) == "solution_deferred"
+
+    def test_a_feasible_fix_closed_without_executing_is_also_solution_deferred(self):
+        """Same position: cause found, fix written down, nobody ran it. Whether
+        the user formally declared it deferred is bookkeeping."""
+        from faultmaven.modules.case.contracts import SolutionFeasible
+
+        case = self._with_cause(_case())
+        case.progress.solution_feasible = SolutionFeasible.NOW
+        case.progress.solution_proposed = True
+        assert self._derive(case) == "solution_deferred"
+
+
+class TestReviewFindingsResidual:
+    """The remaining findings: a fabricated closure claim, a stale prompt zone,
+    a misleading log, and a classifier input that was widened by accident."""
+
+    @staticmethod
+    def _boundary(case, hypotheses=()):
+        from faultmaven.modules.report.domain.services.report_generation_service import (
+            ReportGenerationService,
+        )
+
+        svc = ReportGenerationService.__new__(ReportGenerationService)
+        return "".join(
+            svc._insufficient_evidence_boundary_block(case, list(hypotheses))
+        )
+
+    def test_closure_summary_does_not_claim_an_elimination_pass_that_never_ran(self):
+        """`closed_insufficient_evidence` is now the DEFAULT, not a cell behind
+        work_gate_passed (>=2 hypotheses). The block's "did enough work to rule
+        things out" was licensed by that gate, so a turn-2 close with zero
+        hypotheses would otherwise carry a fabricated claim."""
+
+        text = self._boundary(_case(verified=False))
+        assert "rule things out" not in text
+        assert "never established from the data" in text
+
+    def test_a_verified_symptom_with_no_hypotheses_says_so_plainly(self):
+        text = self._boundary(_case(verified=True))
+        assert "rule things out" not in text
+        assert "candidate causes were put forward" in text
+
+    def test_real_diagnostic_work_keeps_the_original_claim(self):
+        """When the work DID happen the statement is true and must survive."""
+
+        from faultmaven.modules.case.contracts import Hypothesis
+
+        case = _case(verified=True)
+        hyps = [
+            Hypothesis(
+                statement="pool exhausted",
+                category="config",
+                generated_at_turn=2,
+                generation_mode="opportunistic",
+                rationale="r",
+            ),
+            Hypothesis(
+                statement="dns flap",
+                category="network",
+                generated_at_turn=2,
+                generation_mode="opportunistic",
+                rationale="r",
+            ),
+        ]
+        case.hypotheses = {h.hypothesis_id: h for h in hyps}
+        assert "rule things out" in self._boundary(case, hyps)
+
+    def test_zone1_no_longer_withholds_verification_for_past_evidence(self):
+        """The pre-revert framing told Zone 1 to ask for a current check rather
+        than treat the question as settled. Every currency surface is gated on
+        symptom_verified, so suppressing it there kept them all dormant."""
+
+        from faultmaven.core.investigation.prompts.templates import (
+            _get_diagnosis_focus_emphasis,
+        )
+
+        case = _case(verified=False)
+        text = _get_diagnosis_focus_emphasis(case.progress, case)
+        assert "DOES verify it" in text
+        assert "while it EXISTS" in text
+        assert "absolute timestamps" in text
+        # The repudiated instruction must be gone.
+        assert "rather than treating the question as\nsettled" not in text
+
+    def test_an_undeclared_rationale_stores_mitigation_sufficient(self):
+        """Finding 8's substance: the rca-infeasible proposal logged
+        "closed_rca_infeasible" while using the GENERIC fallback rationale, which
+        derive_closure_reason's guard rejects — so the stored reason was
+        mitigation_sufficient and the log disagreed with the record. The log now
+        derives the same way; this pins the behaviour it must report."""
+
+        from faultmaven.core.investigation.terminal_transitions import (
+            derive_closure_reason,
+        )
+        from faultmaven.modules.case.contracts import MitigationRecord
+
+        case = _case()
+        case.progress.mitigation = MitigationRecord(
+            proposed_at_turn=1, accepted=True, verified=True, completed_at_turn=2
+        )
+        case.problem_verification.rca_infeasible = True
+        case.problem_verification.rca_infeasible_rationale = None
+        assert derive_closure_reason(case) == "mitigation_sufficient"
+
+    def test_relay_provenance_does_not_reach_the_content_classifier(self):
+        """`source_url` means the URL the CONTENT came from — the classifier
+        consults it at Priority 3, ahead of the content rules. A relay link is a
+        different thing: the Slack agent's permalink points at the message that
+        forwarded an alert, not at where the alert's text came from. Recording it
+        there would let a pasted excerpt be typed by whatever page someone copied
+        it out of, so the field stays scoped to page captures."""
+
+        from faultmaven.modules.case.api.routes import resolve_paste_source_meta
+
+        meta, _ = resolve_paste_source_meta("paste", "https://slack/archives/C1/p1")
+        assert "source_url" not in meta
+
+        meta, _ = resolve_paste_source_meta(
+            "page_capture", "https://grafana.example.com/d/abc"
+        )
+        assert meta["source_url"] == "https://grafana.example.com/d/abc"

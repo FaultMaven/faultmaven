@@ -2713,11 +2713,15 @@ No symptoms have been formally confirmed. When analyzing data, look for
 evidence the problem exists — errors, anomalies, user impact — to advance
 symptom_verified.
 
-Verification is about the problem's CURRENT state when the case says it is
-ongoing. Data that shows the problem at some earlier time establishes that it
-occurred, not that it is occurring; when the only evidence is from the past,
-say so and ask for a current check rather than treating the question as
-settled.
+Data showing the problem at an earlier time DOES verify it — a problem is worth
+investigating while it EXISTS (evidence still collectible, root cause
+unidentified, solution unknown), whether or not it is firing right now. Do not
+withhold symptom_verified because the evidence is not from this minute.
+
+What the observation time governs is WHERE the investigation looks. State it
+explicitly when you verify: it becomes the window every later evidence request
+targets, and requests must name absolute timestamps rather than relative ones,
+which silently drift to the present.
 """
     elif progress.symptom_verified and progress.cause_state != CauseState.IDENTIFIED:
         stale = _symptom_verification_is_stale(case)

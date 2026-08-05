@@ -52,9 +52,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CauseState,
     InvestigationActionType,
-    SolutionFeasible,
     SolutionState,
-    VerificationStatus,
 )
 
 # Likelihood at or above which a ``working_conclusion`` counts as a known cause
@@ -388,19 +386,30 @@ def _mitigation_verified(case: "Case") -> bool:
     return bool(mitigation is not None and getattr(mitigation, "verified", False))
 
 
-def _solution_deferred(case: "Case") -> bool:
-    """Whether a fix is documented but its implementation happens out-of-band.
+def _fix_documented_not_applied(case: "Case") -> bool:
+    """Whether a fix is on record but was never applied.
 
-    Mirrors ``_maybe_propose_deferred_close``'s own guard — ``DEFERRED`` plus a
-    solution actually on record — so the label and the disposition that creates
-    it cannot disagree. The record check matters: ``solution_feasible`` can be
-    set before any fix exists, and "deferred" with nothing deferred describes
-    no outcome.
+    Two conditions, both load-bearing:
+
+    - **The cause is established** - ``_cause_identified``, the same predicate
+      ``_maybe_propose_deferred_close`` requires via ``_solution_cause_validated``
+      (M5's gate delegates here). Without it, a stale ``solution_feasible`` flag
+      on a case whose cause has since fallen would report "cause identified and
+      fix documented" for a case with no cause: solution records are monotone and
+      are never withdrawn, so the flag alone outlives the thing it describes.
+    - **A solution is on record.** "Deferred" with nothing deferred is not an
+      outcome.
+
+    Deliberately NOT gated on ``solution_feasible == DEFERRED``. A case whose fix
+    was marked FEASIBLE but simply closed without executing is in exactly the
+    same position - the cause was found, the fix is written down, nobody ran it -
+    and routing it to ``closed_insufficient_evidence`` would report "insufficient
+    evidence to establish the problem or its cause" about a case that established
+    both. Whether the user formally declared the fix deferred is bookkeeping; the
+    outcome is the same.
     """
     progress = getattr(case, "progress", None)
-    if progress is None:
-        return False
-    if getattr(progress, "solution_feasible", None) != SolutionFeasible.DEFERRED:
+    if progress is None or not _cause_identified(case):
         return False
     return bool(
         getattr(progress, "solution_proposed", False)
@@ -416,11 +425,11 @@ def derive_closure_reason(case: "Case") -> str:
 
     - ``inquiry_only`` — case is still in INQUIRY (no investigation started).
     - ``solution_deferred`` — the cause is identified and a fix is documented,
-      but implementation happens out-of-band (a change request, a maintenance
-      window, another team). The most complete non-resolved outcome there is:
-      nothing was missing, the fix simply was not applied this session. First
-      among the INVESTIGATING reasons because where several hold, the one
-      carrying the most established knowledge should win.
+      but it was never applied: implementation happens out-of-band (a change
+      request, a maintenance window, another team), or the case simply closed
+      before anyone ran it. The most complete non-resolved outcome there is —
+      nothing was missing. First among the INVESTIGATING reasons because where
+      several hold, the one carrying the most established knowledge should win.
     - ``closed_rca_infeasible`` — the cause is structurally unreachable (an
       uncontrollable external dependency, an EOL system), declared via
       ``rca_infeasible`` WITH a rationale. Ranked above ``mitigation_sufficient``
@@ -455,7 +464,7 @@ def derive_closure_reason(case: "Case") -> str:
     if case.state == CaseState.INQUIRY:
         return "inquiry_only"
 
-    if _solution_deferred(case):
+    if _fix_documented_not_applied(case):
         return "solution_deferred"
 
     if _rca_declared_infeasible(case):

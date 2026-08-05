@@ -692,9 +692,22 @@ def _apply_stage_gate_side_effects(
             and not getattr(case, "pending_transition", None)
             and not case.is_terminal
         ):
+            # The generic fallback is fine for the user-facing sentence but is
+            # NOT a rationale: derive_closure_reason's guard requires a real one
+            # (the label forecloses future work, so it must carry its own
+            # justification). Keep them apart so the log cannot claim a reason
+            # the guard will refuse.
+            declared_rationale = getattr(
+                case.problem_verification, "rca_infeasible_rationale", None
+            )
             rationale = (
-                getattr(case.problem_verification, "rca_infeasible_rationale", None)
+                declared_rationale
                 or "root cause analysis is not feasible for this problem"
+            )
+            derived_reason = (
+                "closed_rca_infeasible"
+                if declared_rationale and declared_rationale.strip()
+                else "mitigation_sufficient"
             )
             closure_message = (
                 "The mitigation is verified and stable. "
@@ -719,8 +732,8 @@ def _apply_stage_gate_side_effects(
             metadata["rca_infeasible_closure_message"] = closure_message
             logger.info(
                 f"Proposed CLOSED transition for case {case.case_id} "
-                f"(rca_infeasible=True; closure_reason derived as "
-                f"closed_rca_infeasible, rationale: {rationale})"
+                f"(rca_infeasible=True; closure_reason will derive as "
+                f"{derived_reason}, rationale: {rationale})"
             )
 
     metadata["compliance_detected"] = True
@@ -1011,41 +1024,68 @@ def _apply_symptom_retraction(
 
 
 def _evidence_coverage(
-    case: "Case", source_file_id: str | None
+    case: "Case", source_file_id: str | None, extract: str | None = None
 ) -> "tuple[datetime | None, datetime | None]":
-    """The time span this evidence's CONTENT covers, inherited from its file.
+    """The time span this evidence's CONTENT covers.
 
-    ``Evidence.coverage_start_ts`` / ``coverage_end_ts`` have existed (with a
-    DB index) since the case-timeline work, and the model docstring has always
-    said the system fills them — but no writer ever did, so every LLM-authored
-    row landed with NULL coverage. The only temporal signal left on an Evidence
-    row was ``collected_at_turn``, i.e. WHEN THE AGENT LOOKED, which says
-    nothing about how old the observation is. That is how a two-hour-old alert
-    read as a live symptom.
+    ``Evidence.coverage_start_ts`` / ``coverage_end_ts`` have existed (with a DB
+    index) since the case-timeline work, and the model docstring has always said
+    the system fills them — but no writer ever did, so every LLM-authored row
+    landed NULL. The only temporal signal left was ``collected_at_turn``, i.e.
+    WHEN THE AGENT LOOKED, which says nothing about how old the observation is.
 
-    The file's coverage is the right source: it is parsed from the content by
-    the extractor (or seeded from a forwarding caller's declared observation
-    time when the content carries no timestamps of its own), and the evidence
-    is a slice of that file. Inheriting the file's span is an over-estimate for
-    a slice — the extract may cover a narrower window than the whole file — but
-    it is sound for the question that matters, "could this be stale?", because
-    it can only make evidence look OLDER (wider), never fresher. Narrowing it
-    to the extract's own timestamps would need a second parse pass and is not
-    required for a staleness read.
+    Resolved in order:
 
-    Returns ``(None, None)`` for fileless (chat-quoted) evidence and for files
-    whose content had no parseable timestamps: unknown coverage stays unknown
-    rather than defaulting to now, so a reader can tell "old" from "unknown".
+    1. **The extract's own timestamps.** An evidence row is a SLICE, so its own
+       quoted lines are the authority on what it covers. ``extract_time_range_ts``
+       was promoted out of the extractors for exactly this (see its docstring).
+    2. **The file's span, but only when it is a single instant.** A point-in-time
+       file — an alert notification, a paste stamped from a forwarding caller's
+       ``observed_at`` — describes one moment, so the slice can only be that
+       moment too.
+    3. **Unknown.**
+
+    A RANGED file is deliberately NOT inherited. Doing so was a real defect, and
+    the justification for it was inverted: it claimed widening "can only make
+    evidence look OLDER, never fresher", but ``coverage_end_ts`` is what the
+    staleness read consults, and widening moves the END LATER. A dump spanning
+    12:00-19:45 that contains a 17:36 symptom would report "last observed 19:45"
+    and read CURRENT — masking exactly the staleness this machinery exists to
+    surface. Unknown is honest; a fabricated recent timestamp is not.
     """
+    if extract and extract.strip():
+        # Local import: keeps the module-level import graph unchanged, and this
+        # is the only caller.
+        from faultmaven.modules.preprocessing.extractors.utils import (
+            extract_time_range_ts,
+        )
+
+        try:
+            start_ts, end_ts, _ = extract_time_range_ts(extract)
+        except Exception:  # noqa: BLE001 - a parse failure must not lose the turn
+            logger.warning(
+                "Could not parse timestamps from an evidence extract; falling "
+                "back to the source file's coverage.",
+                exc_info=True,
+            )
+        else:
+            # A single-timestamp extract parses as (start, None) - the head and
+            # tail scans land on the same line. Content covering one instant
+            # starts AND ends there; leaving the end None would read as UNDATED
+            # and discard the very observation time this exists to capture.
+            if start_ts is not None or end_ts is not None:
+                return start_ts or end_ts, end_ts or start_ts
+
     if source_file_id is None:
         return None, None
     uploaded = case.find_uploaded_file(source_file_id)
     if uploaded is None:
         return None, None
-    return (
-        getattr(uploaded, "coverage_start_ts", None),
-        getattr(uploaded, "coverage_end_ts", None),
-    )
+    file_start = getattr(uploaded, "coverage_start_ts", None)
+    file_end = getattr(uploaded, "coverage_end_ts", None)
+    if file_start is not None and file_start == file_end:
+        return file_start, file_end
+    return None, None
 
 
 def _resolve_evidence_source(
@@ -8319,7 +8359,9 @@ class MilestoneEngine:
                     case, ev_item.source_file_id, ev_item.source_type
                 )
 
-                coverage_start, coverage_end = _evidence_coverage(case, source_file_id)
+                coverage_start, coverage_end = _evidence_coverage(
+                    case, source_file_id, ev_item.extract
+                )
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,

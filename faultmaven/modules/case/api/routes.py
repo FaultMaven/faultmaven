@@ -162,12 +162,15 @@ def resolve_paste_source_meta(
     - ``page_capture`` — the browser extension captured a web page
     - ``text_paste``   — raw text pasted by a user, or relayed by an agent
 
-    ``source_url`` is recorded for BOTH: provenance is channel-agnostic. It
-    used to be kept only under ``page_capture``, so every other caller's URL
-    was accepted over the wire and silently discarded — the Slack agent
-    resolves a permalink back to the alert it is forwarding, sends it, and it
-    was dropped because ``input_type`` said "paste". A link back to where
-    evidence came from is worth keeping whatever produced it.
+    ``source_url`` stays scoped to ``page_capture``. It means the URL the
+    CONTENT came from — the classifier consults it at Priority 3 (0.88-0.94),
+    ahead of the content rules, precisely because for a capture the page IS the
+    content's origin. A relay link is a different thing: the Slack agent's
+    permalink points at the message that forwarded an alert, not at where the
+    alert's text came from, and feeding it to a content classifier would let a
+    pasted excerpt be typed by whatever page someone happened to copy it out of.
+    Recording relay provenance is worth doing, but it needs its own field and a
+    consumer; overloading this one is not the way.
 
     This is a module-level function rather than inline branching because the
     test suite previously kept its own hand-copied mirror of the logic, which
@@ -178,11 +181,11 @@ def resolve_paste_source_meta(
     if input_type == "page_capture":
         meta = {"source_type": "page_capture"}
         prefix = "page-capture-"
+        if source_url:
+            meta["source_url"] = source_url
     else:
         meta = {"source_type": "text_paste"}
         prefix = "pasted-content-"
-    if source_url:
-        meta["source_url"] = source_url
     return meta, prefix
 
 

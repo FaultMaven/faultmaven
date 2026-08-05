@@ -349,8 +349,32 @@ class ReportGenerationService:
             n.obtainability == NeedObtainability.UNOBTAINABLE for n in outstanding
         )
 
+        # What this block may CLAIM depends on what actually happened. The
+        # "did enough work to rule things out" phrasing was licensed by the old
+        # derivation, which only reached this reason from the
+        # INSUFFICIENT_EVIDENCE cell — i.e. behind work_gate_passed (>=2
+        # hypotheses across >=2 categories). This reason is now the default for
+        # any close that established nothing, so a turn-2 close with no
+        # candidates lands here too, and the sentence would assert an
+        # elimination pass that never ran.
+        #
+        # Ruling things OUT requires having had candidates, so that is the
+        # discriminator; the symptom flag only refines the no-candidates case.
+        ruled_things_out = bool(getattr(case, "hypotheses", None))
+        symptom_verified = bool(
+            case.progress and getattr(case.progress, "symptom_verified", False)
+        )
+
         block: List[str] = ["## Data Boundary — Why This Remains Unresolved\n"]
-        if has_declared_wall:
+        if not ruled_things_out:
+            block.append(
+                "The reported problem was never established from the data "
+                "available, so no cause was pursued.\n"
+                if not symptom_verified
+                else "The problem was verified, but the case closed before any "
+                "candidate causes were put forward.\n"
+            )
+        elif has_declared_wall:
             block.append(
                 "The investigation did enough work to rule things out but could "
                 "not ground a single cause: the discriminating data needed to "

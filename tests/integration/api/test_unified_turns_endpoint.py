@@ -194,22 +194,20 @@ def _resolve_paste_source_meta(
 class TestTextPasteSourceMetadata:
     """Validate the source_metadata branch the route applies to pasted_content."""
 
-    def test_source_url_is_kept_for_a_plain_paste_not_only_page_capture(self):
-        """Provenance is channel-agnostic.
-
-        ``source_url`` used to be recorded only under ``page_capture``, so the
-        Slack agent's permalink back to the alert it was forwarding — the one
-        artifact from which the alert's real age could be recovered — was
-        accepted over the wire and silently discarded because ``input_type``
-        said "paste".
+    def test_source_url_stays_scoped_to_page_captures(self):
+        """`source_url` means the URL the CONTENT came from, and the classifier
+        consults it at Priority 3 ahead of the content rules. A relay link — the
+        Slack agent's permalink to the message that forwarded an alert — is not
+        that, and feeding it here would let a pasted excerpt be typed by whatever
+        page someone copied it out of. Relay provenance needs its own field and a
+        consumer; overloading this one is not the way.
         """
         meta, prefix = _resolve_paste_source_meta(
             pasted_content="[FIRING:1] etcdInsufficientMembers kube-system",
             input_type="paste",
             source_url="https://slack/archives/C1/p1785872177",
         )
-        assert meta["source_type"] == "text_paste"
-        assert meta["source_url"] == "https://slack/archives/C1/p1785872177"
+        assert meta == {"source_type": "text_paste"}
         assert prefix == "pasted-content-"
 
     def test_explicit_text_paste_input_type_yields_text_paste_source(self):
