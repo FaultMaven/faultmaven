@@ -162,7 +162,7 @@ def _load_from_settings(settings) -> ProtectionSettings:
         rate_limiting_enabled=True,
         rate_limits={
             "global": RateLimitConfig(enabled=True, requests=1000, window=60),
-            "per_session": RateLimitConfig(enabled=True, requests=10, window=60),
+            "per_session": RateLimitConfig(enabled=True, requests=20, window=60),
             "per_session_hourly": RateLimitConfig(
                 enabled=True, requests=100, window=3600
             ),
@@ -258,7 +258,7 @@ def _load_from_environment() -> ProtectionSettings:
     rate_limits = {
         "global": parse_rate_limit(os.getenv("RATE_LIMIT_GLOBAL", "1000:60"), 1000, 60),
         "per_session": parse_rate_limit(
-            os.getenv("RATE_LIMIT_PER_SESSION", "10:60"), 10, 60
+            os.getenv("RATE_LIMIT_PER_SESSION", "20:60"), 20, 60
         ),
         "per_session_hourly": parse_rate_limit(
             os.getenv("RATE_LIMIT_PER_SESSION_HOURLY", "100:3600"), 100, 3600
@@ -446,7 +446,7 @@ def get_production_protection_settings() -> ProtectionSettings:
         rate_limiting_enabled=True,
         rate_limits={
             "global": RateLimitConfig(enabled=True, requests=500, window=60),
-            "per_session": RateLimitConfig(enabled=True, requests=5, window=60),
+            "per_session": RateLimitConfig(enabled=True, requests=10, window=60),
             "per_session_hourly": RateLimitConfig(
                 enabled=True, requests=50, window=3600
             ),

@@ -418,27 +418,47 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         return result
 
+    # Read-only HTTP methods whose UI navigation traffic should not consume the
+    # tight per-session per-minute quota.  These requests are still bounded by
+    # the ``global`` limit and the ``per_session_hourly`` limit — they are not
+    # unlimited, just exempt from the per-minute bucket that was designed to
+    # protect LLM compute on write operations (fm#994).
+    _READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
     async def _check_session_rate_limits(
         self, session_id: str, endpoint: str, request: Request
     ) -> List[RateLimitResult]:
-        """Check session-based rate limits, returning the results they used."""
+        """Check session-based rate limits, returning the results they used.
 
-        # Per-session per-minute limit
-        per_minute = await self.rate_limiter.check_rate_limit(
-            key=session_id,
-            limit_type=LimitType.PER_SESSION,
-            identifier=f"session:{session_id}",
-        )
+        Read-only requests (GET, HEAD, OPTIONS) skip the strict per-session
+        per-minute limit so that normal SPA navigation — loading case details,
+        file lists, conversation history — does not exhaust a quota designed to
+        throttle heavy AI operations (POST turns).  They remain subject to the
+        ``global`` limit and the ``per_session_hourly`` limit.
+        """
 
-        if not per_minute.allowed:
-            raise RateLimitError(
-                retry_after=per_minute.retry_after or 60,
-                limit_type="per_session",
-                current_count=per_minute.current_count,
-                limit=per_minute.limit,
+        results: List[RateLimitResult] = []
+        is_read_only = request.method.upper() in self._READ_ONLY_METHODS
+
+        # Per-session per-minute limit — only for write operations
+        if not is_read_only:
+            per_minute = await self.rate_limiter.check_rate_limit(
+                key=session_id,
+                limit_type=LimitType.PER_SESSION,
+                identifier=f"session:{session_id}",
             )
 
-        # Per-session hourly limit
+            if not per_minute.allowed:
+                raise RateLimitError(
+                    retry_after=per_minute.retry_after or 60,
+                    limit_type="per_session",
+                    current_count=per_minute.current_count,
+                    limit=per_minute.limit,
+                )
+
+            results.append(per_minute)
+
+        # Per-session hourly limit — applies to all requests
         hourly = await self.rate_limiter.check_rate_limit(
             key=session_id,
             limit_type=LimitType.PER_SESSION_HOURLY,
@@ -453,7 +473,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 limit=hourly.limit,
             )
 
-        return [per_minute, hourly]
+        results.append(hourly)
+        return results
 
     async def _check_endpoint_rate_limits(
         self, endpoint: str, session_id: Optional[str], request: Request

@@ -86,7 +86,7 @@ class ProtectionSettings(BaseModel):
     rate_limits: Dict[str, RateLimitConfig] = Field(
         default_factory=lambda: {
             "global": RateLimitConfig(requests=1000, window=60),
-            "per_session": RateLimitConfig(requests=10, window=60),
+            "per_session": RateLimitConfig(requests=20, window=60),
             "per_session_hourly": RateLimitConfig(requests=100, window=3600),
             "title_generation": RateLimitConfig(requests=1, window=300),
             "agent_query": RateLimitConfig(requests=5, window=60),
