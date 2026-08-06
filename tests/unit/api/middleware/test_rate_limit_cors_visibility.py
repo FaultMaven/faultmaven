@@ -228,6 +228,87 @@ def test_the_outermost_position_is_read_the_way_starlette_stacks():
     assert [entry.cls.__name__ for entry in app.user_middleware] == ["outer", "inner"]
 
 
+class TestTheStructuralGuard:
+    """The check that runs in every environment, tested where it can fail.
+
+    A unit test that imports the app and re-asserts the invariant is worthless:
+    it passes because the guard already passed at import, so it re-measures the
+    guard's input rather than the guard. The tests below drive
+    ``_assert_cors_outermost`` over scratch apps built into each failure state.
+
+    The guard exists because the two ordering tests above run on whatever stack
+    the *test* environment builds, and that stack skips several registrations —
+    so an ordering assertion made there is blind to the one production serves.
+    ``setup_middleware`` calls this on its own final stack, whatever that is.
+    """
+
+    @staticmethod
+    def _guard():
+        from faultmaven.main import _assert_cors_outermost
+
+        return _assert_cors_outermost
+
+    @staticmethod
+    def _scratch_app():
+        from fastapi import FastAPI
+
+        return FastAPI()
+
+    def test_a_correctly_stacked_app_passes(self):
+        app = self._scratch_app()
+        app.add_middleware(RateLimitMiddleware, settings=_settings())
+        app.add_middleware(CORSMiddleware, allow_origins=[ORIGIN])
+
+        self._guard()(app)  # must not raise
+
+    def test_anything_registered_after_cors_trips_it(self):
+        """The defect itself: a layer outside CORS short-circuits past it."""
+        app = self._scratch_app()
+        app.add_middleware(CORSMiddleware, allow_origins=[ORIGIN])
+        app.add_middleware(RateLimitMiddleware, settings=_settings())
+
+        with pytest.raises(RuntimeError, match="outermost"):
+            self._guard()(app)
+
+    def test_two_cors_layers_trip_it(self):
+        """The same defect from the other side: the inner one is dead config."""
+        app = self._scratch_app()
+        app.add_middleware(CORSMiddleware, allow_origins=["https://other.example"])
+        app.add_middleware(RateLimitMiddleware, settings=_settings())
+        app.add_middleware(CORSMiddleware, allow_origins=[ORIGIN])
+
+        with pytest.raises(RuntimeError, match="single outermost"):
+            self._guard()(app)
+
+    def test_no_cors_at_all_trips_it(self):
+        """An empty stack must not sneak past on an index error."""
+        app = self._scratch_app()
+
+        with pytest.raises(RuntimeError, match="outermost"):
+            self._guard()(app)
+
+    def test_the_failure_names_the_stack_it_found(self):
+        """An ordering failure is unreadable without the order it saw."""
+        app = self._scratch_app()
+        app.add_middleware(CORSMiddleware, allow_origins=[ORIGIN])
+        app.add_middleware(RateLimitMiddleware, settings=_settings())
+
+        with pytest.raises(RuntimeError) as excinfo:
+            self._guard()(app)
+
+        assert "RateLimitMiddleware" in str(excinfo.value)
+        assert "CORSMiddleware" in str(excinfo.value)
+
+    def test_the_guard_is_not_an_assert(self):
+        """``assert`` vanishes under ``-O``, and this must hold in production."""
+        import inspect
+
+        source = inspect.getsource(self._guard())
+
+        assert "raise RuntimeError" in source
+        assert "assert " not in source, "a stripped guard is not a guard"
+
+
 def test_the_rate_limit_headers_are_exposed_by_default():
     """The setting the fix above makes reachable.
 

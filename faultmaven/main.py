@@ -1045,6 +1045,34 @@ def _form_with_configured_limits(
 StarletteRequest.form = _form_with_configured_limits
 
 
+def _assert_cors_outermost(target_app) -> None:
+    """Refuse to run with anything stacked outside CORS.
+
+    Starlette wraps in reverse registration order, so ``user_middleware[0]`` is
+    the last-registered and therefore outermost layer. CORS has to be exactly
+    that layer: a middleware registered after it sits *outside* it, and any
+    response that layer short-circuits (a 429, a 503, a rejected upload) leaves
+    without CORS headers — the browser then reports a network error and the
+    caller never sees the status code it was supposed to act on. Two CORS layers
+    are the same defect from the other side: the outer one answers, so the
+    inner's configuration is silently dead.
+
+    A plain ``raise``, never ``assert``: assertions vanish under ``-O`` and a
+    guard that disappears in the configuration most likely to be a production
+    one is not a guard. Unconditional too — no environment gate. The reduced
+    test-env stack skips several registrations, so an ordering test written
+    against it cannot see production's stack; this runs inside
+    ``setup_middleware`` itself, on whatever stack that environment actually
+    built, and fails the import that produced a bad one.
+    """
+    cors_layers = [m for m in target_app.user_middleware if m.cls is CORSMiddleware]
+    if len(cors_layers) != 1 or target_app.user_middleware[0].cls is not CORSMiddleware:
+        raise RuntimeError(
+            "CORS must be the single outermost middleware; stack: "
+            f"{[m.cls.__name__ for m in target_app.user_middleware]}"
+        )
+
+
 # Add middleware in optimized order to prevent duplicates
 def setup_middleware():
     """Setup middleware - only log when not in test mode"""
@@ -1389,6 +1417,8 @@ def setup_middleware():
         logger.info(
             f"Final middleware stack: {[type(m).__name__ for m in app.user_middleware]}"
         )
+
+    _assert_cors_outermost(app)
 
 
 # Configure middleware at import time (must run before app startup).

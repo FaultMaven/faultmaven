@@ -268,6 +268,30 @@ class AuthService:
             self._public_key = None
 
     @property
+    def signing_private_key(self) -> Optional[str]:
+        """The RSA private key this deployment signs with, as resolved here.
+
+        Public because key *resolution* has one authority and this is it:
+        ``_load_keys`` is the only code that reads both the direct-value and
+        the file-path spellings, refuses a half-configured pair, and selects
+        development keys when nothing at all was declared. A second resolver
+        elsewhere produces a second dev pair in the same process, and then
+        tokens minted by one signer fail verification by the other — the 401
+        storm ``_load_keys`` documents. The token generators are built FROM
+        this pair rather than resolving their own (#959).
+
+        Exposed as a read-only property, not by callers reaching for
+        ``_private_key``: ending cross-service private-attribute reads is what
+        this change is for.
+        """
+        return self._private_key
+
+    @property
+    def verification_public_key(self) -> Optional[str]:
+        """The RSA public key matching :attr:`signing_private_key`."""
+        return self._public_key
+
+    @property
     def _algorithm(self) -> str:
         """Get JWT algorithm based on AUTH_MODE.
 

@@ -61,6 +61,34 @@ the instant the next unit of quota frees**:
 - When the window is empty, both fall back to `now + window` — the truth in
   that case, since the request that just went in is the entry that will age
   out.
+- `oldest_score` is **clamped to `now`** before the window is added:
+  `min(oldest_score, now) + window`. Scores are wall-clock and shared across
+  replicas (see [Time source](#time-source)), so a host whose clock runs ahead
+  can write an entry scored in *this* host's future. Unclamped, the derived wait
+  would exceed the window itself — an answer no sliding window of that width can
+  honestly produce. The clamp bounds `Retry-After` at one full window and leaves
+  the measured value untouched whenever the clocks agree, which is every entry a
+  host wrote itself.
+
+  The clamp **bounds** the error; it does not remove it. A future-dated entry
+  genuinely ages out at `oldest_score + window` — that is the score the prune
+  compares against, on whichever replica next reads the key — so the clamped
+  answer is *early* by the skew amount, and a client that obeys it can be
+  refused again on arrival. That re-refusal carries a freshly measured wait,
+  itself bounded by one window, so the client converges rather than looping
+  unboundedly. Early-and-bounded is the direction to be wrong in: the
+  alternative is a single wait longer than the window it describes, which no
+  client can reconcile with the `X-RateLimit-Reset` beside it. NTP-scale skew
+  makes the error sub-second; a replica minutes out of sync is a monitoring
+  problem this clamp only keeps from becoming a client-facing one.
+
+Both numbers come from a single `frees_at`, computed once per check, so
+`reset_time` and `Retry-After` cannot name different instants. The formula lives
+in one place — `infrastructure/protection/window_math.py` (`quota_frees_at`,
+`retry_after_seconds`) — and all three enforcers call it: the Redis check path,
+the read-only status path, and the in-memory OAuth/SSO limiter in
+`modules/auth/api/rate_limiting.py`. It had been hand-expanded at each of those
+sites, so a correction to one was a silent divergence from the other two.
 
 `Retry-After` carries **no jitter and no cap**. The value is already
 per-client — each client's oldest entry arrived at its own time — so herd
@@ -93,13 +121,48 @@ carry them are exactly the ones a browser client must act on.
 **Only the component that enforced the limit writes these headers.** For the
 general limits that is `RateLimitMiddleware`; for the auth endpoints it is the
 OAuth limiter dependencies in `modules/auth/api/rate_limiting.py`, which attach
-`Retry-After` to the 429 they raise. Nothing else in the stack sets or defaults
-a rate-limit header, and `X-RateLimit-Window` is not emitted at all. Two writers
-can only agree by coincidence: the outer one wins, so a correlation layer with
-no knowledge of the enforcement would silently replace a measured wait with a
-constant. Whatever a limiter did not measure is simply absent — a client that
-reads no `Retry-After` backs off on its own policy, which is strictly better
-than backing off on a fabricated one.
+the full quartet to the 429 they raise and, on an allowed request, append their
+`RateLimitResult` to `request.state.rate_limit_results` so the served response
+advertises the OAuth limit whenever it is the tightest one the caller is under
+(it usually is — 5–10/min against the general limits' hundreds). Nothing else in
+the **request-protection stack** sets or defaults a rate-limit header, and
+`X-RateLimit-Window` is not emitted at all. Two writers can only agree by
+coincidence: the outer one wins, so a correlation layer with no knowledge of the
+enforcement would silently replace a measured wait with a constant. Whatever a
+limiter did not measure is simply absent — a client that reads no `Retry-After`
+backs off on its own policy, which is strictly better than backing off on a
+fabricated one.
+
+Two enforcers can both be on one request — the middleware for the general
+limits, an OAuth limiter dependency inside it — so "one writer" is enforced on
+the way out, by `_add_rate_limit_headers` **yielding**:
+
+- It returns immediately on a **429**. Remaining quota beside a refusal is a
+  contradiction the client resolves wrongly (`Remaining: 994` next to "you are
+  being rate limited" reads as "not this limit, carry on"). The middleware's own
+  refusals never reach it — those short-circuit in `dispatch` — so a 429 arriving
+  through `call_next` was written by an inner enforcer that has already said what
+  it measured.
+- It returns immediately when the response **already carries
+  `X-RateLimit-Limit`**. The inner enforcer wrote the limit *it* enforced; the
+  middleware holds results for the general limits only, and stamping them over
+  would replace a measured tighter quota with a roomier one nobody hit. It does
+  not attempt to reconcile the two: "tightest wins" is computable only over
+  results it holds, and an already-written header is not one of them.
+
+Neither condition is redundant. A refusal can arrive without any `X-RateLimit-*`
+(a non-limit 429), and an allowed response can carry an inner enforcer's headers
+with no refusal anywhere.
+
+The invariant is scoped to that stack, not to the process. One other authority
+writes `Retry-After`: `api/exception_handlers.py` (`_llm_http`) stamps a
+heuristic backoff hint — 60, 30 or 10 seconds by mapped condition — on the
+responses it *synthesises* for LLM-provider errors (429/503/504/500). That is a
+separate concern from request protection: nothing was rate-limited here by
+FaultMaven, and the number is an in-house guess about an upstream provider's
+recovery rather than a measurement of one of our windows. Passing the
+*provider's own* `Retry-After` through, so that hint stops being a guess, belongs
+to the fm#509 cluster and is tracked there.
 
 The invariant that fm#920 restored: after N back-to-back requests against a
 limit of L, exactly `min(N, L)` are allowed and the set holds `min(N, L)`
@@ -225,4 +288,17 @@ path performs no Redis call of its own.
 Mutation checks (each must turn at least one test red): reverting the member
 to the integer second; skipping the `ZREMRANGEBYSCORE` prune; inserting on
 the blocked path; making the prune bound exclusive; reverting the script to a
-three-element return; restoring `now + window` on the blocked path.
+three-element return; restoring `now + window` on the blocked path; removing the
+skew clamp from `quota_frees_at`; re-deriving `X-RateLimit-Reset` on a 429 from
+`time.time() + retry_after`; dropping the `X-RateLimit-*` headers from the OAuth
+429; closing the outgoing client before installing its replacement in `_adopt`;
+awaiting the close instead of dispatching it; removing either early return from
+`_add_rate_limit_headers`; writing `Retry-After` unconditionally in
+`_create_rate_limit_response`, or restoring a `or 60` / `or 3600` default at
+**any** of the three raise sites — the state a default fires on is unreachable
+in production, but the "unmeasured is absent" contract is what makes it
+*testable*, so both spellings of the regression turn a test red. The raise-site
+mutation is swept per site rather than checked once: a limit's fallback is only
+reachable through the site that raises for it, and since the read/write split
+four limit types share the two session sites, so a single-site guard left most
+of that surface unguarded. Registering a middleware after CORS.

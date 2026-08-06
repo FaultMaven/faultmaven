@@ -630,7 +630,11 @@ class TestServiceFailurePosture:
             return datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
 
         auth_service.revoke_user_tokens = tracking_revoke
-        service = UserService(user_repo=repo, auth_service=auth_service)
+        service = UserService(
+            user_repo=repo,
+            auth_service=auth_service,
+            token_generator=_generator(_store()),
+        )
 
         user = await service.register_user(
             email="ordering@local.faultmaven",
@@ -682,30 +686,15 @@ class TestServiceFailurePosture:
         auth_service.revoke_user_tokens = tracking_revoke
         auth_service.get_revocation_reason = AsyncMock(return_value=None)
 
-        # Reset tokens are signed with the auth service's keys under the
-        # deployment's configured algorithm (RS256), so the double needs a real
-        # keypair rather than a MagicMock attribute.
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
-
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        auth_service._private_key = key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        ).decode()
-        auth_service._public_key = (
-            key.public_key()
-            .public_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PublicFormat.SubjectPublicKeyInfo,
-            )
-            .decode()
-        )
-
+        # Reset tokens are signed by the deployment's token generator, which
+        # holds its own key — the auth service is asked only about revocation
+        # (#959), so no key fabrication on the double is needed or possible.
         redis = _fake_redis()
         service = UserService(
-            user_repo=repo, auth_service=auth_service, redis_client=redis
+            user_repo=repo,
+            auth_service=auth_service,
+            token_generator=_rs256_generator(_store()),
+            redis_client=redis,
         )
 
         user = await service.register_user(
@@ -754,7 +743,11 @@ class TestServiceFailurePosture:
             return datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
 
         auth_service.revoke_user_tokens = tracking_revoke
-        service = UserService(user_repo=repo, auth_service=auth_service)
+        service = UserService(
+            user_repo=repo,
+            auth_service=auth_service,
+            token_generator=_generator(_store()),
+        )
 
         user = await service.register_user(
             email="roles@local.faultmaven",

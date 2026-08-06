@@ -112,26 +112,22 @@ def _build_local_jwt_generator(revocation_store):
             this generator are rejected on every API endpoint.
     """
     from faultmaven.modules.auth.domain.services.jwt_token_generator import (
-        HS256JWTTokenGenerator,
+        SigningKeyUnavailableError,
+        build_hs256_token_generator,
     )
 
-    settings = get_settings()
-    if not settings.security.jwt_secret_key:
+    try:
+        return build_hs256_token_generator(get_settings(), revocation_store)
+    except SigningKeyUnavailableError as e:
+        # The plumbing — secret, lifetimes, issuer, audience — is the generator
+        # module's, so this path and the container wire identical generators
+        # (#959). Only the protocol translation stays here, with a static
+        # detail: the caught text goes to the log, never to the response.
+        logger.error("Local JWT generator unavailable: %s", e)
         raise HTTPException(
             status_code=500,
             detail="JWT_SECRET_KEY not configured for local mode authentication",
-        )
-
-    return HS256JWTTokenGenerator(
-        secret_key=settings.security.jwt_secret_key.get_secret_value(),
-        revocation_store=revocation_store,
-        # Lifetimes come from the single expiry source (#888); the security half
-        # carries only the secret, issuer and audience.
-        access_token_expire_minutes=settings.auth.jwt_access_token_expire_minutes,
-        refresh_token_expire_days=settings.auth.jwt_refresh_token_expire_days,
-        issuer=settings.security.jwt_issuer,
-        audience=settings.security.jwt_audience,
-    )
+        ) from e
 
 
 # =============================================================================
