@@ -160,3 +160,74 @@ def test_no_retired_value_survives_the_migration(engine):
     )
     _run_upgrade(engine)
     assert _RETIRED not in set(_reasons(engine).values())
+
+
+# -- the PostgreSQL shape -----------------------------------------------------
+# psycopg2's JSONB adapter returns a dict, not a string, so the decode added for
+# SQLite must pass it through untouched. Asserted rather than reasoned about:
+# "the guard only fires for str" is exactly the shape of claim that produced the
+# original defect. No live PostgreSQL is needed — what differs between backends
+# is the Python TYPE handed back, so the type is what gets substituted.
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeBind:
+    """Stands in for a psycopg2-backed connection: JSONB comes back as a dict."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.updates = []
+
+    def execute(self, statement, params=None):
+        sql = str(statement)
+        if sql.startswith("SELECT"):
+            return _FakeResult(self._rows)
+        self.updates.append(params)
+        return _FakeResult([])
+
+
+def _run_upgrade_with_bind(bind):
+    import importlib.util
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    path = next(Path("alembic/versions").glob("*_040_closure_reason_vocabulary.py"))
+    spec = importlib.util.spec_from_file_location("mig040_pg", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.op = SimpleNamespace(get_bind=lambda: bind)
+    module.upgrade()
+    return bind.updates
+
+
+def test_a_dict_progress_blob_is_read_without_decoding():
+    """The PostgreSQL path: JSONB arrives already parsed."""
+
+    bind = _FakeBind([("c_pg", {"mitigation": {"verified": True}})])
+    updates = _run_upgrade_with_bind(bind)
+    assert updates == [{"reason": "mitigation_sufficient", "cid": "c_pg"}]
+
+
+def test_a_dict_blob_without_a_verified_mitigation_maps_bare():
+    bind = _FakeBind([("c_pg_bare", {"mitigation": {"verified": False}})])
+    updates = _run_upgrade_with_bind(bind)
+    assert updates == [{"reason": "closed_insufficient_evidence", "cid": "c_pg_bare"}]
+
+
+def test_both_backend_shapes_agree_on_the_same_case():
+    """The invariant that matters: a case with a verified mitigation gets the
+    same reason whichever backend it lives on. The original defect was exactly
+    this disagreement, silent and backend-specific."""
+
+    as_dict = _run_upgrade_with_bind(
+        _FakeBind([("c", {"mitigation": {"verified": True}})])
+    )
+    as_text = _run_upgrade_with_bind(
+        _FakeBind([("c", json.dumps({"mitigation": {"verified": True}}))])
+    )
+    assert as_dict == as_text == [{"reason": "mitigation_sufficient", "cid": "c"}]
