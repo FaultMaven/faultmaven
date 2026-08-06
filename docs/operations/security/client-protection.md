@@ -22,9 +22,9 @@ This document describes FaultMaven's defense mechanisms against malicious or mal
 **Purpose**: Prevent rapid-fire requests that can overwhelm the system.
 
 **Scope**:
-- Per-session limits: 10 requests/minute, 100 requests/hour
+- Per-session limits: one pair of buckets for writes, one for cheap reads (below)
 - Per-endpoint limits: Specific limits for high-cost operations
-- Global limits: 1000 requests/minute across all clients
+- Global limits: 1000 requests/minute across all clients, keyed on client address
 
 **Implementation**: Redis-backed sliding window rate limiter. The window counts
 **requests**, not time buckets — one sorted-set entry per request inside it, so a
@@ -32,16 +32,92 @@ limit of L admits exactly L requests however they distribute across seconds. See
 [rate-limiting-sliding-window.md](../../architecture/security/rate-limiting-sliding-window.md)
 for the algorithm and its invariants.
 
-**Configuration**:
+**Configuration** (the defaults on the canonical settings path; the production
+preset is tighter — see the table below):
 ```python
 RATE_LIMITS = {
     "global": {"requests": 1000, "window": 60},
-    "per_session": {"requests": 10, "window": 60},
+    "per_session": {"requests": 20, "window": 60},
     "per_session_hourly": {"requests": 100, "window": 3600},
+    "per_session_read": {"requests": 240, "window": 60},
+    "per_session_read_hourly": {"requests": 3000, "window": 3600},
     "title_generation": {"requests": 1, "window": 300},  # 5 minutes
     "agent_query": {"requests": 5, "window": 60}
 }
 ```
+
+#### 1a. Reads and writes are metered separately
+
+A session holds **two independent pairs** of per-session buckets, and every
+request is charged to exactly one pair:
+
+| Traffic | Buckets | Why |
+|---------|---------|-----|
+| Cheap reads — `GET` / `HEAD` / `OPTIONS` outside the list below | `per_session_read`, `per_session_read_hourly` | Ordinary SPA navigation: loading a case, its messages, its files. Cheap to serve, and issued in bursts. |
+| Writes, plus the read endpoints listed below | `per_session`, `per_session_hourly` | Consumes LLM or embedding compute. This is the quota that protection exists for. |
+
+Both pairs are bounded by `global` on top, which is keyed on the client address
+rather than the session.
+
+**Why a second pair rather than an exemption.** A blanket per-session limit of
+10 requests/minute refused normal navigation (fm#994) — a case view issues well
+over ten GETs. Exempting reads from the per-minute bucket alone does not fix it:
+they stay charged to the shared *hourly* bucket, so a burst still exhausts the
+session, now for up to an hour and for its `POST` turns as well as its reads.
+Separate pairs are what makes the failure modes independent — a read flood can
+only refuse reads.
+
+**Why the exception list.** The HTTP verb is a proxy for cost, and for a few
+endpoints it is the wrong one. These `GET`s each run a query embedding (BGE-M3,
+behind a process-wide lock) and a vector similarity search per call, so they are
+metered as writes:
+
+- `GET /api/v1/cases/{case_id}/report-recommendations`
+- `GET /api/v1/reports/recommendations/{case_id}`
+- `GET /api/v1/knowledge/documents/{document_id}/snippet`
+
+The list lives in `EXPENSIVE_READ_PATTERNS` in
+`faultmaven/api/middleware/rate_limiting.py`. A hand-maintained list of
+exceptions rots in the permissive direction — an endpoint added later inherits
+"cheap" by saying nothing — so
+`tests/unit/api/middleware/test_rate_limit_read_cost_classification.py` guards it
+by **reachability rather than by inventory**. For every read route on every
+mounted router it asks whether the handler can reach an embedder or vector store,
+through a declared dependency or an import inside the handler body. Seven of the
+sixty-one can, and only those carry a recorded verdict; the other fifty-four are
+proved cheap on each run rather than listed.
+
+What that means in practice:
+
+- Adding an ordinary read endpoint costs nothing — no list to update.
+- Adding one that touches the vector store **fails the test** until someone
+  records whether it embeds. Four of the seven flagged today hold a
+  `KnowledgeService` but only read rows and counts; they are recorded cheap, with
+  the reason.
+- A pattern that stops matching any live route fails too — a rename would
+  otherwise demote an expensive endpoint to the roomy bucket in silence.
+- `MOUNTS` in that test is checked against `main.py`'s own `include_router` calls
+  by AST, so a router mounted there but missing from the probe is a failure
+  rather than a blind spot.
+
+**Shipped values**:
+
+| Bucket | settings path | development | production |
+|--------|--------------|-------------|------------|
+| `global` | 1000 / 60s | 5000 / 60s | 500 / 60s |
+| `per_session` | 20 / 60s | 50 / 60s | 10 / 60s |
+| `per_session_hourly` | 100 / 3600s | 500 / 3600s | 50 / 3600s |
+| `per_session_read` | 240 / 60s | 600 / 60s | 120 / 60s |
+| `per_session_read_hourly` | 3000 / 3600s | 6000 / 3600s | 1200 / 3600s |
+
+**A missing read bucket narrows, it never widens.** The limiter allows anything
+it holds no configuration for, so routing reads at an unconfigured bucket would
+leave them unmetered. The middleware therefore requires *both* read keys to be
+present before it applies the split; with either missing it charges reads to the
+write buckets — the pre-split behaviour — and logs why. Presence is the test,
+not `enabled`: an operator who ships `per_session_read` with `enabled: false` has
+asked for reads not to be metered separately, which is a different statement from
+never having been told the bucket exists.
 
 #### 2. Request Deduplication
 **Purpose**: Prevent processing identical requests within short time windows.
@@ -206,42 +282,58 @@ class AgentTimeoutManager:
 
 ### Environment Variables
 
+These are read on every deployment:
+
 ```bash
-# Rate Limiting
-RATE_LIMIT_ENABLED=true
-RATE_LIMIT_REDIS_URL=redis://localhost:6379/1
-RATE_LIMIT_GLOBAL_REQUESTS=1000
-RATE_LIMIT_GLOBAL_WINDOW=60
+# Whether the protection middleware is installed at all. Default false —
+# with it unset, rate limiting, deduplication and timeouts are all absent.
+BASIC_PROTECTION_ENABLED=true
 
-# Proxies whose X-Forwarded-For / X-Real-IP may be believed when deciding
-# which client a limit applies to. Addresses or CIDRs, comma-separated.
-# Empty (the default) means no forwarding header is honoured and limits key
-# on the socket peer. Kubernetes: set this to the ingress pod range.
+# Degrade policy for rate limiting and deduplication when Redis is
+# unreachable. Governs nothing else — in particular not PII redaction.
+# The production preset pins this closed and does not read the key.
+PROTECTION_RATE_LIMIT_FAIL_OPEN=true
+
+# Proxies whose X-Forwarded-For may be believed when deciding which client a
+# limit applies to. Addresses or CIDRs, comma-separated. Empty (the default)
+# means no forwarding header is honoured and limits key on the socket peer.
+# Kubernetes: set this to the pod CIDR. X-Real-IP is never believed.
 PROTECTION_TRUSTED_PROXIES=
-
-# Request Deduplication
-DEDUP_ENABLED=true
-DEDUP_DEFAULT_TTL=30
-DEDUP_TITLE_TTL=300
-
-# Agent Timeouts
-AGENT_TIMEOUT_ENABLED=true
-AGENT_TOTAL_TIMEOUT=60
-AGENT_PHASE_TIMEOUT=45
-AGENT_LLM_TIMEOUT=30
 ```
 
-### Rate Limit Configuration
+**The `RATE_LIMIT_*`, `DEDUP_*` and `TIMEOUT_*` keys are not operator knobs.**
+`load_protection_settings` reads them only from `_load_from_environment`, which
+runs when `get_settings()` itself raises — a broken validator, or very early
+init. On a healthy deployment the settings path supplies the values above from
+code and never consults the environment, so setting these changes nothing. They
+exist so that a process which has already lost its settings still starts from
+the deployment's intended numbers:
 
-```python
-# Per-endpoint rate limits (requests per minute)
-ENDPOINT_RATE_LIMITS = {
-    "/api/v1/cases/{case_id}/queries": 5,
-    "/api/v1/data/upload": 10,
-    "/api/v1/sessions/": 20,
-    "title_generation": 1,  # Special case: 1 per 5 minutes
-}
+```bash
+RATE_LIMITING_ENABLED=true
+RATE_LIMIT_GLOBAL=1000:60                 # requests:window_seconds
+RATE_LIMIT_PER_SESSION=20:60
+RATE_LIMIT_PER_SESSION_HOURLY=100:3600
+RATE_LIMIT_PER_SESSION_READ=240:60
+RATE_LIMIT_PER_SESSION_READ_HOURLY=3000:3600
+RATE_LIMIT_TITLE_GENERATION=1:300
 ```
+
+A malformed value falls back to the default shown rather than to no limit.
+
+Changing the limits a deployment actually runs on means changing the preset in
+`faultmaven/config/protection.py`. Promoting these keys onto the settings path is
+tracked as a TODO in `_load_from_environment`.
+
+### Per-endpoint rate limits
+
+`RateLimitMiddleware.endpoint_configs` reserves a hook for limits attached to a
+single path. **No endpoint currently uses it** — the two entries present declare
+limit types that the dispatch path does not read, and neither carries a
+`special_handling` callable. The `title_generation` and `agent_query` entries in
+`RATE_LIMITS` are likewise configured but never checked — no code path calls
+`check_rate_limit` with either type. Per-session cost control is done by the
+read/write split above, not here.
 
 There is no progressive penalty ladder. A refused client is told how long its
 own window actually takes to free quota, and nothing longer: repeat offenders
@@ -294,6 +386,27 @@ PROTECTION_METRICS = {
   "correlation_id": "abc123"
 }
 ```
+
+**This body has no `detail` field, and that is a contract clients get wrong.**
+Every FastAPI handler in the service puts its human-readable text in `detail`;
+`ProtectionErrorResponse` — the shape above, used by every 429 from rate
+limiting and the 409/503 from deduplication — puts it in `message` instead. A
+client that reads only `detail` therefore discards the explanation on exactly
+the responses that carry the most of it, and shows a generic fallback instead of
+the limit and the window.
+
+That is not hypothetical: it is what made a rate-limited case view in the
+Copilot report a fabricated string rather than the server's own (fm#994), and
+the extension had thirteen call sites independently reading `detail` alone.
+Clients should read `detail ?? message`, from one shared helper rather than at
+each call site. In `faultmaven-copilot` that helper is
+`errorBodyText` (`src/lib/errors/error-body.ts`).
+
+Two further things a client needs from a 429, both of which are headers rather
+than body fields: `Retry-After` (the caller's own remaining wait — see above)
+and `X-RateLimit-*`. A client that surfaces a countdown must read `Retry-After`;
+the body's `retry_after` mirrors it, but the headers are what the served-response
+path advertises too.
 
 ## Testing Strategy
 
