@@ -32,6 +32,7 @@ from unittest.mock import patch
 import jwt as pyjwt
 import pytest
 
+from faultmaven.exceptions import ServiceError
 from faultmaven.infrastructure.persistence.user_repository import (
     InMemoryUserRepository,
 )
@@ -309,7 +310,7 @@ class TestDeactivatedAccountsAreNotEnumerable:
         decoy = await generator.generate_dummy_reset_token(EMAIL.upper())
 
         real_claims = await generator.verify_password_reset_token(real_token)
-        decoy_claims = await generator.verify_password_reset_token(decoy)
+        decoy_claims = await generator.verify_password_reset_token(decoy.token)
         assert real_claims["email"] == decoy_claims["email"] == EMAIL.lower()
 
     async def test_the_decoys_still_agree_with_each_other(self):
@@ -349,20 +350,33 @@ class TestDeactivatedAccountsAreNotEnumerable:
         stored = await user_service.user_repo.get(user.user_id)
         assert verify_password(OLD_PASSWORD, stored.hashed_password)
 
-    async def test_no_single_use_key_is_written_for_a_refused_mint(self):
-        """Nothing to redeem means nothing to track — and nothing to leak.
+    async def test_a_single_use_key_is_written_for_every_outcome(self):
+        """The store write is part of the observable, so it happens every time.
 
-        A Redis key naming the deactivated user would be an oracle for anyone
-        who can read the store, and would also let the decoy be told apart from
-        the unknown-email one by an operator staring at the same store.
+        Writing only on the real branch made a Redis fault an existence oracle:
+        a registered address raised while an unregistered one returned a token.
+        The decoy's key is filed under its own random jti and stores its own
+        random subject, so the store still holds nothing that names an account —
+        which was the original reason for skipping the write, and is preserved
+        here without the asymmetry.
         """
         user_service, user = await _build("HS256")
         await self._deactivate(user_service, user)
 
-        reset_token = await user_service.request_password_reset(email=EMAIL)
+        deactivated_token = await user_service.request_password_reset(email=EMAIL)
+        unknown_token = await user_service.request_password_reset(email=EMAIL_UNKNOWN)
 
-        jti = pyjwt.decode(reset_token, options={"verify_signature": False})["jti"]
-        assert await user_service.redis_client.get(f"password_reset:{jti}") is None
+        for token in (deactivated_token, unknown_token):
+            claims = pyjwt.decode(token, options={"verify_signature": False})
+            stored = await user_service.redis_client.get(
+                f"password_reset:{claims['jti']}"
+            )
+            assert stored is not None, "every outcome files a single-use key"
+            # Never an account id — the store must not become the oracle the
+            # claims are careful not to be.
+            assert stored != user.user_id
+            assert stored == claims["sub"]
+            uuid.UUID(stored)
 
 
 class TestTheGeneratorRefusesWhatIsNotAResetToken:
@@ -406,3 +420,139 @@ class TestTheGeneratorRefusesWhatIsNotAResetToken:
 
         with pytest.raises(pyjwt.InvalidTokenError):
             await user_service.token_generator.verify_password_reset_token(forged)
+
+
+class TestAFaultingStoreIsNotAnOracle:
+    """A Redis fault must fail all three outcomes identically.
+
+    The asymmetry this replaces was real and this PR's own doing to document:
+    only the real-account branch wrote to Redis, so with the store down a
+    REGISTERED address raised while an UNREGISTERED one returned a token — the
+    exact question the decoy exists to refuse, answered by an outage.
+    """
+
+    async def _faulting(self, user_service):
+        class FaultingRedis:
+            async def setex(self, *_args, **_kwargs):
+                raise ConnectionError("redis is down")
+
+            async def delete(self, *_args, **_kwargs):
+                raise ConnectionError("redis is down")
+
+            async def get(self, *_args, **_kwargs):
+                raise ConnectionError("redis is down")
+
+        user_service.redis_client = FaultingRedis()
+
+    async def _observable(self, user_service, email):
+        """What the caller sees: the exception class and its message."""
+        try:
+            await user_service.request_password_reset(email=email)
+        except Exception as exc:  # noqa: BLE001 — the class IS the observable
+            return type(exc), str(exc)
+        return None, "returned a token"
+
+    async def test_every_input_class_fails_the_same_way(self):
+        user_service, user = await _build("HS256")
+
+        # A deactivated account, in its own deployment so the registered one
+        # above stays live.
+        deactivated_service, deactivated_user = await _build("HS256")
+        stored = await deactivated_service.user_repo.get(deactivated_user.user_id)
+        stored.is_active = False
+        await deactivated_service.user_repo.save(stored)
+
+        await self._faulting(user_service)
+        await self._faulting(deactivated_service)
+
+        registered = await self._observable(user_service, EMAIL)
+        unknown = await self._observable(user_service, EMAIL_UNKNOWN)
+        deactivated = await self._observable(deactivated_service, EMAIL)
+
+        assert registered == unknown == deactivated, (
+            "a store fault must not separate the three outcomes: "
+            f"registered={registered}, unknown={unknown}, "
+            f"deactivated={deactivated}"
+        )
+        assert registered[0] is ConnectionError
+        assert user.email == EMAIL  # the registered address really was live
+
+
+class TestWithoutASignerTheFlowRefuses:
+    """No signing key: refuse, uniformly, rather than hand out a dead token.
+
+    A decoy in this state is a token that can never be redeemed, handed to a
+    real user together with "check your email" — a fabricated success. The
+    refusal is raised before anything reads the address, so it cannot depend on
+    whether that address exists.
+    """
+
+    async def _unsigned_service(self):
+        user_service, user = await _build("HS256")
+        user_service.token_generator = None
+        return user_service, user
+
+    async def test_the_refusal_is_identical_for_every_input_class(self):
+        user_service, user = await self._unsigned_service()
+
+        deactivated_service, deactivated_user = await self._unsigned_service()
+        stored = await deactivated_service.user_repo.get(deactivated_user.user_id)
+        stored.is_active = False
+        await deactivated_service.user_repo.save(stored)
+
+        observables = []
+        for service, email in (
+            (user_service, EMAIL),
+            (user_service, EMAIL_UNKNOWN),
+            (deactivated_service, EMAIL),
+        ):
+            with pytest.raises(ServiceError) as refusal:
+                await service.request_password_reset(email=email)
+            observables.append((type(refusal.value), str(refusal.value)))
+
+        assert len(set(observables)) == 1, observables
+        assert "signing key" in observables[0][1]
+        assert user.email == EMAIL
+
+    async def test_no_token_is_handed_out_and_nothing_is_filed(self):
+        user_service, _user = await self._unsigned_service()
+
+        with pytest.raises(ServiceError):
+            await user_service.request_password_reset(email=EMAIL)
+
+        assert await user_service.redis_client.keys("password_reset:*") == []
+
+    async def test_redemption_refuses_too(self):
+        """Nothing to verify against; accepting a token here would be worse."""
+        user_service, _user = await _build("HS256")
+        reset_token = await user_service.request_password_reset(email=EMAIL)
+
+        user_service.token_generator = None
+
+        with pytest.raises(ServiceError):
+            await user_service.reset_password(reset_token, NEW_PASSWORD)
+
+    async def test_user_management_still_works_without_a_signer(self):
+        """The whole point: only the reset flow depends on a signer."""
+        user_service, user = await self._unsigned_service()
+
+        created = await user_service.register_user(
+            email="no-signer@local.faultmaven",
+            password=OLD_PASSWORD,
+            full_name="No Signer",
+        )
+        assert created.user_id
+
+        fetched = await user_service.get_user(user.user_id)
+        assert fetched.email == EMAIL
+
+        await user_service.change_password(
+            user_id=user.user_id,
+            current_password=OLD_PASSWORD,
+            new_password=NEW_PASSWORD,
+        )
+        stored = await user_service.user_repo.get(user.user_id)
+        assert verify_password(NEW_PASSWORD, stored.hashed_password)
+
+        deactivated = await user_service.deactivate_user(user.user_id)
+        assert deactivated.is_active is False

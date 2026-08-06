@@ -272,12 +272,20 @@ class TestRequestPasswordReset:
     @pytest.mark.asyncio
     async def test_reset_request_returns_token_for_nonexistent(self, user_service):
         """Reset request should return token even for non-existent email (enumeration prevention)."""
+        from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+            PasswordResetMint,
+        )
+
         with patch.object(
             user_service.token_generator,
             "generate_dummy_reset_token",
             new_callable=AsyncMock,
         ) as mock_dummy:
-            mock_dummy.return_value = "dummy-token"
+            # A decoy is a mint like any other: the caller files a single-use
+            # key for it, so a store fault cannot separate it from a real one.
+            mock_dummy.return_value = PasswordResetMint(
+                token="dummy-token", jti="dummy-jti", subject="dummy-subject"
+            )
             token = await user_service.request_password_reset(
                 email="nonexistent@example.com"
             )

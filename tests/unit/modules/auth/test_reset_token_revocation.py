@@ -346,9 +346,10 @@ class TestEveryRefusalLooksIdentical:
 
     async def _dummy(self, user_service, auth_service, store, user):
         """A token for an address with no account."""
-        return await user_service.token_generator.generate_dummy_reset_token(
+        mint = await user_service.token_generator.generate_dummy_reset_token(
             "nobody@local.faultmaven"
         )
+        return mint.token
 
     async def _spent(self, user_service, auth_service, store, user):
         token = await user_service.request_password_reset(email=EMAIL)

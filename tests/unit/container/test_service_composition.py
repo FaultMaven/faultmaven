@@ -18,6 +18,12 @@ present. Stubs are placed only at the true boundaries — the infrastructure
 services that would otherwise open a database connection, a Redis socket or an
 HTTP client. Nothing between ``register_services`` and the factories it calls is
 patched, because that is precisely the code under test.
+
+Note for anyone probing this by hand: ``python /abs/path/probe.py`` puts the
+SCRIPT's directory on ``sys.path[0]``, not the cwd. A probe script living
+outside the worktree therefore imports the shared checkout however carefully
+the cwd and ``PYTHONPATH`` were set — and reports on code you did not change.
+Put probe scripts inside the tree they are probing.
 """
 
 from __future__ import annotations
@@ -161,3 +167,97 @@ class TestLocalDeploymentComposes:
         # OAuth is off: its services are absent, and everything downstream of
         # them is still registered.
         assert container.get_service("case_service") is not None
+
+
+@pytest.mark.unit
+class TestCompositionWithNoSigningKey:
+    """Local mode where the JWT secret never resolved.
+
+    Reachable in production, not hypothetical: ``ensure_local_jwt_secret_env``
+    warns and returns when it cannot write ``data/.jwt_secret``, leaving
+    ``JWT_SECRET_KEY`` unset. Everything that does not sign must survive it —
+    the admin user routes read ``app.state.user_service`` and raise a bare
+    RuntimeError when it is absent, so an unwritable directory would otherwise
+    turn every ``/api/v1/admin/users`` request into a 500.
+    """
+
+    def _composed(self, monkeypatch):
+        monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+        settings = _settings(monkeypatch, AUTH_MODE="local")
+        assert settings.security.jwt_secret_key is None, "the no-key state"
+
+        container = _container(settings)
+        register_services(container)
+        return container
+
+    def test_composition_completes_and_names_the_absent_generator(self, monkeypatch):
+        container = self._composed(monkeypatch)
+
+        # Assigned, not merely unregistered: a direct attribute read — the
+        # pattern every other container service uses — must see None rather
+        # than raise AttributeError.
+        assert container.signing_token_generator is None
+        assert container.get_service("signing_token_generator") is None
+
+    def test_user_management_survives_it(self, monkeypatch):
+        container = self._composed(monkeypatch)
+
+        user_service = container.get_service("user_service")
+        assert user_service is not None, (
+            "admin user routes raise RuntimeError without this service; a "
+            "missing signing key must not take user management down"
+        )
+        assert user_service.token_generator is None
+
+    def test_downstream_services_are_still_registered(self, monkeypatch):
+        container = self._composed(monkeypatch)
+
+        for name in ("tenant_provider", "case_service", "session_service"):
+            assert container.get_service(name) is not None, name
+
+    @pytest.mark.asyncio
+    async def test_the_reset_flow_refuses_uniformly(self, monkeypatch):
+        """Every input class gets the same refusal, and no dead token.
+
+        Uniform by construction: the refusal precedes the account lookup, so it
+        cannot depend on whether the address exists.
+        """
+        import fakeredis.aioredis as fakeredis_aio
+
+        from faultmaven.exceptions import ServiceError
+        from faultmaven.infrastructure.persistence.user_repository import (
+            InMemoryUserRepository,
+        )
+
+        container = self._composed(monkeypatch)
+        user_service = container.get_service("user_service")
+        user_service.user_repo = InMemoryUserRepository()
+        user_service.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
+
+        live = await user_service.register_user(
+            email="live@local.faultmaven",
+            password="Str0ng-P4ssw0rd!",
+            full_name="Live",
+        )
+        deactivated = await user_service.register_user(
+            email="gone@local.faultmaven",
+            password="Str0ng-P4ssw0rd!",
+            full_name="Gone",
+        )
+        stored = await user_service.user_repo.get(deactivated.user_id)
+        stored.is_active = False
+        await user_service.user_repo.save(stored)
+        assert live.user_id != deactivated.user_id
+
+        observables = set()
+        for email in (
+            "live@local.faultmaven",
+            "nobody@local.faultmaven",
+            "gone@local.faultmaven",
+        ):
+            with pytest.raises(ServiceError) as refusal:
+                await user_service.request_password_reset(email=email)
+            observables.add((type(refusal.value), str(refusal.value)))
+
+        assert len(observables) == 1, observables
+        assert await user_service.redis_client.keys("password_reset:*") == []
