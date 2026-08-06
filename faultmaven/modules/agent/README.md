@@ -1,14 +1,22 @@
 # Agent Module
 
-**Status**: ✅ Extraction Complete
-**Type**: Vertical Slice
-**Complexity**: Very High (Final Platform Evolution module)
+**Type**: Domain Service — business logic only, owns no database tables.
 
 ---
 
 ## Overview
 
-The Agent module provides AI-powered investigation workflows, agent orchestration, and tool execution for the FaultMaven platform. This is the **final and most complex** vertical slice in the Platform Evolution initiative.
+The Agent module supplies the investigation turn workflow and the tool set the
+milestone engine calls during an investigation. It is a leaf: nothing imports
+it, and it owns no persistence of its own — anything it stores goes through the
+Case module's contracts.
+
+It exposes **no HTTP routes**. Investigation turns arrive through the Case
+module's turn endpoint and are driven by `core/investigation/milestone_engine.py`.
+The agent-execution endpoints (`POST /cases/{id}/sessions/{sid}/execute`, with
+its SSE streaming variant) were removed along with the `AgentOrchestrationService`
+they drove; the milestone engine had already taken over that work, and nothing
+called them.
 
 ---
 
@@ -17,217 +25,150 @@ The Agent module provides AI-powered investigation workflows, agent orchestratio
 ```
 faultmaven/modules/agent/
 ├── api/
-│   ├── __init__.py
-│   └── routes.py              # Agent execution endpoints, streaming
+│   └── __init__.py             # No routes — see Overview
 ├── domain/
-│   ├── __init__.py
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── agent_execution.py  # AgentExecution, AgentToolCall, ExecutionStatus
-│   │   ├── agentic.py          # Agentic framework models
-│   │   └── investigation.py    # Investigation state, strategies, hypotheses
 │   ├── events/
-│   │   ├── __init__.py
-│   │   └── execution_events.py # ExecutionEvent, LLMEvent, streaming events
+│   │   └── execution_events.py # ExecutionEvent, streaming event types
+│   ├── models/
+│   │   └── agentic.py          # Agentic framework models, QueryIntent, SuggestedAction
 │   └── services/
-│       ├── __init__.py
-│       ├── agent_orchestration_service.py  # Low-level LLM + tool execution
-│       └── investigation_service.py        # High-level investigation management
-├── infrastructure/
-│   ├── __init__.py
-│   └── persistence/
-│       ├── __init__.py
-│       └── agent_execution_repository.py
-└── tools/
-    ├── __init__.py
-    ├── base.py                 # AgentTool base class, ToolContext
-    ├── registry.py             # ToolRegistry
-    ├── list_evidence_tool.py   # Evidence tools
-    ├── read_file_tool.py
-    ├── case_evidence_qa.py     # Case-scoped evidence Q&A
-    ├── kb_qa.py                # Unified KB Q&A (all scopes: global + personal + team)
-    ├── kb_tool_adapter.py      # AgentTool wrapper for kb_qa
-    ├── document_qa_tool.py     # KB-neutral base class (strategy pattern)
-    ├── search_file_tool.py     # Tier 2 mechanical search (keyword/regex)
-    ├── deep_analysis_tool.py   # Tier 3 deep LLM analysis
-    ├── web_search.py           # Web search tool
-    ├── kb_config.py            # Abstract KBConfig strategy interface
-    └── kb_configs/             # Knowledge base configurations
-        ├── __init__.py
-        ├── case_evidence_config.py
-        └── unified_kb_config.py
+│       ├── investigation_service.py  # Turn lifecycle around the MilestoneEngine
+│       └── query_classifier.py       # Deterministic processing-mode classifier
+├── jobs/
+│   └── storage_cleanup.py      # TTL-based orphan-file sweep
+├── tools/
+│   ├── base.py                 # AgentTool base class, ToolContext
+│   ├── list_evidence_tool.py
+│   ├── list_evidence_by_time_tool.py
+│   ├── list_top_entities_tool.py
+│   ├── find_entity_tool.py
+│   ├── read_file_tool.py
+│   ├── reclassify_evidence_tool.py
+│   ├── vectorize_file_tool.py
+│   ├── case_evidence_qa.py     # Case-scoped evidence Q&A
+│   ├── kb_qa.py                # Unified KB Q&A (global + personal + team)
+│   ├── kb_tool_adapter.py      # AgentTool wrapper for kb_qa
+│   ├── document_qa_tool.py     # KB-neutral base class (strategy pattern)
+│   ├── search_file_tool.py     # Tier 2 mechanical search (keyword/regex/extractor)
+│   ├── deep_analysis_tool.py   # Tier 3 deep LLM analysis
+│   ├── web_search.py           # Web search tool
+│   ├── kb_config.py            # Abstract KBConfig strategy interface
+│   └── kb_configs/             # Knowledge base configurations
+│       ├── case_evidence_config.py
+│       └── unified_kb_config.py
+└── exceptions.py
 ```
+
+There is no `infrastructure/`: as a Domain Service the module owns no tables, so
+it has no repositories. Execution audit data (`agent_executions`,
+`agent_tool_calls`) is **Case-owned** and reached through
+`modules/case/contracts.py`.
 
 ---
 
-## Key Components
+## Services
 
-### Services (2-Tier Architecture)
+### InvestigationService
 
-The Agent module maintains **two separate services** with clear separation of concerns by abstraction level:
+Wraps the `MilestoneEngine` with the turn lifecycle around it: access control,
+case retrieval and persistence, turn creation and processing, progress
+reporting, and session integration.
 
-#### 1. AgentOrchestrationService (Low-Level)
-- **Responsibility**: LLM calls, streaming, tool execution primitives, orchestration hardening
-- **Size**: ~1,350 LOC
-- **Dependencies**: LLM providers, tool registry, coverage metadata utilities
-- **Key Operations**:
-  - Execute agent with streaming responses
-  - Coordinate tool invocations
-  - Handle LLM provider interactions
-  - Token budget tracking
-  - **Coverage gap detection** (R3): Extract entities from user queries (timestamps, services, error codes, IPs), compare against evidence coverage metadata, inject advisories into LLM context
-  - **Per-evidence DA failure tracking** (R4): Track DA failure signals per evidence via `EvidenceDAState`, auto-vectorize large files on repeated failures, inject raw content for small files
-  - **Context budget tracking** (R5): 30K char budget for tool results with standard/aggressive compression preserving high-signal lines
+### QueryClassifier
 
-#### 2. InvestigationService (High-Level)
+Classifies a user message into a processing mode — `TRIAGE`,
+`DIRECTED_ANALYSIS`, or `KNOWLEDGE_QUERY` — from entity-detection heuristics.
+Deterministic and LLM-free, so it is cheap enough to run on every turn.
 
-- **Responsibility**: Investigation turn lifecycle and milestone coordination
-- **Dependencies**: MilestoneEngine, CaseRepository, preprocessing service, file storage service
-- **Key Operations**:
-  - Process investigation turns (user input → milestone advancement)
-  - Coordinate evidence intake through preprocessing
-  - Resolve user intent against pending agent suggestions
-  - Manage milestone progress and status transitions
+---
 
-### Tools (13 Tools)
+## Tools
 
-**Evidence Tools** (import from Evidence module):
-- `ListEvidenceTool` - List available evidence artifacts
-- `ReadFileTool` - Read evidence file contents
-- `CaseEvidenceQATool` - Q&A over case evidence
-- `SearchFileTool` - Tier 2 mechanical search (keyword/regex/extractor) with two-pass keyword matching and zero-result vocabulary recovery
-- `DeepAnalysisTool` - Tier 3 deep LLM analysis with pluggable backends (external, local, basic)
+Tools are constructed explicitly via DI during container initialization; there
+is no self-registering tool registry.
 
-**Knowledge Tools**:
+**Evidence tools** (read through the Evidence module):
 
-- `AnswerFromKB` (via `KBToolAdapter`, tool name: `kb_qa`) - Unified KB Q&A, searches all accessible scopes (global + personal + team) in a single query
-- `DocumentQATool` - KB-neutral base class (strategy pattern with KBConfig)
+- `ListEvidenceTool` — list available evidence artifacts
+- `ListEvidenceByTimeTool` — evidence within a time window
+- `ListTopEntitiesTool` — most-referenced entities across the case
+- `FindEntityTool` — locate a named entity in case evidence
+- `ReadFileTool` — read evidence file contents
+- `ReclassifyEvidenceTool` — correct an evidence classification
+- `VectorizeFileTool` — vectorize a file into the case vector store
+- `CaseEvidenceQATool` — Q&A over case evidence
+- `SearchFileTool` — Tier 2 mechanical search (keyword/regex/extractor), with
+  two-pass keyword matching and zero-result vocabulary recovery
+- `DeepAnalysisTool` — Tier 3 deep LLM analysis with pluggable backends
+  (external, local, basic)
 
-**Web Tools**:
+**Knowledge tools**:
 
-- `WebSearchTool` - Web search capability
+- `AnswerFromKB` (via `KBToolAdapter`, tool name `kb_qa`) — unified KB Q&A,
+  searching every accessible scope (global + personal + team) in one query
+- `DocumentQATool` — KB-neutral base class (strategy pattern with `KBConfig`)
 
-**Tool System**:
-- `AgentTool` - Base class for all tools
-- `ToolRegistry` - Centralized tool registration and discovery
+**Web tools**:
+
+- `WebSearchTool` — web search capability
 
 ---
 
 ## Dependencies
 
-### What Agent Module Depends On (Imports From)
+### What the Agent module imports
 
-| Module/Layer | Usage | Files |
-|--------------|-------|-------|
-| **core/investigation/** | Milestone engine, hypothesis manager | Shared infrastructure |
-| **infrastructure/llm/** | LLM provider abstractions | OpenAI, Anthropic, etc. |
-| **modules/agent/domain/services/llm_client.py** | LLM client wrapper | LLM operations |
-| **modules/case/** | Case context for investigations | `Case` model, `CaseRepository` |
-| **modules/evidence/** | Evidence retrieval for tools | `EvidenceArtifactService` |
-| **modules/knowledge/** | Knowledge base access for tools | Knowledge search, vector search |
+| Module/Layer | Usage |
+|--------------|-------|
+| `core/investigation/` | Milestone engine, hypothesis manager, intent resolver |
+| `infrastructure/llm/` | LLM provider abstractions and routing |
+| `modules/case/contracts` | `Case`, `ICaseRepository`, and the Case-owned execution models |
+| `modules/evidence/` | Evidence retrieval for tools |
+| `modules/knowledge/` | Knowledge base and vector search for tools |
 
-### What Depends on Agent Module (Imports From Agent)
+### What imports the Agent module
 
-**Nothing** - Agent is a **leaf module**. No other modules depend on it.
-
-**Rationale**:
-- Agent module sits at top of dependency graph
-- Provides user-facing investigation capabilities
-- Consumes services from other modules
-- If Case module needs agent status: Use **domain events** (not direct imports)
+**Nothing.** Agent is a leaf module: it sits at the top of the dependency graph
+and consumes services from the modules below it. If the Case module ever needs
+agent status, that goes through domain events rather than a direct import.
 
 ---
 
 ## Architectural Decisions
 
-### 1. ✅ Keep `core/investigation/` as Shared Infrastructure (NO MOVE)
+### `core/investigation/` stays shared infrastructure
 
-**Decision**: `core/investigation/` stays exactly where it is
-
-**Rationale**:
-- Already works as shared infrastructure
-- No other modules actually need investigation patterns currently
-- Avoids creating new top-level package during extraction
-- Reduces complexity and risk
-
-**Action**: Agent services import from existing `core/investigation/` location
+The milestone engine and hypothesis manager are not agent-module internals —
+they are the investigation core, and they stay in `core/investigation/`. Agent
+services import from there.
 
 ```python
-# Agent services import from existing location
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 ```
 
-### 2. ✅ ALL Tools in Agent Module (Initially)
+### LLM infrastructure stays shared
 
-**Decision**: All 11 tools in `modules/agent/tools/` initially (no cross-module distribution)
+LLM providers and routing live in `infrastructure/llm/`, not here. Report needs
+them for summaries and Knowledge needs them for embeddings, so they belong below
+every module that calls them rather than inside one.
 
-**Rationale**:
-- Clear ownership: Agent module owns all tools
-- Single registry, simple discovery
-- Reduces blast radius (no changes to Evidence/Knowledge modules)
-- Faster extraction
-- Tools import from Evidence/Knowledge services (dependency is explicit)
+### All tools live in this module
 
-**Future Improvement**: After Agent extraction is stable, we can refactor to distributed tools if needed.
-
-### 3. ✅ Three Separate Services (Clear Separation)
-
-**Decision**: Maintain three separate services with clear responsibilities
-
-**Rationale**:
-- Clear separation prevents god object anti-pattern
-- Each service has distinct responsibility level
-- Easier to test and maintain in isolation
-- If merging is needed later, do it as **separate refactor AFTER extraction**
-
-### 4. ✅ Keep LLM Infrastructure as Shared (NO MOVE)
-
-**Decision**: LLM infrastructure remains in `infrastructure/llm/`; `llm_client.py` moved to `modules/agent/domain/services/`
-
-**Rationale**:
-- Other modules may need LLM (Report for summaries, Knowledge for embeddings)
-- Already well-abstracted as shared infrastructure
-- Reduces Agent module extraction scope
+Tools stay in `modules/agent/tools/` rather than being distributed to the
+modules whose data they read. One location means one place to look and one
+construction path; the dependency on Evidence and Knowledge is explicit in the
+imports.
 
 ---
 
-## API Endpoints
-
-### Agent Execution
-
-- `POST /api/v1/cases/{case_id}/sessions/{session_id}/execute` - Execute agent with streaming
-- `POST /api/v1/cases/{case_id}/sessions/{session_id}/execute/non-streaming` - Execute without streaming
-
-**Request Body**:
-```json
-{
-  "user_message": "string",
-  "agent_type": "investigator",
-  "max_iterations": 10
-}
-```
-
-**Response** (Streaming):
-Server-Sent Events (SSE) with event types:
-- `started` - Execution started
-- `thinking` - Agent reasoning
-- `tool_call` - Tool invocation
-- `tool_result` - Tool execution result
-- `response` - Incremental response chunk
-- `completed` - Execution finished
-- `error` - Error occurred
-
----
-
-## Usage Examples
-
-### Importing from Agent Module
+## Usage
 
 ```python
-# Models
-from faultmaven.modules.agent.domain.models.agent_execution import (
+# Execution audit models — Case-owned, imported from Case contracts
+from faultmaven.modules.case.contracts import (
     AgentExecution,
     AgentToolCall,
+    AgentType,
     ExecutionStatus,
 )
 
@@ -237,121 +178,19 @@ from faultmaven.modules.agent.domain.events.execution_events import (
     ExecutionEventType,
 )
 
-# Services
-from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
-    AgentOrchestrationService,
-)
-
 # Tools
 from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
-# Tools are constructed explicitly via DI during container initialization.
 ```
 
-### Backward Compatibility
-
-For gradual migration, backward-compatible re-exports are available:
-
-```python
-# These still work (temporary, will be removed in future)
-from faultmaven.models import AgentExecution
-from faultmaven.domain import ExecutionEvent
-from faultmaven.services import AgentOrchestrationService
-```
-
-**Note**: New code should use the `modules/agent/*` paths.
+The module does not eagerly import its submodules — import them directly, as
+above, rather than expecting attributes on the package.
 
 ---
 
 ## Testing
 
-### Unit Tests
-- Service logic tests (AgentOrchestrationService, InvestigationService)
-- Tool tests (each tool class)
-- Model validation tests
+**Unit tests** — tool behaviour per tool class, model validation, and the
+query classifier's mode boundaries.
 
-### Integration Tests
-- Agent execution end-to-end workflows
-- Tool invocation with actual Evidence/Knowledge services
-- Streaming response handling
-- Error handling and recovery
-
-### Performance Tests
-- Agent execution latency
-- Tool invocation overhead
-- Streaming throughput
-
----
-
-## Future Improvements
-
-### 1. Distributed Tools Pattern
-
-**Current**: All tools in `modules/agent/tools/`
-
-**Future**: Distribute tools to owning modules
-- Evidence tools → `modules/evidence/tools/`
-- Knowledge tools → `modules/knowledge/tools/`
-- Plugin-based tool discovery
-
-**Benefit**: Better module cohesion, tools live with their domain
-
-### 2. Service Consolidation (If Needed)
-
-**Current**: Three separate services
-
-**Future**: If overlap becomes unmanageable, consider merging
-- Option A: Single orchestration service
-- Option B: Two services (execution + investigation)
-
-**Note**: Only if complexity justifies it. Current separation works well.
-
-### 3. Investigation Core Library (If Other Modules Need It)
-
-**Current**: `core/investigation/` as shared infrastructure
-
-**Future**: If other modules need investigation patterns
-- Extract to `faultmaven/investigation/core/`
-- Make it a proper shared library
-
----
-
-## Migration Notes
-
-### Extraction Timeline
-
-- **Phase 1** (Models & Events): Complete
-- **Phase 2** (Services): Complete
-- **Phase 3** (API, Tools, Repos): Complete
-- **Phase 4** (Cleanup & Docs): Complete
-
-**Total Extraction Time**: 1 day (2026-01-07)
-
-### Files Moved
-
-**Production Files**: 24 files
-- 3 domain models
-- 1 events file
-- 3 services
-- 1 API route file
-- 1 repository
-- 11 tool files + 1 config + 3 kb_configs
-
-**What Did NOT Move** (Shared Infrastructure):
-- `core/investigation/` - Milestone engine, hypothesis manager
-- `infrastructure/llm/` - LLM providers
-- `modules/agent/domain/services/llm_client.py` - LLM client (moved from `integrations/`)
-
----
-
-## References
-
-- [Agent Module Extraction Plan](../../../docs/working/AGENT-MODULE-EXTRACTION-PLAN.md)
-- [Agent Extraction Progress](../../../docs/working/AGENT-EXTRACTION-PROGRESS.md)
-- [Module Extraction Status](../../../docs/working/MODULE-EXTRACTION-STATUS.md)
-- [Platform Evolution Checkpoint](../../../docs/working/CHECKPOINT_2025_12_27.md)
-
----
-
-**Module Status**: ✅ Extraction Complete
-**Platform Evolution Progress**: 86% (6/7 modules)
-**Next Module**: Session module (under architectural review)
+**Integration tests** — tool invocation against real Evidence and Knowledge
+services, and turn processing through `InvestigationService`.
