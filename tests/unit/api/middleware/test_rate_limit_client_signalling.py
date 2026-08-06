@@ -70,11 +70,11 @@ def _app(redis_client):
     return SimpleNamespace(state=SimpleNamespace(redis_client=redis_client))
 
 
-def _request(app, client, headers=None):
+def _request(app, client, headers=None, method="GET"):
     scope = {
         "type": "http",
         "http_version": "1.1",
-        "method": "GET",
+        "method": method,
         "scheme": "http",
         "server": ("testserver", 80),
         "root_path": "",
@@ -279,6 +279,93 @@ async def test_an_unmeasured_wait_is_absent_not_defaulted():
     body = json.loads(refused.body)
     assert "None" not in body["message"], body["message"]
     assert body["retry_after"] is None, body
+
+
+_ALL_SITES = [
+    (LimitType.GLOBAL, "GET"),
+    (LimitType.PER_SESSION, "POST"),
+    (LimitType.PER_SESSION_HOURLY, "POST"),
+    (LimitType.PER_SESSION_READ, "GET"),
+    (LimitType.PER_SESSION_READ_HOURLY, "GET"),
+]
+
+
+@pytest.mark.parametrize("refusing_type, method", _ALL_SITES)
+async def test_no_raise_site_defaults_an_unmeasured_wait(refusing_type, method):
+    """The contract above is a property of every raise site, not of one of them.
+
+    The test beside this one drives a ``global`` refusal, and for a long time
+    that was the whole guard — so restoring ``or 60`` / ``or 3600`` on either
+    *session* raise site turned nothing red, and the read/write split (fm#994)
+    then routed four limit types through those same two sites. A limit's own
+    fallback is only reachable through the site that raises for it, so the
+    sweep has to name each one: the method chosen per case is what decides
+    which pair ``_check_session_rate_limits`` selects.
+    """
+    settings = get_development_protection_settings()
+    settings.rate_limits = {
+        LimitType.GLOBAL.value: RateLimitConfig(enabled=True, requests=7, window=60),
+        LimitType.PER_SESSION.value: RateLimitConfig(
+            enabled=True, requests=7, window=60
+        ),
+        LimitType.PER_SESSION_HOURLY.value: RateLimitConfig(
+            enabled=True, requests=7, window=3600
+        ),
+        LimitType.PER_SESSION_READ.value: RateLimitConfig(
+            enabled=True, requests=7, window=60
+        ),
+        LimitType.PER_SESSION_READ_HOURLY.value: RateLimitConfig(
+            enabled=True, requests=7, window=3600
+        ),
+    }
+
+    mw = _middleware(settings)
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+    captured = []
+
+    async def _refuse_one(*, key, limit_type, identifier=""):
+        # Only the site under test refuses, and it refuses with nothing
+        # measured — every other check must allow, or the request would be
+        # refused by a site this case is not about.
+        if limit_type is refusing_type:
+            return RateLimitResult(
+                allowed=False,
+                limit_type=limit_type,
+                current_count=7,
+                limit=7,
+                retry_after=None,
+                reset_time=None,
+            )
+        return RateLimitResult(
+            allowed=True, limit_type=limit_type, current_count=1, limit=7
+        )
+
+    mw.rate_limiter.check_rate_limit = _refuse_one
+
+    original = mw._create_rate_limit_response
+
+    def _capture(error, request):
+        captured.append(error)
+        return original(error, request)
+
+    mw._create_rate_limit_response = _capture
+
+    request = _request(
+        app, _unique_client(), headers={"X-Session-ID": "s-1"}, method=method
+    )
+    refused = await mw.dispatch(request, _call_next)
+
+    assert refused.status_code == 429, f"{refusing_type} never refused the request"
+    assert captured, "the refusal never reached the response builder"
+    assert captured[0].limit_type == refusing_type.value, (
+        "a different site refused than the one under test — this case is not "
+        f"exercising {refusing_type}: {captured[0].limit_type}"
+    )
+    assert captured[0].retry_after is None, (
+        f"the {refusing_type} raise site substituted a fabricated wait for the "
+        f"one the limiter did not measure: {captured[0].retry_after}"
+    )
+    assert "Retry-After" not in refused.headers, dict(refused.headers)
 
 
 async def test_the_measured_wait_reaches_the_header_however_small():
