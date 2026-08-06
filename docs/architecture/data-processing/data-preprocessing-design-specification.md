@@ -948,7 +948,9 @@ Three independent fallback trigger signals remain for cases where proactive vect
 
 > **Removed in v5.2:** The `da_call_count >= 3` trigger. Calling DA 3 times on a file is legitimate thorough investigation (e.g., error patterns, timeline, root cause), not failure. This trigger conflated investigation depth with tool inadequacy.
 
-**Cross-turn persistence**: none. `da_invocation_count` was specified as an Evidence field persisted via `repository.save(case)` so the `/sessions/execute` path could reconstruct per-evidence DA history for its `EvidenceDAState` tracking. That field was never added, and both the path and `EvidenceDAState` were removed with the agent orchestration service. DA failure tracking is now per-turn state in `milestone_engine._tool_augmented_generate()` (`da_empty_search_counts` plus the deep-analysis confidence signal), so the reactive vectorization triggers see only the current turn's evidence. Reinstating cross-turn history would need the Evidence column and a migration.
+**Cross-turn persistence**: none. `da_invocation_count` was specified as an Evidence field persisted via `repository.save(case)` so the `/sessions/execute` path could reconstruct per-evidence DA history for its `EvidenceDAState` tracking. The Pydantic field existed but never had a backing DB column, so every save silently dropped the value; it was deleted as dead decoration on 2026-04-25. Both the `/sessions/execute` path and `EvidenceDAState` were later removed with the agent orchestration service. DA failure tracking is now per-turn state in `milestone_engine._tool_augmented_generate()` (`da_empty_search_counts` plus the deep-analysis confidence signal), so the reactive triggers see only the current turn's evidence.
+
+That is a deliberate design, not an unfinished migration. The state that must survive a turn boundary — "has this file already been vectorized?" — is the `evidence.vectorized` column, which the proactive pass consults every turn alongside an in-flight task registry, so no file is embedded twice. The per-turn counters only drive the *reactive* fallback, whose targets on a later turn are already covered: large DA-mode files by the proactive pass, sub-threshold files by direct raw-content injection. Reinstating cross-turn DA history would need a new Evidence column and a migration, and needs a reason beyond symmetry.
 
 **Reactive vectorization** calls `_reactive_vectorize()` which checks the size gate, calls `_vectorize_evidence()` wrapped with `asyncio.wait_for(..., timeout=settings.agent.vectorization_reactive_timeout_seconds)`, and injects the `[SYSTEM]` message on success. Each trigger fires independently — whichever fires first vectorizes the file. On reactive timeout, no advisory is appended and the agent proceeds without semantic-search results for that turn; a proactive task for the same evidence may still be in flight and can benefit later turns.
 
@@ -1226,21 +1228,12 @@ da_vectorized: set[str] = set()               # evidence IDs already vectorized
 
 - `search_file` returns 0 results → `da_empty_search_counts[evidence_id] += 1`
 - `search_file` returns results → `da_empty_search_counts[evidence_id] = 0` (reset)
-- `deep_analysis` completes → `da_invocation_count` persisted on Evidence model
+- `deep_analysis` completes → confidence recorded for the low-confidence trigger (in-turn)
 - Any tool times out → triggers reactive vectorization immediately
 
 **Reactive vectorization**: When any reactive trigger fires AND the file passes the size gate AND proactive vectorization hasn't already completed, `_reactive_vectorize()` is called. It checks size gates, calls `_vectorize_evidence()`, and injects the `[SYSTEM]` message on success.
 
-**Cross-turn persistence**: `da_invocation_count` on the Evidence model is incremented and persisted via `repository.save(case)` after each `deep_analysis` call in `_track_da_result()`:
-
-```python
-# In _track_da_result() — after deep_analysis completes:
-for ev in case.evidence:
-    if ev.evidence_id == evidence_id:
-        ev.da_invocation_count = getattr(ev, "da_invocation_count", 0) + 1
-        break
-await self.repository.save(case)
-```
+**Cross-turn persistence**: none — see "Reactive Vectorization (Fallback)" above for the full account. The `da_invocation_count` increment specified here was written against an Evidence field that never had a backing DB column, so `repository.save(case)` silently dropped it on every call; the field was deleted as dead Pydantic decoration on 2026-04-25. The DA counters are per-turn locals, and the durable "already vectorized" signal is the `evidence.vectorized` column.
 
 #### R5: Context Budget Tracking and Tool Result Compression
 
