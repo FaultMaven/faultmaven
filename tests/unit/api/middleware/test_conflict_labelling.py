@@ -62,11 +62,10 @@ def _iter_409_responses():
 
             kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
             status = kwargs.get("status_code")
-            is_409 = (
-                isinstance(status, ast.Constant) and status.value == 409
-            ) or (
+            is_409 = (isinstance(status, ast.Constant) and status.value == 409) or (
                 # `status.HTTP_409_CONFLICT`
-                isinstance(status, ast.Attribute) and "409" in status.attr
+                isinstance(status, ast.Attribute)
+                and "409" in status.attr
             )
             if not is_409:
                 continue
@@ -151,8 +150,7 @@ def test_deduplication_no_longer_has_an_unlabelled_409_path():
     handled = {
         handler.type.id
         for handler in ast.walk(tree)
-        if isinstance(handler, ast.ExceptHandler)
-        and isinstance(handler.type, ast.Name)
+        if isinstance(handler, ast.ExceptHandler) and isinstance(handler.type, ast.Name)
     }
     assert "DuplicateRequestError" not in handled
 
