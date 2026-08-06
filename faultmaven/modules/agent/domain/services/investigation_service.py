@@ -1318,6 +1318,32 @@ class InvestigationService:
         uploaded_file.coverage_start_ts = preprocessing_result.coverage_start_ts
         uploaded_file.coverage_end_ts = preprocessing_result.coverage_end_ts
 
+        # Fall back to the caller's declared observation time when the content
+        # carries no parseable timestamps of its own. Alert notifications are
+        # the motivating case: an Alertmanager Slack message is one prose line
+        # with no embedded timestamp, so the extractor finds nothing and the
+        # file's coverage is NULL — leaving ingestion time as the only temporal
+        # signal anywhere on the evidence, which reads a two-hour-old alert as
+        # current.
+        #
+        # Parsed content ALWAYS wins: it describes what the data actually
+        # spans, while `observed_at` is only the caller's statement about when
+        # it saw the content. Both-or-neither, never a half-open span — a start
+        # without an end would make the row look like it covers up to now.
+        if (
+            attachment.observed_at is not None
+            and uploaded_file.coverage_start_ts is None
+            and uploaded_file.coverage_end_ts is None
+        ):
+            uploaded_file.coverage_start_ts = attachment.observed_at
+            uploaded_file.coverage_end_ts = attachment.observed_at
+            logger.info(
+                "Seeded coverage for %s from caller-declared observed_at %s "
+                "(content had no parseable timestamps)",
+                uploaded_file.file_id,
+                attachment.observed_at.isoformat(),
+            )
+
         # Preprocessor diagnostics (classifier confidence, extractor
         # attempts, entity overflow markers) have no claim-anchored
         # Evidence to land on at intake; their natural home is

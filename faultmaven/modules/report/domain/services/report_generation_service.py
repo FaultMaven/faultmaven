@@ -294,11 +294,19 @@ class ReportGenerationService:
 
     _CLOSURE_REASON_LABELS = {
         "inquiry_only": "Inquiry only — no investigation started",
-        "closed_after_investigation": (
-            "Closed after investigation — root cause not confirmed"
+        "solution_deferred": (
+            "Closed — cause identified and fix documented, implementation deferred"
+        ),
+        "closed_rca_infeasible": (
+            "Closed — root cause structurally unreachable; mitigation is the "
+            "accepted strategy"
+        ),
+        "mitigation_sufficient": (
+            "Closed — stabilized by a verified mitigation, root-cause analysis "
+            "deferred"
         ),
         "closed_insufficient_evidence": (
-            "Closed — insufficient evidence to ground a cause"
+            "Closed — insufficient evidence to establish the problem or its cause"
         ),
     }
 
@@ -341,8 +349,32 @@ class ReportGenerationService:
             n.obtainability == NeedObtainability.UNOBTAINABLE for n in outstanding
         )
 
+        # What this block may CLAIM depends on what actually happened. The
+        # "did enough work to rule things out" phrasing was licensed by the old
+        # derivation, which only reached this reason from the
+        # INSUFFICIENT_EVIDENCE cell — i.e. behind work_gate_passed (>=2
+        # hypotheses across >=2 categories). This reason is now the default for
+        # any close that established nothing, so a turn-2 close with no
+        # candidates lands here too, and the sentence would assert an
+        # elimination pass that never ran.
+        #
+        # Ruling things OUT requires having had candidates, so that is the
+        # discriminator; the symptom flag only refines the no-candidates case.
+        ruled_things_out = bool(getattr(case, "hypotheses", None))
+        symptom_verified = bool(
+            case.progress and getattr(case.progress, "symptom_verified", False)
+        )
+
         block: List[str] = ["## Data Boundary — Why This Remains Unresolved\n"]
-        if has_declared_wall:
+        if not ruled_things_out:
+            block.append(
+                "The reported problem was never established from the data "
+                "available, so no cause was pursued.\n"
+                if not symptom_verified
+                else "The problem was verified, but the case closed before any "
+                "candidate causes were put forward.\n"
+            )
+        elif has_declared_wall:
             block.append(
                 "The investigation did enough work to rule things out but could "
                 "not ground a single cause: the discriminating data needed to "
@@ -696,7 +728,7 @@ class ReportGenerationService:
         - Leading Hypotheses (top 5 by confidence)
         - Mitigation Status (when a mitigation was inserted)
         - Timeline
-        - Recommendation (for closed_after_investigation only)
+        - Recommendation (for closed_insufficient_evidence only)
         """
         title = case.title or "Untitled Case"
         description = case.description or "No description provided."
@@ -790,7 +822,11 @@ class ReportGenerationService:
         # Recommendation — fires when investigation ran but didn't conclude.
         # The prior "escalated"/"abandoned" guard was dead code: those
         # values are not in VALID_CLOSURE_REASONS.
-        if closure_reason_raw == "closed_after_investigation":
+        # Only the insufficient-evidence close leaves an open lead worth
+        # naming. A deferred fix, an unreachable cause, and a sufficient
+        # mitigation each already carry their own next step, so a
+        # "start here next time" block would misdescribe them.
+        if closure_reason_raw == "closed_insufficient_evidence":
             parts.append("## Recommendation\n")
             if hypotheses:
                 top_hyp = max(hypotheses, key=lambda h: getattr(h, "likelihood", 0))

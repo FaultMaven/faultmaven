@@ -122,7 +122,7 @@ def _make_closed_case(**overrides) -> Case:
     case = _make_investigating_case()
     now = datetime.now(timezone.utc)
     object.__setattr__(case, "closed_at", now)
-    object.__setattr__(case, "closure_reason", "closed_after_investigation")
+    object.__setattr__(case, "closure_reason", "closed_insufficient_evidence")
     object.__setattr__(case, "state", CaseState.CLOSED)
     for k, v in overrides.items():
         object.__setattr__(case, k, v)

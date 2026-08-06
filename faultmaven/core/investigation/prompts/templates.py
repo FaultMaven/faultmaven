@@ -1123,7 +1123,9 @@ internal_reasoning:
 
   conclusions: [step-by-step reasoning from evidence to conclusions]
 
-  milestone_justifications: MANDATORY dictionary — EVERY milestone set to True MUST have an entry.
+  milestone_justifications: MANDATORY dictionary — EVERY milestone you CHANGE
+    must have an entry, whether you set it True or False. A retraction
+    (symptom_verified=False) without one is REFUSED and the claim stands.
     * Format: {{milestone_name: "justification describing the evidence"}}
     * ⚠️ Empty {{}} when completing milestones = validation error
 
@@ -1176,7 +1178,9 @@ You MUST respond with valid JSON matching these fields:
     * Historical evidence (from a prior turn): use turn references ["turn_2", "turn_5"]
     * Do NOT use ev_ IDs here — turn references only for historical evidence.
   - conclusions: Step-by-step reasoning from observations to inferences.
-  - milestone_justifications: MANDATORY dictionary — EVERY milestone set to True MUST have an entry.
+  - milestone_justifications: MANDATORY dictionary — EVERY milestone you CHANGE
+    must have an entry, whether you set it True or False. A retraction
+    (symptom_verified=False) without one is REFUSED and the claim stands.
     * Format: {{milestone_name: "plain-text justification describing the supporting evidence"}}
     * ⚠️ Empty {{}} when completing milestones = validation error
     * Example: {{symptom_verified: "47 connection errors in nginx log between 14:02–16:45 UTC"}}
@@ -2666,7 +2670,26 @@ def get_fallback_prompt_for_case(
 # =============================================================================
 
 
-def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
+def _symptom_verification_is_stale(case) -> bool:
+    """Whether the symptom's observation window sits away from the present.
+
+    Thin adapter over ``symptom_currency`` so the emphasis text has one reason
+    to change. False when no case is supplied (the ``progress``-only callers),
+    and false for UNDATED — an unknown observation time gives nothing to anchor
+    to, so a window directive built on it would name no window while firing on
+    the ordinary case of evidence with no timestamps to parse.
+    """
+    if case is None:
+        return False
+    from faultmaven.core.investigation.symptom_currency import (
+        SymptomCurrency,
+        assess_symptom_currency,
+    )
+
+    return assess_symptom_currency(case) == SymptomCurrency.STALE
+
+
+def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) -> str:
     """Compute focus zone from progress milestones (Framework §8.5).
 
     Returns a contextual status signal injected at the top of DIAGNOSIS
@@ -2679,6 +2702,13 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
     - Zone 3: cause_state == IDENTIFIED, solution_proposed=False — propose fix
     - Zone 3 pending: solution_proposed=True — awaiting execution, NON-suppressive
       hold that yields to root-cause analysis on new evidence/dispute (INV-33)
+
+    ``case`` is optional so existing ``progress``-only callers keep working
+    unchanged; when supplied, Zone 2 additionally names the symptom's
+    observation window. Without it the zone says "Symptoms are confirmed" and
+    nothing about WHERE to look, so evidence requests drift to the present —
+    the failure mode in which an investigation queries the last 30 minutes for
+    a symptom observed two hours earlier.
     """
     if not progress.symptom_verified:
         return """
@@ -2686,13 +2716,55 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
 No symptoms have been formally confirmed. When analyzing data, look for
 evidence the problem exists — errors, anomalies, user impact — to advance
 symptom_verified.
+
+Data showing the problem at an earlier time DOES verify it — a problem is worth
+investigating while it EXISTS (evidence still collectible, root cause
+unidentified, solution unknown), whether or not it is firing right now. Do not
+withhold symptom_verified because the evidence is not from this minute.
+
+What the observation time governs is WHERE the investigation looks. State it
+explicitly when you verify: it becomes the window every later evidence request
+targets, and requests must name absolute timestamps rather than relative ones,
+which silently drift to the present.
 """
     elif progress.symptom_verified and progress.cause_state != CauseState.IDENTIFIED:
+        stale = _symptom_verification_is_stale(case)
+        if stale:
+            return """
+**INVESTIGATION PROGRESS: Root cause analysis — anchor to the symptom's window**
+The symptom was observed some time ago (see the observation time on
+symptom_verified above). That period, not the present, is where this
+investigation looks.
+
+This does NOT mean the problem is stale or not worth pursuing — a problem is
+worth investigating while it EXISTS: evidence still collectible, root cause
+unidentified, solution unknown. Whether it happens to be firing right now
+changes how you work it, not whether you do.
+
+It does mean two things about evidence:
+  1. Scope every request to the symptom's window using ABSOLUTE timestamps.
+     Relative windows silently drift to the present — asking for `--since=30m`
+     about a symptom seen two hours ago inspects a period the problem was never
+     claimed to be in.
+  2. A clean current-state reading is not counter-evidence. It looks at a
+     different window and says nothing about what happened in the symptom's.
+     Do not treat it as refuting the symptom, and do not retract on it.
+
+Retract symptom_verified only if the symptom CLAIM itself turns out to be
+wrong — misread data, the wrong system, an artefact — not because the problem
+is not occurring at this moment.
+"""
         return """
 **INVESTIGATION PROGRESS: Root cause analysis**
 Symptoms are confirmed. When evaluating evidence, focus on hypotheses
 explaining the root cause. Two independent causal observations grounding a
 hypothesis's chain root are what let the engine mark the cause identified.
+
+If new data shows the symptom claim itself was wrong — misread data, the wrong
+system, an artefact — do not absorb it as noise. Say so, record it, and set
+symptom_verified=False with a justification. (The problem merely not occurring
+right now is NOT that: an existing problem is investigable whether or not it is
+currently firing.)
 """
     elif (
         progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed
@@ -2778,7 +2850,7 @@ def _select_diagnosis_block(case: Case) -> str:
     directive, so the seeded turn sees a single coherent instruction. Flag off
     (or no seeds this case): byte-identical to before.
     """
-    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
+    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
     # Teach lazy backward expansion (the engine ingests the emitted chain).
     block += _CHAIN_EMISSION_BLOCK

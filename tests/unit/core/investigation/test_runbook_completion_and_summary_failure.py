@@ -249,7 +249,7 @@ class TestAutoGenerateReportTupleReturn:
         # the cross-field validator (resolved_at only valid in RESOLVED).
         object.__setattr__(case, "resolved_at", None)
         object.__setattr__(case, "state", CaseState.CLOSED)
-        object.__setattr__(case, "closure_reason", "closed_after_investigation")
+        object.__setattr__(case, "closure_reason", "closed_insufficient_evidence")
         case.evidence = [
             Evidence(
                 category=EvidenceCategory.SYMPTOM_EVIDENCE,
