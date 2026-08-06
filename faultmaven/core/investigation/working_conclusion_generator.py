@@ -89,6 +89,17 @@ def generate_working_conclusion(
 
     # Handle case with no hypotheses yet
     if not active_hypotheses:
+        # #987: the hypothesis pool is not the only place the engine knows a
+        # cause. When a RootCauseConclusion stands, mirror IT rather than
+        # reporting "awaiting hypothesis generation" — the two are parallel
+        # truth surfaces, and a working conclusion that contradicts a standing
+        # conclusion is the divergence, not a harmless placeholder. Observed
+        # live: a case whose LLM had authored a correct RCC still carried the
+        # early-stage placeholder because every hypothesis had decayed to
+        # RETIRED, and the resolution recap then rendered the placeholder.
+        rcc_mirror = _conclusion_from_root_cause(case)
+        if rcc_mirror is not None:
+            return rcc_mirror
         return _create_early_stage_conclusion(case, current_turn)
 
     # Find highest likelihood hypothesis
@@ -371,6 +382,62 @@ def _generate_blocked_reasons(
         reasons.append("No active hypotheses remaining (all refuted or retired)")
 
     return reasons
+
+
+def _conclusion_from_root_cause(case: Case) -> WorkingConclusion | None:
+    """Mirror a standing ``RootCauseConclusion`` into a WorkingConclusion, or
+    ``None`` when no conclusion names a cause (#987).
+
+    Used only on the no-standing-hypothesis path: with an ACTIVE/VALIDATED
+    hypothesis the working conclusion tracks the live differential, which is
+    its job. Without one, the honest answer is whatever the case's own
+    conclusion says — not a claim that the investigation has not started.
+    """
+    rcc = getattr(case, "root_cause_conclusion", None)
+    statement = getattr(rcc, "root_cause", None) if rcc is not None else None
+    if not statement:
+        return None
+    likelihood = getattr(rcc, "likelihood", None) or 0.0
+    return WorkingConclusion(
+        statement=statement,
+        likelihood=likelihood,
+        reasoning=(
+            "Mirrors the recorded root-cause conclusion; no hypothesis is "
+            "currently active."
+        ),
+        supporting_evidence_ids=list(getattr(rcc, "evidence_basis", None) or []),
+        caveats=[],
+        updated_at=datetime.now(timezone.utc),
+        # Marks this as a MIRROR, not an independent finding — so a retracted
+        # conclusion cannot keep satisfying the working-conclusion backstop leg
+        # for one more turn through its own stale mirror (#987).
+        mirrors_root_cause_conclusion=True,
+    )
+
+
+def is_early_stage_conclusion(conclusion) -> bool:
+    """Is this WorkingConclusion the EARLY-STAGE PLACEHOLDER rather than a real
+    finding? (#987)
+
+    The placeholder produced by ``_create_early_stage_conclusion`` says the
+    investigation has not reached a cause yet ("Investigating potential causes
+    - awaiting hypothesis generation"). It is legitimate context mid-diagnosis
+    and illegitimate anywhere that renders a CONCLUSION — most sharply in the
+    resolution-confirmation recap, where it contradicts everything the user
+    just read.
+
+    Detected STRUCTURALLY, never by matching the placeholder's wording: it is
+    the only conclusion this module emits with zero likelihood AND no
+    supporting evidence. Both the real hypothesis-backed conclusion (which
+    carries the hypothesis's likelihood and its supporting evidence) and the
+    conclusion mirror (which carries the RCC's) fail this test, so the
+    predicate stays correct if the placeholder text is ever reworded.
+    """
+    if conclusion is None:
+        return True
+    return not (getattr(conclusion, "likelihood", 0) or 0) > 0 and not (
+        getattr(conclusion, "supporting_evidence_ids", None) or []
+    )
 
 
 def _create_early_stage_conclusion(

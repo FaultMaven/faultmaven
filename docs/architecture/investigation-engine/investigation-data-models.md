@@ -97,9 +97,9 @@ class CaseState(str, Enum):
     DISPOSITION: Case closed WITHOUT solution.
     Investigation completed without a verified fix, or inquiry-only.
 
-    closure_reason = "inquiry_only" | "closed_after_investigation"
+    closure_reason = inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_insufficient_evidence
     Engine-derived via derive_closure_reason(). Never authored by the LLM.
-    Note: a case stabilized then closed is simply "closed_after_investigation"
+    Note: a case stabilized by a verified mitigation closes as "mitigation_sufficient"
     (the former "mitigation_sufficient" reason was folded in — the documented
     mitigation is preserved on the closed case).
     """
@@ -524,7 +524,7 @@ class Case(BaseModel):
 
     closure_reason: Optional[str] = Field(
         default=None,
-        description="None for RESOLVED. For CLOSED: inquiry_only | closed_insufficient_evidence | closed_after_investigation. Engine-derived via derive_closure_reason(); never set by the LLM."
+        description="None for RESOLVED. For CLOSED: inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_insufficient_evidence. Engine-derived via derive_closure_reason(); never set by the LLM."
     )
 
     # ============================================================
@@ -911,7 +911,7 @@ Root cause analysis is sometimes infeasible — uncontrollable external dependen
 - Does not select an investigation path — there is no path fork (unified opportunistic flow)
 - Does not force closure — user can still request RCA
 - Does not skip hypothesis formulation — lightweight hypotheses still have diagnostic value
-- Does not create a new terminal state — uses existing `CLOSED(closed_after_investigation)`
+- Does not create a new terminal state — uses existing `CLOSED(closed_rca_infeasible)`
 
 See [Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-mitigation-as-an-insert) for behavioral specification.
 

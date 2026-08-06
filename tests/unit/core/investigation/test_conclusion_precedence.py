@@ -223,7 +223,14 @@ def _inconclusive_root_case():
 def _refuted_root_case():
     """A once-grounded root carrying a durable engine refutation (M6)."""
     case, root, _hyp_a, _rival = _validated_root_case()
-    _attach_engine_refutation(case, root.node_id, "fix applied, symptom persists")
+    _attach_engine_refutation(
+        case,
+        root.node_id,
+        "fix applied, symptom persists",
+        # #987: the durable M6 record states an engine INFERENCE with the case
+        # records it was derived from, never a first-person observation.
+        "engine inference (M6): a fix recorded as executed at turn 2 did not hold",
+    )
     return case
 
 

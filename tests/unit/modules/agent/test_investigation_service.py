@@ -434,7 +434,7 @@ class TestInvestigationServiceProcessTurn:
                 structural_index="ERROR line 42: connection refused",
                 data_type=AsyncMock(value="logs"),
                 content_hash="abc123",
-                extraction_method="structural_index",
+                extraction_method="structure_extraction",
             )
         )
         service.preprocessing_service = mock_preprocessing
@@ -490,7 +490,7 @@ class TestInvestigationServiceProcessTurn:
                 structural_index="Some extracted content",
                 data_type=AsyncMock(value="text"),
                 content_hash="hash123",
-                extraction_method="structural_index",
+                extraction_method="structure_extraction",
             )
         )
         service.preprocessing_service = mock_preprocessing
@@ -564,7 +564,7 @@ class TestInvestigationServiceProcessTurn:
                 structural_index="ERROR at line 42",
                 data_type=AsyncMock(value="logs"),
                 content_hash="hash456",
-                extraction_method="structural_index",
+                extraction_method="structure_extraction",
             )
         )
         service.preprocessing_service = mock_preprocessing
@@ -1221,3 +1221,123 @@ class TestMintedIntentTerminalConsentAdoption:
             mock_case_repository,
         )
         assert kwargs.get("intent_type") == "confirmation"
+
+
+class TestObservedAtSeedsFileCoverage:
+    """`Attachment.observed_at` seeds the file's coverage window — but only
+    when the content carries no timestamps of its own.
+
+    These build a REAL ``PreprocessingResult`` rather than an ``AsyncMock``.
+    With a mock, ``coverage_start_ts`` is a Mock object rather than None, so
+    the `is None` precedence check is never actually exercised and a mutation
+    that drops it passes.
+    """
+
+    @pytest.fixture
+    def service(self, mock_milestone_engine, mock_case_repository):
+        return InvestigationService(
+            milestone_engine=mock_milestone_engine,
+            case_repository=mock_case_repository,
+        )
+
+    @staticmethod
+    def _result(*, start=None, end=None):
+        from faultmaven.core.preprocessing.models import PreprocessingResult
+
+        return PreprocessingResult(
+            data_type="logs",
+            detailed_data_type="logs_and_errors",
+            summary="one alert line",
+            structural_index="[FIRING:1] etcdInsufficientMembers",
+            content_size_bytes=42,
+            content_type="text/plain",
+            extraction_method="structure_extraction",
+            compression_ratio=1.0,
+            content_hash="hash_observed_at",
+            coverage_start_ts=start,
+            coverage_end_ts=end,
+        )
+
+    async def _run(self, service, case, repo, user_id, result, observed_at):
+        preprocessing = AsyncMock()
+        preprocessing.classify_and_extract = AsyncMock(return_value=result)
+        service.preprocessing_service = preprocessing
+
+        case.user_id = user_id
+        await repo.save(case)
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=user_id,
+            payload=TurnPayload(
+                query="investigate",
+                attachments=[
+                    Attachment(
+                        content=b"[FIRING:1] etcdInsufficientMembers kube-system",
+                        filename="pasted-content-20260804T193617.txt",
+                        content_type="text/plain",
+                        observed_at=observed_at,
+                    )
+                ],
+                intent=QueryIntent(type=IntentType.CONVERSATION),
+            ),
+        )
+        stored = await repo.get(case.case_id)
+        return stored.uploaded_files[-1]
+
+    @pytest.mark.asyncio
+    async def test_seeds_coverage_when_content_has_no_timestamps(
+        self, service, mock_case_repository, sample_case, sample_user_id
+    ):
+        """The alert-notification case: one prose line, nothing to parse. The
+        caller's observation time is the only temporal signal there is."""
+
+        observed = datetime(2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc)
+        uploaded = await self._run(
+            service,
+            sample_case,
+            mock_case_repository,
+            sample_user_id,
+            self._result(),
+            observed,
+        )
+        assert uploaded.coverage_start_ts == observed
+        assert uploaded.coverage_end_ts == observed
+
+    @pytest.mark.asyncio
+    async def test_parsed_content_wins_over_the_callers_claim(
+        self, service, mock_case_repository, sample_case, sample_user_id
+    ):
+        """Parsed timestamps describe what the data actually spans;
+        `observed_at` is only the caller's statement about when it saw the
+        content. The data must win."""
+
+        parsed_start = datetime(2026, 8, 4, 10, 0, 0, tzinfo=timezone.utc)
+        parsed_end = datetime(2026, 8, 4, 11, 0, 0, tzinfo=timezone.utc)
+        uploaded = await self._run(
+            service,
+            sample_case,
+            mock_case_repository,
+            sample_user_id,
+            self._result(start=parsed_start, end=parsed_end),
+            datetime(2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc),
+        )
+        assert uploaded.coverage_start_ts == parsed_start
+        assert uploaded.coverage_end_ts == parsed_end
+
+    @pytest.mark.asyncio
+    async def test_coverage_stays_unknown_when_nobody_declared_anything(
+        self, service, mock_case_repository, sample_case, sample_user_id
+    ):
+        """No parsed timestamps and no caller claim must leave NULL, not now —
+        a reader has to be able to tell "old" from "unknown"."""
+
+        uploaded = await self._run(
+            service,
+            sample_case,
+            mock_case_repository,
+            sample_user_id,
+            self._result(),
+            None,
+        )
+        assert uploaded.coverage_start_ts is None
+        assert uploaded.coverage_end_ts is None
