@@ -54,18 +54,24 @@ PASSWORD_RESET_TOKEN_TYPE = "password_reset"
 
 
 class PasswordResetMint(NamedTuple):
-    """A minted reset token and the ``jti`` its single-use key is filed under.
+    """A minted reset token, plus what the caller needs to file it.
 
-    The ``jti`` is returned rather than left to be read back out of the token,
-    because the only two ways to read it are decoding without verifying (which
-    puts a second, unverified claim reader into the codebase) or verifying a
-    token this process signed microseconds ago (a mint path checking its own
-    output on every request). Neither buys anything the minter does not already
-    know.
+    ``jti`` and ``subject`` are returned rather than left to be read back out of
+    the token, because the only two ways to read them are decoding without
+    verifying (which puts a second, unverified claim reader into the codebase)
+    or verifying a token this process signed microseconds ago (a mint path
+    checking its own output on every request). Neither buys anything the minter
+    does not already know.
+
+    A decoy returns one of these too, and its ``subject`` is the random uuid4 it
+    was minted with — never an account id. That is what lets the caller file a
+    single-use key for every outcome without the store ever holding a row that
+    names a real account (#959).
     """
 
     token: str
     jti: str
+    subject: str
 
 
 class SigningKeyUnavailableError(RuntimeError):
@@ -309,7 +315,7 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def generate_dummy_reset_token(self, email: str) -> str:
+    async def generate_dummy_reset_token(self, email: str) -> PasswordResetMint:
         """Generate an enumeration decoy for a request that mints nothing.
 
         Same claim shape, same claim VALUES bar ``sub``/``jti``, same key and
@@ -324,14 +330,18 @@ class IJWTTokenGenerator(ABC):
         because the flow is maintained, not because a form is live.)
 
         The token verifies; it simply names a subject that does not exist, and
-        is refused at redemption like any other unusable link. No single-use
-        key is filed for it — there is nothing to redeem.
+        is refused at redemption like any other unusable link.
+
+        Returns a mint, not a bare token, so the caller can file a single-use
+        key for a decoy exactly as it does for a real token. The alternative —
+        writing to the store only on the real branch — makes a store outage an
+        existence oracle, which is the enumeration the decoy exists to prevent.
 
         Args:
             email: The address the caller asked about, echoed into the claims.
 
         Returns:
-            Signed JWT reset token string
+            The signed token, its ``jti``, and the random subject it names.
         """
         ...
 
@@ -610,16 +620,16 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             "Password reset token generated",
             extra={"user_id": user.user_id, "jti": claims["jti"]},
         )
-        return PasswordResetMint(token=token, jti=claims["jti"])
+        return PasswordResetMint(token=token, jti=claims["jti"], subject=claims["sub"])
 
-    async def generate_dummy_reset_token(self, email: str) -> str:
+    async def generate_dummy_reset_token(self, email: str) -> PasswordResetMint:
         """Generate an RS256-signed enumeration decoy (see interface).
 
         Args:
             email: The address the caller asked about
 
         Returns:
-            JWT reset token string
+            The signed token, its ``jti``, and the random subject it names
         """
         claims = _password_reset_claims(
             subject=str(uuid.uuid4()),
@@ -627,7 +637,11 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             issuer=self.issuer,
             audience=self.audience,
         )
-        return jwt.encode(claims, self.private_key, algorithm="RS256")
+        return PasswordResetMint(
+            token=jwt.encode(claims, self.private_key, algorithm="RS256"),
+            jti=claims["jti"],
+            subject=claims["sub"],
+        )
 
     async def verify_password_reset_token(self, token: str) -> Dict:
         """Verify an RS256-signed reset token using the public key.
@@ -1174,16 +1188,16 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "Password reset token generated (HS256)",
             extra={"user_id": user.user_id, "jti": claims["jti"]},
         )
-        return PasswordResetMint(token=token, jti=claims["jti"])
+        return PasswordResetMint(token=token, jti=claims["jti"], subject=claims["sub"])
 
-    async def generate_dummy_reset_token(self, email: str) -> str:
+    async def generate_dummy_reset_token(self, email: str) -> PasswordResetMint:
         """Generate an HS256-signed enumeration decoy (see interface).
 
         Args:
             email: The address the caller asked about
 
         Returns:
-            JWT reset token string
+            The signed token, its ``jti``, and the random subject it names
         """
         claims = _password_reset_claims(
             subject=str(uuid.uuid4()),
@@ -1191,7 +1205,11 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             issuer=self.issuer,
             audience=self.audience,
         )
-        return jwt.encode(claims, self.secret_key, algorithm="HS256")
+        return PasswordResetMint(
+            token=jwt.encode(claims, self.secret_key, algorithm="HS256"),
+            jti=claims["jti"],
+            subject=claims["sub"],
+        )
 
     async def verify_password_reset_token(self, token: str) -> Dict:
         """Verify an HS256-signed reset token using the shared secret.

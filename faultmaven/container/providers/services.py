@@ -503,20 +503,26 @@ def create_user_service(
     Args:
         auth_service: Auth service for token revocation operations (REQUIRED)
         token_generator: The deployment's IJWTTokenGenerator — the one signing
-            surface, used here for password-reset tokens (REQUIRED, #959)
+            surface, used for password-reset tokens (#959). May be None when no
+            signing key resolved; the reset flow then refuses and everything
+            else on the service keeps working.
         redis_client: Redis client for token tracking
         settings: Application settings
 
     Returns:
-        UserService instance, or None if a required dependency is missing
+        UserService instance, or None if the auth service is missing
     """
     if not auth_service:
         logger.warning("UserService skipped (no auth_service available)")
         return None
 
     if not token_generator:
-        logger.warning("UserService skipped (no token generator available)")
-        return None
+        # Not a reason to skip the service — only its reset flow depends on a
+        # signer, and that flow refuses for itself. See UserService.__init__.
+        logger.warning(
+            "UserService built without a token generator: password reset will "
+            "refuse until a JWT signing key is configured"
+        )
 
     try:
         from faultmaven.infrastructure.persistence.user_repository import (
@@ -975,8 +981,19 @@ def register_services(container: BaseDIContainer) -> None:
         # the startup log too, rather than only surfacing as an absent service.
         logger.error("JWT signing key unavailable: %s", e)
         signing_generator = None
+        # Assigned, not left unset: every other service on this container is
+        # read as an attribute somewhere, and an unset name raises
+        # AttributeError where `None` reads as "absent" — the answer the
+        # degrade path is trying to give. The OAuth path below assigns on both
+        # branches for the same reason.
+        container.signing_token_generator = None
 
-    # User Service (Composition Root: dependencies injected via constructor)
+    # User Service (Composition Root: dependencies injected via constructor).
+    # Built even when there is no signing key: user management, the admin
+    # routes and registration have nothing to do with reset tokens, and taking
+    # them down over a capability they never touch is the coupling this file
+    # refuses for the OAuth generator a few lines below. The reset flow refuses
+    # on its own, at its own entry points (#959).
     user_service = create_user_service(
         auth_service, signing_generator, redis_client, settings
     )

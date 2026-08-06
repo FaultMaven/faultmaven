@@ -40,6 +40,7 @@ from faultmaven.exceptions import (
     ConflictError,
     InactiveAccountError,
     NotFoundError,
+    ServiceError,
     ValidationException,
 )
 from faultmaven.infrastructure.persistence.user_repository import (
@@ -50,6 +51,7 @@ from faultmaven.infrastructure.persistence.user_repository import User as Reposi
 from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     PASSWORD_RESET_TOKEN_EXPIRY_HOURS,
+    PasswordResetMint,
 )
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
@@ -111,7 +113,8 @@ class UserService(BaseService):
         user_repo: User repository for persistence
         auth_service: Auth service for token revocation operations
         token_generator: The deployment's IJWTTokenGenerator — the only thing
-            in the process that signs (#959)
+            in the process that signs (#959). ``None`` when the deployment has
+            no usable signing key; see ``__init__``.
         redis_client: Redis client for token tracking (optional)
     """
 
@@ -119,7 +122,7 @@ class UserService(BaseService):
         self,
         user_repo: UserRepository,
         auth_service: Any,
-        token_generator: Any,
+        token_generator: Any = None,
         redis_client: Optional[Redis] = None,
     ):
         """Initialize user service.
@@ -127,10 +130,12 @@ class UserService(BaseService):
         Args:
             user_repo: User repository for persistence
             auth_service: Auth service for revocation operations (required)
-            token_generator: IJWTTokenGenerator for the reset-token surface
-                (required). Demanded at construction rather than at reset time
-                so a wiring site that forgets it fails at startup, not on the
-                first password-reset request months later.
+            token_generator: IJWTTokenGenerator for the reset-token surface.
+                Optional, and deliberately so: a deployment with no usable
+                signing key can still list, create, update and deactivate
+                users, and refusing to construct this service would take the
+                admin routes down over a capability they never touch. The
+                reset flow — and only it — refuses while this is ``None``.
             redis_client: Redis client for token tracking (optional)
 
         Raises:
@@ -142,14 +147,34 @@ class UserService(BaseService):
         # Require explicit dependency injection
         if auth_service is None:
             raise ValueError("auth_service is required for UserService")
-        if token_generator is None:
-            raise ValueError("token_generator is required for UserService")
 
         self.auth_service = auth_service
         self.token_generator = token_generator
 
         self.redis_client = redis_client
         self._settings = get_settings()
+
+    def _signer(self) -> Any:
+        """Return the token generator, or refuse the whole reset flow.
+
+        Called at both reset entry points, BEFORE anything reads the request:
+        the refusal must not depend on which address was asked about, or it
+        becomes the oracle the decoy exists to prevent. Failing here also keeps
+        ``None`` from travelling further in — nothing downstream has to
+        remember that the signer might be absent.
+
+        A decoy would be the wrong answer in this state. It is a token that can
+        never be redeemed, handed to a real user alongside "check your email":
+        a fabricated success, which is the one thing this system does not do.
+        An error is honest, uniform, and actionable by the operator whose
+        ``JWT_SECRET_KEY`` never got written.
+        """
+        if self.token_generator is None:
+            raise ServiceError(
+                "Password reset is unavailable: this deployment has no JWT "
+                "signing key configured."
+            )
+        return self.token_generator
 
     # ============================================================
     # User Registration
@@ -254,56 +279,76 @@ class UserService(BaseService):
             In production, the token should be sent via email, not returned directly.
 
         Workflow:
-            1. Get user by email
-            2. If user not found, return dummy token (prevent enumeration)
-            3. Mint the reset token through the deployment's token generator
-            4. Store the token's jti in Redis with TTL (single-use tracking)
-            5. Return reset token
+            1. Refuse outright if this deployment cannot sign (uniformly, before
+               anything looks at the address)
+            2. Mint — a real token for a live account, an indistinguishable
+               decoy for an unknown address or a deactivated one
+            3. File the mint's jti in Redis with TTL (single-use tracking)
+            4. Return the token
 
         The three outcomes — real account, unknown email, deactivated account —
-        must be indistinguishable to the caller, who can read every claim in the
-        token they were handed: all three return a token of the same shape, with
-        the same claim values (including the address they submitted), signed with
-        the same key. A deactivated account is refused at the mint chokepoint
-        (`_refuse_if_deactivated`) and falls back to the same decoy an unknown
-        address gets; its holder is then refused at redemption by the
+        must be indistinguishable to whoever receives the token, who can read
+        every claim in it: all three return a token of the same shape, with the
+        same claim values (including the address that was asked about), signed
+        with the same key. A deactivated account is refused at the mint
+        chokepoint (`_refuse_if_deactivated`) and falls back to the same decoy
+        an unknown address gets; its holder is then refused at redemption by the
         active-account check in `reset_password`, which is where the refusal
         belongs — a reset link proves nothing about who holds it.
+
+        Indistinguishable includes the I/O. Steps 2 and 3 run for all three
+        outcomes through one code path, so a Redis fault fails every one of them
+        the same way. When only the real branch wrote to Redis, an outage turned
+        this method into the oracle the decoy exists to prevent: a registered
+        address raised while an unregistered one returned a token. A decoy's key
+        is filed under its own random jti and stores its own random subject, so
+        the store holds nothing that names an account, and redeeming one dies at
+        the user lookup — the same generic refusal every unusable link produces.
         """
+        signer = self._signer()
+
         self.logger.debug(f"Password reset requested for: {email}")
 
-        # Get user by email
+        mint = await self._mint_reset_token(signer, email)
+
+        # ONE write, reached by all three outcomes. Two write sites that must
+        # agree is how the asymmetry got there the first time.
+        key = f"{RESET_TOKEN_PREFIX}{mint.jti}"
+        ttl_seconds = PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600
+        await self.redis_client.setex(key, ttl_seconds, mint.subject)
+
+        return mint.token
+
+    async def _mint_reset_token(self, signer: Any, email: str) -> PasswordResetMint:
+        """Mint the reset token for an address: real if it can be, decoy if not.
+
+        The jti is taken from the minter rather than read back off the token:
+        this service holds no key, and the alternatives are decoding without
+        verification or verifying something signed microseconds ago — a
+        per-request signature check that asserts nothing the mint did not
+        already know.
+        """
         user = await self.user_repo.get_by_email(email)
 
         if not user:
-            # Return a dummy token to prevent email enumeration
-            # In production, this would still trigger a "check your email" message
+            # In production this still answers "check your email" — the caller
+            # cannot tell this branch from the one above.
             self.logger.debug(f"Password reset for non-existent email: {email}")
-            return await self.token_generator.generate_dummy_reset_token(email)
+            return await signer.generate_dummy_reset_token(email)
 
         try:
-            mint = await self.token_generator.generate_password_reset_token(user)
+            mint = await signer.generate_password_reset_token(user)
         except InactiveAccountError:
             # No live credential for a deactivated account — and no observable
-            # that says so. The decoy is not tracked in Redis: it names a
-            # subject that does not exist, so there is nothing to redeem.
+            # that says so.
             self.logger.info(
                 "Password reset refused at mint",
                 extra={"refusal_reason": "account_inactive", "user_id": user.user_id},
             )
-            return await self.token_generator.generate_dummy_reset_token(email)
-
-        # File the single-use key under the jti the minter reports. Not read
-        # back off the token: this service holds no key, and the alternatives
-        # are decoding without verification or verifying something signed
-        # microseconds ago — a per-request signature check that asserts nothing
-        # the mint did not already know.
-        key = f"{RESET_TOKEN_PREFIX}{mint.jti}"
-        ttl_seconds = PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600
-        await self.redis_client.setex(key, ttl_seconds, user.user_id)
+            return await signer.generate_dummy_reset_token(email)
 
         self.logger.info(f"Password reset token generated for user: {user.user_id}")
-        return mint.token
+        return mint
 
     def _refuse_reset(self, reason: str, **log_context) -> Exception:
         """Return the one refusal every unusable reset link produces.
@@ -359,9 +404,14 @@ class UserService(BaseService):
         # `password_reset` type are all the generator's answer (#959) — this
         # service holds no key, so a wrong-type token arrives here as the same
         # InvalidTokenError as a forged one and collapses into the one refusal
-        # every unusable link produces.
+        # every unusable link produces. With no signer at all there is nothing
+        # to verify against, and `_signer` refuses before the token is read:
+        # accepting one on a deployment that cannot sign is not a thing to do
+        # quietly.
+        signer = self._signer()
+
         try:
-            claims = await self.token_generator.verify_password_reset_token(reset_token)
+            claims = await signer.verify_password_reset_token(reset_token)
         except Exception as e:
             raise self._refuse_reset("token_unverifiable", error=str(e))
 
