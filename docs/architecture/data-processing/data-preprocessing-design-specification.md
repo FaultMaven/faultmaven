@@ -1214,10 +1214,13 @@ Two mechanical safety nets in `MilestoneEngine`: vectorization with proactive + 
 #### R3: Coverage Gap Detection — REMOVED
 
 > **Not implemented.** R3 lived only in `AgentOrchestrationService` and was deleted
-> with it in #982. The Tier 1 extractors still emit the coverage metadata this
-> consumed, so the inputs are intact; the consumer is not. Retained here because
-> the gap it covered is real and reinstating it means rebuilding against
-> `_tool_augmented_generate()`.
+> with it in #982. Note that its `COVERAGE_SEPARATOR` branch was already dead
+> before that: extractors stopped emitting the separator text when coverage moved
+> to `ExtractResult.file_meta` (§4 above). Its surviving branch read
+> `file_meta.time_range` but compared by substring, so it reported covered
+> timestamps as gaps. Do not port it — if out-of-coverage advisories are wanted,
+> build an interval comparison on `Evidence.coverage_start_ts` /
+> `coverage_end_ts`.
 
 As it worked: before each LLM call, the orchestration service extracted entities from the user's message and compared them against evidence coverage metadata:
 

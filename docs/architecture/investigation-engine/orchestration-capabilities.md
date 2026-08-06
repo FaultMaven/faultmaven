@@ -29,18 +29,18 @@ so the engine degrades safely when the service is not wired.
 The `pre_case_action` snapshots make every state change reversible at the data
 layer — the prior snapshot is still on disk.
 
-**There is no per-turn checkpoint.** A fourth site used to take a `turn_complete`
-snapshot at the end of every successful turn, giving per-turn auditability
-without depending on these three narrower transition paths. It lived in
-`AgentOrchestrationService`, which was deleted as dead code in #982, and it was
-not reproduced on the live path. `CheckpointService.create_checkpoint` still
-defaults `trigger` to `"turn_complete"`, but nothing in production passes that
-value any more.
+**There is no per-turn checkpoint.** A fourth site took a `turn_complete` snapshot
+at the end of every successful turn, giving per-turn coverage without depending
+on these three narrower transition paths. It lived in `AgentOrchestrationService`
+— on the `/sessions/execute` surface, which no frontend called — and was deleted
+with it in #982. It was never on the `/turns` path, so this is a long-standing
+gap that #982 exposed rather than a regression it caused.
+`CheckpointService.create_checkpoint` still defaults `trigger` to
+`"turn_complete"`; no caller passes it.
 
-The practical consequence: a turn that adds evidence and hypotheses but does not
-change case state leaves no checkpoint. Restoring per-turn snapshots means adding
-a call in the engine's turn-completion path — a decision about how much
-auditability the durable store owes, not a mechanical port.
+The consequence is that a turn which adds evidence and hypotheses but changes no
+case state leaves no checkpoint — and that is what starves the replay endpoints.
+See [§2.3](#23-the-sparsity-problem) for the decision this forces.
 
 ### 1.3 Auditability Today
 
@@ -48,29 +48,48 @@ auditability the durable store owes, not a mechanical port.
 
 ## 2. Replay & Debugging (Time Travel)
 
-> **Implementation Status: DEFERRED**
+> **Implementation Status: BUILT, but starved of data.**
 >
-> Time travel and semantic diffing are designed but not yet implemented.
-> The API endpoints described below do not exist yet. See Section 1 for
-> current state tracking via `TurnProgress`.
+> Both endpoints exist, are mounted, and are published in the OpenAPI spec. What
+> is missing is checkpoints to serve: §1.2 records at three transition points
+> only, so most turn numbers have no snapshot and `restore_at_turn` raises
+> `NotFoundError`. This section previously claimed the endpoints did not exist;
+> they do.
 
-The design includes **Read-Only Time Travel**, allowing users and developers to inspect the exact state of an investigation at any previous turn.
+**Read-Only Time Travel** lets users and developers inspect the state of an
+investigation at a previous turn. Implemented in
+`modules/case/api/replay.py` (router) over
+`modules/case/domain/services/replayer.py` (`CaseReplayer`), mounted by
+`modules/case/api/routes.py`.
 
-### 2.1 State Restoration (Design)
+### 2.1 State Restoration
 
-- **Functionality**: Would reconstruct a full `Case` object from a historical checkpoint.
-- **API Endpoint**: `GET /cases/{case_id}/snapshot/{turn_number}` (not yet implemented)
-- **Frontend Use Case**:
-  - "View History": Allow users to click on a past message and see the "Context" (Hypotheses, Evidence, Status) as it existed *at that moment*.
-  - **Read-Only**: Restored cases are for inspection only. You cannot "resume" from a past state (no forking supported in v1).
+- **Functionality**: reconstructs a full `Case` from a historical checkpoint via `Case.model_validate(checkpoint.case_snapshot)`.
+- **API Endpoint**: `GET /cases/{case_id}/snapshot/{turn_number}` — **live**.
+- **Lookup is exact**: `restore_at_turn` matches `cp.turn_number == turn_number` against the case's checkpoints. There is no nearest-preceding fallback, so a turn with no checkpoint 404s and the error lists the turns that do have one.
+- **Read-Only**: restored cases are for inspection only. You cannot resume from a past state (no forking).
 
-### 2.2 Semantic Diffing (Design)
+### 2.2 Semantic Diffing
 
-- **Functionality**: Would compute the semantic difference between two investigation states (e.g., Turn 2 vs Turn 5).
-- **Logic**: Recursive comparison of fields, highlighting added hypotheses, status changes, or modified evidence.
-- **API Endpoint**: `GET /cases/{case_id}/diff?from={t1}&to={t2}` (not yet implemented)
-- **Frontend Use Case**:
-  - "What Changed?": detailed view showing exactly what the agent concluded between two points in time.
+- **Functionality**: computes the recursive difference between two investigation states (e.g. Turn 2 vs Turn 5), highlighting added hypotheses, state changes and modified evidence.
+- **API Endpoint**: `GET /cases/{case_id}/diff?from={t1}&to={t2}` — **live**.
+- Subject to the same sparsity: both endpoints of the comparison must be turns that happen to carry a checkpoint.
+
+### 2.3 The Sparsity Problem
+
+Replay is only as good as its checkpoint coverage, and coverage is currently
+transition-shaped, not turn-shaped. A turn that adds evidence and hypotheses but
+changes no case state is invisible to replay — which is much of an
+investigation's substance.
+
+This is not a regression from #982: the live path never wrote per-turn
+checkpoints. The deleted service's `turn_complete` site was on the unused
+`/sessions/execute` surface, so replay has been sparse for every case a user has
+actually run. Closing it is a deliberate choice between two coherent states —
+add a turn-end checkpoint (`CheckpointService`'s `trigger` default is already
+`"turn_complete"`, waiting for a caller, at the cost of a full case snapshot per
+turn), or retire replay as another built-but-uncalled surface. Both are honest;
+the current middle is not.
 
 ## 3. Interrupt & Resume (Human-in-the-Loop)
 
@@ -133,23 +152,28 @@ The `MilestoneEngine` includes two mechanical safety nets that improve the agent
 
 ### 5.1 Coverage Gap Detection (R3) — REMOVED
 
-> **Not implemented.** This net lived only in `AgentOrchestrationService` and was
-> deleted with it in #982. It is described here because the gap it covered is
-> real and still open, not because the code exists.
+> **Not implemented, and not to be restored as written.** This net lived only in
+> `AgentOrchestrationService` and was deleted with it in #982. Its gap check was
+> a substring test — `if ts not in coverage_lower`, where `coverage_lower` is the
+> rendered coverage strings joined together — so a query for `14:32` against a
+> range rendered `12:00 to 19:45` reported a *covered* time as a gap. It
+> manufactured false advisories, which is what the no-incorrect-conclusion
+> guarantee forbids. The gap it aimed at is real; the mechanism was not sound.
 
 **Problem**: The LLM doesn't know its Tier 1 structural index only covers a specific time range or set of services. It may answer questions about uncovered data with incomplete evidence.
 
 **Mechanism (as it worked)**:
 
 1. **Query entity extraction**: Regex-based extraction of timestamps, service names, HTTP error codes, E-codes, and IP addresses from the user's message.
-2. **Coverage comparison**: Extracted entities are compared against evidence coverage metadata (appended by Tier 1 extractors as `--- COVERAGE METADATA ---` blocks).
-3. **Advisory injection**: When query entities fall outside evidence coverage (e.g., user asks about 14:00 but evidence covers 13:42-13:57), a coverage advisory is injected into the LLM context before the system prompt.
+2. **Coverage comparison**: Extracted entities were compared against `file_meta.time_range` read from each evidence record's `structural_index`, plus a legacy branch that parsed a `--- COVERAGE METADATA ---` separator format the extractors had already stopped emitting. The comparison itself was a substring test against those strings joined together.
+3. **Advisory injection**: When query entities appeared to fall outside evidence coverage, an advisory was injected into the LLM context before the system prompt.
 
-**Current state**: Tier 1 extractors still append `--- COVERAGE METADATA ---`
-blocks (`COVERAGE_SEPARATOR` in `modules/preprocessing/extractors/utils.py`), but
-no consumer reads them for advisory purposes. Nothing tells the agent when a
-question ranges outside what its evidence covers. Reinstating this means building
-it against `_tool_augmented_generate()` on the engine path.
+**Current state**: nothing tells the agent when a question ranges outside what its
+evidence covers. Coverage itself is intact and better-typed than when R3 was
+written — `ExtractResult.file_meta` carries it as a structured dict, and
+`Evidence.coverage_start_ts` / `coverage_end_ts` are real columns with real
+writers. Closing the gap means an interval comparison against those columns,
+wired into `_tool_augmented_generate()` — not a port of the substring check.
 
 ### 5.2 Per-Evidence DA Failure Tracking + Auto-Vectorization (R4, v5.0)
 

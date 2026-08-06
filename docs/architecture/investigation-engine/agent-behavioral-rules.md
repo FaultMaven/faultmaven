@@ -507,13 +507,22 @@ In addition to the 8 behavioral rules above (which are enforced via prompt injec
 | Per-evidence DA failure tracking + auto-vectorization (R4) | Reactive triggers on a qualifying large evidence file: tool timeout, 3+ consecutive empty `search_file` results on the same file, or low DA confidence (< 0.2). Per-evidence counters keyed by `evidence_id`. | Auto-vectorize the file (no user confirmation); inject raw content for small files below the vectorization threshold | Mechanical: independent counters/flags per evidence file in the engine's tool loop |
 | Context budget (R5) | Assembled messages exceed the resolved tool-loop token budget | Elide whole earlier tool-call groups, oldest first, leaving a marker telling the agent to re-run a search | Mechanical: token estimate per message against `tool_observation_max_tokens` and the model's context window |
 
-**R3 (coverage gap detection) no longer exists.** It extracted entities from the
-user's query, compared them against the `--- COVERAGE METADATA ---` blocks that
-Tier 1 extractors append, and injected an advisory when the query fell outside
-evidence coverage. It lived only in `AgentOrchestrationService` and went with it
-in #982. The extractors still append the coverage blocks, but nothing reads them
-for this purpose — so the agent is no longer told when a question ranges outside
-what its evidence covers. Reinstating it means building it on the engine path.
+**R3 (coverage gap detection) no longer exists.** It extracted timestamps,
+services and error codes from the user's query, compared them against evidence
+coverage, and injected an advisory when the query fell outside. It lived only in
+`AgentOrchestrationService` and went with it in #982.
+
+Do not reinstate it as written. Its comparison was a substring test
+(`if ts not in coverage_lower`), so a query for `14:32` against a coverage range
+rendered as `12:00 to 19:45` reported a *covered* time as a gap — it manufactured
+false advisories, which is precisely what the no-incorrect-conclusion guarantee
+forbids. Its other branch parsed a `--- COVERAGE METADATA ---` separator format
+that extractors had already stopped emitting; coverage is now typed data
+(`ExtractResult.file_meta`, plus `Evidence.coverage_start_ts/coverage_end_ts`).
+
+The underlying gap is real — nothing currently tells the agent when a question
+ranges outside what its evidence covers — but closing it means a new comparison
+built on those typed columns, not a port of this one.
 
 **R5 changed shape, not just address.** The old net counted characters against a
 30K budget and compressed individual tool results by keyword-filtering lines. The

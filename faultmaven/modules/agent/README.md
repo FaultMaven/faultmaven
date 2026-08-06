@@ -14,7 +14,8 @@ It has no API layer. Investigation traffic enters through the Case module's
 `/turns` endpoints and is driven by `core/investigation/milestone_engine`, which
 is where tool execution, LLM calls, context budgeting and the deep-analysis
 safety nets live. The module's own router and the `AgentOrchestrationService`
-behind it were a second, unreachable copy of that path and were deleted in #982.
+behind it were a second implementation of that path — mounted and HTTP-reachable,
+but called by no frontend — and were deleted in #982.
 
 ---
 

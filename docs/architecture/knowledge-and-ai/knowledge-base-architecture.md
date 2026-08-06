@@ -414,8 +414,10 @@ Team KB scope filtering is **implemented end-to-end**:
    (`kb_tool_adapter.py`), but `MilestoneEngine._build_tool_context` does not set
    it, so it defaults to `[]` and `build_kb_scope_filter` omits the team arm
    entirely. The only writer was `AgentOrchestrationService`, deleted in #982 —
-   and that path was already unreachable before then, so the tool has never seen
-   team-shared items on the `/turns` path. This **fails closed** (global ∪
+   and that writer sat on the separate `/sessions/execute` surface, never on
+   `/turns`, so the tool has never seen team-shared items on the live path.
+   Deleting the dead writer did not cause this; it removed the last code that
+   made the wiring look present. This **fails closed** (global ∪
    owner-personal; no cross-tenant exposure), but a team-shared runbook is
    invisible to the agent's KB tool even though the seeder prefetch above finds
    it. Fixing it means resolving the shared ids where the context is built —

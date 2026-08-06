@@ -12,12 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.models.interfaces import ToolResult
-
-# Import Tool from the correct location used by AgentTool.to_tool()
-from faultmaven.modules.agent.domain.events.execution_events import Tool
 from faultmaven.modules.agent.tools.base import (
     AgentTool,
     AgentToolRegistry,
+    Tool,
     ToolContext,
     tool_registry,
 )

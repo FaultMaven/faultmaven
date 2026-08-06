@@ -77,23 +77,6 @@ def truncate_output(text: str, max_chars: int = MAX_STRUCTURAL_INDEX_CHARS) -> s
 
 
 # ---------------------------------------------------------------------------
-# Coverage metadata
-# ---------------------------------------------------------------------------
-
-COVERAGE_SEPARATOR = "\n\n--- COVERAGE METADATA ---\n"
-
-
-def format_coverage_metadata(**kwargs: object) -> str:
-    """Format coverage metadata as key-value pairs after the separator.
-
-    Keys with ``None`` values are omitted.  All other values are converted
-    to strings via ``str()``.
-    """
-    lines = [f"{key}: {value}" for key, value in kwargs.items() if value is not None]
-    return COVERAGE_SEPARATOR + "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
 # Timestamp extraction (for coverage time-range detection)
 # ---------------------------------------------------------------------------
 
