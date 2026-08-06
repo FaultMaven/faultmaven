@@ -23,10 +23,12 @@ Note: This module does NOT eagerly import components to avoid circular dependenc
 Import components directly from their submodules as shown above.
 """
 
-# Subpackages available for direct import
+# Subpackages available for direct import. No ``infrastructure``: the agent
+# module is a Domain Service and owns no tables (see the module architecture in
+# CLAUDE.md), so it has no repositories to expose.
 __all__ = [
     "api",
     "domain",
-    "infrastructure",
+    "jobs",
     "tools",
 ]

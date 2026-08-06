@@ -84,7 +84,10 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 from faultmaven.core.investigation.llm_error_handler import (
     CONTEXT_OVERFLOW_PHRASES,
     LLMErrorHandler,
+    OutputTruncationError,
     classify_token_limit_reason,
+    is_output_truncation_error,
+    is_truncated_json_error,
 )
 from faultmaven.core.investigation.progress_monitor import (
     ProgressMonitor,
@@ -217,6 +220,16 @@ _PENDING_GATE_SUBSTANTIVE_LEN = 40
 # so the prompt the LLM sees does not change.
 KB_PREFETCH_FETCH_LIMIT = 10
 KB_CONTEXT_MAX_ENTRIES = 3
+
+# Generation cap for schema-bound calls, and the ceiling the truncation ladder
+# may raise it to. Investigation schemas (``_Verification`` especially) are
+# large and turn 2+ carries substantial context, so the starting cap is
+# generous; the ceiling bounds how much a single turn may spend chasing an
+# answer that keeps overrunning. Reaching the ceiling is the signal to switch
+# levers — from "give the answer more room" to "give the answer more room by
+# shrinking the question" (the #662 minimal-prompt degrade).
+STRUCTURED_OUTPUT_MAX_TOKENS = 8000
+STRUCTURED_OUTPUT_MAX_TOKENS_CEILING = 16000
 
 
 def _matches_gate_token(msg: str, tokens: list[str]) -> bool:
@@ -6036,8 +6049,10 @@ class MilestoneEngine:
         already_vectorized = self._evidence_is_vectorized(case, evidence_id)
 
         # Track deep_analysis confidence for the low-confidence trigger
-        # below. In-turn only — see agent_orchestration_service for why
-        # cross-turn persistence was dropped.
+        # below. In-turn only, like `da_empty_search_counts`: nothing carries
+        # DA history across turns any more. The orchestration service that
+        # reconstructed it is gone, and the `da_invocation_count` field it
+        # read was never added to the Evidence model.
         if func_name == "deep_analysis" and tool_result.success and case:
             try:
                 data = (
@@ -7188,23 +7203,64 @@ class MilestoneEngine:
             # Provider supports strict json_schema - no need for schema in prompt
             final_prompt = prompt
 
-        # Track max_tokens across retries (will be increased if truncation detected)
-        max_tokens_state = {"value": 8000}  # Increased from 4000 base
+        # Track the generation cap across retries. ``bumped`` is what tells the
+        # next attempt it must not be answered from cache: the cache is keyed on
+        # (case, prompt, model) and max_tokens is not part of that key, so the
+        # truncated body the first attempt stored would otherwise be served back
+        # instantly and the raised cap would never reach the provider (#513).
+        max_tokens_state = {"value": STRUCTURED_OUTPUT_MAX_TOKENS, "bumped": False}
+
+        def _on_truncation(exc: Exception) -> OutputTruncationError:
+            """Raise the cap for the next attempt and return the typed signal.
+
+            Both truncation sites — the provider reporting the cut, and the
+            parse of a body that ran out — funnel through here, so the cap moves
+            exactly once per failed attempt whichever site saw it, and the
+            ladder (raise the cap, then degrade the prompt) has a single owner.
+
+            The message is written to be self-describing rather than passing the
+            original through unchanged: the JSON decoder's wording ("Expecting
+            ',' delimiter") carries no hint that this was a truncation, and the
+            recovery metric downstream reads exactly this text to attribute the
+            degrade.
+            """
+            old_max = max_tokens_state["value"]
+            new_max = min(old_max * 2, STRUCTURED_OUTPUT_MAX_TOKENS_CEILING)
+            if new_max <= old_max:
+                logger.warning(
+                    "JSON truncation at the max_tokens ceiling (%s); handing off "
+                    "to the minimal-prompt degrade instead of retrying at the "
+                    "same size. Underlying error: %s",
+                    old_max,
+                    exc,
+                )
+                return OutputTruncationError(
+                    f"Response truncated at the max_tokens ceiling "
+                    f"({old_max}): {exc}",
+                    cap_reached=True,
+                )
+            max_tokens_state["value"] = new_max
+            max_tokens_state["bumped"] = True
+            logger.warning(
+                "JSON truncation detected, increasing max_tokens: %s → %s",
+                old_max,
+                new_max,
+            )
+            return OutputTruncationError(
+                f"Response truncated at max_tokens={old_max}: {exc}",
+                cap_reached=False,
+            )
 
         # Define the LLM operation for retry
         async def llm_operation():
             # Build generate parameters based on strategy mode
-            # CRITICAL FIX: Increased from 4000 to 8000 tokens to prevent JSON truncation
-            # Investigation schemas (especially _Verification) can be large, and Turn 2+
-            # requires substantial context. 4000 tokens was insufficient, causing:
-            # "EOF while parsing a value at line 4 column 24" errors
             current_max_tokens = max_tokens_state["value"]
             generate_params = {
                 "prompt": final_prompt,
                 "max_tokens": current_max_tokens,
                 "temperature": 0.2,  # Lower temperature for structured output
                 "case_id": case.case_id if case is not None else None,
-                "bypass_cache": max_tokens_state.get("bumped", False),
+                "bypass_cache": max_tokens_state["bumped"],
             }
 
             # Tier 2 — route schema-bound calls to STRUCTURED_OUTPUT_PROVIDER
@@ -7249,7 +7305,19 @@ class MilestoneEngine:
                 if strategy.response_format:
                     generate_params["response_format"] = strategy.response_format
 
-            response = await self.llm_provider.generate(**generate_params)
+            try:
+                response = await self.llm_provider.generate(**generate_params)
+            except Exception as gen_exc:
+                # Some providers can see the cut themselves and raise before
+                # there is any body to parse — Gemini does this on
+                # finishReason=MAX_TOKENS. That path never reaches the parse
+                # block below, so without this the cap was never raised and the
+                # retry repeated the identical full-size call until the attempts
+                # ran out (#513).
+                if is_output_truncation_error(gen_exc):
+                    raise _on_truncation(gen_exc) from None
+                raise
+
             content = response if isinstance(response, str) else response.content
 
             # For function calling, extract from tool_calls
@@ -7328,17 +7396,20 @@ class MilestoneEngine:
 
                 return schema_model.model_validate_json(content)
             except Exception as validation_error:
-                # If JSON validation fails due to truncation, increase max_tokens for retry
-                error_str = str(validation_error).lower()
-                if "eof while parsing" in error_str or "truncated" in error_str:
-                    # Double max_tokens for next retry attempt
-                    old_max = max_tokens_state["value"]
-                    max_tokens_state["value"] = min(old_max * 2, 16000)  # Cap at 16k
-                    max_tokens_state["bumped"] = True
-                    logger.warning(
-                        f"JSON truncation detected, increasing max_tokens: "
-                        f"{old_max} → {max_tokens_state['value']}"
-                    )
+                # A body that ran out is the recoverable case: raise the cap and
+                # retry. Decided POSITIONALLY against the content we just tried
+                # to parse, not by matching words in the message — CPython's
+                # decoder says "Expecting ',' delimiter" or "Unterminated string
+                # starting at" for a cut-off body and never "truncated" or "EOF
+                # while parsing", so the phrase test that used to guard this
+                # matched nothing the decoder actually emits (#513).
+                #
+                # ``content`` is the raw body while json.loads is what failed; by
+                # the time model_validate_json runs it has been re-serialized
+                # from a successfully parsed object, so a schema violation there
+                # is a ValidationError and correctly falls through untouched.
+                if is_truncated_json_error(validation_error, content):
+                    raise _on_truncation(validation_error) from None
                 # Re-raise to trigger retry
                 raise
 

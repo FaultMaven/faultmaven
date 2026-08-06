@@ -12,10 +12,11 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Awaitable, Callable, Optional, Tuple, TypeVar
+from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
 from faultmaven.exceptions import (
     QUOTA_EXHAUSTED,
@@ -48,8 +49,15 @@ CONTEXT_OVERFLOW_PHRASES: Tuple[str, ...] = (
 )
 
 # Output truncated at the generation cap: the response body is cut off, so the
-# JSON fails to parse. Distinct from input overflow; this is a RETRY-class error
-# where the engine bumps max_tokens and retries the generation.
+# JSON fails to parse. Distinct from input overflow — the prompt fit, the
+# ANSWER did not — and it has its own recovery ladder (raise max_tokens, then
+# degrade the prompt), driven by the typed ``OutputTruncationError`` below.
+#
+# These phrases are for *reporting* (``classify_token_limit_reason``) and for
+# the one site where wording is the only evidence available
+# (``is_output_truncation_error``: a provider that reports the cut before there
+# is any body to inspect). They are NOT how the parse site decides — see
+# ``is_truncated_json_error``, which tests position instead of text.
 _OUTPUT_TRUNCATION_PHRASES: Tuple[str, ...] = (
     "truncated",
     "unterminated",  # truncated JSON string
@@ -67,11 +75,93 @@ _PARAM_ERROR_GUARD_PHRASES: Tuple[str, ...] = (
     "is not supported with this model",
 )
 
-# Reason labels for the degrade-recovery metric. Both classes yield TOKEN_LIMIT
-# and both route through the same minimal-prompt retry, but they are different
-# failures worth telling apart in the data: INPUT_OVERFLOW is what the recovery
-# actually targets, while OUTPUT_TRUNCATION is served incidentally (a smaller
-# prompt frees budget but the targeted fix is the max_tokens escalation).
+
+class OutputTruncationError(Exception):
+    """The model's response body was cut off at the generation cap (#513).
+
+    Raised by the caller that OWNS the cap — the engine's structured-output
+    loop — because only that caller knows whether raising it is still an option.
+
+    Typed rather than string-matched, because the two sites that observe
+    truncation word it in completely unrelated ways: the provider says
+    ``finishReason=MAX_TOKENS``, while CPython's JSON decoder says ``Expecting
+    ',' delimiter`` or ``Unterminated string starting at``. Neither vocabulary
+    covers the other, and matching on either alone is what let the failure
+    retry forever without ever raising the cap.
+
+    ``cap_reached`` names the lever that is left:
+
+    * ``False`` — the cap was raised, so an identical retry now has room to
+      finish. RETRY.
+    * ``True`` — the cap is already at its ceiling; raising it again is a
+      no-op. The only remaining lever is shrinking the INPUT, which is what the
+      minimal-prompt degrade does (#662), so this routes to COMPRESS_MEMORY.
+      Without that hand-off the turn spends its remaining attempts on identical
+      full-size calls and then fails, breaking the NO-COLLAPSE guarantee.
+    """
+
+    def __init__(self, message: str, cap_reached: bool = False):
+        super().__init__(message)
+        self.cap_reached = cap_reached
+
+
+def is_output_truncation_error(error: BaseException) -> bool:
+    """True when a *provider* reports it cut the response at the generation cap.
+
+    Text-based by necessity: this is the one site where the provider's own
+    wording is the only evidence there is. Gemini raises on
+    ``finishReason=MAX_TOKENS`` from inside ``generate()``, before any body
+    exists to inspect. The parse-time site has the body and uses the sharper
+    positional test in ``is_truncated_json_error`` instead.
+
+    Input overflow wins when a message carries both vocabularies — a gateway
+    that says "input truncated: context length exceeded" is reporting that the
+    PROMPT did not fit, and raising the generation cap cannot help. Same
+    precedence as ``classify_token_limit_reason``, so the two never disagree
+    about which failure a single message is.
+    """
+    msg = str(getattr(error, "message", "") or error).lower()
+    # A wrong/unsupported request parameter is a config error, not a cut body.
+    if any(guard in msg for guard in _PARAM_ERROR_GUARD_PHRASES):
+        return False
+    if any(p in msg for p in CONTEXT_OVERFLOW_PHRASES):
+        return False
+    return any(p in msg for p in _OUTPUT_TRUNCATION_PHRASES)
+
+
+def is_truncated_json_error(error: BaseException, content: Any) -> bool:
+    """True when *error* is a JSON parse failure caused by a body that ran out.
+
+    Truncation is a POSITION, not a phrase. CPython's decoder never emits the
+    words this code used to look for: a body cut mid-document raises
+    ``Expecting ',' delimiter`` / ``Expecting ':' delimiter`` / ``Expecting
+    value`` with ``pos`` at the end of the input, or ``Unterminated string
+    starting at``, which by construction means the input ended inside a string
+    literal. Neither ``truncated`` nor ``EOF while parsing`` ever appears, so
+    the phrase test that guarded this never fired and the max_tokens ladder
+    never engaged (#513).
+
+    A document malformed in the MIDDLE — model prose, a stray comma, a bad
+    literal — stops with ``pos`` well before the end. That is deliberately NOT
+    truncation: a bigger generation cap cannot fix it, and letting it consume
+    the truncation ladder would burn the turn's attempts on a retry that has no
+    reason to differ.
+    """
+    if not isinstance(error, json.JSONDecodeError) or not isinstance(content, str):
+        return False
+    if error.msg.startswith("Unterminated string"):
+        return True
+    return error.pos >= len(content.rstrip())
+
+
+# Reason labels for the degrade-recovery metric. Both classes reach the
+# minimal-prompt recovery as TOKEN_LIMIT, but by different routes and for
+# different reasons. INPUT_OVERFLOW is what that recovery targets directly.
+# OUTPUT_TRUNCATION arrives only once the max_tokens ladder is exhausted
+# (#513) — raising the cap is the targeted fix, and shrinking the prompt is the
+# fallback when the ceiling could not buy enough room. So a rising
+# OUTPUT_TRUNCATION share means the ceiling is too low for the schemas in play,
+# not that prompts are too large.
 RECOVERY_REASON_INPUT_OVERFLOW = "input_overflow"
 RECOVERY_REASON_OUTPUT_TRUNCATION = "output_truncation"
 RECOVERY_REASON_UNCLASSIFIED = "unclassified"
@@ -116,8 +206,17 @@ class RetryConfig:
 
     # Error message patterns that indicate retryable errors. Used as a fallback
     # when the exception is not an LLMException (which carries authoritative
-    # retryable/status_code metadata). All 5xx codes are listed explicitly
-    # because partial matching ("50") would catch unrelated numbers.
+    # retryable/status_code metadata) and not a typed engine signal. All 5xx
+    # codes are listed explicitly because partial matching ("50") would catch
+    # unrelated numbers.
+    #
+    # Truncation is deliberately NOT extended here. The engine raises
+    # ``OutputTruncationError`` for it, which is dispatched on type before any
+    # of this runs; adding JSON-decoder phrasing would only add entries that
+    # never decide anything (and, as #513 showed, entries that look like
+    # coverage while matching nothing real). The two provider-worded phrases
+    # below predate that signal and stay as a floor for a truncation that
+    # somehow surfaces outside the structured-output loop.
     retryable_patterns: Tuple[str, ...] = (
         "rate limit",
         "over capacity",
@@ -134,8 +233,6 @@ class RetryConfig:
         "overloaded",
         "truncated",
         "finishreason=max_tokens",
-        "unterminated",
-        "eof while parsing",
     )
 
 
@@ -182,6 +279,13 @@ class LLMErrorHandler:
         of a generic wrapper. Falls back to string-pattern matching for
         non-LLM errors.
         """
+        # The engine's typed truncation signal: retryable exactly while raising
+        # the generation cap is still an option. Checked before the LLMException
+        # walk, because the provider exception it was built from may be on the
+        # chain and would answer for the wrong question.
+        if isinstance(error, OutputTruncationError):
+            return not error.cap_reached
+
         cursor: Optional[BaseException] = error
         while cursor is not None:
             if isinstance(cursor, LLMException):
@@ -224,14 +328,18 @@ class LLMErrorHandler:
     def is_token_limit_error(self, error: Exception) -> bool:
         """Check if an error is a context-window overflow.
 
-        This is the only token-related failure that COMPRESS_MEMORY can
-        recover (the prompt is too large for the context window). A request-shape 400 that
-        merely *names* a token parameter — e.g. OpenAI's "Unsupported parameter:
-        'max_tokens' is not supported with this model. Use
-        'max_completion_tokens' instead." — is a non-retryable config error, NOT
-        a context overflow. Matching it here masked the real cause as "Context
-        too large" and sent the engine into a futile compression loop, so we key
-        on specific overflow signatures and never on the bare word
+        Input overflow only: the prompt is too large for the context window, so
+        COMPRESS_MEMORY is the direct remedy. Output truncation is a different
+        failure with a different first remedy (raise the generation cap) and
+        reaches COMPRESS_MEMORY only after that ladder is spent — it travels as
+        ``OutputTruncationError`` and is dispatched on type, never matched here.
+
+        A request-shape 400 that merely *names* a token parameter — e.g.
+        OpenAI's "Unsupported parameter: 'max_tokens' is not supported with this
+        model. Use 'max_completion_tokens' instead." — is a non-retryable config
+        error, NOT a context overflow. Matching it here masked the real cause as
+        "Context too large" and sent the engine into a futile compression loop,
+        so we key on specific overflow signatures and never on the bare word
         "token"/"max_tokens", and bail early on unsupported-parameter errors.
         """
         error_str = str(error).lower()
@@ -261,6 +369,28 @@ class LLMErrorHandler:
         # Track error for pattern detection
         error_type = type(error).__name__
         self._error_counts[error_type] = self._error_counts.get(error_type, 0) + 1
+
+        # Output truncation is a typed signal the engine raised about its OWN
+        # generation cap, so it is dispatched first — before any of the
+        # phrase-matching classifiers below get to read a message that belongs
+        # to the provider or to the JSON decoder. (A provider's truncation text
+        # names its model; letting `is_model_not_found_error` see it would
+        # escalate a recoverable cut as a configuration failure.)
+        if isinstance(error, OutputTruncationError):
+            if error.cap_reached:
+                # Nothing left to raise. Hand it to the same COMPRESS_MEMORY
+                # recovery an input overflow uses: shrinking the prompt is now
+                # the only way to make room for the answer (#662).
+                return ErrorResult(
+                    action=ErrorAction.COMPRESS_MEMORY,
+                    message=(
+                        "Response truncated at the maximum generation cap. "
+                        "Reducing the prompt to make room for the answer..."
+                    ),
+                    error_code=TOKEN_LIMIT,
+                )
+            # The cap was raised; the identical call now has room to finish.
+            return await self._retry_or_exhaust(retry_count)
 
         # Permanent billing / quota exhaustion (non-retryable). The provider
         # account is out of credits or quota; retrying or waiting cannot help —
@@ -311,25 +441,7 @@ class LLMErrorHandler:
 
         # Check for retryable errors
         if self.is_retryable_error(error):
-            if retry_count >= self.config.max_retries:
-                return ErrorResult(
-                    action=ErrorAction.FAIL,
-                    message="LLM service temporarily unavailable. Please try again in a few minutes.",
-                    error_code="RETRY_EXHAUSTED",
-                    retry_count=retry_count,
-                )
-
-            delay = self.calculate_delay(retry_count)
-            logger.info(
-                f"Retryable error, waiting {delay:.1f}s before retry {retry_count + 1}/{self.config.max_retries}"
-            )
-            await asyncio.sleep(delay)
-
-            return ErrorResult(
-                action=ErrorAction.RETRY,
-                message=f"Transient error. Retrying ({retry_count + 1}/{self.config.max_retries})...",
-                retry_count=retry_count + 1,
-            )
+            return await self._retry_or_exhaust(retry_count)
 
         # Unknown error — fail fast and surface details for diagnostics.
         logger.error(
@@ -345,6 +457,34 @@ class LLMErrorHandler:
             message=f"LLM error ({error_type}): {error_preview}",
             error_code="UNKNOWN_ERROR",
             retry_count=retry_count,
+        )
+
+    async def _retry_or_exhaust(self, retry_count: int) -> ErrorResult:
+        """Back off and retry, or report the attempts spent.
+
+        Shared by the string-classified retryable branch and the typed
+        output-truncation signal, so a truncation retry honours the same
+        ceiling and the same backoff as every other retry rather than getting
+        its own budget.
+        """
+        if retry_count >= self.config.max_retries:
+            return ErrorResult(
+                action=ErrorAction.FAIL,
+                message="LLM service temporarily unavailable. Please try again in a few minutes.",
+                error_code="RETRY_EXHAUSTED",
+                retry_count=retry_count,
+            )
+
+        delay = self.calculate_delay(retry_count)
+        logger.info(
+            f"Retryable error, waiting {delay:.1f}s before retry {retry_count + 1}/{self.config.max_retries}"
+        )
+        await asyncio.sleep(delay)
+
+        return ErrorResult(
+            action=ErrorAction.RETRY,
+            message=f"Transient error. Retrying ({retry_count + 1}/{self.config.max_retries})...",
+            retry_count=retry_count + 1,
         )
 
     async def with_retry(

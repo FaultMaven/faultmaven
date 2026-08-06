@@ -153,6 +153,15 @@ class AgentExecution:
     Represents a single execution of an AI agent, tracking the full lifecycle
     from queued to completion or failure.
 
+    **Currently unwritten.** These rows were produced by the agent-execution
+    endpoint and its orchestration service, both removed once the milestone
+    engine took over turn execution; nothing constructs an ``AgentExecution``
+    in production now. The model, the ``agent_executions`` /
+    ``agent_tool_calls`` tables and the repository methods remain, so reads
+    return empty rather than failing. Investigation activity is recorded in
+    ``case_messages`` and ``case_actions``. Removing this needs a migration
+    and is a separate decision — treat the emptiness as expected, not a bug.
+
     Attributes:
         execution_id: Unique identifier
         case_id: Case this execution belongs to
@@ -168,10 +177,10 @@ class AgentExecution:
         token_usage: Token usage statistics (prompt_tokens, completion_tokens, total_tokens)
         tool_calls: List of tool calls made during execution
         metadata: Additional execution-specific metadata (JSON)
-        organization_id: Tenant identifier. Production callers
-            (agent_orchestration_service) propagate it from the
+        organization_id: Tenant identifier, propagated from the
             authenticated session for defense-in-depth; the repository
-            falls back to the parent case row when not set.
+            falls back to the parent case row when not set. No production
+            caller writes these rows today — see the class docstring.
         created_at: Record creation timestamp
         updated_at: Record update timestamp
     """

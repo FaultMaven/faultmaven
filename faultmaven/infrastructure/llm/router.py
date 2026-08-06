@@ -146,6 +146,13 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             every other provider pops and ignores it, so it can never leak into
             a request body. Transparent to model output.
 
+        bypass_cache: when True, do not answer this call from the response
+            cache — but still store the result. This is for a caller retrying a
+            request whose cached answer it has already found unusable (a
+            truncated structured-output body, #513): it needs the provider to be
+            reached, and it needs the good response to replace the bad entry,
+            because nothing else ever will.
+
         Args:
             prompt: Input prompt (optional if messages is provided)
             model: Specific model to use (optional)
@@ -237,12 +244,20 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             # fallback chain answered with a different model than the one
             # requested, the entry is still keyed under the *requested* model, so
             # a later identical call is served a response another model produced.
+            #
+            # ``bypass_cache`` suppresses the *lookup* only — this write still
+            # runs, and it must. A caller sets the flag precisely because the
+            # entry already under this key is unusable: the truncated body the
+            # first attempt stored before the caller discovered it would not
+            # parse. max_tokens is not part of the cache key, so the retry lands
+            # on that same key, and the cache has no eviction API — overwriting
+            # it with the complete response is the only thing that stops the
+            # poisoned entry being served to every later identical call (#513).
             if (
                 model
                 and not messages
                 and sanitized_prompt
                 and response.confidence >= self.confidence_threshold
-                and not bypass_cache
             ):
                 self.cache.store(sanitized_prompt, model, response, case_id=case_id)
 
