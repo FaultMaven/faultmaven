@@ -59,9 +59,16 @@ READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 #
 # Anchored full-path patterns rather than prefixes: a read endpoint must not be
 # able to buy the strict bucket's roominess, or escape it, by sharing a prefix
-# with one of these. ``tests/unit/api/middleware/test_rate_limit_read_cost_
-# classification.py`` pins the inventory, so a read endpoint added later has to
-# be classified rather than silently defaulting to cheap.
+# with one of these.
+#
+# This list is the one thing here that rots in the permissive direction — an
+# endpoint added later inherits "cheap" by saying nothing. It is guarded by
+# reachability rather than by inventory:
+# ``tests/unit/api/middleware/test_rate_limit_read_cost_classification.py`` asks,
+# of every read route on every mounted router, whether the handler can reach an
+# embedder or vector store at all. Only the routes that can need a recorded
+# verdict, so adding an ordinary read endpoint costs nothing and adding one that
+# touches the vector store fails until someone decides what it costs.
 EXPENSIVE_READ_PATTERNS = (
     # Runbook similarity search over the knowledge base.
     re.compile(r"^/api/v1/cases/[^/]+/report-recommendations/?$"),

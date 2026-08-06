@@ -77,11 +77,28 @@ metered as writes:
 - `GET /api/v1/knowledge/documents/{document_id}/snippet`
 
 The list lives in `EXPENSIVE_READ_PATTERNS` in
-`faultmaven/api/middleware/rate_limiting.py`. It is pinned by
-`tests/unit/api/middleware/test_rate_limit_read_cost_classification.py`, which
-fails when a read endpoint is added without a cost verdict, and when a pattern
-stops matching any live route — either would silently demote an expensive
-endpoint to the roomy bucket.
+`faultmaven/api/middleware/rate_limiting.py`. A hand-maintained list of
+exceptions rots in the permissive direction — an endpoint added later inherits
+"cheap" by saying nothing — so
+`tests/unit/api/middleware/test_rate_limit_read_cost_classification.py` guards it
+by **reachability rather than by inventory**. For every read route on every
+mounted router it asks whether the handler can reach an embedder or vector store,
+through a declared dependency or an import inside the handler body. Seven of the
+sixty-one can, and only those carry a recorded verdict; the other fifty-four are
+proved cheap on each run rather than listed.
+
+What that means in practice:
+
+- Adding an ordinary read endpoint costs nothing — no list to update.
+- Adding one that touches the vector store **fails the test** until someone
+  records whether it embeds. Four of the seven flagged today hold a
+  `KnowledgeService` but only read rows and counts; they are recorded cheap, with
+  the reason.
+- A pattern that stops matching any live route fails too — a rename would
+  otherwise demote an expensive endpoint to the roomy bucket in silence.
+- `MOUNTS` in that test is checked against `main.py`'s own `include_router` calls
+  by AST, so a router mounted there but missing from the probe is a failure
+  rather than a blind spot.
 
 **Shipped values**:
 
