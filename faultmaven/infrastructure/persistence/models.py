@@ -117,31 +117,6 @@ class ReportStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class AgentExecutionStatus(str, enum.Enum):
-    QUEUED = "queued"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    TIMEOUT = "timeout"
-
-
-class AgentType(str, enum.Enum):
-    INVESTIGATOR = "investigator"
-    DEBUGGER = "debugger"
-    RESEARCHER = "researcher"
-    VALIDATOR = "validator"
-    REPORTER = "reporter"
-    CUSTOM = "custom"
-
-
-class ToolCallStatus(str, enum.Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    SUCCESS = "success"
-    FAILED = "failed"
-
-
 class InvestigationSessionState(str, enum.Enum):
     ACTIVE = "active"
     PAUSED = "paused"
@@ -1917,7 +1892,7 @@ class CaseCheckpointModel(Base):
 class InvestigationSessionModel(Base):
     """Investigation session: a temporal grouping of agent executions within a
     case. The four-level cascade chain is
-    Case → InvestigationSession → AgentExecution → AgentToolCall."""
+    Case → InvestigationSession."""
 
     __tablename__ = "investigation_sessions"
 
@@ -1962,12 +1937,6 @@ class InvestigationSessionModel(Base):
         onupdate=func.now(),
     )
 
-    agent_executions = relationship(
-        "AgentExecutionModel",
-        back_populates="session",
-        foreign_keys="AgentExecutionModel.session_id",
-    )
-
     __table_args__ = (
         CheckConstraint(
             "state IN ('active', 'paused', 'completed', 'abandoned')",
@@ -1987,135 +1956,6 @@ class InvestigationSessionModel(Base):
         CheckConstraint(
             "token_budget_limit IS NULL OR token_budget_limit >= 0",
             name="investigation_sessions_budget_check",
-        ),
-    )
-
-
-class AgentExecutionModel(Base):
-    """Agent execution: one LLM-driven action within an investigation session."""
-
-    __tablename__ = "agent_executions"
-
-    execution_id = Column(String(36), primary_key=True)
-    organization_id = Column(
-        String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    case_id = Column(
-        String(36),
-        ForeignKey("cases.case_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    session_id = Column(
-        String(36),
-        ForeignKey("investigation_sessions.session_id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
-    agent_type = Column(String(64), nullable=False, index=True)
-    agent_model = Column(String(128), nullable=False, index=True)
-    status = Column(String(32), nullable=False, server_default="queued", index=True)
-
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-    execution_duration_ms = Column(Integer, nullable=True)
-
-    prompt = Column(Text, nullable=True)
-    response = Column(Text, nullable=True)
-    error_message = Column(Text, nullable=True)
-    token_usage = Column(JsonBlob, nullable=True)
-
-    execution_metadata = Column(
-        "metadata", JsonBlob, nullable=False, server_default="{}"
-    )
-
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    session = relationship(
-        "InvestigationSessionModel",
-        back_populates="agent_executions",
-        foreign_keys=[session_id],
-    )
-    tool_calls = relationship(
-        "AgentToolCallModel",
-        back_populates="execution",
-        cascade="all, delete-orphan",
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('queued', 'running', 'completed', 'failed', 'cancelled', 'timeout')",
-            name="agent_executions_status_check",
-        ),
-        CheckConstraint(
-            "agent_type IN ('investigator', 'debugger', 'researcher', 'validator', 'reporter', 'custom')",
-            name="agent_executions_agent_type_check",
-        ),
-        CheckConstraint(
-            "execution_duration_ms IS NULL OR execution_duration_ms >= 0",
-            name="agent_executions_duration_check",
-        ),
-    )
-
-
-class AgentToolCallModel(Base):
-    """Tool invocation made during an agent execution."""
-
-    __tablename__ = "agent_tool_calls"
-
-    tool_call_id = Column(String(36), primary_key=True)
-    organization_id = Column(
-        String(36),
-        ForeignKey("organizations.organization_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    execution_id = Column(
-        String(36),
-        ForeignKey("agent_executions.execution_id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    tool_name = Column(String(128), nullable=False, index=True)
-    tool_input = Column(JsonBlob, nullable=True)
-    tool_output = Column(JsonBlob, nullable=True)
-    status = Column(String(32), nullable=False, server_default="pending", index=True)
-    error_message = Column(Text, nullable=True)
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-    duration_ms = Column(Integer, nullable=True)
-    created_at = Column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
-    )
-    updated_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-        onupdate=func.now(),
-    )
-
-    execution = relationship("AgentExecutionModel", back_populates="tool_calls")
-
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending', 'running', 'success', 'failed')",
-            name="agent_tool_calls_status_check",
-        ),
-        CheckConstraint(
-            "duration_ms IS NULL OR duration_ms >= 0",
-            name="agent_tool_calls_duration_check",
         ),
     )
 

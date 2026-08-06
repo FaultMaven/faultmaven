@@ -18,8 +18,6 @@ DB = Path(__file__).resolve().parent.parent / "data" / "faultmaven.db"
 
 # Child -> parent order. cases last.
 CASE_TABLES = [
-    "agent_tool_calls",
-    "agent_executions",
     "evidence_need_fulfillment",
     "evidence_needs",
     "hypothesis_evidence",

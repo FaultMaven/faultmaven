@@ -30,11 +30,6 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 )
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.investigation_session import InvestigationSession, SessionState
-from faultmaven.modules.case.contracts import (
-    AgentExecution,
-    AgentType,
-    ExecutionStatus,
-)
 from faultmaven.modules.case.domain.models import Case, CaseSeverity, CaseState
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (

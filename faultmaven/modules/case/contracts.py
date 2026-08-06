@@ -10,7 +10,7 @@ Following the design in module-organization-design.md:
 
 Per module-organization-design.md (lines 592-605, 757-770):
 - Domain Services (Evidence, Agent, Report) should import from Case contracts
-- Case contracts export models for Case-owned tables (evidence, reports, agent_executions)
+- Case contracts export models for Case-owned tables (evidence, reports)
 """
 
 from dataclasses import dataclass
@@ -36,12 +36,6 @@ if TYPE_CHECKING:
 
 
 # Case-owned Agent Execution models (Case module owns agent audit data per module-organization-design.md)
-from faultmaven.modules.case.domain.owned_models.agent_execution import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
-)
 
 # Case-owned Checkpoint models (Case module owns checkpoints table)
 from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
@@ -298,72 +292,6 @@ class ICaseRepository(Protocol):
     # Standalone evidence path is deleted; evidence is case-tied only and
     # accessed via `case.evidence` loaded by the case repository.
 
-    # Agent Execution Operations (migrated from Agent module)
-    async def create_agent_execution(self, execution: AgentExecution) -> AgentExecution:
-        """Create new agent execution record."""
-        ...
-
-    async def get_agent_execution(self, execution_id: str) -> Optional[AgentExecution]:
-        """Get agent execution by ID with tool calls loaded."""
-        ...
-
-    async def list_agent_executions_by_case(
-        self,
-        case_id: str,
-        status: Optional[ExecutionStatus] = None,
-        agent_type: Optional[AgentType] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> tuple[List[AgentExecution], int]:
-        """List agent executions for a case with optional filters."""
-        ...
-
-    async def list_agent_executions_by_session(
-        self,
-        session_id: str,
-        status: Optional[ExecutionStatus] = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> tuple[List[AgentExecution], int]:
-        """List agent executions for a session with optional filters."""
-        ...
-
-    async def update_agent_execution(self, execution: AgentExecution) -> AgentExecution:
-        """Update agent execution status and results."""
-        ...
-
-    async def delete_agent_execution(self, execution_id: str) -> bool:
-        """Delete agent execution by ID (cascades to tool calls)."""
-        ...
-
-    async def create_agent_tool_call(self, tool_call: AgentToolCall) -> AgentToolCall:
-        """Create new agent tool call record."""
-        ...
-
-    async def update_agent_tool_call(self, tool_call: AgentToolCall) -> AgentToolCall:
-        """Update agent tool call status and results."""
-        ...
-
-    async def get_agent_tool_calls_for_execution(
-        self,
-        execution_id: str,
-    ) -> List[AgentToolCall]:
-        """Get all tool calls for an execution."""
-        ...
-
-    async def count_agent_executions_by_case(self, case_id: str) -> int:
-        """Count agent executions for a case."""
-        ...
-
-    async def get_latest_agent_execution(
-        self,
-        case_id: str,
-        agent_type: Optional[AgentType] = None,
-    ) -> Optional[AgentExecution]:
-        """Get the most recent agent execution for a case."""
-        ...
-
-    # Checkpoint Operations
     async def create_checkpoint(self, checkpoint: CaseCheckpoint) -> CaseCheckpoint:
         """Create a new case checkpoint."""
         ...
@@ -514,10 +442,6 @@ __all__ = [
     "CaseClosureRequest",
     "CaseClosureResponse",
     # Case-owned Agent Execution models (per module-organization-design.md)
-    "ExecutionStatus",
-    "AgentType",
-    "AgentToolCall",
-    "AgentExecution",
     # Case-owned Checkpoint models
     "CaseCheckpoint",
     # Investigation models from Agent module (shared for investigation coordination)

@@ -38,8 +38,6 @@ import pytest
 from sqlalchemy import Column, create_engine, inspect
 
 from faultmaven.infrastructure.persistence.models import (
-    AgentExecutionModel,
-    AgentToolCallModel,
     Base,
     CaseActionModel,
     CaseCheckpointModel,
@@ -300,7 +298,6 @@ class TestSchemaModelConsistency:
             "case_messages",
             "evidence",
             "investigation_sessions",
-            "agent_executions",
         }
 
         missing_tables = critical_tables - tables
@@ -318,8 +315,6 @@ class TestSchemaModelConsistency:
             ("uploaded_files", UploadedFileModel),
             ("case_actions", CaseActionModel),
             ("case_tags", CaseTagModel),
-            ("agent_executions", AgentExecutionModel),
-            ("agent_tool_calls", AgentToolCallModel),
             ("investigation_sessions", InvestigationSessionModel),
             ("case_checkpoints", CaseCheckpointModel),
             ("knowledge_items", KnowledgeItemModel),

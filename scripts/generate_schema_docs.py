@@ -55,8 +55,6 @@ TABLE_DOMAIN = {
     "hypothesis_evidence": "case",
     "solutions": "case",
     "uploaded_files": "case",
-    "agent_executions": "case",
-    "agent_tool_calls": "case",
     "investigation_sessions": "case",
     "reports": "case",
     # Knowledge domain

@@ -647,23 +647,6 @@ class TestGetCaseWithDetails:
         assert result["evidence"] == list(getattr(sample_case, "evidence", []) or [])
 
     @pytest.mark.asyncio
-    async def test_get_case_with_details_includes_executions(
-        self, case_service, mock_case_repo, sample_case
-    ):
-        """Test that get_case_with_details includes executions when requested."""
-        mock_case_repo.get.return_value = sample_case
-        mock_case_repo.list_agent_executions_by_case.return_value = ([], 0)
-
-        result = await case_service.get_case_with_details(
-            sample_case.case_id,
-            sample_case.organization_id,
-            include_executions=True,
-        )
-
-        assert "executions" in result
-        mock_case_repo.list_agent_executions_by_case.assert_called_once()
-
-    @pytest.mark.asyncio
     async def test_get_case_with_details_not_found_returns_none(
         self, case_service, mock_case_repo
     ):

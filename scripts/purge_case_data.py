@@ -4,7 +4,7 @@
 Deletes:
   - All cases (FK CASCADE cleans evidence, hypotheses, solutions, messages,
     uploaded_files, actions, tags, checkpoints, entities, sessions,
-    agent_executions, tool_calls, hypothesis_evidence, reports)
+    hypothesis_evidence, reports)
   - All investigation_sessions
   - Evidence files on disk  (data/evidence/)
   - Evidence vector embeddings (data/chroma-evidence/)
@@ -52,8 +52,6 @@ def get_counts(conn: sqlite3.Connection) -> dict:
         "case_entities": "SELECT COUNT(*) FROM case_entities",
         "hypothesis_evidence": "SELECT COUNT(*) FROM hypothesis_evidence",
         "investigation_sessions": "SELECT COUNT(*) FROM investigation_sessions",
-        "agent_executions": "SELECT COUNT(*) FROM agent_executions",
-        "agent_tool_calls": "SELECT COUNT(*) FROM agent_tool_calls",
         "reports": "SELECT COUNT(*) FROM reports",
         # Preserved
         "knowledge_items": "SELECT COUNT(*) FROM knowledge_items",
@@ -110,7 +108,6 @@ def main():
     print(f"  Messages:               {before['case_messages']}")
     print(f"  Uploaded files (DB):    {before['uploaded_files']}")
     print(f"  Investigation sessions: {before['investigation_sessions']}")
-    print(f"  Agent executions:       {before['agent_executions']}")
     print(f"  Reports:                {before['reports']}")
     print()
     print(f"  Evidence files on disk:     {dir_size_mb(EVIDENCE_DIR)}")

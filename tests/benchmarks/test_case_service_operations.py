@@ -27,8 +27,6 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 )
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.modules.case.domain.models import CaseSeverity
-
-# AgentExecutionRepository removed - APICaseService now uses case_repo
 from faultmaven.modules.case.domain.services.api_case_service import APICaseService
 from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
     SQLiteCaseRepository,
@@ -324,7 +322,6 @@ class TestGetCaseWithDetailsBenchmark:
                 organization_id,
                 include_sessions=True,
                 include_evidence=True,
-                include_executions=True,
             )
 
         stats = await measure_operation(get_details, iterations=50)
