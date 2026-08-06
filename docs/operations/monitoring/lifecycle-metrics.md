@@ -101,21 +101,42 @@ Matrix row: INV-29 in `investigation-invariants.md`; methodology §7.1 (*Indepen
 
 ## INV-30: absence-trust discipline telemetry
 
-- `faultmaven_counterfactual_refute_hedged_total` — a REFUTES link on a `causal_absence` row arrived below the stance-confidence bar at chain-emission ingest. The link is kept as ordinary refuting evidence but denied decisive (§7.2) force: it cannot single-handedly refute a node, zero a sibling's belief for proof-by-exclusion, or demote the identified cause. One increment per link created (absence-row links are never overwritten, so creation is the one stable event).
+- `faultmaven_counterfactual_refute_hedged_total` — **REMOVED (#987).** Its sole producer was the creation of an LLM-emitted REFUTES link on a `causal_absence` row, which INV-42 now refuses outright on both belief axes. Replaced by `faultmaven_absence_row_link_refused_total` (below).
 - `faultmaven_absence_confirmation_bearing_rejected_total` — at RESOLVED execution, a metadata-qualified `causal_absence` row was refused as the confirmation citation because its content bears on a **different** chain than the root being confirmed. One increment per refused row per stamp evaluation — refusal leaves no marker on the case, so a retried RESOLVED execution re-counts the same rows; the rate is bounded by refused-rows-per-stamp × stamp evaluations, not by resolutions alone.
 
-**Healthy shape.** Both near zero. A sustained hedged-refute rate is an *elicitation* signal — the model keeps reporting failed fixes it does not trust — not a truth problem (the decisive-power gate is what protects the conclusion). Any sustained bearing-rejection rate means confirmations are being recorded against the wrong candidate cause; inspect affected cases before trusting their `CONFIRMED`-grade harvests.
+**Healthy shape.** Near zero. Any sustained bearing-rejection rate means confirmations are being recorded against the wrong candidate cause; inspect affected cases before trusting their `CONFIRMED`-grade harvests.
 
 ```promql
-# Hedged counterfactuals: elicitation drift if sustained.
-rate(faultmaven_counterfactual_refute_hedged_total[24h])
-
 # Bearing refusals at the stamp: should be ~zero; each event is one
 # resolution whose confirmation row talked about a different chain.
 rate(faultmaven_absence_confirmation_bearing_rejected_total[24h])
 ```
 
 Matrix row: INV-30 in `investigation-invariants.md`; methodology §7.3 (decisive counterfactual force) and §9.5 (confirmation-row qualification + bearing).
+
+## INV-42: absence-row trust boundary + M6 precondition telemetry
+
+- `faultmaven_absence_row_link_refused_total{axis,stance}` — an LLM-emitted evidence link on a `causal_absence` row was refused at apply time. Absence rows are stand-alone audit records and carry no model-authored stance on either belief axis. `axis` is `node` (chain `node_evidence_links`) or `hypothesis` (flat `hypothesis_evidence_links`); `stance` is what the model asserted. One increment per refused link.
+- `faultmaven_m6_demotion_refused_total{reason}` — an M6 **counterfactual** (failed-fix) demotion was refused because its preconditions could not be established. The evidence-based demotion arm is unaffected and never appears here. `reason` is:
+  - `no_fix_applied` — nothing was ever tried: no accepted SOLUTION `ProposedAction`.
+  - `undatable_acceptance` — a SOLUTION *was* accepted but carries no `accepted_in_turn`, so "after the fix" cannot be dated. Only reachable on acceptances stamped before that field existed (#987), so this is a **transition** series that drains as in-flight cases close. **While it is nonzero it marks a real, bounded suppression of legitimate failed-fix demotions** — it is deliberately not folded into `no_fix_applied`, which would hide that window inside the benign baseline.
+  - `no_persistence` — a dated fix was applied but no `SYMPTOM_EVIDENCE` at/after it observes the problem still present.
+  - `resolution_confirmed` — a qualifying gone⇒gone row stands at/after the fix turn: the problem demonstrably did NOT persist.
+
+**Healthy shape.** `absence_row_link_refused_total` measures **prompt adherence**, not truth — the engine is correct either way; it is metered because the refusal HIDES the emission, and without it a model that routinely mis-links absence rows looks identical to one that follows the contract. A sustained rate on either axis means the stage instructions are not landing and the prompt needs work; `{axis="node",stance="refutes"}` specifically is the #987 incident shape (a success-confirmation row REFUTES-linked to the cause it confirms).
+
+For `m6_demotion_refused_total`, a sustained `no_persistence` rate is an *elicitation* signal — the model refutes causes without recording the failed outcome the prompt's FAILURE PATH mandates. A nonzero **`resolution_confirmed`** rate is a **defect** signal, not an elicitation one: something upstream is still routing a successful fix into the failed-fix path. Investigate rather than tune. **`undatable_acceptance` should trend to zero** as pre-#987 cases close; if it plateaus, acceptances are being written somewhere that does not stamp `accepted_in_turn`, and failed-fix demotions are being silently suppressed on those cases.
+
+```promql
+# Prompt adherence on absence rows, by axis. The refutes/node series is
+# the #987 shape.
+sum by (axis, stance) (rate(faultmaven_absence_row_link_refused_total[24h]))
+
+# M6 refusals. 'resolution_confirmed' > 0 is a defect, not drift.
+sum by (reason) (rate(faultmaven_m6_demotion_refused_total[24h]))
+```
+
+Matrix row: INV-42 in `investigation-invariants.md`; methodology §7.2 (absence rows carry no model stance) and §9.3 (M6 establishes its preconditions).
 
 ## INV-31: MECE-arbitration hold telemetry
 

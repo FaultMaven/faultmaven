@@ -748,7 +748,7 @@ class TestCloseCase:
         """close_case → RESOLVED leaves closure_reason=None.
 
         closure_reason is the engine-derived CLOSED sub-category
-        ('inquiry_only' / 'closed_after_investigation')
+        ('inquiry_only' / 'closed_insufficient_evidence' / ...)
         and is meaningless for RESOLVED.
         """
         mock_case_repo.get.return_value = sample_case

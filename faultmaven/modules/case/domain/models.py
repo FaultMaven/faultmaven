@@ -320,26 +320,63 @@ class InvestigationStrategy(str, Enum):
 # Sub-categorization of CLOSED state. Engine-derived from case state at
 # transition time. None for non-terminal and RESOLVED cases.
 #
-# Both values are programmatic — derived from the state the case was closed from
-# (unified opportunistic flow, no path fork):
+# All values are programmatic — derived from the state the case was closed from
+# (unified opportunistic flow, no path fork). Every close carries a REASON: a
+# closure_reason must say why the case ended, never merely when. Derived in the
+# order below, most specific first:
+#
 #   - inquiry_only: INQUIRY → CLOSED (no investigation started)
-#   - closed_after_investigation: INVESTIGATING → CLOSED. Folds in the former
-#     `mitigation_sufficient`: a case stabilized then closed is simply an
-#     investigation that closed; the documented mitigation is preserved.
-#   - closed_insufficient_evidence: INVESTIGATING → CLOSED from the
-#     INSUFFICIENT_EVIDENCE verification-status cell (not grounded, work-gated,
-#     stalled — often a declared data wall). Capture-on-close only: the honest
-#     partial (residual candidates + the specific unmet/unobtainable need,
-#     already persisted on the case) is signal for calibration and the flywheel.
-#     The engine never nudges toward this close (no SUGGEST_CLOSE); see
-#     insufficient-evidence-handling.md §5.4.
+#   - solution_deferred: the cause is IDENTIFIED and a fix is documented, but
+#     implementation happens out-of-band (a change request, a maintenance
+#     window, another team) — `solution_feasible == DEFERRED` with a solution on
+#     record, the disposition `_maybe_propose_deferred_close` proposes. The most
+#     complete non-resolved outcome there is: nothing was missing, the fix
+#     simply was not applied this session. Ranked first among the INVESTIGATING
+#     reasons for that reason — where several hold, the one carrying the most
+#     established knowledge wins.
+#   - closed_rca_infeasible: the cause is STRUCTURALLY unreachable — an
+#     uncontrollable external dependency, an EOL system, a known intractable
+#     condition — as declared by `problem_verification.rca_infeasible` WITH a
+#     rationale. Distinct from insufficient evidence, which is contingent: there
+#     the evidence may well exist and someone with more access could get it, so
+#     it is a signal to improve observability. Here nothing can be improved and
+#     the right artefact is a documented workaround; a future reader should know
+#     not to re-open this expecting to find a cause. Ranked ABOVE
+#     mitigation_sufficient because the engine's only path to it fires on
+#     `mitigation_verified` (milestone_engine, "propose closure as stabilized
+#     rather than push RCA"), so both hold on essentially every such close and
+#     the more informative label must win — it already implies a verified
+#     mitigation AND explains why RCA stopped.
+#   - mitigation_sufficient: a verified mitigation on record; the symptom is
+#     relieved and RCA was deferred BY CHOICE, with the cause still reachable if
+#     anyone returns to it. This is the one closure in the set that is not a
+#     failure of any kind, which is why it is not folded into a generic bucket.
+#   - closed_insufficient_evidence: the default for any other close from
+#     INVESTIGATING — what was needed was never established, whether at the
+#     SYMPTOM level (the problem could not be verified) or at the CAUSE level
+#     (verified, but no cause could be grounded). Capture-on-close only: the
+#     honest partial (residual candidates + the specific unmet/unobtainable
+#     need, already persisted on the case) is signal for calibration and the
+#     flywheel. The engine never nudges toward this close (no SUGGEST_CLOSE);
+#     see insufficient-evidence-handling.md §5.4.
+#
+# REMOVED: closed_after_investigation. It named the state a case closed FROM
+# rather than why it ended, and covered four unrelated situations at once — a
+# documented-but-deferred fix, a successful mitigation, an intractable cause,
+# and a plain failure to establish anything. Its former INSUFFICIENT_EVIDENCE-
+# cell restriction also made closed_insufficient_evidence unreachable for a case
+# that never verified its symptom: that cell requires work_gate_passed (>=2
+# hypotheses across >=2 categories), which is CAUSE work a case stuck at symptom
+# verification never does, so every such close fell into the generic bucket.
 #
 # The LLM does NOT emit closure_reason; user-motivation context (e.g., "we're
 # escalating") lives in the LLM-authored persistent Report's free-form summary.
 
 VALID_CLOSURE_REASONS: set[str] = {
     "inquiry_only",
-    "closed_after_investigation",
+    "solution_deferred",
+    "closed_rca_infeasible",
+    "mitigation_sufficient",
     "closed_insufficient_evidence",
 }
 
@@ -3503,6 +3540,20 @@ class ProposedAction(BaseModel):
         description="pending | accepted | rejected | superseded",
     )
 
+    accepted_in_turn: Optional[int] = Field(
+        default=None,
+        description=(
+            "Turn in which compliance detection observed the user EXECUTE this "
+            "action (state='accepted'). Distinct from ``proposed_in_turn``, "
+            "which is when the action was OFFERED — the user executes it a "
+            "turn later in the ordinary flow (#987). Anything reasoning about "
+            "what happened *after the fix* must key on this, not on the "
+            "proposal turn, or pre-execution evidence from the offering turn "
+            "reads as a post-fix outcome. None while pending/superseded, and "
+            "on actions accepted before this field existed."
+        ),
+    )
+
     superseded_in_turn: Optional[int] = Field(
         default=None,
         description=(
@@ -4004,6 +4055,23 @@ class WorkingConclusion(BaseModel):
         default_factory=list, description="Limitations or uncertainties"
     )
 
+    mirrors_root_cause_conclusion: bool = Field(
+        default=False,
+        description=(
+            "True when this working conclusion is a MIRROR of the case's "
+            "RootCauseConclusion rather than an independent read of the live "
+            "hypothesis differential (#987). Load-bearing: the working "
+            "conclusion is one of `cause_identification_leg`'s BACKSTOP legs, "
+            "and it is read from the PREVIOUS turn (it regenerates after the "
+            "recompute). A mirror carries the RCC's likelihood, so without this "
+            "flag a retracted conclusion would keep satisfying the backstop for "
+            "one further turn through its own stale mirror — the retraction is "
+            "supposed to make every consumer see one truth. A mirror is never "
+            "an independent signal anyway: whenever one exists the `rcc` leg "
+            "already governs."
+        ),
+    )
+
     # ============================================================
     # Metadata
     # ============================================================
@@ -4079,6 +4147,22 @@ class RootCauseConclusion(BaseModel):
 
     determined_by: str = Field(
         default="agent", description="Who determined: 'agent' or user_id"
+    )
+
+    established_by: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description=(
+            "PROVENANCE (#987): how this conclusion came to be established, in "
+            "human-readable form — e.g. 'user-confirmed resolution at turn 11; "
+            "causal-absence ev_47b2f3337ffc bears on root cn_29ff828f55b3'. "
+            "Set when the engine PROMOTES a cause from confirmation plus "
+            "evidence rather than from chain validation alone, so the "
+            "structured record carries how it was established instead of a "
+            "bare assertion. None on conclusions the LLM authored directly "
+            "(their provenance is the transcript) and on the per-turn chain "
+            "mirror (its provenance is the validated chain itself)."
+        ),
     )
 
     # ============================================================

@@ -932,8 +932,12 @@ an evidence row.
    symptom_absence — that case CLOSES with the solution documented, it does
    not resolve.
    Both absence categories are STAND-ALONE audit rows — do NOT link them to a
-   hypothesis: a successful fix CONFIRMS the root-cause hypothesis, so a
-   confidence-bearing link would erode the very hypothesis it proves.
+   hypothesis (`hypothesis_evidence_links`) OR to a causal node
+   (`node_evidence_links`): a successful fix CONFIRMS the root-cause
+   hypothesis, so a confidence-bearing link would erode the very hypothesis it
+   proves. A REFUTES on an absence row is read as a FAILED fix — the opposite
+   of what the row records. The engine REFUSES any link you emit on either
+   absence category, on either axis, and records the violation.
 
 CREATING EVIDENCE RECORDS (evidence_to_add):
 When your analysis discovers a claim-relevant slice not already
@@ -1119,7 +1123,9 @@ internal_reasoning:
 
   conclusions: [step-by-step reasoning from evidence to conclusions]
 
-  milestone_justifications: MANDATORY dictionary — EVERY milestone set to True MUST have an entry.
+  milestone_justifications: MANDATORY dictionary — EVERY milestone you CHANGE
+    must have an entry, whether you set it True or False. A retraction
+    (symptom_verified=False) without one is REFUSED and the claim stands.
     * Format: {{milestone_name: "justification describing the evidence"}}
     * ⚠️ Empty {{}} when completing milestones = validation error
 
@@ -1172,7 +1178,9 @@ You MUST respond with valid JSON matching these fields:
     * Historical evidence (from a prior turn): use turn references ["turn_2", "turn_5"]
     * Do NOT use ev_ IDs here — turn references only for historical evidence.
   - conclusions: Step-by-step reasoning from observations to inferences.
-  - milestone_justifications: MANDATORY dictionary — EVERY milestone set to True MUST have an entry.
+  - milestone_justifications: MANDATORY dictionary — EVERY milestone you CHANGE
+    must have an entry, whether you set it True or False. A retraction
+    (symptom_verified=False) without one is REFUSED and the claim stands.
     * Format: {{milestone_name: "plain-text justification describing the supporting evidence"}}
     * ⚠️ Empty {{}} when completing milestones = validation error
     * Example: {{symptom_verified: "47 connection errors in nginx log between 14:02–16:45 UTC"}}
@@ -1318,10 +1326,12 @@ confirm the symptom (or cause) it captured is no longer present.
   `category=symptom_absence_evidence` (or `causal_absence_evidence`
   when re-checking a cause) and `source_file_id` pointing at the file
   you re-checked. Both absence categories are STAND-ALONE audit rows —
-  do NOT link them to a hypothesis. A successful fix confirms the
-  root-cause hypothesis, so a confidence-bearing link would erode the
-  very hypothesis it proves; re-verification records that the fix held,
-  not a change to the diagnosis. The absence row is the audit record
+  do NOT link them to a hypothesis OR to a causal node (neither
+  `hypothesis_evidence_links` nor `node_evidence_links`). A successful fix
+  confirms the root-cause hypothesis, so a confidence-bearing link would
+  erode the very hypothesis it proves; re-verification records that the fix
+  held, not a change to the diagnosis. A REFUTES on one of these rows reads
+  as a FAILED fix — the opposite of what it records. The absence row is the audit record
   that the fix
   held — without it the case has no positive proof of resolution.
 - If the original signature REAPPEARS, the fix did not hold —
@@ -1943,7 +1953,8 @@ goal is to stabilize the situation, NOT to find or fix the root cause.
         summary: "Symptom no longer present after the mitigation: [key indicators]"
         category: symptom_absence_evidence
         source_type: logs | metrics | text (use text for verbal confirmation only)
-        Stand-alone audit row — do NOT link it to a hypothesis. Skip this step
+        Stand-alone audit row — do NOT link it to a hypothesis or a causal
+        node. Skip this step
         if a `symptom_absence_evidence` row was already recorded in a prior turn.
      3. Set `mitigation_verified=True` in your state updates. The return to DIAGNOSIS
         happens only when this is set — do not narrate the transition without setting it.
@@ -1986,7 +1997,8 @@ Do NOT continue proposing further variants after offering this choice.
   `causal_absence_evidence` is recorded only in TREATMENT, when the PERMANENT
   fix has eliminated the cause — and only that row qualifies a case for
   RESOLVED. A stabilized case CLOSES (with the fix documented), it does not
-  resolve. Stand-alone audit row; do NOT link it to a hypothesis.
+  resolve. Stand-alone audit row; do NOT link it to a hypothesis or a causal
+  node.
 
 **CRITICAL REMINDERS:**
 - This is a TEMPORARY fix — always communicate this to the user
@@ -2032,7 +2044,8 @@ verify the outcome.
        summary: "Root cause no longer present after the fix: [what resolved and how]"
        category: causal_absence_evidence
        source_type: logs | metrics | text (use text for verbal confirmation only)
-     Stand-alone audit row — do NOT link it to a hypothesis. If only the symptom
+     Stand-alone audit row — do NOT link it to a hypothesis or a causal node
+     (a REFUTES on it reads as a FAILED fix). If only the symptom
      was relieved while the cause persists, record `symptom_absence_evidence`
      instead and propose CLOSED (see COMPLETION). Then → Proceed to COMPLETION
    - Partial success: → Identify what remains and provide specific next steps to complete
@@ -2217,7 +2230,9 @@ The process:
   symptom_absence while the cause persists. Pair it with causal_absence only
   when the cause itself was eliminated.
   Both absence categories are stand-alone audit rows; do NOT link them to a
-  hypothesis (a fix confirms the cause; a confidence-bearing link would erode it).
+  hypothesis or to a causal node (a fix confirms the cause; a
+  confidence-bearing link would erode it, and a REFUTES reads as a FAILED
+  fix — the opposite of what the row records).
 - **symptom_evidence**: New symptoms that emerge after a failed fix
   (new errors, changed behavior, unexpected side effects)
 - **causal_evidence**: Data revealing the actual root cause after a theory is disproven
@@ -2655,7 +2670,26 @@ def get_fallback_prompt_for_case(
 # =============================================================================
 
 
-def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
+def _symptom_verification_is_stale(case) -> bool:
+    """Whether the symptom's observation window sits away from the present.
+
+    Thin adapter over ``symptom_currency`` so the emphasis text has one reason
+    to change. False when no case is supplied (the ``progress``-only callers),
+    and false for UNDATED — an unknown observation time gives nothing to anchor
+    to, so a window directive built on it would name no window while firing on
+    the ordinary case of evidence with no timestamps to parse.
+    """
+    if case is None:
+        return False
+    from faultmaven.core.investigation.symptom_currency import (
+        SymptomCurrency,
+        assess_symptom_currency,
+    )
+
+    return assess_symptom_currency(case) == SymptomCurrency.STALE
+
+
+def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress", case=None) -> str:
     """Compute focus zone from progress milestones (Framework §8.5).
 
     Returns a contextual status signal injected at the top of DIAGNOSIS
@@ -2668,6 +2702,13 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
     - Zone 3: cause_state == IDENTIFIED, solution_proposed=False — propose fix
     - Zone 3 pending: solution_proposed=True — awaiting execution, NON-suppressive
       hold that yields to root-cause analysis on new evidence/dispute (INV-33)
+
+    ``case`` is optional so existing ``progress``-only callers keep working
+    unchanged; when supplied, Zone 2 additionally names the symptom's
+    observation window. Without it the zone says "Symptoms are confirmed" and
+    nothing about WHERE to look, so evidence requests drift to the present —
+    the failure mode in which an investigation queries the last 30 minutes for
+    a symptom observed two hours earlier.
     """
     if not progress.symptom_verified:
         return """
@@ -2675,13 +2716,55 @@ def _get_diagnosis_focus_emphasis(progress: "InvestigationProgress") -> str:
 No symptoms have been formally confirmed. When analyzing data, look for
 evidence the problem exists — errors, anomalies, user impact — to advance
 symptom_verified.
+
+Data showing the problem at an earlier time DOES verify it — a problem is worth
+investigating while it EXISTS (evidence still collectible, root cause
+unidentified, solution unknown), whether or not it is firing right now. Do not
+withhold symptom_verified because the evidence is not from this minute.
+
+What the observation time governs is WHERE the investigation looks. State it
+explicitly when you verify: it becomes the window every later evidence request
+targets, and requests must name absolute timestamps rather than relative ones,
+which silently drift to the present.
 """
     elif progress.symptom_verified and progress.cause_state != CauseState.IDENTIFIED:
+        stale = _symptom_verification_is_stale(case)
+        if stale:
+            return """
+**INVESTIGATION PROGRESS: Root cause analysis — anchor to the symptom's window**
+The symptom was observed some time ago (see the observation time on
+symptom_verified above). That period, not the present, is where this
+investigation looks.
+
+This does NOT mean the problem is stale or not worth pursuing — a problem is
+worth investigating while it EXISTS: evidence still collectible, root cause
+unidentified, solution unknown. Whether it happens to be firing right now
+changes how you work it, not whether you do.
+
+It does mean two things about evidence:
+  1. Scope every request to the symptom's window using ABSOLUTE timestamps.
+     Relative windows silently drift to the present — asking for `--since=30m`
+     about a symptom seen two hours ago inspects a period the problem was never
+     claimed to be in.
+  2. A clean current-state reading is not counter-evidence. It looks at a
+     different window and says nothing about what happened in the symptom's.
+     Do not treat it as refuting the symptom, and do not retract on it.
+
+Retract symptom_verified only if the symptom CLAIM itself turns out to be
+wrong — misread data, the wrong system, an artefact — not because the problem
+is not occurring at this moment.
+"""
         return """
 **INVESTIGATION PROGRESS: Root cause analysis**
 Symptoms are confirmed. When evaluating evidence, focus on hypotheses
 explaining the root cause. Two independent causal observations grounding a
 hypothesis's chain root are what let the engine mark the cause identified.
+
+If new data shows the symptom claim itself was wrong — misread data, the wrong
+system, an artefact — do not absorb it as noise. Say so, record it, and set
+symptom_verified=False with a justification. (The problem merely not occurring
+right now is NOT that: an existing problem is investigable whether or not it is
+currently firing.)
 """
     elif (
         progress.cause_state == CauseState.IDENTIFIED and not progress.solution_proposed
@@ -2767,7 +2850,7 @@ def _select_diagnosis_block(case: Case) -> str:
     directive, so the seeded turn sees a single coherent instruction. Flag off
     (or no seeds this case): byte-identical to before.
     """
-    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress)
+    focus_emphasis = _get_diagnosis_focus_emphasis(case.progress, case)
     block = focus_emphasis + _RCA_DIAGNOSIS_BLOCK
     # Teach lazy backward expansion (the engine ingests the emitted chain).
     block += _CHAIN_EMISSION_BLOCK
