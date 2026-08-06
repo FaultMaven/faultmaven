@@ -387,6 +387,27 @@ PROTECTION_METRICS = {
 }
 ```
 
+**This body has no `detail` field, and that is a contract clients get wrong.**
+Every FastAPI handler in the service puts its human-readable text in `detail`;
+`ProtectionErrorResponse` — the shape above, used by every 429 from rate
+limiting and the 409/503 from deduplication — puts it in `message` instead. A
+client that reads only `detail` therefore discards the explanation on exactly
+the responses that carry the most of it, and shows a generic fallback instead of
+the limit and the window.
+
+That is not hypothetical: it is what made a rate-limited case view in the
+Copilot report a fabricated string rather than the server's own (fm#994), and
+the extension had thirteen call sites independently reading `detail` alone.
+Clients should read `detail ?? message`, from one shared helper rather than at
+each call site. In `faultmaven-copilot` that helper is
+`errorBodyText` (`src/lib/errors/error-body.ts`).
+
+Two further things a client needs from a 429, both of which are headers rather
+than body fields: `Retry-After` (the caller's own remaining wait — see above)
+and `X-RateLimit-*`. A client that surfaces a countdown must read `Retry-After`;
+the body's `retry_after` mirrors it, but the headers are what the served-response
+path advertises too.
+
 ## Testing Strategy
 
 ### Unit Tests
