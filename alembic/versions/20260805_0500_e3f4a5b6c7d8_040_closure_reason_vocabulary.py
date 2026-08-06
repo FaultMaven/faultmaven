@@ -62,7 +62,11 @@ def upgrade() -> None:
     ).fetchall()
 
     for case_id, progress in rows:
-        if isinstance(progress, (str, bytes)):
+        # `str` exactly: SQLite's Text gives str, psycopg2's JSONB gives dict,
+        # and a legacy PG column predating the JSONB variant gives str. No
+        # supported driver yields bytes, so widening to accept it would be a
+        # guard clause nothing could ever falsify.
+        if isinstance(progress, str):
             try:
                 progress = json.loads(progress)
             except (ValueError, TypeError):

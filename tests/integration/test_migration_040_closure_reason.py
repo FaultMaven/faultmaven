@@ -15,6 +15,7 @@ shape that was broken.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 import sqlalchemy as sa
@@ -22,6 +23,16 @@ import sqlalchemy as sa
 pytestmark = pytest.mark.integration
 
 _RETIRED = "closed_after_investigation"
+
+# Anchored on this file rather than the cwd, so pytest invoked from anywhere
+# still finds the migration (matching test_alembic_migrations.py).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _migration_path() -> Path:
+    return next(
+        (_REPO_ROOT / "alembic" / "versions").glob("*_040_closure_reason_vocabulary.py")
+    )
 
 
 def _seed(engine, rows):
@@ -45,12 +56,11 @@ def _seed(engine, rows):
 def _run_upgrade(engine):
     """Invoke the migration's upgrade() with op bound to this connection."""
     import importlib.util
-    from pathlib import Path
 
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
-    path = next(Path("alembic/versions").glob("*_040_closure_reason_vocabulary.py"))
+    path = _migration_path()
     spec = importlib.util.spec_from_file_location("mig040", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -193,10 +203,9 @@ class _FakeBind:
 
 def _run_upgrade_with_bind(bind):
     import importlib.util
-    from pathlib import Path
     from types import SimpleNamespace
 
-    path = next(Path("alembic/versions").glob("*_040_closure_reason_vocabulary.py"))
+    path = _migration_path()
     spec = importlib.util.spec_from_file_location("mig040_pg", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
