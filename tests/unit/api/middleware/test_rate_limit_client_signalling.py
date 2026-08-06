@@ -164,13 +164,34 @@ async def test_the_headers_report_the_tightest_limit():
     """A client that respects the tightest limit respects all of them.
 
     Reporting a roomier one would invite it to speed up into the tighter one.
+
+    Uses POST because fm#994 exempts read-only methods (GET/HEAD/OPTIONS)
+    from the per-session per-minute limit, so only a write request produces
+    a ``per_session`` result for the header comparison.
     """
     mw = _middleware(_settings(global_requests=100, session_requests=4))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
     ip = _unique_client()
     headers = {"X-Session-ID": "session-tightest"}
 
-    response = await mw.dispatch(_request(app, ip, headers), _call_next)
+    # Build a POST request to exercise the per_session check
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "server": ("testserver", 80),
+        "root_path": "",
+        "path": "/api/v1/cases",
+        "raw_path": b"/api/v1/cases",
+        "query_string": b"",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        "client": ip,
+        "app": app,
+    }
+    request = Request(scope)
+
+    response = await mw.dispatch(request, _call_next)
 
     assert response.status_code == 200
     assert response.headers["X-RateLimit-Limit"] == "4", "reported the roomier limit"

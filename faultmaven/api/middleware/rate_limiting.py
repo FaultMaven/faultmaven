@@ -7,6 +7,7 @@ graceful degradation.
 
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
@@ -45,6 +46,50 @@ INIT_RETRY_COOLDOWN_SECONDS = 30.0
 LIVENESS_PATHS = frozenset({"/health", "/readiness"})
 LIVENESS_PATH_PREFIXES = ("/health/",)
 
+# Read-only HTTP methods. Their *cheap* traffic — ordinary SPA navigation — is
+# metered in the per-session read buckets rather than the write ones, so a burst
+# of case-detail GETs cannot refuse the next POST turn (fm#994).
+READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# Read endpoints that are *not* cheap: each runs a query embedding (BGE-M3,
+# behind a process-wide lock) and a vector similarity search per call, which is
+# exactly the compute the tight per-session bucket exists to protect. The verb
+# is only a proxy for cost, and for these three it is the wrong one — so they
+# are metered as writes despite being GETs.
+#
+# Anchored full-path patterns rather than prefixes: a read endpoint must not be
+# able to buy the strict bucket's roominess, or escape it, by sharing a prefix
+# with one of these.
+#
+# This list is the one thing here that rots in the permissive direction — an
+# endpoint added later inherits "cheap" by saying nothing. It is guarded by
+# reachability rather than by inventory:
+# ``tests/unit/api/middleware/test_rate_limit_read_cost_classification.py`` asks,
+# of every read route on every mounted router, whether the handler can reach an
+# embedder or vector store at all. Only the routes that can need a recorded
+# verdict, so adding an ordinary read endpoint costs nothing and adding one that
+# touches the vector store fails until someone decides what it costs.
+EXPENSIVE_READ_PATTERNS = (
+    # Runbook similarity search over the knowledge base.
+    re.compile(r"^/api/v1/cases/[^/]+/report-recommendations/?$"),
+    re.compile(r"^/api/v1/reports/recommendations/[^/]+/?$"),
+    # Semantic snippet lookup — embeds the query to locate the chunk.
+    re.compile(r"^/api/v1/knowledge/documents/[^/]+/snippet/?$"),
+)
+
+
+def is_cheap_read(method: str, path: str) -> bool:
+    """Whether a request is read-only *and* cheap enough for the read buckets.
+
+    Exposed at module level so the classification the middleware enforces is the
+    same one the route-inventory test asserts over — a second copy of this rule
+    written in the test could agree with the docstring while disagreeing with
+    the code.
+    """
+    if method.upper() not in READ_ONLY_METHODS:
+        return False
+    return not any(pattern.match(path) for pattern in EXPENSIVE_READ_PATTERNS)
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
@@ -79,6 +124,49 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Configure rate limits
         self.rate_limiter.configure_limits(settings.rate_limits)
+
+        # Whether this deployment's configuration carries the read buckets.
+        #
+        # This has to be decided here rather than left to the limiter, because
+        # ``check_rate_limit`` answers "allowed, limit 0" for a limit type it
+        # holds no config for. Routing reads to an unconfigured bucket would
+        # therefore not meter them at all — a settings object written before the
+        # split would silently gain an unlimited read path. Absence narrows
+        # instead: reads fall back to the write buckets, which is exactly the
+        # behaviour that configuration already described.
+        #
+        # Presence, not ``enabled``, is the test. An operator who ships
+        # ``per_session_read`` with ``enabled=False`` has said "do not meter
+        # reads separately"; honouring that is not the same as never having been
+        # told about the bucket at all.
+        configured = set(settings.rate_limits)
+        read_keys = {
+            LimitType.PER_SESSION_READ.value,
+            LimitType.PER_SESSION_READ_HOURLY.value,
+        }
+        self._read_limits_configured = read_keys <= configured
+
+        if not self._read_limits_configured and read_keys & configured:
+            # Half-configured is the dangerous shape: the per-minute read bucket
+            # without its hourly partner is how a read flood gets an hour-long
+            # ceiling of "whatever global allows". Refuse the split entirely and
+            # say which key is missing.
+            self.logger.error(
+                "Rate limiting has a partial read-bucket configuration (%s "
+                "missing); read requests will be metered against the write "
+                "buckets until both %s are configured",
+                ", ".join(sorted(read_keys - configured)),
+                " and ".join(sorted(read_keys)),
+            )
+        elif not self._read_limits_configured:
+            # Safe, but not silent: this is the state fm#994 was reported from,
+            # where ordinary navigation competes with POST turns for one quota.
+            self.logger.warning(
+                "Rate limiting has no read buckets configured (%s); read "
+                "requests are metered against the write buckets, so normal UI "
+                "navigation consumes the quota that protects LLM compute",
+                " and ".join(sorted(read_keys)),
+            )
 
         # Endpoint-specific configurations
         self.endpoint_configs = {
@@ -421,39 +509,71 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def _check_session_rate_limits(
         self, session_id: str, endpoint: str, request: Request
     ) -> List[RateLimitResult]:
-        """Check session-based rate limits, returning the results they used."""
+        """Check session-based rate limits, returning the results they used.
 
-        # Per-session per-minute limit
+        A session gets two independent pairs of buckets, chosen by what the
+        request costs rather than by what it is called:
+
+        - **Cheap reads** — GET/HEAD/OPTIONS that are not in
+          ``EXPENSIVE_READ_PATTERNS`` — go to ``per_session_read`` and
+          ``per_session_read_hourly``. Ordinary SPA navigation lives here.
+        - **Everything else** — writes, and the read endpoints that run an
+          embedding and a vector search — goes to ``per_session`` and
+          ``per_session_hourly``, the quota that protects LLM compute.
+
+        The pairing is the point, and it is what fm#994's first fix got wrong.
+        Exempting reads from only the per-minute bucket left them counted in the
+        shared *hourly* one, so a read burst still exhausted a session — now for
+        up to an hour, and for its POST turns as well as its GETs. Reads can only
+        exhaust reads; a flood of them cannot refuse the next turn.
+
+        Both pairs are additionally bounded by the ``global`` limit, which is
+        keyed on the client address rather than the session.
+        """
+
+        if self._read_limits_configured and is_cheap_read(
+            request.method, request.url.path
+        ):
+            per_minute_type = LimitType.PER_SESSION_READ
+            hourly_type = LimitType.PER_SESSION_READ_HOURLY
+        else:
+            per_minute_type = LimitType.PER_SESSION
+            hourly_type = LimitType.PER_SESSION_HOURLY
+
+        results: List[RateLimitResult] = []
+
         per_minute = await self.rate_limiter.check_rate_limit(
             key=session_id,
-            limit_type=LimitType.PER_SESSION,
-            identifier=f"session:{session_id}",
+            limit_type=per_minute_type,
+            identifier=f"{per_minute_type.value}:{session_id}",
         )
 
         if not per_minute.allowed:
             raise RateLimitError(
                 retry_after=per_minute.retry_after or 60,
-                limit_type="per_session",
+                limit_type=per_minute_type.value,
                 current_count=per_minute.current_count,
                 limit=per_minute.limit,
             )
 
-        # Per-session hourly limit
+        results.append(per_minute)
+
         hourly = await self.rate_limiter.check_rate_limit(
             key=session_id,
-            limit_type=LimitType.PER_SESSION_HOURLY,
-            identifier=f"session_hourly:{session_id}",
+            limit_type=hourly_type,
+            identifier=f"{hourly_type.value}:{session_id}",
         )
 
         if not hourly.allowed:
             raise RateLimitError(
                 retry_after=hourly.retry_after or 3600,
-                limit_type="per_session_hourly",
+                limit_type=hourly_type.value,
                 current_count=hourly.current_count,
                 limit=hourly.limit,
             )
 
-        return [per_minute, hourly]
+        results.append(hourly)
+        return results
 
     async def _check_endpoint_rate_limits(
         self, endpoint: str, session_id: Optional[str], request: Request
