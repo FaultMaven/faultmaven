@@ -136,6 +136,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         case_id: Optional[str] = None,
         provider_override: Optional[str] = None,
         cache_prompt: bool = False,
+        bypass_cache: bool = False,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -144,6 +145,13 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             prefix (system + tools). Only the Anthropic provider acts on it;
             every other provider pops and ignores it, so it can never leak into
             a request body. Transparent to model output.
+
+        bypass_cache: when True, do not answer this call from the response
+            cache — but still store the result. This is for a caller retrying a
+            request whose cached answer it has already found unusable (a
+            truncated structured-output body, #513): it needs the provider to be
+            reached, and it needs the good response to replace the bad entry,
+            because nothing else ever will.
 
         Args:
             prompt: Input prompt (optional if messages is provided)
@@ -171,7 +179,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Multi-turn `messages` calls are skipped outright — an identical
         # message list is not a thing that recurs, so there is nothing to hit.
         cache_model = model  # Use the requested model for cache lookup
-        if cache_model and not messages and sanitized_prompt:
+        if cache_model and not messages and sanitized_prompt and not bypass_cache:
             cached_response = self.cache.check(
                 sanitized_prompt, cache_model, case_id=case_id
             )
@@ -236,6 +244,15 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             # fallback chain answered with a different model than the one
             # requested, the entry is still keyed under the *requested* model, so
             # a later identical call is served a response another model produced.
+            #
+            # ``bypass_cache`` suppresses the *lookup* only — this write still
+            # runs, and it must. A caller sets the flag precisely because the
+            # entry already under this key is unusable: the truncated body the
+            # first attempt stored before the caller discovered it would not
+            # parse. max_tokens is not part of the cache key, so the retry lands
+            # on that same key, and the cache has no eviction API — overwriting
+            # it with the complete response is the only thing that stops the
+            # poisoned entry being served to every later identical call (#513).
             if (
                 model
                 and not messages
@@ -389,6 +406,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         case_id = kwargs.get("case_id")
         provider_override = kwargs.get("provider_override")
         cache_prompt = kwargs.get("cache_prompt", False)
+        bypass_cache = kwargs.get("bypass_cache", False)
 
         # Call existing route method with all the robust functionality
         response = await self.route(
@@ -404,6 +422,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             case_id=case_id,
             provider_override=provider_override,
             cache_prompt=cache_prompt,
+            bypass_cache=bypass_cache,
         )
 
         # Return the full LLMResponse (milestone_engine expects this)

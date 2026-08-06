@@ -3779,10 +3779,10 @@ class SQLiteCaseRepository(CaseRepository):
     async def _resolve_organization_id(self, execution: Any, case_id: str) -> str:
         """Resolve organization_id for an execution.
 
-        Production callers (agent_orchestration_service) populate
-        execution.organization_id from the authenticated session. Tests
-        may construct execution objects without it; in that case fall
-        back to the parent case row.
+        A caller that has an authenticated session populates
+        execution.organization_id from it. Callers that construct execution
+        objects without one — tests today, since no production caller writes
+        these rows (see ``AgentExecution``) — fall back to the parent case row.
         """
         org_id = getattr(execution, "organization_id", None)
         if org_id:

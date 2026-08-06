@@ -116,14 +116,55 @@ class TestErrorClassification:
             "bad request: too many tokens",  # Cohere-style overflow (was lost
             # when bare "token" was dropped; shared with _is_context_length_error)
             "exceeds the maximum context (8192)",
+        ],
+    )
+    def test_real_overflow_detected(self, handler, msg):
+        """Genuine context overflow still triggers compress."""
+        assert handler.is_token_limit_error(Exception(msg)) is True
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
             "EOF while parsing a value",  # truncated JSON output
             "Unterminated string starting at line 3",
             "finishReason=MAX_TOKENS",  # Gemini output cap
         ],
     )
-    def test_real_overflow_and_truncation_detected(self, handler, msg):
-        """Genuine context overflow / output truncation still triggers compress."""
-        assert handler.is_token_limit_error(Exception(msg)) is True
+    def test_truncation_is_not_read_as_an_input_overflow(self, handler, msg):
+        """The prompt fit; the ANSWER did not. Compressing memory is not the
+        first remedy for that — raising the generation cap is — so truncation
+        must not enter the COMPRESS_MEMORY branch by wording alone."""
+        assert handler.is_token_limit_error(Exception(msg)) is False
+
+    def test_truncation_retryability_comes_from_the_typed_signal(self, handler):
+        """Not from matching words in a message.
+
+        The engine owns the generation cap, so only the engine knows whether
+        retrying is still useful; it says so with ``OutputTruncationError``.
+        Keying retryability on phrases instead is what #513 was: neither real
+        truncation site emits the words that were being matched — CPython's
+        decoder says "Expecting ',' delimiter", never "EOF while parsing" — so
+        the list looked like coverage while matching nothing the code produces.
+        """
+        from faultmaven.core.investigation.llm_error_handler import (
+            OutputTruncationError,
+        )
+
+        # Decoder wording on a bare exception decides nothing either way.
+        assert handler.is_retryable_error(Exception("EOF while parsing a value")) is (
+            False
+        )
+
+        # The typed signal decides, and it decides both ways: retry while
+        # raising the cap is still an option, stop once it is not.
+        assert (
+            handler.is_retryable_error(OutputTruncationError("cut", cap_reached=False))
+            is True
+        )
+        assert (
+            handler.is_retryable_error(OutputTruncationError("cut", cap_reached=True))
+            is False
+        )
 
     @pytest.mark.parametrize(
         "msg",

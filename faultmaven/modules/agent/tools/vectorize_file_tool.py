@@ -45,9 +45,9 @@ def append_vectorization_advisory(text: str, indexed: bool) -> str:
     """Append the searchability advisory, and only if the file really is indexed.
 
     The rule lives here rather than at each emission site because it was
-    previously restated at four of them — twice in ``MilestoneEngine``, twice in
-    ``AgentOrchestrationService`` — with the message text copied inline. Four
-    copies of a rule are four chances to keep the ``if`` and lose the condition,
+    previously restated across different orchestration layers
+    with the message text copied inline. Multiple
+    copies of a rule are chances to keep the ``if`` and lose the condition,
     and the advisory is not a cosmetic string: it sends the model to
     ``case_evidence_search``, so claiming it for a file that was never written
     guarantees an empty search the model then reads as a statement about the
