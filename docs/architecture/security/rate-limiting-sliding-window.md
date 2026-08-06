@@ -111,9 +111,29 @@ A window key holds at most `limit` entries, never `window` entries: the set
 grows only on allowed requests, and step 3 refuses without inserting once the
 limit is reached. Each entry costs a 32-character member plus a float score,
 which with sorted-set overhead lands around 90–120 bytes, so a saturated key
-costs roughly `limit × 100` bytes — of the order of 50 KB for production's
-`global` limit of 500. The key's TTL is `window + 60`, so a key stops costing
-anything a little over a minute after its last request.
+costs roughly `limit × 100` bytes. The key's TTL is `window + 60`, so a key stops
+costing anything shortly after its last request — a minute later for the
+per-minute windows, an hour later for the hourly ones.
+
+The largest key is no longer `global`. Since reads were given their own
+per-session buckets (fm#994), production's ceilings are:
+
+| Limit | Production | Keyed on | Saturated key | Held for |
+|-------|-----------|----------|---------------|----------|
+| `global` | 500 / 60s | client address | ~50 KB | ~2 min |
+| `per_session` | 10 / 60s | session | ~1 KB | ~2 min |
+| `per_session_hourly` | 50 / 3600s | session | ~5 KB | ~1 hr |
+| `per_session_read` | 120 / 60s | session | ~12 KB | ~2 min |
+| `per_session_read_hourly` | 1200 / 3600s | session | **~120 KB** | ~1 hr |
+
+`per_session_read_hourly` is both the largest and the one there is one of *per
+session*, so it is the term that scales with concurrency: a thousand sessions
+that each saturate it cost on the order of 120 MB, held for an hour past their
+last request. That is a ceiling and not a typical cost — entries accumulate only
+on allowed requests, so a session that issues fifty reads holds fifty entries,
+not twelve hundred. It is worth watching when sizing Redis for a deployment with
+many simultaneous sessions, and it is the first number to lower if that sizing
+becomes a problem.
 
 ## The defect this replaced
 
