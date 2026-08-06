@@ -155,43 +155,15 @@ class ServiceFactory:
     # Evidence is case-tied only — there is no standalone evidence service.
     # Agent tools access case.evidence directly via self.case_repo.
 
-    def create_agent_orchestration_service(
-        self,
-        team_service=None,
-        share_repository=None,
-    ) -> "AgentOrchestrationService":  # noqa: F821
-        """Create agent orchestration service with dependencies.
-
-        Args:
-            team_service: Optional team service for resolving user team memberships.
-            share_repository: Optional share repository (ADR-013 §D4) for resolving
-                the shared-to-my-teams arm of the KB read allowlist.
-
-        Returns:
-            AgentOrchestrationService instance with injected dependencies
-        """
-        from faultmaven.modules.agent.domain.services.agent_orchestration_service import (
-            AgentOrchestrationService,
-        )
-        from faultmaven.modules.agent.tools.base import (
-            tool_registry as agent_tool_registry,
-        )
-
-        return AgentOrchestrationService(
-            case_repo=self.case_repo,
-            session_service=self.create_investigation_session_service(),
-            tool_registry=agent_tool_registry,
-            team_service=team_service,
-            share_repository=share_repository,
-            # LLM client will be created lazily by the service
-        )
-
     # `create_user_service` lived here and had no caller: `UserService` reaches
     # the API through `app.state.user_service`, which the Composition Root fills
     # from `container.providers.services.create_user_service`. It built the
     # service against an in-memory repository — a second, divergent wiring that
     # would have silently served an empty user store had anything ever called
     # it. Removed with #959 rather than taught about the token generator.
+    #
+    # `create_agent_orchestration_service` also lived here and was removed on
+    # main with the agent shadow stack (#982); its service module is gone.
 
     # Future service factory methods:
 

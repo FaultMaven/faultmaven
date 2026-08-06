@@ -11,7 +11,6 @@ Public API:
         - QueryIntent, SuggestedAction
 
     From domain.services (import directly):
-        - AgentOrchestrationService
         - InvestigationService
 
     From tools:
@@ -19,16 +18,17 @@ Public API:
 
 Usage:
     from faultmaven.modules.case.contracts import AgentType
-    from faultmaven.modules.agent.domain.services.agent_orchestration_service import AgentOrchestrationService
 
 Note: This module does NOT eagerly import components to avoid circular dependencies.
 Import components directly from their submodules as shown above.
 """
 
-# Subpackages available for direct import
+# Subpackages available for direct import. No ``infrastructure``: the agent
+# module is a Domain Service and owns no tables (see the module architecture in
+# CLAUDE.md), so it has no repositories to expose.
 __all__ = [
     "api",
     "domain",
-    "infrastructure",
+    "jobs",
     "tools",
 ]

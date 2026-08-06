@@ -328,3 +328,93 @@ class TestResponseCacheStoreGate:
 
         assert second.cached is True
         assert registry.route_request.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestBypassCache:
+    """``bypass_cache`` suppresses the lookup and *keeps* the write (#513).
+
+    The engine sets it when retrying a structured call whose cached answer it
+    has already found unusable — a body cut off at the generation cap. That
+    makes the write the load-bearing half, which is the opposite of the usual
+    reading of "bypass": ``max_tokens`` is not part of the cache key, so the
+    retry lands on the same key as the truncated entry, and ``LLMResponseCache``
+    has no eviction API. If the retry also declined to store, the poisoned entry
+    would survive every later identical call, each one paying a wasted attempt
+    to rediscover that it will not parse.
+    """
+
+    async def test_a_bypass_call_reaches_the_provider_despite_a_warm_entry(self):
+        registry = _mock_registry()
+
+        with patch(
+            "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
+        ):
+            from faultmaven.infrastructure.llm.router import LLMRouter
+
+            router = LLMRouter()
+            await router.route(prompt="why is node-3 NotReady?", model="gpt-4o")
+            second = await router.route(
+                prompt="why is node-3 NotReady?", model="gpt-4o", bypass_cache=True
+            )
+
+        assert second.cached is not True
+        assert registry.route_request.await_count == 2
+
+    async def test_a_bypass_call_overwrites_the_entry_it_bypassed(self):
+        """The half that makes the bypass terminal rather than a per-call
+        opt-out. After the retry, the *next* ordinary call must be served the
+        good response — not the one the bypass was needed to escape."""
+        from faultmaven.infrastructure.llm.providers import LLMResponse
+
+        registry = _mock_registry()
+
+        with patch(
+            "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
+        ):
+            from faultmaven.infrastructure.llm.router import LLMRouter
+
+            router = LLMRouter()
+            # The poisoned entry: what the first attempt stored before the
+            # caller discovered it would not parse.
+            await router.route(prompt="why is node-3 NotReady?", model="gpt-4o")
+            registry.route_request.return_value = LLMResponse(
+                content="the kubelet on node-3 is out of disk",
+                confidence=0.9,
+                provider="openai",
+                model="gpt-4o",
+                tokens_used=10,
+                response_time_ms=10,
+            )
+            await router.route(
+                prompt="why is node-3 NotReady?", model="gpt-4o", bypass_cache=True
+            )
+            third = await router.route(prompt="why is node-3 NotReady?", model="gpt-4o")
+
+        assert third.cached is True
+        assert third.content == "the kubelet on node-3 is out of disk"
+        # One key, replaced — not a second entry alongside the bad one.
+        assert len(router.cache.cache) == 1
+        # Exactly the two calls that were meant to reach the provider.
+        assert registry.route_request.await_count == 2
+
+    async def test_generate_forwards_bypass_cache(self):
+        """``generate()`` is the ILLMProvider entrypoint the engine calls; a
+        flag dropped there would be silently ignored at the only site that
+        sets it."""
+        registry = _mock_registry()
+
+        with patch(
+            "faultmaven.infrastructure.llm.router.get_registry", return_value=registry
+        ):
+            from faultmaven.infrastructure.llm.router import LLMRouter
+
+            router = LLMRouter()
+            await router.generate(prompt="why is node-3 NotReady?", model="gpt-4o")
+            second = await router.generate(
+                prompt="why is node-3 NotReady?", model="gpt-4o", bypass_cache=True
+            )
+
+        assert second.cached is not True
+        assert registry.route_request.await_count == 2

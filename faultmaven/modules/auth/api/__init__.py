@@ -3,11 +3,14 @@
 Contains all authentication and authorization API endpoints.
 """
 
-# Don't eagerly import to avoid circular imports
-# API routes will be imported by the main app router
+# Don't eagerly import to avoid circular imports.
+# Routers are imported by the main app router from these submodules.
 
 __all__ = [
-    "auth_router",
-    "session_router",
-    "oauth_router",
+    "auth",
+    "oauth",
+    "rate_limiting",
+    "session",
+    "sso",
+    "teams",
 ]

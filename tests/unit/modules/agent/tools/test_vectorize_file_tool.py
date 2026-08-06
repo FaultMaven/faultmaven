@@ -325,9 +325,8 @@ class TestToolProperties:
 
 
 class TestAdvisoryRuleIsStatedOnce:
-    """``append_vectorization_advisory`` holds the rule the four emission sites
-    used to restate — two in ``MilestoneEngine``, two in
-    ``AgentOrchestrationService``, with the message text copied inline.
+    """``append_vectorization_advisory`` holds the rule the emission sites
+    used to restate across orchestration layers, with the message text copied inline.
 
     The advisory is not cosmetic: it sends the model to
     ``case_evidence_search``. Claiming it for a file that was never written

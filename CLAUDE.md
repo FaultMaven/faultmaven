@@ -666,6 +666,8 @@ alembic downgrade -1
 
 **Case domain:** `cases`, `case_messages`, `case_actions`, `case_tags`, `case_checkpoints`, `case_entities`, `evidence`, `hypotheses`, `hypothesis_evidence`, `solutions`, `uploaded_files`, `investigation_sessions`, `agent_executions`, `agent_tool_calls`, `reports`, `conversion_jobs`, `conversion_drafts`
 
+> `agent_executions` / `agent_tool_calls` currently have **no writer**. They were populated by `AgentOrchestrationService` behind the `POST /cases/{id}/sessions/{sid}/execute` endpoint; both were removed once the milestone engine took over turn execution. The tables, their ORM models, and the `ICaseRepository` read/write methods remain, so `get_case_with_details(include_executions=True)` returns an empty list rather than failing. Investigation activity is recorded in `case_messages` and `case_actions`. Dropping them needs a migration and is a separate decision — do not read their emptiness as a bug.
+
 **Knowledge domain (case-adjacent):** `knowledge_items`, `knowledge_suggestions`
 
 **Tenancy:** `enterprises` (top-tier container), with `users.enterprise_id` and `organizations.enterprise_id` NOT NULL FKs.
@@ -730,7 +732,6 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 |--------|----------|-------------|
 | Cases | `GET/POST /cases` | Case management CRUD |
 | Cases | `GET /cases/{id}` | Get case details |
-| Agent | `POST /cases/{id}/sessions/{sid}/execute` | Start AI investigation |
 | Knowledge | `GET/POST /knowledge/documents` | Knowledge base CRUD |
 | Knowledge | `POST /knowledge/search` | Semantic search |
 | Knowledge | `POST /knowledge/convert` | Convert document to runbook drafts |

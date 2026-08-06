@@ -106,7 +106,15 @@ class LLMResponseCache:
         response: LLMResponse,
         case_id: Optional[str] = None,
     ):
-        """Store response under its exact prompt/model/case key."""
+        """Store response under its exact prompt/model/case key.
+
+        An existing entry under the key is replaced. That happens only on the
+        bypass-cache path: a caller that skipped the lookup because it had
+        already found the cached answer unusable — a truncated structured-output
+        body (#513) — and is now writing the complete one over it. There is no
+        eviction API, so this overwrite is the sole way a bad entry stops being
+        served.
+        """
         cache_key = self._get_cache_key(prompt, model, case_id)
 
         self.cache[cache_key] = {
@@ -117,10 +125,14 @@ class LLMResponseCache:
             "tokens_used": response.tokens_used,
         }
 
-        # Evict the oldest entry when full. Insertion order *is* age here: the
-        # cache is insert-only, because a repeat of an exact key is answered by
-        # ``check`` before ``store`` is ever reached, and the router only stores
-        # on the path where it checked. So the first key the dict yields is the
-        # oldest, and eviction is O(1) instead of a scan over every entry.
+        # Evict the oldest entry when full. Insertion order is age-of-first-write
+        # here: an ordinary repeat of a key is answered by ``check`` before
+        # ``store`` is reached, so almost every write is an insert, and a dict
+        # assignment to an existing key keeps its original position rather than
+        # moving it to the end. So the first key the dict yields is the oldest
+        # first-written, and eviction is O(1) instead of a scan over every entry.
+        # The bypass-cache overwrite therefore refreshes the value without
+        # refreshing the age — accepted, because it is the rare retry path and
+        # evicting it early costs one cache miss, never a wrong answer.
         if len(self.cache) > self.max_size:
             del self.cache[next(iter(self.cache))]

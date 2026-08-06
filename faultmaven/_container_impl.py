@@ -62,7 +62,7 @@ except ImportError as e:
 # Agentic Framework Interfaces
 # NOTE: The agentic framework concrete implementations (AgentStateManager,
 # BusinessLogicWorkflowEngine, etc.) were archived during the modular refactoring.
-# The current system uses AgentOrchestrationService in modules/agent/ instead.
+# The current system uses specialized orchestration layers in modules/agent/ instead.
 # These interfaces are kept for type checking only.
 try:
     from faultmaven.modules.agent.domain.models.agentic import (
