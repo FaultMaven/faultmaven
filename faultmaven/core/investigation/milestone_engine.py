@@ -3551,7 +3551,7 @@ class MilestoneEngine:
         tools_kwargs: dict[str, Any] = {}
         if self.investigation_tools:
             tools_kwargs["investigation_tools"] = self._build_da_tool_schemas()
-            tools_kwargs["tool_context"] = self._build_tool_context(
+            tools_kwargs["tool_context"] = await self._build_tool_context(
                 case, intent_data=None
             )
             tools_kwargs["force_tool_use"] = False
@@ -4571,7 +4571,7 @@ class MilestoneEngine:
                     processing_mode, case, bool(has_pending)
                 )
                 da_tools = self._build_da_tool_schemas()
-                da_context = self._build_tool_context(case, intent_data)
+                da_context = await self._build_tool_context(case, intent_data)
                 response_obj = await self._generate_structured_output(
                     prompt,
                     schema_model,
@@ -6381,7 +6381,52 @@ class MilestoneEngine:
             "- Reference evidence by filename or description, never by ev_ IDs."
         )
 
-    def _build_tool_context(self, case: Any, intent_data: dict | None = None) -> Any:
+    async def _resolve_shared_kb_ids(self, user_id: str, organization_id: Any) -> list:
+        """KB item ids shared to ``user_id``'s teams — the team arm of the tool
+        path's read allowlist (ADR-013 §D4).
+
+        Keyed on the **session** user, matching the owner arm: ``kb_tool_adapter``
+        passes ``ToolContext.user_id`` to ``build_kb_scope_filter`` as the owner,
+        so both arms must describe the same principal. Keying the team arm on the
+        case owner instead would let a collaborator's turn read the owner's
+        team-shared items — a wider allowlist than the reader is entitled to.
+        (``_prefetch_kb_context`` keys on the case owner precisely because it is
+        not acting for a session user; the two are deliberately different.)
+
+        ``team_service``/``share_repository`` are wired post-construction and are
+        absent in standalone, so a missing collaborator collapses the team arm to
+        empty rather than raising — global ∪ owned still resolves.
+        """
+        if not user_id or user_id == "system":
+            return []
+
+        team_service = getattr(self, "team_service", None)
+        share_repository = getattr(self, "share_repository", None)
+        if not team_service or not share_repository:
+            return []
+
+        from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+            resolve_shared_kb_ids,
+        )
+
+        try:
+            team_ids = await team_service.list_all_user_team_ids(user_id)
+            return await resolve_shared_kb_ids(
+                share_repository, team_ids, organization_id
+            )
+        except Exception:  # noqa: BLE001
+            # Degrade to global ∪ owned rather than failing the turn. Narrowing
+            # is safe; the alternative would be an unscoped read.
+            logger.warning(
+                "shared_kb_id_resolution_failed",
+                extra={"user_id": user_id},
+                exc_info=True,
+            )
+            return []
+
+    async def _build_tool_context(
+        self, case: Any, intent_data: dict | None = None
+    ) -> Any:
         """Build ToolContext for tool execution during DA turns."""
         from faultmaven.modules.agent.tools.base import (
             ToolContext,
@@ -6409,6 +6454,7 @@ class MilestoneEngine:
             case_id=case.case_id,
             organization_id=organization_id,
             user_id=user_id,
+            shared_kb_ids=await self._resolve_shared_kb_ids(user_id, organization_id),
             case_repository=self.repository,
             metadata=metadata,
             in_memory_case=case,
