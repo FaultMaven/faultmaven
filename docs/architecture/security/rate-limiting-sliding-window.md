@@ -294,7 +294,11 @@ skew clamp from `quota_frees_at`; re-deriving `X-RateLimit-Reset` on a 429 from
 429; closing the outgoing client before installing its replacement in `_adopt`;
 awaiting the close instead of dispatching it; removing either early return from
 `_add_rate_limit_headers`; writing `Retry-After` unconditionally in
-`_create_rate_limit_response`, or restoring a `or 60` / `or 3600` default at the
-raise sites — the state a default fires on is unreachable in production, but the
-"unmeasured is absent" contract is what makes it *testable*, so both spellings
-of the regression turn a test red; registering a middleware after CORS.
+`_create_rate_limit_response`, or restoring a `or 60` / `or 3600` default at
+**any** of the three raise sites — the state a default fires on is unreachable
+in production, but the "unmeasured is absent" contract is what makes it
+*testable*, so both spellings of the regression turn a test red. The raise-site
+mutation is swept per site rather than checked once: a limit's fallback is only
+reachable through the site that raises for it, and since the read/write split
+four limit types share the two session sites, so a single-site guard left most
+of that surface unguarded. Registering a middleware after CORS.
