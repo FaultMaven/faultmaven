@@ -2185,23 +2185,10 @@ class AgentSettings(BaseSettings):
     - LLM retry logic and timeouts
     - Tool execution limits
     - Token budget defaults
-    - Agent-specific model selection
+
 
     Design Reference: docs/architecture/TASK-015-agent-orchestration-design.md
     """
-
-    # LLM Provider for Agent Orchestration
-    agent_provider: str = Field(
-        default="anthropic",
-        validation_alias="AGENT_LLM_PROVIDER",
-        description="LLM provider for agent execution (anthropic, openai)",
-    )
-
-    agent_model: str = Field(
-        default="claude-sonnet-4-20250514",
-        validation_alias="AGENT_LLM_MODEL",
-        description="Model to use for agent execution",
-    )
 
     # Retry configuration
     max_retries: int = Field(
@@ -2331,8 +2318,7 @@ class AgentSettings(BaseSettings):
         validation_alias="VECTORIZATION_REACTIVE_TIMEOUT_SECONDS",
         description=(
             "Upper bound for synchronous reactive vectorization inside "
-            "the DA tool loop (MilestoneEngine._reactive_vectorize and "
-            "AgentOrchestrationService's auto-vectorization trigger). "
+            "the DA tool loop (MilestoneEngine._reactive_vectorize). "
             "Reactive vectorize is triggered on tool failure signals "
             "(tool timeout, repeated empty searches, low confidence); "
             "the agent waits for it before continuing. BGE-M3 encode on "

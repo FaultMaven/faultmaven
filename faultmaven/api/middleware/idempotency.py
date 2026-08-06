@@ -176,6 +176,19 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                     )
                     return JSONResponse(
                         status_code=409,
+                        # Labelled, and that is load-bearing rather than
+                        # decorative. Several unrelated conflicts share 409, and
+                        # a client cannot tell them apart from the body: the
+                        # Slack agent reads an **unlabelled** 409 on the turn
+                        # POST as "this case is terminal" and tells the user
+                        # their investigation is closed. Key reuse is not
+                        # terminal and not even about the case, so going out
+                        # unlabelled would make it a false claim about the
+                        # user's investigation. A label the client does not
+                        # recognize falls through to its generic 4xx handling,
+                        # which is the honest answer for a conflict it does not
+                        # model — so labelling can only narrow the damage.
+                        headers={"x-error-code": "IDEMPOTENCY_KEY_REUSE"},
                         content={
                             "detail": (
                                 "This Idempotency-Key was already used with a "
@@ -184,6 +197,7 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                                 "request unchanged."
                             ),
                             "error_type": "IdempotencyKeyReuse",
+                            "error_code": "IDEMPOTENCY_KEY_REUSE",
                             "correlation_id": str(uuid4()),
                             "timestamp": self._get_timestamp(),
                         },

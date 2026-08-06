@@ -56,7 +56,6 @@ __all__ = [
     "get_api_case_service",
     "get_investigation_session_service",
     "get_file_storage_service",
-    "get_agent_orchestration_service",
     # Re-exported from v1.dependencies (legacy)
     "get_session_id",
 ]
@@ -212,49 +211,6 @@ async def get_file_storage_service(
             return await file_storage.retrieve_file(key)
     """
     return factory.create_file_storage_service()
-
-
-async def get_agent_orchestration_service(
-    request: Request,
-    factory: ServiceFactory = Depends(get_service_factory),
-) -> "AgentOrchestrationService":  # noqa: F821
-    """Get agent orchestration service for request.
-
-    Creates an AgentOrchestrationService with all required dependencies
-    from the service factory. This service handles AI agent execution
-    with streaming support.
-
-    Args:
-        factory: Service factory from get_service_factory
-
-    Returns:
-        AgentOrchestrationService instance
-
-    Example:
-        @app.post("/sessions/{session_id}/execute")
-        async def execute_agent(
-            session_id: str,
-            request: AgentExecutionRequest,
-            agent_service: AgentOrchestrationService = Depends(get_agent_orchestration_service)
-        ):
-            async for event in agent_service.execute_agent(
-                session_id=session_id,
-                organization_id=organization_id,
-                user_message=request.user_message,
-            ):
-                yield event
-    """
-    # KB team-scope resolver. Wired only in multi-tenant (Cloud) deployments;
-    # in standalone it is None (team collaboration is a Cloud feature), so the
-    # agent resolves an empty team set and KB scope collapses to personal ∪
-    # global. Sourced from app.state (set once at startup by the container).
-    team_service = getattr(request.app.state, "team_service", None)
-    # Share source of truth (ADR-013 §D4): resolves the shared-to-my-teams arm of
-    # the KB read allowlist. Present in both deployment modes.
-    share_repository = getattr(request.app.state, "share_repository", None)
-    return factory.create_agent_orchestration_service(
-        team_service=team_service, share_repository=share_repository
-    )
 
 
 # Future service dependencies:

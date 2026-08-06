@@ -2,7 +2,7 @@
 
 This is the read-side resolution seam the KB retrieval paths consume to build
 the team arm of a principal's read scope (``build_kb_scope_filter``): agent
-retrieval (``AgentOrchestrationService``) and the KB document inventory route
+retrieval and the KB document inventory route
 both call ``list_all_user_team_ids`` on the wired ``team_service``.
 
 Scope (ADR-010 / ADR-013): membership *resolution* lives in the core (this
