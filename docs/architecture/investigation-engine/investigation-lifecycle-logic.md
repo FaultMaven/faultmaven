@@ -491,7 +491,7 @@ propose_transition(
     to_status="closed",
     summary=closure.message,
     # closure_reason derived by engine via derive_closure_reason():
-    # "inquiry_only" | "closed_after_investigation"
+    # inquiry_only | solution_deferred | closed_rca_infeasible | mitigation_sufficient | closed_insufficient_evidence
 )
 # User confirms → _execute_closed_transition(case, user_id, closure_reason)
 ```
@@ -688,9 +688,9 @@ def force_close_investigation(case: Case, user_id: str, reason: str):
     case.atomic_update(
         status=CaseState.CLOSED,
         closed_at=datetime.now(UTC),
-        closure_reason=reason,  # engine-derived: "closed_after_investigation"
+        closure_reason=reason,  # engine-derived; see derive_closure_reason()
     )
-    # Note: a case stabilized then closed is simply "closed_after_investigation"
+    # Note: a case stabilized by a verified mitigation closes as "mitigation_sufficient"
     # (the former "mitigation_sufficient" reason was folded in). The documented
     # mitigation is preserved on the closed case.
     case.action_history.append(CaseAction(
@@ -1440,7 +1440,7 @@ If `rca_infeasible=True` but the user says "actually, let's dig deeper" — the 
 Cases closed via this path use the existing terminal state:
 
 - `status = CLOSED`
-- `closure_reason = "closed_after_investigation"` (the documented mitigation is preserved on the closed case)
+- `closure_reason = "mitigation_sufficient"` (the documented mitigation is preserved on the closed case)
 
 `RESOLVED` remains pristine — it always means a permanent fix with verified root cause. See §4.5.1 for runbook generation.
 
@@ -1449,7 +1449,7 @@ Cases closed via this path use the existing terminal state:
 The unified flow was ratified with the following decisions (resolved 2026-06-05):
 
 1. **Solution-space deliberation reuses the hypothesis / evidence-needs machinery.** Candidate solutions are enumerated, compared, and selected through the same propose/evidence/converge loop that drives causal hypotheses, rather than a parallel structure — a dedicated structure is introduced only if a clear advantage emerges. This is the genuinely under-built surface today: the current SOLUTION stage assumes a *single obvious fix* to propose-and-verify and has no notion of deliberating across a solution space (trade-offs, workaround-vs-permanent, design choices). `solution_state = CANDIDATES` is the reserved hook for this; the deliberation-loop design (what "evidence" means for a solution choice, and how `solution_state` advances UNKNOWN→CANDIDATES→SELECTED) is the highest-value follow-on work.
-2. **Deferred-implementation disposition is CLOSE-with-documented-solution** (forwarding row 3 in §2.3) — no third terminal state unless analytics genuinely need to separate "resolved-pending-impl" from "abandoned." The documented root cause + selected fix are preserved on the closed case (`closure_reason = closed_after_investigation`).
+2. **Deferred-implementation disposition is CLOSE-with-documented-solution** (forwarding row 3 in §2.3) — no third terminal state unless analytics genuinely need to separate "resolved-pending-impl" from "abandoned." The documented root cause + selected fix are preserved on the closed case (`closure_reason = solution_deferred`).
 3. **One mitigation record for now** (forward-only), but the flow must stay open to user-led action so a non-mitigating insert is never a dead-end (§2.3; INV-24). Multiple structured mitigation records are a possible future extension.
 4. **`cause_state = CANDIDATES` is derived** from the active-hypothesis count (≥2 ACTIVE hypotheses), not a second stored field — coupled to the prompt change that forces hypothesis emission under uncertainty (they ship together; see §1.4.1 and INV-22). A derived signal over an unreliable producer is worse than the boolean it replaced, so the derivation and the prompt mandate are not separable.
 5. **Resolution-gate interaction** (`solution_verified` ↔ the absence-evidence end-state) is revisited *after* this redesign rather than folded in — see the resolution-gate notes and the `resolution_suggest_close` guard in §1.2.
@@ -1797,7 +1797,7 @@ The user decides the mitigation is sufficient (or RCA is infeasible, see §2.4) 
 1. **Agent-proposed** (when `rca_infeasible=True` and the cause remains uncertain): after the mitigation verifies, the agent proposes closure via User-Agent Handshake instead of pushing RCA.
 2. **User-initiated** (any case): the user closes via UI at any time (close-anytime, §2.3).
 
-**Closure**: `CaseState.CLOSED` with `closure_reason="closed_after_investigation"`. The documented mitigation (and any partial findings) is preserved on the closed case.
+**Closure**: `CaseState.CLOSED` with `closure_reason="mitigation_sufficient"`. The documented mitigation (and any partial findings) is preserved on the closed case.
 
 **Post-terminal**: agent offers runbook generation only for RESOLVED cases (§4.5.1); CLOSED cases get the closure summary only.
 
@@ -1817,18 +1817,18 @@ The retrospective shape is **direct** vs **mitigated**, derived from
 | `solution_accepted` / `solution_verified` | True / True | False / False | True / True |
 | `cause_state` | IDENTIFIED | May be UNKNOWN/CANDIDATES | IDENTIFIED |
 | `CaseState` | RESOLVED | CLOSED | RESOLVED |
-| `closure_reason` | None | `closed_after_investigation` | None |
+| `closure_reason` | None | `mitigation_sufficient` | None |
 | **Knowledge artifact** | **Runbook** | **Closure Summary only** | **Runbook** |
 
 `closure_reason` is `None` for all RESOLVED cases — resolution itself is the
 categorization. Only CLOSED cases carry a `closure_reason` value (`inquiry_only`,
-`closed_insufficient_evidence`, or `closed_after_investigation`).
+`closed_rca_infeasible`, `mitigation_sufficient`, or `closed_insufficient_evidence`).
 `derive_closure_reason` (in `terminal_transitions.py`) returns `inquiry_only`
 when the case never left INQUIRY, `closed_insufficient_evidence` when the case
 is closed from INVESTIGATING while in the `INSUFFICIENT_EVIDENCE`
 verification-status cell (see
 [Insufficient-Evidence Handling §3.5](./insufficient-evidence-handling.md)),
-and otherwise `closed_after_investigation` — the former `mitigation_sufficient`
+and otherwise `closed_insufficient_evidence` — `mitigation_sufficient`
 reason was folded into the latter.
 
 ---
@@ -1987,7 +1987,7 @@ Independent of post-terminal operations. User can archive any terminal case via 
     - User stops responding.
     - User explicitly requests escalation.
     - User closes after a mitigation without pursuing RCA (the documented mitigation is preserved on the closed case).
-3. **Closure**: Case marked `CLOSED` with `closure_reason="closed_after_investigation"` (covers escalated, abandoned, and stabilized-then-closed alike).
+3. **Closure**: Case marked `CLOSED` with an engine-derived `closure_reason` naming why it ended — a stabilized case closes as `mitigation_sufficient`, one that established nothing as `closed_insufficient_evidence`.
 
 #### Milestones
 

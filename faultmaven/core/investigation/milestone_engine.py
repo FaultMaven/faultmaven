@@ -692,8 +692,16 @@ def _apply_stage_gate_side_effects(
             and not getattr(case, "pending_transition", None)
             and not case.is_terminal
         ):
+            # The generic fallback is fine for the user-facing sentence but is
+            # NOT a rationale: derive_closure_reason's guard requires a real one
+            # (the label forecloses future work, so it must carry its own
+            # justification). Keep them apart so the log cannot claim a reason
+            # the guard will refuse.
+            declared_rationale = getattr(
+                case.problem_verification, "rca_infeasible_rationale", None
+            )
             rationale = (
-                getattr(case.problem_verification, "rca_infeasible_rationale", None)
+                declared_rationale
                 or "root cause analysis is not feasible for this problem"
             )
             closure_message = (
@@ -717,10 +725,19 @@ def _apply_stage_gate_side_effects(
             metadata["transition_proposed_this_turn"] = True
             metadata["override_suggestions"] = _close_confirmation_suggestions()
             metadata["rca_infeasible_closure_message"] = closure_message
+            # Read the reason propose_transition just STORED rather than
+            # re-deriving it here. Mirroring the derivation meant reproducing 2
+            # of its 5 branches, which diverges whenever another branch wins —
+            # an rca_infeasible declaration alongside a standing working
+            # conclusion and a solution record derives `solution_deferred`,
+            # which a two-branch mirror cannot express.
+            stored_reason = (getattr(case, "pending_transition", None) or {}).get(
+                "closure_reason"
+            )
             logger.info(
                 f"Proposed CLOSED transition for case {case.case_id} "
                 f"(rca_infeasible=True; closure_reason derived as "
-                f"closed_after_investigation, rationale: {rationale})"
+                f"{stored_reason}, rationale: {rationale})"
             )
 
     metadata["compliance_detected"] = True
@@ -939,6 +956,140 @@ def _is_context_length_error(exc: Exception) -> bool:
     # Shared with llm_error_handler.is_token_limit_error so the two overflow
     # classifiers cannot drift (see CONTEXT_OVERFLOW_PHRASES).
     return any(p in msg for p in CONTEXT_OVERFLOW_PHRASES)
+
+
+def _apply_symptom_retraction(
+    case: "Case", milestones, response_obj, metadata: dict
+) -> bool:
+    """Honor an explicit, justified ``symptom_verified=False``.
+
+    The symptom claim was a one-way latch: nothing could lower it once set, so
+    a verification that later proved WRONG — misread data, the wrong system, an
+    artefact — stayed on the case and kept the investigation pointed at a cause
+    for something that was never really the symptom.
+
+    This is about the CLAIM being mistaken, not about the problem being quiet.
+    A problem is investigable while it EXISTS (evidence collectible, cause
+    unidentified, solution unknown), so "not firing right now" is never grounds
+    to retract; the prompt says so explicitly.
+
+    The LLM is already the authority for this milestone (it is the only party
+    that sets it), so retraction goes through the same authority rather than a
+    parallel engine-side rule. The downstream layers were built for this: the
+    ``rcc`` / ``working_conclusion`` backstop legs in ``cause_identification_leg``
+    are explicitly gated on a verified symptom precisely so a conclusion
+    "left behind after a symptom claim is withdrawn" stops counting, and
+    ``verification_status._is_grounded`` reads the same anchor. Withdrawal was
+    designed for; it was simply unreachable.
+
+    TWO GUARDS, because a spurious retraction is worse than a missed one — it
+    would discard real progress and could oscillate:
+
+    1. Only an EXPLICIT ``False`` counts. The field is ``Optional[bool]``, so
+       "absent" and "false" are distinguishable; a model that omits it (the
+       overwhelmingly common case) changes nothing.
+    2. A justification for the retraction must be present in
+       ``internal_reasoning.milestone_justifications``. Providers differ in how
+       eagerly they populate optional booleans, and some will emit ``false`` by
+       habit rather than by judgement; requiring the model to also write down
+       WHY separates a decision from a default. This reuses the justification
+       channel the prompt already mandates for milestone changes.
+
+    Returns True when a retraction was applied.
+    """
+    claimed = getattr(milestones, "symptom_verified", None)
+    if claimed is not False:
+        return False
+    if not case.progress or not case.progress.symptom_verified:
+        return False  # nothing to retract
+
+    reasoning = getattr(response_obj, "internal_reasoning", None)
+    justifications = getattr(reasoning, "milestone_justifications", None) or {}
+    rationale = justifications.get("symptom_verified")
+    if not rationale or not str(rationale).strip():
+        logger.warning(
+            "Case %s: ignoring unjustified symptom_verified=False. Retraction "
+            "discards established progress, so it requires an explicit "
+            "justification — an unexplained false is treated as a provider "
+            "default, not a judgement.",
+            case.case_id,
+        )
+        return False
+
+    case.progress.symptom_verified = False
+    metadata.setdefault("milestones_retracted", []).append("symptom_verified")
+    logger.info(
+        "Case %s: symptom_verified RETRACTED at turn %s — %s",
+        case.case_id,
+        case.current_turn,
+        str(rationale)[:200],
+    )
+    return True
+
+
+def _evidence_coverage(
+    case: "Case", source_file_id: str | None, extract: str | None = None
+) -> "tuple[datetime | None, datetime | None]":
+    """The time span this evidence's CONTENT covers.
+
+    ``Evidence.coverage_start_ts`` / ``coverage_end_ts`` have existed (with a DB
+    index) since the case-timeline work, and the model docstring has always said
+    the system fills them — but no writer ever did, so every LLM-authored row
+    landed NULL. The only temporal signal left was ``collected_at_turn``, i.e.
+    WHEN THE AGENT LOOKED, which says nothing about how old the observation is.
+
+    Resolved in order:
+
+    1. **The extract's own timestamps.** An evidence row is a SLICE, so its own
+       quoted lines are the authority on what it covers. ``extract_time_range_ts``
+       was promoted out of the extractors for exactly this (see its docstring).
+    2. **The file's span, but only when it is a single instant.** A point-in-time
+       file — an alert notification, a paste stamped from a forwarding caller's
+       ``observed_at`` — describes one moment, so the slice can only be that
+       moment too.
+    3. **Unknown.**
+
+    A RANGED file is deliberately NOT inherited. Doing so was a real defect, and
+    the justification for it was inverted: it claimed widening "can only make
+    evidence look OLDER, never fresher", but ``coverage_end_ts`` is what the
+    staleness read consults, and widening moves the END LATER. A dump spanning
+    12:00-19:45 that contains a 17:36 symptom would report "last observed 19:45"
+    and read CURRENT — masking exactly the staleness this machinery exists to
+    surface. Unknown is honest; a fabricated recent timestamp is not.
+    """
+    if extract and extract.strip():
+        # Local import: keeps the module-level import graph unchanged, and this
+        # is the only caller.
+        from faultmaven.modules.preprocessing.extractors.utils import (
+            extract_time_range_ts,
+        )
+
+        try:
+            start_ts, end_ts, _ = extract_time_range_ts(extract)
+        except Exception:  # noqa: BLE001 - a parse failure must not lose the turn
+            logger.warning(
+                "Could not parse timestamps from an evidence extract; falling "
+                "back to the source file's coverage.",
+                exc_info=True,
+            )
+        else:
+            # A single-timestamp extract parses as (start, None) - the head and
+            # tail scans land on the same line. Content covering one instant
+            # starts AND ends there; leaving the end None would read as UNDATED
+            # and discard the very observation time this exists to capture.
+            if start_ts is not None or end_ts is not None:
+                return start_ts or end_ts, end_ts or start_ts
+
+    if source_file_id is None:
+        return None, None
+    uploaded = case.find_uploaded_file(source_file_id)
+    if uploaded is None:
+        return None, None
+    file_start = getattr(uploaded, "coverage_start_ts", None)
+    file_end = getattr(uploaded, "coverage_end_ts", None)
+    if file_start is not None and file_start == file_end:
+        return file_start, file_end
+    return None, None
 
 
 def _resolve_evidence_source(
@@ -1779,7 +1930,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     drive to close on its own when implementation is deferred. The user still
     confirms via the standard disposition handshake, and the documented
     root cause + solution are preserved on the closed case
-    (``closure_reason=closed_after_investigation``).
+    (``closure_reason=solution_deferred``).
     """
     p = case.progress
     if p.solution_feasible != SolutionFeasible.DEFERRED:
@@ -2438,8 +2589,21 @@ def _terminal_confirmation_response(case) -> str:
             "Residual candidates and the missing data are preserved in the "
             "closure summary."
         )
-    if closure_reason == "closed_after_investigation":
-        return "Case closed without resolution. Investigation history preserved."
+    if closure_reason == "solution_deferred":
+        return (
+            "Case closed — cause identified and fix documented; implementation "
+            "is deferred out-of-band."
+        )
+    if closure_reason == "closed_rca_infeasible":
+        return (
+            "Case closed — the root cause is not reachable for this problem; "
+            "the mitigation stands as the accepted strategy."
+        )
+    if closure_reason == "mitigation_sufficient":
+        return (
+            "Case closed — stabilized by a verified mitigation; root-cause "
+            "analysis was deferred."
+        )
     return "Case closed."
 
 
@@ -8112,6 +8276,8 @@ class MilestoneEngine:
                         setattr(p, field, True)
                         metadata["milestones_completed"].append(field)
 
+            _apply_symptom_retraction(case, m, response_obj, metadata)
+
             if m.root_cause_likelihood is not None:
                 p.root_cause_likelihood = m.root_cause_likelihood
             if getattr(m, "solution_feasible", None) is not None:
@@ -8196,6 +8362,9 @@ class MilestoneEngine:
                     case, ev_item.source_file_id, ev_item.source_type
                 )
 
+                coverage_start, coverage_end = _evidence_coverage(
+                    case, source_file_id, ev_item.extract
+                )
                 ev = Evidence(
                     evidence_id=f"ev_{uuid4().hex[:12]}",
                     summary=ev_item.summary,
@@ -8208,6 +8377,8 @@ class MilestoneEngine:
                     collected_at_turn=case.current_turn,
                     advances_milestones=advances_milestones,
                     primary_purpose="Investigation context",
+                    coverage_start_ts=coverage_start,
+                    coverage_end_ts=coverage_end,
                 )
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)

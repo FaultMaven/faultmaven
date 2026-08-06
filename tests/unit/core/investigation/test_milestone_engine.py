@@ -1795,7 +1795,7 @@ class TestReadinessAssessments:
 
         case = MagicMock()
         case.case_id = "case_trivial"
-        case.closure_reason = "closed_after_investigation"
+        case.closure_reason = "closed_insufficient_evidence"
         case.evidence = []
         case.hypotheses = {}
         case.description = ""
@@ -2188,7 +2188,7 @@ class TestContradictingIntentCancelsPendingTransition:
             "summary": "Close without resolution",
             "evidence_ids": [],
             "proposed_at": "2026-04-23T00:00:00+00:00",
-            "closure_reason": "closed_after_investigation",
+            "closure_reason": "closed_insufficient_evidence",
         }
 
         # Mock LLM response for the new intent processing
@@ -2254,7 +2254,7 @@ class TestContradictingIntentCancelsPendingTransition:
             "summary": "Close without resolution",
             "evidence_ids": [],
             "proposed_at": "2026-04-23T00:00:00+00:00",
-            "closure_reason": "closed_after_investigation",
+            "closure_reason": "closed_insufficient_evidence",
         }
 
         # User submits SAME status_transition intent → confirmation
@@ -2539,8 +2539,10 @@ class TestNeedsInfoFollowupProposesClose:
 
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
-        # closure_reason is auto-derived; no mitigation → closed_after_investigation
-        assert case.pending_transition["closure_reason"] == "closed_after_investigation"
+        # closure_reason is auto-derived; no mitigation, nothing established
+        assert (
+            case.pending_transition["closure_reason"] == "closed_insufficient_evidence"
+        )
         assert metadata.get("resolution_suggest_close") is True
         assert metadata.get("transition_proposed_this_turn") is True
 
@@ -2584,7 +2586,9 @@ class TestNeedsInfoFollowupProposesClose:
 
         assert case.pending_transition is not None
         assert case.pending_transition["to_state"] == "closed"
-        assert case.pending_transition["closure_reason"] == "closed_after_investigation"
+        assert (
+            case.pending_transition["closure_reason"] == "closed_insufficient_evidence"
+        )
         assert metadata.get("resolution_suggest_close") is True
         assert metadata.get("transition_proposed_this_turn") is True
         # The hardcoded second-ask message is what the user sees — it now

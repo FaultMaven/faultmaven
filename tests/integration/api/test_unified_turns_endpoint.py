@@ -23,6 +23,7 @@ import pytest
 
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api_models import AttachmentResult, IntentType, TurnResponse
+from faultmaven.modules.case.api.routes import resolve_paste_source_meta
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models import Case
 
@@ -170,9 +171,13 @@ class TestTurnPayloadConstruction:
 #   page_capture → browser extension captured a web page (has source URL)
 #   text_paste   → user pasted raw text (scratchpad or auto-promoted chat)
 #
-# `_resolve_paste_source_meta` below mirrors the route's branching exactly
-# so the tests can assert the contract without spinning up a TestClient.
-# Keep this helper in sync with routes.py if the route logic changes.
+# These import the ROUTE's own helper. They used to call a hand-copied mirror
+# of the branching kept in this file, which could not fail when the route
+# changed — the mirror stayed self-consistent and green while production
+# diverged. `pasted_content` is no longer a parameter at all: the legacy
+# `--- Page Content (URL) ---` body header was removed as a write-around (a
+# paste shaped that way bypassed Tier-1 extraction), so nothing reads the body
+# to decide origin. The wrapper below keeps the call sites readable.
 
 
 def _resolve_paste_source_meta(
@@ -180,28 +185,30 @@ def _resolve_paste_source_meta(
     input_type: str | None,
     source_url: str | None,
 ) -> tuple[dict, str]:
-    """Mirror of routes.py:2140-2166. Returns (source_meta, filename_prefix).
+    """Thin adapter onto the production helper, preserving these tests' shape."""
 
-    Keep in sync with the route. Fixtures import this directly so the
-    tests document the contract that the production route must match.
-
-    Note: ``pasted_content`` is unused since the legacy
-    ``--- Page Content (URL) ---`` header was removed (the dual-source
-    detection is no longer accepted as a page-capture signal). The
-    parameter remains in the signature so call sites that document the
-    full input shape stay readable.
-    """
-    if input_type == "page_capture":
-        meta = {"source_type": "page_capture"}
-        if source_url:
-            meta["source_url"] = source_url
-        return meta, "page-capture-"
-    return {"source_type": "text_paste"}, "pasted-content-"
+    return resolve_paste_source_meta(input_type, source_url)
 
 
 @pytest.mark.unit
 class TestTextPasteSourceMetadata:
     """Validate the source_metadata branch the route applies to pasted_content."""
+
+    def test_source_url_stays_scoped_to_page_captures(self):
+        """`source_url` means the URL the CONTENT came from, and the classifier
+        consults it at Priority 3 ahead of the content rules. A relay link — the
+        Slack agent's permalink to the message that forwarded an alert — is not
+        that, and feeding it here would let a pasted excerpt be typed by whatever
+        page someone copied it out of. Relay provenance needs its own field and a
+        consumer; overloading this one is not the way.
+        """
+        meta, prefix = _resolve_paste_source_meta(
+            pasted_content="[FIRING:1] etcdInsufficientMembers kube-system",
+            input_type="paste",
+            source_url="https://slack/archives/C1/p1785872177",
+        )
+        assert meta == {"source_type": "text_paste"}
+        assert prefix == "pasted-content-"
 
     def test_explicit_text_paste_input_type_yields_text_paste_source(self):
         """input_type='paste' with no URL → source_type=text_paste."""
@@ -543,3 +550,72 @@ class TestSubmitTurnBillingExhaustion:
 
         assert exc.value.status_code == 500
         assert exc.value.headers["x-error-code"] == "SERVICE_ERROR"
+
+
+# ============================================================
+# observed_at — the caller's declared observation time
+# ============================================================
+#
+# A forwarding caller (the Slack agent relaying an alert posted hours earlier)
+# is the only party that knows when the content was actually seen. Absent it,
+# the sole timestamp on the evidence chain is the synthetic
+# `pasted-content-{now}.txt` filename, i.e. ingestion time — which asserts a
+# stale alert is current.
+
+
+@pytest.mark.unit
+class TestObservedAtParsing:
+    """The route's `observed_at` parser: fail to unknown, never to now."""
+
+    def _parse(self, raw):
+        from faultmaven.modules.case.api.routes import _parse_observed_at
+
+        return _parse_observed_at(raw, "corr-1")
+
+    def test_iso_instant_is_parsed_to_utc(self):
+        assert self._parse("2026-08-04T17:36:17+00:00") == datetime(
+            2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc
+        )
+
+    def test_zulu_suffix_is_accepted(self):
+        assert self._parse("2026-08-04T17:36:17Z") == datetime(
+            2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc
+        )
+
+    def test_offset_is_normalised_to_utc(self):
+        assert self._parse("2026-08-04T19:36:17+02:00") == datetime(
+            2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc
+        )
+
+    def test_naive_is_read_as_utc(self):
+        """The wire contract is UTC; a naive value must not become server-local."""
+        assert self._parse("2026-08-04T17:36:17") == datetime(
+            2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc
+        )
+
+    def test_absent_is_unknown(self):
+        assert self._parse(None) is None
+        assert self._parse("") is None
+
+    def test_malformed_degrades_to_unknown_rather_than_rejecting_the_turn(self):
+        """A voluntary provenance hint must never cost the user their turn —
+        and must never silently become "now", which is the false claim this
+        field exists to prevent."""
+        assert self._parse("yesterday") is None
+        assert self._parse("1785872177") is None  # epoch, not ISO
+
+    def test_future_is_rejected(self):
+        """Content cannot be observed after it was submitted. A future value
+        means a broken clock or a bad conversion; trusting it would make stale
+        evidence look FRESHER, which is the unsafe direction."""
+        future = datetime.now(timezone.utc).replace(microsecond=0)
+        future = future.replace(year=future.year + 1)
+        assert self._parse(future.isoformat()) is None
+
+    def test_small_clock_skew_is_tolerated(self):
+        """Ordinary skew between the caller's host and this one must not
+        discard a legitimate just-now observation."""
+        from datetime import timedelta
+
+        skewed = datetime.now(timezone.utc) + timedelta(minutes=2)
+        assert self._parse(skewed.isoformat()) is not None
