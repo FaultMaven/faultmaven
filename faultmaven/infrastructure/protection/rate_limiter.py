@@ -7,7 +7,6 @@ Redis-backed storage (real or FakeRedis).
 
 import asyncio
 import logging
-import math
 import time
 import uuid
 from datetime import datetime, timezone
@@ -19,6 +18,7 @@ from ...models.protection import (
     RateLimitResult,
     RateLimitState,
 )
+from .window_math import quota_frees_at, retry_after_seconds
 
 # Consecutive failed checks against the current client before the limiter
 # declares it dead and asks to be re-initialized.
@@ -201,6 +201,11 @@ class RedisRateLimiter:
         # served unlimited traffic for the rest of it. Comparing epochs is what
         # makes a failure attributable to one specific client.
         self._adoption_epoch = 0
+
+        # Background closes of replaced clients, held only so the event loop's
+        # weak reference to a running task is not the only one — an unreferenced
+        # task can be collected mid-close, and the pool it was dropping leaks.
+        self._teardown_tasks: set = set()
 
         # Rate limit configurations
         self._configs: Dict[str, RateLimitConfig] = {}
@@ -445,23 +450,44 @@ class RedisRateLimiter:
         Without the close, a flapping Redis leaked one pool (``max_connections``
         20) per demotion cycle — the ladder is re-entered on every death, and
         nothing else ever dropped the previous pool.
+
+        Everything from the ownership capture to the last assignment runs with no
+        ``await`` in it, and the close is dispatched rather than awaited. The two
+        properties are related: it is the *absence of a yield point*, not the
+        relative position of the dispatch, that makes the install atomic.
+
+        - **No await between capture and install.** Any ``await`` in that span is
+          a point at which a concurrent ``check_rate_limit`` can snapshot
+          ``_window_script`` — and when the close was awaited *first*, that
+          snapshot was the script bound to the client being torn down, so the
+          check went to a pool that was closing or already closed. Awaiting the
+          close after the install fixed that instance; dispatching it removes the
+          yield point altogether, so no observer can see a half-installed
+          limiter regardless of where the dispatch sits.
+        - **Close off the adoption path.** Closing the outgoing pool is
+          best-effort cleanup of a connection that is usually already dead;
+          installing the replacement is what ends the outage. Awaiting the close
+          put an unbounded teardown *on* that path — and not only on the adopting
+          request: ``RateLimitMiddleware._initialize`` serialises re-entry behind
+          one lock, so every request queued on it waited for a socket that may
+          never answer. Dispatching it means adoption returns as soon as the
+          replacement is installed, whatever the dead pool does afterwards.
+
+        The task reference is held in ``_teardown_tasks`` until it completes.
+        ``asyncio`` keeps only a weak reference to a running task, so a
+        fire-and-forget task with no strong reference anywhere can be garbage
+        collected mid-flight and the close silently never happens — which would
+        reinstate the pool leak this close exists to fix.
+
+        The ownership test reads the values ``self`` held *before* the install,
+        captured first: ``_owns_client`` is about to be overwritten with the
+        incoming client's ownership, and testing the post-install value would
+        decide the outgoing client's fate from its successor's provenance.
         """
         from faultmaven.infrastructure.redis_client import is_fakeredis
 
         outgoing = self._redis
-        if (
-            self._owns_client
-            and outgoing is not None
-            and outgoing is not client
-            and not is_fakeredis(outgoing)
-        ):
-            try:
-                await outgoing.close()
-            except Exception as e:
-                # A pool that is already dead is exactly the case this runs in,
-                # so a failure to close it is expected and not worth failing an
-                # adoption over — the replacement client is what matters.
-                self.logger.debug(f"Closing the replaced Redis client failed: {e}")
+        owned_outgoing = self._owns_client
 
         self._redis = client
         self._window_script = client.register_script(_WINDOW_SCRIPT)
@@ -473,6 +499,36 @@ class RedisRateLimiter:
         self._last_check_failure_log_at = None
         if not is_fakeredis(client):
             self._had_real_client = True
+
+        if (
+            owned_outgoing
+            and outgoing is not None
+            and outgoing is not client
+            and not is_fakeredis(outgoing)
+        ):
+            self._dispatch_teardown(outgoing)
+
+    def _dispatch_teardown(self, outgoing) -> None:
+        """Close a replaced client in the background, holding a reference to it.
+
+        The reference is the whole point: ``asyncio`` holds tasks weakly, so a
+        task nothing else names may be collected before it finishes and the close
+        would silently not happen. Discarded on completion so the set does not
+        grow with the process's uptime.
+        """
+        task = asyncio.ensure_future(self._close_outgoing(outgoing))
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+
+    async def _close_outgoing(self, outgoing) -> None:
+        """Best-effort close of a pool that is usually already dead."""
+        try:
+            await outgoing.close()
+        except Exception as e:
+            # A pool that is already dead is exactly the case this runs in, so a
+            # failure to close it is expected and not worth surfacing — nothing
+            # is waiting on the outcome, and the replacement is already serving.
+            self.logger.debug(f"Closing the replaced Redis client failed: {e}")
 
     async def close(self) -> None:
         """Close the Redis connection — only one this limiter opened itself.
@@ -622,30 +678,21 @@ class RedisRateLimiter:
 
         current_count, limit, allowed, oldest_raw = result
 
-        oldest_score = _parse_oldest_score(oldest_raw)
-        if oldest_score is None:
-            # Nothing in the window to age out. On the allowed path this request
-            # is the entry that just went in, so a full window is exactly right;
-            # on the blocked path it cannot happen with a positive limit.
-            quota_frees_at = current_time + config.window
-        else:
-            quota_frees_at = oldest_score + config.window
+        # One derivation for both numbers, through the shared helper: a window
+        # whose oldest entry is ``None`` held nothing to age out (on the allowed
+        # path this request is that entry, so a full window is exactly right; on
+        # the blocked path it cannot happen with a positive limit), and a score
+        # from a host whose clock runs ahead is clamped so the answer can never
+        # exceed one window.
+        frees_at = quota_frees_at(
+            _parse_oldest_score(oldest_raw), config.window, current_time
+        )
 
-        reset_time = datetime.fromtimestamp(quota_frees_at, tz=timezone.utc)
+        reset_time = datetime.fromtimestamp(frees_at, tz=timezone.utc)
 
         if not allowed:
-            # Rounded up and floored at one second: a sub-second answer reads as
-            # "retry immediately", which is exactly what a refused client must
-            # not do.
-            #
-            # Deliberately uncapped and unjittered. The old value was a whole
-            # window plus random jitter, capped at 300s — three separate lies to
-            # a client that was one second away from quota. The honest value is
-            # already per-client (each client's oldest entry is its own), so
-            # herd de-synchronization comes free without randomness; and an
-            # hourly limit's honest wait may legitimately exceed 300s, where a
-            # cap would send the whole herd back at 300s to be refused again.
-            retry_after = max(1, math.ceil(quota_frees_at - current_time))
+            # The same instant ``reset_time`` names, expressed as a wait.
+            retry_after = retry_after_seconds(frees_at, current_time)
 
             return RateLimitResult(
                 allowed=False,
@@ -717,10 +764,11 @@ class RedisRateLimiter:
                 num=1,
                 withscores=True,
             )
-            if oldest:
-                quota_frees_at = float(oldest[0][1]) + config.window
-            else:
-                quota_frees_at = current_time + config.window
+            frees_at = quota_frees_at(
+                float(oldest[0][1]) if oldest else None,
+                config.window,
+                current_time,
+            )
 
             return RateLimitState(
                 key=key,
@@ -728,7 +776,7 @@ class RedisRateLimiter:
                 current_count=current_count,
                 limit=config.requests,
                 window=config.window,
-                reset_time=datetime.fromtimestamp(quota_frees_at, tz=timezone.utc),
+                reset_time=datetime.fromtimestamp(frees_at, tz=timezone.utc),
             )
         except Exception as e:
             self.logger.error(f"Failed to get rate limit status: {e}")

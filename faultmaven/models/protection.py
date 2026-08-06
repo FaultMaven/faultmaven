@@ -38,6 +38,13 @@ class LimitType(str, Enum):
     PER_SESSION_READ = "per_session_read"
     PER_SESSION_READ_HOURLY = "per_session_read_hourly"
     TITLE_GENERATION = "title_generation"
+    # The OAuth/SSO endpoint limiter in ``modules/auth/api/rate_limiting.py``.
+    # It enforces a tighter quota (5–10/min) than any of the limits above, so a
+    # caller told only about the roomy ones would pace itself against a limit it
+    # is nowhere near while the one it is actually hitting stays invisible.
+    # Naming it here is what lets its result join the others the served-response
+    # header path picks the tightest of.
+    OAUTH = "oauth"
 
 
 class ProtectionResult(str, Enum):
@@ -188,22 +195,40 @@ class ProtectionError(Exception):
 
 
 class RateLimitError(ProtectionError):
-    """Rate limit exceeded error"""
+    """Rate limit exceeded error.
+
+    Carries the ``reset_time`` the limiter measured, not just the wait derived
+    from it. The renderer used to re-derive the instant as
+    ``time.time() + retry_after``, which reads the clock a second time — after
+    the check, the raise and the response construction — so the timestamp a
+    client received drifted from the one the limiter actually computed. Two
+    numbers that are meant to name the same instant have to come from one
+    measurement. ``None`` means the limiter did not measure one, and an
+    unmeasured value is omitted rather than invented.
+    """
 
     def __init__(
         self,
-        retry_after: int,
+        retry_after: Optional[int],
         limit_type: str,
         current_count: int,
         limit: int,
         correlation_id: str = "",
+        reset_time: Optional[datetime] = None,
     ):
-        message = f"Rate limit exceeded: {current_count}/{limit} requests. Retry after {retry_after} seconds."
+        # The message obeys the same contract as the headers: a wait nobody
+        # measured is left out of the sentence rather than rendered as the word
+        # "None" for a client to read as a duration. The header path already
+        # omits it; the body is as much the wire as the header is.
+        message = f"Rate limit exceeded: {current_count}/{limit} requests."
+        if retry_after is not None:
+            message += f" Retry after {retry_after} seconds."
         super().__init__(message, "RATE_LIMIT_EXCEEDED", correlation_id)
         self.retry_after = retry_after
         self.limit_type = limit_type
         self.current_count = current_count
         self.limit = limit
+        self.reset_time = reset_time
 
 
 class DuplicateRequestError(ProtectionError):
