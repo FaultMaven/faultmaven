@@ -166,6 +166,10 @@ def _load_from_settings(settings) -> ProtectionSettings:
             "per_session_hourly": RateLimitConfig(
                 enabled=True, requests=100, window=3600
             ),
+            "per_session_read": RateLimitConfig(enabled=True, requests=240, window=60),
+            "per_session_read_hourly": RateLimitConfig(
+                enabled=True, requests=3000, window=3600
+            ),
             "title_generation": RateLimitConfig(enabled=True, requests=1, window=300),
         },
         # Deduplication - use defaults
@@ -263,6 +267,12 @@ def _load_from_environment() -> ProtectionSettings:
         "per_session_hourly": parse_rate_limit(
             os.getenv("RATE_LIMIT_PER_SESSION_HOURLY", "100:3600"), 100, 3600
         ),
+        "per_session_read": parse_rate_limit(
+            os.getenv("RATE_LIMIT_PER_SESSION_READ", "240:60"), 240, 60
+        ),
+        "per_session_read_hourly": parse_rate_limit(
+            os.getenv("RATE_LIMIT_PER_SESSION_READ_HOURLY", "3000:3600"), 3000, 3600
+        ),
         "title_generation": parse_rate_limit(
             os.getenv("RATE_LIMIT_TITLE_GENERATION", "1:300"), 1, 300
         ),
@@ -338,6 +348,10 @@ def get_development_protection_settings() -> ProtectionSettings:
             "per_session": RateLimitConfig(enabled=True, requests=50, window=60),
             "per_session_hourly": RateLimitConfig(
                 enabled=True, requests=500, window=3600
+            ),
+            "per_session_read": RateLimitConfig(enabled=True, requests=600, window=60),
+            "per_session_read_hourly": RateLimitConfig(
+                enabled=True, requests=6000, window=3600
             ),
             "title_generation": RateLimitConfig(enabled=True, requests=5, window=300),
         },
@@ -449,6 +463,10 @@ def get_production_protection_settings() -> ProtectionSettings:
             "per_session": RateLimitConfig(enabled=True, requests=10, window=60),
             "per_session_hourly": RateLimitConfig(
                 enabled=True, requests=50, window=3600
+            ),
+            "per_session_read": RateLimitConfig(enabled=True, requests=120, window=60),
+            "per_session_read_hourly": RateLimitConfig(
+                enabled=True, requests=1200, window=3600
             ),
             "title_generation": RateLimitConfig(
                 enabled=True, requests=1, window=600
