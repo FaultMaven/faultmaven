@@ -250,6 +250,19 @@ protection_duration_seconds = Histogram(
 }
 ```
 
+`limit_type` takes one of five values, not one: `global`, `per_session`,
+`per_session_hourly`, `per_session_read`, `per_session_read_hourly`. **An alert
+written against `per_session` alone sees no read refusals at all** — reads were
+moved to their own pair of buckets in fm#994, so a throttled UI now reports
+`per_session_read` or `per_session_read_hourly`. Match on the prefix
+`per_session` (which covers all four) or enumerate them.
+
+Note that `RateLimitMiddleware` currently emits this as a single formatted
+message rather than as the structured fields above —
+`Rate limit exceeded: per_session_read, count=121/120, retry_after=60s, ip=…,
+session=…` — so a log-based alert has to match within the message text. The
+structured shape above is the target, not what ships today.
+
 ## Testing Strategy
 
 ### Unit Test Coverage
@@ -293,18 +306,21 @@ protection_duration_seconds = Histogram(
 
 ### Configuration Tuning
 
-```python
-# Production tuning guidelines
-PRODUCTION_RATE_LIMITS = {
-    "global": {"requests": 5000, "window": 60},        # Scale with capacity
-    "per_session": {"requests": 20, "window": 60},     # Allow burst traffic
-    "title_generation": {"requests": 2, "window": 300} # Slightly more lenient
-}
+The shipped values live in `faultmaven/config/protection.py` and are tabulated in
+[client-protection.md](client-protection.md). They are not repeated here: the
+copy that used to sit in this section had drifted from every preset it claimed to
+describe, and a tuning guide that disagrees with the code is worse than one that
+points at it.
 
-# Development/testing
-DEVELOPMENT_RATE_LIMITS = {
-    "global": {"requests": 100, "window": 60},
-    "per_session": {"requests": 50, "window": 60},     # More lenient for testing
-    "title_generation": {"requests": 10, "window": 60} # Frequent testing
-}
-```
+Two things to know before turning a dial:
+
+- **Reads and writes are separate buckets.** `per_session` / `per_session_hourly`
+  meter writes and the few embedding-backed GETs; `per_session_read` /
+  `per_session_read_hourly` meter ordinary navigation. Raising `per_session`
+  because the UI is being throttled treats the wrong bucket — that symptom is
+  almost always the read pair.
+- **Both read keys must be set together.** The middleware applies the split only
+  when it finds both, and meters reads against the write buckets (logging why)
+  when either is missing. That is deliberate: the limiter allows anything it
+  holds no configuration for, so a half-configured split would leave reads
+  unmetered rather than merely tighter.

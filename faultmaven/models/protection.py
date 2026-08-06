@@ -30,6 +30,13 @@ class LimitType(str, Enum):
     PER_SESSION = "per_session"
     PER_ENDPOINT = "per_endpoint"
     PER_SESSION_HOURLY = "per_session_hourly"
+    # Cheap read traffic — SPA navigation — is metered in its own pair of
+    # buckets rather than in ``per_session``/``per_session_hourly``. Sharing the
+    # write buckets is what made a burst of GETs refuse the next POST turn; the
+    # split is what keeps a read flood out of the quota that protects LLM
+    # compute. See ``RateLimitMiddleware._check_session_rate_limits``.
+    PER_SESSION_READ = "per_session_read"
+    PER_SESSION_READ_HOURLY = "per_session_read_hourly"
     TITLE_GENERATION = "title_generation"
 
 
@@ -86,8 +93,10 @@ class ProtectionSettings(BaseModel):
     rate_limits: Dict[str, RateLimitConfig] = Field(
         default_factory=lambda: {
             "global": RateLimitConfig(requests=1000, window=60),
-            "per_session": RateLimitConfig(requests=10, window=60),
+            "per_session": RateLimitConfig(requests=20, window=60),
             "per_session_hourly": RateLimitConfig(requests=100, window=3600),
+            "per_session_read": RateLimitConfig(requests=240, window=60),
+            "per_session_read_hourly": RateLimitConfig(requests=3000, window=3600),
             "title_generation": RateLimitConfig(requests=1, window=300),
             "agent_query": RateLimitConfig(requests=5, window=60),
         }
