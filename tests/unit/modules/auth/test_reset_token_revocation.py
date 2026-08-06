@@ -30,6 +30,9 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     AuthService,
 )
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    HS256JWTTokenGenerator,
+)
 from faultmaven.modules.auth.domain.services.user_service import (
     RESET_REFUSED_CODE,
     RESET_REFUSED_MESSAGE,
@@ -74,6 +77,25 @@ def _fake_redis():
     return fakeredis_aio.FakeRedis(decode_responses=True)
 
 
+def _hs256_generator(store):
+    """The local-mode signer, holding the secret it signs with.
+
+    Nothing is fabricated onto `AuthService` here. It cannot be: `_load_keys`
+    always produces an RSA pair (configured or dev-generated), so the state the
+    old fixture built — an HMAC secret sitting on `_private_key` — was
+    unreachable in production and hid the fact that signing a reset token with
+    those two together is something PyJWT refuses outright (#959).
+    """
+    return HS256JWTTokenGenerator(
+        secret_key=SECRET,
+        revocation_store=store,
+        access_token_expire_minutes=60,
+        refresh_token_expire_days=7,
+        issuer=_settings().security.jwt_issuer,
+        audience=_settings().security.jwt_audience,
+    )
+
+
 async def _build(store=None):
     """Real AuthService + UserService sharing one revocation store."""
     store = InMemoryRevocationStore() if store is None else store
@@ -83,10 +105,9 @@ async def _build(store=None):
         "faultmaven.modules.auth.domain.services.auth_service.get_settings",
         return_value=settings,
     ):
+        # Production-shaped: `_load_keys` generates a dev RSA pair, exactly as
+        # a standalone install has.
         auth_service = AuthService(revocation_store=store)
-    # HS256: the reset-token signing and verification keys are the same secret.
-    auth_service._private_key = SECRET
-    auth_service._public_key = SECRET
 
     with patch(
         "faultmaven.modules.auth.domain.services.user_service.get_settings",
@@ -95,6 +116,7 @@ async def _build(store=None):
         user_service = UserService(
             user_repo=InMemoryUserRepository(),
             auth_service=auth_service,
+            token_generator=_hs256_generator(store),
             redis_client=_fake_redis(),
         )
 
@@ -324,7 +346,10 @@ class TestEveryRefusalLooksIdentical:
 
     async def _dummy(self, user_service, auth_service, store, user):
         """A token for an address with no account."""
-        return user_service._generate_dummy_reset_token()
+        mint = await user_service.token_generator.generate_dummy_reset_token(
+            "nobody@local.faultmaven"
+        )
+        return mint.token
 
     async def _spent(self, user_service, auth_service, store, user):
         token = await user_service.request_password_reset(email=EMAIL)

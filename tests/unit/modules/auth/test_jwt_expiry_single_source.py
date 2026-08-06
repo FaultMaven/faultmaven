@@ -144,6 +144,20 @@ def _configured_settings(monkeypatch, minutes: int, days: int) -> FaultMavenSett
     return FaultMavenSettings(_env_file=None)
 
 
+def _auth_service(private_pem: str, public_pem: str):
+    """The key authority the container passes to the factory (#959).
+
+    A real ``AuthService`` holding the same PEMs the environment carries, so
+    what this file asserts — which settings half supplies the LIFETIMES — is
+    unchanged by where the keys come from.
+    """
+    from faultmaven.modules.auth.domain.services.auth_service import AuthService
+
+    return AuthService(
+        revocation_store=None, private_key=private_pem, public_key=public_pem
+    )
+
+
 def _lifetime(payload: dict) -> timedelta:
     return timedelta(seconds=payload["exp"] - payload["iat"])
 
@@ -155,6 +169,10 @@ class TestCloudMintHonoursTheKnob:
     container factory that wires it in production — because the defect lived in
     that wiring, not in the generator. A hand-built generator would prove
     nothing about which settings half the cloud path reaches.
+
+    Keys are passed in because the container passes AuthService's resolved pair
+    (#959); here they are the same PEMs the env carries, so what this asserts —
+    which settings half supplies the LIFETIMES — is unchanged.
     """
 
     @pytest.mark.parametrize("minutes,days", LIFETIME_PAIRS)
@@ -167,7 +185,11 @@ class TestCloudMintHonoursTheKnob:
 
         from faultmaven.container.providers.services import create_jwt_token_generator
 
-        generator = create_jwt_token_generator(settings, _revocation_store())
+        generator = create_jwt_token_generator(
+            settings,
+            _revocation_store(),
+            _auth_service(private_pem, public_pem),
+        )
         token = await generator.generate_access_token(_user())
 
         payload = jwt.decode(
@@ -191,7 +213,11 @@ class TestCloudMintHonoursTheKnob:
 
         from faultmaven.container.providers.services import create_jwt_token_generator
 
-        generator = create_jwt_token_generator(settings, _revocation_store())
+        generator = create_jwt_token_generator(
+            settings,
+            _revocation_store(),
+            _auth_service(private_pem, public_pem),
+        )
         token = await generator.generate_refresh_token(_user())
 
         payload = jwt.decode(
