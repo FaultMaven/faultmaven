@@ -1,7 +1,9 @@
-"""Agent Module - AI Agent Orchestration and Investigation Workflows.
+"""Agent Module - Investigation Workflows and Agent Tools.
 
-This module provides agent orchestration, investigation workflows, and tool systems
-for the FaultMaven platform.
+This module provides the tool system the investigation engine executes with, the
+investigation turn service, and the agent-facing domain models. It has no HTTP
+surface of its own: investigation traffic enters through the Case module's
+``/turns`` endpoints and is driven by ``core/investigation/milestone_engine``.
 
 Public API:
     From modules.case.contracts (agent-execution audit data is Case-owned):
@@ -25,8 +27,7 @@ Import components directly from their submodules as shown above.
 
 # Subpackages available for direct import
 __all__ = [
-    "api",
     "domain",
-    "infrastructure",
+    "jobs",
     "tools",
 ]

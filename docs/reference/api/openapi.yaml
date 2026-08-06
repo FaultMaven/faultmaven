@@ -5740,81 +5740,6 @@ components:
       - offset
       title: AdminUserListResponse
       description: Admin user list response with pagination.
-    AgentExecutionRequest:
-      properties:
-        user_message:
-          type: string
-          maxLength: 10000
-          minLength: 1
-          title: User Message
-          description: User's question or request for the agent
-        agent_type:
-          type: string
-          title: Agent Type
-          description: Type of agent to execute (investigator, debugger, researcher,
-            validator, reporter)
-          default: investigator
-        stream:
-          type: boolean
-          title: Stream
-          description: Whether to stream response events (SSE)
-          default: true
-      type: object
-      required:
-      - user_message
-      title: AgentExecutionRequest
-      description: 'Request model for executing an AI agent.
-
-
-        This model defines the input for agent execution requests,
-
-        supporting both streaming and non-streaming modes.'
-      example:
-        agent_type: investigator
-        stream: true
-        user_message: What is causing the 500 errors in the API?
-    AgentExecutionResponse:
-      properties:
-        execution_id:
-          type: string
-          title: Execution Id
-        status:
-          type: string
-          title: Status
-        agent_response:
-          type: string
-          title: Agent Response
-        tokens_used:
-          type: integer
-          title: Tokens Used
-        started_at:
-          type: string
-          format: date-time
-          title: Started At
-        completed_at:
-          anyOf:
-          - type: string
-            format: date-time
-          - type: 'null'
-          title: Completed At
-        tool_calls:
-          items:
-            $ref: '#/components/schemas/ToolCallResponse'
-          type: array
-          title: Tool Calls
-          default: []
-      type: object
-      required:
-      - execution_id
-      - status
-      - agent_response
-      - tokens_used
-      - started_at
-      title: AgentExecutionResponse
-      description: 'Response model for completed agent execution (non-streaming).
-
-
-        Used when stream=false in the request.'
     AttachmentResult:
       properties:
         file_id:
@@ -11070,33 +10995,6 @@ components:
       - title
       title: TitleResponse
       description: Simplified title response schema per API spec.
-    ToolCallResponse:
-      properties:
-        tool_call_id:
-          type: string
-          title: Tool Call Id
-        tool_name:
-          type: string
-          title: Tool Name
-        arguments:
-          type: object
-          title: Arguments
-        result:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Result
-        status:
-          type: string
-          title: Status
-      type: object
-      required:
-      - tool_call_id
-      - tool_name
-      - arguments
-      - status
-      title: ToolCallResponse
-      description: Response model for a tool call within an execution.
     TurnOutcome:
       type: string
       enum:

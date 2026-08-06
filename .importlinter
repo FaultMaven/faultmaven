@@ -146,11 +146,14 @@ ignore_imports =
 # ============================================================================
 # Enforce clean architecture within the Agent module vertical slice
 # Re-enabled after Gap #15/#16 fixes (removed infrastructure imports from domain layer)
+# The api/ layer is gone as of #982: the module's only router served the dead
+# AgentOrchestrationService, so the package was deleted with it. Agent exposes
+# no HTTP surface of its own — investigation traffic enters through the Case
+# module's /turns endpoints. The remaining two layers still hold.
 [importlinter:contract:7]
 name = Agent module layer boundaries
 type = layers
 layers =
-    faultmaven.modules.agent.api
     faultmaven.modules.agent.domain
     faultmaven.modules.agent.tools
 ignore_imports =

@@ -3779,10 +3779,13 @@ class SQLiteCaseRepository(CaseRepository):
     async def _resolve_organization_id(self, execution: Any, case_id: str) -> str:
         """Resolve organization_id for an execution.
 
-        Production callers (agent_orchestration_service) populate
-        execution.organization_id from the authenticated session. Tests
-        may construct execution objects without it; in that case fall
-        back to the parent case row.
+        The caller that populated ``execution.organization_id`` from the
+        authenticated session was ``AgentOrchestrationService``, deleted in
+        #982. Nothing in production writes an execution now, so the parent-case
+        fallback below is the only path this method still takes — under test.
+        Kept, rather than reduced to the fallback, because it is the correct
+        shape for whatever writes executions next; see the subsystem note on
+        ``ICaseRepository``.
         """
         org_id = getattr(execution, "organization_id", None)
         if org_id:

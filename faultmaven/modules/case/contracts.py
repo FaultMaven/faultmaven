@@ -299,6 +299,23 @@ class ICaseRepository(Protocol):
     # accessed via `case.evidence` loaded by the case repository.
 
     # Agent Execution Operations (migrated from Agent module)
+    #
+    # DORMANT as of #982. ``AgentOrchestrationService`` was the only production
+    # writer, and it is gone; the three service methods that read executions
+    # (``ApiCaseService.get_case_with_details(include_executions=...)``,
+    # ``InvestigationSessionService.get_session_executions`` and
+    # ``.add_execution_to_session``) have no callers of their own. So no request
+    # path reaches any method below: nothing creates a row and nothing renders
+    # one. The four repository implementations, the mappers and the
+    # ``agent_executions``/``agent_tool_calls`` tables are all still here and
+    # still tested, but they are exercised only by their own tests.
+    #
+    # Left standing rather than removed with the service because the live
+    # investigation path — ``core/investigation/milestone_engine`` driving the
+    # Case module's ``/turns`` endpoints — has no execution-audit trail of its
+    # own, and this is the schema it would adopt. Removing it is tracked
+    # separately; the decision is whether milestone turns should be audited
+    # here, not whether the dead half should be tidied.
     async def create_agent_execution(self, execution: AgentExecution) -> AgentExecution:
         """Create new agent execution record."""
         ...

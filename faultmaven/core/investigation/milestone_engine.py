@@ -6036,8 +6036,8 @@ class MilestoneEngine:
         already_vectorized = self._evidence_is_vectorized(case, evidence_id)
 
         # Track deep_analysis confidence for the low-confidence trigger
-        # below. In-turn only — see agent_orchestration_service for why
-        # cross-turn persistence was dropped.
+        # below. In-turn only: persisting it across turns would need a
+        # backing DB column on Evidence, which nothing else wants yet.
         if func_name == "deep_analysis" and tool_result.success and case:
             try:
                 data = (

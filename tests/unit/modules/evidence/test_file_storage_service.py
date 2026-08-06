@@ -687,8 +687,8 @@ class TestBackendDelegation:
         """No injected backend → whatever STORAGE_BACKEND resolves to.
 
         This is what makes the on-demand construction sites (read_file_tool,
-        agent_orchestration_service) honour the setting without each having to
-        plumb a backend through.
+        storage_cleanup) honour the setting without each having to plumb a
+        backend through.
         """
         sentinel = FilesystemStorageBackend(storage_root=temp_storage_dir)
         with patch(

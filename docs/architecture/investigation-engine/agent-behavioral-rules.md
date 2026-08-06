@@ -498,15 +498,28 @@ The remaining rules occupy stable positions in the template but are not ordered 
 
 ## Mechanical Safety Nets (Non-Prompt Enforcement)
 
-In addition to the 8 behavioral rules above (which are enforced via prompt injection), the `AgentOrchestrationService` implements **mechanical safety nets** that operate outside the prompt:
+In addition to the 8 behavioral rules above (which are enforced via prompt injection), the `MilestoneEngine` implements **mechanical safety nets** that operate outside the prompt:
 
-> **Label disambiguation**: "Rule N" throughout this document refers to the behavioral rules above (Rule 1 – Rule 8). The mechanical safety nets are labeled "R3", "R4", "R5" to match their identifiers in `agent_orchestration_service.py` and `orchestration-capabilities.md`. They are **not** behavioral rules and the numbering is independent.
+> **Label disambiguation**: "Rule N" throughout this document refers to the behavioral rules above (Rule 1 – Rule 8). The mechanical safety nets are labeled "R4" and "R5" to match `orchestration-capabilities.md`. They are **not** behavioral rules and the numbering is independent. (R3 is absent — see below.)
 
 | Safety Net | Trigger | Action | Enforcement |
 | --- | --- | --- | --- |
-| Coverage gap detection (R3) | User query contains entities (timestamps, services, error codes, IPs) outside evidence coverage | Advisory injected into LLM context | Mechanical: regex entity extraction + coverage metadata comparison |
-| Per-evidence DA failure tracking + auto-vectorization (R4) | Reactive triggers on a qualifying large evidence file: tool timeout, 3+ consecutive empty `search_file` results on the same file, or low DA confidence (< 0.2). Per-evidence state via `EvidenceDAState`. | Auto-vectorize the file (no user confirmation); inject raw content for small files below the vectorization threshold | Mechanical: independent counters/flags per evidence file in execution loop |
-| Context budget (R5) | Tool result chars exceed 30K budget | Standard/aggressive compression of tool results | Mechanical: character counter + keyword-based line filtering |
+| Per-evidence DA failure tracking + auto-vectorization (R4) | Reactive triggers on a qualifying large evidence file: tool timeout, 3+ consecutive empty `search_file` results on the same file, or low DA confidence (< 0.2). Per-evidence counters keyed by `evidence_id`. | Auto-vectorize the file (no user confirmation); inject raw content for small files below the vectorization threshold | Mechanical: independent counters/flags per evidence file in the engine's tool loop |
+| Context budget (R5) | Assembled messages exceed the resolved tool-loop token budget | Elide whole earlier tool-call groups, oldest first, leaving a marker telling the agent to re-run a search | Mechanical: token estimate per message against `tool_observation_max_tokens` and the model's context window |
+
+**R3 (coverage gap detection) no longer exists.** It extracted entities from the
+user's query, compared them against the `--- COVERAGE METADATA ---` blocks that
+Tier 1 extractors append, and injected an advisory when the query fell outside
+evidence coverage. It lived only in `AgentOrchestrationService` and went with it
+in #982. The extractors still append the coverage blocks, but nothing reads them
+for this purpose — so the agent is no longer told when a question ranges outside
+what its evidence covers. Reinstating it means building it on the engine path.
+
+**R5 changed shape, not just address.** The old net counted characters against a
+30K budget and compressed individual tool results by keyword-filtering lines. The
+engine's version works in estimated tokens against the model's real context
+window and drops whole tool-call groups rather than thinning them, so results the
+agent does see are never silently altered.
 
 These are **not behavioral rules** because they don't constrain the LLM's output structure or vocabulary. They are system-level interventions that modify what the LLM *sees* (injected advisories, compressed results, semantically-indexed evidence) rather than what it *does*. They complement the behavioral rules by ensuring the LLM has the right information to make good decisions.
 

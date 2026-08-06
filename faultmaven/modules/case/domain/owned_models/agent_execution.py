@@ -168,10 +168,10 @@ class AgentExecution:
         token_usage: Token usage statistics (prompt_tokens, completion_tokens, total_tokens)
         tool_calls: List of tool calls made during execution
         metadata: Additional execution-specific metadata (JSON)
-        organization_id: Tenant identifier. Production callers
-            (agent_orchestration_service) propagate it from the
-            authenticated session for defense-in-depth; the repository
-            falls back to the parent case row when not set.
+        organization_id: Tenant identifier. The caller that propagated it from
+            the authenticated session was ``AgentOrchestrationService``, deleted
+            in #982; nothing writes an execution today, so in practice the
+            repository always takes its fallback to the parent case row.
         created_at: Record creation timestamp
         updated_at: Record update timestamp
     """
