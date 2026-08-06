@@ -143,11 +143,6 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
             return response
 
-        except DuplicateRequestError as e:
-            check_duration = time.time() - start_time
-            self._update_metrics(check_duration, duplicate_found=True)
-            return self._create_duplicate_error_response(e, request)
-
         except Exception as e:
             self.logger.error(
                 f"Deduplication error: {type(e).__name__}: {str(e)}",
@@ -411,19 +406,20 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             },
         )
 
-    def _create_duplicate_error_response(
-        self, error: DuplicateRequestError, request: Request
-    ) -> JSONResponse:
-        """Create error response for duplicate request"""
-        error_response = ProtectionErrorResponse.from_duplicate_error(error)
-
-        self.logger.info(
-            f"Duplicate request blocked: {request.url.path}, "
-            f"session={self._extract_session_id(request)}, "
-            f"ttl_remaining={error.ttl_remaining}s"
-        )
-
-        return JSONResponse(status_code=409, content=error_response.__dict__)
+    # ``_create_duplicate_error_response`` used to live here, reached from an
+    # ``except DuplicateRequestError`` arm in ``dispatch``. Both are removed:
+    # ``DuplicateRequestError`` is never raised anywhere in the codebase — it is
+    # only ever *constructed*, by ``_create_duplicate_response`` above, which
+    # returns its own labelled JSONResponse. The handler could not run.
+    #
+    # It is worth saying why the dead path mattered rather than just deleting
+    # it quietly. Unlike ``_create_duplicate_response`` it emitted a 409 with
+    # **no** ``x-error-code`` header, and the Slack agent reads an unlabelled
+    # 409 on the turn POST as "this case is terminal" — so had anything ever
+    # raised ``DuplicateRequestError``, a user with a live case would have been
+    # told their investigation was closed. The guarantee that no non-terminal
+    # 409 is unlabelled is now pinned by
+    # ``tests/unit/api/middleware/test_conflict_labelling.py``.
 
     def _update_metrics(self, check_duration: float, duplicate_found: bool) -> None:
         """Update middleware metrics"""
