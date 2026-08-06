@@ -863,7 +863,7 @@ states that identity in the methodology's terms.
   or user declines):** the ladder is **capped** at the deepest *reachable,
   controllable* rung. The accepted terminal action is a **state interception** (R8)
   at an intermediate node; the root is never eliminated, so the case CLOSES
-  (`closed_after_investigation`) on *symptom* absence, not *causal* absence.
+  (`mitigation_sufficient`) on *symptom* absence, not *causal* absence.
 
 **Axis B (impact-now gap) governs the temporary interception** — whether, *en
 route*, we intercept an intermediate rung to suppress `D` now. This is the
@@ -882,7 +882,7 @@ override them.
 | Intervention quadrant (§7.4) | Unified-flow term | Disposition | Absence evidence |
 |---|---|---|---|
 | Remediation (perm @ root) | permanent fix + verified root cause | **RESOLVED** | causal_absence |
-| Defensive fix (perm @ intermediate) | accepted permanent workaround (often `rca_infeasible`) | **CLOSED** (`closed_after_investigation`) | symptom_absence |
+| Defensive fix (perm @ intermediate) | accepted permanent workaround (often `rca_infeasible`) | **CLOSED** (`closed_rca_infeasible` / `mitigation_sufficient`) | symptom_absence |
 | Mitigation (temp @ intermediate) | mitigation insert | buy time → forward → RESOLVED / CLOSED (revert reminder) | symptom_absence (interim) |
 | Loop-break (R9) | mitigate the cycle | **CLOSED** / stabilized | symptom_absence |
 

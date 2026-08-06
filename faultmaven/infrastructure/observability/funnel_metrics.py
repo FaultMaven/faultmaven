@@ -12,12 +12,13 @@ Gauges (no-ops unless ``ENABLE_METRICS=true``; see ``shims/metrics.py``):
 
 - ``faultmaven_cases{state, closure_reason}`` -- the funnel: count of ONLINE
   cases by workflow state. ``closure_reason`` sub-classifies CLOSED
-  (``inquiry_only`` / ``closed_after_investigation`` / ``closed_insufficient_evidence``
+  (``inquiry_only`` / ``solution_deferred`` / ``closed_rca_infeasible`` /
+  ``mitigation_sufficient`` / ``closed_insufficient_evidence``
   / ``unknown`` for closes that reached terminal without a classified reason --
   the integrity gap D4 closes). ``none`` for non-closed states.
 - ``faultmaven_case_resolution_turns_quantile{to_state, quantile}`` -- p50/p95
   of turns-to-terminal over the investigation population (resolved +
-  closed_after_investigation + closed_insufficient_evidence; inquiry_only is
+  every close except inquiry_only; inquiry_only is
   excluded -- it did no investigation). Effort, not wall-clock. Insufficient-
   evidence closes are included because they crossed the work gate (real
   diagnostic effort) before hitting the data wall.
@@ -45,33 +46,37 @@ REFRESH_INTERVAL_SECONDS = 30
 _OPEN_OR_RESOLVED = ("inquiry", "investigating", "resolved")
 _CLOSED_REASONS = (
     "inquiry_only",
-    "closed_after_investigation",
+    "solution_deferred",
+    "closed_rca_infeasible",
+    "mitigation_sufficient",
     "closed_insufficient_evidence",
     "unknown",
 )
 _QUANTILES = (("0.5", 0.50), ("0.95", 0.95))
 # Terminal outcomes that represent real diagnostic effort (turns-to-terminal).
-# inquiry_only is excluded (no investigation); insufficient-evidence closes are
-# included (they crossed the work gate before hitting the data wall).
+# Only inquiry_only is excluded — no investigation ran, so there is no effort to
+# measure. Every other close did the work, whatever it ended up establishing.
 _EFFORT_TO_STATES = (
     "resolved",
-    "closed_after_investigation",
+    "solution_deferred",
+    "closed_rca_infeasible",
+    "mitigation_sufficient",
     "closed_insufficient_evidence",
 )
 
 cases_gauge = Gauge(
     "faultmaven_cases",
     "Online cases by workflow state; closure_reason sub-classifies CLOSED "
-    "(inquiry_only / closed_after_investigation / closed_insufficient_evidence "
-    "/ unknown).",
+    "(inquiry_only / solution_deferred / closed_rca_infeasible / "
+    "mitigation_sufficient / closed_insufficient_evidence / unknown).",
     labelnames=["state", "closure_reason"],
 )
 
 resolution_turns_quantile = Gauge(
     "faultmaven_case_resolution_turns_quantile",
-    "Turns-to-terminal quantiles over the investigation population (resolved + "
-    "closed_after_investigation + closed_insufficient_evidence). Effort, not "
-    "wall-clock.",
+    "Turns-to-terminal quantiles over the investigation population (every "
+    "terminal outcome except inquiry_only, which ran no investigation). "
+    "Effort, not wall-clock.",
     labelnames=["to_state", "quantile"],
 )
 
@@ -109,7 +114,8 @@ class FunnelMetricsCollector:
                     text(
                         "SELECT state, closure_reason, current_turn FROM cases "
                         "WHERE state = 'resolved' OR (state = 'closed' AND "
-                        "closure_reason IN ('closed_after_investigation', "
+                        "closure_reason IN ('solution_deferred', "
+                        "'closed_rca_infeasible', 'mitigation_sufficient', "
                         "'closed_insufficient_evidence'))"
                     )
                 )
@@ -137,7 +143,7 @@ class FunnelMetricsCollector:
         buckets: dict = {to_state: [] for to_state in _EFFORT_TO_STATES}
         for state, reason, turn in rows:
             # Resolved keys on state; closes key on their closure_reason (the
-            # effort query admits only the two effort-bearing close reasons).
+            # effort query admits every close reason except inquiry_only).
             to_state = "resolved" if state == "resolved" else reason
             if to_state not in buckets:
                 continue

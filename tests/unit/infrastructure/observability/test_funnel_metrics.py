@@ -46,7 +46,7 @@ class TestNormalizeCounts:
         assert out[("investigating", "none")] == 0
         assert out[("resolved", "none")] == 0
         assert out[("closed", "inquiry_only")] == 0
-        assert out[("closed", "closed_after_investigation")] == 0
+        assert out[("closed", "mitigation_sufficient")] == 0
         assert out[("closed", "closed_insufficient_evidence")] == 0
         assert out[("closed", "unknown")] == 0
 
@@ -64,13 +64,13 @@ class TestNormalizeCounts:
                 ("investigating", None, 3),
                 ("resolved", None, 4),
                 ("closed", "inquiry_only", 2),
-                ("closed", "closed_after_investigation", 1),
+                ("closed", "mitigation_sufficient", 1),
             ]
         )
         assert out[("investigating", "none")] == 3
         assert out[("resolved", "none")] == 4
         assert out[("closed", "inquiry_only")] == 2
-        assert out[("closed", "closed_after_investigation")] == 1
+        assert out[("closed", "mitigation_sufficient")] == 1
 
     def test_closed_without_reason_maps_to_unknown(self):
         # The D4 integrity gap: a CLOSED case with no classified reason must be
@@ -92,22 +92,29 @@ class TestSetQuantiles:
                 [
                     ("resolved", None, 4),
                     ("resolved", None, 8),
-                    ("closed", "closed_after_investigation", 2),
+                    ("closed", "mitigation_sufficient", 2),
                     ("closed", "closed_insufficient_evidence", 6),
                 ]
             )
-        # Three effort to_states x two quantiles = 6 label/set calls.
-        assert g.labels.call_count == 6
+        # Every effort to_state x two quantiles. The full matrix is seeded
+        # regardless of which reasons appear in the rows, so vanished series
+        # reset to zero rather than retaining a stale gauge value.
+        assert g.labels.call_count == 2 * len(funnel_metrics._EFFORT_TO_STATES)
         labelled = {
             (kw["to_state"], kw["quantile"]) for _, kw in g.labels.call_args_list
         }
         assert ("resolved", "0.5") in labelled
         assert ("resolved", "0.95") in labelled
-        assert ("closed_after_investigation", "0.5") in labelled
-        # Insufficient-evidence closes are a distinct effort series, not folded
-        # into closed_after_investigation.
+        assert ("mitigation_sufficient", "0.5") in labelled
+        # Each closure reason is its own effort series — the whole point of
+        # retiring the generic bucket was that they measure different things.
         assert ("closed_insufficient_evidence", "0.5") in labelled
         assert ("closed_insufficient_evidence", "0.95") in labelled
+        assert ("solution_deferred", "0.5") in labelled
+        assert ("closed_rca_infeasible", "0.5") in labelled
+        # inquiry_only is the one exclusion: no investigation ran, so there is
+        # no diagnostic effort to measure.
+        assert not any(to_state == "inquiry_only" for to_state, _ in labelled)
 
 
 @pytest.mark.unit

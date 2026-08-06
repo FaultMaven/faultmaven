@@ -7,8 +7,10 @@ Reference: investigation-lifecycle-logic.md §2.4.
 
 Post-redesign (unified opportunistic flow, no path fork): there is no
 Gate 3 and no ``path_selection``. Closing from INVESTIGATING yields the
-unified closure reason ``closed_after_investigation`` (which folds in the
-former ``mitigation_sufficient`` reason).
+closure reason ``closed_rca_infeasible``: the cause is structurally
+unreachable (declared via rca_infeasible + rationale), which outranks the
+``mitigation_sufficient`` that also holds here — this path only fires on
+mitigation_verified, so both always apply and the more informative label wins.
 """
 
 import pytest
@@ -86,7 +88,7 @@ def test_rca_infeasible_creates_pending_closure():
     to CLOSED.
 
     closure_reason is engine-derived from case state: closing from
-    INVESTIGATING → ``closed_after_investigation``.
+    INVESTIGATING → ``closed_rca_infeasible``.
     """
     case = _make_case(rca_infeasible=True, rationale="third-party API outage")
     metadata: dict = {}
@@ -97,7 +99,7 @@ def test_rca_infeasible_creates_pending_closure():
 
     assert case.pending_transition is not None
     assert case.pending_transition["to_state"] == "closed"
-    assert case.pending_transition["closure_reason"] == "closed_after_investigation"
+    assert case.pending_transition["closure_reason"] == "closed_rca_infeasible"
     assert "third-party API outage" in case.pending_transition["summary"]
     assert (
         "shall we close this case as stabilized?" in case.pending_transition["summary"]
@@ -142,9 +144,9 @@ def test_no_problem_verification_does_not_propose_closure():
     assert "rca_infeasible_closure_message" not in metadata
 
 
-def test_confirm_pending_transition_closes_after_investigation():
+def test_confirm_pending_transition_closes_rca_infeasible():
     """User confirmation drives CLOSED with
-    closure_reason=closed_after_investigation."""
+    closure_reason=closed_rca_infeasible."""
     case = _make_case(rca_infeasible=True, rationale="deprecated legacy system")
     _apply_stage_gate_side_effects(case, {"mitigation_verified"}, "ok", {})
 
@@ -152,7 +154,7 @@ def test_confirm_pending_transition_closes_after_investigation():
 
     assert confirmed is True
     assert case.state == CaseState.CLOSED
-    assert case.closure_reason == "closed_after_investigation"
+    assert case.closure_reason == "closed_rca_infeasible"
     assert case.pending_transition is None
 
 
