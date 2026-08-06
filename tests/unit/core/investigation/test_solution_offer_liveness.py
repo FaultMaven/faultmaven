@@ -900,6 +900,6 @@ class TestClosedFamilySolutionSurface:
                 proposed_in_turn=3,
             )
         )
-        _execute_closed_transition(case, "u1", "closed_after_investigation")
+        _execute_closed_transition(case, "u1", "closed_insufficient_evidence")
         assert case.progress.solution_proposed is True
         assert case.progress.solution_state == SolutionState.SELECTED
