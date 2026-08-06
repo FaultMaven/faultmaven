@@ -124,9 +124,17 @@ def _dependency_names(route):
 def _handler_imports(endpoint):
     """Modules imported anywhere in the handler, including inside its body.
 
-    Function-local imports are the ones that matter most here:
+    Function-local imports are the shape this exists for:
     ``report-recommendations`` reaches ``RunbookKnowledgeBase`` through one, so a
-    scan of module-level imports alone would call it cheap.
+    scan of module-level imports alone would miss it.
+
+    **This half of the probe is redundant today** — every route it flags is
+    already flagged by its declared dependencies, so neutralising it changes no
+    verdict and no route-level test notices. It is kept because the shape it
+    catches is real and present (a handler that constructs a knowledge base it
+    never declared), and it is exercised directly by
+    ``test_the_probe_sees_an_import_inside_a_handler_body`` rather than left to
+    be proved by a live route that happens to need it.
     """
     try:
         tree = ast.parse(textwrap.dedent(inspect.getsource(endpoint)))
@@ -282,6 +290,39 @@ def test_the_mount_table_matches_main():
         f"  prefix disagreements: "
         f"{sorted(m for m, p in mounted.items() if dict((x, y) for y, x in MOUNTS).get(m) != p)}"
     )
+
+
+def test_the_probe_sees_an_import_inside_a_handler_body():
+    """The half of the probe no live route currently needs, proved on its own.
+
+    Every route the import scan would flag is already flagged by its declared
+    dependencies, so neutralising the scan changes no verdict and no other test
+    in this module notices. A detector that cannot be observed to work is not a
+    verified one — so it is exercised here directly, on the shape it exists for.
+    """
+
+    async def handler():
+        from faultmaven.infrastructure.knowledge.runbook_kb import (  # noqa: F401
+            RunbookKnowledgeBase,
+        )
+
+        return RunbookKnowledgeBase
+
+    found = _handler_imports(handler)
+    assert "faultmaven.infrastructure.knowledge.runbook_kb" in found
+    assert any(marker in m.lower() for m in found for marker in _IMPORT_MARKERS), (
+        "the scan saw the import but no marker matches it, so a handler that "
+        "constructs a knowledge base it never declared would still read as cheap"
+    )
+
+
+def test_the_probe_reports_nothing_for_a_handler_that_imports_nothing():
+    """The negative half: the scan must not flag every handler it can parse."""
+
+    async def handler(case_id: str):
+        return {"case_id": case_id}
+
+    assert _handler_imports(handler) == set()
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
