@@ -41,8 +41,8 @@ from faultmaven.models.case_ui import (
     ResolutionSummary,
     RootCauseSummary,
     SolutionSummary,
+    SolutionVerificationData,
     TemporalStateData,
-    VerificationStatus,
     WorkingConclusionSummary,
 )
 from faultmaven.modules.case.contracts import (
@@ -540,7 +540,7 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     )
 
     # Verification status
-    verification_status = VerificationStatus(
+    verification_status = SolutionVerificationData(
         verified=True,  # Assumed if case is RESOLVED
         verification_method="Post-resolution monitoring",
         details="Solution applied and verified effective",
