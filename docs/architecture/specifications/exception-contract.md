@@ -9,7 +9,7 @@ global handlers in
 Migration status under Item 3 of the 2026-05-20
 investigation-pipeline-followups handoff series:
 
-- **Conforming**: auth (PR #331), case/replay (PR #333), case/routes
+- **Conforming**: auth (PR #331), case/routes
   (PR #335), agent/routes, knowledge/verify_draft (PR #334),
   knowledge/routes (`approve_suggestion` and `remediate_pii`,
   PR #337).
@@ -271,7 +271,7 @@ Both shapes are valid depending on route needs:
   pass-through when** the route needs a route-specific 500 envelope
   (e.g., a domain-specific `error_code`) or a route-specific log
   message on unhandled errors. Pattern from auth `local_login` (PR
-  #331) and case `replay` endpoints (PR #333).
+  #331).
 - **Omit `try/except` entirely when** the route doesn't need either.
   Typed exceptions propagate to global handlers; unhandled
   exceptions go to FastAPI's default 500 (which still logs the
