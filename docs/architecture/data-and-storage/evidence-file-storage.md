@@ -46,8 +46,8 @@ Consumers depend on `FileStorageService`. Nothing outside
 construction point. `FileStorageService` accepts a backend by injection and
 falls back to the factory when none is supplied, so every construction site —
 the DI container, the request-scoped service factory, and the on-demand sites
-in `read_file_tool`, `agent_orchestration_service`, and the `storage_cleanup`
-job — honours the configured backend without each having to plumb one through.
+in `read_file_tool` and the `storage_cleanup` job — honours the configured
+backend without each having to plumb one through.
 
 | Setting | Backend | Deployment |
 |---------|---------|------------|

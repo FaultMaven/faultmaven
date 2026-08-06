@@ -5,10 +5,8 @@ import time
 import pytest
 
 from faultmaven.modules.preprocessing.extractors.utils import (
-    COVERAGE_SEPARATOR,
     extract_time_range,
     extract_timestamp,
-    format_coverage_metadata,
 )
 
 
@@ -145,23 +143,3 @@ class TestExtractTimeRange:
         assert "2005" in result["Time range"]
         assert "2025" not in result["Time range"]
         assert "2026" not in result["Time range"]
-
-
-@pytest.mark.unit
-class TestFormatCoverageMetadata:
-    """Tests for format_coverage_metadata()."""
-
-    def test_basic_format(self):
-        result = format_coverage_metadata(Lines="100 of 500", Format="json")
-        assert result.startswith(COVERAGE_SEPARATOR)
-        assert "Lines: 100 of 500" in result
-        assert "Format: json" in result
-
-    def test_none_values_omitted(self):
-        result = format_coverage_metadata(Lines="50", Format=None)
-        assert "Lines: 50" in result
-        assert "Format" not in result
-
-    def test_empty_kwargs(self):
-        result = format_coverage_metadata()
-        assert result == COVERAGE_SEPARATOR
