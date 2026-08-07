@@ -118,6 +118,45 @@ def downgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("execution_id"),
     )
+    op.create_index(
+        op.f("ix_agent_executions_agent_model"),
+        "agent_executions",
+        ["agent_model"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_agent_executions_agent_type"),
+        "agent_executions",
+        ["agent_type"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_agent_executions_case_id"),
+        "agent_executions",
+        ["case_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_agent_executions_created_at"),
+        "agent_executions",
+        ["created_at"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_agent_executions_organization_id"),
+        "agent_executions",
+        ["organization_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_agent_executions_session_id"),
+        "agent_executions",
+        ["session_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_agent_executions_status"), "agent_executions", ["status"], unique=False
+    )
     op.create_table(
         "agent_tool_calls",
         sa.Column("tool_call_id", sa.String(length=36), nullable=False),
@@ -170,6 +209,33 @@ def downgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.PrimaryKeyConstraint("tool_call_id"),
+    )
+    op.create_index(
+        op.f("ix_agent_tool_calls_created_at"),
+        "agent_tool_calls",
+        ["created_at"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_agent_tool_calls_execution_id"),
+        "agent_tool_calls",
+        ["execution_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_agent_tool_calls_organization_id"),
+        "agent_tool_calls",
+        ["organization_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_agent_tool_calls_status"), "agent_tool_calls", ["status"], unique=False
+    )
+    op.create_index(
+        op.f("ix_agent_tool_calls_tool_name"),
+        "agent_tool_calls",
+        ["tool_name"],
+        unique=False,
     )
 
     if op.get_bind().dialect.name == "postgresql":
