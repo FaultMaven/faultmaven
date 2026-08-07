@@ -815,6 +815,7 @@ class InvestigationService:
                         user_confirmed=(
                             (intent.user_confirmed or False) if intent else False
                         ),
+                        user_id=user_id,
                     )
                 elif intent_type == IntentType.CONFIRMATION:
                     result = await self._handle_confirmation(
@@ -823,6 +824,7 @@ class InvestigationService:
                         confirmation_value=(
                             intent.confirmation_value if intent else None
                         ),
+                        user_id=user_id,
                     )
                 elif intent_type == IntentType.HYPOTHESIS_ACTION:
                     result = await self._handle_hypothesis_action(
@@ -830,6 +832,7 @@ class InvestigationService:
                         user_message=query or "",
                         hypothesis_id=intent.hypothesis_id if intent else None,
                         action=intent.action if intent else None,
+                        user_id=user_id,
                     )
                 elif intent_type == IntentType.GREETING:
                     result = await self._handle_greeting(case=case)
@@ -885,6 +888,11 @@ class InvestigationService:
                         **(intent.model_dump(exclude_unset=True) if intent else {}),
                         "query_mode": classification.mode.value,
                     },
+                    # The turn's authenticated principal. Kept out of
+                    # ``intent_data`` deliberately: that dict is built from the
+                    # client-supplied intent payload, and the KB read allowlist
+                    # must not be keyed on anything a client can set.
+                    user_id=user_id,
                 )
             else:
                 # Defensive: _IntentDispatchKind only has three values
@@ -1387,6 +1395,7 @@ class InvestigationService:
         from_state: Optional[str],
         to_state: Optional[str],
         user_confirmed: bool,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
 
@@ -1396,6 +1405,8 @@ class InvestigationService:
             from_state: Expected current status
             to_state: Requested new status
             user_confirmed: Whether user confirmed the transition
+            user_id: Authenticated principal for the turn (keys the agent's
+                KB read allowlist)
 
         Returns:
             Result dict with agent response and updated case
@@ -1423,6 +1434,7 @@ class InvestigationService:
                 "to_state": to_state,
                 "user_confirmed": user_confirmed,
             },
+            user_id=user_id,
         )
 
         return result
@@ -1471,7 +1483,11 @@ class InvestigationService:
         return confirms_pending and is_substantive_reply(user_message)
 
     async def _handle_confirmation(
-        self, case: "Case", user_message: str, confirmation_value: Optional[bool]
+        self,
+        case: "Case",
+        user_message: str,
+        confirmation_value: Optional[bool],
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle yes/no confirmation intent.
 
@@ -1479,6 +1495,8 @@ class InvestigationService:
             case: Case entity
             user_message: User's confirmation message
             confirmation_value: True for yes, False for no
+            user_id: Authenticated principal for the turn (keys the agent's
+                KB read allowlist)
 
         Returns:
             Result dict with agent response and updated case
@@ -1493,6 +1511,7 @@ class InvestigationService:
             attachments=None,
             intent_type="confirmation",
             intent_data={"value": confirmation_value},
+            user_id=user_id,
         )
 
         return result
@@ -1503,6 +1522,7 @@ class InvestigationService:
         user_message: str,
         hypothesis_id: Optional[str],
         action: Optional[str],
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Handle hypothesis action intent (validate/refute/retire).
 
@@ -1511,6 +1531,8 @@ class InvestigationService:
             user_message: User's message about the hypothesis
             hypothesis_id: Target hypothesis ID
             action: Action to perform
+            user_id: Authenticated principal for the turn (keys the agent's
+                KB read allowlist)
 
         Returns:
             Result dict with agent response and updated case
@@ -1531,6 +1553,7 @@ class InvestigationService:
             attachments=None,
             intent_type="hypothesis_action",
             intent_data={"hypothesis_id": hypothesis_id, "action": action},
+            user_id=user_id,
         )
 
         return result

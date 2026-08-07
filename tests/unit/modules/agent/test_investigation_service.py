@@ -180,6 +180,63 @@ class TestEvidenceBearingRerouteToEngine:
         assert intent_data["query_mode"] == "triage"
 
 
+class TestAuthenticatedPrincipalReachesTheEngine:
+    """The turn's reader must arrive at the engine as its own argument.
+
+    The engine keys the agent's KB read allowlist (owner + team arms, ADR-013
+    §D4) on this value. It cannot be recovered downstream: ``intent_data`` is
+    assembled from the client-supplied intent payload, so a principal taken
+    from there would be client-settable, and the engine has no other handle on
+    the authenticated caller. The service, which holds ``current_user.user_id``,
+    is the only place it can come from, and it must travel outside
+    ``intent_data``.
+
+    Before this was threaded, the engine defaulted to the ``"system"``
+    sentinel on every live turn: it owns no KB items and belongs to no team, so
+    both arms of the filter collapsed and the agent could read only the global
+    corpus — silently, with no error anywhere.
+    """
+
+    def _service(self):
+        engine = MockMilestoneEngine()
+        preprocessing = AsyncMock()
+        preprocessing.classify_and_extract = AsyncMock(
+            return_value=make_preprocessing_result()
+        )
+        return (
+            InvestigationService(
+                milestone_engine=engine,
+                case_repository=MockCaseRepository(),
+                preprocessing_service=preprocessing,
+                file_storage_service=None,
+            ),
+            engine,
+        )
+
+    @pytest.mark.asyncio
+    async def test_authenticated_principal_is_threaded_to_the_engine(self):
+        service, engine = self._service()
+        user_id = str(uuid4())
+        case = create_sample_case(user_id=user_id)
+        await service.repository.save(case)
+
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=user_id,
+            payload=TurnPayload(query="what does this error mean?", attachments=[]),
+        )
+
+        kwargs = engine.process_turn.await_args.kwargs
+        assert kwargs.get("user_id") == user_id, (
+            "the engine did not receive the turn's authenticated principal, so "
+            "its KB tool falls back to 'system' and reads global-only"
+        )
+        assert "user_id" not in kwargs["intent_data"], (
+            "the principal must not ride in intent_data — that dict is built "
+            "from the client-supplied intent payload"
+        )
+
+
 class TestInvestigationServiceProcessTurn:
     """Tests for InvestigationService.process_turn()."""
 
