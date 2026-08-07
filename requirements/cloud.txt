@@ -544,7 +544,7 @@ pyod==3.2.1
     # via faultmaven (pyproject.toml)
 pyparsing==3.3.2
     # via matplotlib
-pypdf==6.14.2
+pypdf==6.15.0
     # via faultmaven (pyproject.toml)
 pypika==0.51.1
     # via chromadb
