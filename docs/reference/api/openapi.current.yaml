@@ -7531,7 +7531,7 @@ components:
           $ref: '#/components/schemas/SolutionSummary'
           description: Solution that fixed the problem
         verification_status:
-          $ref: '#/components/schemas/VerificationStatus'
+          $ref: '#/components/schemas/SolutionVerificationData'
           description: How solution effectiveness was verified
         resolution_summary:
           $ref: '#/components/schemas/ResolutionSummary'
@@ -11990,7 +11990,7 @@ components:
       - msg
       - type
       title: ValidationError
-    VerificationStatus:
+    SolutionVerificationData:
       properties:
         verified:
           type: boolean
@@ -12011,7 +12011,7 @@ components:
       - verified
       - verification_method
       - details
-      title: VerificationStatus
+      title: SolutionVerificationData
       description: Solution verification status for RESOLVED phase.
     WorkingConclusion:
       properties:
