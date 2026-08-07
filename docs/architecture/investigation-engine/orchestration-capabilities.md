@@ -6,7 +6,7 @@ These capabilities are implemented in the `MilestoneEngine` and supported by the
 
 ## 1. State Checkpointing
 
-FaultMaven uses a **Turn-Based Checkpointing** system to keep investigation state durable and auditable. The write path is implemented; the read-side surfaces (time travel, semantic diff — see §2) are still deferred.
+FaultMaven uses a **Turn-Based Checkpointing** system to keep investigation state durable and auditable. Both the write path and the read-side surfaces (time travel, semantic diff — see §2) are implemented; what limits them is how sparsely checkpoints are written (§1.2, §2.3).
 
 ### 1.1 Mechanism
 
@@ -22,9 +22,9 @@ so the engine degrades safely when the service is not wired.
 
 | Site | When | Metadata captured |
 |---|---|---|
-| [`milestone_engine.py:3852`](../../../faultmaven/core/investigation/milestone_engine.py) | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
-| [`milestone_engine.py:9291`](../../../faultmaven/core/investigation/milestone_engine.py) | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
-| [`milestone_engine.py:9703`](../../../faultmaven/core/investigation/milestone_engine.py) | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
+| [`milestone_engine.py:3869`](../../../faultmaven/core/investigation/milestone_engine.py) | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
+| [`milestone_engine.py:9365`](../../../faultmaven/core/investigation/milestone_engine.py) | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
+| [`milestone_engine.py:9778`](../../../faultmaven/core/investigation/milestone_engine.py) | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
 
 The `pre_case_action` snapshots make every state change reversible at the data
 layer — the prior snapshot is still on disk.
@@ -134,13 +134,15 @@ This is why the turn timeout ladder matters: server 120s < copilot 300s <
 ingress 600s. Each inner rung must stay below its client, because a caller has no
 partial output to fall back on.
 
-### 4.2 Event Vocabulary (retained, unused)
+### 4.2 Event Vocabulary (removed)
 
-`domain/events/execution_events.py` still defines `ExecutionEvent`,
+`domain/events/execution_events.py` defined `ExecutionEvent`,
 `ExecutionEventType`, `LLMEvent`, `ToolCall`, `ToolResult`, `Message` and
-`AgentContext`. Only `Tool` has a live importer (`tools/base.py`, which converts
-an `AgentTool` into the LLM function-calling schema). The rest is the vocabulary a
-future streaming implementation would emit; it is not wired to anything today.
+`AgentContext`. Only `Tool` had a live consumer, so it moved to
+`tools/base.py` — where its one caller, `AgentTool.to_llm_tool`, converts an
+`AgentTool` into the LLM function-calling schema — and the rest of the module was
+deleted in #982. Nothing had imported the event types since the service went, so
+there is no vocabulary in the tree waiting for a streaming implementation.
 
 Any future streaming work should be designed against the engine's tool loop
 (`_tool_augmented_generate()`), not restored from the deleted service — the

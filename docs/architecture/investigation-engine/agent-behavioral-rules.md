@@ -504,7 +504,7 @@ In addition to the 8 behavioral rules above (which are enforced via prompt injec
 
 | Safety Net | Trigger | Action | Enforcement |
 | --- | --- | --- | --- |
-| Per-evidence DA failure tracking + auto-vectorization (R4) | Reactive triggers on a qualifying large evidence file: tool timeout, 3+ consecutive empty `search_file` results on the same file, or low DA confidence (< 0.2). Per-evidence counters keyed by `evidence_id`. | Auto-vectorize the file (no user confirmation); inject raw content for small files below the vectorization threshold | Mechanical: independent counters/flags per evidence file in the engine's tool loop |
+| Per-evidence DA failure tracking + auto-vectorization (R4) | Reactive triggers on a qualifying large evidence file: tool timeout, 3+ consecutive empty `search_file` results on the same file, or low DA confidence (< 0.2). Per-evidence counters keyed by `evidence_id`. | Auto-vectorize the file (no user confirmation). A file outside the size band is left alone — there is no raw-content injection on this path | Mechanical: independent counters/flags per evidence file in the engine's tool loop |
 | Context budget (R5) | Assembled messages exceed the resolved tool-loop token budget | Elide whole earlier tool-call groups, oldest first, leaving a marker telling the agent to re-run a search | Mechanical: token estimate per message against `tool_observation_max_tokens` and the model's context window |
 
 **R3 (coverage gap detection) no longer exists.** It extracted timestamps,
