@@ -2,11 +2,11 @@
 
 This document details the core orchestration capabilities of the FaultMaven Investigation Engine, specifically focusing on state management, debugging, execution control, and real-time feedback.
 
-These capabilities are implemented in the `AgentOrchestrationService` and supported by the `CaseRepository`.
+These capabilities are implemented in the `MilestoneEngine` and supported by the `CaseRepository`.
 
 ## 1. State Checkpointing
 
-FaultMaven uses a **Turn-Based Checkpointing** system to keep investigation state durable and auditable. The write path is implemented; the read-side surfaces (time travel, semantic diff — see §2) are still deferred.
+FaultMaven uses a **Turn-Based Checkpointing** system to keep investigation state durable and auditable. Both the write path and the read-side surfaces (time travel, semantic diff — see §2) are implemented; what limits them is how sparsely checkpoints are written (§1.2, §2.3).
 
 ### 1.1 Mechanism
 
@@ -16,16 +16,31 @@ FaultMaven uses a **Turn-Based Checkpointing** system to keep investigation stat
 
 ### 1.2 Trigger Sites
 
-Checkpoints fire at four sites in the investigation flow. All sites are guarded by `if self.checkpoint_service:` so the engine degrades safely when the service is not wired.
+Checkpoints fire at three sites, all in `milestone_engine.py`, and all with
+trigger `pre_case_action`. Every site is guarded by `if self.checkpoint_service:`
+so the engine degrades safely when the service is not wired.
 
-| Site | Trigger | When | Metadata captured |
-|---|---|---|---|
-| [`milestone_engine.py:1923`](../../../faultmaven/core/investigation/milestone_engine.py) | `pre_case_action` | Confirmed case-status transition initiated by the engine's pending_transition path | `from_status`, `to_status` |
-| [`milestone_engine.py:5791`](../../../faultmaven/core/investigation/milestone_engine.py) | `pre_case_action` | Just before INQUIRY → INVESTIGATING transition (Gap #6) | `from_status`, `to_status="investigating"` |
-| [`milestone_engine.py:6065`](../../../faultmaven/core/investigation/milestone_engine.py) | `pre_case_action` | Just before user-confirmed terminal transition (Gap #6) | `from_status`, `to_status` |
-| [`agent_orchestration_service.py:548`](../../../faultmaven/modules/agent/domain/services/agent_orchestration_service.py) | `turn_complete` | Fail-safe snapshot at the end of every successful turn (Step 9b) | none |
+| Site | When | Metadata captured |
+|---|---|---|
+| [`milestone_engine.py:3869`](../../../faultmaven/core/investigation/milestone_engine.py) | Confirmed case-state transition via the `pending_transition` path | `from_state`, `to_state` |
+| [`milestone_engine.py:9365`](../../../faultmaven/core/investigation/milestone_engine.py) | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
+| [`milestone_engine.py:9778`](../../../faultmaven/core/investigation/milestone_engine.py) | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
 
-The `pre_case_action` snapshots make every state change reversible at the data layer (the prior snapshot is still on disk). The `turn_complete` snapshots give per-turn auditability without depending on the engine's narrower transition paths.
+The `pre_case_action` snapshots make every state change reversible at the data
+layer — the prior snapshot is still on disk.
+
+**There is no per-turn checkpoint.** A fourth site took a `turn_complete` snapshot
+at the end of every successful turn, giving per-turn coverage without depending
+on these three narrower transition paths. It lived in `AgentOrchestrationService`
+— on the `/sessions/execute` surface, which no frontend called — and was deleted
+with it in #982. It was never on the `/turns` path, so this is a long-standing
+gap that #982 exposed rather than a regression it caused.
+`CheckpointService.create_checkpoint` still defaults `trigger` to
+`"turn_complete"`; no caller passes it.
+
+The consequence is that a turn which adds evidence and hypotheses but changes no
+case state leaves no checkpoint — and that is what starves the replay endpoints.
+See [§2.3](#23-the-sparsity-problem) for the decision this forces.
 
 ### 1.3 Auditability Today
 
@@ -33,29 +48,48 @@ The `pre_case_action` snapshots make every state change reversible at the data l
 
 ## 2. Replay & Debugging (Time Travel)
 
-> **Implementation Status: DEFERRED**
+> **Implementation Status: BUILT, but starved of data.**
 >
-> Time travel and semantic diffing are designed but not yet implemented.
-> The API endpoints described below do not exist yet. See Section 1 for
-> current state tracking via `TurnProgress`.
+> Both endpoints exist, are mounted, and are published in the OpenAPI spec. What
+> is missing is checkpoints to serve: §1.2 records at three transition points
+> only, so most turn numbers have no snapshot and `restore_at_turn` raises
+> `NotFoundError`. This section previously claimed the endpoints did not exist;
+> they do.
 
-The design includes **Read-Only Time Travel**, allowing users and developers to inspect the exact state of an investigation at any previous turn.
+**Read-Only Time Travel** lets users and developers inspect the state of an
+investigation at a previous turn. Implemented in
+`modules/case/api/replay.py` (router) over
+`modules/case/domain/services/replayer.py` (`CaseReplayer`), mounted by
+`modules/case/api/routes.py`.
 
-### 2.1 State Restoration (Design)
+### 2.1 State Restoration
 
-- **Functionality**: Would reconstruct a full `Case` object from a historical checkpoint.
-- **API Endpoint**: `GET /cases/{case_id}/snapshot/{turn_number}` (not yet implemented)
-- **Frontend Use Case**:
-  - "View History": Allow users to click on a past message and see the "Context" (Hypotheses, Evidence, Status) as it existed *at that moment*.
-  - **Read-Only**: Restored cases are for inspection only. You cannot "resume" from a past state (no forking supported in v1).
+- **Functionality**: reconstructs a full `Case` from a historical checkpoint via `Case.model_validate(checkpoint.case_snapshot)`.
+- **API Endpoint**: `GET /cases/{case_id}/snapshot/{turn_number}` — **live**.
+- **Lookup is exact**: `restore_at_turn` matches `cp.turn_number == turn_number` against the case's checkpoints. There is no nearest-preceding fallback, so a turn with no checkpoint 404s and the error lists the turns that do have one.
+- **Read-Only**: restored cases are for inspection only. You cannot resume from a past state (no forking).
 
-### 2.2 Semantic Diffing (Design)
+### 2.2 Semantic Diffing
 
-- **Functionality**: Would compute the semantic difference between two investigation states (e.g., Turn 2 vs Turn 5).
-- **Logic**: Recursive comparison of fields, highlighting added hypotheses, status changes, or modified evidence.
-- **API Endpoint**: `GET /cases/{case_id}/diff?from={t1}&to={t2}` (not yet implemented)
-- **Frontend Use Case**:
-  - "What Changed?": detailed view showing exactly what the agent concluded between two points in time.
+- **Functionality**: computes the recursive difference between two investigation states (e.g. Turn 2 vs Turn 5), highlighting added hypotheses, state changes and modified evidence.
+- **API Endpoint**: `GET /cases/{case_id}/diff?from={t1}&to={t2}` — **live**.
+- Subject to the same sparsity: both endpoints of the comparison must be turns that happen to carry a checkpoint.
+
+### 2.3 The Sparsity Problem
+
+Replay is only as good as its checkpoint coverage, and coverage is currently
+transition-shaped, not turn-shaped. A turn that adds evidence and hypotheses but
+changes no case state is invisible to replay — which is much of an
+investigation's substance.
+
+This is not a regression from #982: the live path never wrote per-turn
+checkpoints. The deleted service's `turn_complete` site was on the unused
+`/sessions/execute` surface, so replay has been sparse for every case a user has
+actually run. Closing it is a deliberate choice between two coherent states —
+add a turn-end checkpoint (`CheckpointService`'s `trigger` default is already
+`"turn_complete"`, waiting for a caller, at the cost of a full case snapshot per
+turn), or retire replay as another built-but-uncalled surface. Both are honest;
+the current middle is not.
 
 ## 3. Interrupt & Resume (Human-in-the-Loop)
 
@@ -81,39 +115,67 @@ Instead of the Agent executing a fix (especially with future write-capable tools
 
 ## 4. Streaming Support
 
-The engine supports real-time streaming of agent execution events to provide a responsive UI.
+> **Implementation Status: NOT IMPLEMENTED**
+>
+> Streaming was served by `AgentOrchestrationService.execute_agent`, which yielded
+> `ExecutionEvent` objects over SSE from `POST /sessions/{session_id}/message?stream=true`.
+> That service, that route and the `ExecutionEventSSE` wire model were deleted as
+> dead code in #982 — the frontends had already stopped calling them.
 
-### 4.1 Event Stream
+### 4.1 Current Behaviour
 
-The `execute_agent` method yields `ExecutionEvent` objects via an `AsyncGenerator`.
+A turn is a single request/response. `POST /cases/{case_id}/turns` runs the
+milestone engine to completion — including the whole tool loop — and returns the
+finished response in one body. Nothing is emitted mid-turn, so the UI shows an
+indeterminate pending state for the turn's full duration rather than per-tool
+progress.
 
-| Event Type | Description | Frontend Handling |
-| :--- | :--- | :--- |
-| `thinking` | Agent's internal thought process | Show "Thinking..." indicator or collapsible "Thoughts" section. |
-| `tool_use` | Agent calling a tool | Show "Running tool: [Name]..." spinner. |
-| `tool_result` | Result of tool execution | Update spinner to "Done" or show brief result summary. |
-| `text_chunk` | Token of the final response | Append to the message bubble in real-time (typewriter effect). |
-| `error` | Execution failure | Show error toast or inline error message. |
-| `completed` | Turn finished | Finalize UI state, enable input. |
+This is why the turn timeout ladder matters: server 120s < copilot 300s <
+ingress 600s. Each inner rung must stay below its client, because a caller has no
+partial output to fall back on.
 
-### 4.2 Integration
+### 4.2 Event Vocabulary (removed)
 
-- **Protocol**: Server-Sent Events (SSE) or standard HTTP streaming response.
-- **Route**: `POST /sessions/{session_id}/message?stream=true`
+`domain/events/execution_events.py` defined `ExecutionEvent`,
+`ExecutionEventType`, `LLMEvent`, `ToolCall`, `ToolResult`, `Message` and
+`AgentContext`. Only `Tool` had a live consumer, so it moved to
+`tools/base.py` — where its one caller, `AgentTool.to_llm_tool`, converts an
+`AgentTool` into the LLM function-calling schema — and the rest of the module was
+deleted in #982. Nothing had imported the event types since the service went, so
+there is no vocabulary in the tree waiting for a streaming implementation.
+
+Any future streaming work should be designed against the engine's tool loop
+(`_tool_augmented_generate()`), not restored from the deleted service — the
+tool-choice, budget and vectorization behaviour there has since diverged.
 
 ## 5. Orchestration Hardening (Mechanical Safety Nets)
 
-The `AgentOrchestrationService` includes three mechanical safety nets that improve the agent's data access decisions without requiring prompt changes. These are non-blocking advisories and automated actions — hints injected into the LLM context and mechanical triggers, not hard gates.
+The `MilestoneEngine` includes two mechanical safety nets that improve the agent's data access decisions without requiring prompt changes. These are non-blocking advisories and automated actions — hints injected into the LLM context and mechanical triggers, not hard gates.
 
-### 5.1 Coverage Gap Detection (R3)
+### 5.1 Coverage Gap Detection (R3) — REMOVED
+
+> **Not implemented, and not to be restored as written.** This net lived only in
+> `AgentOrchestrationService` and was deleted with it in #982. Its gap check was
+> a substring test — `if ts not in coverage_lower`, where `coverage_lower` is the
+> rendered coverage strings joined together — so a query for `14:32` against a
+> range rendered `12:00 to 19:45` reported a *covered* time as a gap. It
+> manufactured false advisories, which is what the no-incorrect-conclusion
+> guarantee forbids. The gap it aimed at is real; the mechanism was not sound.
 
 **Problem**: The LLM doesn't know its Tier 1 structural index only covers a specific time range or set of services. It may answer questions about uncovered data with incomplete evidence.
 
-**Mechanism**:
+**Mechanism (as it worked)**:
 
 1. **Query entity extraction**: Regex-based extraction of timestamps, service names, HTTP error codes, E-codes, and IP addresses from the user's message.
-2. **Coverage comparison**: Extracted entities are compared against evidence coverage metadata (appended by Tier 1 extractors as `--- COVERAGE METADATA ---` blocks).
-3. **Advisory injection**: When query entities fall outside evidence coverage (e.g., user asks about 14:00 but evidence covers 13:42-13:57), a coverage advisory is injected into the LLM context before the system prompt.
+2. **Coverage comparison**: Extracted entities were compared against `file_meta.time_range` read from each evidence record's `structural_index`, plus a legacy branch that parsed a `--- COVERAGE METADATA ---` separator format the extractors had already stopped emitting. The comparison itself was a substring test against those strings joined together.
+3. **Advisory injection**: When query entities appeared to fall outside evidence coverage, an advisory was injected into the LLM context before the system prompt.
+
+**Current state**: nothing tells the agent when a question ranges outside what its
+evidence covers. Coverage itself is intact and better-typed than when R3 was
+written — `ExtractResult.file_meta` carries it as a structured dict, and
+`Evidence.coverage_start_ts` / `coverage_end_ts` are real columns with real
+writers. Closing the gap means an interval comparison against those columns,
+wired into `_tool_augmented_generate()` — not a port of the substring check.
 
 ### 5.2 Per-Evidence DA Failure Tracking + Auto-Vectorization (R4, v5.0)
 
@@ -121,29 +183,46 @@ The `AgentOrchestrationService` includes three mechanical safety nets that impro
 
 **Reactive auto-vectorization**: The agent may call `search_file` or `deep_analysis` repeatedly on the same evidence file without resolution, hitting empty results or low-confidence answers.
 
-**Mechanism** (replaces v4.2 global `consecutive_empty_searches` counter):
+**Mechanism** (`_track_da_result()` and `_reactive_vectorize()` in `milestone_engine.py`):
 
-1. Track DA failure signals **independently per evidence file** via `EvidenceDAState` (empty search count, DA call count, last DA confidence, timeout flag).
-2. When **any single trigger** fires on a qualifying file (size above `vectorization_min_size_bytes`), auto-vectorize the file via `vectorize_file` — no user confirmation needed.
-3. Four independent triggers: tool timeout, 3+ consecutive empty searches, 3+ DA invocations, low confidence (<0.2).
-4. For files below the vectorization threshold, inject raw file content into the LLM context instead.
-5. `da_invocation_count` is persisted on the Evidence model for cross-turn accumulation.
+1. Track DA failure signals **independently per evidence file**, keyed by `evidence_id` in turn-local dicts (`da_empty_search_counts`) plus the tool result's own timeout and confidence signals. State is **in-turn only**: persisting it across turns would need a backing column on Evidence, which nothing else wants yet.
+2. When **any single trigger** fires on a qualifying file, auto-vectorize it — no user confirmation needed. Qualifying means `vectorization_min_size_bytes <= size <= VECTORIZATION_MAX_SIZE_BYTES`; files outside that band are left alone.
+3. Three independent triggers: tool timeout, 3+ consecutive empty `search_file` results on the same file, and `deep_analysis` confidence below 0.2.
+4. After 3 consecutive empty searches the tool result also carries a `[SYSTEM]` advisory suggesting a different `deep_analysis` query.
+5. Reactive vectorization runs inside the tool loop, so it is bounded by `vectorization_reactive_timeout_seconds`; on timeout the agent proceeds without semantic search for that turn. Proactive vectorization (above) is unbounded because it runs concurrently with the LLM rather than blocking it.
 
-See [Data Preprocessing v5.0](../data-processing/data-preprocessing-design-specification.md) Section 6.1 for full implementation details.
+> **Changed in #982.** The named `EvidenceDAState` dataclass, the fourth trigger
+> (3+ DA invocations) and the cross-turn `da_invocation_count` persisted on the
+> Evidence model all belonged to `AgentOrchestrationService` and were removed with
+> it. The engine's equivalent is the three-trigger, in-turn version above. Raw
+> content injection for small files does not exist on this path either — a file
+> below the threshold simply gets no vectorization.
 
-### 5.3 Context Budget Tracking (R5)
+See [Data Preprocessing](../data-processing/data-preprocessing-design-specification.md) Section 6.1 for related detail.
+
+### 5.3 Context Budget (R5)
 
 **Problem**: Multiple tool results can fill the context window with low-signal log noise, pushing out high-value information.
 
-**Mechanism**:
+**Mechanism** (message elision in `milestone_engine.py`):
 
-1. Track cumulative tool result characters via a `tool_result_chars` counter.
-2. **Budget**: 30K characters (`TOOL_RESULT_BUDGET`).
-3. At 80% budget: apply **standard compression** — keep first 3 lines + high-signal keyword lines + last 2 lines.
-4. Over budget: apply **aggressive compression** — keep first line + high-signal keyword lines only.
-5. High-signal keywords: `error`, `exception`, `fail`, `timeout`, `refused`, `denied`, `critical`, `fatal`, `panic`, `crash`, `kill`, `oom`, `traceback`, `stacktrace`, `caused by`.
+1. Resolve a token budget per turn from `prompt_budget.tool_observation_max_tokens`, floored by the model's real context window via `resolve_model_budget()` — so the ceiling tracks the model actually in use.
+2. Estimate tokens per assembled message. If the total fits the budget, pass the messages through untouched.
+3. Otherwise keep the head (system + base task) and re-add tool-call groups newest-first while they fit, dropping whole groups rather than thinning them.
+4. Insert one marker in place of what was dropped: *"[Earlier tool calls and their results were elided to stay within the context budget. Re-run a search if you need those specifics.]"*
 
-**Key**: Compression only affects what the LLM sees. The uncompressed content is preserved in the `AgentToolCall` record for audit and debugging.
+**Key**: elision affects only what the LLM sees on this call, and it never alters
+the text of a result the agent does see — a tool result is either present in full
+or absent with the marker accounting for it.
+
+> **Changed in #982.** The previous net counted characters against a fixed 30K
+> `TOOL_RESULT_BUDGET` and compressed individual results by keyword-filtering
+> lines (keeping `error`, `exception`, `timeout`, `traceback` and similar). That
+> lived in `AgentOrchestrationService`. The engine's version is token-based,
+> model-aware, and drops at group granularity, which is why there is no longer a
+> high-signal keyword list. Note the audit consequence: the old net preserved
+> uncompressed content in the `AgentToolCall` record, and nothing writes those
+> records now (see the dormancy note on `ICaseRepository`).
 
 ### 5.4 Tool-Augmented Generation (v5.0 → v6.0)
 
