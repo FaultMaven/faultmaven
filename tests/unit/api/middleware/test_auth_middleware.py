@@ -33,6 +33,7 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     AuthenticationError,
     TokenRevocationError,
 )
+from tests.utils import request_with_authorization
 
 # ============================================================
 # Test Fixtures
@@ -167,7 +168,7 @@ class TestGetCurrentUser:
         set_auth_service(mock_auth_service)
 
         user = await get_current_user(
-            authorization="Bearer valid-token",
+            request_with_authorization("Bearer valid-token"),
             credentials=None,
             auth_service=mock_auth_service,
         )
@@ -181,7 +182,7 @@ class TestGetCurrentUser:
         """Raises 401 when no token provided."""
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
-                authorization=None,
+                request_with_authorization(),
                 credentials=None,
                 auth_service=mock_auth_service,
             )
@@ -194,7 +195,7 @@ class TestGetCurrentUser:
         """Raises 401 for non-Bearer header."""
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
-                authorization="Basic abc123",
+                request_with_authorization("Basic abc123"),
                 credentials=None,
                 auth_service=mock_auth_service,
             )
@@ -210,7 +211,7 @@ class TestGetCurrentUser:
 
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
-                authorization="Bearer expired-token",
+                request_with_authorization("Bearer expired-token"),
                 credentials=None,
                 auth_service=mock_auth_service,
             )
@@ -227,7 +228,7 @@ class TestGetCurrentUser:
 
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
-                authorization="Bearer revoked-token",
+                request_with_authorization("Bearer revoked-token"),
                 credentials=None,
                 auth_service=mock_auth_service,
             )
@@ -244,7 +245,7 @@ class TestGetCurrentUser:
 
         with pytest.raises(HTTPException) as exc_info:
             await get_current_user(
-                authorization="Bearer malformed-token",
+                request_with_authorization("Bearer malformed-token"),
                 credentials=None,
                 auth_service=mock_auth_service,
             )
@@ -268,7 +269,7 @@ class TestGetCurrentUserOptional:
         )
 
         user = await get_current_user_optional(
-            authorization="Bearer valid-token",
+            request_with_authorization("Bearer valid-token"),
             credentials=None,
             auth_service=mock_auth_service,
         )
@@ -279,7 +280,7 @@ class TestGetCurrentUserOptional:
     async def test_returns_none_for_missing_token(self, mock_auth_service):
         """Returns None when no token provided."""
         user = await get_current_user_optional(
-            authorization=None,
+            request_with_authorization(),
             credentials=None,
             auth_service=mock_auth_service,
         )
@@ -294,7 +295,7 @@ class TestGetCurrentUserOptional:
         )
 
         user = await get_current_user_optional(
-            authorization="Bearer invalid-token",
+            request_with_authorization("Bearer invalid-token"),
             credentials=None,
             auth_service=mock_auth_service,
         )
@@ -309,7 +310,7 @@ class TestGetCurrentUserOptional:
         )
 
         user = await get_current_user_optional(
-            authorization="Bearer revoked-token",
+            request_with_authorization("Bearer revoked-token"),
             credentials=None,
             auth_service=mock_auth_service,
         )

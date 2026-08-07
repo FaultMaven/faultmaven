@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from faultmaven.api.middleware.auth import get_auth_service
@@ -120,15 +120,17 @@ async def get_user_store(request: Request):
 
 
 # Token Extraction
-async def extract_bearer_token(
-    authorization: Optional[str] = Header(
-        None, alias="Authorization", include_in_schema=False
-    ),
-) -> Optional[str]:
+async def extract_bearer_token(request: Request) -> Optional[str]:
     """Extract Bearer token from Authorization header
 
+    Reads the header off the request rather than declaring it as a
+    ``Header(...)`` parameter. A declared parameter — even one hidden with
+    ``include_in_schema=False`` — makes FastAPI attach a 422 response to every
+    operation that depends on this, including operations that take no
+    parameters at all and can never produce one (#880 residual).
+
     Args:
-        authorization: Authorization header value
+        request: The incoming request, read for its Authorization header
 
     Returns:
         Token string if valid Bearer token provided, None otherwise
@@ -138,6 +140,7 @@ async def extract_bearer_token(
         - Expects format: "Bearer <token>"
         - Used for optional authentication scenarios
     """
+    authorization = request.headers.get("authorization")
     if not authorization:
         return None
 

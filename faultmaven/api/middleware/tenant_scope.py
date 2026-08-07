@@ -34,9 +34,8 @@ working for public endpoints.
 """
 
 import logging
-from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 
 from faultmaven.api.middleware.auth import _extract_token, get_auth_service
 from faultmaven.config.constants import STANDALONE_ORG_ID
@@ -69,9 +68,7 @@ _UNSCOPED_ORG = ""
 
 
 async def bind_request_org_context(
-    authorization: Optional[str] = Header(
-        None, alias="Authorization", include_in_schema=False
-    ),
+    request: Request,
     auth_service: AuthService = Depends(get_auth_service),
 ) -> None:
     """Scope the request to its organization for PostgreSQL RLS.
@@ -92,7 +89,7 @@ async def bind_request_org_context(
 
     # Multi-tenant: the org comes from the authenticated user's verified claim. We
     # reuse the auth stack's token extraction and verification — no new parsing.
-    token = _extract_token(authorization, None)
+    token = _extract_token(request.headers.get("authorization"), None)
     if not token:
         # Public / unauthenticated request — no org to bind. Tenanted endpoints
         # require auth and will 401; bind the non-org sentinel so the session
