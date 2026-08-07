@@ -498,10 +498,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not result.allowed:
             raise RateLimitError(
-                retry_after=result.retry_after or 60,
+                retry_after=result.retry_after,
                 limit_type="global",
                 current_count=result.current_count,
                 limit=result.limit,
+                reset_time=result.reset_time,
             )
 
         return result
@@ -529,6 +530,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         Both pairs are additionally bounded by the ``global`` limit, which is
         keyed on the client address rather than the session.
+
+        Whichever pair is chosen, a blocked result always carries the wait and
+        the instant the limiter measured — ``_check_redis_rate_limit`` sets both
+        on the refusal path — so neither is defaulted here. The old ``or 60`` /
+        ``or 3600`` fallbacks were unreachable, and unreachable is the point:
+        had a limiter regression ever made them reachable they would have
+        quietly resurrected the flat-window answer the honest formula replaced,
+        on the one response where the client acts on it. Passing the measured
+        value through unguarded means such a regression fails loudly at render
+        instead. The hourly fallback was the worse of the two here — it would
+        have answered an hour to a read refusal that measured seconds.
         """
 
         if self._read_limits_configured and is_cheap_read(
@@ -550,10 +562,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not per_minute.allowed:
             raise RateLimitError(
-                retry_after=per_minute.retry_after or 60,
+                retry_after=per_minute.retry_after,
                 limit_type=per_minute_type.value,
                 current_count=per_minute.current_count,
                 limit=per_minute.limit,
+                reset_time=per_minute.reset_time,
             )
 
         results.append(per_minute)
@@ -566,10 +579,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not hourly.allowed:
             raise RateLimitError(
-                retry_after=hourly.retry_after or 3600,
+                retry_after=hourly.retry_after,
                 limit_type=hourly_type.value,
                 current_count=hourly.current_count,
                 limit=hourly.limit,
+                reset_time=hourly.reset_time,
             )
 
         results.append(hourly)
@@ -648,9 +662,33 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         advertise — that is a disabled limit, and also what a check reports
         after failing open — so they are skipped rather than published as a
         limit of zero.
+
+        Two responses are left alone entirely, and both are the single-writer
+        invariant expressed on the way out rather than on the way in:
+
+        - **A refusal.** Advertising remaining quota beside a 429 is a
+          contradiction the client resolves wrongly — ``Remaining: 994`` next to
+          "you are being rate limited" reads as "the limit you hit is not this
+          one, carry on". Whatever refused the request has already said what it
+          measured; this middleware's own refusals never reach here (they
+          short-circuit in ``dispatch``), so a 429 arriving through
+          ``call_next`` came from an inner enforcer.
+        - **A response that already carries ``X-RateLimit-Limit``.** An inner
+          enforcer — the OAuth/SSO limiter dependencies — writes the header of
+          the limit *it* enforced. This middleware holds results for the general
+          limits only, and stamping them over an inner writer's would replace a
+          measured tighter quota with a roomier one nobody hit. The middleware
+          yields; it does not attempt to reconcile two enforcers' numbers,
+          because "tightest wins" is only computable over results, and an
+          already-written header is not a result it holds.
         """
 
         try:
+            if response.status_code == 429:
+                return
+            if "X-RateLimit-Limit" in response.headers:
+                return
+
             results = [
                 result
                 for result in getattr(request.state, "rate_limit_results", ())
@@ -697,12 +735,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # ``X-RateLimit-Reset`` the same instant as a timestamp — a 429 used to
         # omit the second, so a client tracking reset instants across responses
         # lost the value on precisely the response that mattered.
-        response.headers["Retry-After"] = str(error.retry_after)
+        #
+        # The instant is the one the limiter measured, carried on the error. It
+        # is never re-derived from ``time.time() + retry_after``: that reads the
+        # clock again, after the check, the raise and this construction, so the
+        # timestamp a client received disagreed with the wait beside it by
+        # however long that took. Absent means the limiter measured nothing, and
+        # an unmeasured value is omitted rather than invented — a client reading
+        # no reset falls back to its own policy, which beats planning against a
+        # fabricated instant.
+        # ``Retry-After`` obeys the same "unmeasured is absent" contract as the
+        # reset instant below. A blocked result always carries
+        # ``max(1, ceil(...))``, so ``None`` here means a limiter regression
+        # produced a refusal it could not put a wait on — and the honest
+        # response to that is silence, not ``str(None)`` rendering the literal
+        # header value "None" for a client to parse as a duration.
+        if error.retry_after is not None:
+            response.headers["Retry-After"] = str(error.retry_after)
         response.headers["X-RateLimit-Limit"] = str(error.limit)
         response.headers["X-RateLimit-Remaining"] = "0"
-        response.headers["X-RateLimit-Reset"] = str(
-            int(time.time() + error.retry_after)
-        )
+        if error.reset_time is not None:
+            response.headers["X-RateLimit-Reset"] = str(
+                int(error.reset_time.timestamp())
+            )
 
         return response
 

@@ -222,8 +222,14 @@ class SolutionSummary(BaseModel):
     applied_by: str = Field(description="Who applied the solution (user_id or 'agent')")
 
 
-class VerificationStatus(BaseModel):
-    """Solution verification status for RESOLVED phase."""
+# Not named ``VerificationStatus``: that collides with the enum of the same
+# name in ``modules.case.domain.models``, and two classes sharing a short name
+# make FastAPI's component naming depend on registration order, which is not
+# stable across processes (#880). The docstring below is published verbatim as
+# this component's `description` in the OpenAPI document, so it describes the
+# model rather than explaining the naming.
+class SolutionVerificationData(BaseModel):
+    """Solution verification details for RESOLVED phase."""
 
     verified: bool = Field(description="Whether solution effectiveness was verified")
 
@@ -627,7 +633,7 @@ class CaseUIResponse_Resolved(BaseModel):
         description="Solution that fixed the problem"
     )
 
-    verification_status: VerificationStatus = Field(
+    verification_status: SolutionVerificationData = Field(
         description="How solution effectiveness was verified"
     )
 

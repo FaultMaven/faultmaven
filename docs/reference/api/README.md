@@ -6835,7 +6835,7 @@ User activation/deactivation response.
 
 ---
 
-### VerificationStatus
+### SolutionVerificationData
 
 Solution verification status for RESOLVED phase.
 

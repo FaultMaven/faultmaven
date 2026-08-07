@@ -88,10 +88,16 @@ def mock_auth_service():
 
 @pytest.fixture
 def user_service(mock_user_repo, mock_auth_service):
-    """Create UserService with mocked dependencies."""
+    """Create UserService with mocked dependencies.
+
+    The token generator is required at construction (#959) but unused by the
+    admin flows exercised here; a double is enough because nothing in them
+    signs.
+    """
     return UserService(
         user_repo=mock_user_repo,
         auth_service=mock_auth_service,
+        token_generator=MagicMock(),
     )
 
 

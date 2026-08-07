@@ -20,10 +20,9 @@ Rate limits (per resolved client IP, per minute):
 """
 
 import logging
-import math
 import time
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Dict, Iterable, Optional, Tuple
 
 from fastapi import HTTPException, Request, status
@@ -34,6 +33,11 @@ from faultmaven.api.middleware.client_ip import (
     resolve_client_ip,
 )
 from faultmaven.config.protection import get_trusted_proxies
+from faultmaven.infrastructure.protection.window_math import (
+    quota_frees_at,
+    retry_after_seconds,
+)
+from faultmaven.models.protection import LimitType, RateLimitResult
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +107,25 @@ class OAuthRateLimiter:
     async def check_rate_limit(self, request: Request, endpoint_name: str) -> None:
         """Check if request is within rate limit.
 
+        This limiter is the *tightest* quota an OAuth/SSO caller is under — 5 to
+        10 per minute against the general limits' hundreds — so it is also the
+        one such a caller needs to pace against. Both outcomes therefore publish
+        its state, and both publish it the way the Redis-backed enforcer does:
+
+        - A refusal carries the full quartet on the 429 it raises. ``Retry-After``
+          alone tells a client when to come back but not what it came up
+          against, so it cannot tell a tight endpoint limit from the roomy global
+          one and cannot pace itself before the next refusal.
+        - An allowed request contributes a ``RateLimitResult`` to
+          ``request.state.rate_limit_results``, the list ``RateLimitMiddleware``
+          picks the least-remaining limit out of on the way back. That is what
+          makes the OAuth limit visible on a 2xx: without it the served response
+          advertised only the roomy limits this caller is nowhere near, while
+          the one it is five requests from was never mentioned.
+
+        The header authority stays single: the component that enforced a limit
+        is the one that publishes it, here as everywhere.
+
         Args:
             request: FastAPI request object
             endpoint_name: Endpoint identifier ("/authorize", "/token", "/revoke")
@@ -129,24 +152,45 @@ class OAuthRateLimiter:
         requests = [ts for ts in requests if ts > cutoff]
         self._requests[key] = requests
 
+        # The window is sliding, so the instant quota frees is when the oldest
+        # surviving timestamp ages out — not a flat minute from now.
+        # ``requests`` is pruned and in arrival order, so its first element is
+        # that timestamp; an empty list means nothing is left to age out and the
+        # entry that is about to go in becomes the oldest. The shared helper is
+        # the same one the Redis-backed limiter derives from, so the two
+        # enforcers cannot drift apart on the formula.
+        frees_at = quota_frees_at(
+            requests[0] if requests else None, self._window_seconds, now
+        )
+
         # Check if limit exceeded
         if len(requests) >= limit:
             logger.warning(
                 f"Rate limit exceeded for {client_ip} on {endpoint_name}: "
                 f"{len(requests)}/{limit} requests in last {self._window_seconds}s"
             )
-            # The window is sliding, so the wait is until the oldest surviving
-            # timestamp ages out — not a flat minute. ``requests`` is pruned and
-            # in arrival order, so its first element is that timestamp. A
-            # hardcoded 60 told a caller one second from quota to wait sixty,
+            # A hardcoded 60 told a caller one second from quota to wait sixty,
             # which is the difference between a client that backs off correctly
             # and one that gives up.
-            retry_after = max(1, math.ceil(requests[0] + self._window_seconds - now))
+            retry_after = retry_after_seconds(frees_at, now)
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"Rate limit exceeded. Maximum {limit} requests per minute.",
-                headers={"Retry-After": str(retry_after)},
+                headers={
+                    "Retry-After": str(retry_after),
+                    "X-RateLimit-Limit": str(limit),
+                    "X-RateLimit-Remaining": "0",
+                    # The same instant ``Retry-After`` is derived from, as a
+                    # timestamp — one measurement, two renderings.
+                    "X-RateLimit-Reset": str(int(frees_at)),
+                },
             )
+
+        # The count this request makes, read BEFORE the insert. ``requests`` is
+        # the same list object ``self._requests[key]`` holds — the prune
+        # rebinds it there — so appending mutates it, and any ``len(requests)``
+        # taken afterwards already includes the new entry.
+        current_count = len(requests) + 1
 
         # Add current request timestamp
         self._requests[key].append(now)
@@ -154,9 +198,49 @@ class OAuthRateLimiter:
         # Periodic cleanup
         self._cleanup_old_entries()
 
+        # ``current_count`` includes the request that just went in, matching the
+        # Lua script's allowed-path return of ``count + 1``. Both enforcers
+        # therefore mean the same thing by it, so ``limit - current_count`` is
+        # the remaining quota on either — the header path subtracts them without
+        # knowing which limiter produced the result.
+        self._publish_allowed(
+            request,
+            limit=limit,
+            current_count=current_count,
+            frees_at=frees_at,
+        )
+
         logger.debug(
             f"Rate limit check passed for {client_ip} on {endpoint_name}: "
-            f"{len(requests)+1}/{limit} requests"
+            f"{current_count}/{limit} requests"
+        )
+
+    @staticmethod
+    def _publish_allowed(
+        request: Request, *, limit: int, current_count: int, frees_at: float
+    ) -> None:
+        """Offer this limit's state to the served-response header path.
+
+        ``RateLimitMiddleware`` creates ``request.state.rate_limit_results``
+        before route dependencies run and reads it after the route returns, so
+        an entry appended here is seen when it picks the tightest limit to
+        advertise. The attribute is read with ``getattr`` and never created:
+        its absence means the middleware is not in the stack — reduced test
+        stacks, or any app mounting these routers alone — and manufacturing the
+        list there would build a collection nothing ever reads.
+        """
+        results = getattr(request.state, "rate_limit_results", None)
+        if results is None:
+            return
+
+        results.append(
+            RateLimitResult(
+                allowed=True,
+                limit_type=LimitType.OAUTH,
+                current_count=current_count,
+                limit=limit,
+                reset_time=datetime.fromtimestamp(frees_at, tz=timezone.utc),
+            )
         )
 
 

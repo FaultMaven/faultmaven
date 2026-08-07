@@ -10369,7 +10369,7 @@
             "description": "Solution that fixed the problem"
           },
           "verification_status": {
-            "$ref": "#/components/schemas/VerificationStatus",
+            "$ref": "#/components/schemas/SolutionVerificationData",
             "description": "How solution effectiveness was verified"
           },
           "resolution_summary": {
@@ -16293,7 +16293,7 @@
         ],
         "title": "ValidationError"
       },
-      "VerificationStatus": {
+      "SolutionVerificationData": {
         "properties": {
           "verified": {
             "type": "boolean",
@@ -16319,7 +16319,7 @@
           "verification_method",
           "details"
         ],
-        "title": "VerificationStatus",
+        "title": "SolutionVerificationData",
         "description": "Solution verification status for RESOLVED phase."
       },
       "WorkingConclusion": {
