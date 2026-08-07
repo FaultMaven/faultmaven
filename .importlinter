@@ -112,7 +112,6 @@ ignore_imports =
     # 2026-04 phase 2: the standalone evidence path was deleted and those imports
     # no longer exist, so import-linter flags the ignore entry itself.
     faultmaven.modules.case.infrastructure.sessionless_case_repository -> faultmaven.modules.case.contracts
-    faultmaven.modules.case.infrastructure._agent_execution_mappers -> faultmaven.modules.case.contracts
     faultmaven.modules.case.contracts -> faultmaven.modules.case.domain.models
     faultmaven.modules.case.contracts -> faultmaven.modules.case.domain.owned_models.*
 

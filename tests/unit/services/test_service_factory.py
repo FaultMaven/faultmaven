@@ -32,7 +32,6 @@ from faultmaven.modules.evidence.domain.services.file_storage_service import (
 )
 
 # EvidenceArtifactRepository removed - evidence now handled by ICaseRepository (TD-001)
-# AgentExecutionRepository removed - agent executions now handled by ICaseRepository (TD-001)
 from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (
     KnowledgeItemRepository,
 )

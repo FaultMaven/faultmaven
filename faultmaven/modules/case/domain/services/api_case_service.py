@@ -533,7 +533,6 @@ class APICaseService(BaseService):
         organization_id: str,
         include_sessions: bool = True,
         include_evidence: bool = True,
-        include_executions: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Get case with related entities.
 
@@ -542,7 +541,6 @@ class APICaseService(BaseService):
             organization_id: Organization for authorization
             include_sessions: Include investigation sessions
             include_evidence: Include evidence artifacts
-            include_executions: Include agent executions
 
         Returns:
             Dictionary with case and related entities
@@ -553,7 +551,6 @@ class APICaseService(BaseService):
             organization_id=organization_id,
             include_sessions=include_sessions,
             include_evidence=include_evidence,
-            include_executions=include_executions,
         )
 
         # Get the case first
@@ -580,16 +577,6 @@ class APICaseService(BaseService):
                 # deleted. Evidence is case-tied only and lives on `case.evidence`,
                 # which the case repository loads via `_load_evidence_for_case`.
                 result["evidence"] = list(getattr(case, "evidence", []) or [])
-
-            if include_executions:
-                try:
-                    executions, _ = await self.case_repo.list_agent_executions_by_case(
-                        case_id
-                    )
-                    result["executions"] = executions
-                except Exception as e:
-                    self.log_error("get_case_executions", e, case_id=case_id)
-                    result["executions"] = []
 
             return result
 

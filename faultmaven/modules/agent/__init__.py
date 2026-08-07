@@ -4,9 +4,6 @@ This module provides agent orchestration, investigation workflows, and tool syst
 for the FaultMaven platform.
 
 Public API:
-    From modules.case.contracts (agent-execution audit data is Case-owned):
-        - AgentExecution, AgentToolCall, AgentType, ExecutionStatus
-
     From domain.models.agentic:
         - QueryIntent, SuggestedAction
 

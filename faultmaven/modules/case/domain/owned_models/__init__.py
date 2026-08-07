@@ -3,21 +3,12 @@
 This package contains all domain models owned by the Case module, including:
 - Case-owned evidence DTOs (EvidenceUploadRequest, etc.)
 - Case-owned report models (CaseReport, etc.)
-- Case-owned agent execution models (AgentExecution, AgentToolCall)
 
 Per module-organization-design.md:
-- Case module owns 11 tables including evidence, reports, and agent executions
-- Evidence, Agent, and Report modules are Domain Services that operate on Case-owned data
+- Case module owns evidence and report tables
+- Evidence and Report modules are Domain Services that operate on Case-owned data
 - These models are canonical and should be imported from Case contracts
 """
-
-# Agent execution models (Case owns agent audit data per module-organization-design.md)
-from faultmaven.modules.case.domain.owned_models.agent_execution import (
-    AgentExecution,
-    AgentToolCall,
-    AgentType,
-    ExecutionStatus,
-)
 
 # Evidence DTOs (Case owns evidence table per module-organization-design.md).
 # The canonical Evidence domain model lives at
@@ -67,9 +58,4 @@ __all__ = [
     "ReportGenerationResponse",
     "CaseClosureRequest",
     "CaseClosureResponse",
-    # Agent execution models
-    "ExecutionStatus",
-    "AgentType",
-    "AgentToolCall",
-    "AgentExecution",
 ]

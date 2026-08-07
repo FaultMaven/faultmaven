@@ -27,18 +27,11 @@ from faultmaven.infrastructure.persistence.investigation_session_repository impo
 )
 from faultmaven.infrastructure.persistence.models import Base
 from faultmaven.models.investigation_session import InvestigationSession, SessionState
-from faultmaven.modules.case.contracts import (
-    AgentExecution,
-    AgentType,
-    ExecutionStatus,
-)
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
     InvestigationStrategy,
 )
-
-# AgentExecutionRepository removed - APIInvestigationSessionService now uses case_repo
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
@@ -460,105 +453,6 @@ class TestListSessionsBenchmarks:
 
 # ============================================================
 # Get Session with Executions Benchmarks
-# ============================================================
-
-
-class TestGetSessionWithExecutionsBenchmarks:
-    """Benchmark get session with executions operations."""
-
-    @pytest.mark.skip(
-        reason="Agent execution methods not yet implemented in SQLiteCaseRepository after migration"
-    )
-    @pytest.mark.asyncio
-    async def test_benchmark_get_session_with_executions(
-        self, session_service, sample_case, case_repo
-    ):
-        """Benchmark get_session_with_executions - target <250ms p95."""
-        session = await session_service.create_session(
-            case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
-            user_id=sample_case.user_id,
-        )
-
-        # Create 10 executions using case_repo (migrated from execution_repo)
-        for i in range(10):
-            execution = AgentExecution(
-                execution_id=create_test_execution_id(),
-                case_id=sample_case.case_id,
-                agent_type=AgentType.INVESTIGATOR,
-                agent_model="gpt-4",
-                status=ExecutionStatus.COMPLETED,
-            )
-            await case_repo.create_agent_execution(execution)
-
-        iterations = 50
-        timings = []
-
-        for _ in range(iterations):
-            duration = await time_async_operation(
-                session_service.get_session_with_executions(
-                    session.session_id,
-                    sample_case.organization_id,
-                    include_tool_calls=False,
-                )
-            )
-            timings.append(duration)
-
-        passed = report_benchmark("Get Session with Executions (10)", timings, 250)
-        assert passed, f"P95 exceeded 250ms target"
-
-
-# ============================================================
-# Add Execution to Session Benchmarks
-# ============================================================
-
-
-class TestAddExecutionBenchmarks:
-    """Benchmark add execution to session operations."""
-
-    @pytest.mark.skip(
-        reason="Agent execution methods not yet implemented in SQLiteCaseRepository after migration"
-    )
-    @pytest.mark.asyncio
-    async def test_benchmark_add_execution_to_session(
-        self, session_service, sample_case, case_repo
-    ):
-        """Benchmark add_execution_to_session operation - target <150ms p95."""
-        session = await session_service.create_session(
-            case_id=sample_case.case_id,
-            organization_id=sample_case.organization_id,
-            user_id=sample_case.user_id,
-        )
-
-        iterations = 50
-        timings = []
-
-        for i in range(iterations):
-            execution = AgentExecution(
-                execution_id=create_test_execution_id(),
-                case_id=sample_case.case_id,
-                agent_type=AgentType.INVESTIGATOR,
-                agent_model="gpt-4",
-                status=ExecutionStatus.COMPLETED,
-            )
-            await case_repo.create_agent_execution(execution)
-
-            duration = await time_async_operation(
-                session_service.add_execution_to_session(
-                    session.session_id,
-                    sample_case.organization_id,
-                    execution.execution_id,
-                    token_usage=100,
-                )
-            )
-            timings.append(duration)
-
-        passed = report_benchmark("Add Execution to Session", timings, 150)
-        assert passed, f"P95 exceeded 150ms target"
-
-
-# ============================================================
-# Check Budget Exceeded Benchmarks
 # ============================================================
 
 

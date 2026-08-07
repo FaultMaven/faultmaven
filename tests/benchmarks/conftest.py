@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 # DatabaseEvidenceArtifactRepository removed in storage redesign 2026-04
 # phase 2 (standalone evidence path deletion).
-# AgentExecutionRepository removed - agent executions now handled by ICaseRepository
 from faultmaven.infrastructure.persistence.investigation_session_repository import (
     DatabaseInvestigationSessionRepository,
 )
@@ -184,8 +183,6 @@ async def case_repository(
 
 # evidence_artifact_repository fixture removed in storage redesign 2026-04
 # phase 2 (standalone evidence path deletion). Evidence is case-tied only.
-
-# agent_execution_repository fixture removed - no longer needed
 
 
 @pytest.fixture

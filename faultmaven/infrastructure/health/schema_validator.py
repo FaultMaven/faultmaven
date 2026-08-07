@@ -29,8 +29,6 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from faultmaven.infrastructure.persistence.models import (
-    AgentExecutionModel,
-    AgentToolCallModel,
     Base,
     CaseActionModel,
     CaseCheckpointModel,
@@ -125,8 +123,6 @@ class SchemaValidator:
         "uploaded_files": UploadedFileModel,
         "case_actions": CaseActionModel,
         "case_tags": CaseTagModel,
-        "agent_executions": AgentExecutionModel,
-        "agent_tool_calls": AgentToolCallModel,
         "investigation_sessions": InvestigationSessionModel,
         "case_checkpoints": CaseCheckpointModel,
         "knowledge_items": KnowledgeItemModel,
