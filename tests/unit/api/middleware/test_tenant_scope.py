@@ -26,6 +26,7 @@ from faultmaven.modules.auth.domain.services.auth_service import (
     TokenRevocationError,
 )
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
+from tests.utils import request_with_authorization
 
 OTHER_ORG = "11111111-1111-1111-1111-111111111111"
 
@@ -65,7 +66,7 @@ async def test_single_tenant_forces_standalone_ignoring_injected_org(monkeypatch
     auth_service = AsyncMock()
 
     await bind_request_org_context(
-        authorization="Bearer forged-token", auth_service=auth_service
+        request_with_authorization("Bearer forged-token"), auth_service=auth_service
     )
 
     assert get_current_org_id() == STANDALONE_ORG_ID
@@ -84,7 +85,7 @@ async def test_multi_tenant_binds_verified_user_org(monkeypatch):
     )
 
     await bind_request_org_context(
-        authorization="Bearer good-token", auth_service=auth_service
+        request_with_authorization("Bearer good-token"), auth_service=auth_service
     )
 
     assert get_current_org_id() == OTHER_ORG
@@ -104,7 +105,7 @@ async def test_multi_tenant_missing_org_fails_closed(monkeypatch):
 
     with pytest.raises(HTTPException) as exc:
         await bind_request_org_context(
-            authorization="Bearer no-org-token", auth_service=auth_service
+            request_with_authorization("Bearer no-org-token"), auth_service=auth_service
         )
 
     assert exc.value.status_code == 403
@@ -135,7 +136,8 @@ async def test_multi_tenant_sentinel_org_claim_fails_closed(monkeypatch):
 
     with pytest.raises(HTTPException) as exc:
         await bind_request_org_context(
-            authorization="Bearer sentinel-org-token", auth_service=auth_service
+            request_with_authorization("Bearer sentinel-org-token"),
+            auth_service=auth_service,
         )
 
     assert exc.value.status_code == 403
@@ -152,7 +154,9 @@ async def test_multi_tenant_no_token_binds_unscoped_org(monkeypatch):
     monkeypatch.setattr(_PROVIDER_TARGET, lambda: BUILTIN_MULTI)
     auth_service = AsyncMock()
 
-    await bind_request_org_context(authorization=None, auth_service=auth_service)
+    await bind_request_org_context(
+        request_with_authorization(), auth_service=auth_service
+    )
 
     assert get_current_org_id() == ""
     auth_service.extract_user_from_token_with_revocation_check.assert_not_awaited()
@@ -170,7 +174,7 @@ async def test_multi_tenant_invalid_token_binds_unscoped_org(monkeypatch, error)
     auth_service.extract_user_from_token_with_revocation_check.side_effect = error
 
     await bind_request_org_context(
-        authorization="Bearer bad-token", auth_service=auth_service
+        request_with_authorization("Bearer bad-token"), auth_service=auth_service
     )
 
     assert get_current_org_id() == ""
