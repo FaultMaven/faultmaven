@@ -138,6 +138,7 @@ class MockMilestoneEngine:
         attachments: Optional[list] = None,
         intent_type: Optional[str] = None,
         intent_data: Optional[dict[str, Any]] = None,
+        user_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Mock turn processing.
 
