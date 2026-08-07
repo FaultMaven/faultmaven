@@ -438,11 +438,11 @@ python scripts/backfill_closed_at_timestamps.py  # Backfill case timestamps
 # Architecture & Validation
 python scripts/check_import_violations.py  # Check architecture
 python scripts/check_config_compliance.py  # Validate configuration
-python scripts/check_api_changes.py        # Detect API changes
+python scripts/generate_api_docs.py --check  # Detect API reference drift (CI gate)
 
 # Development & Testing
 python scripts/setup_env.py                # Environment setup
-python scripts/generate_api_docs.py        # Generate API documentation
+python scripts/generate_api_docs.py        # Regenerate the API reference (commit the result)
 python scripts/frontend_verification_smoke_test.py  # Frontend smoke test
 ./scripts/run_load_tests.sh                # Run Locust load tests
 ./scripts/test_integration_logging.sh      # Test integration logging
@@ -583,7 +583,42 @@ mypy faultmaven/
 
 # Architecture validation
 lint-imports
+
+# API reference drift (same check CI runs)
+python scripts/generate_api_docs.py --check
 ```
+
+### API Reference
+
+`docs/reference/api/openapi.json` and `docs/reference/api/README.md` are
+**generated** from the running app by `scripts/generate_api_docs.py`. Never edit
+them by hand — the `api-contract-drift` CI job regenerates and diffs, so a
+change to any route, schema or docstring must ship with its regenerated
+artifact in the same PR:
+
+```bash
+python scripts/generate_api_docs.py
+git add docs/reference/api/openapi.json docs/reference/api/README.md
+```
+
+The generator empties the environment and applies its own pinned settings, so
+the artifact is a function of the code rather than of your `.env`. It documents
+the **maximal deployed surface** (OAuth, SSO and `/metrics` mounted; debug
+endpoints, which are development-only, excluded).
+
+⚠️ **Regenerate with the lockfile installed** (`pip install -r
+requirements/dev.txt`). FastAPI and Pydantic decide how schemas are emitted, so
+the document depends on their versions as well as on the code — a stale local
+FastAPI produces a valid-looking artifact that CI rejects, with the diff showing
+up in schema shape (`ctx`/`input` on ValidationError, `const` vs a single-value
+`enum`, `contentMediaType` vs `format: binary`) rather than in routes.
+
+Which operations require authentication is derived from the dependency graph:
+a route gains `security` in the spec because `require_authentication` declares
+the `HTTPBearer` scheme. An auth dependency that reads the `Authorization`
+header directly emits no `security` and would publish a protected route as
+open — `tests/integration/api/test_openapi_documents_auth.py` fails on that,
+and on any new auth dependency it has not been told how to classify.
 
 ### Pre-commit Hooks
 

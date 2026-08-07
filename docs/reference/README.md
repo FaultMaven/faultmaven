@@ -13,8 +13,8 @@ Factual lookup materials for FaultMaven developers and operators.
 
 ## Quick Links
 
-- [OpenAPI Spec (current)](./api/openapi.current.yaml) — Live API specification
-- [OpenAPI Spec (locked)](./api/openapi.locked.yaml) — Stability checkpoint for breaking-change detection
+- [OpenAPI Spec](./api/openapi.json) — Generated from the running app; CI fails if it drifts
+- [API Reference](./api/README.md) — The same spec rendered for reading, including per-operation auth
 - [LLM Model Capabilities](./llm-model-capabilities.md)
 - [Local LLM Setup](./configuration/local-llm-setup.md)
 - [Tool Catalog](./tools/tool-catalog.md)

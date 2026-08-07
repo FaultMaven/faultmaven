@@ -108,7 +108,9 @@ def set_auth_service(
 
 
 async def get_current_user(
-    authorization: Optional[str] = Header(None, alias="Authorization"),
+    authorization: Optional[str] = Header(
+        None, alias="Authorization", include_in_schema=False
+    ),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> AuthenticatedUser:
@@ -178,7 +180,9 @@ async def get_current_user(
 
 
 async def get_current_user_optional(
-    authorization: Optional[str] = Header(None, alias="Authorization"),
+    authorization: Optional[str] = Header(
+        None, alias="Authorization", include_in_schema=False
+    ),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> Optional[AuthenticatedUser]:
