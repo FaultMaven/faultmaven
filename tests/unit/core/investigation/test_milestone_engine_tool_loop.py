@@ -883,9 +883,7 @@ class TestBuildToolContext:
         mock_case.case_id = "case_001"
         mock_case.organization_id = "org_123"
 
-        intent_data = {"user_id": "user_abc"}
-
-        result = await engine._build_tool_context(mock_case, intent_data)
+        result = await engine._build_tool_context(mock_case, user_id="user_abc")
 
         assert result.session_id == "case_001"
         assert result.case_id == "case_001"
@@ -893,15 +891,15 @@ class TestBuildToolContext:
         assert result.user_id == "user_abc"
         assert result.case_repository is engine.repository
 
-    async def test_default_user_id_when_not_in_intent(self):
-        """Uses 'system' as default user_id when not in intent_data."""
+    async def test_default_user_id_when_no_principal(self):
+        """Uses 'system' when the turn carries no authenticated principal."""
         engine = _make_engine()
 
         mock_case = MagicMock()
         mock_case.case_id = "case_002"
         mock_case.organization_id = "org_456"
 
-        result = await engine._build_tool_context(mock_case, None)
+        result = await engine._build_tool_context(mock_case, user_id=None)
 
         assert result.user_id == "system"
 

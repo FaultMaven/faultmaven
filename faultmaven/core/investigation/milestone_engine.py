@@ -3103,6 +3103,7 @@ class MilestoneEngine:
         case: "Case",
         user_message: str,
         metadata: dict[str, Any],
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Handle turns on terminal cases: Q&A, report regeneration, runbook creation.
 
@@ -3133,7 +3134,9 @@ class MilestoneEngine:
             return await self._handle_runbook_creation(case, metadata)
 
         # Scenario 3: Q&A
-        return await self._process_terminal_qa(case, user_message, metadata)
+        return await self._process_terminal_qa(
+            case, user_message, metadata, user_id=user_id
+        )
 
     async def _handle_report_regeneration(
         self,
@@ -3522,10 +3525,16 @@ class MilestoneEngine:
         case: "Case",
         user_message: str,
         metadata: dict[str, Any],
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Process a Q&A turn on a terminal case via the LLM.
 
         Uses TERMINAL_TEMPLATE and TerminalResponse schema. No state mutations.
+
+        ``user_id`` is the authenticated principal for the turn; it keys the KB
+        read allowlist the ``kb_qa`` tool builds (owner + team arms). A terminal
+        case still answers questions, so its Q&A turn must read the same KB the
+        user's non-terminal turns do.
         """
         from faultmaven.config.settings import get_settings
         from faultmaven.infrastructure.security.case_redaction import (
@@ -3565,7 +3574,7 @@ class MilestoneEngine:
         if self.investigation_tools:
             tools_kwargs["investigation_tools"] = self._build_da_tool_schemas()
             tools_kwargs["tool_context"] = await self._build_tool_context(
-                case, intent_data=None
+                case, user_id=user_id
             )
             tools_kwargs["force_tool_use"] = False
 
@@ -3637,6 +3646,7 @@ class MilestoneEngine:
         attachments: list[dict[str, Any]] | None = None,
         intent_type: str | None = None,
         intent_data: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Process a single conversation turn with optional structured intent.
@@ -3655,6 +3665,10 @@ class MilestoneEngine:
             attachments: Optional file attachments
             intent_type: Optional structured intent type (status_transition, confirmation, etc.)
             intent_data: Optional intent-specific data
+            user_id: Authenticated principal for this turn. Keys the KB read
+                allowlist handed to the agent's tools (owner + team arms,
+                ADR-013 §D4). ``None`` means no principal — an engine-internal
+                turn — and collapses the allowlist to the global corpus.
 
         Returns:
             {
@@ -3688,6 +3702,7 @@ class MilestoneEngine:
                     attachments,
                     intent_type,
                     intent_data,
+                    user_id=user_id,
                 )
             finally:
                 active_token_tracker.reset(token)
@@ -3741,6 +3756,7 @@ class MilestoneEngine:
         attachments: list[dict[str, Any]] | None = None,
         intent_type: str | None = None,
         intent_data: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
         # Add intent information to logger for tracing
@@ -3784,7 +3800,9 @@ class MilestoneEngine:
 
             # 0a. Terminal case handling — Q&A and report regeneration only
             if case.is_terminal:
-                return await self._process_terminal_turn(case, user_message, metadata)
+                return await self._process_terminal_turn(
+                    case, user_message, metadata, user_id=user_id
+                )
 
             # 0b. Pending transition confirmation — short-circuit before LLM
             # When a pending transition exists (User-Agent Handshake), check if
@@ -4584,7 +4602,7 @@ class MilestoneEngine:
                     processing_mode, case, bool(has_pending)
                 )
                 da_tools = self._build_da_tool_schemas()
-                da_context = await self._build_tool_context(case, intent_data)
+                da_context = await self._build_tool_context(case, user_id=user_id)
                 response_obj = await self._generate_structured_output(
                     prompt,
                     schema_model,
@@ -6438,16 +6456,29 @@ class MilestoneEngine:
             )
             return []
 
-    async def _build_tool_context(
-        self, case: Any, intent_data: dict | None = None
-    ) -> Any:
-        """Build ToolContext for tool execution during DA turns."""
+    async def _build_tool_context(self, case: Any, user_id: str | None = None) -> Any:
+        """Build ToolContext for tool execution during DA turns.
+
+        ``user_id`` is the turn's authenticated principal, threaded down from
+        ``process_turn``. It is the *only* source: it previously came off
+        ``intent_data``, which no caller populates — ``InvestigationService``
+        builds that dict from ``QueryIntent.model_dump()`` (a model with no
+        ``user_id`` field) plus ``query_mode``, so every live turn resolved to
+        ``"system"`` and both arms of the KB read allowlist
+        (``build_kb_scope_filter(user_id, shared_kb_ids)``) collapsed to the
+        global corpus. Reading it from the intent payload would also make the
+        read principal client-settable; the parameter comes from
+        ``current_user.user_id``.
+
+        ``None`` (engine-internal turn, no principal) keeps the historical
+        ``"system"`` sentinel, which matches no owner and resolves no teams.
+        """
         from faultmaven.modules.agent.tools.base import (
             ToolContext,
             derive_kb_context_metadata,
         )
 
-        user_id = (intent_data or {}).get("user_id", "system")
+        user_id = user_id or "system"
         organization_id = getattr(case, "organization_id", "")
 
         # Extract current investigation stage for tool context enrichment

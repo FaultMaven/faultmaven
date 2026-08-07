@@ -16,8 +16,18 @@ These assert at the surface that renders the value — ``build_kb_scope_filter``
 actual output, the dict handed to ChromaDB — rather than on ``context.shared_kb_ids``
 alone. Asserting the field is set would pass even if nothing downstream consumed it,
 which is exactly how the gap survived.
+
+Both arms are keyed on one principal, and the whole allowlist is worthless if that
+principal never arrives: ``_build_tool_context`` used to read ``user_id`` off
+``intent_data``, which no caller populates, so every live turn resolved to
+``"system"`` and *both* arms collapsed to the global corpus. The
+``test_the_principal_reaches_*`` cases below pin the delivery of the principal from
+the authenticated entry point, because a test that hands ``_build_tool_context`` a
+principal directly cannot tell whether anything upstream supplies one.
 """
 
+import ast
+import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -73,7 +83,7 @@ async def test_team_shared_ids_reach_the_scope_filter():
     """The widening case: a shared item must be readable by the tool."""
     engine = _engine(team_ids=["team_a"], shared_ids=["kb_shared_1", "kb_shared_2"])
 
-    context = await engine._build_tool_context(_case(), {"user_id": "user_a"})
+    context = await engine._build_tool_context(_case(), user_id="user_a")
 
     # The filter kb_qa will build from this context, exactly as kb_tool_adapter
     # passes it through.
@@ -96,7 +106,7 @@ async def test_the_team_arm_is_keyed_on_the_session_user():
     case = _case()
     case.user_id = "case_owner"  # deliberately different from the session user
 
-    await engine._build_tool_context(case, {"user_id": "session_user"})
+    await engine._build_tool_context(case, user_id="session_user")
 
     engine.team_service.list_all_user_team_ids.assert_awaited_once_with("session_user")
 
@@ -105,7 +115,7 @@ async def test_organization_id_is_threaded_into_the_share_lookup():
     """The share resolution must stay tenant-scoped."""
     engine = _engine(team_ids=["team_a"], shared_ids=["kb_1"])
 
-    await engine._build_tool_context(_case(org_id="org_xyz"), {"user_id": "user_a"})
+    await engine._build_tool_context(_case(org_id="org_xyz"), user_id="user_a")
 
     _, kwargs = engine.share_repository.list_resource_ids.await_args
     assert (
@@ -120,8 +130,7 @@ async def test_no_principal_means_no_team_arm(user_id):
     """``system`` is not a user; it must not resolve anyone's team allowlist."""
     engine = _engine(team_ids=["team_a"], shared_ids=["kb_1"])
 
-    intent = None if user_id is None else {"user_id": user_id}
-    context = await engine._build_tool_context(_case(), intent)
+    context = await engine._build_tool_context(_case(), user_id=user_id)
 
     assert context.shared_kb_ids == []
     engine.team_service.list_all_user_team_ids.assert_not_awaited()
@@ -134,7 +143,7 @@ async def test_standalone_without_team_services_collapses_to_owned_and_global():
     """Missing collaborators narrow the allowlist; they never widen it."""
     engine = _engine(wired=False)
 
-    context = await engine._build_tool_context(_case(), {"user_id": "user_a"})
+    context = await engine._build_tool_context(_case(), user_id="user_a")
 
     assert context.shared_kb_ids == []
     assert _team_arm(build_kb_scope_filter(context.user_id, context.shared_kb_ids)) is (
@@ -149,9 +158,90 @@ async def test_a_failed_resolution_narrows_rather_than_raising():
         side_effect=RuntimeError("share table unavailable")
     )
 
-    context = await engine._build_tool_context(_case(), {"user_id": "user_a"})
+    context = await engine._build_tool_context(_case(), user_id="user_a")
 
     assert context.shared_kb_ids == []
     assert _team_arm(build_kb_scope_filter(context.user_id, context.shared_kb_ids)) is (
         None
     )
+
+
+# ---------------------------------------------------------------------------
+# Delivery of the principal.
+#
+# Everything above hands ``_build_tool_context`` a principal. That proves the
+# allowlist is built correctly *given* one, and proves nothing about whether a
+# real turn ever supplies one — the failure that made the original team-arm fix
+# inert. These pin the two hops the principal has to survive, as properties over
+# every call site rather than as one sampled instance, so a newly added dispatch
+# branch that forgets to thread it fails here.
+# ---------------------------------------------------------------------------
+
+
+def _call_sites(module, attr_path: tuple[str, ...]) -> list[ast.Call]:
+    """Every ``ast.Call`` in ``module`` whose callee is ``attr_path``."""
+    tree = ast.parse(inspect.getsource(module))
+    wanted = ".".join(attr_path)
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        parts, cur = [], node.func
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            parts.append(cur.id)
+        if ".".join(reversed(parts)) == wanted:
+            found.append(node)
+    return found
+
+
+def test_the_principal_reaches_every_tool_context_build():
+    """Hop 2: engine → ``_build_tool_context``.
+
+    A call site that omits ``user_id`` silently gets the ``"system"`` sentinel,
+    which owns nothing and belongs to no team — the KB tool then reads the
+    global corpus only, with no error anywhere.
+    """
+    from faultmaven.core.investigation import milestone_engine
+
+    calls = _call_sites(milestone_engine, ("self", "_build_tool_context"))
+    assert calls, "no _build_tool_context call sites found — did it get renamed?"
+    for call in calls:
+        assert any(kw.arg == "user_id" for kw in call.keywords), (
+            f"milestone_engine.py:{call.lineno} builds a ToolContext without "
+            "passing user_id; its KB tool would read global-only"
+        )
+
+
+def test_the_principal_reaches_every_engine_turn():
+    """Hop 1: ``InvestigationService`` → ``engine.process_turn``.
+
+    The service is the only holder of the authenticated principal (the route
+    passes ``current_user.user_id``); the engine cannot recover it from the
+    case, which names the *owner*, not this turn's reader.
+    """
+    from faultmaven.modules.agent.domain.services import investigation_service
+
+    calls = _call_sites(investigation_service, ("self", "engine", "process_turn"))
+    assert calls, "no engine.process_turn call sites found — did it get renamed?"
+    for call in calls:
+        assert any(kw.arg == "user_id" for kw in call.keywords), (
+            f"investigation_service.py:{call.lineno} dispatches a turn without "
+            "the authenticated principal; the agent's KB tool loses its "
+            "owner and team arms"
+        )
+
+
+async def test_the_principal_is_not_taken_from_the_client_intent_payload():
+    """``intent_data`` is built from the client-supplied intent; it must not be
+    able to name the principal whose KB the agent reads."""
+    engine = _engine(team_ids=["team_a"], shared_ids=["kb_1"])
+
+    # The shape a client could forge if the principal came from the payload.
+    context = await engine._build_tool_context(_case(), user_id=None)
+
+    assert context.user_id == "system"
+    assert context.shared_kb_ids == []
+    assert "intent_data" not in inspect.signature(engine._build_tool_context).parameters
