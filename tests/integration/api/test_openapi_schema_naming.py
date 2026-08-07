@@ -165,6 +165,63 @@ def test_no_component_name_collisions(probe):
     )
 
 
+def verification_status_problems(
+    schema_names, loaded_modules, verification_status, solution_verification
+):
+    """Return the reasons the fm#880 collision would be back; empty if it is not.
+
+    Split out from the test so the rule can be exercised against synthetic
+    namespaces as well as the real one — the subprocess probe can only show the
+    namespace as it happens to be today, which cannot demonstrate that the rule
+    still fires when a collision does occur.
+
+    The condition is stated as "these two never collide", not "both are
+    published". Since #982 retired the replay API, no route carries
+    ``response_model=Case``, so the engine's ``VerificationStatus`` enum is no
+    longer reachable from the published contract and does not appear in it. A
+    name that is absent cannot collide — but it can come back, either directly
+    or as a demoted alias the moment something re-exposes the Case graph, so
+    both shapes are still checked.
+    """
+    problems = []
+
+    aliases = {
+        name: module
+        for name, module in module_qualified_aliases(
+            schema_names, loaded_modules
+        ).items()
+        if name.split("__")[-1] == "VerificationStatus"
+    }
+    if aliases:
+        problems.append(
+            "VerificationStatus was demoted to a module-qualified alias — the "
+            "collision is back: "
+            + ", ".join(
+                f"{name} (from {module})" for name, module in sorted(aliases.items())
+            )
+        )
+
+    if solution_verification is None:
+        problems.append(
+            "SolutionVerificationData is missing from the component namespace; "
+            "it is published by the RESOLVED-phase response and should be there"
+        )
+    elif solution_verification.get("type") != "object":
+        problems.append(
+            "SolutionVerificationData should be an object; it is "
+            f"{solution_verification.get('type')}"
+        )
+
+    if verification_status is not None and "enum" not in verification_status:
+        problems.append(
+            "VerificationStatus is published again but is not the domain enum "
+            f"(type={verification_status.get('type')}) — something else has "
+            "taken the short name"
+        )
+
+    return problems
+
+
 @pytest.mark.integration
 @pytest.mark.slow
 def test_verification_status_classes_have_distinct_names(probe):
@@ -173,29 +230,60 @@ def test_verification_status_classes_have_distinct_names(probe):
     ``modules.case.domain.models.VerificationStatus`` (the engine's assessment
     enum) and the RESOLVED-phase response model formerly also called
     ``VerificationStatus`` are unrelated types that happened to share a name.
-    Asserting on their *shape* — enum vs object — rather than merely on their
-    presence is what distinguishes them being genuinely separate components
-    from one of them having been demoted and the assertion following the alias.
+    Checking *shape* — enum vs object — rather than mere presence is what
+    distinguishes them being genuinely separate components from one of them
+    having been demoted and the assertion following the alias.
     """
-    missing = [
-        name
-        for name, component in (
-            ("VerificationStatus", probe["verification_status"]),
-            ("SolutionVerificationData", probe["solution_verification"]),
-        )
-        if component is None
-    ]
-    assert not missing, (
-        f"expected both components to exist under their own short names; "
-        f"missing {missing}. If one is absent, it was demoted to a "
-        f"module-qualified alias — the collision is back."
+    problems = verification_status_problems(
+        probe["schemas"],
+        probe["modules"],
+        probe["verification_status"],
+        probe["solution_verification"],
     )
 
-    assert "enum" in probe["verification_status"], (
-        "VerificationStatus should be the domain enum; it is now "
-        f"{probe['verification_status'].get('type')}"
+    assert not problems, "\n".join(problems)
+
+
+def test_verification_status_rule_detects_a_returning_collision():
+    """The rule above must still fail when the collision actually comes back.
+
+    Pure and instant, like ``test_alias_detection_ignores_fastapi_generated_names``:
+    it exercises the rule rather than the app, so the rule cannot quietly stop
+    being able to fail just because today's namespace happens to satisfy it.
+    """
+    loaded = {"faultmaven", "faultmaven.models.case_ui"}
+    enum = {"enum": ["verified", "refuted"]}
+    obj = {"type": "object"}
+
+    # Today's shape: the enum is unpublished, the object is present. Clean.
+    assert (
+        verification_status_problems(["SolutionVerificationData"], loaded, None, obj)
+        == []
     )
-    assert probe["solution_verification"]["type"] == "object"
+
+    # Both published under their own short names is equally clean.
+    assert (
+        verification_status_problems(
+            ["VerificationStatus", "SolutionVerificationData"], loaded, enum, obj
+        )
+        == []
+    )
+
+    # A demoted alias is the collision returning.
+    assert verification_status_problems(
+        ["faultmaven__models__case_ui__VerificationStatus", "SolutionVerificationData"],
+        loaded,
+        None,
+        obj,
+    )
+
+    # The short name taken by something that is not the enum.
+    assert verification_status_problems(
+        ["VerificationStatus", "SolutionVerificationData"], loaded, obj, obj
+    )
+
+    # The published half going missing.
+    assert verification_status_problems(["VerificationStatus"], loaded, enum, None)
 
 
 def test_alias_detection_ignores_fastapi_generated_names():

@@ -6,7 +6,10 @@ These capabilities are implemented in the `MilestoneEngine` and supported by the
 
 ## 1. State Checkpointing
 
-FaultMaven uses a **Turn-Based Checkpointing** system to keep investigation state durable and auditable. Both the write path and the read-side surfaces (time travel, semantic diff — see §2) are implemented; what limits them is how sparsely checkpoints are written (§1.2, §2.3).
+FaultMaven snapshots case state immediately **before each state transition**, so a
+transition that goes wrong leaves the prior state recoverable from the database.
+This is a pre-transition recovery record, not a replay log: it is written on
+transitions only, and it has no online reader (see §2).
 
 ### 1.1 Mechanism
 
@@ -26,70 +29,73 @@ so the engine degrades safely when the service is not wired.
 | [`milestone_engine.py:9365`](../../../faultmaven/core/investigation/milestone_engine.py) | Just before INQUIRY → INVESTIGATING (Gap #6) | `from_state`, `to_state="investigating"` |
 | [`milestone_engine.py:9778`](../../../faultmaven/core/investigation/milestone_engine.py) | Just before a user-confirmed terminal transition (Gap #6) | `from_state`, `to_state` |
 
-The `pre_case_action` snapshots make every state change reversible at the data
-layer — the prior snapshot is still on disk.
+These snapshots make every state change reversible at the data layer — the prior
+state is still on disk, recoverable by an operator reading `case_checkpoints`.
+That is the whole of what checkpoints promise.
 
-**There is no per-turn checkpoint.** A fourth site took a `turn_complete` snapshot
-at the end of every successful turn, giving per-turn coverage without depending
-on these three narrower transition paths. It lived in `AgentOrchestrationService`
-— on the `/sessions/execute` surface, which no frontend called — and was deleted
-with it in #982. It was never on the `/turns` path, so this is a long-standing
-gap that #982 exposed rather than a regression it caused.
+**There is no per-turn checkpoint, by decision.** A fourth site took a
+`turn_complete` snapshot at the end of every successful turn. It lived in
+`AgentOrchestrationService` — on the `/sessions/execute` surface no frontend
+called — and was deleted with it in #982; it was never on the `/turns` path, so
+per-turn coverage has never existed for a case a user actually ran.
+
+It was not reinstated, because a checkpoint is a **full `case.model_dump()`**. One
+snapshot per turn makes storage grow with turns × case size, and a case's snapshot
+grows as its own evidence and hypotheses accumulate — so the cost is quadratic in
+the length of an investigation, not linear. Turning that on responsibly needs a
+retention and pruning policy that does not exist. Transition-shaped checkpointing
+is bounded (a handful per case lifetime) and buys the property actually claimed
+above.
+
 `CheckpointService.create_checkpoint` still defaults `trigger` to
-`"turn_complete"`; no caller passes it.
-
-The consequence is that a turn which adds evidence and hypotheses but changes no
-case state leaves no checkpoint — and that is what starves the replay endpoints.
-See [§2.3](#23-the-sparsity-problem) for the decision this forces.
+`"turn_complete"`. That default now has no caller; it is left as the seam a future
+per-turn implementation would use, once retention is designed.
 
 ### 1.3 Auditability Today
 
-`TurnProgress` entries in `case.turn_history` still capture per-turn gate/progress milestones, evidence added, hypotheses generated, and turn outcomes — that surface is unchanged and is the primary feed for in-product turn-by-turn UI. Checkpoints sit underneath it as the durable snapshot store; they become observable to the user only when the time-travel surfaces in §2 land.
+`TurnProgress` entries in `case.turn_history` capture per-turn gate/progress
+milestones, evidence added, hypotheses generated, and turn outcomes. **That — not
+checkpoints — is the per-turn audit surface**, and it is the primary feed for the
+in-product turn-by-turn UI. Checkpoints sit beneath it as a transition-time
+recovery record with no user-facing surface.
 
-## 2. Replay & Debugging (Time Travel)
+## 2. Replay & Debugging (Time Travel) — RETIRED
 
-> **Implementation Status: BUILT, but starved of data.**
->
-> Both endpoints exist, are mounted, and are published in the OpenAPI spec. What
-> is missing is checkpoints to serve: §1.2 records at three transition points
-> only, so most turn numbers have no snapshot and `restore_at_turn` raises
-> `NotFoundError`. This section previously claimed the endpoints did not exist;
-> they do.
+> **Removed.** `GET /cases/{case_id}/snapshot/{turn_number}` and
+> `GET /cases/{case_id}/diff` existed, were mounted, and were published in the
+> OpenAPI spec. They were deleted along with `CaseReplayer`, and dropped from the
+> spec, because they could not honour the contract they advertised.
 
-**Read-Only Time Travel** lets users and developers inspect the state of an
-investigation at a previous turn. Implemented in
-`modules/case/api/replay.py` (router) over
-`modules/case/domain/services/replayer.py` (`CaseReplayer`), mounted by
-`modules/case/api/routes.py`.
+### 2.1 Why
 
-### 2.1 State Restoration
+`restore_at_turn` matched a checkpoint by exact turn number, with no
+nearest-preceding fallback. Checkpoints are written only at state transitions
+(§1.2), so most turn numbers had no snapshot and the endpoint answered
+`NotFoundError`. It was not a degraded experience; for the substance of an
+investigation — turns that add evidence and hypotheses without changing state —
+it was a guaranteed 404.
 
-- **Functionality**: reconstructs a full `Case` from a historical checkpoint via `Case.model_validate(checkpoint.case_snapshot)`.
-- **API Endpoint**: `GET /cases/{case_id}/snapshot/{turn_number}` — **live**.
-- **Lookup is exact**: `restore_at_turn` matches `cp.turn_number == turn_number` against the case's checkpoints. There is no nearest-preceding fallback, so a turn with no checkpoint 404s and the error lists the turns that do have one.
-- **Read-Only**: restored cases are for inspection only. You cannot resume from a past state (no forking).
+Nothing called it. Neither the dashboard nor the copilot has a hand-written caller;
+both only carried the generated type declarations derived from the spec. So this
+was a mounted, advertised, permanently-failing surface with no consumer — the same
+shape as the shadow stack removed in #982, and removed for the same reason.
 
-### 2.2 Semantic Diffing
+### 2.2 What it would take to bring back
 
-- **Functionality**: computes the recursive difference between two investigation states (e.g. Turn 2 vs Turn 5), highlighting added hypotheses, state changes and modified evidence.
-- **API Endpoint**: `GET /cases/{case_id}/diff?from={t1}&to={t2}` — **live**.
-- Subject to the same sparsity: both endpoints of the comparison must be turns that happen to carry a checkpoint.
+Replay needs per-turn checkpoints, and per-turn checkpoints need a retention
+policy first — a checkpoint is a full `case.model_dump()`, so writing one per turn
+costs turns × case size, and the case grows as the investigation does. Designing
+that is the prerequisite; the API is the easy part and should be rebuilt against
+whatever the retention model turns out to be, not restored from git.
 
-### 2.3 The Sparsity Problem
+Two things survive to build on: `CheckpointService.create_checkpoint` still takes a
+`trigger` (defaulting to the now-callerless `"turn_complete"`), and
+`case_checkpoints` still stores immutable, hash-stamped snapshots.
 
-Replay is only as good as its checkpoint coverage, and coverage is currently
-transition-shaped, not turn-shaped. A turn that adds evidence and hypotheses but
-changes no case state is invisible to replay — which is much of an
-investigation's substance.
+### 2.3 What still answers "what happened on turn N"
 
-This is not a regression from #982: the live path never wrote per-turn
-checkpoints. The deleted service's `turn_complete` site was on the unused
-`/sessions/execute` surface, so replay has been sparse for every case a user has
-actually run. Closing it is a deliberate choice between two coherent states —
-add a turn-end checkpoint (`CheckpointService`'s `trigger` default is already
-`"turn_complete"`, waiting for a caller, at the cost of a full case snapshot per
-turn), or retire replay as another built-but-uncalled surface. Both are honest;
-the current middle is not.
+`case.turn_history` (§1.3). It is per-turn, it is already the feed for the
+turn-by-turn UI, and it costs a row rather than a full case snapshot.
 
 ## 3. Interrupt & Resume (Human-in-the-Loop)
 
