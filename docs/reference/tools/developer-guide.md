@@ -603,21 +603,22 @@ Before submitting a new tool:
 - [ ] All tests pass (`pytest`)
 - [ ] No linter errors (`ruff check`)
 
-## Tool Result Compression
+## Tool Results and the Context Budget
 
-Tool results are subject to **context budget tracking** in the `AgentOrchestrationService`. When cumulative tool result characters exceed the 30K budget, results are compressed before being sent to the LLM:
+Tool results are subject to a **context budget** in `MilestoneEngine._tool_augmented_generate()`. The budget is a token count, resolved from `prompt_budget.tool_observation_max_tokens` and floored by the real context window of the model in use.
 
-- **Standard compression** (at 80% budget): First 3 lines + high-signal keyword lines + last 2 lines
-- **Aggressive compression** (over budget): First line + high-signal keyword lines only
+When the assembled messages exceed it, the engine keeps the head (system + base task) and re-adds tool-call groups newest-first while they fit. Whatever does not fit is dropped **whole**, replaced by a single marker:
 
-**High-signal keywords**: `error`, `exception`, `fail`, `timeout`, `refused`, `denied`, `critical`, `fatal`, `panic`, `crash`, `kill`, `oom`, `traceback`, `stacktrace`, `caused by`
+> `[Earlier tool calls and their results were elided to stay within the context budget. Re-run a search if you need those specifics.]`
 
 **Implications for tool developers**:
 
-1. **Put critical information early**: The first 1-3 lines of your tool result are always preserved. Include the most important findings there.
-2. **Use high-signal keywords**: Results containing error-related keywords are preserved during compression. Structure your output to include these naturally.
-3. **Keep results concise**: Shorter results are less likely to trigger compression. Avoid dumping raw data — summarize and highlight key findings.
-4. **Uncompressed audit trail**: The original uncompressed result is always saved in the `AgentToolCall` record, so no data is lost for debugging.
+1. **Your result is never rewritten.** A tool result is either passed to the LLM verbatim or elided entirely with the marker accounting for it. You do not need to defend against having your output thinned mid-body.
+2. **Recency wins, not position within your output.** The oldest tool calls are dropped first. On a long tool loop, an early result may vanish from a later iteration's context — so if a finding matters for the turn's conclusion, restate it in the result of the call that acts on it rather than assuming the earlier one is still visible.
+3. **Length costs the whole group.** A verbose result makes its group a bigger candidate for elision. Prefer dense output over padded output, but do not truncate to hit a line count — there is no line-based preservation rule to exploit.
+4. **Nothing keeps a copy.** An elided result is gone from that call's context and is not archived anywhere the agent or a debugger can reach it — `agent_tool_calls` has had no writer since the orchestration service was removed. Treat the result you return as the only record of it.
+
+> **Changed in #982.** The previous mechanism counted characters against a fixed 30K `TOOL_RESULT_BUDGET` and compressed individual results by keeping the first few lines plus any lines matching a high-signal keyword list (`error`, `exception`, `timeout`, `traceback`, …). It lived in `AgentOrchestrationService` and went with it, along with the `AgentToolCall` audit row that used to hold the uncompressed original. If you have tools written to that contract — front-loading findings into the first three lines, or seeding keywords to survive filtering — neither technique does anything now. Points 2 and 4 above are the rules that replaced them.
 
 ---
 

@@ -27,8 +27,6 @@ faultmaven/modules/agent/
 ├── api/
 │   └── __init__.py             # No routes — see Overview
 ├── domain/
-│   ├── events/
-│   │   └── execution_events.py # ExecutionEvent, streaming event types
 │   ├── models/
 │   │   └── agentic.py          # Agentic framework models, QueryIntent, SuggestedAction
 │   └── services/
@@ -37,7 +35,7 @@ faultmaven/modules/agent/
 ├── jobs/
 │   └── storage_cleanup.py      # TTL-based orphan-file sweep
 ├── tools/
-│   ├── base.py                 # AgentTool base class, ToolContext
+│   ├── base.py                 # AgentTool base class, ToolContext, Tool
 │   ├── list_evidence_tool.py
 │   ├── list_evidence_by_time_tool.py
 │   ├── list_top_entities_tool.py
@@ -172,14 +170,8 @@ from faultmaven.modules.case.contracts import (
     ExecutionStatus,
 )
 
-# Events
-from faultmaven.modules.agent.domain.events.execution_events import (
-    ExecutionEvent,
-    ExecutionEventType,
-)
-
 # Tools
-from faultmaven.modules.agent.tools.base import AgentTool, ToolContext
+from faultmaven.modules.agent.tools.base import AgentTool, Tool, ToolContext
 ```
 
 The module does not eagerly import its submodules — import them directly, as

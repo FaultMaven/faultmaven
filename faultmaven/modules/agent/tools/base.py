@@ -13,9 +13,39 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from faultmaven.models.interfaces import BaseTool, ToolResult
-from faultmaven.modules.agent.domain.events.execution_events import Tool
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Tool:
+    """Tool definition for LLM function calling.
+
+    The wire shape an ``AgentTool`` is converted into before it is handed to a
+    provider. Lived in ``domain/events/execution_events.py`` until #982, as part
+    of the deleted orchestrator's event vocabulary; it is here now because
+    ``AgentTool.to_llm_tool`` is its only consumer.
+
+    Attributes:
+        name: Unique name of the tool
+        description: Human-readable description
+        parameters: JSON Schema for tool parameters
+    """
+
+    name: str
+    description: str
+    parameters: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for LLM API."""
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
 
 
 def derive_kb_context_metadata(case: Any) -> Dict[str, str]:
