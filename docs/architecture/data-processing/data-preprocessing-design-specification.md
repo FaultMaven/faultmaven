@@ -123,7 +123,7 @@ Three changes close a class of first-request cold-start incidents where a 225 KB
 | Area | v5.2 | v5.3 |
 |------|------|------|
 | **Entry point** | Multiple preprocessing entry paths (legacy `process_upload`, `ChunkingService`, `PreprocessingService.preprocess`) cohabited with `classify_and_extract` | Single entry point in §2.4: `PreprocessingService.classify_and_extract()`. Legacy paths deleted (violated Tier 0+1 zero-LLM guarantee or were unreachable). |
-| **Appendix B** | Stub / incomplete extractor reference | Rewritten: per-extractor `strategy_name` table, runtime markers (`page_capture_passthrough`, `structure_extraction`, `none`, `classification_failed`), uniform output budget (`MAX_STRUCTURAL_INDEX_TOKENS=2500`, `MAX_STRUCTURAL_INDEX_CHARS=10000`), shared utilities (`extract_timestamp`, `format_coverage_metadata`), 21 enumerated detect-secrets plugins as a security contract. |
+| **Appendix B** | Stub / incomplete extractor reference | Rewritten: per-extractor `strategy_name` table, runtime markers (`page_capture_passthrough`, `structure_extraction`, `none`, `classification_failed`), uniform output budget (`MAX_STRUCTURAL_INDEX_TOKENS=2500`, `MAX_STRUCTURAL_INDEX_CHARS=10000`), shared utilities (`extract_timestamp`, `extract_time_range`), 21 enumerated detect-secrets plugins as a security contract. |
 | **Tier-0 command detection** | Spec implied broad command coverage; code matched only 7 commands with single-pattern detection | Spec and code aligned on the 14-command `COMMAND_OUTPUTS` dict with ≥2-pattern requirement (top/ps/vmstat/iostat/netstat/free/df/lsof → COMMAND_OUTPUT; dmesg/journalctl/strace/ltrace → LOGS_AND_ERRORS; perf → PROFILING_DATA; lscpu → STRUCTURED_CONFIG). Documented in [data-classification-strategy.md v3.0](./data-classification-strategy.md#command-output-classification). |
 | **Companion: classification strategy** | Documented as 6-level cascade with `AdaptiveClassifier` / `PatternLearner` / `fallback_level` (none of which existed in code) | Rewritten as v3.0: 5-priority signal-source ordering (user_override / agent_hint / source_url / browser_context / rule_based), CSV/TSV structural gate, extension-sensitive LOGS thresholds, `_validate_hint` safety valve. |
 | **Removed dead fields** | `sanitization_applied`, `redactions_count`, `security_flags`, `EXTRACTION_VERSION`, `CONFIDENCE_HIGH/MEDIUM/LOW_THRESHOLD` referenced in spec | Removed — PII redaction runs at the LLM boundary, not at extraction time; replaced with `CONFIDENCE_THRESHOLDS` + `FILE_UPLOAD_CONFIDENCE_BOOST` constants. |
@@ -135,6 +135,8 @@ Three changes close a class of first-request cold-start incidents where a 225 KB
 | **Vectorization trigger** | Reactive: auto-vectorize after 3+ DA calls, 3+ empty searches, timeout, or low confidence | Proactive: background vectorization starts immediately for DA-mode large files. Reactive triggers retained as fallback (timeout, empty searches, low confidence). `da_call_count >= 3` trigger removed. |
 | **Integration point** | `agent_orchestration_service._execute_with_streaming()` (secondary `/sessions/execute` path only) | `milestone_engine._tool_augmented_generate()` (primary `/turns` path). Tracking lives where tools execute — same pattern as `deep_analysis_count` / `MAX_DEEP_ANALYSIS` enforcement already in the method. |
 | **Cross-turn DA init** | `EvidenceDAState` initialized with `da_call_count=0` every turn; persistent count synced only after a DA call completes | `da_invocation_count` persisted on Evidence model via `repository.save(case)` after each `deep_analysis` call. |
+| **Reactive triggers** | 4 triggers: timeout, 3+ empty searches, 3+ DA calls, low confidence | 3 triggers: timeout, 3+ empty searches, low confidence. DA call count trigger removed (replaced by proactive vectorization). |
+| **Small-file fallback condition** | Redundant `not self._should_auto_vectorize(state)` check | Simplified to direct size check: `content_size_bytes < vectorization_min_size_bytes`. |
 
 > **Superseded by #982.** The v5.1 column describes `AgentOrchestrationService`,
 > which no longer exists — that whole path was dead code and was deleted. The
@@ -143,8 +145,6 @@ Three changes close a class of first-request cold-start incidents where a 225 KB
 > exists. DA tracking on the engine path is in-turn only, keyed by `evidence_id`
 > in turn-local dicts; persisting it would need a backing column that nothing
 > else wants yet. See [Orchestration Capabilities §5.2](../investigation-engine/orchestration-capabilities.md#52-per-evidence-da-failure-tracking--auto-vectorization-r4-v50).
-| **Reactive triggers** | 4 triggers: timeout, 3+ empty searches, 3+ DA calls, low confidence | 3 triggers: timeout, 3+ empty searches, low confidence. DA call count trigger removed (replaced by proactive vectorization). |
-| **Small-file fallback condition** | Redundant `not self._should_auto_vectorize(state)` check | Simplified to direct size check: `content_size_bytes < vectorization_min_size_bytes`. |
 
 ### v5.0 → v5.1 (Page Capture Pipeline)
 
@@ -432,9 +432,9 @@ All 10 active extractors (excluding VisualEvidence) return **coverage metadata**
 > - **cProfile**: `Functions profiled` = count of parsed call sites; `Top function` = highest-cumtime location.
 > - **Flame graph**: `Functions profiled` = count of unique leaf frames (the functions on CPU when sampled — the R3-useful signal for "is function X present?"); `Top function` = leaf of the highest-sampled stack.
 > - **perf report**: `Functions profiled` = count of parsed symbols; `Top function` = highest-overhead symbol.
-> - **perf stat** and **unknown-format fallback**: neither field is emitted, because these formats carry no function-level data. `format_coverage_metadata` drops `None`-valued keys, so the absence is genuine (not a lie by omission).
+> - **perf stat** and **unknown-format fallback**: neither field is emitted, because these formats carry no function-level data. `file_meta` simply omits keys with no value, so the absence is genuine (not a lie by omission).
 
-Coverage data is stored as a structured `file_meta` dict in `ExtractResult`, returned alongside `file_extract` and `search_map`. Utility functions in `faultmaven/modules/preprocessing/extractors/utils.py` provide `format_coverage_metadata()`, `extract_timestamp()`, and `extract_time_range()`.
+Coverage data is stored as a structured `file_meta` dict in `ExtractResult`, returned alongside `file_extract` and `search_map`. Utility functions in `faultmaven/modules/preprocessing/extractors/utils.py` provide `extract_timestamp()`, `extract_time_range()`, and `extract_time_range_ts()`.
 
 ### 2.3 Classification Fallback: Best-Effort Dispatch
 
@@ -1250,35 +1250,38 @@ da_vectorized: set[str] = set()               # evidence IDs already vectorized
 
 - `search_file` returns 0 results → `da_empty_search_counts[evidence_id] += 1`
 - `search_file` returns results → `da_empty_search_counts[evidence_id] = 0` (reset)
-- `deep_analysis` completes → `da_invocation_count` persisted on Evidence model
+- `deep_analysis` completes → confidence recorded for the low-confidence trigger (in-turn)
 - Any tool times out → triggers reactive vectorization immediately
 
 **Reactive vectorization**: When any reactive trigger fires AND the file passes the size gate AND proactive vectorization hasn't already completed, `_reactive_vectorize()` is called. It checks size gates, calls `_vectorize_evidence()`, and injects the `[SYSTEM]` message on success.
 
-**Cross-turn persistence**: `da_invocation_count` on the Evidence model is incremented and persisted via `repository.save(case)` after each `deep_analysis` call in `_track_da_result()`:
+**Cross-turn persistence**: none — see "Reactive Vectorization (Fallback)" above for
+the full account. `da_invocation_count` was specified here as an Evidence field
+written back via `repository.save(case)`, but no such field exists on the model and
+no backing column was ever added; the counters in `_track_da_result()` are turn-local
+dicts. The durable "already vectorized" signal is the `evidence.vectorized` column.
 
-```python
-# In _track_da_result() — after deep_analysis completes:
-for ev in case.evidence:
-    if ev.evidence_id == evidence_id:
-        ev.da_invocation_count = getattr(ev, "da_invocation_count", 0) + 1
-        break
-await self.repository.save(case)
-```
+#### R5: Context Budget
 
-#### R5: Context Budget Tracking and Tool Result Compression
+Tool results can flood the LLM context window with log noise. The engine resolves a
+per-turn token budget from `prompt_budget.tool_observation_max_tokens`, floored by the
+real context window of the model in use, and estimates tokens per assembled message. If
+the total fits, the messages pass through untouched. Otherwise the head (system + base
+task) is kept and tool-call groups are re-added newest-first while they fit; whatever
+does not fit is dropped **whole**, replaced by a single marker:
 
-Tool results can flood the LLM context window with log noise. The orchestration service tracks cumulative tool result size (in characters) against a 30K char budget (`TOOL_RESULT_BUDGET`):
+> `[Earlier tool calls and their results were elided to stay within the context budget. Re-run a search if you need those specifics.]`
 
-| Budget Usage | Compression Level | Behavior |
-| --- | --- | --- |
-| < 80% (< 24K chars) | None | Full tool result passed through |
-| 80-100% (24K-30K) | Standard | First 3 lines + high-signal keyword lines + last 2 lines |
-| > 100% (> 30K) | Aggressive | First line + high-signal keyword lines only |
+Elision affects only what the LLM sees on that call, and it never alters the text of a
+result the agent does see — a result is either present in full or absent with the marker
+accounting for it. See the [tool developer guide](../../reference/tools/developer-guide.md#tool-results-and-the-context-budget)
+for what this means when writing a tool.
 
-**High-signal keywords** (15 terms): `error`, `exception`, `fail`, `timeout`, `refused`, `denied`, `critical`, `fatal`, `panic`, `crash`, `kill`, `oom`, `traceback`, `stacktrace`, `caused by`.
-
-Compression modifies only what the LLM sees — the full uncompressed content is preserved in the `AgentToolCall` database record for audit purposes.
+> **Changed in #982.** The previous mechanism counted characters against a fixed 30K
+> `TOOL_RESULT_BUDGET` and compressed individual results by keeping the first few lines
+> plus any lines matching a 15-term high-signal keyword list. It lived in
+> `AgentOrchestrationService` and went with it, along with the `AgentToolCall` audit row
+> that held the uncompressed original — `agent_tool_calls` has had no writer since.
 
 ---
 
@@ -1567,7 +1570,7 @@ Runtime markers (set by `PreprocessingService`, not by any extractor):
 - `extract_timestamp(line)` / `extract_time_range(content)` — recognise ISO-8601 (with/without `T`), syslog BSD, epoch seconds, epoch milliseconds, and YYMMDD HHMMSS (Hadoop/HDFS compact format, added v5.7). Scan only the first 10 and last 10 lines to stay within the Tier 1 latency budget.
 - `extract_time_range_ts(content)` — same timestamp recognition, returns a `(first_ts, last_ts)` tuple of `datetime` objects (not strings). Used by `LogsAndErrorsExtractor` to compute log duration and per-event temporal spans, and lifted onto `PreprocessingResult.coverage_start_ts/end_ts` for the case timeline.
 - `has_content()` + `EMPTY_CONTENT_RESPONSE` — uniform empty-input guard.
-- `COVERAGE_SEPARATOR` + `format_coverage_metadata(**kwargs) -> str` — **legacy backward-compat shim, no longer produced by any extractor.** Active extractors emit coverage as the `file_meta` dict on `ExtractResult` (see §2.2 Coverage Metadata). The constant and helper remain because `agent_orchestration_service.py` still parses pre-v5.4 evidence rows by splitting on `COVERAGE_SEPARATOR` (see the `# Legacy: parse old COVERAGE_SEPARATOR format` branch). Do not introduce new callers.
+- `COVERAGE_SEPARATOR` + `format_coverage_metadata(**kwargs) -> str` — **removed in #982.** No extractor had produced the separator since coverage moved to the `file_meta` dict on `ExtractResult` (see §2.2 Coverage Metadata), and the only consumer was the legacy parse branch inside `agent_orchestration_service.py`, which went with the service. Coverage is typed data now; do not reintroduce a string-separator format.
 
 ### Extractor-specific notes
 

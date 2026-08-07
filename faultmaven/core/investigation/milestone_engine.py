@@ -3103,6 +3103,7 @@ class MilestoneEngine:
         case: "Case",
         user_message: str,
         metadata: dict[str, Any],
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Handle turns on terminal cases: Q&A, report regeneration, runbook creation.
 
@@ -3133,7 +3134,9 @@ class MilestoneEngine:
             return await self._handle_runbook_creation(case, metadata)
 
         # Scenario 3: Q&A
-        return await self._process_terminal_qa(case, user_message, metadata)
+        return await self._process_terminal_qa(
+            case, user_message, metadata, user_id=user_id
+        )
 
     async def _handle_report_regeneration(
         self,
@@ -3522,10 +3525,16 @@ class MilestoneEngine:
         case: "Case",
         user_message: str,
         metadata: dict[str, Any],
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Process a Q&A turn on a terminal case via the LLM.
 
         Uses TERMINAL_TEMPLATE and TerminalResponse schema. No state mutations.
+
+        ``user_id`` is the authenticated principal for the turn; it keys the KB
+        read allowlist the ``kb_qa`` tool builds (owner + team arms). A terminal
+        case still answers questions, so its Q&A turn must read the same KB the
+        user's non-terminal turns do.
         """
         from faultmaven.config.settings import get_settings
         from faultmaven.infrastructure.security.case_redaction import (
@@ -3564,8 +3573,8 @@ class MilestoneEngine:
         tools_kwargs: dict[str, Any] = {}
         if self.investigation_tools:
             tools_kwargs["investigation_tools"] = self._build_da_tool_schemas()
-            tools_kwargs["tool_context"] = self._build_tool_context(
-                case, intent_data=None
+            tools_kwargs["tool_context"] = await self._build_tool_context(
+                case, user_id=user_id
             )
             tools_kwargs["force_tool_use"] = False
 
@@ -3637,6 +3646,7 @@ class MilestoneEngine:
         attachments: list[dict[str, Any]] | None = None,
         intent_type: str | None = None,
         intent_data: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """
         Process a single conversation turn with optional structured intent.
@@ -3655,6 +3665,10 @@ class MilestoneEngine:
             attachments: Optional file attachments
             intent_type: Optional structured intent type (status_transition, confirmation, etc.)
             intent_data: Optional intent-specific data
+            user_id: Authenticated principal for this turn. Keys the KB read
+                allowlist handed to the agent's tools (owner + team arms,
+                ADR-013 §D4). ``None`` means no principal — an engine-internal
+                turn — and collapses the allowlist to the global corpus.
 
         Returns:
             {
@@ -3688,6 +3702,7 @@ class MilestoneEngine:
                     attachments,
                     intent_type,
                     intent_data,
+                    user_id=user_id,
                 )
             finally:
                 active_token_tracker.reset(token)
@@ -3741,6 +3756,7 @@ class MilestoneEngine:
         attachments: list[dict[str, Any]] | None = None,
         intent_type: str | None = None,
         intent_data: dict[str, Any] | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Inner implementation of process_turn, called under per-case lock."""
         # Add intent information to logger for tracing
@@ -3784,7 +3800,9 @@ class MilestoneEngine:
 
             # 0a. Terminal case handling — Q&A and report regeneration only
             if case.is_terminal:
-                return await self._process_terminal_turn(case, user_message, metadata)
+                return await self._process_terminal_turn(
+                    case, user_message, metadata, user_id=user_id
+                )
 
             # 0b. Pending transition confirmation — short-circuit before LLM
             # When a pending transition exists (User-Agent Handshake), check if
@@ -4584,7 +4602,7 @@ class MilestoneEngine:
                     processing_mode, case, bool(has_pending)
                 )
                 da_tools = self._build_da_tool_schemas()
-                da_context = self._build_tool_context(case, intent_data)
+                da_context = await self._build_tool_context(case, user_id=user_id)
                 response_obj = await self._generate_structured_output(
                     prompt,
                     schema_model,
@@ -6395,14 +6413,72 @@ class MilestoneEngine:
             "- Reference evidence by filename or description, never by ev_ IDs."
         )
 
-    def _build_tool_context(self, case: Any, intent_data: dict | None = None) -> Any:
-        """Build ToolContext for tool execution during DA turns."""
+    async def _resolve_shared_kb_ids(self, user_id: str, organization_id: Any) -> list:
+        """KB item ids shared to ``user_id``'s teams — the team arm of the tool
+        path's read allowlist (ADR-013 §D4).
+
+        Keyed on the **session** user, matching the owner arm: ``kb_tool_adapter``
+        passes ``ToolContext.user_id`` to ``build_kb_scope_filter`` as the owner,
+        so both arms must describe the same principal. Keying the team arm on the
+        case owner instead would let a collaborator's turn read the owner's
+        team-shared items — a wider allowlist than the reader is entitled to.
+        (``_prefetch_kb_context`` keys on the case owner precisely because it is
+        not acting for a session user; the two are deliberately different.)
+
+        ``team_service``/``share_repository`` are wired post-construction and are
+        absent in standalone, so a missing collaborator collapses the team arm to
+        empty rather than raising — global ∪ owned still resolves.
+        """
+        if not user_id or user_id == "system":
+            return []
+
+        team_service = getattr(self, "team_service", None)
+        share_repository = getattr(self, "share_repository", None)
+        if not team_service or not share_repository:
+            return []
+
+        from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+            resolve_shared_kb_ids,
+        )
+
+        try:
+            team_ids = await team_service.list_all_user_team_ids(user_id)
+            return await resolve_shared_kb_ids(
+                share_repository, team_ids, organization_id
+            )
+        except Exception:  # noqa: BLE001
+            # Degrade to global ∪ owned rather than failing the turn. Narrowing
+            # is safe; the alternative would be an unscoped read.
+            logger.warning(
+                "shared_kb_id_resolution_failed",
+                extra={"user_id": user_id},
+                exc_info=True,
+            )
+            return []
+
+    async def _build_tool_context(self, case: Any, user_id: str | None = None) -> Any:
+        """Build ToolContext for tool execution during DA turns.
+
+        ``user_id`` is the turn's authenticated principal, threaded down from
+        ``process_turn``. It is the *only* source: it previously came off
+        ``intent_data``, which no caller populates — ``InvestigationService``
+        builds that dict from ``QueryIntent.model_dump()`` (a model with no
+        ``user_id`` field) plus ``query_mode``, so every live turn resolved to
+        ``"system"`` and both arms of the KB read allowlist
+        (``build_kb_scope_filter(user_id, shared_kb_ids)``) collapsed to the
+        global corpus. Reading it from the intent payload would also make the
+        read principal client-settable; the parameter comes from
+        ``current_user.user_id``.
+
+        ``None`` (engine-internal turn, no principal) keeps the historical
+        ``"system"`` sentinel, which matches no owner and resolves no teams.
+        """
         from faultmaven.modules.agent.tools.base import (
             ToolContext,
             derive_kb_context_metadata,
         )
 
-        user_id = (intent_data or {}).get("user_id", "system")
+        user_id = user_id or "system"
         organization_id = getattr(case, "organization_id", "")
 
         # Extract current investigation stage for tool context enrichment
@@ -6423,6 +6499,7 @@ class MilestoneEngine:
             case_id=case.case_id,
             organization_id=organization_id,
             user_id=user_id,
+            shared_kb_ids=await self._resolve_shared_kb_ids(user_id, organization_id),
             case_repository=self.repository,
             metadata=metadata,
             in_memory_case=case,
