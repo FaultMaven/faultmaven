@@ -69,7 +69,9 @@ _UNSCOPED_ORG = ""
 
 
 async def bind_request_org_context(
-    authorization: Optional[str] = Header(None, alias="Authorization"),
+    authorization: Optional[str] = Header(
+        None, alias="Authorization", include_in_schema=False
+    ),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> None:
     """Scope the request to its organization for PostgreSQL RLS.

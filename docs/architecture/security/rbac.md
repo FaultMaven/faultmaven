@@ -128,6 +128,18 @@ All regular user permissions, PLUS:
 
 ## Protected Endpoints
 
+> **Which endpoints require authentication is now generated, not maintained
+> here.** [`docs/reference/api/README.md`](../../reference/api/README.md) states
+> the scheme each operation requires, derived from the running app and enforced
+> by the `api-contract-drift` CI job — it cannot fall behind the routes.
+>
+> The tables below remain authoritative for what this file uniquely knows:
+> *which role or ownership* a route demands (`platform_admin` only, "404 if not
+> visible", team membership). OpenAPI expresses "a bearer token is required"
+> and nothing finer. When the two disagree about whether a route is
+> authenticated at all, the generated reference is right by construction and
+> this file needs correcting.
+
 ### Tenant-Scoped Resolution
 
 Roles decide *what* a principal may do. They never decide *whose* data it
