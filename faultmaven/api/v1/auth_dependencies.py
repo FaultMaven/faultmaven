@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request
-from fastapi.security import HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from faultmaven.api.middleware.auth import get_auth_service
 from faultmaven.config.tenant_context import (
@@ -121,7 +121,9 @@ async def get_user_store(request: Request):
 
 # Token Extraction
 async def extract_bearer_token(
-    authorization: Optional[str] = Header(None, alias="Authorization")
+    authorization: Optional[str] = Header(
+        None, alias="Authorization", include_in_schema=False
+    ),
 ) -> Optional[str]:
     """Extract Bearer token from Authorization header
 
@@ -247,11 +249,18 @@ async def get_current_user_optional(
 
 async def require_authentication(
     user: Optional[DevUser] = Depends(get_current_user_optional),
+    _scheme: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> DevUser:
     """Require authenticated user (raises 401 if not authenticated)
 
     Args:
         user: User from optional dependency
+        _scheme: Unused at run time. It is declared so the ``HTTPBearer``
+            security scheme appears in this dependency's tree, which is the
+            only way FastAPI learns to emit ``security`` for the operations
+            that depend on it. The token is still read by
+            ``extract_bearer_token``; this parameter documents, it does not
+            authenticate.
 
     Returns:
         Authenticated DevUser
@@ -263,6 +272,9 @@ async def require_authentication(
         - Use this for endpoints that require authentication
         - Returns proper WWW-Authenticate header for OAuth2 compliance
         - Provides clear error message for missing authentication
+        - Deliberately NOT added to ``get_current_user_optional``: routes that
+          only take optional auth must keep an empty ``security``, since a
+          caller may legitimately omit the header (issue #880)
     """
     if not user:
         correlation_id = str(uuid.uuid4())

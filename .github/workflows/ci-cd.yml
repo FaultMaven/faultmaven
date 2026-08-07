@@ -385,6 +385,47 @@ jobs:
           python scripts/check_import_violations.py
 
   # ============================================================================
+  # API CONTRACT DRIFT
+  # The checked-in API reference must describe the routes this app actually
+  # serves — including which of them require authentication. Regenerating and
+  # diffing is the whole check: there is no hand-maintained list to curate, so
+  # it cannot decay into a partial one (issue #880).
+  #
+  # This lives here rather than in its own workflow on purpose. ci-cd.yml has
+  # no path filters, so it runs on every pull request. The workflow it replaced
+  # filtered on `faultmaven/api/**`, but routes live in
+  # `faultmaven/modules/*/api/`, so it did not trigger on most route changes.
+  # ============================================================================
+  api-contract-drift:
+    needs: [env-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: API Contract Drift Check
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+          cache-dependency-path: 'requirements/dev.txt'
+
+      - name: Install Dependencies from Lockfile
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/dev.txt
+          pip install -e . --no-deps
+
+      - name: Check API reference matches the app
+        env:
+          SKIP_SERVICE_CHECKS: "true"
+        run: |
+          python scripts/generate_api_docs.py --check
+
+  # ============================================================================
   # PACKAGING TESTS
   # Verify pyproject.toml and packaging configuration
   # ============================================================================
@@ -418,7 +459,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [test-standalone, test-cloud, test-postgres, architecture-lint, test-packaging]
+    needs: [test-standalone, test-cloud, test-postgres, architecture-lint, api-contract-drift, test-packaging]
 
     steps:
       - name: Checkout Repository
