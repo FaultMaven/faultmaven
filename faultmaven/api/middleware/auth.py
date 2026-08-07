@@ -30,7 +30,7 @@ Design Reference: TASK-017 JWT Authentication & Authorization Middleware
 import logging
 from typing import Callable, Optional
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
@@ -108,9 +108,7 @@ def set_auth_service(
 
 
 async def get_current_user(
-    authorization: Optional[str] = Header(
-        None, alias="Authorization", include_in_schema=False
-    ),
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> AuthenticatedUser:
@@ -121,7 +119,7 @@ async def get_current_user(
     Header format: "Bearer <jwt_token>"
 
     Args:
-        authorization: Authorization header value (legacy support)
+        request: The incoming request, read for its Authorization header
         credentials: HTTPBearer credentials (for OpenAPI docs)
         auth_service: AuthService instance
 
@@ -133,7 +131,7 @@ async def get_current_user(
         HTTPException 403: Token expired or revoked
     """
     # Extract token from header
-    token = _extract_token(authorization, credentials)
+    token = _extract_token(request.headers.get("authorization"), credentials)
 
     if not token:
         raise HTTPException(
@@ -180,9 +178,7 @@ async def get_current_user(
 
 
 async def get_current_user_optional(
-    authorization: Optional[str] = Header(
-        None, alias="Authorization", include_in_schema=False
-    ),
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> Optional[AuthenticatedUser]:
@@ -191,14 +187,14 @@ async def get_current_user_optional(
     Use this for endpoints that work both authenticated and unauthenticated.
 
     Args:
-        authorization: Authorization header value
+        request: The incoming request, read for its Authorization header
         credentials: HTTPBearer credentials
         auth_service: AuthService instance
 
     Returns:
         AuthenticatedUser if authenticated, None otherwise
     """
-    token = _extract_token(authorization, credentials)
+    token = _extract_token(request.headers.get("authorization"), credentials)
 
     if not token:
         return None
@@ -406,7 +402,7 @@ def _extract_token(
     - HTTPBearer credentials (for OpenAPI docs)
 
     Args:
-        authorization: Authorization header value
+        authorization: Raw Authorization header value, or None
         credentials: HTTPBearer credentials
 
     Returns:

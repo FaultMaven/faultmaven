@@ -13,6 +13,8 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
 )
 
 if TYPE_CHECKING:  # static analysis only — see make_org_knowledge_item
+    from starlette.requests import Request
+
     from faultmaven.modules.knowledge.domain.models.knowledge_item import (
         KnowledgeItem,
         KnowledgeItemType,
@@ -673,4 +675,32 @@ def forge_refresh_token(
             "jti": str(uuid4()),
             "type": "refresh",
         },
+    )
+
+
+def request_with_authorization(authorization: Optional[str] = None) -> "Request":
+    """A real ``Request`` carrying (or omitting) an ``Authorization`` header.
+
+    The auth and tenant dependencies read the header off the request rather
+    than declaring it as a ``Header(...)`` parameter — declaring it made
+    FastAPI attach a 422 response to every operation that depends on them,
+    including ones with no parameters at all (#880 residual). Tests that
+    exercise those dependencies directly therefore need a request object, and
+    building a genuine one keeps them honest: a stand-in with a ``.headers``
+    dict would pass even if the production code started relying on something
+    else the real type provides.
+    """
+    from starlette.requests import Request
+
+    headers = []
+    if authorization is not None:
+        headers.append((b"authorization", authorization.encode()))
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "query_string": b"",
+            "headers": headers,
+        }
     )

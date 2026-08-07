@@ -29,7 +29,6 @@ Root endpoint with API information.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -46,7 +45,6 @@ Trigger comprehensive system cleanup and optimization.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -209,7 +207,6 @@ Raises:
 **Responses:**
 
 - `200` — Successful Response ([`EnvConfigStatusResponse`](#envconfigstatusresponse))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -243,7 +240,6 @@ Raises:
 **Responses:**
 
 - `200` — Successful Response (`object`)
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -376,7 +372,6 @@ Raises:
 **Responses:**
 
 - `200` — Successful Response ([`LLMConfigResponse`](#llmconfigresponse))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -748,7 +743,6 @@ copilot OAuth-PKCE machine flow.
 **Responses:**
 
 - `200` — Successful Response ([`AuthConfigResponse`](#authconfigresponse))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -816,7 +810,6 @@ and user storage systems.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -886,7 +879,6 @@ is keyed by jti, independent of the signing algorithm.
 **Responses:**
 
 - `200` — Successful Response ([`LogoutResponse`](#logoutresponse))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -907,7 +899,6 @@ Returns detailed information about the currently authenticated user.
 **Responses:**
 
 - `200` — Successful Response ([`UserInfoResponse`](#userinforesponse))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -943,7 +934,6 @@ Scopes are returned narrowest-to-widest: ``personal | team | global``.
 **Responses:**
 
 - `200` — Successful Response ([`AvailableScopesResponse`](#availablescopesresponse))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -1312,7 +1302,6 @@ List all users. Admin only.
 **Responses:**
 
 - `200` — Successful Response (`object`)
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -1467,7 +1456,6 @@ including connectivity and performance metrics.
 **Responses:**
 
 - `200` — Successful Response (`object`)
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -2769,7 +2757,6 @@ Requires authentication, for the same reason as ``/stats``.
 **Responses:**
 
 - `200` — Successful Response (`object`)
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -3319,7 +3306,6 @@ List all non-deleted drafts across all conversion jobs.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -3391,7 +3377,6 @@ under multi (#770). Non-global (personal/team) discovery is unaffected.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -3443,7 +3428,6 @@ route as "Any authenticated user".
 **Responses:**
 
 - `200` — Successful Response (`object`)
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -3971,7 +3955,6 @@ Returns:
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4328,7 +4311,6 @@ standalone, where team sharing is unwired (``team_service is None``).
 **Responses:**
 
 - `200` — Successful Response (array of [`TeamResponse`](#teamresponse))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4345,7 +4327,6 @@ Enhanced health check endpoint with component-specific metrics and SLA monitorin
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4383,7 +4364,6 @@ Enhanced detailed health check for all dependencies with SLA metrics
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4400,7 +4380,6 @@ Get logging system health status.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4417,7 +4396,6 @@ Get error patterns and recovery information from enhanced error context.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4434,7 +4412,6 @@ Get SLA status and metrics for all components.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4460,7 +4437,6 @@ Label cardinality is bounded:
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4477,7 +4453,6 @@ Get current alert status and statistics.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4494,7 +4469,6 @@ Get comprehensive system optimization metrics.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4511,7 +4485,6 @@ Get comprehensive performance metrics.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4549,7 +4522,6 @@ Readiness probe: return unready if Redis or ChromaDB are unavailable.
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
@@ -4573,7 +4545,6 @@ Returns:
 **Responses:**
 
 - `200` — Successful Response
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
