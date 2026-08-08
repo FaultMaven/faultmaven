@@ -6377,8 +6377,6 @@ User activation/deactivation response.
 
 **Properties:**
 
-- `ctx` (object, optional)
-- `input` (object, optional)
 - `loc` (array, required)
 - `msg` (string, required)
 - `type` (string, required)

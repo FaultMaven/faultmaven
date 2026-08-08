@@ -790,7 +790,7 @@
       "Body_convert_document_api_v1_knowledge_convert_post": {
         "properties": {
           "file": {
-            "contentMediaType": "application/octet-stream",
+            "format": "binary",
             "title": "File",
             "type": "string"
           },
@@ -836,7 +836,7 @@
           "files": {
             "default": [],
             "items": {
-              "contentMediaType": "application/octet-stream",
+              "format": "binary",
               "type": "string"
             },
             "title": "Files",
@@ -952,7 +952,7 @@
             "type": "string"
           },
           "file": {
-            "contentMediaType": "application/octet-stream",
+            "format": "binary",
             "title": "File",
             "type": "string"
           },
@@ -6203,13 +6203,6 @@
       },
       "ValidationError": {
         "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
           "loc": {
             "items": {
               "anyOf": [
