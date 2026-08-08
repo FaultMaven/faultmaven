@@ -42,8 +42,37 @@ HOSTILE_ENVIRONMENT = {
 }
 
 
-@pytest.mark.integration
-@pytest.mark.slow
+# Keys the interpreter and its imports need, kept when the baseline run's
+# environment is built. Everything else is DROPPED rather than enumerated —
+# same discipline as the generator, and for the same reason: a denylist of
+# "settings known to gate a router" is exactly what goes stale, and any such
+# setting reaching the baseline run is what makes it lie (see below).
+_SYSTEM_ENVIRONMENT_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "LANG",
+        "LC_ALL",
+        "PWD",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONHASHSEED",
+        "VIRTUAL_ENV",
+        "CONDA_PREFIX",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "SYSTEMROOT",
+        "COMSPEC",
+    }
+)
+
+
 def _run_check(environment):
     return subprocess.run(
         [sys.executable, str(GENERATOR), "--check"],
@@ -55,6 +84,8 @@ def _run_check(environment):
     )
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_generated_reference_ignores_the_ambient_environment():
     """`--check` passes even when every router-gating setting is hostile."""
     assert GENERATOR.exists(), f"generator not found at {GENERATOR}"
@@ -75,7 +106,20 @@ def test_generated_reference_ignores_the_ambient_environment():
     # keeps this closed for the property under test: if the baseline passes,
     # any hostile-environment failure is a genuine leak and still fails. Only
     # the case where nothing could have passed is skipped.
-    baseline = _run_check(dict(os.environ))
+    #
+    # ⚠ The baseline runs under a NEUTRAL environment, not the ambient one.
+    # Under ambient it inherits whatever the caller exported — and if the
+    # generator ever stops emptying the environment, that leak reaches the
+    # baseline too, the baseline fails, and this test SKIPS instead of failing:
+    # fail-open on precisely the defect it exists to catch. That is not
+    # hypothetical. Reproduced with `os.environ.clear()` removed from the
+    # generator and `ENABLE_DEBUG_ENDPOINTS=true` exported — hostile-listed but
+    # NOT in the generator's PINNED_ENVIRONMENT, so nothing overwrites it — and
+    # the run skipped. CI's own jobs export settings of this shape, and `.env`
+    # values reach os.environ, so the contaminated case is the normal one.
+    baseline = _run_check(
+        {k: v for k, v in os.environ.items() if k in _SYSTEM_ENVIRONMENT_KEYS}
+    )
     if baseline.returncode != 0:
         pytest.skip(
             "this interpreter cannot reproduce the committed API reference, so "
@@ -88,7 +132,11 @@ def test_generated_reference_ignores_the_ambient_environment():
             "Do NOT regenerate the artifacts to make this pass — that commits "
             "a document matching your local libraries and breaks the drift "
             "gate, which installs requirements/dev.txt.\n\n"
-            f"baseline stdout:\n{baseline.stdout[-2000:]}"
+            # stderr as well as stdout: a generator that dies on an ImportError
+            # writes nothing to stdout, and a skip whose diagnosis is blank
+            # while asserting "your venv drifted" is its own wrong answer.
+            f"baseline stdout:\n{baseline.stdout[-2000:]}\n\n"
+            f"baseline stderr:\n{baseline.stderr[-2000:]}"
         )
 
     environment = {**os.environ, **HOSTILE_ENVIRONMENT}

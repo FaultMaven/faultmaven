@@ -72,8 +72,16 @@ fi
 # staged. Keeps the documented defaults from drifting from the code defaults.
 if git diff --cached --name-only --diff-filter=ACM \
      | grep -qE '^(\.env\.example|faultmaven/config/settings\.py)$'; then
+    # Same worktree blind spot as the black lookup above, and worse here: this
+    # guard BLOCKS the commit (exit 1). Probing only $REPO_ROOT/.venv means a
+    # worktree falls through to the system python3, which has no
+    # pydantic_settings, so the gate silently downgrades to a warning — the
+    # .env.example drift it exists to stop sails through. Search the main
+    # checkout's venvs too.
     SYNC_PY=""
-    for cand in "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}" "$REPO_ROOT/.venv/bin/python" "$(command -v python3 || true)"; do
+    for cand in "${VIRTUAL_ENV:+$VIRTUAL_ENV/bin/python}" "$REPO_ROOT/.venv/bin/python" \
+                "${MAIN_ROOT:+$MAIN_ROOT/.venv/bin/python}" "${MAIN_ROOT:+$MAIN_ROOT/.venv-dev/bin/python}" \
+                "$(command -v python3 || true)"; do
         [ -n "$cand" ] || continue
         if "$cand" -c 'import pydantic_settings' >/dev/null 2>&1; then SYNC_PY="$cand"; break; fi
     done
