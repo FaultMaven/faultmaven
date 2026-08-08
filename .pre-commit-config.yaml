@@ -1,5 +1,14 @@
 # Pre-commit hooks to prevent API key exposure
 # Install: pip install pre-commit && pre-commit install
+#
+# `default_install_hook_types` is what makes `pre-commit install` wire the
+# post-merge and post-checkout stages as well. Without it the framework installs
+# the pre-commit stage only, and the venv-staleness warning below would never
+# run for anyone on this path — which is the recommended one, since
+# scripts/install-git-hooks.sh deliberately refuses to take over core.hooksPath
+# while the framework owns .git/hooks (doing so would disable secret scanning).
+# Existing clones need one `pre-commit install` to pick the new types up.
+default_install_hook_types: [pre-commit, post-merge, post-checkout]
 
 repos:
   # Detect secrets and API keys
@@ -133,3 +142,25 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+
+      # Warn when a virtualenv built by scripts/sync-venv.sh no longer matches
+      # the lockfile it was stamped from — a pull or branch switch moves the
+      # file and never the environment. Same script the .githooks/ hooks call,
+      # so both installation paths behave identically.
+      #
+      # Warn-only by construction: it exits 0 on every path, so it can never
+      # block a merge or checkout, and it prints nothing unless a stamped venv
+      # is actually behind. Contributors who have not run sync-venv.sh have no
+      # stamp and never see it.
+      # `verbose: true` is load-bearing, not cosmetic. pre-commit shows a hook's
+      # output only when the hook FAILS; this one exits 0 by design, so without
+      # verbose it prints "Passed" and swallows the warning — the check would
+      # run and tell nobody. Verified: with it, the warning is shown.
+      - id: venv-staleness
+        name: warn when a virtualenv is behind its lockfile
+        entry: .githooks/check-venv-staleness.sh
+        language: script
+        stages: [post-merge, post-checkout]
+        pass_filenames: false
+        always_run: true
+        verbose: true

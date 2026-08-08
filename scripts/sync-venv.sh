@@ -12,13 +12,15 @@
 #
 # Why a venv PER lockfile rather than one for everything: no lockfile is a
 # superset. mypy and import-linter are in dev only; boto3, opik and presidio are
-# in cloud only. CI has the same split — Code Quality runs on dev.txt, Test
-# Cloud on cloud.txt — so one local environment cannot mirror every job.
+# in cloud only. CI has the same split — Architecture Boundary and API Contract
+# Drift run on dev.txt, Test Cloud on cloud.txt — so one local environment cannot
+# mirror every job.
 #
-# Uses `uv pip sync`, not `pip install -r`. Both fix versions (pip does downgrade
-# to an exact pin), but only sync REMOVES packages the lockfile omits. Leftovers
-# matter: a package you have and CI does not can make an optional import succeed
-# locally and fail there.
+# Uses `uv pip sync`, where CI uses `pip install -r`. Same end state on CI's
+# empty runner; different on a reusable environment, which is the point — both
+# fix versions (pip does downgrade to an exact pin), but only sync REMOVES
+# packages the lockfile omits. Leftovers matter: a package you have and CI does
+# not can make an optional import succeed locally and fail there.
 #
 # Requires: uv (pip install uv)
 
@@ -32,9 +34,12 @@ EXTRA="${1:-}"
 if [ -z "$EXTRA" ]; then
     echo "usage: ./scripts/sync-venv.sh <dev|test|cloud> [venv-path]" >&2
     echo "" >&2
-    echo "  dev    requirements/dev.txt    — mirrors Code Quality, Architecture Boundary, Security Scanning" >&2
-    echo "  test   requirements/test.txt   — mirrors Test Standalone, Test Packaging Configuration" >&2
-    echo "  cloud  requirements/cloud.txt  — mirrors Test Cloud, Test PostgreSQL Integration" >&2
+    echo "  dev    requirements/dev.txt    — Architecture Boundary Check, API Contract Drift Check" >&2
+    echo "  test   requirements/test.txt   — Test Standalone, Code Quality Checks," >&2
+    echo "                                   Test Packaging Configuration, Environment Smoke Check" >&2
+    echo "  cloud  requirements/cloud.txt  — Test Cloud, Test PostgreSQL Integration" >&2
+    echo "" >&2
+    echo "  (Security Scanning installs no lockfile — it audits the files themselves.)" >&2
     exit 1
 fi
 
@@ -50,6 +55,21 @@ if ! command -v uv >/dev/null 2>&1; then
     echo "✗ uv is required. Install with: pip install uv" >&2
     exit 1
 fi
+UV_BIN="$(command -v uv)"
+
+# `uv pip sync` removes everything the lockfile does not list, and uv is in none
+# of them. If the uv being used lives inside the venv about to be synced, the
+# first run uninstalls it and every later run dies on the check above — with the
+# environment left half-synced. Install uv outside the target (pipx, or the
+# system interpreter) instead.
+case "$UV_BIN" in
+    "$ROOT/$VENV"/*|"$VENV"/*)
+        echo "✗ uv resolves to $UV_BIN, inside the venv being synced." >&2
+        echo "  'uv pip sync' would uninstall it — uv is in no lockfile." >&2
+        echo "  Install uv outside the target venv (e.g. pipx install uv)." >&2
+        exit 1
+        ;;
+esac
 
 # Refuse to overwrite a venv that is not one of ours unless it was created here.
 # `.venv` is the shared one the pre-commit hook looks for and several worktrees
@@ -64,6 +84,24 @@ echo "Syncing $VENV to $LOCKFILE (Python ${PYTHON_VERSION})..."
 
 if [ ! -x "$VENV/bin/python" ]; then
     uv venv "$VENV" --python "$PYTHON_VERSION" --quiet
+else
+    # PYTHON_VERSION only binds at creation, so an environment made earlier on a
+    # different interpreter would be synced from a lockfile compiled for 3.11 and
+    # then stamped and reported "matches". The lockfiles are resolved with
+    # --python-version 3.11 --python-platform linux and carry no environment
+    # markers, so nothing downstream would notice. Refuse rather than recreate:
+    # deleting an environment someone may be running tests in is not this
+    # script's call to make.
+    HAVE="$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo unknown)"
+    if [ "$HAVE" != "$PYTHON_VERSION" ]; then
+        echo "✗ $VENV runs Python $HAVE, but $LOCKFILE is compiled for $PYTHON_VERSION." >&2
+        echo "  Syncing anyway would install 3.11-resolved pins under $HAVE and stamp it as" >&2
+        echo "  matching, which is the silent divergence this tooling exists to prevent." >&2
+        echo "" >&2
+        echo "  Recreate it yourself when nothing is using it:" >&2
+        echo "      rm -rf $VENV && ./scripts/sync-venv.sh $EXTRA $VENV" >&2
+        exit 1
+    fi
 fi
 
 # Two steps, mirroring what CI does: the lockfile decides every version, then the

@@ -42,29 +42,36 @@ To get started with local development for the `faultmaven` monolith:
         ```bash
         ./scripts/sync-venv.sh dev     # creates .venv-dev
         ```
-    * There is no single environment that mirrors all of CI, because no lockfile is a superset — `mypy` and `import-linter` are in `dev` only, `boto3`/`opik`/`presidio` in `cloud` only. Build the one matching the job you care about, or both:
+    * There is no single environment that mirrors all of CI, because no lockfile is a superset — `mypy` and `import-linter` are in `dev` only, `boto3`/`opik`/`presidio` in `cloud` only. Build the one matching the job you care about:
 
-        | lockfile | CI jobs it mirrors |
-        |----------|--------------------|
-        | `requirements/dev.txt` | Code Quality, Architecture Boundary, Security Scanning |
-        | `requirements/test.txt` | Test Standalone, Test Packaging Configuration |
+        | lockfile | CI jobs that install it |
+        |----------|-------------------------|
+        | `requirements/dev.txt` | Architecture Boundary Check, API Contract Drift Check |
+        | `requirements/test.txt` | Test Standalone, Code Quality Checks, Test Packaging Configuration, Environment Smoke Check |
         | `requirements/cloud.txt` | Test Cloud, Test PostgreSQL Integration |
 
+        Security Scanning installs no lockfile — it audits the files themselves with `pip-audit --no-deps`.
+
 3.  **Install Dependencies**
-    * `sync-venv.sh` already did this — it runs `uv pip sync <lockfile>` then `uv pip install -e . --no-deps`, which is exactly what CI runs.
+    * `sync-venv.sh` already did this — it runs `uv pip sync <lockfile>` then `uv pip install -e . --no-deps`. CI does the equivalent with `pip install -r <lockfile>` on an empty runner; `sync` is used locally because, unlike `pip install -r`, it also **removes** packages the lockfile omits, which is the half that matters on an environment you reuse.
     * The `--no-deps` matters: the version ranges in `pyproject.toml` are inputs to `./scripts/lock-deps.sh`, never resolved at install time. The lockfiles are the only source of versions, which is what makes an environment reproducible.
     * **A virtualenv goes stale on its own.** `requirements/*.txt` are exact pins under version control; a venv is persistent state. `git pull` updates the file and never the environment, so every lockfile bump silently widens the gap — and a drifted interpreter makes local results disagree with CI in ways that look like code problems. CI cannot drift, because it rebuilds from the lockfile on an empty runner every run.
-    * Install the git hooks and you get warned when it happens:
+    * A `post-merge` / `post-checkout` hook warns when it happens, comparing each stamped venv against the lockfile on the branch you are now on. Which command installs it depends on which hook path you use — the two are mutually exclusive, because `core.hooksPath` makes git ignore `.git/hooks/` entirely:
         ```bash
+        # pre-commit framework (recommended — also runs secret/API-key scanning)
+        pip install pre-commit && pre-commit install
+
+        # or the repo's own hooks (black formatter + these warnings, no secret scanning)
         ./scripts/install-git-hooks.sh
         ```
-        `post-merge` and `post-checkout` then compare each stamped venv against the lockfile on the branch you are now on. They only warn — they never modify an environment, since rewriting one underneath a test run in another terminal is worse than the drift. Re-sync when you see the warning:
+        Both run the same check. `install-git-hooks.sh` refuses while the framework owns `.git/hooks`, rather than silently disabling its secret scanning; if you already use the framework, just re-run `pre-commit install` to pick up the new hook types.
+    * The warning never modifies an environment — rewriting one underneath a test run in another terminal is worse than the drift. Re-sync when you see it, using the exact command the warning prints:
         ```bash
         ./scripts/sync-venv.sh dev
         ```
-    * To check by hand at any time:
+    * To check by hand at any time, from the repository root (the stamp records a repo-relative path):
         ```bash
-        sha256sum -c --status .venv-dev/.locksum && echo in-sync
+        sha256sum -c --status .venv-dev/.locksum && echo in-sync   # shasum -a 256 -c on macOS
         ```
 
 4.  **Run Local Services (Recommended)**

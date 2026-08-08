@@ -42,9 +42,12 @@ else
     exit 0
 fi
 
-TREE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || exit 0)"
+# `x="$(cmd || exit 0)"` would exit the SUBSHELL, not this script — the
+# assignment then succeeds with an empty value and everything downstream runs
+# against "". Test the values instead.
+TREE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-[ -n "$COMMON_DIR" ] || exit 0
+[ -n "$TREE_ROOT" ] && [ -n "$COMMON_DIR" ] || exit 0
 MAIN_ROOT="$(dirname "$COMMON_DIR")"
 
 # In the ordinary case a worktree's toplevel differs from the main checkout and
@@ -71,8 +74,11 @@ for stamp in "$root"/.venv*/.locksum; do
 
     [ "$recorded_hash" = "$(_sha256 "$TREE_ROOT/$lockfile")" ] && continue
 
-    venv_dir="$(dirname "$stamp")"
-    STALE+=("$(basename "$venv_dir")|$lockfile")
+    # Carry the venv's PATH, not its basename. Two roots are searched, so
+    # `.venv-dev` in the main checkout and `.venv-dev` in a worktree would
+    # otherwise print as one indistinguishable line — and the fix command below
+    # has to name the actual directory to rebuild.
+    STALE+=("$(dirname "$stamp")|$lockfile")
 done
 done
 
@@ -80,14 +86,24 @@ done
 
 printf "${YELLOW}⚠ virtualenv is behind its lockfile${NC}\n" >&2
 for entry in "${STALE[@]}"; do
-    venv="${entry%%|*}"; lock="${entry##*|}"
-    printf "    %s was built from a different %s\n" "$venv" "$lock" >&2
+    venv_path="${entry%%|*}"; lock="${entry##*|}"
+    printf "    %s was built from a different %s\n" "$venv_path" "$lock" >&2
 done
+
 printf "\n  Local results may disagree with CI until you re-sync:\n" >&2
 for entry in "${STALE[@]}"; do
-    venv="${entry%%|*}"; lock="${entry##*|}"
-    printf "      ./scripts/sync-venv.sh %s\n" "$(basename "$lock" .txt)" >&2
-    printf "      (rebuilds %s)\n" "$venv" >&2
+    venv_path="${entry%%|*}"; lock="${entry##*|}"
+    extra="$(basename "$lock" .txt)"
+
+    # sync-venv.sh defaults its target to .venv-<extra>. Anything else — the
+    # shared `.venv`, a second env for the same lockfile — was created with the
+    # explicit-path form and must be repeated, or this command would rebuild a
+    # DIFFERENT venv, leave the stale one untouched, and warn again forever.
+    if [ "$(basename "$venv_path")" = ".venv-${extra}" ]; then
+        printf "      ./scripts/sync-venv.sh %s\n" "$extra" >&2
+    else
+        printf "      ./scripts/sync-venv.sh %s %s\n" "$extra" "$venv_path" >&2
+    fi
 done
 printf "\n" >&2
 

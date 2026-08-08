@@ -22,6 +22,11 @@
 # it is already installed, this script refuses to override it unless you pass
 # --force, because core.hooksPath would bypass those security hooks.
 #
+# You are not choosing between the framework and the staleness warning: the
+# framework config carries the same check (id: venv-staleness) on its own
+# post-merge/post-checkout stages, so `pre-commit install` gets you both it and
+# secret scanning. This script exists for people not using the framework.
+#
 # To use the full framework instead:
 #     git config --unset core.hooksPath && pip install pre-commit && pre-commit install
 
