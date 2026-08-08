@@ -5,16 +5,26 @@ models. A validator that quietly stops rejecting fails OPEN — the model
 constructs, nothing errors, and the bad value travels on — so "the suite still
 passes" is not evidence that one still works. Each case below therefore pins
 the *outcome*: the accepted-and-possibly-transformed value, or the exact error
-message, for a valid input AND an invalid one per validator.
+message, for a valid input AND an invalid one — for all ten validators.
+
+That last clause was false when this file was first written: `validate_features`
+had no case at all, and a review demonstrated that gutting its range check left
+every other case green. Two inputs were added to close it. A docstring asserting
+a property the table does not actually cover is worse than no docstring, because
+it is the thing the next reader checks *instead of* the table.
 
 Written while migrating V1 `@validator` to V2 `@field_validator`. The migration
 looked mechanical — no `pre=`, `always=`, `each_item=`, no `values` argument on
-any of the ten — but "looked mechanical" is what this file exists to stop
-anyone relying on: the table was captured from the pre-migration code, run
-against the post-migration code, and required to be identical. It stays because
-the next person to touch these needs the same net, and because `@field_validator`
-has its own silent-no-op modes (a typo'd field name in the decorator raises at
-class-definition time, but a validator moved to the wrong `mode=` does not).
+any of the ten — but "looked mechanical" is what this file exists to stop anyone
+relying on: the table was captured from the pre-migration code, run against the
+post-migration code, and required to be identical. It stays because the next
+person to touch these needs the same net, and because `@field_validator` has its
+own silent-no-op modes: a typo'd field name raises at class-definition time, but
+a wrong `mode=` does not. The `username=123` case pins that specifically — under
+`mode="after"` pydantic's str check runs first and raises ValidationError; under
+`mode="before"` the validator gets the int and `re.match` raises TypeError, which
+escapes `pytest.raises(ValidationError)`. Before that input existed, flipping the
+mode passed all 23 cases.
 
 Transformations are pinned deliberately, not just accept/reject: both auth
 validators lowercase their input, and losing that would collapse two distinct
@@ -91,6 +101,22 @@ ACCEPTED = [
     (contracts.LoopCheckRequest, "confidence_history", [0.0, 1.0], [0.0, 1.0]),
     (contracts.GatewayResult, "clarity_assessment", "absurd", "absurd"),
     (contracts.GatewayResult, "reality_check", "verified", "verified"),
+    # ConfidenceRequest.validate_features had no case at all until a review
+    # pointed it out: gutting its range check left every other case green.
+    # Unknown keys are passed through untouched by design — pinned so that
+    # stays a decision rather than an accident.
+    (
+        contracts.ConfidenceRequest,
+        "features",
+        {"pattern_boost": 0.2},
+        {"pattern_boost": 0.2},
+    ),
+    (
+        contracts.ConfidenceRequest,
+        "features",
+        {"unknown_key": 99.0},
+        {"unknown_key": 99.0},
+    ),
 ]
 
 REJECTED = [
@@ -116,6 +142,16 @@ REJECTED = [
         "Clarity assessment must be one of",
     ),
     (contracts.GatewayResult, "reality_check", "nope", "Reality check must be one of"),
+    # The other half of the features gap: 0.5 is outside pattern_boost's
+    # [0.0, 0.2] band, so a gutted range check now fails here.
+    (contracts.ConfidenceRequest, "features", {"pattern_boost": 0.5}, "not in range"),
+    # Pins validator MODE, not just its body. Under the current mode="after"
+    # pydantic's str check runs first and this is a clean ValidationError.
+    # Under mode="before" the validator receives the int and re.match raises
+    # TypeError, which escapes pytest.raises(ValidationError) and fails this
+    # case. Without it, a wrong mode= passes the whole file — which the
+    # docstring claimed it would catch before this input existed.
+    (api_auth.DevLoginRequest, "username", 123, "Input should be a valid string"),
 ]
 
 
