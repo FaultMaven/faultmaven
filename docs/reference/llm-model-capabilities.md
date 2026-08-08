@@ -9,7 +9,7 @@ Provider capability matrix for FaultMaven's LLM routing system. These capabiliti
 | OpenAI | Yes | STRICT | Full capability |
 | Anthropic | Yes | FUNCTION_CALLING | Uses native tool use API |
 | Groq | Yes | STRICT (some models) | Model-dependent strict support |
-| Fireworks | Model-dependent | BEST_EFFORT | DeepSeek models: no tool calling |
+| Fireworks | Yes, except a denylist | BEST_EFFORT | Only `minimax-m2p7` is denylisted |
 | Gemini | Yes | BEST_EFFORT | Full capability |
 | Cohere | Yes | BEST_EFFORT | Full capability |
 | HuggingFace | No | BEST_EFFORT | No DA tool use, degraded investigation |
@@ -42,12 +42,50 @@ Defines how reliably the provider produces valid JSON matching a schema.
 
 **Detection:** `provider.get_structured_output_capability(model)` and `provider.get_structured_output_strategy(schema, model)`.
 
+> **Known gap — Fireworks is classified below its actual capability.**
+> `FireworksProvider.get_structured_output_capability()` returns `BEST_EFFORT`
+> unconditionally, on the stated premise that "Fireworks doesn't currently
+> support strict json_schema enforcement". That premise no longer holds for at
+> least some models. Measured 2026-08-08 against
+> `accounts/fireworks/models/deepseek-v4-flash-0731`:
+>
+> | Request | Result |
+> |---|---|
+> | `response_format: {"type": "json_schema", strict: true}` | 200 — returned **exactly** the declared keys, no extras |
+> | `response_format: {"type": "json_object"}` | 200 — added an **extra** key outside the schema |
+>
+> That is precisely the STRICT-vs-BEST_EFFORT distinction, so the engine is
+> currently leaving schema enforcement unused on Fireworks and accepting
+> prompt-level drift instead. Promoting the classification is a **per-model**
+> decision (a strict-capable allowlist mirroring `_TOOL_CALLING_DENYLIST`), not
+> a blanket flip — support has to be verified per model before claiming it, and
+> the change alters strategy selection for every Fireworks route. Until then the
+> matrix row above describes what the code *does*, not the ceiling of what the
+> provider *can* do.
+
 ## Known Model-Specific Behaviors
 
-### DeepSeek on Fireworks
-- Uses proprietary tool-calling tokens (`<｜tool▁calls▁begin｜>`, `<｜tool▁calls▁end｜>`) incompatible with Fireworks' OpenAI-compatible tools API
-- Produces `400 invalid_request_error` when tools are sent
-- `supports_tool_calling()` returns `False` for all DeepSeek models on Fireworks
+### Fireworks tool-calling denylist
+
+`FireworksProvider.supports_tool_calling()` returns `True` for every model
+**except** those in `_TOOL_CALLING_DENYLIST`, which currently holds exactly one
+entry: `accounts/fireworks/models/minimax-m2p7` (forced tool use times out at
+the 180s Fireworks timeout — 2026-05-20 Run 7 post-mortem).
+
+The denylist is a *pre-check* optimisation, not the safety net: it skips the
+tool-augmented path for models with a known, reproducible incompatibility so
+the engine doesn't pay for the first failure every turn. One-off or transient
+incompatibilities are meant to fall to the Layer-2 runtime fallback
+(`ToolCallingUnsupportedError`). Add a model only after observing **repeated**
+failures for it, in production or reproducible eval runs.
+
+**DeepSeek is not denylisted.** Older DeepSeek releases (V2, R1) emitted
+proprietary tool-calling tokens (`<｜tool▁calls▁begin｜>`) that Fireworks'
+OpenAI-compatible tools API rejected with `400 invalid_request_error`; **V3 and
+later support OpenAI-compatible tool calling** and are routed through the tool
+loop like any other model. This section previously claimed
+`supports_tool_calling()` returned `False` for all DeepSeek models on
+Fireworks — that has not been true since the V2/R1-era block was lifted.
 
 ### HuggingFace Inference API
 - Does not support OpenAI-compatible tool calling
