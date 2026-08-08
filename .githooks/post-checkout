@@ -1,0 +1,37 @@
+#!/bin/bash
+#
+# FaultMaven post-checkout hook — warn when a stamped virtualenv has fallen
+# behind its lockfile. Version-controlled; activated by:
+# ./scripts/install-git-hooks.sh
+#
+# Runs after `git checkout <branch>`, `git switch`, `git clone` and
+# `git worktree add`. Switching branches can change requirements/*.txt as
+# surely as a pull can, and leaves the environment equally untouched.
+#
+# Arguments git passes: $1 previous HEAD, $2 new HEAD, $3 branch-checkout flag
+# (1 = branch, 0 = file). The flag matters: `git checkout -- some/file` fires
+# this hook too, and a hook that printed on every file restore would be noise
+# people learn to ignore — which is how a warning stops working.
+#
+# Says nothing unless a venv is actually stale — see check-venv-staleness.sh.
+
+set -uo pipefail
+
+PREV_HEAD="${1:-}"
+NEW_HEAD="${2:-}"
+IS_BRANCH_CHECKOUT="${3:-0}"
+
+# File checkout, not a branch change.
+[ "$IS_BRANCH_CHECKOUT" = "1" ] || exit 0
+
+# Same commit either side: `git checkout` of the branch already on. Nothing in
+# the tree moved, so nothing can have gone stale that was not stale before.
+# (Left as a separate check from the flag above: a clone reports 1 with equal
+# heads and should still be quiet.)
+[ -n "$PREV_HEAD" ] && [ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0
+
+HOOK_DIR="$(dirname "$0")"
+[ -r "$HOOK_DIR/check-venv-staleness.sh" ] || exit 0
+
+bash "$HOOK_DIR/check-venv-staleness.sh" || true
+exit 0
