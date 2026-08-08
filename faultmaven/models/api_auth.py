@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DevLoginRequest(BaseModel):
@@ -46,7 +46,8 @@ class DevLoginRequest(BaseModel):
         json_schema_extra={"example": "John Doe"},
     )
 
-    @validator("username")
+    @field_validator("username")
+    @classmethod
     def validate_username(cls, v):
         """Validate username format (allows email addresses)"""
         # Allow email addresses OR traditional usernames
@@ -59,7 +60,8 @@ class DevLoginRequest(BaseModel):
             )
         return v.lower()  # Store usernames in lowercase for consistency
 
-    @validator("email")
+    @field_validator("email")
+    @classmethod
     def validate_email(cls, v):
         """Validate email format if provided"""
         if v is not None:

@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class ConfidenceBand(str, Enum):
@@ -178,7 +178,8 @@ class TurnContext(BaseModel):
         default_factory=list, description="Recent conversation turns for context"
     )
 
-    @validator("priority")
+    @field_validator("priority")
+    @classmethod
     def validate_priority(cls, v):
         """Validate priority value."""
         valid_priorities = ["low", "normal", "high", "urgent"]
@@ -251,7 +252,8 @@ class DecisionRecord(BaseModel):
         default=None, description="Turn completion timestamp"
     )
 
-    @validator("status")
+    @field_validator("status")
+    @classmethod
     def validate_status(cls, v):
         """Validate status value."""
         valid_statuses = ["started", "processing", "completed", "failed", "timeout"]
@@ -290,7 +292,8 @@ class RetrievalRequest(BaseModel):
         default=0.5, ge=0.0, le=1.0, description="Minimum similarity threshold"
     )
 
-    @validator("enabled_sources")
+    @field_validator("enabled_sources")
+    @classmethod
     def validate_sources(cls, v):
         """Validate enabled sources."""
         valid_sources = ["kb", "pattern", "playbook"]
@@ -354,7 +357,8 @@ class ConfidenceRequest(BaseModel):
     # pattern_boost: float           # Pattern matching confidence bonus (0.0-0.2)
     # history_slope: float           # Confidence trend over last 3 turns (-1.0-1.0)
 
-    @validator("features")
+    @field_validator("features")
+    @classmethod
     def validate_features(cls, v):
         """Validate feature values are in expected ranges."""
         expected_features = {
@@ -461,7 +465,8 @@ class PolicyEvaluation(BaseModel):
         default_factory=dict, description="Results of compliance validation"
     )
 
-    @validator("decision")
+    @field_validator("decision")
+    @classmethod
     def validate_decision(cls, v):
         """Validate decision value."""
         valid_decisions = ["allow", "deny", "confirm"]
@@ -475,10 +480,10 @@ class LoopCheckRequest(BaseModel):
 
     session_id: str = Field(description="Session identifier")
     history: List[str] = Field(
-        min_items=1, max_length=10, description="Recent query history for analysis"
+        min_length=1, max_length=10, description="Recent query history for analysis"
     )
     confidence_history: List[float] = Field(
-        min_items=1, description="Confidence scores for recent turns"
+        min_length=1, description="Confidence scores for recent turns"
     )
 
     # Additional signals
@@ -489,7 +494,8 @@ class LoopCheckRequest(BaseModel):
         default_factory=dict, description="Additional metadata for detection"
     )
 
-    @validator("confidence_history")
+    @field_validator("confidence_history")
+    @classmethod
     def validate_confidence_scores(cls, v):
         """Validate confidence scores are in valid range."""
         for score in v:
@@ -587,7 +593,8 @@ class GatewayResult(BaseModel):
         default="1.0", description="Gateway processing version"
     )
 
-    @validator("clarity_assessment")
+    @field_validator("clarity_assessment")
+    @classmethod
     def validate_clarity(cls, v):
         """Validate clarity assessment value."""
         valid_clarity = ["vague", "specific", "complex", "absurd"]
@@ -595,7 +602,8 @@ class GatewayResult(BaseModel):
             raise ValueError(f"Clarity assessment must be one of {valid_clarity}")
         return v
 
-    @validator("reality_check")
+    @field_validator("reality_check")
+    @classmethod
     def validate_reality(cls, v):
         """Validate reality check value."""
         valid_reality = ["plausible", "improbable", "impossible", "verified"]
