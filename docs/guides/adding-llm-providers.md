@@ -859,7 +859,7 @@ service = AgentService(
 
 **Optional Capability Methods** (override from `BaseLLMProvider` when needed):
 
-- `def supports_tool_calling(model=None) -> bool` - Whether the model supports OpenAI-compatible function calling. Default: `True`. Override to return `False` for models that don't support tools (e.g., HuggingFace Inference API, DeepSeek on Fireworks). When `False`, the investigation engine falls back to single-shot generation without DA tool use.
+- `def supports_tool_calling(model=None) -> bool` - Whether the model supports OpenAI-compatible function calling. Default: `True`. Override to return `False` for models that don't support tools (e.g. HuggingFace Inference API, whose API has no tools endpoint), or that accept the tools API but cannot satisfy `tool_choice=required` in practice (Fireworks' `_TOOL_CALLING_DENYLIST`, currently `minimax-m2p7` only — DeepSeek V3+ *is* tool-capable on Fireworks and is not denylisted). When `False`, the investigation engine falls back to single-shot generation without DA tool use.
 - `def get_structured_output_capability(model=None) -> StructuredOutputCapability` - Structured output support level (`STRICT`, `BEST_EFFORT`, `FUNCTION_CALLING`, `NONE`). Default: `BEST_EFFORT`. Override for providers with strict JSON schema support (e.g., OpenAI → `STRICT`).
 
 **Error Handling**:
