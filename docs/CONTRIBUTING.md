@@ -38,16 +38,33 @@ To get started with local development for the `faultmaven` monolith:
         ```
 
 2.  **Set Up a Virtual Environment**
-    * It is highly recommended to use a Python virtual environment.
+    * `./scripts/sync-venv.sh` builds one from a lockfile and records what it was built from:
         ```bash
-        python -m venv venv
-        source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
+        ./scripts/sync-venv.sh dev     # creates .venv-dev
         ```
+    * There is no single environment that mirrors all of CI, because no lockfile is a superset — `mypy` and `import-linter` are in `dev` only, `boto3`/`opik`/`presidio` in `cloud` only. Build the one matching the job you care about, or both:
+
+        | lockfile | CI jobs it mirrors |
+        |----------|--------------------|
+        | `requirements/dev.txt` | Code Quality, Architecture Boundary, Security Scanning |
+        | `requirements/test.txt` | Test Standalone, Test Packaging Configuration |
+        | `requirements/cloud.txt` | Test Cloud, Test PostgreSQL Integration |
 
 3.  **Install Dependencies**
-    * Install all required packages using the `requirements.txt` file.
+    * `sync-venv.sh` already did this — it runs `uv pip sync <lockfile>` then `uv pip install -e . --no-deps`, which is exactly what CI runs.
+    * The `--no-deps` matters: the version ranges in `pyproject.toml` are inputs to `./scripts/lock-deps.sh`, never resolved at install time. The lockfiles are the only source of versions, which is what makes an environment reproducible.
+    * **A virtualenv goes stale on its own.** `requirements/*.txt` are exact pins under version control; a venv is persistent state. `git pull` updates the file and never the environment, so every lockfile bump silently widens the gap — and a drifted interpreter makes local results disagree with CI in ways that look like code problems. CI cannot drift, because it rebuilds from the lockfile on an empty runner every run.
+    * Install the git hooks and you get warned when it happens:
         ```bash
-        pip install -r requirements.txt
+        ./scripts/install-git-hooks.sh
+        ```
+        `post-merge` and `post-checkout` then compare each stamped venv against the lockfile on the branch you are now on. They only warn — they never modify an environment, since rewriting one underneath a test run in another terminal is worse than the drift. Re-sync when you see the warning:
+        ```bash
+        ./scripts/sync-venv.sh dev
+        ```
+    * To check by hand at any time:
+        ```bash
+        sha256sum -c --status .venv-dev/.locksum && echo in-sync
         ```
 
 4.  **Run Local Services (Recommended)**

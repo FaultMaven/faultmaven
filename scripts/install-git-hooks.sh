@@ -2,13 +2,22 @@
 #
 # Install FaultMaven's version-controlled git hooks.
 #
-# Points git at the tracked .githooks/ directory (core.hooksPath) so the
-# pre-commit black formatter stays in sync with the repo — no per-clone copy
-# into .git/hooks/ that can drift. Run once per clone:
+# Points git at the tracked .githooks/ directory (core.hooksPath) so the hooks
+# stay in sync with the repo — no per-clone copy into .git/hooks/ that can
+# drift. Run once per clone:
 #
 #     ./scripts/install-git-hooks.sh
 #
-# This installs a black-formatter hook ONLY. The pre-commit FRAMEWORK
+# Installs:
+#   pre-commit     auto-format staged Python with black
+#   post-merge     warn when a stamped virtualenv falls behind its lockfile
+#   post-checkout  the same, after a branch change
+#
+# The two staleness hooks warn only — they never touch an environment — and stay
+# silent unless ./scripts/sync-venv.sh has stamped a venv. They add nothing for
+# anyone not using it.
+#
+# None of these scan for secrets. The pre-commit FRAMEWORK
 # (.pre-commit-config.yaml) additionally runs secret/API-key/RSA detection; if
 # it is already installed, this script refuses to override it unless you pass
 # --force, because core.hooksPath would bypass those security hooks.
@@ -47,7 +56,10 @@ fi
 chmod +x .githooks/* 2>/dev/null || true
 git config core.hooksPath .githooks
 echo "✓ git hooks installed (core.hooksPath → .githooks)"
-echo "  Note: this hook runs black only — it does NOT scan for secrets/keys."
+echo "    pre-commit     black-formats staged Python"
+echo "    post-merge     warns when a stamped venv falls behind its lockfile"
+echo "    post-checkout  the same, after a branch change"
+echo "  Note: these do NOT scan for secrets/keys."
 echo "  For secret scanning too, use the pre-commit framework (see header)."
 
 # Verify black matches the version CI enforces (formatting is version-sensitive).

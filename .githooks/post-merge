@@ -1,0 +1,18 @@
+#!/bin/bash
+#
+# FaultMaven post-merge hook — warn when a stamped virtualenv has fallen behind
+# its lockfile. Version-controlled; activated by: ./scripts/install-git-hooks.sh
+#
+# Runs after `git pull` and `git merge`. This is the moment the gap opens: the
+# merge updates requirements/*.txt and never touches the environment, so a
+# lockfile bump lands with no local effect and no signal.
+#
+# Says nothing unless a venv is actually stale — see check-venv-staleness.sh.
+
+set -uo pipefail
+
+HOOK_DIR="$(dirname "$0")"
+[ -r "$HOOK_DIR/check-venv-staleness.sh" ] || exit 0
+
+bash "$HOOK_DIR/check-venv-staleness.sh" || true
+exit 0
