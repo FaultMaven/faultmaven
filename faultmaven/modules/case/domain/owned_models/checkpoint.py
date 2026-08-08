@@ -7,7 +7,7 @@ Used for time-travel debugging, drift detection, and undo functionality.
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CaseCheckpoint(BaseModel):
@@ -37,5 +37,6 @@ class CaseCheckpoint(BaseModel):
         default_factory=dict, description="Additional context metadata"
     )
 
-    class Config:
-        frozen = True  # Checkpoints are immutable
+    model_config = ConfigDict(
+        frozen=True,  # Checkpoints are immutable
+    )

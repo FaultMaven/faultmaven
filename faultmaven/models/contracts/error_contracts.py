@@ -17,7 +17,7 @@ from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ErrorType(str, Enum):
@@ -130,11 +130,10 @@ class ServiceError(BaseModel):
         default_factory=dict, description="Debug information for troubleshooting"
     )
 
-    class Config:
-        """Pydantic configuration."""
-
+    model_config = ConfigDict(
         # Allow self-referencing models
-        use_enum_values = True
+        use_enum_values=True,
+    )
 
 
 class ValidationError(ServiceError):

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -152,9 +152,10 @@ class ProtectionSettings(BaseModel):
     redis_url: Optional[str] = None
     redis_key_prefix: str = "fm:protection"
 
-    class Config:
+    model_config = ConfigDict(
         # Allow enum values
-        use_enum_values = True
+        use_enum_values=True,
+    )
 
 
 @dataclass
