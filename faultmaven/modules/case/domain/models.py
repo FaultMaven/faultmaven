@@ -5350,13 +5350,28 @@ class Case(BaseModel):
     # `json_encoders` removed — deprecated in Pydantic V2, and both entries were
     # doing harm or nothing:
     #
-    #   datetime  — appended "Z" to a string `isoformat()` had already suffixed
-    #               with "+00:00", emitting `2026-08-08T09:14:05+00:00Z`. That is
-    #               not a valid timestamp; utils/datetime.py documents it as
-    #               "CORRUPTED - legacy data only" and repairs it on read — this
-    #               model was the producer. V2's default emits the correct
-    #               `...T09:14:05Z` unaided. The repair path stays, for rows
-    #               written before this.
+    #   datetime  — for TZ-AWARE values it appended "Z" to a string
+    #               `isoformat()` had already suffixed with "+00:00", emitting
+    #               `2026-08-08T09:14:05+00:00Z`. That is not a valid timestamp;
+    #               utils/datetime.py documents it as "CORRUPTED - legacy data
+    #               only" and repairs it on read — this model was the producer.
+    #               V2's default emits the correct `...T09:14:05Z` unaided, so
+    #               for aware values this is a fix. The repair path stays, for
+    #               rows written before it.
+    #
+    #               For NAIVE values the output does change: old `...05Z`, new
+    #               `...05` with no designator. Naive timestamps are reachable —
+    #               the SQLite mapper returns them unnormalised — but only when
+    #               EVERY timestamp on the case is naive, because
+    #               `validate_timestamp_ordering` compares created_at against
+    #               updated_at and a mixed pair raises TypeError before any
+    #               serialisation happens (a pre-existing hazard, not one this
+    #               introduced). The all-naive case round-trips safely:
+    #               `parse_utc_timestamp` reads a bare timestamp back as UTC,
+    #               identically to the `Z` form — verified for all three shapes.
+    #               No live API surface serialises the domain `Case`; the only
+    #               consumer is the checkpoint hash, which is never compared
+    #               against a stored value.
     #   timedelta — dead. Config does not propagate to nested models in V2 and
     #               `Case` has no timedelta field of its own, so the only field
     #               it could have reached (`ProblemVerification.duration`)

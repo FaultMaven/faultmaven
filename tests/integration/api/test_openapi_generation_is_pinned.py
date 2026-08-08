@@ -42,35 +42,14 @@ HOSTILE_ENVIRONMENT = {
 }
 
 
-# Keys the interpreter and its imports need, kept when the baseline run's
-# environment is built. Everything else is DROPPED rather than enumerated —
-# same discipline as the generator, and for the same reason: a denylist of
-# "settings known to gate a router" is exactly what goes stale, and any such
-# setting reaching the baseline run is what makes it lie (see below).
-_SYSTEM_ENVIRONMENT_KEYS = frozenset(
-    {
-        "PATH",
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "SHELL",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "LANG",
-        "LC_ALL",
-        "PWD",
-        "PYTHONPATH",
-        "PYTHONHOME",
-        "PYTHONHASHSEED",
-        "VIRTUAL_ENV",
-        "CONDA_PREFIX",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "SYSTEMROOT",
-        "COMSPEC",
-    }
-)
+# Imported, not copied. The generator applies this same set; a hand-copy that
+# drifted behind it would starve the baseline subprocess below, make `--check`
+# fail for that reason, and turn this test's assertion into a permanent skip.
+# The generator itself cannot be imported here — it calls
+# _pin_generation_environment() at module scope, which would empty pytest's own
+# os.environ — hence the separate side-effect-free module.
+sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+from generation_environment import _SYSTEM_ENVIRONMENT_KEYS  # noqa: E402
 
 
 def _run_check(environment):
