@@ -212,8 +212,9 @@ class CaseAction(BaseModel):
             )
         return self
 
-    class Config:
-        frozen = True  # Immutable once created
+    model_config = ConfigDict(
+        frozen=True,  # Immutable once created
+    )
 
 
 def is_valid_action(from_state: CaseState, to_state: CaseState) -> bool:
@@ -1403,7 +1404,7 @@ class ProblemVerification(BaseModel):
     correlations: List[Correlation] = Field(
         default_factory=list,
         description="Identified correlations between changes and symptom",
-        max_items=10,  # Limit to top 10
+        max_length=10,  # Limit to top 10 (V2 spelling of the deprecated max_items)
     )
 
     correlation_confidence: float = Field(
@@ -3975,8 +3976,9 @@ class TurnProgress(BaseModel):
     # ============================================================
     # Configuration
     # ============================================================
-    class Config:
-        frozen = True  # Immutable once created
+    model_config = ConfigDict(
+        frozen=True,  # Immutable once created
+    )
 
 
 # ============================================================
@@ -5345,12 +5347,22 @@ class Case(BaseModel):
     # ============================================================
     # Configuration
     # ============================================================
+    # `json_encoders` removed — deprecated in Pydantic V2, and both entries were
+    # doing harm or nothing:
+    #
+    #   datetime  — appended "Z" to a string `isoformat()` had already suffixed
+    #               with "+00:00", emitting `2026-08-08T09:14:05+00:00Z`. That is
+    #               not a valid timestamp; utils/datetime.py documents it as
+    #               "CORRUPTED - legacy data only" and repairs it on read — this
+    #               model was the producer. V2's default emits the correct
+    #               `...T09:14:05Z` unaided. The repair path stays, for rows
+    #               written before this.
+    #   timedelta — dead. Config does not propagate to nested models in V2 and
+    #               `Case` has no timedelta field of its own, so the only field
+    #               it could have reached (`ProblemVerification.duration`)
+    #               already serialised as ISO-8601 `PT1H`, never as seconds.
+    #               Confirmed unchanged before and after.
     model_config = ConfigDict(
         validate_assignment=True,  # Validate on field assignment
         use_enum_values=False,  # Keep enum instances
-        json_encoders={
-            datetime: lambda v: v.isoformat()
-            + ("Z" if v.tzinfo in (None, timezone.utc) else ""),
-            timedelta: lambda v: v.total_seconds(),
-        },
     )

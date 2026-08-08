@@ -13,7 +13,7 @@ Design: Follows TASK-024 (Report Module) and TASK-026 (Hypothesis) API model pat
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ============================================================
 # Message API Models
@@ -51,8 +51,8 @@ class MessageResponse(BaseModel):
         None, description="Additional message metadata"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "message_id": "exec-abc123",
                 "role": "assistant",
@@ -65,7 +65,8 @@ class MessageResponse(BaseModel):
                     "tool_calls": ["list_evidence", "read_file"],
                 },
             }
-        }
+        },
+    )
 
 
 class PaginationInfo(BaseModel):
@@ -89,8 +90,8 @@ class MessageListResponse(BaseModel):
     has_more: bool = Field(..., description="Whether there are more messages to fetch")
     pagination: PaginationInfo = Field(..., description="Pagination information")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "session_id": "sess-abc123",
                 "messages": [
@@ -118,7 +119,8 @@ class MessageListResponse(BaseModel):
                 "has_more": False,
                 "pagination": {"limit": 50, "offset": 0, "next_offset": None},
             }
-        }
+        },
+    )
 
 
 # ============================================================
@@ -145,8 +147,8 @@ class ChatRequest(BaseModel):
     )
     stream: Optional[bool] = Field(default=True, description="Enable SSE streaming")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "case_id": "CASE-2026010100001",
                 "session_id": None,
@@ -154,7 +156,8 @@ class ChatRequest(BaseModel):
                 "agent_type": "investigator",
                 "stream": True,
             }
-        }
+        },
+    )
 
 
 class ChatMessageResponse(BaseModel):
@@ -181,8 +184,8 @@ class ChatResponse(BaseModel):
     )
     duration_ms: int = Field(..., description="Execution duration in milliseconds")
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "execution_id": "exec-abc123",
                 "session_id": "sess-xyz789",
@@ -195,4 +198,5 @@ class ChatResponse(BaseModel):
                 "tool_calls": ["list_evidence", "read_file"],
                 "duration_ms": 5234,
             }
-        }
+        },
+    )
