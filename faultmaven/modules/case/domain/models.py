@@ -5362,11 +5362,13 @@ class Case(BaseModel):
     #               For NAIVE values the output does change: old `...05Z`, new
     #               `...05` with no designator. Naive timestamps are reachable —
     #               the SQLite mapper returns them unnormalised — but only when
-    #               EVERY timestamp on the case is naive, because
-    #               `validate_timestamp_ordering` compares created_at against
-    #               updated_at and a mixed pair raises TypeError before any
+    #               no COMPARED PAIR mixes awareness: `validate_timestamp_ordering`
+    #               always compares created_at against updated_at and
+    #               last_activity_at, and against resolved_at/closed_at when
+    #               those are set, and a mixed pair raises TypeError before any
     #               serialisation happens (a pre-existing hazard, not one this
-    #               introduced). The all-naive case round-trips safely:
+    #               introduced). In practice that means all-naive or all-aware,
+    #               since they share a source. Either way it round-trips safely:
     #               `parse_utc_timestamp` reads a bare timestamp back as UTC,
     #               identically to the `Z` form — verified for all three shapes.
     #               No live API surface serialises the domain `Case`; the only
