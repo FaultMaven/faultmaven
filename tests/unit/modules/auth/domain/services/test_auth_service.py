@@ -52,8 +52,8 @@ def mock_settings():
     settings.security.jwt_algorithm = "HS256"  # Match local mode default
     settings.auth.jwt_access_token_expire_minutes = 15
     settings.auth.jwt_refresh_token_expire_days = 7
-    settings.security.jwt_issuer = "faultmaven-api"
-    settings.security.jwt_audience = "faultmaven-app"
+    settings.security.jwt_issuer = "faultmaven"
+    settings.security.jwt_audience = "faultmaven-api"
     settings.security.token_revocation_prefix = "revoked:token:"
     settings.security.jwt_private_key = None
     settings.security.jwt_public_key = None
@@ -151,8 +151,8 @@ class TestTokenVerification:
             "email": "test@example.com",
             "roles": ["admin"],
             "permissions": [],
-            "iss": "faultmaven-api",
-            "aud": "faultmaven-app",
+            "iss": "faultmaven",
+            "aud": "faultmaven-api",
             "iat": int((now - timedelta(hours=1)).timestamp()),
             "exp": int((now - timedelta(minutes=1)).timestamp()),  # Already expired
             "jti": str(uuid.uuid4()),
@@ -188,8 +188,8 @@ class TestTokenVerification:
         typeless_claims = {
             "sub": "user-123",
             "organization_id": "org-456",
-            "iss": "faultmaven-api",
-            "aud": "faultmaven-app",
+            "iss": "faultmaven",
+            "aud": "faultmaven-api",
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=15)).timestamp()),
             "jti": str(uuid.uuid4()),
@@ -206,8 +206,8 @@ class TestTokenVerification:
         fake_claims = {
             "sub": "user-123",
             "organization_id": "org-456",
-            "iss": "faultmaven-api",
-            "aud": "faultmaven-app",
+            "iss": "faultmaven",
+            "aud": "faultmaven-api",
             "iat": int(datetime.now(timezone.utc).timestamp()),
             "exp": int(
                 (datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()
@@ -273,8 +273,8 @@ class TestTokenVerification:
         """verify_token handles tokens with missing required claims."""
         # Create token without required claims
         incomplete_claims = {
-            "iss": "faultmaven-api",
-            "aud": "faultmaven-app",
+            "iss": "faultmaven",
+            "aud": "faultmaven-api",
             "iat": int(datetime.now(timezone.utc).timestamp()),
             "exp": int(
                 (datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()
@@ -1153,7 +1153,7 @@ class TestTokenVerificationEdgeCases:
             "roles": ["admin"],
             "permissions": [],
             "iss": "wrong-issuer",  # Wrong issuer
-            "aud": "faultmaven-app",
+            "aud": "faultmaven-api",
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=15)).timestamp()),
             "jti": str(uuid.uuid4()),
@@ -1219,7 +1219,7 @@ class TestTokenVerificationEdgeCases:
             "email": "test@example.com",
             "roles": ["admin"],
             "permissions": [],
-            "iss": "faultmaven-api",
+            "iss": "faultmaven",
             "aud": "wrong-audience",  # Wrong audience
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=15)).timestamp()),

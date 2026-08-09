@@ -3,9 +3,15 @@
 ``iss`` and ``aud`` are the two claims a deployment is free to name. Before this,
 the HS256 generator minted access tokens with its configured pair but validated
 against the literals ``"faultmaven"``/``"faultmaven-api"``, and minted refresh
-tokens with those literals regardless of configuration. Since ``JWT_ISSUER`` and
-``JWT_AUDIENCE`` default to ``"faultmaven-api"``/``"faultmaven-app"``, a
-production-wired generator could not validate its own access token.
+tokens with those literals regardless of configuration. ``JWT_ISSUER`` and
+``JWT_AUDIENCE`` then defaulted to ``"faultmaven-api"``/``"faultmaven-app"``, so
+a production-wired generator could not validate its own access token.
+
+Those defaults are now the hardcoded pair — issuer ``"faultmaven"``, audience
+``"faultmaven-api"`` — which is both RFC 7519-correct (``aud`` names the API
+that receives the token, not the client that bears it) and what makes the fix
+cheap to deploy: refresh tokens minted before it already carry that pair, so
+they keep validating instead of logging everyone out.
 
 That was latent rather than live, but by a thread worth naming: the sole caller
 of ``validate_access_token`` (``oauth_service``) is handed a generator from
@@ -22,11 +28,12 @@ algorithm, either token kind, and any configured (issuer, audience), the claims
 carry that pair, the minting generator accepts its own token, and a decoder
 configured with the same pair accepts it too.**
 
-The parameter set deliberately includes the two literals the old code hardcoded.
-A test whose configured pair happens to equal the hardcode cannot observe the
-defect — that is precisely why the pre-existing HS256 fixtures did not. Here
-they are one case among several, and ``deployment-custom`` matches neither the
-hardcodes nor the settings defaults, so any reintroduced literal fails.
+The settings defaults now coincide with the literals the old code hardcoded, so
+that case alone can no longer observe the defect — a generator configured with
+the hardcode agrees with a hardcoding one by construction. That is exactly why
+the pre-existing HS256 fixtures never caught this, and why the sweep does not
+rely on the default case: ``former-defaults`` and ``deployment-custom`` share no
+value with the literals, so any reintroduced literal fails on them.
 
 ``test_the_validator_itself_refuses_a_foreign_pair`` is the mutation check
 riding along with the suite. The accept assertions are all satisfied by a
@@ -57,13 +64,18 @@ SECRET = "unit-test-secret-key-please-ignore"
 ACCESS_MINUTES = 15
 REFRESH_DAYS = 7
 
-#: Configured pairs to sweep. ``settings-defaults`` is what production wires;
-#: ``legacy-hardcode`` is what the HS256 paths used to bake in (kept so the
-#: fixed code is exercised on it too, not to bless it); ``deployment-custom``
-#: shares no value with either, so a reintroduced literal cannot satisfy it.
+#: Configured pairs to sweep.
+#:
+#: ``settings-defaults`` is what production wires, and is also the pair the
+#: HS256 paths used to hardcode — so it is the one case here that CANNOT
+#: observe the defect, and is present to prove the shipped configuration works
+#: rather than to guard it. ``former-defaults`` is what the settings defaulted
+#: to before this change, and ``deployment-custom`` shares no value with any
+#: literal in the codebase. Those two carry the detection: a reintroduced
+#: literal fails on both.
 PAIRS = {
-    "settings-defaults": ("faultmaven-api", "faultmaven-app"),
-    "legacy-hardcode": ("faultmaven", "faultmaven-api"),
+    "settings-defaults": ("faultmaven", "faultmaven-api"),
+    "former-defaults": ("faultmaven-api", "faultmaven-app"),
     "deployment-custom": ("acme-idp", "acme-consumers"),
 }
 
@@ -288,17 +300,20 @@ async def test_a_generator_cannot_be_built_without_the_pair(algorithm, omitted):
     """No local default to fall back to — for *either* half of the pair.
 
     Both generators used to default to ``"faultmaven"``/``"faultmaven-api"``,
-    which are not the settings defaults — so a caller that said nothing got a
-    generator disagreeing with every other decoder in the deployment. Omission
-    now fails at construction instead of at some later validation.
+    so a caller that said nothing got a generator built from a pair no settings
+    object had supplied. Omission now fails at construction instead of at some
+    later validation.
 
-    Each half is omitted separately, not just both together. A default restored
-    on ``audience`` alone is the nastier of the two: ``"faultmaven-api"`` is the
-    settings default *issuer*, so such a generator mints ``aud="faultmaven-api"``
-    while ``AuthService.verify_token`` requires ``"faultmaven-app"`` — half of
-    #938 reintroduced, on every request. Asserting only that the error names
-    ``issuer`` would not see it, because the both-omitted message names
-    ``issuer`` too.
+    Each half is omitted separately, not just both together, and the ``audience``
+    case is the one that needs saying. Those old defaults are now *also* the
+    settings defaults, so a default restored on ``audience`` alone would produce
+    a correct-looking generator on any deployment running the defaults — no
+    failing test, no visible symptom — while quietly reinstating the premise this
+    whole change removes: that there is an issuer or audience independent of
+    configuration. It breaks the moment a deployment sets ``JWT_AUDIENCE``, which
+    is the one situation nobody exercises before shipping. The assertion must
+    therefore name the omitted argument rather than merely matching ``issuer``,
+    since the both-omitted message names ``issuer`` too.
     """
     issuer, audience = PAIRS["deployment-custom"]
     kwargs = {

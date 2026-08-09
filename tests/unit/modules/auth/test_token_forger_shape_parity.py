@@ -49,8 +49,8 @@ SECRET = "test-secret-key-0123456789abcdef"  # 32+ bytes: HS256 minimum
 #: production seam — so it is the one that most needs production-shaped values.
 #: It used to carry the literals the HS256 paths hardcoded, which made the seam
 #: agree with a generator no deployment builds (#938).
-ISSUER = "faultmaven-api"
-AUDIENCE = "faultmaven-app"
+ISSUER = "faultmaven"
+AUDIENCE = "faultmaven-api"
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
 ORG_ID = "22222222-2222-2222-2222-222222222222"

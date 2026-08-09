@@ -48,8 +48,8 @@ from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 #: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
 #: defaults). Deliberately not the literals the HS256 paths once hardcoded:
 #: a fixture that matched those could not observe #938.
-ISSUER = "faultmaven-api"
-AUDIENCE = "faultmaven-app"
+ISSUER = "faultmaven"
+AUDIENCE = "faultmaven-api"
 
 SECRET = "test-secret-key-for-hs256-signing-only"
 TENANT = "org_acme_7f3c"

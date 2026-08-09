@@ -33,8 +33,8 @@ from faultmaven.providers.tenancy import factory as tenancy_factory
 #: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
 #: defaults). Deliberately not the literals the HS256 paths once hardcoded:
 #: a fixture that matched those could not observe #938.
-ISSUER = "faultmaven-api"
-AUDIENCE = "faultmaven-app"
+ISSUER = "faultmaven"
+AUDIENCE = "faultmaven-api"
 
 REAL_ORG = "22222222-2222-2222-2222-222222222222"
 

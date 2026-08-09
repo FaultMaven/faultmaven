@@ -46,8 +46,8 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
 #: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
 #: defaults). Deliberately not the literals the HS256 paths once hardcoded:
 #: a fixture that matched those could not observe #938.
-ISSUER = "faultmaven-api"
-AUDIENCE = "faultmaven-app"
+ISSUER = "faultmaven"
+AUDIENCE = "faultmaven-api"
 SECRET = "test-secret-key-for-hs256-signing-only"
 REDIRECT = "chrome-extension://abc123/callback.html"
 

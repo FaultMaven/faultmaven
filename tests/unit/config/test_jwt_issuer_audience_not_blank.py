@@ -56,15 +56,15 @@ def test_a_non_blank_value_is_accepted(field):
 def test_the_defaults_survive_the_validator():
     """The shipped defaults must not be rejected by the rule guarding them."""
     settings = SecuritySettings()
-    assert settings.jwt_issuer == "faultmaven-api"
-    assert settings.jwt_audience == "faultmaven-app"
+    assert settings.jwt_issuer == "faultmaven"
+    assert settings.jwt_audience == "faultmaven-api"
 
 
 @pytest.mark.parametrize(
     "issuer,audience,expect_broken",
     [
-        ("faultmaven-api", "", True),  # blank audience: MissingRequiredClaim
-        ("", "faultmaven-app", False),  # blank issuer: silently functional
+        ("faultmaven", "", True),  # blank audience: MissingRequiredClaim
+        ("", "faultmaven-api", False),  # blank issuer: silently functional
     ],
 )
 def test_only_a_blank_audience_would_have_broken_auth(issuer, audience, expect_broken):

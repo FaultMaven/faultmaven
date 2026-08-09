@@ -263,8 +263,8 @@ modules/auth/
   "scopes": ["openid", "profile", "email", "cases:read", "cases:write"],
   "exp": 1234567890,
   "iat": 1234567890,
-  "iss": "faultmaven-api",
-  "aud": "faultmaven-app",
+  "iss": "faultmaven",
+  "aud": "faultmaven-api",
   "jti": "unique-token-id",
   "type": "access",
   "auth_mode": "local"

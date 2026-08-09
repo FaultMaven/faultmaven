@@ -69,8 +69,8 @@ def _retired_env_cases():
 
 RETIRED_ENV_CASES = _retired_env_cases()
 
-ISSUER = "faultmaven-api"
-AUDIENCE = "faultmaven-app"
+ISSUER = "faultmaven"
+AUDIENCE = "faultmaven-api"
 SECRET = "unit-test-hs256-secret-please-ignore"
 
 # (access minutes, refresh days) — both non-default, so a run that quietly

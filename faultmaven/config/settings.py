@@ -997,8 +997,15 @@ class SecuritySettings(BaseSettings):
     # AuthSettings, and every minting path takes it from there (#888). This half
     # carries the keys, issuer and audience only.
 
-    jwt_issuer: str = Field(default="faultmaven-api")
-    jwt_audience: str = Field(default="faultmaven-app")
+    # ``aud`` names the token's intended RECIPIENT, which for an access token is
+    # the API — not the client presenting it (RFC 7519 §4.1.3). These defaulted
+    # to issuer="faultmaven-api"/audience="faultmaven-app", which had it
+    # backwards: the issuer was named after the API and the audience after the
+    # bearer. Corrected as part of #938, which is also what makes the change
+    # free: the HS256 refresh mint hardcoded exactly this pair, so unifying onto
+    # it leaves refresh tokens issued before the upgrade still valid.
+    jwt_issuer: str = Field(default="faultmaven")
+    jwt_audience: str = Field(default="faultmaven-api")
 
     @field_validator("jwt_issuer", "jwt_audience")
     @classmethod

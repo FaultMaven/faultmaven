@@ -162,8 +162,8 @@ This pattern ensures:
   "organization_id": "org_default",
   "iat": 1706140800,
   "exp": 1706141700,
-  "iss": "faultmaven-api",
-  "aud": "faultmaven-app",
+  "iss": "faultmaven",
+  "aud": "faultmaven-api",
   "jti": "550e8400-e29b-41d4-a716-446655440000",
   "type": "access",
   "auth_mode": "local"
@@ -178,7 +178,15 @@ Neither value may be blank. Both are refused at startup, because with no hardcod
 
 **Changing the pair invalidates tokens already in circulation.** Both access and refresh tokens minted under the previous values are rejected immediately by the next request that presents them — they are not merely left to expire. Clients treat that rejection as definitive and re-authenticate, so the effect is a forced re-login for every active session, and a rolling deploy widens it: while both generations are running they reject each other's refresh tokens, and refresh rotation revokes the presented token before minting its replacement.
 
-The upgrade to #938 is itself such a change, for `AUTH_MODE=local` deployments only. Before it, HS256 refresh tokens were minted with `iss="faultmaven"` / `aud="faultmaven-api"` regardless of configuration; afterwards they carry the configured pair. Local-mode refresh tokens issued before the upgrade therefore stop verifying after it, and a rollback breaks the new ones symmetrically. Access tokens are unaffected by this particular change — they already carried the configured pair — and `AUTH_MODE=oauth` deployments are unaffected entirely, RS256 having always used it.
+The defaults are `iss="faultmaven"` / `aud="faultmaven-api"` because `aud` names the token's intended **recipient** — for an access token, the API — rather than the client bearing it (RFC 7519 §4.1.3). They previously read `iss="faultmaven-api"` / `aud="faultmaven-app"`, which had both roles backwards; #938 corrected them while unifying the pair.
+
+That correction is also what makes #938 cheap to deploy, and the impact differs by mode:
+
+- **`AUTH_MODE=local` (HS256).** Refresh tokens minted before the upgrade already carried exactly this pair — it was hardcoded into the refresh mint — so they keep validating and most sessions continue uninterrupted. Access tokens carried the old defaults and are rejected. A client holding one still inside its lifetime presents it, receives a definitive 401, and logs out; a client past its proactive-refresh threshold (the extension refreshes with under five minutes remaining) refreshes first and recovers silently on the surviving refresh token. So the exposure is roughly the sessions active in the earlier part of a 15-minute access window, not the whole population.
+- **`AUTH_MODE=oauth` (RS256).** Both token kinds carried the old configured defaults, so both are invalidated and every active session re-authenticates.
+- **Both modes.** Password-reset tokens in flight (one-hour lifetime) stop verifying and the reset must be requested again.
+
+A rollback inverts each of these.
 
 **Token Types:**
 
