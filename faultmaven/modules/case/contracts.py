@@ -199,7 +199,9 @@ class ICaseRepository(Protocol):
     async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
         """Delete a single evidence row.
 
-        Explicit alternative to mirror-delete via aggregate save(case).
+        The aggregate save(case) does NOT delete these rows (its upserts are
+        purely additive), so targeted removal has to be explicit. (Deleting
+        the whole case still removes them — the FK is ON DELETE CASCADE.)
         Returns True if a row was removed, False if no such evidence existed.
         """
         ...
@@ -207,8 +209,39 @@ class ICaseRepository(Protocol):
     async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
         """Delete a single uploaded_file row.
 
-        Explicit alternative to mirror-delete via aggregate save(case).
+        The aggregate save(case) does NOT delete these rows (its upserts are
+        purely additive), so targeted removal has to be explicit. (Deleting
+        the whole case still removes them — the FK is ON DELETE CASCADE.)
         Returns True if a row was removed, False if no such file existed.
+        """
+        ...
+
+    async def add_uploaded_file(
+        self, case_id: str, uploaded_file: "UploadedFile", organization_id: str
+    ) -> None:
+        """Commit ONE uploaded_file row on its own, outside the aggregate save.
+
+        An upload is a user-initiated fact: the bytes are already in storage by
+        the time this is called, and whether the turn's LLM later succeeds has
+        no bearing on whether the user uploaded the file. Committing the row
+        here keeps the row and the bytes consistent. Previously the row rode
+        along on the end-of-turn ``save(case)``, so a failed turn left the bytes
+        stored and unreferenced, and the retry stored a second copy —
+        ``find_uploaded_file_by_content_hash`` could not dedup against a row
+        that was never written.
+
+        Scoped rather than ``save(case)`` because the aggregate save commits the
+        WHOLE case: mid-turn that would make the half-built turn durable (the
+        user message appended at step 2, the bumped ``current_turn``), which is
+        exactly what deferring the save exists to avoid. This commits the upload
+        without committing the turn.
+
+        Ordering with the later aggregate save is safe because
+        ``_upsert_uploaded_files`` is purely additive — it re-upserts this row
+        rather than deleting it. (Note for anyone extending this: that is NOT
+        true of ``causal_nodes``/``causal_edges``, which the aggregate save does
+        reconcile destructively.) Idempotent — re-committing the same file_id
+        updates in place.
         """
         ...
 

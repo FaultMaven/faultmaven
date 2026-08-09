@@ -2082,7 +2082,9 @@ class SQLiteCaseRepository(CaseRepository):
     async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
         """Scoped DELETE of a single evidence row.
 
-        Explicit alternative to the mirror-delete the aggregate save performs.
+        The aggregate save does NOT remove these rows (purely additive
+        upserts), so targeted removal must be explicit. This is that path;
+        deleting the whole case also removes them, via ON DELETE CASCADE.
         Use this for intentional removals rather than popping from
         `case.evidence` and calling `save(case)`.
         """
@@ -2105,7 +2107,9 @@ class SQLiteCaseRepository(CaseRepository):
     async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
         """Scoped DELETE of a single uploaded_file row.
 
-        Explicit alternative to the mirror-delete the aggregate save performs.
+        The aggregate save does NOT remove these rows (purely additive
+        upserts), so targeted removal must be explicit. This is that path;
+        deleting the whole case also removes them, via ON DELETE CASCADE.
         """
         try:
             query = text("""
@@ -2121,6 +2125,31 @@ class SQLiteCaseRepository(CaseRepository):
             await self.db.rollback()
             raise RepositoryException(
                 f"Failed to delete uploaded_file {file_id} on case {case_id}: {e}"
+            ) from e
+
+    async def add_uploaded_file(
+        self, case_id: str, uploaded_file: UploadedFile, organization_id: str
+    ) -> None:
+        """Commit ONE uploaded_file row on its own, outside the aggregate save.
+
+        Delegates to the same `_upsert_uploaded_files` the aggregate save uses,
+        so the row shape and the COALESCE handling of preprocessing artifacts
+        stay in one place; this method only narrows the set to one file and
+        commits it.
+
+        Scoped rather than `save(case)` because the aggregate save commits the
+        whole case, which mid-turn would make the half-built turn durable. That
+        upsert is purely additive, so the later aggregate save re-upserts this
+        row rather than removing it.
+        """
+        try:
+            await self._upsert_uploaded_files(case_id, [uploaded_file], organization_id)
+            await self.db.commit()
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to add uploaded_file "
+                f"{getattr(uploaded_file, 'file_id', '?')} on case {case_id}: {e}"
             ) from e
 
     async def get_analytics(self, case_id: str) -> dict[str, Any]:

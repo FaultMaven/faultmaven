@@ -180,6 +180,172 @@ class TestEvidenceBearingRerouteToEngine:
         assert intent_data["query_mode"] == "triage"
 
 
+class TestUploadDurabilityIsIndependentOfTheTurn:
+    """An upload must survive a turn that fails after it.
+
+    The bytes are written by ``store_file`` during preprocessing, and
+    ``mark_linked`` then exempts them from TTL reclaim. While the
+    ``UploadedFile`` row waited for the end-of-turn ``save(case)``, a turn that
+    raised left those bytes stored, exempt from reclaim, and referenced by
+    nothing — a permanent orphan — and the retry stored a second copy, because
+    ``find_uploaded_file_by_content_hash`` cannot match a row that was never
+    written. The row is now committed by its own scoped write during
+    preprocessing.
+    """
+
+    def _service(self, repository):
+        engine = MockMilestoneEngine()
+        preprocessing = AsyncMock()
+        preprocessing.classify_and_extract = AsyncMock(
+            return_value=make_preprocessing_result()
+        )
+        storage = AsyncMock()
+        storage.store_file = AsyncMock(return_value={"storage_key": "blob/abc123"})
+        storage.mark_linked = AsyncMock(return_value=True)
+        service = InvestigationService(
+            milestone_engine=engine,
+            case_repository=repository,
+            preprocessing_service=preprocessing,
+            file_storage_service=storage,
+        )
+        return service, engine, storage
+
+    @pytest.mark.asyncio
+    async def test_upload_is_committed_even_when_the_turn_fails(self):
+        """The scoped commit lands BEFORE the engine runs, not merely at some point.
+
+        ⚠️ Asserted on the repository call, not on ``case.uploaded_files``.
+        The service appends the row to the in-memory case regardless, and
+        ``MockCaseRepository`` stores by reference — so inspecting the case
+        would report success with the scoped commit deleted. The call is the
+        only signal that distinguishes committed from merely-appended.
+
+        ⚠️ Ordering is asserted explicitly via a call log. Asserting only that
+        the commit happened would pass for an implementation that committed in a
+        ``finally`` AFTER the engine — which is a different (and weaker)
+        property: it would leave the upload uncommitted for the whole duration
+        of the LLM call, so a crash or timeout mid-turn still orphans the bytes.
+        The property is "durable before anything can fail", not "durable
+        eventually".
+        """
+        repository = MockCaseRepository()
+        calls: list[str] = []
+
+        async def _record_commit(*_args, **_kwargs):
+            calls.append("commit")
+
+        repository.add_uploaded_file = AsyncMock(side_effect=_record_commit)
+        service, engine, storage = self._service(repository)
+
+        user_id = str(uuid4())
+        case = create_sample_case(user_id=user_id)
+        await repository.save(case)
+
+        async def _failing_engine(*_args, **_kwargs):
+            calls.append("engine")
+            raise RuntimeError("LLM provider exploded")
+
+        engine.process_turn.side_effect = _failing_engine
+
+        with pytest.raises(ServiceException):
+            await service.process_turn(
+                case_id=case.case_id,
+                user_id=user_id,
+                payload=TurnPayload(
+                    query="here are the logs",
+                    attachments=[
+                        Attachment(
+                            content=b"07:40 ERROR 503 SSLException: Connection reset",
+                            filename="user-service.log",
+                            content_type="text/plain",
+                        )
+                    ],
+                ),
+            )
+
+        repository.add_uploaded_file.assert_awaited_once()
+        call_case_id, committed_file, call_org = (
+            repository.add_uploaded_file.await_args.args
+        )
+        assert call_case_id == case.case_id
+        assert call_org == case.organization_id
+        # The committed row must carry the storage pointer — a row that does not
+        # reference the stored bytes leaves them orphaned just the same.
+        assert committed_file.storage_ref == "blob/abc123"
+        assert committed_file.filename == "user-service.log"
+
+        # The ordering itself. "commit" must precede "engine" — a commit that
+        # only happens after the engine (or in a finally) fails here.
+        assert calls == [
+            "commit",
+            "engine",
+        ], f"expected the upload to be committed before the engine ran, got {calls}"
+        storage.store_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_service_calls_the_contract_method_name(self):
+        """Pin the method NAME against a rename that silently disables the fix.
+
+        The call site resolves the method with ``getattr(self.repository,
+        "add_uploaded_file", None)`` and degrades when it is absent. That guard
+        protects test doubles, but it also means renaming the contract method
+        without updating the call site reverts every upload to the orphaning
+        behaviour — with only a log line to show for it. This asserts the name
+        the service looks up still exists on the abstract base and the Protocol,
+        so the rename is caught here instead of in production.
+        """
+        from faultmaven.modules.case.contracts import ICaseRepository
+        from faultmaven.modules.case.infrastructure.case_repository import (
+            CaseRepository,
+        )
+
+        assert hasattr(CaseRepository, "add_uploaded_file"), (
+            "CaseRepository lost add_uploaded_file — the service's getattr "
+            "lookup now silently degrades every upload"
+        )
+        assert hasattr(ICaseRepository, "add_uploaded_file")
+
+    @pytest.mark.asyncio
+    async def test_scoped_commit_failure_degrades_but_does_not_break_the_upload(self):
+        """A repository that cannot do the scoped write must not fail the turn.
+
+        The fallback is the previous behaviour — the row rides the end-of-turn
+        save — which is a durability regression, not a broken upload. It is
+        logged rather than raised, so the turn still completes.
+        """
+        repository = MockCaseRepository()
+        repository.add_uploaded_file = AsyncMock(
+            side_effect=RuntimeError("db unavailable")
+        )
+        service, engine, storage = self._service(repository)
+
+        user_id = str(uuid4())
+        case = create_sample_case(user_id=user_id)
+        await repository.save(case)
+
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id=user_id,
+            payload=TurnPayload(
+                query="here are the logs",
+                attachments=[
+                    Attachment(
+                        content=b"07:40 ERROR 503 SSLException: Connection reset",
+                        filename="user-service.log",
+                        content_type="text/plain",
+                    )
+                ],
+            ),
+        )
+
+        assert response is not None
+        repository.add_uploaded_file.assert_awaited_once()
+        # The upload still reached the case aggregate, so the end-of-turn save
+        # persists it on this (successful) turn.
+        stored = await repository.get(case.case_id)
+        assert any(f.filename == "user-service.log" for f in stored.uploaded_files)
+
+
 class TestAuthenticatedPrincipalReachesTheEngine:
     """The turn's reader must arrive at the engine as its own argument.
 
@@ -320,7 +486,13 @@ class TestInvestigationServiceProcessTurn:
         sample_user_id,
         sample_turn_payload,
     ):
-        """Test that user message is saved before processing."""
+        """The committed case carries the user message and the agent reply.
+
+        The docstring used to say "saved before processing", which described
+        the pre-#184 ordering and had been false since the save was deferred to
+        the end of the turn. This asserts post-success state only; the
+        deferral itself is pinned by the failure-path test below.
+        """
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
         sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
@@ -345,6 +517,72 @@ class TestInvestigationServiceProcessTurn:
         assert any(
             m["content"] == sample_turn_payload.query for m in user_messages
         ), f"User message '{sample_turn_payload.query}' not found in saved messages"
+
+    @pytest.mark.asyncio
+    async def test_failed_turn_commits_nothing_on_the_straight_line_path(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_turn_payload,
+    ):
+        """An engine failure must not commit the user message or the turn bump.
+
+        This is the property the deferred save exists for, and nothing asserted
+        it: `test_process_turn_saves_user_message` only checks post-success
+        state, so moving the save back above the engine call shipped green.
+
+        ⚠️ Asserted on what reached ``save()``, NEVER on the stored case.
+        ``MockCaseRepository`` stores BY REFERENCE
+        (``_storage[case.case_id] = case``) and ``_get`` hands the same object
+        back, so the service's in-memory mutations are visible through the
+        repository whether or not anything was ever saved. Measured, not
+        assumed: after a failed turn ``(await repo.get(...)).message_count``
+        reads 1 BOTH with the deferral and with a ``save`` restored above the
+        engine call — identical, so an assertion on it cannot tell the two
+        apart. Only the save calls differ (1 vs 2). Hence the snapshot taken at
+        each save; this test was confirmed to go red with the deferral removed.
+
+        Scope is a failure IN the engine call, which is all the deferral covers.
+        It does NOT extend to a failure after the engine returns: the real
+        ``MilestoneEngine`` saves the case unconditionally at its Step 7, before
+        the service appends the agent reply, so a post-engine failure leaves the
+        user message durable and the reply missing. The mock engine raises, so
+        that save never happens and this test sees the deferral in isolation.
+        See the STEP-2 comment in ``process_turn`` for the full ordering.
+        """
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        # Snapshot state AS COMMITTED, at the moment of each save.
+        committed: list[tuple[int, int]] = []
+        underlying_save = mock_case_repository.save.side_effect
+
+        async def _snapshotting_save(case):
+            committed.append((case.message_count, case.current_turn))
+            return await underlying_save(case)
+
+        mock_case_repository.save.side_effect = _snapshotting_save
+
+        mock_milestone_engine.process_turn.side_effect = RuntimeError(
+            "LLM provider exploded"
+        )
+
+        with pytest.raises(ServiceException):
+            await service.process_turn(
+                case_id=sample_case.case_id,
+                user_id=sample_user_id,
+                payload=sample_turn_payload,
+            )
+
+        assert committed == [], (
+            "A failed turn reached the database: save() was called with "
+            f"(message_count, current_turn)={committed!r}. The user message "
+            "and/or the turn bump were committed for a turn that produced no "
+            "agent reply."
+        )
 
     @pytest.mark.asyncio
     async def test_process_turn_persists_engine_metadata_on_assistant_message(

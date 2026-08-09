@@ -690,10 +690,31 @@ class InvestigationService:
                 )
 
             # 2. Build user message and update case in-memory (NOT persisted yet).
-            #    Deferring the save until after LLM processing ensures atomic
-            #    persistence of both user and agent messages.  If the LLM fails,
-            #    the database is untouched — no orphaned user message, no inflated
-            #    turn count — so the client can cleanly retry the same turn.
+            #    What the deferral actually buys: nothing is committed BEFORE the
+            #    LLM runs, so a turn that fails in the LLM call leaves no orphaned
+            #    user message and no inflated turn count, and the client can retry
+            #    the same turn. That is the whole of it.
+            #
+            #    ⚠️ It does NOT make the turn atomic, and it does NOT commit the
+            #    user message and the agent's reply together. Two earlier versions
+            #    of this comment claimed one or the other; both were false, so
+            #    check this against the code before trusting it:
+            #
+            #      - On an engine-routed turn ``MilestoneEngine`` saves the case
+            #        UNCONDITIONALLY at its Step 7 (``milestone_engine.py``, in
+            #        ``_process_turn_impl``) — before returning, and therefore
+            #        before the agent reply is appended by step 4 below. The user
+            #        message is durable at that point and the reply is not. A
+            #        failure in the window between them (reverse-redaction,
+            #        clarification building, response assembly) leaves exactly the
+            #        orphaned-user-message + inflated-turn state this comment used
+            #        to promise was impossible.
+            #      - The deterministic and terminal branches commit the same
+            #        ``case`` object earlier still, at their own ``save(case)``
+            #        sites.
+            #
+            #    So: an LLM failure commits nothing; a post-LLM failure can commit
+            #    a half turn. Do not reason about this path as all-or-nothing.
             from uuid import uuid4
 
             intent = payload.intent
@@ -956,10 +977,22 @@ class InvestigationService:
                 + [s for s in raw_follow_ups if s.get("intent")]
             ) or None
 
-            # 4. Save agent response AND user message atomically.
-            #    The user message was appended in-memory at step 2 but not
-            #    persisted.  This single save commits both messages together,
-            #    guaranteeing no half-completed turns in the database.
+            # 4. Append the agent response and save.
+            #    ⚠️ This is NOT an atomic commit of both messages, though it used
+            #    to say so ("commits both messages together, guaranteeing no
+            #    half-completed turns"). On an engine-routed turn the engine has
+            #    ALREADY committed the user message at its Step 7 save, so by the
+            #    time control reaches here a half-completed turn is exactly what
+            #    is in the database, and this save completes it rather than
+            #    preventing it.
+            #
+            #    It IS the single commit for both only when no engine save
+            #    intervened — GREETING and FILE_RECLASSIFICATION. The other three
+            #    SERVICE intents (STATUS_TRANSITION, CONFIRMATION,
+            #    HYPOTHESIS_ACTION) delegate to ``engine.process_turn`` from their
+            #    handlers, so they hit Step 7 just like an engine-routed turn.
+            #    "Service-dispatched" is NOT a synonym for "no engine save".
+            #    See the STEP-2 comment for the full ordering.
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": updated_case.current_turn,
@@ -1375,6 +1408,64 @@ class InvestigationService:
         if is_classification_failed:
             suggested_types = (
                 preprocessing_result.extraction_metadata.get("suggested_types") or []
+            )
+
+        # Commit the row NOW, on its own, rather than letting it ride along on
+        # the end-of-turn ``save(case)``.
+        #
+        # An upload is a user-initiated fact: the bytes are already in storage
+        # (``store_file`` above), and whether this turn's LLM later succeeds has
+        # no bearing on whether the user uploaded the file. When the row waited
+        # for the aggregate save, a turn that raised left the bytes stored with
+        # nothing referencing them — and ``mark_linked`` had already exempted
+        # them from TTL reclaim, so the orphan was permanent rather than
+        # self-clearing. The retry then stored a second copy, because
+        # ``find_uploaded_file_by_content_hash`` cannot dedup against a row that
+        # was never written.
+        #
+        # Committed here, at the end, so the row carries its preprocessing
+        # artifacts and seeded coverage rather than a bare stub. Scoped rather
+        # than ``save(case)`` because the aggregate save commits the whole case,
+        # and mid-turn that would make the half-built turn durable — the very
+        # thing deferring the save exists to avoid. The underlying
+        # ``_upsert_uploaded_files`` is purely additive, so the end-of-turn
+        # aggregate save re-upserts this row rather than removing it.
+        add_uploaded_file = getattr(self.repository, "add_uploaded_file", None)
+        if add_uploaded_file is not None:
+            try:
+                await add_uploaded_file(
+                    case.case_id,
+                    uploaded_file,
+                    getattr(case, "organization_id", "default"),
+                )
+            except Exception as e:
+                # Degrade to the previous behaviour (the row rides the
+                # end-of-turn save) rather than failing the upload outright —
+                # but say so. Silence here would turn a durability regression
+                # into an invisible one.
+                logger.warning(
+                    "Scoped commit of uploaded_file %s on case %s failed: %s. "
+                    "The row now depends on the end-of-turn save; if this turn "
+                    "fails, the stored bytes are orphaned.",
+                    uploaded_file.file_id,
+                    case.case_id,
+                    e,
+                )
+        else:
+            # WARNING, not DEBUG. `add_uploaded_file` is an @abstractmethod on
+            # CaseRepository and a member of the ICaseRepository Protocol, so in
+            # production this branch is unreachable — reaching it means either a
+            # test double or that the contract method was renamed without
+            # updating this call site. Both revert every upload to the orphaning
+            # behaviour this code exists to prevent, which is not a debug-level
+            # event. (`test_service_calls_the_contract_method_name` pins the
+            # name against a silent rename.)
+            logger.warning(
+                "Repository %s has no add_uploaded_file — uploads fall back to "
+                "the end-of-turn save and are orphaned if the turn fails. "
+                "uploaded_file=%s",
+                type(self.repository).__name__,
+                uploaded_file.file_id,
             )
 
         return _PreprocessedAttachment(
