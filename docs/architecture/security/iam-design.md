@@ -162,8 +162,8 @@ This pattern ensures:
   "organization_id": "org_default",
   "iat": 1706140800,
   "exp": 1706141700,
-  "iss": "faultmaven",
-  "aud": "faultmaven-api",
+  "iss": "faultmaven-api",
+  "aud": "faultmaven-app",
   "jti": "550e8400-e29b-41d4-a716-446655440000",
   "type": "access",
   "auth_mode": "local"
@@ -171,6 +171,10 @@ This pattern ensures:
 ```
 
 Both `HS256JWTTokenGenerator` (local mode) and `RS256JWTTokenGenerator` (cloud/OAuth mode) produce identical claim sets. The only difference is the signing algorithm and the `auth_mode` value (`"local"` vs `"oauth"`).
+
+`iss` and `aud` above are the **defaults** of `JWT_ISSUER` / `JWT_AUDIENCE`, not constants. A deployment names its own pair, and that one pair is what every mint stamps and every decoder checks — the generators take it as a required constructor argument, so a construction site that fails to wire it fails at construction rather than minting tokens no other decoder in the deployment accepts (#938).
+
+Changing the pair invalidates tokens already in circulation: a refresh token minted under the previous values fails verification afterwards, and its holder logs in again. Access tokens age out within their (minutes-long) lifetime; refresh tokens do not, so treat a change as a forced re-login for every active session.
 
 **Token Types:**
 
