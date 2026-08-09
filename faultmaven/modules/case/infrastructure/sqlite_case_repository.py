@@ -2123,6 +2123,27 @@ class SQLiteCaseRepository(CaseRepository):
                 f"Failed to delete uploaded_file {file_id} on case {case_id}: {e}"
             ) from e
 
+    async def add_uploaded_file(
+        self, case_id: str, uploaded_file: UploadedFile, organization_id: str
+    ) -> None:
+        """Commit ONE uploaded_file row on its own, outside the aggregate save.
+
+        Delegates to the same `_upsert_uploaded_files` the aggregate save uses,
+        so the row shape and the COALESCE handling of preprocessing artifacts
+        stay in one place; this method only narrows the set to one file and
+        commits it. Additive and idempotent — no mirror-delete, so committing a
+        file mid-turn cannot remove rows the in-memory snapshot has not seen.
+        """
+        try:
+            await self._upsert_uploaded_files(case_id, [uploaded_file], organization_id)
+            await self.db.commit()
+        except Exception as e:
+            await self.db.rollback()
+            raise RepositoryException(
+                f"Failed to add uploaded_file "
+                f"{getattr(uploaded_file, 'file_id', '?')} on case {case_id}: {e}"
+            ) from e
+
     async def get_analytics(self, case_id: str) -> dict[str, Any]:
         """Compute analytics for case from normalized tables.
 

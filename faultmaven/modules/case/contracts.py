@@ -212,6 +212,28 @@ class ICaseRepository(Protocol):
         """
         ...
 
+    async def add_uploaded_file(
+        self, case_id: str, uploaded_file: "UploadedFile", organization_id: str
+    ) -> None:
+        """Commit ONE uploaded_file row on its own, outside the aggregate save.
+
+        An upload is a user-initiated fact: the bytes are already in storage by
+        the time this is called, and whether the turn's LLM later succeeds has
+        no bearing on whether the user uploaded the file. Committing the row
+        here keeps the row and the bytes consistent. Previously the row rode
+        along on the end-of-turn ``save(case)``, so a failed turn left the bytes
+        stored and unreferenced, and the retry stored a second copy —
+        ``find_uploaded_file_by_content_hash`` could not dedup against a row
+        that was never written.
+
+        Scoped and additive, for the same reason as
+        ``update_evidence_vectorized``: ``save(case)`` rewrites the whole case
+        aggregate and mirror-deletes rows absent from the in-memory snapshot, so
+        it is the wrong instrument for committing one row mid-turn. Idempotent —
+        re-committing the same file_id updates in place.
+        """
+        ...
+
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics for a case."""
         ...

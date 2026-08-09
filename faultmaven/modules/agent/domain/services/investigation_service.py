@@ -1389,6 +1389,54 @@ class InvestigationService:
                 preprocessing_result.extraction_metadata.get("suggested_types") or []
             )
 
+        # Commit the row NOW, on its own, rather than letting it ride along on
+        # the end-of-turn ``save(case)``.
+        #
+        # An upload is a user-initiated fact: the bytes are already in storage
+        # (``store_file`` above), and whether this turn's LLM later succeeds has
+        # no bearing on whether the user uploaded the file. When the row waited
+        # for the aggregate save, a turn that raised left the bytes stored with
+        # nothing referencing them — and ``mark_linked`` had already exempted
+        # them from TTL reclaim, so the orphan was permanent rather than
+        # self-clearing. The retry then stored a second copy, because
+        # ``find_uploaded_file_by_content_hash`` cannot dedup against a row that
+        # was never written.
+        #
+        # Committed here, at the end, so the row carries its preprocessing
+        # artifacts and seeded coverage rather than a bare stub. The write is
+        # scoped and additive (``add_uploaded_file`` → ``_upsert_uploaded_files``
+        # for one file, no mirror-delete), so it cannot truncate rows that the
+        # in-memory snapshot has not seen — the hazard that makes ``save(case)``
+        # the wrong instrument mid-turn.
+        add_uploaded_file = getattr(self.repository, "add_uploaded_file", None)
+        if add_uploaded_file is not None:
+            try:
+                await add_uploaded_file(
+                    case.case_id,
+                    uploaded_file,
+                    getattr(case, "organization_id", "default"),
+                )
+            except Exception as e:
+                # Degrade to the previous behaviour (the row rides the
+                # end-of-turn save) rather than failing the upload outright —
+                # but say so. Silence here would turn a durability regression
+                # into an invisible one.
+                logger.warning(
+                    "Scoped commit of uploaded_file %s on case %s failed: %s. "
+                    "The row now depends on the end-of-turn save; if this turn "
+                    "fails, the stored bytes are orphaned.",
+                    uploaded_file.file_id,
+                    case.case_id,
+                    e,
+                )
+        else:
+            logger.debug(
+                "Repository %s has no add_uploaded_file; uploaded_file %s "
+                "will be persisted by the end-of-turn save.",
+                type(self.repository).__name__,
+                uploaded_file.file_id,
+            )
+
         return _PreprocessedAttachment(
             uploaded_file=uploaded_file,
             classification_failed=is_classification_failed,

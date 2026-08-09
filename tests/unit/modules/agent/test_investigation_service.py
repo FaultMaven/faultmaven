@@ -180,6 +180,127 @@ class TestEvidenceBearingRerouteToEngine:
         assert intent_data["query_mode"] == "triage"
 
 
+class TestUploadDurabilityIsIndependentOfTheTurn:
+    """An upload must survive a turn that fails after it.
+
+    The bytes are written by ``store_file`` during preprocessing, and
+    ``mark_linked`` then exempts them from TTL reclaim. While the
+    ``UploadedFile`` row waited for the end-of-turn ``save(case)``, a turn that
+    raised left those bytes stored, exempt from reclaim, and referenced by
+    nothing — a permanent orphan — and the retry stored a second copy, because
+    ``find_uploaded_file_by_content_hash`` cannot match a row that was never
+    written. The row is now committed by its own scoped write during
+    preprocessing.
+    """
+
+    def _service(self, repository):
+        engine = MockMilestoneEngine()
+        preprocessing = AsyncMock()
+        preprocessing.classify_and_extract = AsyncMock(
+            return_value=make_preprocessing_result()
+        )
+        storage = AsyncMock()
+        storage.store_file = AsyncMock(return_value={"storage_key": "blob/abc123"})
+        storage.mark_linked = AsyncMock(return_value=True)
+        service = InvestigationService(
+            milestone_engine=engine,
+            case_repository=repository,
+            preprocessing_service=preprocessing,
+            file_storage_service=storage,
+        )
+        return service, engine, storage
+
+    @pytest.mark.asyncio
+    async def test_upload_is_committed_even_when_the_turn_fails(self):
+        """The scoped commit lands before the engine is ever called.
+
+        ⚠️ Asserted on the repository call, not on ``case.uploaded_files``.
+        The service appends the row to the in-memory case regardless, and
+        ``MockCaseRepository`` stores by reference — so inspecting the case
+        would report success with the scoped commit deleted. The call is the
+        only signal that distinguishes committed from merely-appended.
+        """
+        repository = MockCaseRepository()
+        repository.add_uploaded_file = AsyncMock()
+        service, engine, storage = self._service(repository)
+
+        user_id = str(uuid4())
+        case = create_sample_case(user_id=user_id)
+        await repository.save(case)
+
+        engine.process_turn.side_effect = RuntimeError("LLM provider exploded")
+
+        with pytest.raises(ServiceException):
+            await service.process_turn(
+                case_id=case.case_id,
+                user_id=user_id,
+                payload=TurnPayload(
+                    query="here are the logs",
+                    attachments=[
+                        Attachment(
+                            content=b"07:40 ERROR 503 SSLException: Connection reset",
+                            filename="user-service.log",
+                            content_type="text/plain",
+                        )
+                    ],
+                ),
+            )
+
+        repository.add_uploaded_file.assert_awaited_once()
+        call_case_id, committed_file, call_org = (
+            repository.add_uploaded_file.await_args.args
+        )
+        assert call_case_id == case.case_id
+        assert call_org == case.organization_id
+        # The committed row must carry the storage pointer — a row that does not
+        # reference the stored bytes leaves them orphaned just the same.
+        assert committed_file.storage_ref == "blob/abc123"
+        assert committed_file.filename == "user-service.log"
+
+        # And it must be committed before the turn can fail, not after.
+        storage.store_file.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_scoped_commit_failure_degrades_but_does_not_break_the_upload(self):
+        """A repository that cannot do the scoped write must not fail the turn.
+
+        The fallback is the previous behaviour — the row rides the end-of-turn
+        save — which is a durability regression, not a broken upload. It is
+        logged rather than raised, so the turn still completes.
+        """
+        repository = MockCaseRepository()
+        repository.add_uploaded_file = AsyncMock(
+            side_effect=RuntimeError("db unavailable")
+        )
+        service, engine, storage = self._service(repository)
+
+        user_id = str(uuid4())
+        case = create_sample_case(user_id=user_id)
+        await repository.save(case)
+
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id=user_id,
+            payload=TurnPayload(
+                query="here are the logs",
+                attachments=[
+                    Attachment(
+                        content=b"07:40 ERROR 503 SSLException: Connection reset",
+                        filename="user-service.log",
+                        content_type="text/plain",
+                    )
+                ],
+            ),
+        )
+
+        assert response is not None
+        repository.add_uploaded_file.assert_awaited_once()
+        # The upload still reached the case aggregate, so the end-of-turn save
+        # persists it on this (successful) turn.
+        stored = await repository.get(case.case_id)
+        assert any(f.filename == "user-service.log" for f in stored.uploaded_files)
+
+
 class TestAuthenticatedPrincipalReachesTheEngine:
     """The turn's reader must arrive at the engine as its own argument.
 
