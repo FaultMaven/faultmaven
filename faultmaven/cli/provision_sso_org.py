@@ -28,16 +28,23 @@ really is RLS-exempt and refuses before any write if it is not — the pod's own
 ``DATABASE_URL`` is the application role by design, so an unqualified
 ``kubectl exec`` would otherwise run under exactly the role this script forbids.
 
-That exemption is the *whole* mechanism. Nothing here scopes the writes to the
-new tenant, because nothing can: the tenant policies key on ``organization_id``,
-while this script resolves an organization by ``(enterprise_id, slug)`` — the id
-is what the lookup exists to learn. A role RLS applies to cannot read the row it
-must be idempotent about under any binding, so its INSERT then trips the policy's
-WITH CHECK arm (migration 018 omits ``FOR``, so USING doubles as WITH CHECK).
-Provisioning is therefore incompatible with FORCE ROW LEVEL SECURITY, which
-subjects a table's *owner* to its policies — superusers and ``BYPASSRLS`` roles
-are never forced. FaultMaven does not enable FORCE RLS anywhere; enabling it
-would break this path rather than harden it.
+That exemption is the mechanism. Nothing here scopes the writes to the new
+tenant: the tenant policies key on ``organization_id``, while this script
+resolves an organization by ``(enterprise_id, slug)`` — the id is what the
+lookup exists to learn. So under FORCE ROW LEVEL SECURITY a scoped role could
+not read that row whatever it bound, and the INSERT that followed would trip the
+policy's WITH CHECK arm (migration 018 omits ``FOR``, so USING doubles as WITH
+CHECK). FORCE RLS subjects a table's *owner* to its policies — superusers and
+``BYPASSRLS`` roles are never forced — and FaultMaven enables it nowhere.
+
+Slug-keyed resolution is what forces that, and it *could* be avoided:
+``sso_org_mappings`` is deliberately untenanted (migration 038), so a re-run
+could recover the organization id from the mapping and bind it before opening
+the session. That is not done, and not from inertia — it would only help
+bindings that already exist, and a first run would then meet a slug collision as
+a raw unique-constraint error rather than as ``OrgAlreadyClaimed`` and the
+REUSING alarm below. Those refusals are the point of this script; trading them
+for resilience against a setting nothing sets would be a bad exchange.
 
 Admin binding is manual and post-hoc (ADR-015 D5): no login path grants
 elevated roles, so the first user signs in via SSO and an operator promotes
@@ -358,7 +365,7 @@ async def provision(
                     "is a different customer, stop and\n    re-provision under a "
                     "distinct --slug."
                 )
-            elif org_created and enterprise_id is None and not enterprise_created:
+            elif org_created and not enterprise_id and not enterprise_created:
                 # The organization is new, so there is no tenant to confuse — but
                 # its PARENT was matched by --slug rather than named with
                 # --enterprise-id, which is how a new customer silently ends up
@@ -367,6 +374,12 @@ async def provision(
                 # alarm above; it is expensive because it is hard to undo — an
                 # account under the wrong enterprise fails login closed with
                 # reason=enterprise_mismatch and needs a manual migration.
+                #
+                # Truthiness rather than `is None`, to match the test
+                # _get_or_create_enterprise itself applies when it picks the slug
+                # path: an empty --enterprise-id (an unset shell variable in the
+                # documented kubectl recipe) IS the matched-by-slug case, and
+                # must not be read as the operator naming a parent.
                 print("")
                 print("⚠️  NEW ORGANIZATION UNDER AN EXISTING ENTERPRISE.")
                 print(

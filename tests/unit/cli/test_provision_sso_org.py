@@ -436,6 +436,20 @@ async def test_an_enterprise_matched_by_slug_warns_about_the_parent(
     assert "REUSING AN EXISTING TENANT" not in out
 
 
+async def test_an_empty_enterprise_id_still_warns_about_the_parent(
+    provision_against, capsys
+):
+    """`--enterprise-id ""` — an unset shell variable in the documented kubectl
+    recipe. `_get_or_create_enterprise` tests truthiness, so it takes the slug
+    path; the warning must read it the same way rather than as a named parent."""
+    ok = await provision_against(
+        name="Acme Reseller", slug="acme", workos_org_id="org_RES2", enterprise_id=""
+    )
+
+    assert ok is True
+    assert "UNDER AN EXISTING ENTERPRISE" in capsys.readouterr().out
+
+
 async def test_an_idempotent_re_run_stays_quiet(provision_against, capsys):
     """Re-running with the same arguments resolves onto the tenant it created
     last time. The organization is reused, but the binding is not new, so the
