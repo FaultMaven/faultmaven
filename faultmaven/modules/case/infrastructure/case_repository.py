@@ -497,7 +497,9 @@ class CaseRepository(ABC):
         """
         Delete a single evidence row.
 
-        Explicit alternative to the mirror-delete that `save(case)` performs
+        The aggregate `save(case)` does NOT remove these rows — its upserts are
+        purely additive — so targeted removal must be explicit. This is that
+        path (deleting the whole case also removes them, via ON DELETE CASCADE)
         via `_upsert_evidence`. Prefer this method for intentional removals —
         it states intent clearly and does not require a case-aggregate save.
 
@@ -518,7 +520,9 @@ class CaseRepository(ABC):
         """
         Delete a single uploaded_file row.
 
-        Explicit alternative to the mirror-delete that `save(case)` performs
+        The aggregate `save(case)` does NOT remove these rows — its upserts are
+        purely additive — so targeted removal must be explicit. This is that
+        path (deleting the whole case also removes them, via ON DELETE CASCADE)
         via `_upsert_uploaded_files`. Prefer this method for intentional removals.
 
         Args:
@@ -530,6 +534,43 @@ class CaseRepository(ABC):
 
         Raises:
             RepositoryException: If the delete fails.
+        """
+        pass
+
+    @abstractmethod
+    async def add_uploaded_file(
+        self, case_id: str, uploaded_file: UploadedFile, organization_id: str
+    ) -> None:
+        """
+        Commit ONE uploaded_file row on its own, outside the aggregate save.
+
+        An upload is a user-initiated fact whose durability must not depend on
+        the rest of the turn succeeding. The bytes are already in storage when
+        this is called; committing the row here keeps the two consistent. When
+        the row rode along on the end-of-turn `save(case)` instead, a turn that
+        raised left the bytes stored and unreferenced, and the retry stored a
+        second copy — `find_uploaded_file_by_content_hash` cannot dedup against
+        a row that was never written.
+
+        Scoped rather than `save(case)` because the aggregate save commits the
+        WHOLE case: mid-turn that makes the half-built turn durable (the user
+        message appended at step 2, the bumped `current_turn`), which is exactly
+        what deferring the save exists to avoid. This commits the upload without
+        committing the turn.
+
+        Ordering with the later aggregate save is safe because
+        `_upsert_uploaded_files` is purely additive — it re-upserts this row
+        rather than deleting it. That is NOT true of `causal_nodes`/`causal_edges`,
+        which the aggregate save reconciles destructively; do not generalise this
+        method's safety to those tables.
+
+        Args:
+            case_id: Case the file belongs to.
+            uploaded_file: The row to commit.
+            organization_id: Tenant that owns the row (RLS scope).
+
+        Raises:
+            RepositoryException: If the write fails.
         """
         pass
 
@@ -1190,6 +1231,27 @@ class InMemoryCaseRepository(CaseRepository):
             f for f in case.uploaded_files if getattr(f, "file_id", None) != file_id
         ]
         return len(case.uploaded_files) < before
+
+    async def add_uploaded_file(
+        self, case_id: str, uploaded_file: UploadedFile, organization_id: str
+    ) -> None:
+        """Commit one uploaded_file row in memory (idempotent by file_id)."""
+        case = self._cases.get(case_id)
+        if not case:
+            # Do NOT no-op. The SQL implementations fail on the FK, and the
+            # contract documents RepositoryException — a silent return would
+            # let a wrong case_id certify green in every in-memory-backed test.
+            raise RepositoryException(
+                f"Cannot add uploaded_file to unknown case {case_id}"
+            )
+        if case.uploaded_files is None:
+            case.uploaded_files = []
+        file_id = getattr(uploaded_file, "file_id", None)
+        for i, existing in enumerate(case.uploaded_files):
+            if getattr(existing, "file_id", None) == file_id:
+                case.uploaded_files[i] = uploaded_file
+                return
+        case.uploaded_files.append(uploaded_file)
 
     async def get_analytics(self, case_id: str) -> Dict[str, Any]:
         """Compute analytics for case in memory."""

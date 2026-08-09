@@ -511,12 +511,35 @@ class CaseRepository(ABC):
 | --- | --- |
 | `update_evidence_vectorized(case_id, evidence_id, vectorized)` | Flip the `vectorized` flag after BGE-M3 encode completes. |
 | `update_activity_timestamp(case_id)` | Refresh `cases.updated_at` without re-serializing the aggregate. |
+| `add_uploaded_file(case_id, uploaded_file, organization_id)` | Commit ONE `uploaded_files` row mid-turn, without committing the turn. |
 
 Scoped methods:
 
-- Touch one column on one row; blast radius is the intended field.
+- Touch one row (usually one column); blast radius is the intended field.
 - Are safe to call from a fire-and-forget task holding a stale `Case` snapshot — the stale snapshot is never consulted during the write.
 - Make the intent visible in the signature, so code review can catch misuse.
+
+**Why `add_uploaded_file` exists.** An upload is a user-initiated fact: the bytes
+are already in storage, and `mark_linked` has already exempted them from TTL
+reclaim, by the time the turn continues. Letting the row wait for the end-of-turn
+`save(case)` meant a turn that raised left the bytes stored, reclaim-exempt, and
+referenced by nothing — a permanent orphan — and the retry stored a second copy,
+because `find_uploaded_file_by_content_hash` cannot dedup against a row that was
+never written.
+
+The reason it is scoped is **not** that the aggregate save would delete the row
+(it would not — see below). It is that `save(case)` commits the *whole* case, so
+calling it mid-turn would make the half-built turn durable: the user message
+appended at step 2 and the bumped `current_turn`, which deferring the save exists
+to avoid. Ordering with the later aggregate save is safe precisely because
+`_upsert_uploaded_files` is additive — it re-upserts the row rather than removing
+it. `tests/integration/modules/case/test_sqlite_case_repository.py::TestScopedAddUploadedFile`
+pins that with an aggregate save from a snapshot that never saw the row.
+
+⚠️ Do not generalise that safety to `causal_nodes` / `causal_edges`: those ARE
+reconciled destructively by `_reconcile_causal_graph` on aggregate save. "The
+aggregate save is additive" holds for every `_upsert_*` helper, not for the
+causal-graph reconciler.
 
 **Historical context**. Prior to v2.3, `save(case)` performed a DELETE-then-upsert on every owned sub-collection. A fire-and-forget background task (`_vectorize_evidence`) that captured a `Case` snapshot at turn-2 time and saved it ~34s later (after BGE-M3 encoding of a 171 KB log finished) truncated messages from turns 3–6 that had been persisted in the meantime. The fix removed the DELETE clauses and introduced `update_evidence_vectorized`; the broader pattern — "aggregate save must be additive" — applies to every `_upsert_*` helper.
 

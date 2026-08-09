@@ -801,3 +801,195 @@ class TestUploadedFilePreprocessingRoundtrip:
         assert uf.data_type == "logs"
         # Mutable fields (turn) still update normally.
         assert uf.uploaded_at_turn == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+class TestScopedAddUploadedFile:
+    """`add_uploaded_file` against the real SQLite repository.
+
+    The unit tests for the upload-durability fix mock this method, so they
+    prove the service CALLS it and nothing about whether it works.
+
+    ⚠️ Every read-back here goes through a SEPARATE session, and that is the
+    whole point. The first version of these tests read back through the same
+    `sqlite_session` they wrote on, which sees the session's own uncommitted
+    INSERT — so deleting `await self.db.commit()` from `add_uploaded_file` left
+    all four green while uploads were again lost on rollback. The durability
+    claim was unpinned by the tests meant to pin it. A second session sees only
+    COMMITTED data, so that mutation is now red.
+    """
+
+    def _fresh_session(self, engine):
+        """A session that shares the database file but not the transaction."""
+        return sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)()
+
+    def _case(self, case_id: str):
+        from faultmaven.modules.case.domain.models import (
+            Case,
+            CaseState,
+            DocumentationData,
+            InquiryData,
+            InvestigationProgress,
+        )
+
+        return Case(
+            case_id=case_id,
+            user_id="user_001",
+            organization_id="00000000-0000-0000-0000-000000000001",
+            title="Scoped upload commit",
+            state=CaseState.INQUIRY,
+            inquiry=InquiryData(),
+            documentation=DocumentationData(),
+            progress=InvestigationProgress(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+    def _file(self, file_id: str, *, turn: int = 1, summary: str | None = "burst"):
+        from faultmaven.modules.case.domain.models import UploadedFile
+
+        return UploadedFile(
+            file_id=file_id,
+            filename="app.log",
+            size_bytes=2048,
+            content_type="text/plain",
+            content_hash="a" * 64,
+            storage_ref="local://test/app.log",
+            upload_source="file_upload",
+            uploaded_at_turn=turn,
+            uploaded_at=datetime.now(timezone.utc),
+            uploaded_by="user_001",
+            summary=summary,
+            data_type="logs",
+        )
+
+    async def test_row_is_durable_without_an_aggregate_save(
+        self, sqlite_session, sqlite_engine
+    ):
+        """Committed on its own, visible to a session that never saw the write.
+
+        This is the mutation-sensitive one: drop the commit and the fresh
+        session finds nothing.
+        """
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        case_id = f"case_{uuid4().hex[:12]}"
+        file_id = f"file_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        await repo.save(case)
+
+        await repo.add_uploaded_file(case_id, self._file(file_id), case.organization_id)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            reloaded = await SQLiteCaseRepository(other).get(case_id)
+
+        assert reloaded is not None
+        assert [f.file_id for f in reloaded.uploaded_files] == [
+            file_id
+        ], "the row was not COMMITTED — a separate session cannot see it"
+        assert reloaded.uploaded_files[0].storage_ref == "local://test/app.log"
+        assert reloaded.uploaded_files[0].summary == "burst"
+
+    async def test_dedup_lookup_finds_the_scoped_row(
+        self, sqlite_session, sqlite_engine
+    ):
+        """Retry-dedup depends on this: the committed row must be findable by
+        content hash from a later, independent transaction — that is what stops
+        a retried turn storing a second copy.
+        """
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        case_id = f"case_{uuid4().hex[:12]}"
+        file_id = f"file_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        await repo.save(case)
+
+        await repo.add_uploaded_file(case_id, self._file(file_id), case.organization_id)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            found = await SQLiteCaseRepository(
+                other
+            ).find_uploaded_file_by_content_hash(case_id, "a" * 64)
+        assert found is not None and found.file_id == file_id
+
+    async def test_later_aggregate_save_from_a_blind_snapshot_keeps_the_row(
+        self, sqlite_session, sqlite_engine
+    ):
+        """The safety property the docstrings claim.
+
+        A `save(case)` later in the same turn works from a Case object loaded
+        BEFORE the scoped commit, so its `uploaded_files` does not contain the
+        row. If the aggregate save mirror-deleted rows missing from its
+        snapshot, that save would destroy the upload. It does not —
+        `_upsert_uploaded_files` is purely additive.
+        """
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        case_id = f"case_{uuid4().hex[:12]}"
+        file_id = f"file_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        await repo.save(case)
+
+        blind_snapshot = await repo.get(case_id)
+        assert blind_snapshot is not None
+        assert blind_snapshot.uploaded_files == []
+
+        await repo.add_uploaded_file(case_id, self._file(file_id), case.organization_id)
+
+        blind_snapshot.title = "updated mid-turn"
+        await repo.save(blind_snapshot)
+
+        async with self._fresh_session(sqlite_engine) as other:
+            final = await SQLiteCaseRepository(other).get(case_id)
+
+        assert final is not None
+        assert final.title == "updated mid-turn"
+        assert [f.file_id for f in final.uploaded_files] == [
+            file_id
+        ], "the aggregate save removed a row committed by add_uploaded_file"
+
+    async def test_recommitting_the_same_file_id_is_idempotent(
+        self, sqlite_session, sqlite_engine
+    ):
+        """A retried commit updates in place rather than duplicating.
+
+        The re-commit passes ``summary=None`` deliberately. Passing the same
+        value would make the COALESCE assertion below vacuous — it would pass
+        just as well with `COALESCE(EXCLUDED.summary, uploaded_files.summary)`
+        replaced by `EXCLUDED.summary`. NULL is the only input that exercises
+        the branch, and it is also the real case: a re-commit after a failed
+        re-extraction carries no artifacts.
+        """
+        from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+            SQLiteCaseRepository,
+        )
+
+        repo = SQLiteCaseRepository(sqlite_session)
+        case_id = f"case_{uuid4().hex[:12]}"
+        file_id = f"file_{uuid4().hex[:12]}"
+        case = self._case(case_id)
+        await repo.save(case)
+
+        await repo.add_uploaded_file(case_id, self._file(file_id), case.organization_id)
+        await repo.add_uploaded_file(
+            case_id, self._file(file_id, turn=2, summary=None), case.organization_id
+        )
+
+        async with self._fresh_session(sqlite_engine) as other:
+            final = await SQLiteCaseRepository(other).get(case_id)
+
+        assert final is not None
+        assert len(final.uploaded_files) == 1
+        assert final.uploaded_files[0].uploaded_at_turn == 2
+        # COALESCE protected the artifact against the NULL re-commit.
+        assert final.uploaded_files[0].summary == "burst"
