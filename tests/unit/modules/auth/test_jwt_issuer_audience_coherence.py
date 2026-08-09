@@ -284,11 +284,17 @@ async def test_a_generator_cannot_be_built_without_the_pair(algorithm):
         "access_token_expire_minutes": ACCESS_MINUTES,
         "refresh_token_expire_days": REFRESH_DAYS,
     }
-    with pytest.raises(TypeError):
-        if algorithm == "HS256":
-            HS256JWTTokenGenerator(secret_key=SECRET, **common)
-        else:
-            private_pem, public_pem = _rsa_pair()
-            RS256JWTTokenGenerator(
-                private_key=private_pem, public_key=public_pem, **common
-            )
+    # Everything that can raise on its own is done before the raises block, so
+    # the only TypeError it can catch is the missing-argument one.
+    if algorithm == "HS256":
+        construct = lambda: HS256JWTTokenGenerator(  # noqa: E731
+            secret_key=SECRET, **common
+        )
+    else:
+        private_pem, public_pem = _rsa_pair()
+        construct = lambda: RS256JWTTokenGenerator(  # noqa: E731
+            private_key=private_pem, public_key=public_pem, **common
+        )
+
+    with pytest.raises(TypeError, match="issuer"):
+        construct()
