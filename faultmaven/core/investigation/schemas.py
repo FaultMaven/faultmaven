@@ -83,6 +83,38 @@ def _coerce_none_to_empty_dict(v: Any) -> Any:
 # schema, since any of them can be nulled by a less-disciplined model.
 _NoneTolerantDict = BeforeValidator(_coerce_none_to_empty_dict)
 
+
+def _coerce_bare_int_to_new_index(v: Any) -> Any:
+    """Coerce a bare integer ``N`` to the ``new_index_N`` placeholder form.
+
+    Some models (observed: Gemini) emit an unquoted integer where the schema
+    declares ``str``. Gemini's function-calling tool spec carries ``type`` as
+    advisory metadata rather than a decoding constraint, so the wire protocol
+    accepts the integer and Pydantic 500s the turn client-side.
+
+    A bare integer ``N`` almost certainly means "the Nth item created this
+    turn": every real ID in this schema carries a typed prefix
+    (``hyp_``/``ev_``/``cn_``/``eneed_``), so an integer cannot be a
+    well-formed existing ID. Coercing turns a 500 into an ordinary
+    ``new_index`` reference, which downstream resolution either resolves or
+    fails soft on, exactly as it would for any other placeholder.
+
+    See [[project_pydantic_shape_failures_backlog]] Variant E.
+    """
+    if isinstance(v, int) and not isinstance(v, bool):
+        return f"new_index_{v}"
+    return v
+
+
+# An ID-reference field whose contract admits a same-turn ``new_index_N``
+# placeholder alongside a real prefixed ID. Apply to *every* such field —
+# the coercion is only sound where a same-turn reference is meaningful, so
+# fields that must name an already-persisted row (``source_file_id``,
+# ``names_root_node_id``, ``SolutionToAdd.node_ref``) deliberately stay plain
+# ``str``: fabricating a ``new_index`` there would invent a reference that
+# cannot resolve, trading a loud 500 for a silent wrong link.
+IdRef = Annotated[str, BeforeValidator(_coerce_bare_int_to_new_index)]
+
 # =============================================================================
 # Unified Ingestion Pipeline (v4.1)
 # =============================================================================
@@ -445,7 +477,7 @@ class HypothesisToAdd(BaseModel):
     # serialized schema, the flag-off baseline emits no chains, and the engine
     # tolerates an unrooted hypothesis (graceful fallback). Do NOT make it
     # required — that would break the flag-off baseline and the fallback.
-    root_node_ref: Optional[str] = Field(
+    root_node_ref: Optional[IdRef] = Field(
         default=None,
         description=(
             "Chain mode: the causal node that is this hypothesis's ROOT cause — "
@@ -477,7 +509,7 @@ class HypothesisUpdate(BaseModel):
             "statuses. state=REFUTED and refutation_reason travel together."
         ),
     )
-    root_node_ref: Optional[str] = Field(
+    root_node_ref: Optional[IdRef] = Field(
         default=None,
         description=(
             "Chain mode: anchor or RE-ROOT this existing hypothesis onto a causal "
@@ -529,14 +561,14 @@ class HypothesisUpdate(BaseModel):
 class HypothesisEvidenceLinkToAdd(BaseModel):
     """Link evidence to a hypothesis."""
 
-    hypothesis_id_ref: str = Field(
+    hypothesis_id_ref: IdRef = Field(
         description=(
             "Hypothesis ID string (format: hyp_xxxxxxxxxxxx) or "
             "'new_index_N' if created this turn. MUST be a string — "
             "do not emit a bare integer."
         )
     )
-    evidence_id_ref: str = Field(
+    evidence_id_ref: IdRef = Field(
         description=(
             "Evidence ID string (format: ev_xxxxxxxxxxxx) or "
             "'new_index_N' if created this turn. MUST be a string — "
@@ -551,31 +583,6 @@ class HypothesisEvidenceLinkToAdd(BaseModel):
         le=1.0,
         description="Confidence in the stance assessment (0.0-1.0)",
     )
-
-    @field_validator("hypothesis_id_ref", "evidence_id_ref", mode="before")
-    @classmethod
-    def _coerce_bare_int_to_new_index(cls, v):
-        """Coerce bare integers to ``new_index_N`` form.
-
-        Gemini's function-calling tool spec is looser on type enforcement
-        than its response_schema mode — bare integers can slip through
-        where the schema declares ``str``. The schema description names
-        two valid string forms (existing ID or ``new_index_N``); a bare
-        integer ``N`` almost certainly means "the Nth new item this turn"
-        because existing IDs always have ``hyp_xxxxxxxxxxxx`` /
-        ``ev_xxxxxxxxxxxx`` prefixes. Coerce at the boundary so a 500
-        becomes a normal new-index reference; downstream resolution will
-        either find or fail-soft as it would for any new_index lookup.
-
-        Note: this is a tactical patch for a specific shape failure
-        variant (int-where-string on ID-ref fields). The strategic fix
-        — tightening Gemini's function-calling schema enforcement so
-        it rejects the wrong type at decode time — is tracked separately
-        (see PR description).
-        """
-        if isinstance(v, int) and not isinstance(v, bool):
-            return f"new_index_{v}"
-        return v
 
 
 # Chain-emission contract (Two-Dimensional Hypothesis Methodology §5/§9.1).
@@ -596,7 +603,7 @@ class CausalNodeToAdd(BaseModel):
     node_type: NodeType = Field(
         description="'root' (a candidate root cause) or 'intermediate' (a state on the way to D)."
     )
-    produces: Optional[str] = Field(
+    produces: Optional[IdRef] = Field(
         default=None,
         description=(
             "The node this directly causes (one step closer to the problem): an "
@@ -618,10 +625,10 @@ class CausalEdgeToAdd(BaseModel):
     """An explicit cause→effect edge, for convergence (S2) or links beyond a
     node's own ``produces``."""
 
-    cause: str = Field(
+    cause: IdRef = Field(
         description="Cause node ref: existing id, 'D', or 'new_index_N'."
     )
-    effect: str = Field(
+    effect: IdRef = Field(
         description="Effect node ref: existing id, 'D', or 'new_index_N'."
     )
     and_group: Optional[str] = Field(default=None, description="AND-set key (M7).")
@@ -644,7 +651,7 @@ class DeductiveValidationToAdd(BaseModel):
     empirically via ``node_evidence_links`` instead.
     """
 
-    survivor_node_ref: str = Field(
+    survivor_node_ref: IdRef = Field(
         description=(
             "The surviving ROOT cause to validate by exclusion: an existing "
             "``cn_...`` id, or ``new_index_N`` for a root emitted this turn."
@@ -664,8 +671,8 @@ class NodeEvidenceLinkToAdd(BaseModel):
     """Link evidence to a specific causal NODE (rung-level), not the whole chain
     — what makes step-by-step descent and AND-validation computable (§9.1)."""
 
-    node_ref: str = Field(description="Node ref: existing id, 'D', or 'new_index_N'.")
-    evidence_id_ref: str = Field(
+    node_ref: IdRef = Field(description="Node ref: existing id, 'D', or 'new_index_N'.")
+    evidence_id_ref: IdRef = Field(
         description="Evidence ID (ev_...) or 'new_index_N' if created this turn."
     )
     stance: EvidenceStance
@@ -709,7 +716,7 @@ class EvidenceNeedUpdate(BaseModel):
     schema-validation time, mirroring ``HypothesisEvidenceLinkToAdd``.
     """
 
-    need_id: Optional[str] = Field(
+    need_id: Optional[IdRef] = Field(
         default=None,
         description=(
             "Set to update an existing need; omit (or set None) to "
@@ -756,7 +763,7 @@ class EvidenceNeedUpdate(BaseModel):
             "a value here would otherwise clobber the stored priority)."
         ),
     )
-    motivating_hypothesis_ids: Optional[List[str]] = Field(
+    motivating_hypothesis_ids: Optional[List[IdRef]] = Field(
         default_factory=list,
         description=(
             "Hypotheses that motivate this need. Each entry accepts a "
@@ -775,7 +782,7 @@ class EvidenceNeedUpdate(BaseModel):
             "non-empty ``superseded_reason``."
         ),
     )
-    fulfilling_evidence_ids: Optional[List[str]] = Field(
+    fulfilling_evidence_ids: Optional[List[IdRef]] = Field(
         default_factory=list,
         description=(
             "Evidence rows that fulfill this need. Each entry accepts a "
@@ -803,27 +810,6 @@ class EvidenceNeedUpdate(BaseModel):
             "``symptom_verification`` needs (out of scope)."
         ),
     )
-
-    @field_validator(
-        "need_id",
-        "motivating_hypothesis_ids",
-        "fulfilling_evidence_ids",
-        mode="before",
-    )
-    @classmethod
-    def _coerce_bare_int_to_new_index(cls, v):
-        """Coerce bare integers to ``new_index_N`` form. Same shape as
-        ``HypothesisEvidenceLinkToAdd._coerce_bare_int_to_new_index``
-        (PR #354). Handles both scalar and list inputs."""
-
-        def _coerce_one(item):
-            if isinstance(item, int) and not isinstance(item, bool):
-                return f"new_index_{item}"
-            return item
-
-        if isinstance(v, list):
-            return [_coerce_one(item) for item in v]
-        return _coerce_one(v)
 
     @model_validator(mode="after")
     def _validate_create_vs_update_semantics(self) -> "EvidenceNeedUpdate":
@@ -1280,7 +1266,7 @@ class SuggestedFollowUp(BaseModel):
     # EVIDENCE-suggestion-to-need linkage (Phase 6: engine resolves
     # ``new_index_N`` here against ``metadata["evidence_needs_updated"]``
     # before flattening to the API response dict).
-    evidence_need_id: Optional[str] = Field(
+    evidence_need_id: Optional[IdRef] = Field(
         default=None,
         description=(
             "For action_type=EVIDENCE only: the persistent EvidenceNeed "
@@ -1291,15 +1277,6 @@ class SuggestedFollowUp(BaseModel):
             "(coerced). Used by the frontend for visual linkage."
         ),
     )
-
-    @field_validator("evidence_need_id", mode="before")
-    @classmethod
-    def _coerce_bare_int_evidence_need_id(cls, v):
-        """Bare int → ``new_index_N``. Same shape as
-        ``HypothesisEvidenceLinkToAdd._coerce_bare_int_to_new_index``."""
-        if isinstance(v, int) and not isinstance(v, bool):
-            return f"new_index_{v}"
-        return v
 
     @model_validator(mode="after")
     def _validate_evidence_need_id_only_with_evidence_action(
