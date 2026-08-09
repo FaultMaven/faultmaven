@@ -13,9 +13,19 @@ bidirectional invariant is what stops the coercion drifting out of sync with
 the schema again — three causal-graph fields (``produces``, ``cause``,
 ``effect``) were already missing it, and no name-based sweep would have found
 them.
+
+⚠️ Scope of that guarantee. The real membership rule is "the field's CONSUMER
+resolves the placeholder"; what is mechanically checkable here is only that the
+DESCRIPTION and the ANNOTATION agree. That is a proxy, and a strictly weaker
+one: a new ref field whose consumer resolves ``new_index_N`` but whose
+description omits the word satisfies both direction tests below and still 500s
+on a bare index. The three fields above were caught only because their
+descriptions happened to spell the contract out. When adding an ID-reference
+field, read its consumer — these tests will not do it for you.
 """
 
 import inspect
+import types
 import typing
 
 import pytest
@@ -36,6 +46,27 @@ def _is_id_ref(field) -> bool:
     only for the bare form, leaving it inline in the annotation otherwise.
     """
     return _COERCER in str(field.annotation) + str(field.metadata)
+
+
+def _is_list_field(field) -> bool:
+    """True when the field's declared type is a list, however it is spelled.
+
+    Handles ``List[X]``, PEP 585 ``list[X]``, and either wrapped in
+    ``Optional``. A substring match on ``str(annotation)`` would miss
+    ``list[IdRef]`` — already the house spelling elsewhere in
+    ``core/investigation/`` — and silently feed a scalar to a list field, so
+    the probe would fail on its own construction rather than on the coercion.
+    """
+
+    def walk(annotation) -> bool:
+        origin = typing.get_origin(annotation)
+        if origin in (list, typing.List):
+            return True
+        if origin in (typing.Union, types.UnionType):
+            return any(walk(arg) for arg in typing.get_args(annotation))
+        return False
+
+    return walk(field.annotation)
 
 
 def _documents_new_index(field) -> bool:
@@ -101,12 +132,15 @@ def test_the_schema_actually_has_id_ref_fields():
     _ID_REF_FIELDS,
     ids=[f"{m}.{f}" for m, f, _ in _ID_REF_FIELDS],
 )
-def test_id_ref_field_coerces_bare_int(model_name, field_name, field):
-    """A bare integer becomes the ``new_index_N`` placeholder."""
+@pytest.mark.parametrize("emitted,expected", [(3, "new_index_3"), ("3", "new_index_3")])
+def test_id_ref_field_coerces_a_bare_index(
+    model_name, field_name, field, emitted, expected
+):
+    """A bare index becomes the ``new_index_N`` placeholder, quoted or not."""
     adapter = _adapter_for(field)
-    value = [3] if "List" in str(field.annotation) else 3
-    expected = ["new_index_3"] if isinstance(value, list) else "new_index_3"
-    assert adapter.validate_python(value) == expected
+    if _is_list_field(field):
+        emitted, expected = [emitted], [expected]
+    assert adapter.validate_python(emitted) == expected
 
 
 @pytest.mark.parametrize(
@@ -117,8 +151,9 @@ def test_id_ref_field_coerces_bare_int(model_name, field_name, field):
 def test_id_ref_field_passes_real_ids_through(model_name, field_name, field):
     """Coercion must not touch a well-formed existing ID."""
     adapter = _adapter_for(field)
-    is_list = "List" in str(field.annotation)
-    value = ["hyp_real123abc12"] if is_list else "hyp_real123abc12"
+    value = "hyp_real123abc12"
+    if _is_list_field(field):
+        value = [value]
     assert adapter.validate_python(value) == value
 
 
@@ -161,7 +196,7 @@ def test_fields_whose_consumer_cannot_resolve_a_placeholder_stay_strict():
     """Fields whose consumer only matches a persisted id must NOT coerce.
 
     Membership in ``IdRef`` is decided by the consumer, not the field name.
-    ``_guard_source_file`` demotes an unresolvable ``source_file_id`` to
+    ``_resolve_evidence_source`` demotes an unresolvable ``source_file_id`` to
     USER_DESCRIPTION, and the solution apply-path keeps ``node_ref`` only when
     it is already in ``case.causal_nodes`` — neither resolves ``new_index_N``,
     so annotating them would advertise a form the engine cannot honour.

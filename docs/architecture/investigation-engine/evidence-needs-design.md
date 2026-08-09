@@ -864,7 +864,7 @@ in `models/llm_schemas.py` is dead code removed in Phase 2):
 ```python
 class EvidenceNeedUpdate(BaseModel):
     """LLM-emitted: create a new need OR update an existing one."""
-    need_id: Optional[str] = Field(
+    need_id: Optional[IdRef] = Field(
         default=None,
         description=(
             "Set to update an existing need; omit (or omit field) to "
@@ -887,7 +887,7 @@ class EvidenceNeedUpdate(BaseModel):
         description="Why this data would help advance the investigation.",
     )
     priority: Optional[Literal["high", "medium", "low"]] = None
-    motivating_hypothesis_ids: List[str] = Field(
+    motivating_hypothesis_ids: List[IdRef] = Field(
         default_factory=list,
         description=(
             "Hypotheses that motivate this need. Each entry accepts a "

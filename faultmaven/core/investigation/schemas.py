@@ -85,24 +85,36 @@ _NoneTolerantDict = BeforeValidator(_coerce_none_to_empty_dict)
 
 
 def _coerce_bare_int_to_new_index(v: Any) -> Any:
-    """Coerce a bare integer ``N`` to the ``new_index_N`` placeholder form.
+    """Coerce a bare index ``N`` to the ``new_index_N`` placeholder form.
 
     Some models (observed: Gemini) emit an unquoted integer where the schema
     declares ``str``. Gemini's function-calling tool spec carries ``type`` as
     advisory metadata rather than a decoding constraint, so the wire protocol
     accepts the integer and Pydantic 500s the turn client-side.
 
-    A bare integer ``N`` almost certainly means "the Nth item created this
+    A bare index ``N`` almost certainly means "the Nth item created this
     turn": every real ID in this schema carries a typed prefix
-    (``hyp_``/``ev_``/``cn_``/``eneed_``), so an integer cannot be a
+    (``hyp_``/``ev_``/``cn_``/``eneed_``), so a plain number cannot be a
     well-formed existing ID. Coercing turns a 500 into an ordinary
     ``new_index`` reference, which downstream resolution either resolves or
     fails soft on, exactly as it would for any other placeholder.
 
+    Both the unquoted (``0``) and quoted (``"0"``) spellings are coerced. The
+    soundness argument above is about the VALUE, not how it was quoted, and the
+    quoted form is the worse failure: it satisfies ``str`` so it reaches
+    ``_resolve_id_ref`` intact, matches nothing, and the reference is dropped
+    with no exception and no metric — a silent loss, where the unquoted form at
+    least fails soft into a correct link. ``int()`` normalises leading zeros so
+    ``"007"`` and ``7`` resolve to the same placeholder.
+
     See [[project_pydantic_shape_failures_backlog]] Variant E.
     """
-    if isinstance(v, int) and not isinstance(v, bool):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, int):
         return f"new_index_{v}"
+    if isinstance(v, str) and v.isdigit():
+        return f"new_index_{int(v)}"
     return v
 
 
@@ -111,10 +123,16 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
 # the field's CONSUMER resolves the placeholder — not how the field is named,
 # and not what its description happens to say. ``EvidenceToAdd.source_file_id``
 # and ``SolutionToAdd.node_ref`` stay plain ``str`` because their consumers
-# only ever match an already-persisted id (``_guard_source_file`` demotes an
-# unresolvable file to USER_DESCRIPTION; the solution apply-path keeps
+# only ever match an already-persisted id (``_resolve_evidence_source`` demotes
+# an unresolvable file to USER_DESCRIPTION; the solution apply-path keeps
 # ``node_ref`` only when it is already in ``case.causal_nodes``). Annotating
 # those would advertise a placeholder form the engine cannot honour.
+#
+# ⚠️ The test suite pins the description⇄annotation pairing, which is a PROXY
+# for this rule, not the rule itself. It cannot see consumers. A new ref field
+# whose consumer resolves ``new_index_N`` but whose description omits the word
+# passes both direction tests and still 500s on a bare int — so when adding an
+# ID-reference field, check its CONSUMER; do not rely on the tests to catch it.
 #
 # They do keep a residual bare-int exposure, which is deliberate: what a strict
 # ID field should do with an int-where-string is the general shape-failure
