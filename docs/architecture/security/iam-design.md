@@ -174,7 +174,11 @@ Both `HS256JWTTokenGenerator` (local mode) and `RS256JWTTokenGenerator` (cloud/O
 
 `iss` and `aud` above are the **defaults** of `JWT_ISSUER` / `JWT_AUDIENCE`, not constants. A deployment names its own pair, and that one pair is what every mint stamps and every decoder checks — the generators take it as a required constructor argument, so a construction site that fails to wire it fails at construction rather than minting tokens no other decoder in the deployment accepts (#938).
 
-Changing the pair invalidates tokens already in circulation: a refresh token minted under the previous values fails verification afterwards, and its holder logs in again. Access tokens age out within their (minutes-long) lifetime; refresh tokens do not, so treat a change as a forced re-login for every active session.
+Neither value may be blank. Both are refused at startup, because with no hardcoded fallback left a blank one fails every authentication in the deployment. The two are not symmetric at runtime — PyJWT treats a falsy `aud` in a payload as *absent* and rejects it, while a blank `iss` compares equal to itself and is silently functional — but both are refused, since a blank issuer is unintended in every case.
+
+**Changing the pair invalidates tokens already in circulation.** Both access and refresh tokens minted under the previous values are rejected immediately by the next request that presents them — they are not merely left to expire. Clients treat that rejection as definitive and re-authenticate, so the effect is a forced re-login for every active session, and a rolling deploy widens it: while both generations are running they reject each other's refresh tokens, and refresh rotation revokes the presented token before minting its replacement.
+
+The upgrade to #938 is itself such a change, for `AUTH_MODE=local` deployments only. Before it, HS256 refresh tokens were minted with `iss="faultmaven"` / `aud="faultmaven-api"` regardless of configuration; afterwards they carry the configured pair. Local-mode refresh tokens issued before the upgrade therefore stop verifying after it, and a rollback breaks the new ones symmetrically. Access tokens are unaffected by this particular change — they already carried the configured pair — and `AUTH_MODE=oauth` deployments are unaffected entirely, RS256 having always used it.
 
 **Token Types:**
 

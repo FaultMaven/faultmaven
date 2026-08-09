@@ -5,8 +5,17 @@ the HS256 generator minted access tokens with its configured pair but validated
 against the literals ``"faultmaven"``/``"faultmaven-api"``, and minted refresh
 tokens with those literals regardless of configuration. Since ``JWT_ISSUER`` and
 ``JWT_AUDIENCE`` default to ``"faultmaven-api"``/``"faultmaven-app"``, a
-production-wired generator could not validate its own access token — latent only
-because the sole caller of ``validate_access_token`` holds the RS256 generator.
+production-wired generator could not validate its own access token.
+
+That was latent rather than live, but by a thread worth naming: the sole caller
+of ``validate_access_token`` (``oauth_service``) is handed a generator from
+``create_jwt_token_generator``, which returns RS256 *unconditionally*. Its
+mode-selecting sibling ``create_signing_token_generator`` returns HS256 under
+``AUTH_MODE=local`` — a mode that may be combined with ``OAUTH_ENABLED=true``.
+So the latency was a property of which builder the OAuth wiring happened to
+call, not of the configuration; point that wiring at the sibling and the dead
+path becomes live. Stated here because it is the kind of claim that stays in a
+docstring long after it stops being true.
 
 The guarantee under test is a property, not a pair of values: **for either
 algorithm, either token kind, and any configured (issuer, audience), the claims
