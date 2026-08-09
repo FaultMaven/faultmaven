@@ -54,8 +54,8 @@ from tests.utils import InMemoryRevocationStore
 pytestmark = pytest.mark.asyncio
 
 SECRET = "unit-test-secret-key-please-ignore"
-ISSUER = "faultmaven-api"
-AUDIENCE = "faultmaven-app"
+ISSUER = "faultmaven"
+AUDIENCE = "faultmaven-api"
 EMAIL = "reset-mint@local.faultmaven"
 EMAIL_UNKNOWN = "nobody-here@local.faultmaven"
 OLD_PASSWORD = "Str0ng-P4ssw0rd!"

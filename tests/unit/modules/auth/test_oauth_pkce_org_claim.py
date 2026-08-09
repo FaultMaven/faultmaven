@@ -45,6 +45,12 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
+#: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
+#: defaults). Deliberately not the literals the HS256 paths once hardcoded:
+#: a fixture that matched those could not observe #938.
+ISSUER = "faultmaven"
+AUDIENCE = "faultmaven-api"
+
 SECRET = "test-secret-key-for-hs256-signing-only"
 TENANT = "org_acme_7f3c"
 OTHER_TENANT = "org_globex_9b1d"
@@ -66,8 +72,8 @@ def _claims(token: str) -> dict:
         token,
         SECRET,
         algorithms=["HS256"],
-        audience="faultmaven-api",
-        issuer="faultmaven",
+        audience=AUDIENCE,
+        issuer=ISSUER,
     )
 
 
@@ -90,6 +96,8 @@ def token_generator():
         ),
         access_token_expire_minutes=15,
         refresh_token_expire_days=7,
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
 
 
@@ -590,6 +598,8 @@ async def test_the_org_attaches_to_the_real_user_types_not_just_a_mock(pkce_pair
             revocation_store=_store(),
             access_token_expire_minutes=15,
             refresh_token_expire_days=7,
+            issuer=ISSUER,
+            audience=AUDIENCE,
         )
         return generator, {"key": public_pem, "algorithms": ["RS256"]}
 
@@ -599,6 +609,8 @@ async def test_the_org_attaches_to_the_real_user_types_not_just_a_mock(pkce_pair
             revocation_store=_store(),
             access_token_expire_minutes=15,
             refresh_token_expire_days=7,
+            issuer=ISSUER,
+            audience=AUDIENCE,
         )
         return generator, {"key": SECRET, "algorithms": ["HS256"]}
 
@@ -609,8 +621,8 @@ async def test_the_org_attaches_to_the_real_user_types_not_just_a_mock(pkce_pair
         def claim_of(token):
             return jwt.decode(
                 token,
-                audience="faultmaven-api",
-                issuer="faultmaven",
+                audience=AUDIENCE,
+                issuer=ISSUER,
                 **decode_with,
             )["organization_id"]
 

@@ -997,8 +997,60 @@ class SecuritySettings(BaseSettings):
     # AuthSettings, and every minting path takes it from there (#888). This half
     # carries the keys, issuer and audience only.
 
-    jwt_issuer: str = Field(default="faultmaven-api")
-    jwt_audience: str = Field(default="faultmaven-app")
+    # ``aud`` names the token's intended RECIPIENT, which for an access token is
+    # the API — not the client presenting it (RFC 7519 §4.1.3). These defaulted
+    # to issuer="faultmaven-api"/audience="faultmaven-app", which had it
+    # backwards: the issuer was named after the API and the audience after the
+    # bearer. Corrected as part of #938, which is also what makes the change
+    # free: the HS256 refresh mint hardcoded exactly this pair, so unifying onto
+    # it leaves refresh tokens issued before the upgrade still valid.
+    # ``validate_default`` so the rule below covers the shipped defaults too.
+    # Pydantic skips validators on unset fields, so without it a default that
+    # was itself blank would sail through the very check written to prevent a
+    # blank one.
+    jwt_issuer: str = Field(default="faultmaven", validate_default=True)
+    jwt_audience: str = Field(default="faultmaven-api", validate_default=True)
+
+    @field_validator("jwt_issuer", "jwt_audience")
+    @classmethod
+    def reject_blank_issuer_or_audience(cls, v, info):
+        """Normalize, and refuse a blank issuer/audience at startup.
+
+        Since #938 these two values are load-bearing: every mint stamps them and
+        every decode checks them, with no hardcoded fallback left anywhere. A
+        blank one is therefore a whole-deployment auth failure, and pydantic
+        accepts ``JWT_AUDIENCE=`` from the environment without complaint — so
+        without this the deployment boots clean and dies at the first login.
+
+        **A blank audience is the outage; a blank issuer is not.** PyJWT treats
+        a falsy ``aud`` in the payload as *absent* and raises
+        ``MissingRequiredClaimError``, so a generator with a blank audience
+        rejects the tokens it just minted. A blank *issuer* compares equal to
+        itself and works silently. Both are refused anyway — a blank issuer is
+        unintended in every case, and a rule that holds for one field of a pair
+        is the kind an operator misremembers.
+
+        **Surrounding whitespace is stripped, and the stripped value is what the
+        deployment uses.** PyJWT neither strips nor trims: it compares ``iss``
+        by equality and matches ``aud`` exactly, and ``" "`` is truthy to it. So
+        checking a stripped copy while storing the raw one would refuse
+        ``JWT_AUDIENCE=" "`` yet quietly accept ``JWT_AUDIENCE="faultmaven-api "``
+        and stamp the trailing space onto every token — self-consistent, so
+        nothing fails, until the day someone removes the space and invalidates
+        every token in circulation. Neither a Kubernetes ConfigMap value nor a
+        Compose ``environment:`` entry trims for us, and a trailing space is
+        invisible in both.
+        """
+        cleaned = v.strip()
+        if not cleaned:
+            field = (info.field_name or "value").upper()
+            raise ValueError(
+                f"{field} must not be blank. It is stamped on every token this "
+                "deployment mints and checked on every token it validates; a "
+                "blank value fails every authentication. Unset it to take the "
+                "default, or give it a non-blank value."
+            )
+        return cleaned
 
     # Token revocation (Redis)
     token_revocation_prefix: str = Field(default="revoked:token:")

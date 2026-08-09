@@ -64,8 +64,8 @@ def _unconfigured_oauth_settings():
         ),
         security=SimpleNamespace(
             jwt_algorithm="RS256",
-            jwt_issuer="faultmaven-api",
-            jwt_audience="faultmaven-app",
+            jwt_issuer="faultmaven",
+            jwt_audience="faultmaven-api",
             token_revocation_prefix="revoked:token:",
             jwt_private_key=None,
             jwt_public_key=None,

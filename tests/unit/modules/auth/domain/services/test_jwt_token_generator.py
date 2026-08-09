@@ -21,6 +21,12 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     RS256JWTTokenGenerator,
 )
 
+#: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
+#: defaults). Deliberately not the literals the HS256 paths once hardcoded:
+#: a fixture that matched those could not observe #938.
+ISSUER = "faultmaven"
+AUDIENCE = "faultmaven-api"
+
 
 # Test RSA key pair generation
 # Keys are generated dynamically for each test run to avoid hardcoding secrets
@@ -97,6 +103,8 @@ def token_generator(mock_revocation_store):
         revocation_store=mock_revocation_store,
         access_token_expire_minutes=ACCESS_MINUTES,
         refresh_token_expire_days=REFRESH_DAYS,
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
 
 
