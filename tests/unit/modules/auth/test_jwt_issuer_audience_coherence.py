@@ -19,9 +19,13 @@ defect — that is precisely why the pre-existing HS256 fixtures did not. Here
 they are one case among several, and ``deployment-custom`` matches neither the
 hardcodes nor the settings defaults, so any reintroduced literal fails.
 
-``test_a_wrong_pair_is_rejected`` is the mutation check riding along with the
-suite: it proves the accept assertions above are load-bearing rather than
-passing because verification is switched off somewhere on the path.
+``test_the_validator_itself_refuses_a_foreign_pair`` is the mutation check
+riding along with the suite. The accept assertions are all satisfied by a
+validator that verifies nothing, so something has to fail when the checking is
+removed; that test presents a correctly-signed token differing only in its pair
+and requires the generator's own validator to refuse it. Asserting through
+``jwt.decode`` instead — as the test above it does — would measure PyJWT rather
+than this module, and a ``verify_aud: False`` here would go unnoticed.
 """
 
 from datetime import datetime, timezone
@@ -197,12 +201,8 @@ async def test_an_independent_decoder_with_the_same_pair_accepts(
 
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-async def test_a_wrong_pair_is_rejected(algorithm, kind):
-    """The accept assertions are load-bearing: a wrong pair still fails.
-
-    Without this, making every ``validate_*`` pass ``verify_aud: False`` would
-    turn this whole module green while removing the check it exists to pin.
-    """
+async def test_a_wrong_pair_is_rejected_by_a_decoder(algorithm, kind):
+    """A mismatched pair fails a decoder configured the standard way."""
     issuer, audience = PAIRS["deployment-custom"]
     generator, key = _build(algorithm, issuer, audience)
     token = await _mint(generator, kind)
@@ -216,6 +216,58 @@ async def test_a_wrong_pair_is_rejected(algorithm, kind):
         jwt.decode(
             token, key, algorithms=[algorithm], issuer=issuer, audience="someone-else"
         )
+
+
+@pytest.mark.parametrize("wrong", ["issuer", "audience"])
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+async def test_the_validator_itself_refuses_a_foreign_pair(algorithm, kind, wrong):
+    """The generator's own validator does the checking — not just some decoder.
+
+    The accept assertions above are satisfied by a validator that verifies
+    nothing, so on their own they would stay green if ``validate_access_token``
+    grew a ``verify_aud: False`` or dropped its ``issuer=`` argument. The
+    sibling test one level up cannot see that either: it calls ``jwt.decode``
+    directly and so measures PyJWT rather than the code under test.
+
+    This closes that hole. Two generators are built over the **same signing
+    key** and differ only in the configured pair, so the token presented here is
+    perfectly signed and correctly typed — the pair is the single reason it must
+    be refused, and ``None`` can mean nothing else.
+    """
+    issuer, audience = PAIRS["deployment-custom"]
+    ours, key = _build(algorithm, issuer, audience)
+
+    foreign_issuer = "someone-else" if wrong == "issuer" else issuer
+    foreign_audience = "someone-else" if wrong == "audience" else audience
+
+    # Same key material, different configured pair.
+    if algorithm == "HS256":
+        theirs = HS256JWTTokenGenerator(
+            secret_key=SECRET,
+            revocation_store=InMemoryRevocationStore(),
+            access_token_expire_minutes=ACCESS_MINUTES,
+            refresh_token_expire_days=REFRESH_DAYS,
+            issuer=foreign_issuer,
+            audience=foreign_audience,
+        )
+    else:
+        theirs = RS256JWTTokenGenerator(
+            private_key=ours.private_key,
+            public_key=ours.public_key,
+            revocation_store=InMemoryRevocationStore(),
+            access_token_expire_minutes=ACCESS_MINUTES,
+            refresh_token_expire_days=REFRESH_DAYS,
+            issuer=foreign_issuer,
+            audience=foreign_audience,
+        )
+
+    foreign_token = await _mint(theirs, kind)
+
+    assert await _validate(ours, kind, foreign_token) is None, (
+        f"{algorithm} {kind}: a token carrying a foreign {wrong} was accepted — "
+        "the validator is not checking the pair it was configured with"
+    )
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
