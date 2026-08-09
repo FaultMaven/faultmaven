@@ -27,7 +27,18 @@ correctly, with its own copy of the logic — and the copy had silently dropped
 the time bound. A site that hand-rolls this is a bug even when its refusal looks
 right.
 
-**Call this BEFORE entering** ``BaseExternalClient.call_external``. The
+The write side is here for the same reason. ``embed_texts_or_raise`` bounds the
+BATCH embed that indexing does, which had refused an unavailable model correctly
+in its own hand-rolled copy but carried no time bound at all — the asymmetry
+#953 found.
+
+The two bounds are deliberately DIFFERENT numbers, and this module is where
+that stays visible. A query may give up before a cold load finishes, because
+the load continues in the background and the retry finds it warm; an index may
+not, because it fails a write rather than a read. Same policy, same error
+codes, different tolerance — see the constants below.
+
+**Call these BEFORE entering** ``BaseExternalClient.call_external``. The
 embedding is a local model call, not the ChromaDB round-trip the retry and
 circuit-breaker policy exists for: raising inside that wrapper burns the full
 retry budget on a model that cannot recover in seconds, and charges ChromaDB's
@@ -48,7 +59,49 @@ logger = logging.getLogger(__name__)
 # Bound on a single query embedding. This ADDS to the ChromaDB budget rather
 # than sharing it, so a search's worst case is embed + query, not one 10s
 # ceiling for both. Matched to call_external's 10s for consistency.
+#
+# This is SHORTER than a cold BGE-M3 load takes (60-120s, see
+# ``ModelCache.peek_bge_m3_model``), and deliberately so: a search that gives up
+# fast is recoverable — the load continues on its worker thread and warms the
+# cache, so the retry succeeds. A search is cheap to repeat.
 EMBED_TIMEOUT_SECONDS = 10.0
+
+# The batch equivalent does NOT reuse that number, because a write is not cheap
+# to repeat. Indexing is the last step before a document is saved, so a bound
+# that fires during a HEALTHY cold load doesn't degrade a read — it fails the
+# write, and on the publish path takes the freshly-created row down with it.
+#
+# So the constant term has to cover the load this repo documents rather than the
+# one the query path is willing to skip: 60-120s cold (`model_cache.py`,
+# `PRELOAD_MODELS`, which is a supported opt-out precisely because operators
+# accept that latency). 180s is that worst case plus headroom.
+EMBED_BATCH_LOAD_SECONDS = 180.0
+
+# Per-text allowance on top of the load budget.
+#
+# Anchored to the worst case this repo has actually measured rather than picked:
+# the pre-embedded KB pack exists because embedding its 1244 chunks on a
+# CPU-limited pod takes "tens of minutes" (~1s/chunk — see
+# ``_index_document_in_vector_store``'s ``prechunked`` docstring). This doubles
+# that for headroom, so the bound only fires on work that is not progressing.
+EMBED_BATCH_PER_TEXT_SECONDS = 2.0
+
+
+def batch_embed_timeout(text_count: int) -> float:
+    """The bound for embedding ``text_count`` texts in one batch.
+
+    Deliberately proportional to the work and NOT capped at some round number.
+    The bound exists to turn "never returns" into "returns an error" — not to
+    enforce a latency SLA. A ceiling tighter than what a large document
+    legitimately costs would make that document permanently un-editable, which
+    trades a hang for a silent capability loss.
+
+    The consequence is that a big enough document can outlast the caller's own
+    client timeout. That is a bounded, visible failure: the client gives up, the
+    server does not hang forever, and (#952) the document is left consistent
+    either way.
+    """
+    return EMBED_BATCH_LOAD_SECONDS + EMBED_BATCH_PER_TEXT_SECONDS * max(text_count, 0)
 
 
 async def embed_query_or_raise(
@@ -112,3 +165,83 @@ async def embed_query_or_raise(
         )
 
     return query_embedding
+
+
+async def embed_texts_or_raise(
+    texts: List[str],
+    *,
+    subject: str,
+    operation: str,
+    log: Optional[logging.Logger] = None,
+) -> List[List[float]]:
+    """Embed a BATCH of texts for indexing, raising rather than degrading.
+
+    The write-side counterpart to :func:`embed_query_or_raise`. It exists for
+    the same reason that one does: the indexing path had its own hand-rolled
+    ``if embeddings is None: raise``, which refused correctly but carried no
+    time bound at all — ``aembed_texts`` handled "the model is unavailable" and
+    not "the model never returns" (#953). One module owning both halves is what
+    keeps the query and index paths from drifting into two policies.
+
+    Args:
+        texts: Chunk texts to embed. An empty list embeds to an empty list —
+            callers reject unchunkable content before reaching here, because
+            ``collection.add(embeddings=[], ...)`` errors downstream.
+        subject: What is unavailable, in the caller's own words, for the
+            message the operator sees.
+        operation: Call-site name for the log line (e.g. "update_document").
+        log: Logger to report on. Defaults to this module's.
+
+    There is no opt-out. #953 asked whether the boot repair path should stay
+    unbounded on the grounds that ``kb_init``'s per-boot chunk budget already
+    governs it; it should not, because that budget is checked BETWEEN rows. It
+    bounds how much work a boot starts, not how long one call may take, so a
+    single non-returning load never reaches the next budget check — it hangs
+    the awaited startup lifespan until the probe kills the pod. The repair loop
+    already catches per-row exceptions and defers the row to the next boot, so
+    a bound there costs a retry and buys the crashloop back.
+
+    Returns:
+        One 1024-dim BGE-M3 vector per input text, in order.
+
+    Raises:
+        KnowledgeBaseError: The embedding timed out
+            (``KNOWLEDGE_EMBEDDER_TIMEOUT``) or the model could not be loaded
+            (``KNOWLEDGE_EMBEDDER_UNAVAILABLE``). Never a short/empty vector
+            list for a non-empty input — a caller that wrote those would index
+            a document against someone else's chunks.
+
+    Same caveat as the query path: the bound is on the CALLER, not the work.
+    ``aembed_texts`` runs on a worker thread via ``asyncio.to_thread``, which
+    cannot be cancelled, so a timed-out batch keeps embedding in the background
+    (and warms the model cache for the retry). What this guarantees is that the
+    caller returns — not that the encode stops.
+    """
+    from faultmaven.infrastructure.model_cache import model_cache
+
+    log = log or logger
+
+    timeout = batch_embed_timeout(len(texts))
+    try:
+        embeddings = await asyncio.wait_for(
+            model_cache.aembed_texts(texts), timeout=timeout
+        )
+    except asyncio.TimeoutError:
+        log.error(
+            f"BGE-M3 batch embedding timed out after {timeout}s for "
+            f"{operation} ({len(texts)} texts)"
+        )
+        raise KnowledgeBaseError(
+            f"{subject} unavailable: embedding {len(texts)} chunks timed "
+            f"out after {timeout}s",
+            error_code="KNOWLEDGE_EMBEDDER_TIMEOUT",
+        )
+
+    if embeddings is None:
+        log.error(f"BGE-M3 model unavailable for {operation}")
+        raise KnowledgeBaseError(
+            f"{subject} unavailable: the embedding model could not be loaded",
+            error_code="KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+        )
+
+    return embeddings
