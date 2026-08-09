@@ -158,9 +158,10 @@ class TestEvidenceNeedUpdateValidators:
 
 @pytest.mark.unit
 class TestNewIndexCoercion:
-    """Mirrors HypothesisEvidenceLinkToAdd._coerce_bare_int_to_new_index
-    (PR #354): bare integers (Gemini function-calling slip-through)
-    become ``new_index_N`` strings at schema-validation time."""
+    """Bare integers (Gemini function-calling slip-through) become
+    ``new_index_N`` strings at schema-validation time, via the shared
+    ``IdRef`` annotated type. The cross-schema property these instances
+    are drawn from is pinned in ``test_id_ref_coercion.py``."""
 
     def test_bare_int_in_motivating_list_coerced(self):
         u = EvidenceNeedUpdate(

@@ -390,8 +390,8 @@ reject-and-resurface backstop.
 
 **Same-turn ID resolution.** When the LLM creates a hypothesis and the
 need that anchors to it in the same turn, the hypothesis has no DB ID
-yet. Per the same pattern as `HypothesisEvidenceLinkToAdd` (PR #354 —
-`_coerce_bare_int_to_new_index`), `EvidenceNeedUpdate.motivating_hypothesis_ids`
+yet. Via the shared `IdRef` type in `core/investigation/schemas.py`,
+`EvidenceNeedUpdate.motivating_hypothesis_ids`
 accepts `new_index_N` placeholders (or bare integers, coerced at
 schema validation) that reference the corresponding entry in
 `hypotheses_to_add`. The engine resolves these via the established
@@ -864,7 +864,7 @@ in `models/llm_schemas.py` is dead code removed in Phase 2):
 ```python
 class EvidenceNeedUpdate(BaseModel):
     """LLM-emitted: create a new need OR update an existing one."""
-    need_id: Optional[str] = Field(
+    need_id: Optional[IdRef] = Field(
         default=None,
         description=(
             "Set to update an existing need; omit (or omit field) to "
@@ -887,7 +887,7 @@ class EvidenceNeedUpdate(BaseModel):
         description="Why this data would help advance the investigation.",
     )
     priority: Optional[Literal["high", "medium", "low"]] = None
-    motivating_hypothesis_ids: List[str] = Field(
+    motivating_hypothesis_ids: List[IdRef] = Field(
         default_factory=list,
         description=(
             "Hypotheses that motivate this need. Each entry accepts a "
@@ -898,7 +898,7 @@ class EvidenceNeedUpdate(BaseModel):
     status: Optional[Literal["pending", "partially_met", "fulfilled", "superseded"]] = (
         Field(default=None, description="Set when updating; None for create.")
     )
-    fulfilling_evidence_ids: List[str] = Field(
+    fulfilling_evidence_ids: List[IdRef] = Field(
         default_factory=list,
         description=(
             "Evidence rows that fulfill this need. Each entry accepts a "
@@ -907,14 +907,13 @@ class EvidenceNeedUpdate(BaseModel):
         ),
     )
     superseded_reason: Optional[str] = Field(default=None, max_length=500)
-
-    @field_validator("motivating_hypothesis_ids", "fulfilling_evidence_ids",
-                     "need_id", mode="before")
-    @classmethod
-    def _coerce_bare_int_to_new_index(cls, v):
-        # Same coercion shape as HypothesisEvidenceLinkToAdd (PR #354).
-        ...
 ```
+
+The bare-int coercion is carried by the shared `IdRef` type
+(`Annotated[str, BeforeValidator(_coerce_bare_int_to_new_index)]`), not by a
+per-class validator. Every field whose consumer resolves a `new_index_N`
+placeholder is annotated with it; `tests/unit/core/investigation/
+test_id_ref_coercion.py` pins that pairing in both directions.
 
 Stage hooks — `evidence_need_updates` is added to each of:
 
