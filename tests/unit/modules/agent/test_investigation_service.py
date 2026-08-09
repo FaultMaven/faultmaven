@@ -320,7 +320,13 @@ class TestInvestigationServiceProcessTurn:
         sample_user_id,
         sample_turn_payload,
     ):
-        """Test that user message is saved before processing."""
+        """The committed case carries the user message and the agent reply.
+
+        The docstring used to say "saved before processing", which described
+        the pre-#184 ordering and had been false since the save was deferred to
+        the end of the turn. This asserts post-success state only; the
+        deferral itself is pinned by the failure-path test below.
+        """
         # Pre-populate repository - ensure sample_case has user_id matching sample_user_id
         sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
@@ -345,6 +351,70 @@ class TestInvestigationServiceProcessTurn:
         assert any(
             m["content"] == sample_turn_payload.query for m in user_messages
         ), f"User message '{sample_turn_payload.query}' not found in saved messages"
+
+    @pytest.mark.asyncio
+    async def test_failed_turn_commits_nothing_on_the_straight_line_path(
+        self,
+        service,
+        mock_case_repository,
+        mock_milestone_engine,
+        sample_case,
+        sample_user_id,
+        sample_turn_payload,
+    ):
+        """An engine failure must not commit the user message or the turn bump.
+
+        This is the property the deferred save exists for, and nothing asserted
+        it: `test_process_turn_saves_user_message` only checks post-success
+        state, so moving the save back above the engine call shipped green.
+
+        ⚠️ Asserted on what reached ``save()``, NEVER on the stored case.
+        ``MockCaseRepository`` stores BY REFERENCE
+        (``_storage[case.case_id] = case``) and ``_get`` hands the same object
+        back, so the service's in-memory mutations are visible through the
+        repository whether or not anything was ever saved. Measured, not
+        assumed: after a failed turn ``(await repo.get(...)).message_count``
+        reads 1 BOTH with the deferral and with a ``save`` restored above the
+        engine call — identical, so an assertion on it cannot tell the two
+        apart. Only the save calls differ (1 vs 2). Hence the snapshot taken at
+        each save; this test was confirmed to go red with the deferral removed.
+
+        Scope is the straight-line path, which is all the deferral covers: the
+        real ``MilestoneEngine.process_turn`` commits this same case object on
+        its deterministic and terminal branches, so a failure after one of those
+        DOES leave the user message durable. See the STEP-2 comment in
+        ``process_turn``.
+        """
+        sample_case.user_id = sample_user_id
+        await mock_case_repository.save(sample_case)
+
+        # Snapshot state AS COMMITTED, at the moment of each save.
+        committed: list[tuple[int, int]] = []
+        underlying_save = mock_case_repository.save.side_effect
+
+        async def _snapshotting_save(case):
+            committed.append((case.message_count, case.current_turn))
+            return await underlying_save(case)
+
+        mock_case_repository.save.side_effect = _snapshotting_save
+
+        mock_milestone_engine.process_turn.side_effect = RuntimeError(
+            "LLM provider exploded"
+        )
+
+        with pytest.raises(ServiceException):
+            await service.process_turn(
+                case_id=sample_case.case_id,
+                user_id=sample_user_id,
+                payload=sample_turn_payload,
+            )
+
+        assert committed == [], (
+            "A failed turn reached the database: save() was called with "
+            f"(message_count, current_turn)={committed!r}. The user message "
+            "and/or the turn bump were committed for a turn that produced no "
+            "agent reply."
+        )
 
     @pytest.mark.asyncio
     async def test_process_turn_persists_engine_metadata_on_assistant_message(

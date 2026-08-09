@@ -690,10 +690,22 @@ class InvestigationService:
                 )
 
             # 2. Build user message and update case in-memory (NOT persisted yet).
-            #    Deferring the save until after LLM processing ensures atomic
-            #    persistence of both user and agent messages.  If the LLM fails,
-            #    the database is untouched — no orphaned user message, no inflated
-            #    turn count — so the client can cleanly retry the same turn.
+            #    The save is deferred to the end of the turn so that the user
+            #    message and the agent's reply commit together on the
+            #    straight-line path: a failure there leaves no orphaned user
+            #    message and no inflated turn count, and the client can retry the
+            #    same turn.
+            #
+            #    ⚠️ This is NOT turn-wide atomicity, and the comment that used to
+            #    claim it ("if the LLM fails, the database is untouched") was
+            #    false. ``MilestoneEngine.process_turn`` commits THIS SAME ``case``
+            #    object on its deterministic and terminal branches — a dozen
+            #    ``repository.save(case)`` sites, e.g. the terminal state written
+            #    before report generation because the Report row FKs to case_id.
+            #    Once any of those has run, the appended user message and the
+            #    bumped ``current_turn`` are already durable, and a failure after
+            #    it does not roll them back. Deferral narrows the window; it does
+            #    not close it. Do not reason about this path as all-or-nothing.
             from uuid import uuid4
 
             intent = payload.intent
