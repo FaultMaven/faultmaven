@@ -249,6 +249,44 @@ async def test_an_existing_slug_resolves_onto_the_existing_organization(session)
     assert organization.organization_id == ORG_A
 
 
+# Each helper's `created` flag is not decoration: `provision` combines them into
+# `not (enterprise_created and org_created)` to decide whether to print the
+# REUSING AN EXISTING TENANT alarm — the warning that stands between a slug
+# collision and a new customer's users landing in someone else's tenant. A
+# helper that reported "created" for a row it merely found would silence it.
+
+
+async def test_an_existing_enterprise_slug_resolves_rather_than_creating(session):
+    enterprise, created = await provision_sso_org._get_or_create_enterprise(
+        session, enterprise_id=None, name="Acme", slug="acme"
+    )
+
+    assert created is False
+    assert enterprise.enterprise_id == ENTERPRISE_ID
+
+
+async def test_a_new_enterprise_slug_creates_one(session):
+    enterprise, created = await provision_sso_org._get_or_create_enterprise(
+        session, enterprise_id=None, name="Globex", slug="globex"
+    )
+
+    assert created is True
+    assert enterprise.enterprise_id != ENTERPRISE_ID
+
+
+async def test_the_default_team_is_created_once_then_resolved(session):
+    team, created = await provision_sso_org._get_or_create_default_team(
+        session, organization_id=ORG_A
+    )
+    assert created is True
+
+    again, created_again = await provision_sso_org._get_or_create_default_team(
+        session, organization_id=ORG_A
+    )
+    assert created_again is False
+    assert again.team_id == team.team_id
+
+
 # =============================================================================
 # The role preflight (#887) — refuses before any write
 # =============================================================================
