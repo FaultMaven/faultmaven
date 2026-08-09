@@ -51,6 +51,12 @@ from faultmaven.modules.auth.infrastructure.stores.sso_ephemeral_store import (
 )
 from faultmaven.providers.tenancy import factory as tenancy_factory
 
+#: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
+#: defaults). Deliberately not the literals the HS256 paths once hardcoded:
+#: a fixture that matched those could not observe #938.
+ISSUER = "faultmaven"
+AUDIENCE = "faultmaven-api"
+
 DASHBOARD_URL = "https://app.faultmaven.test"
 
 IDP_ORG = "org_01HWORKOS"
@@ -705,6 +711,8 @@ def _rs256_generator():
         revocation_store=MagicMock(),
         access_token_expire_minutes=15,
         refresh_token_expire_days=7,
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
     return generator, public_pem
 
@@ -766,7 +774,7 @@ async def test_exchange_mints_access_and_refresh_tokens_carrying_the_org(
             token,
             public_pem,
             algorithms=["RS256"],
-            audience="faultmaven-api",
-            issuer="faultmaven",
+            audience=AUDIENCE,
+            issuer=ISSUER,
         )
         assert claims["organization_id"] == FM_ORG

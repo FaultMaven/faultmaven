@@ -172,6 +172,22 @@ This pattern ensures:
 
 Both `HS256JWTTokenGenerator` (local mode) and `RS256JWTTokenGenerator` (cloud/OAuth mode) produce identical claim sets. The only difference is the signing algorithm and the `auth_mode` value (`"local"` vs `"oauth"`).
 
+`iss` and `aud` above are the **defaults** of `JWT_ISSUER` / `JWT_AUDIENCE`, not constants. A deployment names its own pair, and that one pair is what every mint stamps and every decoder checks — the generators take it as a required constructor argument, so a construction site that fails to wire it fails at construction rather than minting tokens no other decoder in the deployment accepts (#938).
+
+Neither value may be blank. Both are refused at startup, because with no hardcoded fallback left a blank one fails every authentication in the deployment. The two are not symmetric at runtime — PyJWT treats a falsy `aud` in a payload as *absent* and rejects it, while a blank `iss` compares equal to itself and is silently functional — but both are refused, since a blank issuer is unintended in every case.
+
+**Changing the pair invalidates tokens already in circulation.** Both access and refresh tokens minted under the previous values are rejected immediately by the next request that presents them — they are not merely left to expire. Clients treat that rejection as definitive and re-authenticate, so the effect is a forced re-login for every active session, and a rolling deploy widens it: while both generations are running they reject each other's refresh tokens, and refresh rotation revokes the presented token before minting its replacement.
+
+The defaults are `iss="faultmaven"` / `aud="faultmaven-api"` because `aud` names the token's intended **recipient** — for an access token, the API — rather than the client bearing it (RFC 7519 §4.1.3). They previously read `iss="faultmaven-api"` / `aud="faultmaven-app"`, which had both roles backwards; #938 corrected them while unifying the pair.
+
+That correction is also what makes #938 cheap to deploy, and the impact differs by mode:
+
+- **`AUTH_MODE=local` (HS256).** Refresh tokens minted before the upgrade already carried exactly this pair — it was hardcoded into the refresh mint — so they keep validating and most sessions continue uninterrupted. Access tokens carried the old defaults and are rejected. A client holding one still inside its lifetime presents it, receives a definitive 401, and logs out; a client past its proactive-refresh threshold (the extension refreshes with under five minutes remaining) refreshes first and recovers silently on the surviving refresh token. So the exposure is roughly the sessions active in the earlier part of a 15-minute access window, not the whole population.
+- **`AUTH_MODE=oauth` (RS256).** Both token kinds carried the old configured defaults, so both are invalidated and every active session re-authenticates.
+- **Both modes.** Password-reset tokens in flight (one-hour lifetime) stop verifying and the reset must be requested again.
+
+A rollback inverts each of these.
+
 **Token Types:**
 
 | Token | Lifetime | Purpose | Storage |

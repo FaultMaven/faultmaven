@@ -370,12 +370,20 @@ class AuthService:
                 issuer=self._issuer,
                 audience=self._audience,
                 options={
-                    "require": ["sub", "iss", "aud", "exp", "iat", "jti"],
+                    # ``type`` is required, not defaulted. This check used to
+                    # read ``claims.get("type", "access")``, so a token carrying
+                    # no type claim at all was treated as an access token — the
+                    # one permissive spot left on this path. Requiring the claim
+                    # puts presence in PyJWT's hands, with a precise error, and
+                    # leaves the comparison below with no absent case to invent
+                    # a value for. Every mint stamps ``type``, so nothing
+                    # legitimate is refused (#938, adjacent hardening).
+                    "require": ["sub", "iss", "aud", "exp", "iat", "jti", "type"],
                 },
             )
 
             # Verify token type
-            actual_type = claims.get("type", "access")
+            actual_type = claims.get("type")
             if actual_type != token_type:
                 raise AuthenticationError(
                     f"Invalid token type. Expected {token_type}, got {actual_type}",

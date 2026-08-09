@@ -52,8 +52,8 @@ def mock_settings():
     settings.security.jwt_algorithm = "HS256"  # Match local mode default
     settings.auth.jwt_access_token_expire_minutes = 15
     settings.auth.jwt_refresh_token_expire_days = 7
-    settings.security.jwt_issuer = "faultmaven-api"
-    settings.security.jwt_audience = "faultmaven-app"
+    settings.security.jwt_issuer = "faultmaven"
+    settings.security.jwt_audience = "faultmaven-api"
     settings.security.token_revocation_prefix = "revoked:token:"
     settings.security.jwt_private_key = None
     settings.security.jwt_public_key = None
@@ -151,12 +151,15 @@ class TestTokenVerification:
             "email": "test@example.com",
             "roles": ["admin"],
             "permissions": [],
-            "iss": "faultmaven-api",
-            "aud": "faultmaven-app",
+            "iss": "faultmaven",
+            "aud": "faultmaven-api",
             "iat": int((now - timedelta(hours=1)).timestamp()),
             "exp": int((now - timedelta(minutes=1)).timestamp()),  # Already expired
             "jti": str(uuid.uuid4()),
-            "token_type": "access",
+            # The claim the generators actually mint is "type"; this said
+            # "token_type", a claim nothing reads, and passed only because
+            # verify_token defaulted a missing type to "access" (#938).
+            "type": "access",
         }
 
         # Encode with the service's key
@@ -167,20 +170,50 @@ class TestTokenVerification:
 
         assert exc_info.value.error_code == "TOKEN_EXPIRED"
 
+    def test_verify_refuses_a_token_carrying_no_type_claim(self, auth_service):
+        """A typeless token is refused, not assumed to be an access token.
+
+        This check used to read ``claims.get("type", "access")``, so a token
+        with no ``type`` claim authenticated as an access token — the last
+        permissive spot on the request path. Every mint stamps ``type``, so
+        producing one requires the signing key; that makes this a depth measure
+        rather than a live hole, which is exactly why it survived unnoticed and
+        why a guard is what keeps it fixed (#938).
+
+        The token below is otherwise perfect — correct signature, issuer,
+        audience, expiry and jti — so the missing ``type`` is the only possible
+        reason to reject it.
+        """
+        now = datetime.now(timezone.utc)
+        typeless_claims = {
+            "sub": "user-123",
+            "organization_id": "org-456",
+            "iss": "faultmaven",
+            "aud": "faultmaven-api",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=15)).timestamp()),
+            "jti": str(uuid.uuid4()),
+            # deliberately no "type"
+        }
+        typeless_token = sign_claims_for(auth_service, typeless_claims)
+
+        with pytest.raises(AuthenticationError):
+            auth_service.verify_token(typeless_token, token_type="access")
+
     def test_verify_raises_on_invalid_signature(self, auth_service):
         """verify_token raises AuthenticationError on wrong signature."""
         # Create a token with wrong key
         fake_claims = {
             "sub": "user-123",
             "organization_id": "org-456",
-            "iss": "faultmaven-api",
-            "aud": "faultmaven-app",
+            "iss": "faultmaven",
+            "aud": "faultmaven-api",
             "iat": int(datetime.now(timezone.utc).timestamp()),
             "exp": int(
                 (datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()
             ),
             "jti": str(uuid.uuid4()),
-            "token_type": "access",
+            "type": "access",
         }
 
         # Encode with a different secret (using HS256 with wrong secret raises InvalidTokenError, not DecodeError)
@@ -240,8 +273,8 @@ class TestTokenVerification:
         """verify_token handles tokens with missing required claims."""
         # Create token without required claims
         incomplete_claims = {
-            "iss": "faultmaven-api",
-            "aud": "faultmaven-app",
+            "iss": "faultmaven",
+            "aud": "faultmaven-api",
             "iat": int(datetime.now(timezone.utc).timestamp()),
             "exp": int(
                 (datetime.now(timezone.utc) + timedelta(minutes=15)).timestamp()
@@ -1120,11 +1153,11 @@ class TestTokenVerificationEdgeCases:
             "roles": ["admin"],
             "permissions": [],
             "iss": "wrong-issuer",  # Wrong issuer
-            "aud": "faultmaven-app",
+            "aud": "faultmaven-api",
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=15)).timestamp()),
             "jti": str(uuid.uuid4()),
-            "token_type": "access",
+            "type": "access",
         }
 
         # Encode with the test private key
@@ -1186,12 +1219,12 @@ class TestTokenVerificationEdgeCases:
             "email": "test@example.com",
             "roles": ["admin"],
             "permissions": [],
-            "iss": "faultmaven-api",
+            "iss": "faultmaven",
             "aud": "wrong-audience",  # Wrong audience
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=15)).timestamp()),
             "jti": str(uuid.uuid4()),
-            "token_type": "access",
+            "type": "access",
         }
 
         # Encode with the test private key
