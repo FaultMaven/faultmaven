@@ -249,11 +249,11 @@ async def test_an_existing_slug_resolves_onto_the_existing_organization(session)
     assert organization.organization_id == ORG_A
 
 
-# Each helper's `created` flag is not decoration: `provision` combines them into
-# `not (enterprise_created and org_created)` to decide whether to print the
-# REUSING AN EXISTING TENANT alarm — the warning that stands between a slug
-# collision and a new customer's users landing in someone else's tenant. A
-# helper that reported "created" for a row it merely found would silence it.
+# The `created` flags are not decoration: `org_created` decides whether
+# `provision` prints the REUSING AN EXISTING TENANT alarm — the warning that
+# stands between a slug collision and a new customer's users landing in someone
+# else's tenant. A helper that reported "created" for a row it merely found
+# would silence it. The alarm itself is exercised further down.
 
 
 async def test_an_existing_enterprise_slug_resolves_rather_than_creating(session):
@@ -343,3 +343,90 @@ async def test_provision_proceeds_when_the_role_is_rls_exempt(monkeypatch):
         )
 
     assert reached == [True]
+
+
+# =============================================================================
+# The REUSING AN EXISTING TENANT alarm
+# =============================================================================
+
+
+@pytest.fixture
+def provision_against(monkeypatch, session):
+    """Run the real `provision()` against the in-memory session.
+
+    The preflight is a no-op here (SQLite has no RLS, and the role posture is
+    covered above); what this exercises is the alarm condition, which nothing
+    reached before because both preflight tests stop at the session boundary.
+    """
+    from contextlib import asynccontextmanager
+
+    async def allow(**_kwargs):
+        return "faultmaven"
+
+    @asynccontextmanager
+    async def lend_session(*_a, **_kw):
+        yield session
+
+    monkeypatch.setattr(
+        provision_sso_org, "assert_provisioning_db_role_bypasses_rls", allow
+    )
+    monkeypatch.setattr(provision_sso_org, "get_db_session", lend_session)
+    return provision_sso_org.provision
+
+
+async def test_binding_a_new_idp_org_onto_an_existing_tenant_warns(
+    provision_against, capsys
+):
+    """The slug collision this whole module exists to catch: --slug resolves onto
+    a tenant somebody else already owns, and its cases come with it.
+
+    Paired with the test below — same enterprise, and only the slug differs
+    between "you are about to join someone else's tenant" and "you just made
+    your own"."""
+    ok = await provision_against(
+        name="Not Acme",
+        slug="acme-a",
+        workos_org_id="org_NEW",
+        enterprise_id=ENTERPRISE_ID,
+    )
+
+    assert ok is True
+    out = capsys.readouterr().out
+    assert "REUSING AN EXISTING TENANT" in out
+    assert ORG_A in out
+
+
+async def test_a_new_org_under_an_existing_enterprise_does_not_warn(
+    provision_against, capsys
+):
+    """The documented --enterprise-id recipe (a second organization for the same
+    customer). The organization is the isolation boundary and this run created
+    it, so there is no reuse to confirm — warning here would tell the operator
+    that a tenant they just made is somebody else's."""
+    ok = await provision_against(
+        name="Acme EU",
+        slug="acme-eu",
+        workos_org_id="org_EU",
+        enterprise_id=ENTERPRISE_ID,
+    )
+
+    assert ok is True
+    assert "REUSING AN EXISTING TENANT" not in capsys.readouterr().out
+
+
+async def test_an_idempotent_re_run_stays_quiet(provision_against, capsys):
+    """Re-running with the same arguments resolves onto the tenant it created
+    last time. The organization is reused, but the binding is not new, so the
+    alarm must not cry wolf on the script's documented no-op."""
+    args = dict(
+        name="Fresh Co", slug="fresh", workos_org_id="org_FRESH", enterprise_id=None
+    )
+
+    ok = await provision_against(**args)
+    assert ok is True
+    assert "REUSING AN EXISTING TENANT" not in capsys.readouterr().out
+
+    ok_again = await provision_against(**args)
+
+    assert ok_again is True
+    assert "REUSING AN EXISTING TENANT" not in capsys.readouterr().out

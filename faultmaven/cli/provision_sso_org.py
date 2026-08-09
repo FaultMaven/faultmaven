@@ -328,23 +328,30 @@ async def provision(
                 prior is None or prior.organization_id != organization.organization_id
             )
 
-            if binding_is_new and not (enterprise_created and org_created):
-                # A brand-new IdP binding onto a tenant this run did not create.
-                # Legitimate (a second IdP org for an existing customer), but it
-                # is also exactly what a slug collision looks like — say so
-                # loudly, and say it before the mapping is written.
+            if binding_is_new and not org_created:
+                # A brand-new IdP binding onto an organization this run did not
+                # create. Legitimate (a second IdP org for an existing customer),
+                # but it is also exactly what a slug collision looks like — say
+                # so loudly, and say it before the mapping is written.
+                #
+                # The organization is the isolation boundary — RLS keys on
+                # organization_id — so reusing the *enterprise* alone is not the
+                # hazard: a new organization under an existing enterprise is the
+                # documented --enterprise-id recipe, and warning about it would
+                # tell the operator that a tenant they just created is somebody
+                # else's. Gating on org_created alone also makes the enterprise
+                # line below unconditional: an organization this run did not
+                # create implies the enterprise holding it already existed.
                 print("")
                 print("⚠️  REUSING AN EXISTING TENANT — confirm this is the right one.")
-                if not enterprise_created:
-                    print(
-                        f"    enterprise   {enterprise.enterprise_id} "
-                        f"({enterprise.name} / {enterprise.slug}) already existed"
-                    )
-                if not org_created:
-                    print(
-                        f"    organization {organization.organization_id} "
-                        f"({organization.name} / {organization.slug}) already existed"
-                    )
+                print(
+                    f"    enterprise   {enterprise.enterprise_id} "
+                    f"({enterprise.name} / {enterprise.slug}) already existed"
+                )
+                print(
+                    f"    organization {organization.organization_id} "
+                    f"({organization.name} / {organization.slug}) already existed"
+                )
                 print(
                     f"    {PROVIDER}:{workos_org_id} is being bound to it, so its "
                     "users will land in\n    that tenant and see its cases. If this "
