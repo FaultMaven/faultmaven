@@ -441,6 +441,12 @@ class SSOLoginService:
         # Bind before reading the organization row: `organizations` is
         # RLS-tenanted (migration 018), so the read only succeeds inside its
         # own tenant scope.
+        #
+        # This rebind lands mid-flow, after the mapping read above — it works
+        # only because each repository call opens its own session, and so its
+        # own transaction. The engine's `begin` listener samples the contextvar
+        # at BEGIN and never again, so were these two reads ever to share one
+        # transaction this line would silently keep the old scope (#935).
         set_current_org_id(organization_id)
 
         organization = await self._orgs.get_organization(organization_id)

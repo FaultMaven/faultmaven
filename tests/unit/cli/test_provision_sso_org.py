@@ -212,54 +212,41 @@ async def test_a_second_organization_may_be_bound_to_its_own_idp_org(session):
 
 
 # =============================================================================
-# The bind-early invariant (F2)
+# Slug-keyed resolution — what makes a re-run a no-op
 # =============================================================================
+#
+# These used to assert that `_get_or_create_organization` bound the resolved
+# organization as the current tenant "so the writes stay inside policy even
+# where RLS is forced". That claim was false and is gone (#935): the whole run
+# shares one transaction, and the engine's `begin` listener samples the tenant
+# contextvar at BEGIN — before the first SELECT in `_get_or_create_enterprise`,
+# and never again. The old assertions read the Python contextvar at
+# `session.add` time, a proxy that passed while PostgreSQL still held the
+# Standalone sentinel, so they would have gone on passing had the listener
+# never fired at all. What actually keeps provisioning legal is the RLS-exempt
+# role, checked by the preflight below.
 
 
-async def test_the_organization_is_bound_as_tenant_before_its_insert(session):
-    """`organizations` is RLS-tenanted and its policy doubles as WITH CHECK, so
-    the INSERT has to run inside the new organization's own scope."""
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
-
-    set_current_org_id(STANDALONE_ORG_ID)
-    bound_at_insert = []
-
-    original_add = session.add
-
-    def spy_add(instance):
-        if isinstance(instance, OrganizationModel):
-            bound_at_insert.append(get_current_org_id())
-        return original_add(instance)
-
-    session.add = spy_add
-    try:
-        organization, created = await provision_sso_org._get_or_create_organization(
-            session, enterprise_id=ENTERPRISE_ID, name="Acme New", slug="acme-new"
-        )
-    finally:
-        session.add = original_add
-        set_current_org_id(STANDALONE_ORG_ID)
+async def test_a_new_slug_creates_an_organization_under_the_enterprise(session):
+    organization, created = await provision_sso_org._get_or_create_organization(
+        session, enterprise_id=ENTERPRISE_ID, name="Acme New", slug="acme-new"
+    )
 
     assert created is True
-    # Bound to its OWN id at the moment the row was added, not the sentinel.
-    assert bound_at_insert == [organization.organization_id]
+    assert organization.enterprise_id == ENTERPRISE_ID
+    assert organization.slug == "acme-new"
+    assert organization.organization_id not in (ORG_A, ORG_B)
 
 
-async def test_resolving_an_existing_organization_also_binds_it(session):
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+async def test_an_existing_slug_resolves_onto_the_existing_organization(session):
+    """Identity is (enterprise_id, slug), so re-running is a no-op rather than a
+    second tenant — the property the script's idempotency claim rests on."""
+    organization, created = await provision_sso_org._get_or_create_organization(
+        session, enterprise_id=ENTERPRISE_ID, name="Acme A", slug="acme-a"
+    )
 
-    set_current_org_id(STANDALONE_ORG_ID)
-    try:
-        organization, created = await provision_sso_org._get_or_create_organization(
-            session, enterprise_id=ENTERPRISE_ID, name="Acme A", slug="acme-a"
-        )
-        assert created is False
-        assert organization.organization_id == ORG_A
-        assert get_current_org_id() == ORG_A
-    finally:
-        set_current_org_id(STANDALONE_ORG_ID)
+    assert created is False
+    assert organization.organization_id == ORG_A
 
 
 # =============================================================================

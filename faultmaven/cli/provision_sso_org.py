@@ -23,12 +23,21 @@ membership-level consequences (see
 **Run it with the owner DSN.** ``organizations`` and ``teams`` are RLS-tenanted
 (migration 018) and this script writes rows for a tenant that does not exist
 yet, so it needs the RLS-owning role (``faultmaven``), not the limited
-application role (``faultmaven_app``). It also binds the new organization as the
-current tenant while it writes, so the writes stay inside policy even where RLS
-is forced. A preflight verifies the connected role really is RLS-exempt and
-refuses before any write if it is not — the pod's own ``DATABASE_URL`` is the
-application role by design, so an unqualified ``kubectl exec`` would otherwise
-run under exactly the role this script forbids.
+application role (``faultmaven_app``). A preflight verifies the connected role
+really is RLS-exempt and refuses before any write if it is not — the pod's own
+``DATABASE_URL`` is the application role by design, so an unqualified
+``kubectl exec`` would otherwise run under exactly the role this script forbids.
+
+That exemption is the *whole* mechanism. Nothing here scopes the writes to the
+new tenant, because nothing can: the tenant policies key on ``organization_id``,
+while this script resolves an organization by ``(enterprise_id, slug)`` — the id
+is what the lookup exists to learn. A role RLS applies to cannot read the row it
+must be idempotent about under any binding, so its INSERT then trips the policy's
+WITH CHECK arm (migration 018 omits ``FOR``, so USING doubles as WITH CHECK).
+Provisioning is therefore incompatible with FORCE ROW LEVEL SECURITY, which
+subjects a table's *owner* to its policies — superusers and ``BYPASSRLS`` roles
+are never forced. FaultMaven does not enable FORCE RLS anywhere; enabling it
+would break this path rather than harden it.
 
 Admin binding is manual and post-hoc (ADR-015 D5): no login path grants
 elevated roles, so the first user signs in via SSO and an operator promotes
@@ -63,7 +72,6 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
-from faultmaven.config.tenant_context import set_current_org_id
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
@@ -123,15 +131,13 @@ async def _get_or_create_organization(
 ) -> tuple[OrganizationModel, bool]:
     """Return (organization, created). Identity is (enterprise_id, slug).
 
-    **Binds the resolved organization as the current tenant** before returning,
-    and — when creating — before the INSERT. ``organizations`` is RLS-tenanted
-    (migration 018) and its policy has no ``FOR`` clause, so USING doubles as
-    WITH CHECK: under FORCE ROW LEVEL SECURITY the insert only passes inside its
-    own tenant scope. Binding here rather than in the caller is what lets every
-    RLS-tenanted write in this script (this row, the team, nothing else) happen
-    under the right ``app.current_org_id``. ``enterprises`` is not tenanted (no
-    ``organization_id`` column — see migration 018), so the enterprise write
-    above needs no bind.
+    Resolving by slug is what makes re-running a no-op — and it is also why the
+    script needs an RLS-exempt role. ``organizations`` is RLS-tenanted
+    (migration 018) and its policy keys on ``organization_id``, so a role that
+    RLS applies to could not read this row without already knowing the id this
+    lookup exists to find. See the module docstring. ``enterprises`` is not
+    tenanted (no ``organization_id`` column — migration 018), so the enterprise
+    write above is unaffected either way.
     """
     existing = (
         await session.execute(
@@ -142,12 +148,9 @@ async def _get_or_create_organization(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        set_current_org_id(existing.organization_id)
         return existing, False
 
-    # Generate the id first so the tenant is bound before the row is written.
     organization_id = str(uuid.uuid4())
-    set_current_org_id(organization_id)
 
     organization = OrganizationModel(
         organization_id=organization_id,
@@ -305,9 +308,6 @@ async def provision(
                 session, enterprise_id=enterprise_id, name=name, slug=slug
             )
 
-            # _get_or_create_organization binds the resolved organization as the
-            # current tenant before its INSERT — every RLS-tenanted write below
-            # is already in scope.
             organization, org_created = await _get_or_create_organization(
                 session,
                 enterprise_id=enterprise.enterprise_id,
