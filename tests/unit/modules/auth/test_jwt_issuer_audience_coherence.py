@@ -29,6 +29,7 @@ than this module, and a ``verify_aud: False`` here would go unnoticed.
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import jwt
 import pytest
@@ -36,6 +37,8 @@ import pytest
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
     RS256JWTTokenGenerator,
+    build_hs256_token_generator,
+    build_rs256_token_generator,
 )
 from tests.utils import InMemoryRevocationStore
 
@@ -270,31 +273,115 @@ async def test_the_validator_itself_refuses_a_foreign_pair(algorithm, kind, wron
     )
 
 
+@pytest.mark.parametrize("omitted", ["issuer", "audience", "both"])
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-async def test_a_generator_cannot_be_built_without_the_pair(algorithm):
-    """No local default to fall back to.
+async def test_a_generator_cannot_be_built_without_the_pair(algorithm, omitted):
+    """No local default to fall back to — for *either* half of the pair.
 
     Both generators used to default to ``"faultmaven"``/``"faultmaven-api"``,
     which are not the settings defaults — so a caller that said nothing got a
     generator disagreeing with every other decoder in the deployment. Omission
     now fails at construction instead of at some later validation.
+
+    Each half is omitted separately, not just both together. A default restored
+    on ``audience`` alone is the nastier of the two: ``"faultmaven-api"`` is the
+    settings default *issuer*, so such a generator mints ``aud="faultmaven-api"``
+    while ``AuthService.verify_token`` requires ``"faultmaven-app"`` — half of
+    #938 reintroduced, on every request. Asserting only that the error names
+    ``issuer`` would not see it, because the both-omitted message names
+    ``issuer`` too.
     """
-    common = {
+    issuer, audience = PAIRS["deployment-custom"]
+    kwargs = {
         "revocation_store": InMemoryRevocationStore(),
         "access_token_expire_minutes": ACCESS_MINUTES,
         "refresh_token_expire_days": REFRESH_DAYS,
     }
-    # Everything that can raise on its own is done before the raises block, so
+    if omitted != "both":
+        # Supply the half that is not under test.
+        kwargs["audience" if omitted == "issuer" else "issuer"] = (
+            audience if omitted == "issuer" else issuer
+        )
+
+    # Everything that can raise on its own happens before the raises block, so
     # the only TypeError it can catch is the missing-argument one.
     if algorithm == "HS256":
         construct = lambda: HS256JWTTokenGenerator(  # noqa: E731
-            secret_key=SECRET, **common
+            secret_key=SECRET, **kwargs
         )
     else:
         private_pem, public_pem = _rsa_pair()
         construct = lambda: RS256JWTTokenGenerator(  # noqa: E731
-            private_key=private_pem, public_key=public_pem, **common
+            private_key=private_pem, public_key=public_pem, **kwargs
         )
 
-    with pytest.raises(TypeError, match="issuer"):
+    with pytest.raises(TypeError) as excinfo:
         construct()
+
+    expected = ["issuer", "audience"] if omitted == "both" else [omitted]
+    for name in expected:
+        assert name in str(excinfo.value), (
+            f"{algorithm}: omitting {omitted} raised {excinfo.value!r}, which "
+            f"does not name {name!r} — the assertion would not catch a default "
+            f"restored on {name} alone"
+        )
+
+
+# =============================================================================
+# The settings -> generator seam
+# =============================================================================
+
+
+def _settings_stub(issuer, audience):
+    """A settings object shaped like the halves the builders actually read."""
+    secret = SimpleNamespace(get_secret_value=lambda: SECRET)
+    return SimpleNamespace(
+        auth=SimpleNamespace(
+            jwt_access_token_expire_minutes=ACCESS_MINUTES,
+            jwt_refresh_token_expire_days=REFRESH_DAYS,
+        ),
+        security=SimpleNamespace(
+            jwt_secret_key=secret,
+            jwt_issuer=issuer,
+            jwt_audience=audience,
+        ),
+    )
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+async def test_the_builders_wire_the_configured_pair_the_right_way_round(
+    algorithm, kind
+):
+    """The builders read the settings keys the property is stated in terms of.
+
+    Everything above builds generators by hand, so all of it stays green if
+    ``build_hs256_token_generator`` passes ``jwt_audience`` as the issuer, or
+    reintroduces a literal. That seam is where the configured pair actually
+    enters the system, and it was covered only incidentally — by tests about
+    token *expiry*, which is not where a reader looks for this.
+
+    The pair here is deliberately asymmetric and shares no value with the
+    settings defaults or the old hardcodes, so a swap is a failure rather than
+    two names that happen to look interchangeable.
+    """
+    issuer, audience = "acme-idp", "acme-consumers"
+    settings = _settings_stub(issuer, audience)
+
+    if algorithm == "HS256":
+        generator = build_hs256_token_generator(settings, InMemoryRevocationStore())
+    else:
+        private_pem, public_pem = _rsa_pair()
+        generator = build_rs256_token_generator(
+            settings,
+            InMemoryRevocationStore(),
+            private_key=private_pem,
+            public_key=public_pem,
+        )
+
+    token = await _mint(generator, kind)
+    claims = jwt.decode(token, options={"verify_signature": False})
+
+    assert claims["iss"] == issuer, f"{algorithm} {kind}: issuer misrouted"
+    assert claims["aud"] == audience, f"{algorithm} {kind}: audience misrouted"
+    assert await _validate(generator, kind, token) is not None

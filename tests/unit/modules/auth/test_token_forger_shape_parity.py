@@ -42,8 +42,15 @@ from tests.utils import (
 )
 
 SECRET = "test-secret-key-0123456789abcdef"  # 32+ bytes: HS256 minimum
-ISSUER = "faultmaven"
-AUDIENCE = "faultmaven-api"
+
+#: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
+#: defaults). This file is the only place in the suite where a token from a
+#: live generator is verified by the real ``AuthService`` — the actual
+#: production seam — so it is the one that most needs production-shaped values.
+#: It used to carry the literals the HS256 paths hardcoded, which made the seam
+#: agree with a generator no deployment builds (#938).
+ISSUER = "faultmaven-api"
+AUDIENCE = "faultmaven-app"
 
 USER_ID = "11111111-1111-1111-1111-111111111111"
 ORG_ID = "22222222-2222-2222-2222-222222222222"

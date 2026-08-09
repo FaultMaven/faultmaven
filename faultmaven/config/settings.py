@@ -1000,6 +1000,39 @@ class SecuritySettings(BaseSettings):
     jwt_issuer: str = Field(default="faultmaven-api")
     jwt_audience: str = Field(default="faultmaven-app")
 
+    @field_validator("jwt_issuer", "jwt_audience")
+    @classmethod
+    def reject_blank_issuer_or_audience(cls, v, info):
+        """Refuse a blank issuer/audience at startup rather than at first login.
+
+        Since #938 these two values are load-bearing: every mint stamps them and
+        every decode checks them, with no hardcoded fallback left anywhere. A
+        blank one is therefore a whole-deployment auth failure, and pydantic
+        accepts ``JWT_AUDIENCE=`` from the environment without complaint — so
+        without this the deployment boots clean and dies at the first login.
+
+        **A blank audience is the outage; a blank issuer is not.** PyJWT treats
+        a falsy ``aud`` in the payload as *absent* and raises
+        ``MissingRequiredClaimError``, so a generator with a blank audience
+        rejects the tokens it just minted. A blank *issuer* compares equal to
+        itself and works silently. Both are refused anyway — a blank issuer is
+        unintended in every case, and a rule that holds for one field of a pair
+        is the kind an operator misremembers.
+
+        Whitespace is stripped before the check because PyJWT does not strip:
+        ``" "`` is truthy, so a bare falsiness test would admit an audience that
+        is blank in every sense that matters to a human reading the config.
+        """
+        if not v.strip():
+            field = (info.field_name or "value").upper()
+            raise ValueError(
+                f"{field} must not be blank. It is stamped on every token this "
+                "deployment mints and checked on every token it validates; a "
+                "blank value fails every authentication. Unset it to take the "
+                "default, or give it a non-blank value."
+            )
+        return v
+
     # Token revocation (Redis)
     token_revocation_prefix: str = Field(default="revoked:token:")
 
