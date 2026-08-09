@@ -358,6 +358,30 @@ async def provision(
                     "is a different customer, stop and\n    re-provision under a "
                     "distinct --slug."
                 )
+            elif org_created and enterprise_id is None and not enterprise_created:
+                # The organization is new, so there is no tenant to confuse — but
+                # its PARENT was matched by --slug rather than named with
+                # --enterprise-id, which is how a new customer silently ends up
+                # owned by an existing one. Not an isolation breach (cases belong
+                # to the organization), and so deliberately quieter than the
+                # alarm above; it is expensive because it is hard to undo — an
+                # account under the wrong enterprise fails login closed with
+                # reason=enterprise_mismatch and needs a manual migration.
+                print("")
+                print("⚠️  NEW ORGANIZATION UNDER AN EXISTING ENTERPRISE.")
+                print(
+                    f"    enterprise   {enterprise.enterprise_id} "
+                    f"({enterprise.name} / {enterprise.slug}) already existed and "
+                    "was matched\n                 by --slug, not named with "
+                    "--enterprise-id."
+                )
+                print(
+                    "    If this customer does not belong to that enterprise, stop "
+                    "and re-run\n    with a distinct --slug (or an explicit "
+                    "--enterprise-id). Moving an account\n    between enterprises "
+                    "later is a manual migration, not a login fix — see\n    "
+                    "docs/operations/sso-org-provisioning.md."
+                )
 
             mapping_created = await _ensure_mapping(
                 session,

@@ -411,7 +411,29 @@ async def test_a_new_org_under_an_existing_enterprise_does_not_warn(
     )
 
     assert ok is True
-    assert "REUSING AN EXISTING TENANT" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "REUSING AN EXISTING TENANT" not in out
+    # Named explicitly, so the parent is the operator's stated intent.
+    assert "UNDER AN EXISTING ENTERPRISE" not in out
+
+
+async def test_an_enterprise_matched_by_slug_warns_about_the_parent(
+    provision_against, capsys
+):
+    """The other half of the collision: --slug matches an existing *enterprise*,
+    so a new customer is silently parented under an existing one. No isolation
+    breach — the organization is new — but an account under the wrong enterprise
+    fails login closed and needs a manual migration to move."""
+    ok = await provision_against(
+        name="Acme Reseller", slug="acme", workos_org_id="org_RES", enterprise_id=None
+    )
+
+    assert ok is True
+    out = capsys.readouterr().out
+    assert "UNDER AN EXISTING ENTERPRISE" in out
+    assert ENTERPRISE_ID in out
+    # The tenant itself is new, so the louder alarm must stay silent.
+    assert "REUSING AN EXISTING TENANT" not in out
 
 
 async def test_an_idempotent_re_run_stays_quiet(provision_against, capsys):
@@ -424,9 +446,11 @@ async def test_an_idempotent_re_run_stays_quiet(provision_against, capsys):
 
     ok = await provision_against(**args)
     assert ok is True
-    assert "REUSING AN EXISTING TENANT" not in capsys.readouterr().out
+    assert "⚠️" not in capsys.readouterr().out
 
     ok_again = await provision_against(**args)
 
     assert ok_again is True
-    assert "REUSING AN EXISTING TENANT" not in capsys.readouterr().out
+    # Neither warning: the tenant is reused, but this run created it and the
+    # binding already points here.
+    assert "⚠️" not in capsys.readouterr().out
