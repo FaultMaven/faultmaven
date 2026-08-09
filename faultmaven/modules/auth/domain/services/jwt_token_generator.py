@@ -437,16 +437,17 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         revocation_store,  # ITokenRevocationStore
         access_token_expire_minutes: int,
         refresh_token_expire_days: int,
-        issuer: str = "faultmaven",
-        audience: str = "faultmaven-api",
+        issuer: str,
+        audience: str,
     ):
         """Initialize JWT token generator.
 
         Lifetimes are explicit parameters rather than a settings object so that
         which settings half the caller holds can never decide a token's
-        lifetime (#888). Both are required: there is no local default to fall
-        back to, so a construction site that forgets to wire the configured
-        value fails at construction instead of minting a plausible-looking one.
+        lifetime (#888). The same holds for ``issuer``/``audience`` (#938).
+        None of the four has a local default to fall back to, so a construction
+        site that forgets to wire the configured value fails at construction
+        instead of minting a plausible-looking one.
 
         Args:
             private_key: RSA private key (PEM format) for signing
@@ -456,8 +457,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 (``JWT_ACCESS_TOKEN_EXPIRY_MINUTES``)
             refresh_token_expire_days: Refresh token lifetime, in DAYS
                 (``JWT_REFRESH_TOKEN_EXPIRY_DAYS``)
-            issuer: JWT issuer (iss claim)
-            audience: JWT audience (aud claim)
+            issuer: JWT issuer (iss claim) — ``JWT_ISSUER``
+            audience: JWT audience (aud claim) — ``JWT_AUDIENCE``
         """
         self.private_key = private_key
         self.public_key = public_key
@@ -479,8 +480,8 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         - organization_id: organization the user belongs to
         - exp: expiration timestamp
         - iat: issued at timestamp
-        - iss: issuer ("faultmaven")
-        - aud: audience ("faultmaven-api")
+        - iss: the configured issuer (``JWT_ISSUER``)
+        - aud: the configured audience (``JWT_AUDIENCE``)
         - jti: JWT ID (for revocation tracking)
         - type: "access" (token type discriminator)
         - auth_mode: "oauth" (authentication mode)
@@ -1008,14 +1009,22 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         revocation_store,  # ITokenRevocationStore
         access_token_expire_minutes: int,
         refresh_token_expire_days: int,
-        issuer: str = "faultmaven",
-        audience: str = "faultmaven-api",
+        issuer: str,
+        audience: str,
     ):
         """Initialize JWT token generator.
 
         Lifetimes are explicit parameters rather than a settings object, and are
         the same two values the RS256 generator takes — one configured source
         for both auth modes (#888).
+
+        ``issuer``/``audience`` are required for the same reason (#938). They
+        used to default to ``"faultmaven"``/``"faultmaven-api"``, which are not
+        the values ``JWT_ISSUER``/``JWT_AUDIENCE`` default to — so an omitting
+        caller got a generator that disagreed with every other decoder in the
+        deployment. There is no issuer or audience independent of settings;
+        making them required means a caller cannot obtain the wrong pair by
+        saying nothing.
 
         Args:
             secret_key: Secret key for HS256 signing/validation
@@ -1024,8 +1033,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 (``JWT_ACCESS_TOKEN_EXPIRY_MINUTES``)
             refresh_token_expire_days: Refresh token lifetime, in DAYS
                 (``JWT_REFRESH_TOKEN_EXPIRY_DAYS``)
-            issuer: JWT issuer (iss claim)
-            audience: JWT audience (aud claim)
+            issuer: JWT issuer (iss claim) — ``JWT_ISSUER``
+            audience: JWT audience (aud claim) — ``JWT_AUDIENCE``
         """
         self.secret_key = secret_key
         self.revocation_store = revocation_store
@@ -1045,8 +1054,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         - scopes: OAuth scopes (for compatibility)
         - exp: expiration timestamp
         - iat: issued at timestamp
-        - iss: "faultmaven" (issuer)
-        - aud: "faultmaven-api" (audience)
+        - iss: the configured issuer (``JWT_ISSUER``)
+        - aud: the configured audience (``JWT_AUDIENCE``)
         - jti: JWT ID (for revocation tracking)
         - type: "access" (token type discriminator)
         - auth_mode: "local" (authentication mode)
@@ -1115,8 +1124,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         - sub: user_id (subject)
         - exp: expiration timestamp (7 days)
         - iat: issued at timestamp
-        - iss: "faultmaven" (issuer)
-        - aud: "faultmaven-api" (audience)
+        - iss: the configured issuer (``JWT_ISSUER``)
+        - aud: the configured audience (``JWT_AUDIENCE``)
         - jti: JWT ID (for revocation tracking)
         - type: "refresh" (token type discriminator)
         - organization_id: organization the refreshed session belongs to
@@ -1142,8 +1151,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             "sub": user.user_id,  # Subject (user ID)
             "exp": expires_at,  # Expiration time
             "iat": now,  # Issued at
-            "iss": "faultmaven",  # Issuer
-            "aud": "faultmaven-api",  # Audience
+            "iss": self.issuer,  # Issuer
+            "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)
             "type": "refresh",  # Token type
             "organization_id": resolve_organization_claim(user),
@@ -1254,8 +1263,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 token,
                 self.secret_key,
                 algorithms=["HS256"],
-                audience="faultmaven-api",
-                issuer="faultmaven",
+                audience=self.audience,
+                issuer=self.issuer,
                 options={"verify_exp": True},
             )
 
@@ -1321,8 +1330,8 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 token,
                 self.secret_key,
                 algorithms=["HS256"],
-                audience="faultmaven-api",
-                issuer="faultmaven",
+                audience=self.audience,
+                issuer=self.issuer,
                 options={"verify_exp": True},
             )
 
