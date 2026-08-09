@@ -498,7 +498,8 @@ class CaseRepository(ABC):
         Delete a single evidence row.
 
         The aggregate `save(case)` does NOT remove these rows — its upserts are
-        purely additive — so removal must be explicit. This is that path
+        purely additive — so targeted removal must be explicit. This is that
+        path (deleting the whole case also removes them, via ON DELETE CASCADE)
         via `_upsert_evidence`. Prefer this method for intentional removals —
         it states intent clearly and does not require a case-aggregate save.
 
@@ -520,7 +521,8 @@ class CaseRepository(ABC):
         Delete a single uploaded_file row.
 
         The aggregate `save(case)` does NOT remove these rows — its upserts are
-        purely additive — so removal must be explicit. This is that path
+        purely additive — so targeted removal must be explicit. This is that
+        path (deleting the whole case also removes them, via ON DELETE CASCADE)
         via `_upsert_uploaded_files`. Prefer this method for intentional removals.
 
         Args:
@@ -1236,7 +1238,12 @@ class InMemoryCaseRepository(CaseRepository):
         """Commit one uploaded_file row in memory (idempotent by file_id)."""
         case = self._cases.get(case_id)
         if not case:
-            return
+            # Do NOT no-op. The SQL implementations fail on the FK, and the
+            # contract documents RepositoryException — a silent return would
+            # let a wrong case_id certify green in every in-memory-backed test.
+            raise RepositoryException(
+                f"Cannot add uploaded_file to unknown case {case_id}"
+            )
         if case.uploaded_files is None:
             case.uploaded_files = []
         file_id = getattr(uploaded_file, "file_id", None)

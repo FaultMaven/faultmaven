@@ -200,8 +200,8 @@ class ICaseRepository(Protocol):
         """Delete a single evidence row.
 
         The aggregate save(case) does NOT delete these rows (its upserts are
-        purely additive), so removal has to be explicit — this is the only
-        path that removes one.
+        purely additive), so targeted removal has to be explicit. (Deleting
+        the whole case still removes them — the FK is ON DELETE CASCADE.)
         Returns True if a row was removed, False if no such evidence existed.
         """
         ...
@@ -210,8 +210,8 @@ class ICaseRepository(Protocol):
         """Delete a single uploaded_file row.
 
         The aggregate save(case) does NOT delete these rows (its upserts are
-        purely additive), so removal has to be explicit — this is the only
-        path that removes one.
+        purely additive), so targeted removal has to be explicit. (Deleting
+        the whole case still removes them — the FK is ON DELETE CASCADE.)
         Returns True if a row was removed, False if no such file existed.
         """
         ...

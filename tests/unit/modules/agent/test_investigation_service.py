@@ -283,6 +283,29 @@ class TestUploadDurabilityIsIndependentOfTheTurn:
         storage.store_file.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_service_calls_the_contract_method_name(self):
+        """Pin the method NAME against a rename that silently disables the fix.
+
+        The call site resolves the method with ``getattr(self.repository,
+        "add_uploaded_file", None)`` and degrades when it is absent. That guard
+        protects test doubles, but it also means renaming the contract method
+        without updating the call site reverts every upload to the orphaning
+        behaviour — with only a log line to show for it. This asserts the name
+        the service looks up still exists on the abstract base and the Protocol,
+        so the rename is caught here instead of in production.
+        """
+        from faultmaven.modules.case.contracts import ICaseRepository
+        from faultmaven.modules.case.infrastructure.case_repository import (
+            CaseRepository,
+        )
+
+        assert hasattr(CaseRepository, "add_uploaded_file"), (
+            "CaseRepository lost add_uploaded_file — the service's getattr "
+            "lookup now silently degrades every upload"
+        )
+        assert hasattr(ICaseRepository, "add_uploaded_file")
+
+    @pytest.mark.asyncio
     async def test_scoped_commit_failure_degrades_but_does_not_break_the_upload(self):
         """A repository that cannot do the scoped write must not fail the turn.
 

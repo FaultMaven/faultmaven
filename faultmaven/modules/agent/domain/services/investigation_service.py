@@ -984,9 +984,15 @@ class InvestigationService:
             #    ALREADY committed the user message at its Step 7 save, so by the
             #    time control reaches here a half-completed turn is exactly what
             #    is in the database, and this save completes it rather than
-            #    preventing it. Only on a service-dispatched turn, where no engine
-            #    save intervenes, is this the single commit for both. See the
-            #    STEP-2 comment for the full ordering.
+            #    preventing it.
+            #
+            #    It IS the single commit for both only when no engine save
+            #    intervened — GREETING and FILE_RECLASSIFICATION. The other three
+            #    SERVICE intents (STATUS_TRANSITION, CONFIRMATION,
+            #    HYPOTHESIS_ACTION) delegate to ``engine.process_turn`` from their
+            #    handlers, so they hit Step 7 just like an engine-routed turn.
+            #    "Service-dispatched" is NOT a synonym for "no engine save".
+            #    See the STEP-2 comment for the full ordering.
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": updated_case.current_turn,
@@ -1446,9 +1452,18 @@ class InvestigationService:
                     e,
                 )
         else:
-            logger.debug(
-                "Repository %s has no add_uploaded_file; uploaded_file %s "
-                "will be persisted by the end-of-turn save.",
+            # WARNING, not DEBUG. `add_uploaded_file` is an @abstractmethod on
+            # CaseRepository and a member of the ICaseRepository Protocol, so in
+            # production this branch is unreachable — reaching it means either a
+            # test double or that the contract method was renamed without
+            # updating this call site. Both revert every upload to the orphaning
+            # behaviour this code exists to prevent, which is not a debug-level
+            # event. (`test_service_calls_the_contract_method_name` pins the
+            # name against a silent rename.)
+            logger.warning(
+                "Repository %s has no add_uploaded_file — uploads fall back to "
+                "the end-of-turn save and are orphaned if the turn fails. "
+                "uploaded_file=%s",
                 type(self.repository).__name__,
                 uploaded_file.file_id,
             )

@@ -2083,7 +2083,8 @@ class SQLiteCaseRepository(CaseRepository):
         """Scoped DELETE of a single evidence row.
 
         The aggregate save does NOT remove these rows (purely additive
-        upserts), so removal must be explicit. This is that path.
+        upserts), so targeted removal must be explicit. This is that path;
+        deleting the whole case also removes them, via ON DELETE CASCADE.
         Use this for intentional removals rather than popping from
         `case.evidence` and calling `save(case)`.
         """
@@ -2107,7 +2108,8 @@ class SQLiteCaseRepository(CaseRepository):
         """Scoped DELETE of a single uploaded_file row.
 
         The aggregate save does NOT remove these rows (purely additive
-        upserts), so removal must be explicit. This is that path.
+        upserts), so targeted removal must be explicit. This is that path;
+        deleting the whole case also removes them, via ON DELETE CASCADE.
         """
         try:
             query = text("""
