@@ -2082,7 +2082,8 @@ class SQLiteCaseRepository(CaseRepository):
     async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
         """Scoped DELETE of a single evidence row.
 
-        Explicit alternative to the mirror-delete the aggregate save performs.
+        The aggregate save does NOT remove these rows (purely additive
+        upserts), so removal must be explicit. This is that path.
         Use this for intentional removals rather than popping from
         `case.evidence` and calling `save(case)`.
         """
@@ -2105,7 +2106,8 @@ class SQLiteCaseRepository(CaseRepository):
     async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
         """Scoped DELETE of a single uploaded_file row.
 
-        Explicit alternative to the mirror-delete the aggregate save performs.
+        The aggregate save does NOT remove these rows (purely additive
+        upserts), so removal must be explicit. This is that path.
         """
         try:
             query = text("""
@@ -2131,8 +2133,12 @@ class SQLiteCaseRepository(CaseRepository):
         Delegates to the same `_upsert_uploaded_files` the aggregate save uses,
         so the row shape and the COALESCE handling of preprocessing artifacts
         stay in one place; this method only narrows the set to one file and
-        commits it. Additive and idempotent — no mirror-delete, so committing a
-        file mid-turn cannot remove rows the in-memory snapshot has not seen.
+        commits it.
+
+        Scoped rather than `save(case)` because the aggregate save commits the
+        whole case, which mid-turn would make the half-built turn durable. That
+        upsert is purely additive, so the later aggregate save re-upserts this
+        row rather than removing it.
         """
         try:
             await self._upsert_uploaded_files(case_id, [uploaded_file], organization_id)

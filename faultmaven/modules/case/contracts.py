@@ -199,7 +199,9 @@ class ICaseRepository(Protocol):
     async def delete_evidence(self, case_id: str, evidence_id: str) -> bool:
         """Delete a single evidence row.
 
-        Explicit alternative to mirror-delete via aggregate save(case).
+        The aggregate save(case) does NOT delete these rows (its upserts are
+        purely additive), so removal has to be explicit — this is the only
+        path that removes one.
         Returns True if a row was removed, False if no such evidence existed.
         """
         ...
@@ -207,7 +209,9 @@ class ICaseRepository(Protocol):
     async def delete_uploaded_file(self, case_id: str, file_id: str) -> bool:
         """Delete a single uploaded_file row.
 
-        Explicit alternative to mirror-delete via aggregate save(case).
+        The aggregate save(case) does NOT delete these rows (its upserts are
+        purely additive), so removal has to be explicit — this is the only
+        path that removes one.
         Returns True if a row was removed, False if no such file existed.
         """
         ...
@@ -226,11 +230,18 @@ class ICaseRepository(Protocol):
         ``find_uploaded_file_by_content_hash`` could not dedup against a row
         that was never written.
 
-        Scoped and additive, for the same reason as
-        ``update_evidence_vectorized``: ``save(case)`` rewrites the whole case
-        aggregate and mirror-deletes rows absent from the in-memory snapshot, so
-        it is the wrong instrument for committing one row mid-turn. Idempotent —
-        re-committing the same file_id updates in place.
+        Scoped rather than ``save(case)`` because the aggregate save commits the
+        WHOLE case: mid-turn that would make the half-built turn durable (the
+        user message appended at step 2, the bumped ``current_turn``), which is
+        exactly what deferring the save exists to avoid. This commits the upload
+        without committing the turn.
+
+        Ordering with the later aggregate save is safe because
+        ``_upsert_uploaded_files`` is purely additive — it re-upserts this row
+        rather than deleting it. (Note for anyone extending this: that is NOT
+        true of ``causal_nodes``/``causal_edges``, which the aggregate save does
+        reconcile destructively.) Idempotent — re-committing the same file_id
+        updates in place.
         """
         ...
 

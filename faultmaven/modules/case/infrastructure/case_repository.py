@@ -497,7 +497,8 @@ class CaseRepository(ABC):
         """
         Delete a single evidence row.
 
-        Explicit alternative to the mirror-delete that `save(case)` performs
+        The aggregate `save(case)` does NOT remove these rows — its upserts are
+        purely additive — so removal must be explicit. This is that path
         via `_upsert_evidence`. Prefer this method for intentional removals —
         it states intent clearly and does not require a case-aggregate save.
 
@@ -518,7 +519,8 @@ class CaseRepository(ABC):
         """
         Delete a single uploaded_file row.
 
-        Explicit alternative to the mirror-delete that `save(case)` performs
+        The aggregate `save(case)` does NOT remove these rows — its upserts are
+        purely additive — so removal must be explicit. This is that path
         via `_upsert_uploaded_files`. Prefer this method for intentional removals.
 
         Args:
@@ -548,10 +550,17 @@ class CaseRepository(ABC):
         second copy — `find_uploaded_file_by_content_hash` cannot dedup against
         a row that was never written.
 
-        Scoped and additive for the same reason as `update_evidence_vectorized`:
-        `save(case)` rewrites the whole case aggregate and mirror-deletes rows
-        missing from the in-memory snapshot, so it is the wrong instrument for
-        committing a single row mid-turn.
+        Scoped rather than `save(case)` because the aggregate save commits the
+        WHOLE case: mid-turn that makes the half-built turn durable (the user
+        message appended at step 2, the bumped `current_turn`), which is exactly
+        what deferring the save exists to avoid. This commits the upload without
+        committing the turn.
+
+        Ordering with the later aggregate save is safe because
+        `_upsert_uploaded_files` is purely additive — it re-upserts this row
+        rather than deleting it. That is NOT true of `causal_nodes`/`causal_edges`,
+        which the aggregate save reconciles destructively; do not generalise this
+        method's safety to those tables.
 
         Args:
             case_id: Case the file belongs to.

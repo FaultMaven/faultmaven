@@ -690,22 +690,31 @@ class InvestigationService:
                 )
 
             # 2. Build user message and update case in-memory (NOT persisted yet).
-            #    The save is deferred to the end of the turn so that the user
-            #    message and the agent's reply commit together on the
-            #    straight-line path: a failure there leaves no orphaned user
-            #    message and no inflated turn count, and the client can retry the
-            #    same turn.
+            #    What the deferral actually buys: nothing is committed BEFORE the
+            #    LLM runs, so a turn that fails in the LLM call leaves no orphaned
+            #    user message and no inflated turn count, and the client can retry
+            #    the same turn. That is the whole of it.
             #
-            #    ⚠️ This is NOT turn-wide atomicity, and the comment that used to
-            #    claim it ("if the LLM fails, the database is untouched") was
-            #    false. ``MilestoneEngine.process_turn`` commits THIS SAME ``case``
-            #    object on its deterministic and terminal branches — a dozen
-            #    ``repository.save(case)`` sites, e.g. the terminal state written
-            #    before report generation because the Report row FKs to case_id.
-            #    Once any of those has run, the appended user message and the
-            #    bumped ``current_turn`` are already durable, and a failure after
-            #    it does not roll them back. Deferral narrows the window; it does
-            #    not close it. Do not reason about this path as all-or-nothing.
+            #    ⚠️ It does NOT make the turn atomic, and it does NOT commit the
+            #    user message and the agent's reply together. Two earlier versions
+            #    of this comment claimed one or the other; both were false, so
+            #    check this against the code before trusting it:
+            #
+            #      - On an engine-routed turn ``MilestoneEngine`` saves the case
+            #        UNCONDITIONALLY at its Step 7 (``milestone_engine.py``, in
+            #        ``_process_turn_impl``) — before returning, and therefore
+            #        before the agent reply is appended by step 4 below. The user
+            #        message is durable at that point and the reply is not. A
+            #        failure in the window between them (reverse-redaction,
+            #        clarification building, response assembly) leaves exactly the
+            #        orphaned-user-message + inflated-turn state this comment used
+            #        to promise was impossible.
+            #      - The deterministic and terminal branches commit the same
+            #        ``case`` object earlier still, at their own ``save(case)``
+            #        sites.
+            #
+            #    So: an LLM failure commits nothing; a post-LLM failure can commit
+            #    a half turn. Do not reason about this path as all-or-nothing.
             from uuid import uuid4
 
             intent = payload.intent
@@ -968,10 +977,16 @@ class InvestigationService:
                 + [s for s in raw_follow_ups if s.get("intent")]
             ) or None
 
-            # 4. Save agent response AND user message atomically.
-            #    The user message was appended in-memory at step 2 but not
-            #    persisted.  This single save commits both messages together,
-            #    guaranteeing no half-completed turns in the database.
+            # 4. Append the agent response and save.
+            #    ⚠️ This is NOT an atomic commit of both messages, though it used
+            #    to say so ("commits both messages together, guaranteeing no
+            #    half-completed turns"). On an engine-routed turn the engine has
+            #    ALREADY committed the user message at its Step 7 save, so by the
+            #    time control reaches here a half-completed turn is exactly what
+            #    is in the database, and this save completes it rather than
+            #    preventing it. Only on a service-dispatched turn, where no engine
+            #    save intervenes, is this the single commit for both. See the
+            #    STEP-2 comment for the full ordering.
             agent_message = {
                 "message_id": f"msg_{uuid4().hex[:12]}",
                 "turn_number": updated_case.current_turn,
@@ -1403,11 +1418,12 @@ class InvestigationService:
         # was never written.
         #
         # Committed here, at the end, so the row carries its preprocessing
-        # artifacts and seeded coverage rather than a bare stub. The write is
-        # scoped and additive (``add_uploaded_file`` → ``_upsert_uploaded_files``
-        # for one file, no mirror-delete), so it cannot truncate rows that the
-        # in-memory snapshot has not seen — the hazard that makes ``save(case)``
-        # the wrong instrument mid-turn.
+        # artifacts and seeded coverage rather than a bare stub. Scoped rather
+        # than ``save(case)`` because the aggregate save commits the whole case,
+        # and mid-turn that would make the half-built turn durable — the very
+        # thing deferring the save exists to avoid. The underlying
+        # ``_upsert_uploaded_files`` is purely additive, so the end-of-turn
+        # aggregate save re-upserts this row rather than removing it.
         add_uploaded_file = getattr(self.repository, "add_uploaded_file", None)
         if add_uploaded_file is not None:
             try:

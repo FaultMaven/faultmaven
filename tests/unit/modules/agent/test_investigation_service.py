@@ -212,23 +212,40 @@ class TestUploadDurabilityIsIndependentOfTheTurn:
 
     @pytest.mark.asyncio
     async def test_upload_is_committed_even_when_the_turn_fails(self):
-        """The scoped commit lands before the engine is ever called.
+        """The scoped commit lands BEFORE the engine runs, not merely at some point.
 
         ⚠️ Asserted on the repository call, not on ``case.uploaded_files``.
         The service appends the row to the in-memory case regardless, and
         ``MockCaseRepository`` stores by reference — so inspecting the case
         would report success with the scoped commit deleted. The call is the
         only signal that distinguishes committed from merely-appended.
+
+        ⚠️ Ordering is asserted explicitly via a call log. Asserting only that
+        the commit happened would pass for an implementation that committed in a
+        ``finally`` AFTER the engine — which is a different (and weaker)
+        property: it would leave the upload uncommitted for the whole duration
+        of the LLM call, so a crash or timeout mid-turn still orphans the bytes.
+        The property is "durable before anything can fail", not "durable
+        eventually".
         """
         repository = MockCaseRepository()
-        repository.add_uploaded_file = AsyncMock()
+        calls: list[str] = []
+
+        async def _record_commit(*_args, **_kwargs):
+            calls.append("commit")
+
+        repository.add_uploaded_file = AsyncMock(side_effect=_record_commit)
         service, engine, storage = self._service(repository)
 
         user_id = str(uuid4())
         case = create_sample_case(user_id=user_id)
         await repository.save(case)
 
-        engine.process_turn.side_effect = RuntimeError("LLM provider exploded")
+        async def _failing_engine(*_args, **_kwargs):
+            calls.append("engine")
+            raise RuntimeError("LLM provider exploded")
+
+        engine.process_turn.side_effect = _failing_engine
 
         with pytest.raises(ServiceException):
             await service.process_turn(
@@ -257,7 +274,12 @@ class TestUploadDurabilityIsIndependentOfTheTurn:
         assert committed_file.storage_ref == "blob/abc123"
         assert committed_file.filename == "user-service.log"
 
-        # And it must be committed before the turn can fail, not after.
+        # The ordering itself. "commit" must precede "engine" — a commit that
+        # only happens after the engine (or in a finally) fails here.
+        assert calls == [
+            "commit",
+            "engine",
+        ], f"expected the upload to be committed before the engine ran, got {calls}"
         storage.store_file.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -500,11 +522,13 @@ class TestInvestigationServiceProcessTurn:
         apart. Only the save calls differ (1 vs 2). Hence the snapshot taken at
         each save; this test was confirmed to go red with the deferral removed.
 
-        Scope is the straight-line path, which is all the deferral covers: the
-        real ``MilestoneEngine.process_turn`` commits this same case object on
-        its deterministic and terminal branches, so a failure after one of those
-        DOES leave the user message durable. See the STEP-2 comment in
-        ``process_turn``.
+        Scope is a failure IN the engine call, which is all the deferral covers.
+        It does NOT extend to a failure after the engine returns: the real
+        ``MilestoneEngine`` saves the case unconditionally at its Step 7, before
+        the service appends the agent reply, so a post-engine failure leaves the
+        user message durable and the reply missing. The mock engine raises, so
+        that save never happens and this test sees the deferral in isolation.
+        See the STEP-2 comment in ``process_turn`` for the full ordering.
         """
         sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)

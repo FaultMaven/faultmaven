@@ -1722,9 +1722,14 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
 
         Delegates to the same `_upsert_uploaded_files` the aggregate save uses,
         so the row shape stays in one place; this only narrows the set to one
-        file and commits it. Additive and idempotent — no mirror-delete, so a
-        mid-turn commit cannot remove rows absent from the in-memory snapshot.
-        `organization_id` carries the tenant for the RLS-scoped write.
+        file and commits it.
+
+        Scoped rather than `save(case)` because the aggregate save commits the
+        whole case, which mid-turn would make the half-built turn durable. That
+        upsert is purely additive, so the later aggregate save re-upserts this
+        row rather than removing it. `organization_id` carries the tenant for
+        the RLS-scoped write (the engine's per-transaction begin listener
+        applies the scope, as for every other sessionless method).
         """
         try:
             await self._upsert_uploaded_files(case_id, [uploaded_file], organization_id)
