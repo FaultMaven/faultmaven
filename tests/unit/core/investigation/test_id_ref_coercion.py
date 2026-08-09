@@ -42,12 +42,36 @@ def _documents_new_index(field) -> bool:
     return "new_index" in (field.description or "")
 
 
+def _all_models():
+    """Every BaseModel in the schema module, including nested ones.
+
+    Several response schemas define their ``*StateUpdate`` payloads as classes
+    nested inside the response class, so a sweep over module-level names alone
+    would silently skip them — and a field added there would escape both
+    direction tests below.
+    """
+    seen, stack = {}, [
+        obj
+        for obj in vars(s).values()
+        if inspect.isclass(obj) and issubclass(obj, BaseModel)
+    ]
+    while stack:
+        model = stack.pop()
+        if model.__qualname__ in seen:
+            continue
+        seen[model.__qualname__] = model
+        stack.extend(
+            obj
+            for obj in vars(model).values()
+            if inspect.isclass(obj) and issubclass(obj, BaseModel)
+        )
+    return seen
+
+
 def _all_fields():
     """(model_name, field_name, FieldInfo) for every schema model."""
-    for model_name, obj in vars(s).items():
-        if not (inspect.isclass(obj) and issubclass(obj, BaseModel)):
-            continue
-        for field_name, field in obj.model_fields.items():
+    for model_name, model in _all_models().items():
+        for field_name, field in model.model_fields.items():
             yield model_name, field_name, field
 
 
@@ -69,7 +93,7 @@ _ID_REF_FIELDS = [(m, f, fld) for m, f, fld in _all_fields() if _is_id_ref(fld)]
 
 def test_the_schema_actually_has_id_ref_fields():
     """Guard the sweep itself: an empty set would make every test below vacuous."""
-    assert len(_ID_REF_FIELDS) >= 14
+    assert len(_ID_REF_FIELDS) >= 15
 
 
 @pytest.mark.parametrize(
@@ -133,16 +157,21 @@ def test_every_id_ref_documents_its_new_index_contract():
     ), f"these IdRef fields do not document new_index_N: {undocumented}"
 
 
-def test_fields_naming_a_persisted_row_stay_strict():
-    """Fields that can only name an already-persisted row must NOT coerce.
+def test_fields_whose_consumer_cannot_resolve_a_placeholder_stay_strict():
+    """Fields whose consumer only matches a persisted id must NOT coerce.
 
-    Fabricating a ``new_index`` reference where no same-turn item can exist
-    trades a loud 500 for a silent wrong link, which is strictly worse. These
-    three are the ones that look like ID refs but are not.
+    Membership in ``IdRef`` is decided by the consumer, not the field name.
+    ``_guard_source_file`` demotes an unresolvable ``source_file_id`` to
+    USER_DESCRIPTION, and the solution apply-path keeps ``node_ref`` only when
+    it is already in ``case.causal_nodes`` — neither resolves ``new_index_N``,
+    so annotating them would advertise a form the engine cannot honour.
+
+    (``RootCauseConclusionUpdate.names_root_node_id`` is deliberately NOT in
+    this list: milestone_engine B2 (#695) does resolve its placeholder, so it
+    carries ``IdRef``.)
     """
     for model_name, field_name in (
         ("EvidenceToAdd", "source_file_id"),
-        ("RootCauseConclusionUpdate", "names_root_node_id"),
         ("SolutionToAdd", "node_ref"),
     ):
         field = getattr(s, model_name).model_fields[field_name]

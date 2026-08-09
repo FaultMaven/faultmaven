@@ -107,12 +107,19 @@ def _coerce_bare_int_to_new_index(v: Any) -> Any:
 
 
 # An ID-reference field whose contract admits a same-turn ``new_index_N``
-# placeholder alongside a real prefixed ID. Apply to *every* such field —
-# the coercion is only sound where a same-turn reference is meaningful, so
-# fields that must name an already-persisted row (``source_file_id``,
-# ``names_root_node_id``, ``SolutionToAdd.node_ref``) deliberately stay plain
-# ``str``: fabricating a ``new_index`` there would invent a reference that
-# cannot resolve, trading a loud 500 for a silent wrong link.
+# placeholder alongside a real prefixed ID. The test of membership is whether
+# the field's CONSUMER resolves the placeholder — not how the field is named,
+# and not what its description happens to say. ``EvidenceToAdd.source_file_id``
+# and ``SolutionToAdd.node_ref`` stay plain ``str`` because their consumers
+# only ever match an already-persisted id (``_guard_source_file`` demotes an
+# unresolvable file to USER_DESCRIPTION; the solution apply-path keeps
+# ``node_ref`` only when it is already in ``case.causal_nodes``). Annotating
+# those would advertise a placeholder form the engine cannot honour.
+#
+# They do keep a residual bare-int exposure, which is deliberate: what a strict
+# ID field should do with an int-where-string is the general shape-failure
+# question ([[project_pydantic_shape_failures_backlog]]) and applies to every
+# ``str`` field, not just ID-shaped ones. It is not settled here.
 IdRef = Annotated[str, BeforeValidator(_coerce_bare_int_to_new_index)]
 
 # =============================================================================
@@ -992,13 +999,15 @@ class RootCauseConclusionUpdate(BaseModel):
     mechanism: str
     evidence_ids: List[str] = Field(default_factory=list)
     likelihood: float = Field(default=0.7, ge=0.0, le=1.0)
-    names_root_node_id: Optional[str] = Field(
+    names_root_node_id: Optional[IdRef] = Field(
         default=None,
         description=(
             "The cn_... id of the cause's root node in <causal_graph> (the node "
-            "you rooted the hypothesis on). Lets the engine attribute this "
-            "conclusion to that cause exactly (INV-35). Omit only if the cause "
-            "is not yet a node in the graph."
+            "you rooted the hypothesis on), or a 'new_index_N' placeholder if "
+            "that root is a node you are emitting this same turn in "
+            "causal_nodes_to_add. Lets the engine attribute this conclusion to "
+            "that cause exactly (INV-35). Omit only if the cause is not yet a "
+            "node in the graph."
         ),
     )
 
