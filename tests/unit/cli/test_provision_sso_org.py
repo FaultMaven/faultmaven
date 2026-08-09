@@ -19,6 +19,7 @@ Exercised against a real in-memory SQLite engine built from the ORM metadata,
 so the refusals are checked against the schema that actually ships.
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import pytest
@@ -358,7 +359,6 @@ def provision_against(monkeypatch, session):
     covered above); what this exercises is the alarm condition, which nothing
     reached before because both preflight tests stop at the session boundary.
     """
-    from contextlib import asynccontextmanager
 
     async def allow(**_kwargs):
         return "faultmaven"
