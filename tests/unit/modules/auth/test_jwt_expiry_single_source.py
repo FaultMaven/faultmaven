@@ -256,14 +256,14 @@ class TestLocalMintHonoursTheSameKnob:
             audience=AUDIENCE,
             issuer=ISSUER,
         )
-        # The HS256 refresh payload hardcodes its iss/aud rather than taking the
-        # generator's — a separate inconsistency, outside #888's scope — so only
-        # the signature is verified here. The lifetime is what this asserts.
+        # The HS256 refresh payload takes the generator's iss/aud like every
+        # other mint here (#938), so this verifies them rather than opting out.
         refresh = jwt.decode(
             await generator.generate_refresh_token(_user()),
             SECRET,
             algorithms=["HS256"],
-            options={"verify_aud": False},
+            audience=AUDIENCE,
+            issuer=ISSUER,
         )
 
         assert _lifetime(access) == timedelta(minutes=minutes)

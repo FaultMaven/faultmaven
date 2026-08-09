@@ -38,6 +38,12 @@ from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceIm
 from faultmaven.providers.tenancy import factory as tenancy_factory
 from tests.utils import InMemoryRevocationStore
 
+#: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
+#: defaults). Deliberately not the literals the HS256 paths once hardcoded:
+#: a fixture that matched those could not observe #938.
+ISSUER = "faultmaven-api"
+AUDIENCE = "faultmaven-app"
+
 pytestmark = pytest.mark.asyncio
 
 REAL_ORG = "22222222-2222-2222-2222-222222222222"
@@ -77,6 +83,8 @@ def _rs256_generator(revocation_store=None):
         revocation_store=revocation_store or InMemoryRevocationStore(),
         access_token_expire_minutes=ACCESS_MINUTES,
         refresh_token_expire_days=REFRESH_DAYS,
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
     return generator, {"key": public_pem, "algorithms": ["RS256"]}
 
@@ -88,8 +96,8 @@ def _hs256_generator(revocation_store=None):
         revocation_store=revocation_store or InMemoryRevocationStore(),
         access_token_expire_minutes=ACCESS_MINUTES,
         refresh_token_expire_days=REFRESH_DAYS,
-        issuer="faultmaven",
-        audience="faultmaven-api",
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
     return generator, {"key": secret, "algorithms": ["HS256"]}
 
@@ -105,8 +113,8 @@ def _decode(token, verify_args):
         token,
         verify_args["key"],
         algorithms=verify_args["algorithms"],
-        audience="faultmaven-api",
-        issuer="faultmaven",
+        audience=AUDIENCE,
+        issuer=ISSUER,
     )
 
 
@@ -294,8 +302,8 @@ async def test_refresh_of_a_pre_mapping_token_still_fails_closed(as_tenant_provi
             "sub": "user-1",
             "exp": datetime.now(timezone.utc).timestamp() + 3600,
             "iat": datetime.now(timezone.utc),
-            "iss": "faultmaven",
-            "aud": "faultmaven-api",
+            "iss": ISSUER,
+            "aud": AUDIENCE,
             "jti": "legacy-jti",
             "type": "refresh",
         },
@@ -306,8 +314,8 @@ async def test_refresh_of_a_pre_mapping_token_still_fails_closed(as_tenant_provi
         legacy_payload_token,
         verify_args["key"],
         algorithms=["HS256"],
-        audience="faultmaven-api",
-        issuer="faultmaven",
+        audience=AUDIENCE,
+        issuer=ISSUER,
     )
 
     dev_user = _dev_user()

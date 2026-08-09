@@ -1,0 +1,242 @@
+"""A generator validates exactly what it mints, for any configured pair (#938).
+
+``iss`` and ``aud`` are the two claims a deployment is free to name. Before this,
+the HS256 generator minted access tokens with its configured pair but validated
+against the literals ``"faultmaven"``/``"faultmaven-api"``, and minted refresh
+tokens with those literals regardless of configuration. Since ``JWT_ISSUER`` and
+``JWT_AUDIENCE`` default to ``"faultmaven-api"``/``"faultmaven-app"``, a
+production-wired generator could not validate its own access token — latent only
+because the sole caller of ``validate_access_token`` holds the RS256 generator.
+
+The guarantee under test is a property, not a pair of values: **for either
+algorithm, either token kind, and any configured (issuer, audience), the claims
+carry that pair, the minting generator accepts its own token, and a decoder
+configured with the same pair accepts it too.**
+
+The parameter set deliberately includes the two literals the old code hardcoded.
+A test whose configured pair happens to equal the hardcode cannot observe the
+defect — that is precisely why the pre-existing HS256 fixtures did not. Here
+they are one case among several, and ``deployment-custom`` matches neither the
+hardcodes nor the settings defaults, so any reintroduced literal fails.
+
+``test_a_wrong_pair_is_rejected`` is the mutation check riding along with the
+suite: it proves the accept assertions above are load-bearing rather than
+passing because verification is switched off somewhere on the path.
+"""
+
+from datetime import datetime, timezone
+
+import jwt
+import pytest
+
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    HS256JWTTokenGenerator,
+    RS256JWTTokenGenerator,
+)
+from tests.utils import InMemoryRevocationStore
+
+pytestmark = pytest.mark.asyncio
+
+SECRET = "unit-test-secret-key-please-ignore"
+ACCESS_MINUTES = 15
+REFRESH_DAYS = 7
+
+#: Configured pairs to sweep. ``settings-defaults`` is what production wires;
+#: ``legacy-hardcode`` is what the HS256 paths used to bake in (kept so the
+#: fixed code is exercised on it too, not to bless it); ``deployment-custom``
+#: shares no value with either, so a reintroduced literal cannot satisfy it.
+PAIRS = {
+    "settings-defaults": ("faultmaven-api", "faultmaven-app"),
+    "legacy-hardcode": ("faultmaven", "faultmaven-api"),
+    "deployment-custom": ("acme-idp", "acme-consumers"),
+}
+
+
+class _User:
+    """A user object shaped like the ones the mint paths actually receive."""
+
+    user_id = "user-938"
+    username = "coherence"
+    email = "coherence@local.faultmaven"
+    roles = ["user"]
+    scopes = ["openid"]
+    is_active = True
+    deleted_at = None
+    organization_id = "11111111-1111-1111-1111-111111111111"
+    enterprise_id = "22222222-2222-2222-2222-222222222222"
+    account_kind = "human"
+    created_at = datetime.now(timezone.utc)
+
+
+def _rsa_pair():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    public_pem = (
+        key.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    return private_pem, public_pem
+
+
+def _build(algorithm, issuer, audience):
+    """Return (generator, verification key) wired exactly as the builders do."""
+    if algorithm == "HS256":
+        generator = HS256JWTTokenGenerator(
+            secret_key=SECRET,
+            revocation_store=InMemoryRevocationStore(),
+            access_token_expire_minutes=ACCESS_MINUTES,
+            refresh_token_expire_days=REFRESH_DAYS,
+            issuer=issuer,
+            audience=audience,
+        )
+        return generator, SECRET
+    private_pem, public_pem = _rsa_pair()
+    generator = RS256JWTTokenGenerator(
+        private_key=private_pem,
+        public_key=public_pem,
+        revocation_store=InMemoryRevocationStore(),
+        access_token_expire_minutes=ACCESS_MINUTES,
+        refresh_token_expire_days=REFRESH_DAYS,
+        issuer=issuer,
+        audience=audience,
+    )
+    return generator, public_pem
+
+
+async def _mint(generator, kind):
+    if kind == "access":
+        return await generator.generate_access_token(_User())
+    return await generator.generate_refresh_token(_User())
+
+
+async def _validate(generator, kind, token):
+    if kind == "access":
+        return await generator.validate_access_token(token)
+    return await generator.validate_refresh_token(token)
+
+
+ALGORITHMS = ["HS256", "RS256"]
+KINDS = ["access", "refresh"]
+
+
+@pytest.mark.parametrize("pair_name", list(PAIRS))
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+async def test_claims_carry_the_configured_pair(algorithm, kind, pair_name):
+    """Every mint stamps the configured issuer/audience — no literals."""
+    issuer, audience = PAIRS[pair_name]
+    generator, _ = _build(algorithm, issuer, audience)
+
+    token = await _mint(generator, kind)
+    claims = jwt.decode(token, options={"verify_signature": False})
+
+    assert claims["iss"] == issuer
+    assert claims["aud"] == audience
+
+
+@pytest.mark.parametrize("pair_name", list(PAIRS))
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+async def test_a_generator_validates_its_own_token(algorithm, kind, pair_name):
+    """The defect stated directly: mint and validate must agree."""
+    issuer, audience = PAIRS[pair_name]
+    generator, _ = _build(algorithm, issuer, audience)
+
+    token = await _mint(generator, kind)
+    payload = await _validate(generator, kind, token)
+
+    assert payload is not None, (
+        f"{algorithm} {kind} token minted with "
+        f"iss={issuer!r}/aud={audience!r} was rejected by the generator "
+        "that minted it"
+    )
+    assert payload["sub"] == _User.user_id
+
+
+@pytest.mark.parametrize("pair_name", list(PAIRS))
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+async def test_an_independent_decoder_with_the_same_pair_accepts(
+    algorithm, kind, pair_name
+):
+    """The other live decoder agrees too.
+
+    ``AuthService.verify_token`` decodes with ``settings.security.jwt_issuer``/
+    ``jwt_audience`` and requires those claims present, so a token minted with a
+    different pair fails there even when the generator's own validator is happy.
+    That is the second direction of the same incoherence, and the reason this
+    asserts against a decoder built from the configured pair rather than
+    against the generator alone.
+    """
+    issuer, audience = PAIRS[pair_name]
+    generator, key = _build(algorithm, issuer, audience)
+
+    token = await _mint(generator, kind)
+    claims = jwt.decode(
+        token,
+        key,
+        algorithms=[algorithm],
+        issuer=issuer,
+        audience=audience,
+        options={"require": ["sub", "iss", "aud", "exp", "iat", "jti"]},
+    )
+
+    assert claims["sub"] == _User.user_id
+
+
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+async def test_a_wrong_pair_is_rejected(algorithm, kind):
+    """The accept assertions are load-bearing: a wrong pair still fails.
+
+    Without this, making every ``validate_*`` pass ``verify_aud: False`` would
+    turn this whole module green while removing the check it exists to pin.
+    """
+    issuer, audience = PAIRS["deployment-custom"]
+    generator, key = _build(algorithm, issuer, audience)
+    token = await _mint(generator, kind)
+
+    with pytest.raises(jwt.InvalidIssuerError):
+        jwt.decode(
+            token, key, algorithms=[algorithm], issuer="someone-else", audience=audience
+        )
+
+    with pytest.raises(jwt.InvalidAudienceError):
+        jwt.decode(
+            token, key, algorithms=[algorithm], issuer=issuer, audience="someone-else"
+        )
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+async def test_a_generator_cannot_be_built_without_the_pair(algorithm):
+    """No local default to fall back to.
+
+    Both generators used to default to ``"faultmaven"``/``"faultmaven-api"``,
+    which are not the settings defaults — so a caller that said nothing got a
+    generator disagreeing with every other decoder in the deployment. Omission
+    now fails at construction instead of at some later validation.
+    """
+    common = {
+        "revocation_store": InMemoryRevocationStore(),
+        "access_token_expire_minutes": ACCESS_MINUTES,
+        "refresh_token_expire_days": REFRESH_DAYS,
+    }
+    with pytest.raises(TypeError):
+        if algorithm == "HS256":
+            HS256JWTTokenGenerator(secret_key=SECRET, **common)
+        else:
+            private_pem, public_pem = _rsa_pair()
+            RS256JWTTokenGenerator(
+                private_key=private_pem, public_key=public_pem, **common
+            )

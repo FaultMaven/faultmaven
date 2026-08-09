@@ -50,6 +50,11 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
     RedisTokenRevocationStore,
 )
 
+#: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
+#: defaults). Deliberately not the literals the HS256 paths once hardcoded:
+#: a fixture that matched those could not observe #938.
+ISSUER = "faultmaven-api"
+AUDIENCE = "faultmaven-app"
 pytestmark = pytest.mark.asyncio
 
 SECRET = "unit-test-secret-key-please-ignore"
@@ -75,8 +80,8 @@ def _generator(store):
         revocation_store=store,
         access_token_expire_minutes=60,
         refresh_token_expire_days=7,
-        issuer="faultmaven",
-        audience="faultmaven-api",
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
 
 
@@ -114,6 +119,8 @@ def _rs256_generator(store):
         revocation_store=store,
         access_token_expire_minutes=60,
         refresh_token_expire_days=7,
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
 
 
@@ -146,8 +153,8 @@ def _auth_service_settings():
         ),
         security=SimpleNamespace(
             jwt_algorithm="HS256",
-            jwt_issuer="faultmaven",
-            jwt_audience="faultmaven-api",
+            jwt_issuer=ISSUER,
+            jwt_audience=AUDIENCE,
             token_revocation_prefix="revoked:token:",
             jwt_private_key=None,
             jwt_public_key=None,

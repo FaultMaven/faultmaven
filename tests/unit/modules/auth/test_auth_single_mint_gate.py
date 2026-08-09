@@ -43,6 +43,11 @@ from faultmaven.modules.auth.infrastructure.stores.token_revocation_store import
     RedisTokenRevocationStore,
 )
 
+#: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
+#: defaults). Deliberately not the literals the HS256 paths once hardcoded:
+#: a fixture that matched those could not observe #938.
+ISSUER = "faultmaven-api"
+AUDIENCE = "faultmaven-app"
 SECRET = "test-secret-key-for-hs256-signing-only"
 REDIRECT = "chrome-extension://abc123/callback.html"
 
@@ -84,6 +89,8 @@ def _generator():
         ),
         access_token_expire_minutes=15,
         refresh_token_expire_days=7,
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
 
 
@@ -315,6 +322,8 @@ def _generator_named(name):
             revocation_store=store,
             access_token_expire_minutes=15,
             refresh_token_expire_days=7,
+            issuer=ISSUER,
+            audience=AUDIENCE,
         )
 
     from cryptography.hazmat.primitives import serialization
@@ -336,6 +345,8 @@ def _generator_named(name):
         revocation_store=store,
         access_token_expire_minutes=15,
         refresh_token_expire_days=7,
+        issuer=ISSUER,
+        audience=AUDIENCE,
     )
 
 

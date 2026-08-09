@@ -30,6 +30,12 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
 )
 from faultmaven.providers.tenancy import factory as tenancy_factory
 
+#: The configured pair, as production wires it (JWT_ISSUER/JWT_AUDIENCE
+#: defaults). Deliberately not the literals the HS256 paths once hardcoded:
+#: a fixture that matched those could not observe #938.
+ISSUER = "faultmaven-api"
+AUDIENCE = "faultmaven-app"
+
 REAL_ORG = "22222222-2222-2222-2222-222222222222"
 
 # Every shape an "org-less" user arrives in. The sentinel spellings matter most:
@@ -138,6 +144,8 @@ def _rs256_generator():
             revocation_store=MagicMock(),
             access_token_expire_minutes=15,
             refresh_token_expire_days=7,
+            issuer=ISSUER,
+            audience=AUDIENCE,
         ),
         {"key": public_pem, "algorithms": ["RS256"]},
     )
@@ -151,6 +159,8 @@ def _hs256_generator():
             revocation_store=MagicMock(),
             access_token_expire_minutes=15,
             refresh_token_expire_days=7,
+            issuer=ISSUER,
+            audience=AUDIENCE,
         ),
         {"key": secret, "algorithms": ["HS256"]},
     )
@@ -167,8 +177,8 @@ def _decode(token, verify_args):
         token,
         verify_args["key"],
         algorithms=verify_args["algorithms"],
-        audience="faultmaven-api",
-        issuer="faultmaven",
+        audience=AUDIENCE,
+        issuer=ISSUER,
     )
 
 

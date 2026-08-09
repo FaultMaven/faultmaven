@@ -59,8 +59,11 @@ def _make_generator(revocation_store) -> HS256JWTTokenGenerator:
         revocation_store=revocation_store,
         access_token_expire_minutes=60,
         refresh_token_expire_days=7,
-        issuer="faultmaven",
-        audience="faultmaven-api",
+        # The configured pair, as production wires it. This fixture used to pass
+        # the literals the HS256 paths hardcoded, which made every assertion here
+        # agree with a generator no real deployment builds (#938).
+        issuer="faultmaven-api",
+        audience="faultmaven-app",
     )
 
 
