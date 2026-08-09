@@ -1004,13 +1004,17 @@ class SecuritySettings(BaseSettings):
     # bearer. Corrected as part of #938, which is also what makes the change
     # free: the HS256 refresh mint hardcoded exactly this pair, so unifying onto
     # it leaves refresh tokens issued before the upgrade still valid.
-    jwt_issuer: str = Field(default="faultmaven")
-    jwt_audience: str = Field(default="faultmaven-api")
+    # ``validate_default`` so the rule below covers the shipped defaults too.
+    # Pydantic skips validators on unset fields, so without it a default that
+    # was itself blank would sail through the very check written to prevent a
+    # blank one.
+    jwt_issuer: str = Field(default="faultmaven", validate_default=True)
+    jwt_audience: str = Field(default="faultmaven-api", validate_default=True)
 
     @field_validator("jwt_issuer", "jwt_audience")
     @classmethod
     def reject_blank_issuer_or_audience(cls, v, info):
-        """Refuse a blank issuer/audience at startup rather than at first login.
+        """Normalize, and refuse a blank issuer/audience at startup.
 
         Since #938 these two values are load-bearing: every mint stamps them and
         every decode checks them, with no hardcoded fallback left anywhere. A
@@ -1026,11 +1030,19 @@ class SecuritySettings(BaseSettings):
         unintended in every case, and a rule that holds for one field of a pair
         is the kind an operator misremembers.
 
-        Whitespace is stripped before the check because PyJWT does not strip:
-        ``" "`` is truthy, so a bare falsiness test would admit an audience that
-        is blank in every sense that matters to a human reading the config.
+        **Surrounding whitespace is stripped, and the stripped value is what the
+        deployment uses.** PyJWT neither strips nor trims: it compares ``iss``
+        by equality and matches ``aud`` exactly, and ``" "`` is truthy to it. So
+        checking a stripped copy while storing the raw one would refuse
+        ``JWT_AUDIENCE=" "`` yet quietly accept ``JWT_AUDIENCE="faultmaven-api "``
+        and stamp the trailing space onto every token — self-consistent, so
+        nothing fails, until the day someone removes the space and invalidates
+        every token in circulation. Neither a Kubernetes ConfigMap value nor a
+        Compose ``environment:`` entry trims for us, and a trailing space is
+        invisible in both.
         """
-        if not v.strip():
+        cleaned = v.strip()
+        if not cleaned:
             field = (info.field_name or "value").upper()
             raise ValueError(
                 f"{field} must not be blank. It is stamped on every token this "
@@ -1038,7 +1050,7 @@ class SecuritySettings(BaseSettings):
                 "blank value fails every authentication. Unset it to take the "
                 "default, or give it a non-blank value."
             )
-        return v
+        return cleaned
 
     # Token revocation (Redis)
     token_revocation_prefix: str = Field(default="revoked:token:")

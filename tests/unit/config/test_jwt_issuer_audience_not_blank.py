@@ -18,6 +18,8 @@ Both are refused regardless — a blank issuer is unintended in every case, and 
 rule holding for one half of a pair is one an operator misremembers.
 """
 
+import os
+
 import jwt
 import pytest
 from pydantic import ValidationError
@@ -29,6 +31,25 @@ from faultmaven.config.settings import SecuritySettings
 BLANK = ["", " ", "   ", "\t", "\n"]
 
 FIELDS = ["jwt_issuer", "jwt_audience"]
+
+#: Every environment name that binds these fields. ``SecuritySettings`` uses an
+#: empty ``env_prefix``, so a plain ``JWT_ISSUER`` exported in a developer's or
+#: CI shell reaches them — and pydantic-settings binds case-insensitively.
+BINDING_ENV_NAMES = ["JWT_ISSUER", "JWT_AUDIENCE"]
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_pair(monkeypatch):
+    """No ambient configuration decides the outcome of these tests.
+
+    Every assertion here is about what the *code* does with a given value, so an
+    exported ``JWT_ISSUER`` — which reaches these fields, ``.env`` included,
+    since dotenv loads into ``os.environ`` — would otherwise silently substitute
+    a different input and fail tests that have nothing to do with it.
+    """
+    for name in list(os.environ):
+        if name.upper() in BINDING_ENV_NAMES:
+            monkeypatch.delenv(name, raising=False)
 
 
 @pytest.mark.parametrize("blank", BLANK)
@@ -54,10 +75,55 @@ def test_a_non_blank_value_is_accepted(field):
 
 
 def test_the_defaults_survive_the_validator():
-    """The shipped defaults must not be rejected by the rule guarding them."""
+    """The shipped defaults are themselves validated, and pass.
+
+    The fields declare ``validate_default=True`` precisely so this is a real
+    assertion. Pydantic skips validators on unset fields by default, so without
+    it this would construct the model, read two constants back, and prove only
+    that they are spelled as written — a blank default would sail past the check
+    written to prevent a blank value.
+    """
     settings = SecuritySettings()
+
     assert settings.jwt_issuer == "faultmaven"
     assert settings.jwt_audience == "faultmaven-api"
+
+    # The declaration is asserted directly because a blank *default* is not
+    # reachable from a test: overriding it in a subclass would restate
+    # ``validate_default`` and so could not detect its removal from the real
+    # field. Without this, dropping the flag regresses silently — the values
+    # above are non-blank, so they pass whether or not anything checked them.
+    for field in FIELDS:
+        assert SecuritySettings.model_fields[field].validate_default is True, (
+            f"{field} no longer validates its default, so the blank-value rule "
+            "does not cover the shipped configuration"
+        )
+
+
+@pytest.mark.parametrize(
+    "padded,expected",
+    [
+        (" faultmaven-api", "faultmaven-api"),
+        ("faultmaven-api ", "faultmaven-api"),
+        ("\tfaultmaven-api\n", "faultmaven-api"),
+    ],
+)
+@pytest.mark.parametrize("field", FIELDS)
+def test_surrounding_whitespace_is_stripped_from_the_stored_value(
+    field, padded, expected
+):
+    """The deployment uses the trimmed value, not the raw one.
+
+    PyJWT compares ``iss`` by equality and matches ``aud`` exactly, so a stored
+    ``"faultmaven-api "`` is a *different* audience that every token then
+    carries. It is self-consistent, so nothing fails — until the space is
+    removed and every token in circulation stops verifying. Neither a Kubernetes
+    ConfigMap value nor a Compose ``environment:`` entry trims, and the space is
+    invisible in both.
+    """
+    settings = SecuritySettings(**{field: padded})
+
+    assert getattr(settings, field) == expected
 
 
 @pytest.mark.parametrize(
