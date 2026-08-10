@@ -875,22 +875,40 @@ async def update_document(
     except HTTPException:
         raise
     except KnowledgeBaseError as e:
-        # Re-indexing failed. Whether the OLD vectors survived depends on where
-        # it failed, and the response must not assert more than is known:
-        # the pre-delete failures (no embedder, no chunks) leave the previous
-        # vectors intact, but KNOWLEDGE_INDEXING_FAILED can fire from
-        # add_documents AFTER the delete, leaving the document with none.
+        # Re-indexing failed, so the edit was NOT saved: the row is committed
+        # only after the vectors are in place (#952), which is what lets this
+        # response promise the document is unchanged rather than describing
+        # which half landed.
+        #
+        # Searchability is the one part that still varies, and the response
+        # must not assert more than is known: the pre-delete failures (no
+        # embedder, embedder timeout, no chunks) leave the previous vectors
+        # intact, but KNOWLEDGE_INDEXING_FAILED can fire from add_documents
+        # AFTER the delete, leaving the document with none. Recovering that is
+        # a retry of this same request — NOT something the caller can be told
+        # will happen on its own, since the boot reconcile pass that repairs
+        # chunkless rows is skipped entirely under TENANT_PROVIDER=multi.
         logger.error(f"Failed to re-index document {document_id}: {e}")
         searchable_state = (
-            "Search results still reflect the previous content."
+            (
+                "The document is unchanged and still searchable on its "
+                "current content."
+            )
             if getattr(e, "error_code", None)
-            in ("KNOWLEDGE_EMBEDDER_UNAVAILABLE", "KNOWLEDGE_NO_CHUNKS")
-            else "This document may not be searchable until the update succeeds."
+            in (
+                "KNOWLEDGE_EMBEDDER_UNAVAILABLE",
+                "KNOWLEDGE_EMBEDDER_TIMEOUT",
+                "KNOWLEDGE_NO_CHUNKS",
+            )
+            else (
+                "The document is unchanged, but it may not be searchable until "
+                "the update succeeds."
+            )
         )
         raise HTTPException(
             status_code=503,
             detail=(
-                f"Document saved, but re-indexing for search failed. "
+                f"Your edit was not saved: re-indexing for search failed. "
                 f"{searchable_state} Retry the update once the knowledge base "
                 f"is available."
             ),
