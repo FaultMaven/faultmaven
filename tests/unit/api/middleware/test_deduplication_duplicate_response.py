@@ -38,6 +38,7 @@ import fakeredis.aioredis as fakeredis_aio
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.requests import Request as StarletteRequest
 
 from faultmaven.api.middleware.deduplication import DeduplicationMiddleware
 from faultmaven.config.protection import get_development_protection_settings
@@ -230,35 +231,28 @@ def test_an_unreadable_body_is_not_treated_as_an_empty_one(harness, monkeypatch)
     genuinely empty one and against every other unreadable body. Now that a
     duplicate is answered 409, that collision is user-visible.
     """
-    calls = {"n": 0}
 
-    async def _fail_second_read(_self, request):
-        calls["n"] += 1
-        if calls["n"] > 1:
-            raise RuntimeError("stream consumed")
-        return b""
-
-    monkeypatch.setattr(DeduplicationMiddleware, "_get_request_body", _fail_second_read)
+    # The read itself is broken, not `_get_request_body` -- patching the method
+    # would leave the swallow inside it untested, and this test green whether
+    # or not it is there.
+    def _post(body: bytes):
+        return harness.client.post(
+            "/api/v1/agent/query",
+            content=body,
+            headers={"X-Session-ID": "sess-1", "content-type": "application/json"},
+        )
 
     # An empty body establishes the digest for b"".
-    assert (
-        harness.client.post(
-            "/api/v1/agent/query",
-            content=b"",
-            headers={"X-Session-ID": "sess-1", "content-type": "application/json"},
-        ).status_code
-        == 200
-    )
+    assert _post(b"").status_code == 200
 
-    # The unreadable one must not collide with it.
-    assert (
-        harness.client.post(
-            "/api/v1/agent/query",
-            content=b"anything",
-            headers={"X-Session-ID": "sess-1", "content-type": "application/json"},
-        ).status_code
-        == 200
-    )
+    async def _unreadable(_self):
+        raise RuntimeError("stream consumed")
+
+    monkeypatch.setattr(StarletteRequest, "body", _unreadable)
+
+    # Swallowed, this hashes as b"" and collides with the request above -- 409.
+    # Propagated, the request is simply not identified, and runs.
+    assert _post(b"anything").status_code == 200
 
 
 def test_idempotency_bearing_paths_are_skipped(harness):
@@ -273,7 +267,6 @@ def test_idempotency_bearing_paths_are_skipped(harness):
     breaking idempotent retry.
     """
     from starlette.datastructures import Headers
-    from starlette.requests import Request as StarletteRequest
 
     def _req(path: str, content_type: str) -> StarletteRequest:
         return StarletteRequest(
