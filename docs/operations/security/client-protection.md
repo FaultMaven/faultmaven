@@ -123,11 +123,18 @@ never having been told the bucket exists.
 **Purpose**: Prevent processing identical requests within short time windows.
 
 **Scope**:
-- Title generation: Block duplicates for 5 minutes per session
-- Agent queries: Block exact duplicates for 30 seconds per session
-- Hash-based identification: SHA-256 of (session_id + endpoint + request_body)
+- Blocks a resubmit of the *exact* same request within the endpoint's TTL
+- Hash-based identification: SHA-256 over length-prefixed
+  (session_id, method, path, canonical query, raw body bytes)
+- Keyed on the session — a request with no session id is not deduplicated
+- `GET`s, `/health*`, `/metrics*`, `/static*`, `POST /api/v1/cases`,
+  `POST /api/v1/sessions` and `multipart/form-data` are skipped
 
-**Cache Strategy**: Redis with TTL-based expiration.
+A duplicate is answered **409** with `Retry-After` and an `x-error-code`.
+
+**Cache Strategy**: Redis with TTL-based expiration. The stored value is the
+first request's timestamp, which is what `Retry-After` counts down from; no
+response body is cached.
 
 #### 3. Agent Execution Timeouts
 **Purpose**: Prevent runaway agent processes from consuming resources indefinitely.
@@ -241,21 +248,40 @@ class RequestDeduplicationMiddleware:
     Hash-based request deduplication
 
     Features:
-    - Content-based hashing (excludes timestamps)
+    - Exact request hashing (no content normalization)
     - Per-endpoint TTL configuration
-    - Memory-efficient storage
-    - Optional response caching
+    - Redis-backed storage
+    - Duplicates answered with a labelled 409 + Retry-After
     """
 ```
 
-**Hash Algorithm**:
+**Hash Algorithm**: a request is identified *exactly* — same session, method,
+path, query and body bytes. Components are length-prefixed rather than joined by
+a delimiter, so no component's content can pose as a field boundary.
+
 ```python
-def generate_request_hash(session_id: str, endpoint: str, body: str) -> str:
-    # Normalize body (remove timestamps, request IDs)
-    normalized = normalize_request_body(body)
-    content = f"{session_id}:{endpoint}:{normalized}"
-    return hashlib.sha256(content.encode()).hexdigest()
+def generate_request_hash(session_id, endpoint, method, query_params, body) -> str:
+    digest = hashlib.sha256()
+    for component in (session_id, method.upper(), endpoint,
+                      canonical_query(query_params), body or ""):
+        encoded = component.encode("utf-8")
+        digest.update(f"{len(encoded)}:".encode("ascii"))
+        digest.update(encoded)
+    return digest.hexdigest()
 ```
+
+**The body is deliberately not normalized.** An earlier version rewrote
+timestamps, UUIDs, 10-digit numbers and `/tmp` paths to placeholders and dropped
+body fields by name. For a product whose request bodies are mostly IDs, epochs
+and log fragments, that collapsed genuinely different messages onto one digest —
+"check order 4232342342" and "check order 9994442211" hashed alike, so the user's
+second message was classified as a duplicate of the first. Normalization can only
+manufacture false duplicates here: an accidental double-submit is byte-identical
+by construction.
+
+Headers are deliberately excluded from the digest. An identical body resubmitted
+under a different `Accept-Encoding` — or retried after a content-type correction
+— is the same submit.
 
 ### Agent Execution Timeouts
 
@@ -439,7 +465,12 @@ path advertises too.
 
 ### Potential Bypasses
 - **IP rotation**: Mitigated by session-based limits
-- **Request variation**: Mitigated by normalized hashing
+- **Request variation**: **Not mitigated by deduplication, by design.** Varying
+  one byte produces a different hash and defeats the dedup window. Dedup exists
+  to catch accidental resubmits, not adversaries; a client varying its payload
+  is bounded by the rate limiter, which counts requests regardless of content.
+  Attempting to close this at the hash was the source of the false-duplicate
+  defect described above.
 - **Slow attacks**: Mitigated by hourly limits
 - **Distributed attacks**: Mitigated by global limits
 

@@ -71,7 +71,6 @@ class DeduplicationConfig:
 
     ttl: int  # seconds
     enabled: bool = True
-    cache_responses: bool = False
 
 
 @dataclass
@@ -111,11 +110,7 @@ class ProtectionSettings(BaseModel):
 
     # Deduplication configuration
     deduplication: Dict[str, DeduplicationConfig] = Field(
-        default_factory=lambda: {
-            "default": DeduplicationConfig(ttl=30),
-            "title_generation": DeduplicationConfig(ttl=300),
-            "agent_query": DeduplicationConfig(ttl=30),
-        }
+        default_factory=lambda: {"default": DeduplicationConfig(ttl=30)}
     )
 
     # Timeout configuration
