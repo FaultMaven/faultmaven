@@ -856,7 +856,9 @@ class AnalyticsDashboardService(BaseService):
         import hashlib
 
         query_str = json.dumps(query_config, sort_keys=True)
-        return hashlib.md5(query_str.encode()).hexdigest()
+        # Cache key over an operator dashboard's own query config — a
+        # fingerprint, not a secret, and not truncated.
+        return hashlib.md5(query_str.encode(), usedforsecurity=False).hexdigest()
 
     def _apply_query_filters(
         self, data: Dict[str, Any], filters: Dict[str, Any]

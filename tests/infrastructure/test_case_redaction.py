@@ -1,6 +1,7 @@
 """Tests for CaseRedactionContext — case-scoped PII redaction registry."""
 
 import json
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -310,3 +311,63 @@ class TestSanitizeTextWithRegistry:
         # Both should be redacted (but independently)
         assert "10.0.0.1" not in result1
         assert "10.0.0.2" not in result2
+
+
+@pytest.mark.asyncio
+class TestRegistrySurvivesTheRedisRoundTrip:
+    """Save a REAL registry and load it back through a second context.
+
+    The other Redis tests mock `get` and `set` independently, so nothing feeds
+    a saved payload back through `load` — a serialization change could break
+    reversal with every one of them still green. This drives the actual
+    sanitize → save → load → reverse path.
+    """
+
+    class _FakeRedis:
+        """Enough Redis to round-trip one key, storing bytes like the real one."""
+
+        def __init__(self):
+            self.store = {}
+
+        async def get(self, key):
+            return self.store.get(key)
+
+        async def set(self, key, value, ex=None):
+            self.store[key] = value.encode() if isinstance(value, str) else value
+
+        async def delete(self, key):
+            self.store.pop(key, None)
+
+    async def test_a_saved_registry_reverses_in_a_fresh_context(self, sanitizer):
+        redis = self._FakeRedis()
+        text = "host 10.9.8.7 talked to 10.9.8.6"
+
+        first = CaseRedactionContext("case-rt", sanitizer, redis)
+        await first.load()
+        redacted = await first.asanitize(text)
+        await first.save()
+
+        assert "10.9.8.7" not in redacted
+        assert redis.store, "nothing was persisted"
+
+        second = CaseRedactionContext("case-rt", sanitizer, redis)
+        await second.load()
+
+        assert second.reverse(redacted) == text
+        assert second.entity_count == 2
+
+    async def test_a_reloaded_registry_keeps_assigning_the_same_placeholders(
+        self, sanitizer
+    ):
+        redis = self._FakeRedis()
+        first = CaseRedactionContext("case-rt2", sanitizer, redis)
+        await first.load()
+        one = await first.asanitize("host 10.9.8.7")
+        await first.save()
+
+        second = CaseRedactionContext("case-rt2", sanitizer, redis)
+        await second.load()
+        two = await second.asanitize("again 10.9.8.7")
+
+        placeholder = re.search(r"<IP_ADDRESS_[0-9a-f]{16}>", one).group(0)
+        assert placeholder in two

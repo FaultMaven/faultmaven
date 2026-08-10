@@ -417,6 +417,23 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     # client (never None), so this is always populated.
     app.state.redis_client = container.get_redis_client()
 
+    # Refuse to serve if another process in this deployment redacts under a
+    # different key. Resolution alone cannot establish that — whether a
+    # generated key is shared is a property of the topology, which the app
+    # cannot see, and the predicate it used to infer from (DEPLOYMENT_MODE)
+    # is one an operator can simply not set. On-prem does not, so a
+    # multi-replica Deployment took the standalone path and minted a key per
+    # pod, silently. Redis is the one store every replica genuinely shares, so
+    # the invariant is checked there instead of guessed at.
+    from .infrastructure.security.pseudonym_key import (
+        resolve_pseudonym_key,
+        verify_pseudonym_key_agreement,
+    )
+
+    await verify_pseudonym_key_agreement(
+        resolve_pseudonym_key(settings), app.state.redis_client
+    )
+
     # The rest of the service layer. Genuinely optional services (the
     # conversion service, the query classification engine) name themselves
     # optional at their own line and fall back to None; everything else
@@ -597,6 +614,18 @@ async def lifespan(app: FastAPI):
         from .config.deployment_coherence import validate_deployment_coherence
 
         validate_deployment_coherence(settings)
+
+        # Fail fast if redaction has no pseudonym key it may use. Resolving is
+        # what creates the standalone key file, so doing it here also means the
+        # first redaction of the process is never the thing that writes it.
+        # In cloud an unset key raises: generating one per pod would give each
+        # replica a different placeholder for the same value, and discovering
+        # that mid-request — the regex pass runs on every sanitize call,
+        # whatever PROTECTION_SANITIZE_PII says — would surface as scattered
+        # 500s rather than a refusal to start (#971).
+        from .infrastructure.security.pseudonym_key import resolve_pseudonym_key
+
+        resolve_pseudonym_key(settings)
 
         # Fail fast if no LLM provider was explicitly chosen, or the chosen
         # provider's credential is missing. There is no default provider — a

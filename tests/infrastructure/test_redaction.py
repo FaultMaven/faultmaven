@@ -1,10 +1,15 @@
 import asyncio
+import re
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from faultmaven.config.settings import get_settings
+from faultmaven.infrastructure.security.pseudonym_key import (
+    reset_pseudonym_key_cache,
+)
 from faultmaven.infrastructure.security.redaction import (
     DataSanitizer,
     RedactionUnavailableError,
@@ -391,6 +396,11 @@ class TestFailClosedPosture:
         settings.protection.presidio_anonymizer_url = "http://fake:8081"
         settings.protection.sanitize_pii = sanitize_pii
         settings.protection.fail_open = fail_open
+        # Real str, not the MagicMock attribute: the pseudonym key is fed to
+        # hmac, which rejects anything that is not bytes-like. A mock here
+        # would make these tests fail on the stand-in rather than on the
+        # behaviour they are actually about.
+        settings.protection.pseudonym_key = "test-pseudonym-key"
         settings.server.skip_service_checks = True  # forces analyzer_available=False
         return settings
 
@@ -552,3 +562,284 @@ class TestPresidioSettingsWiring:
         sanitizer = DataSanitizer()
 
         assert sanitizer._presidio_score_threshold == 0.85
+
+
+class TestPseudonymsAreKeyedNotDerivable:
+    """#971: a placeholder must be unguessable from redacted output alone.
+
+    The old scheme was `md5(value)[:12]` — an unkeyed commitment to the
+    plaintext. The spaces redaction protects run 10^7-10^10 candidates
+    (internal IPs, SSNs, phone numbers), so anyone holding redacted output
+    could enumerate them offline and match digests, undoing the redaction.
+
+    The replacement is HMAC-SHA256 under a deployment key. Both halves matter
+    and are pinned separately here: keyed (this class) AND still deterministic
+    (TestPseudonymsSurviveSeparateSanitizations) — a random token would satisfy
+    the first and destroy the second.
+    """
+
+    PLACEHOLDER = re.compile(r"<IP_ADDRESS_([0-9a-f]{16})>")
+
+    def _token(self, sanitizer, text="Login from 10.1.2.3"):
+        result = sanitizer.sanitize(text)
+        match = self.PLACEHOLDER.search(result)
+        assert match is not None, f"no IP placeholder in {result!r}"
+        return match.group(1)
+
+    def _sanitizer_with_key(self, key):
+        reset_pseudonym_key_cache()
+        settings = get_settings()
+        with patch.object(settings.protection, "pseudonym_key", key):
+            sanitizer = DataSanitizer(settings=settings)
+            token = self._token(sanitizer)
+        reset_pseudonym_key_cache()
+        return token
+
+    def test_the_placeholder_changes_with_the_key(self):
+        """THE property. No unkeyed derivation of the value can pass this —
+        not md5, not sha256, not a salt baked into the code."""
+        assert self._sanitizer_with_key(
+            "key-one-0123456789abcdef"
+        ) != self._sanitizer_with_key("key-two-0123456789abcdef")
+
+    def test_the_placeholder_is_not_the_md5_of_the_value(self):
+        """Pin the exact construction that was here before."""
+        import hashlib
+
+        assert self._sanitizer_with_key("any-key-0123456789abcdef") != (
+            hashlib.md5(b"10.1.2.3").hexdigest()[:16]
+        )
+
+    def test_the_placeholder_is_not_an_unkeyed_sha256_either(self):
+        import hashlib
+
+        assert self._sanitizer_with_key("any-key-0123456789abcdef") != (
+            hashlib.sha256(b"10.1.2.3").hexdigest()[:16]
+        )
+
+    def test_the_placeholder_is_the_keyed_hmac(self):
+        """Positive control: the digest really is HMAC under the key, so the
+        negative assertions above are not passing on some third thing."""
+        import hashlib
+        import hmac as _hmac
+
+        expected = _hmac.new(
+            b"key-one-0123456789abcdef", b"10.1.2.3", hashlib.sha256
+        ).hexdigest()[:16]
+        assert self._sanitizer_with_key("key-one-0123456789abcdef") == expected
+
+
+class TestPseudonymsSurviveSeparateSanitizations:
+    """The other half: co-reference across independently-sanitized artifacts.
+
+    Evidence files are sanitized one at a time and PERSISTED, the KB at
+    ingestion, prompts per turn — each with its own registry. If one host
+    reads as two placeholders across those, the investigation loses the
+    correlation it exists to find, and an LLM told about two hosts can conclude
+    something false about either. This is what a random per-registry token
+    would destroy, which is why the digest is keyed rather than random.
+    """
+
+    PLACEHOLDER = re.compile(r"<IP_ADDRESS_[0-9a-f]{16}>")
+
+    def test_two_separate_sanitizer_instances_agree(self):
+        """Two evidence files, ingested by different calls, same host."""
+        first = DataSanitizer().sanitize("evidence A: timeouts from 10.4.5.6")
+        second = DataSanitizer().sanitize("evidence B: 10.4.5.6 refused")
+
+        a = self.PLACEHOLDER.search(first)
+        b = self.PLACEHOLDER.search(second)
+        assert a and b
+        assert a.group(0) == b.group(0)
+
+    def test_separate_registries_agree(self):
+        sanitizer = DataSanitizer()
+        first = sanitizer.sanitize_text_with_registry("from 10.4.5.6", {})
+        second = sanitizer.sanitize_text_with_registry("to 10.4.5.6", {})
+
+        assert self.PLACEHOLDER.search(first).group(0) == (
+            self.PLACEHOLDER.search(second).group(0)
+        )
+
+    def test_repeated_value_across_dict_leaves_agrees(self):
+        result = str(
+            DataSanitizer().sanitize(
+                {
+                    "summary": "timeouts reaching 10.4.5.6",
+                    "detail": {"lines": ["conn refused 10.4.5.6"]},
+                }
+            )
+        )
+
+        assert len(set(self.PLACEHOLDER.findall(result))) == 1
+        assert "10.4.5.6" not in result
+
+    def test_distinct_values_stay_distinct(self):
+        result = str(DataSanitizer().sanitize({"a": "10.4.5.6", "b": "10.4.5.7"}))
+
+        assert len(set(self.PLACEHOLDER.findall(result))) == 2
+
+
+class TestInternalIpRangeCoverage:
+    """Every octet of an internal address must be redacted, on every branch.
+
+    The 10/8 alternative used to share the two-octet tail written for
+    172.16/12 and 192.168/16, so `10.1.2.3` matched only `10.1.2`: the final
+    octet went to the LLM in the clear and every host on the /24 collapsed
+    onto one placeholder. The bounds are `(?<![\\d.])`/`(?![\\d.])` rather than
+    `\\b` because `\\b` only holds against a non-word character, so an address
+    abutting one (`10.1.2.3_backup`) leaked entirely.
+    """
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "10.1.2.3",
+            "10.0.0.1",
+            "10.255.254.253",
+            "172.16.5.9",
+            "172.31.0.7",
+            "192.168.1.100",
+        ],
+    )
+    def test_whole_address_is_replaced(self, address):
+        result = DataSanitizer().sanitize(f"peer {address} unreachable")
+
+        assert address not in result
+        assert re.fullmatch(r"peer <IP_ADDRESS_[0-9a-f]{16}> unreachable", result)
+
+    @pytest.mark.parametrize(
+        "text,leaked",
+        [
+            ("10.1.2.3_backup", "10.1.2.3"),
+            ("x10.1.2.3", "10.1.2.3"),
+            ("host10.1.2.3end", "10.1.2.3"),
+        ],
+    )
+    def test_an_address_abutting_a_word_character_is_still_redacted(self, text, leaked):
+        assert leaked not in DataSanitizer().sanitize(text)
+
+    @pytest.mark.parametrize(
+        "text,leaked",
+        [
+            # Ending a sentence — the common shape in prose and log messages.
+            ("Connection refused from 192.168.1.10.", "192.168.1.10"),
+            ("see 172.16.0.1. Next line", "172.16.0.1"),
+            ("host 10.1.2.3.", "10.1.2.3"),
+            # Dot-prefixed, e.g. a name fragment.
+            ("srv.10.1.2.3 down", "10.1.2.3"),
+            # Other punctuation that is not a digit continuation.
+            ("(10.1.2.3)", "10.1.2.3"),
+            ("[192.168.1.10]", "192.168.1.10"),
+            ("172.16.0.1,172.16.0.2", "172.16.0.1"),
+        ],
+    )
+    def test_an_address_adjacent_to_punctuation_is_still_redacted(self, text, leaked):
+        """A trailing dot is punctuation, not a longer address.
+
+        Excluding any adjacent dot looks like the safe reading and is the
+        opposite: it makes a sentence-final address match nothing, so the whole
+        thing goes to the LLM in the clear — worse than the pattern this
+        replaced. Every other IP case here is written `peer {addr} down`, which
+        is why that never showed up.
+        """
+        assert leaked not in DataSanitizer().sanitize(text)
+
+    def test_distinct_hosts_on_one_slash24_stay_distinct(self):
+        result = str(DataSanitizer().sanitize({"a": "10.1.2.3", "b": "10.1.2.4"}))
+
+        assert len(set(re.findall(r"<IP_ADDRESS_([0-9a-f]{16})>", result))) == 2
+
+    @pytest.mark.parametrize(
+        "address",
+        ["8.8.8.8", "203.0.113.5", "172.15.0.1", "172.32.0.1", "110.1.2.3"],
+    )
+    def test_public_addresses_are_left_alone(self, address):
+        assert address in DataSanitizer().sanitize(f"peer {address} unreachable")
+
+    @pytest.mark.parametrize("text", ["10.1.2.34567", "1.10.1.2.3"])
+    def test_a_fragment_of_a_longer_number_is_not_matched(self, text):
+        assert text in DataSanitizer().sanitize(f"value {text} seen")
+
+
+class TestTheInternalRangesAsAProperty:
+    """Sweep the whole 172.16/12 range, not three instances of it.
+
+    Parametrised examples pin 172.16 and 172.31 and exclude 172.15 and 172.32,
+    which leaves the interior unguarded: narrowing the alternation to
+    `2[0-8]` silently drops 172.29/16 from redaction and every instance-based
+    case still passes.
+    """
+
+    @pytest.mark.parametrize("second", range(16, 32))
+    def test_every_octet_of_172_16_slash_12_is_internal(self, second):
+        address = f"172.{second}.4.5"
+
+        assert address not in DataSanitizer().sanitize(f"peer {address} down")
+
+    @pytest.mark.parametrize("second", [0, 1, 15, 32, 100, 255])
+    def test_172_outside_the_range_is_public(self, second):
+        address = f"172.{second}.4.5"
+
+        assert address in DataSanitizer().sanitize(f"peer {address} down")
+
+    @pytest.mark.parametrize("second", [0, 1, 128, 254, 255])
+    def test_every_second_octet_of_10_slash_8_is_internal(self, second):
+        address = f"10.{second}.4.5"
+
+        assert address not in DataSanitizer().sanitize(f"peer {address} down")
+
+
+class TestThePresidioArmUsesTheSameKeyedPseudonym:
+    """`_hashed_placeholder` has two call sites; every other new test drives
+    only the regex one, because the analyzer is unavailable in tests. A
+    Presidio-detected entity must get the same keyed, deterministic
+    placeholder — it lands in the same registry and is reversed by the same
+    map."""
+
+    def _sanitizer(self):
+        settings = MagicMock()
+        settings.protection.entities_to_protect = ["EMAIL_ADDRESS"]
+        settings.protection.min_score_threshold = 0.9
+        settings.protection.presidio_analyzer_url = "http://fake:8080"
+        settings.protection.presidio_anonymizer_url = "http://fake:8081"
+        settings.protection.sanitize_pii = True
+        settings.protection.fail_open = True
+        settings.protection.pseudonym_key = "a-test-key-long-enough-to-pass"
+        settings.server.skip_service_checks = True
+        sanitizer = DataSanitizer(settings=settings)
+        sanitizer.analyzer_available = True
+        return sanitizer
+
+    def test_a_presidio_entity_gets_the_keyed_hmac(self):
+        import hashlib
+        import hmac as _hmac
+
+        text = "contact a@example.com now"
+        start, end = text.index("a@example.com"), text.index("a@example.com") + 13
+        sanitizer = self._sanitizer()
+
+        with patch.object(
+            sanitizer,
+            "call_external_sync",
+            return_value=[{"start": start, "end": end, "entity_type": "EMAIL_ADDRESS"}],
+        ):
+            result = sanitizer.sanitize_text_with_registry(text, {})
+
+        expected = _hmac.new(
+            b"a-test-key-long-enough-to-pass", b"a@example.com", hashlib.sha256
+        ).hexdigest()[:16]
+        assert result == f"contact <EMAIL_ADDRESS_{expected}> now"
+
+    def test_the_presidio_arm_agrees_with_a_separate_registry(self):
+        """Co-reference has to hold across the analyzer arm too."""
+        text = "contact a@example.com now"
+        start, end = text.index("a@example.com"), text.index("a@example.com") + 13
+        sanitizer = self._sanitizer()
+        entity = [{"start": start, "end": end, "entity_type": "EMAIL_ADDRESS"}]
+
+        with patch.object(sanitizer, "call_external_sync", return_value=entity):
+            first = sanitizer.sanitize_text_with_registry(text, {})
+            second = sanitizer.sanitize_text_with_registry(text, {})
+
+        assert first == second

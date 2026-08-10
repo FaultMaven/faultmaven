@@ -27,12 +27,14 @@ Core Design Principles:
 
 import asyncio
 import hashlib
+import hmac
 import re
 from typing import Any, Dict, List, Optional
 
 import requests
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
+from faultmaven.infrastructure.security.pseudonym_key import resolve_pseudonym_key
 from faultmaven.models.interfaces import ISanitizer
 
 
@@ -72,6 +74,9 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
 
             settings = get_settings()
         self._settings = settings
+
+        # Resolved on first redaction, not here — see the _pseudonym_key property.
+        self.__key: Optional[bytes] = None
 
         # Presidio service endpoints
         analyzer_url = settings.protection.presidio_analyzer_url
@@ -160,9 +165,34 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
             # Password patterns
             (r"\bpassword[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
             (r"\bpasswd[_-]?[=:]\s*[^\s\n]+", "[PASSWORD_REDACTED]"),
-            # IP addresses (internal ranges)
+            # IP addresses (internal ranges). Two things this spelling fixes.
+            #
+            # Each alternative must leave EXACTLY two octets for the shared
+            # tail: 10/8 has three octets after its prefix, 172.16/12 and
+            # 192.168/16 have two. The former `(10\.|...)` spelling gave 10/8
+            # the same two-octet tail as the others, so `10.1.2.3` matched only
+            # `10.1.2` — the final octet survived redaction in the clear, and
+            # every host on a /24 shared one placeholder in the registry.
+            #
+            # The bounds are lookarounds rather than `\b`, because `\b` only
+            # holds against a non-word character. Fixing the octet count while
+            # keeping `\b` would have made an abutting address WORSE:
+            # `10.1.2.3_backup` (a filename, a log field) matches nothing at
+            # all under a `\b`-bounded four-octet pattern and leaks in full,
+            # where the old three-octet pattern at least caught `10.1.2`.
+            #
+            # They exclude an adjacent DIGIT, and separately a dot that is part
+            # of a longer dotted run — not any adjacent dot. A blanket
+            # `(?<![\d.])`/`(?![\d.])` looks equivalent and is not: it refuses
+            # to match an address ending a sentence, so
+            # `refused from 192.168.1.10.` leaked the whole address that the
+            # pattern it replaced had redacted. `(?!\d)(?!\.\d)` accepts the
+            # full stop and still refuses the continuation, so `10.1.2.34567`,
+            # `10.1.2.3.4`, `110.1.2.3` and `1.10.1.2.3` stay unmatched.
             (
-                r"\b(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)\d{1,3}\.\d{1,3}\b",
+                r"(?<!\d)(?<!\d\.)"
+                r"(?:10\.\d{1,3}|172\.(?:1[6-9]|2[0-9]|3[01])|192\.168)"
+                r"\.\d{1,3}\.\d{1,3}(?!\d)(?!\.\d)",
                 "[IP_ADDRESS_REDACTED]",
             ),
             # MAC addresses
@@ -256,12 +286,49 @@ class DataSanitizer(BaseExternalClient, ISanitizer):
         prot = self._settings.protection
         return bool(prot.sanitize_pii) and not bool(prot.fail_open)
 
-    @staticmethod
-    def _hashed_placeholder(entity_type: str, value: str) -> str:
-        """Stable ``<TYPE_hash>`` placeholder for a value. 48-bit digest keeps
-        distinct values from colliding onto one placeholder (which would make
-        the reverse mapping ambiguous)."""
-        digest = hashlib.md5(value.encode("utf-8")).hexdigest()[:12]
+    @property
+    def _pseudonym_key(self) -> bytes:
+        """The deployment's pseudonym key, resolved once per sanitizer.
+
+        Resolved lazily rather than in ``__init__`` so that constructing a
+        sanitizer — which happens all over the codebase and in every test —
+        never touches the filesystem or fails; only actually redacting
+        something requires a key.
+        """
+        if self.__key is None:
+            self.__key = resolve_pseudonym_key(self._settings)
+        return self.__key
+
+    def _hashed_placeholder(self, entity_type: str, value: str) -> str:
+        """Stable ``<TYPE_digest>`` placeholder for a value.
+
+        ``HMAC-SHA256(deployment key, value)`` truncated to 64 bits. Keyed, not
+        bare: an unkeyed digest — the ``md5(value)[:12]`` this replaced — is a
+        commitment to the plaintext, and the spaces redaction protects run
+        10^7–10^10 candidates (internal IPs, SSNs, phone numbers), all
+        trivially enumerated offline by anyone holding the redacted text
+        (#971). With the key withheld there is nothing to enumerate against.
+
+        Still *deterministic*, deliberately. The same value must land on the
+        same placeholder across separately-sanitized artifacts — evidence files
+        are redacted one at a time and persisted, the KB at ingestion, prompts
+        per turn — or one host reads as two and the investigation loses the
+        co-reference it exists to find. That is why this is a keyed hash and
+        not a random token: a random token satisfies the secrecy half and
+        destroys this half.
+
+        Truncated to 64 bits, wider than the 48 this replaced. A collision
+        maps two distinct values onto one placeholder, and the reverse map then
+        resolves one of them to the WRONG original — a wrong value handed back
+        to the user, not merely a lost one. The redaction registry is
+        unbounded (``entity_registry_cap_per_type`` caps a different
+        subsystem's extractor, not this), so the size to plan for is however
+        many distinct entities a large log has: at 48 bits the birthday bound
+        over 10^5 entries is ~2e-5, at 64 bits it is ~3e-10.
+        """
+        digest = hmac.new(
+            self._pseudonym_key, value.encode("utf-8"), hashlib.sha256
+        ).hexdigest()[:16]
         return f"<{entity_type}_{digest}>"
 
     def _sanitize_text(self, text: str) -> str:

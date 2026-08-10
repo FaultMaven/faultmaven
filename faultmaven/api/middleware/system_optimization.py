@@ -492,13 +492,26 @@ class SystemOptimizationMiddleware(BaseHTTPMiddleware):
             str(sorted(request.query_params.items())),
         ]
 
-        # Include authorization if present (for user-specific caching)
+        # Include authorization if present (for user-specific caching).
+        # This component is what would keep one caller's cached response from
+        # being served to another, so it is a security boundary, not a
+        # fingerprint: the digest is SHA-256 and is NOT truncated. The former
+        # `md5(...)[:8]` left 32 bits, at which two distinct bearer tokens can
+        # collide onto one cache key (#971).
+        #
+        # Latent, not live: `call_next` hands BaseHTTPMiddleware a
+        # `_StreamingResponse`, which has no `.body`, so `_cache_response`
+        # returns early and `_response_cache` never populates — every
+        # `_check_cache` misses. Widened here anyway because the hazard is
+        # one bug fix away from being reachable, and because the truncated
+        # digest of a bearer token is precisely what the B324 gate should
+        # catch.
         auth_header = request.headers.get("authorization")
         if auth_header:
-            key_components.append(hashlib.md5(auth_header.encode()).hexdigest()[:8])
+            key_components.append(hashlib.sha256(auth_header.encode()).hexdigest())
 
         cache_string = "|".join(key_components)
-        return hashlib.md5(cache_string.encode()).hexdigest()
+        return hashlib.sha256(cache_string.encode()).hexdigest()
 
     def _calculate_cache_ttl(self, request: Request, response: Response) -> int:
         """Calculate intelligent cache TTL based on endpoint characteristics"""
