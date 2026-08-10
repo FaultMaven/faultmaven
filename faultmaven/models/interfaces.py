@@ -284,7 +284,9 @@ class ITracer(ABC):
             >>> tracer = OpikTracer()
             >>> with tracer.trace("auth.mint_access_token") as span:
                 # Operation code here
-                token = await token_generator.generate_access_token(user)
+                token = await token_generator.generate_access_token(
+                    user, state_read_at=state_read_at
+                )
                 span.set_attribute("user_id", user.user_id)
                 span.set_attribute("auth_method", "oauth")
 

@@ -93,8 +93,11 @@ def _mint_instant(state_read_at: datetime) -> datetime:
     ahead = (state_read_at - now).total_seconds()
     if ahead > STATE_READ_AT_FUTURE_TOLERANCE_SECONDS:
         raise ValueError(
-            f"state_read_at is {ahead:.1f}s in the future — it must be "
-            "captured before the auth-state reads, not derived from them"
+            f"state_read_at is {ahead:.1f}s in the future. Either the caller "
+            "passed a derived time (an expiry, now + lifetime) instead of a "
+            "pre-read capture, or the wall clock stepped backwards by more "
+            "than the tolerance mid-request (NTP step, VM resume) — the "
+            "former is a code bug; the latter self-heals on retry"
         )
     return min(state_read_at, now)
 
@@ -569,8 +572,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: User to generate token for
-            state_read_at: Captured before the caller's first auth-state read;
-                ``iat``/``exp`` are stamped from it (#831, see interface)
+            state_read_at: See interface (#831)
 
         Returns:
             JWT access token string
@@ -645,8 +647,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: User to generate token for
-            state_read_at: Captured before the caller's first auth-state read;
-                ``iat``/``exp`` are stamped from it (#831, see interface)
+            state_read_at: See interface (#831)
 
         Returns:
             JWT refresh token string
@@ -692,7 +693,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: Account the reset is for
-            state_read_at: Captured before the account lookup (#831)
+            state_read_at: See interface (#831)
 
         Returns:
             The signed token and its ``jti``
@@ -721,7 +722,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             email: The address the caller asked about
-            state_read_at: The same instant the real mint would get (#831)
+            state_read_at: See interface (#831)
 
         Returns:
             The signed token, its ``jti``, and the random subject it names
@@ -1159,8 +1160,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: User to generate token for
-            state_read_at: Captured before the caller's first auth-state read;
-                ``iat``/``exp`` are stamped from it (#831, see interface)
+            state_read_at: See interface (#831)
 
         Returns:
             JWT access token string
@@ -1237,8 +1237,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: User to generate token for
-            state_read_at: Captured before the caller's first auth-state read;
-                ``iat``/``exp`` are stamped from it (#831, see interface)
+            state_read_at: See interface (#831)
 
         Returns:
             JWT refresh token string
@@ -1284,7 +1283,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: Account the reset is for
-            state_read_at: Captured before the account lookup (#831)
+            state_read_at: See interface (#831)
 
         Returns:
             The signed token and its ``jti``
@@ -1313,7 +1312,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             email: The address the caller asked about
-            state_read_at: The same instant the real mint would get (#831)
+            state_read_at: See interface (#831)
 
         Returns:
             The signed token, its ``jti``, and the random subject it names

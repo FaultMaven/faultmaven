@@ -308,17 +308,41 @@ mints. Stamped at mint time, that token's `iat` postdates the watermark and
 survives it while carrying pre-change state. So every
 `IJWTTokenGenerator.generate_*` method requires a `state_read_at` argument —
 captured by the caller before its first read of any state the claims derive
-from (the user row, the presented refresh token, the authorization code, the
-SSO login payload, the reset-request account lookup) — and stamps `iat` and
-`exp` from it. A mint whose reads straddled a revocation then necessarily
-carries `iat <= watermark` and dies with it. The argument is required with no
-default, so a future mint path that forgets it fails loudly rather than
-silently reopening the straddle; a `state_read_at` more than a couple of
-seconds in the future is refused outright (a miswired caller passing a
-derived time, not clock slew), and a marginally-future one degrades to `now`,
-the smaller and therefore more-revocable stamp. The cost is that a token's
-effective lifetime is shortened by its handler's read-to-mint latency —
-sub-second everywhere, dominated by the bcrypt verify on password flows. The
+from (the user row, the presented refresh token, the reset-request account
+lookup) — and stamps `iat` and `exp` from it. A mint whose reads straddled a
+revocation then necessarily carries `iat <= watermark` and dies with it. The
+argument is required with no default, so a future mint path that forgets it
+fails loudly rather than silently reopening the straddle; a `state_read_at`
+more than a couple of seconds in the future is refused outright (a miswired
+caller passing a derived time, not clock slew), and a marginally-future one
+degrades to `now`, the smaller and therefore more-revocable stamp.
+
+**Two-leg flows carry the first leg's basis in the hand-off artifact.** The
+OAuth authorization code and the SSO completion code are minted from state
+read in an *earlier* request — most consequentially the organization the
+tokens will claim — and neither artifact is revocable (no `iat`, no
+watermark check), so capturing only at the exchange leg would let a
+revoke-all landing between the legs be survived by a pair carrying the
+pre-revocation tenant. The SSO login payload therefore carries the callback
+leg's own pre-read capture, and the OAuth exchange derives the code's
+creation instant from `expires_at` minus the configured code TTL; each
+exchange stamps from the *older* of the two legs' bases. The refresh grants
+need no such carry: the presented refresh token is itself watermark-checked,
+so that artifact is already revocable. Residues, stated precisely: the
+derived OAuth instant postdates the authorize handler's own reads by
+milliseconds (and shifts by the delta if `oauth_code_expiry_seconds` is
+reconfigured while a code is in flight — partial leg-1 coverage for codes
+spanning the change, never a stamp past the exchange's own capture), and an
+SSO payload written by a pre-#831 process carries no callback capture, a
+window bounded by the 60-second login-code TTL.
+
+The cost of pre-read stamping is that a token's effective lifetime is
+shortened by the span between its basis and the mint — sub-second on the
+single-request flows (dominated by the bcrypt verify on password flows), up
+to the artifact's TTL on a slowly-redeemed two-leg flow — and the
+`expires_in` response field, which reports the configured lifetime, is
+nominal: it overstates the real remaining lifetime by that same span, so
+clients must refresh with margin (they already must, for clock skew). The
 password-reset decoy takes the same captured instant as the real mint, so
 `iat` cannot carry the account lookup's latency and answer the existence
 question the decoy refuses.

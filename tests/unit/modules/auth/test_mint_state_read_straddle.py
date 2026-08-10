@@ -39,6 +39,8 @@ Covered here:
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -48,6 +50,7 @@ import pytest
 
 from faultmaven.config.settings import AuthMode
 from faultmaven.modules.auth.api import auth as auth_routes
+from faultmaven.modules.auth.contracts import OAuthCodeDTO
 from faultmaven.modules.auth.domain.models.api_auth import (
     DevLoginRequest,
     TokenRefreshRequest,
@@ -60,6 +63,10 @@ from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     RS256JWTTokenGenerator,
     revocation_reason,
 )
+from faultmaven.modules.auth.domain.services.oauth_service import (
+    OAuthServiceImpl,
+)
+from faultmaven.modules.auth.domain.services.sso_login_service import SSOLoginService
 from tests.utils import InMemoryRevocationStore
 
 pytestmark = [pytest.mark.unit, pytest.mark.security, pytest.mark.asyncio]
@@ -97,8 +104,9 @@ def _hs256(store) -> HS256JWTTokenGenerator:
     )
 
 
-def _rs256(store) -> RS256JWTTokenGenerator:
-    """Built with an ephemeral key pair so nothing here is a usable key."""
+def _ephemeral_keypair() -> tuple[str, str]:
+    """One runtime-generated pair, shared module-wide: nothing committed is a
+    usable key, no test mutates key material, and one keygen replaces eight."""
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -116,9 +124,16 @@ def _rs256(store) -> RS256JWTTokenGenerator:
         )
         .decode()
     )
+    return private_pem, public_pem
+
+
+_PRIVATE_PEM, _PUBLIC_PEM = _ephemeral_keypair()
+
+
+def _rs256(store) -> RS256JWTTokenGenerator:
     return RS256JWTTokenGenerator(
-        private_key=private_pem,
-        public_key=public_pem,
+        private_key=_PRIVATE_PEM,
+        public_key=_PUBLIC_PEM,
         revocation_store=store,
         access_token_expire_minutes=ACCESS_MINUTES,
         refresh_token_expire_days=REFRESH_DAYS,
@@ -323,14 +338,22 @@ async def test_clearly_future_state_read_at_is_refused(algo):
 
 
 async def test_marginally_future_state_read_at_degrades_to_now():
-    """Sub-tolerance clock slew clamps to ``now`` — never a future stamp."""
+    """Sub-tolerance clock slew clamps to ``now`` — never a future stamp.
+
+    Bounded on BOTH sides, from instants captured around the mint: the upper
+    bound alone would pass a clamp that leaked the future value whenever the
+    clock crossed a second boundary mid-test, and would pass a clamp mutated
+    to return an arbitrarily old instant. ``degrades to now`` means now.
+    """
     generator = _hs256(InMemoryRevocationStore())
     ahead = datetime.now(timezone.utc) + timedelta(
         seconds=STATE_READ_AT_FUTURE_TOLERANCE_SECONDS - 1
     )
+    now_before = int(datetime.now(timezone.utc).timestamp())
     token = await generator.generate_access_token(_user(), state_read_at=ahead)
     now_after = int(datetime.now(timezone.utc).timestamp())
-    assert _claims(token)["iat"] <= now_after
+    iat = _claims(token)["iat"]
+    assert now_before <= iat <= now_after
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +383,13 @@ class _StraddlingUserStore:
         self._store = store
 
     async def _read(self, matches: bool) -> DevUser | None:
-        revoked_at = int(datetime.now(timezone.utc).timestamp())
+        now = datetime.now(timezone.utc)
+        revoked_at = int(now.timestamp())
         await self._store.revoke_user_tokens_before(self._user.user_id, revoked_at, TTL)
         # Stall into the second after the watermark, so anything stamped
-        # after this read observably postdates it.
-        while int(datetime.now(timezone.utc).timestamp()) <= revoked_at:
-            await asyncio.sleep(0.05)
+        # after this read observably postdates it. One computed sleep of the
+        # sub-second remainder, not a poll loop.
+        await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
         return self._user if matches else None
 
     async def get_user_by_username(self, username: str) -> DevUser | None:
@@ -459,3 +483,228 @@ async def test_refresh_that_straddles_a_revocation_mints_a_dead_pair():
 
     assert await generator.validate_access_token(result.access_token) is None
     assert await generator.validate_refresh_token(result.refresh_token) is None
+
+
+# ---------------------------------------------------------------------------
+# 7. Two-leg flows: the artifact carries (or implies) its first leg's basis
+# ---------------------------------------------------------------------------
+#
+# The SSO completion code and the OAuth authorization code are minted from
+# state read in an EARLIER request, and neither artifact is revocable (no
+# ``iat``, no watermark check). Capturing only at the exchange leg would let
+# a revoke-all landing between the legs be survived by a pair carrying the
+# pre-revocation tenant. The SSO payload carries the callback leg's capture;
+# the OAuth code's creation instant is derived from ``expires_at`` minus the
+# configured code TTL. Same simulated window as section 1: leg-1 basis 10s
+# ago, watermark 5s ago, exchange now — so an exchange-only capture (the
+# mutation) mints a SURVIVING pair and these go RED.
+
+
+async def test_sso_exchange_stamps_from_the_callback_legs_capture():
+    store = InMemoryRevocationStore()
+    generator = _hs256(store)
+    user = _dev_user()
+
+    callback_capture = datetime.now(timezone.utc) - STRADDLE_READ_AGE
+    watermark = datetime.now(timezone.utc) - STRADDLE_WATERMARK_AGE
+    await store.revoke_user_tokens_before(user.user_id, int(watermark.timestamp()), TTL)
+
+    class _LoginStore:
+        async def consume_login(self, code):
+            return {
+                "user_id": user.user_id,
+                "state_read_at": callback_capture.isoformat(),
+            }
+
+    class _Users:
+        async def get(self, user_id):
+            return user
+
+    class _Sessions:
+        async def create_session(self, **kwargs):
+            return (SimpleNamespace(session_id="session-831-sso"), False)
+
+    service = SSOLoginService(
+        identity_provider=SimpleNamespace(provider_name="test-idp"),
+        ephemeral_store=_LoginStore(),
+        user_repository=_Users(),
+        token_generator=generator,
+        session_service=_Sessions(),
+        dashboard_url="https://dashboard.example",
+        access_token_expires_in=ACCESS_MINUTES * 60,
+    )
+
+    result = await service.exchange("completion-code")
+
+    assert result is not None
+    assert await generator.validate_access_token(result.access_token) is None
+    assert await generator.validate_refresh_token(result.refresh_token) is None
+
+
+async def test_sso_exchange_capture_covers_its_own_reads_without_a_leg1_stamp():
+    """A payload from a pre-#831 writer (no callback capture) still gets the
+    exchange-entry capture: a revocation landing during the exchange leg's own
+    user-row read kills the pair."""
+    store = InMemoryRevocationStore()
+    generator = _hs256(store)
+    user = _dev_user()
+
+    class _LoginStore:
+        async def consume_login(self, code):
+            return {"user_id": user.user_id}
+
+    class _StraddlingUsers:
+        async def get(self, user_id):
+            now = datetime.now(timezone.utc)
+            await store.revoke_user_tokens_before(
+                user.user_id, int(now.timestamp()), TTL
+            )
+            await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
+            return user
+
+    class _Sessions:
+        async def create_session(self, **kwargs):
+            return (SimpleNamespace(session_id="session-831-sso2"), False)
+
+    service = SSOLoginService(
+        identity_provider=SimpleNamespace(provider_name="test-idp"),
+        ephemeral_store=_LoginStore(),
+        user_repository=_StraddlingUsers(),
+        token_generator=generator,
+        session_service=_Sessions(),
+        dashboard_url="https://dashboard.example",
+        access_token_expires_in=ACCESS_MINUTES * 60,
+    )
+
+    result = await service.exchange("completion-code")
+
+    assert result is not None
+    assert await generator.validate_access_token(result.access_token) is None
+    assert await generator.validate_refresh_token(result.refresh_token) is None
+
+
+async def test_oauth_exchange_stamps_from_the_authorize_legs_instant():
+    store = InMemoryRevocationStore()
+    generator = _hs256(store)
+
+    code_verifier = "straddle-verifier-" + "x" * 32
+    code_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+    expiry_seconds = 600
+    code_created = datetime.now(timezone.utc) - STRADDLE_READ_AGE
+    code_data = OAuthCodeDTO(
+        code="authz-code-831",
+        user_id=USER_ID,
+        redirect_uri="https://callback.example/cb",
+        code_challenge=code_challenge,
+        expires_at=code_created + timedelta(seconds=expiry_seconds),
+        used=False,
+    )
+
+    watermark = datetime.now(timezone.utc) - STRADDLE_WATERMARK_AGE
+    await store.revoke_user_tokens_before(USER_ID, int(watermark.timestamp()), TTL)
+
+    class _CodeRepo:
+        async def get_code(self, code):
+            return code_data
+
+        async def claim_code(self, code):
+            return True
+
+    class _Users:
+        async def get(self, user_id):
+            return _user()
+
+    settings = SimpleNamespace(
+        oauth_code_expiry_seconds=expiry_seconds,
+        jwt_access_token_expire_minutes=ACCESS_MINUTES,
+        jwt_refresh_token_expire_days=REFRESH_DAYS,
+    )
+    service = OAuthServiceImpl(_CodeRepo(), _Users(), generator, settings)
+
+    dto = await service.exchange_code_for_token(
+        code="authz-code-831",
+        code_verifier=code_verifier,
+        redirect_uri="https://callback.example/cb",
+    )
+
+    assert await generator.validate_access_token(dto.access_token) is None
+    assert await generator.validate_refresh_token(dto.refresh_token) is None
+
+
+async def test_oauth_refresh_grant_capture_covers_its_own_reads():
+    """The refresh grant has no leg-1 artifact (the presented token is itself
+    watermark-checked), but its own capture must precede its reads: a
+    revocation landing during the user-row load kills the rotated pair."""
+    store = InMemoryRevocationStore()
+    generator = _hs256(store)
+    user = _user()
+
+    old_refresh = await generator.generate_refresh_token(
+        user, state_read_at=datetime.now(timezone.utc) - STRADDLE_READ_AGE
+    )
+
+    class _StraddlingUsers:
+        async def get(self, user_id):
+            now = datetime.now(timezone.utc)
+            await store.revoke_user_tokens_before(
+                user.user_id, int(now.timestamp()), TTL
+            )
+            await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
+            return user
+
+    settings = SimpleNamespace(
+        oauth_code_expiry_seconds=600,
+        jwt_access_token_expire_minutes=ACCESS_MINUTES,
+        jwt_refresh_token_expire_days=REFRESH_DAYS,
+    )
+    service = OAuthServiceImpl(None, _StraddlingUsers(), generator, settings)
+
+    dto = await service.refresh_access_token(
+        refresh_token=old_refresh, client_id="faultmaven-copilot"
+    )
+
+    assert await generator.validate_access_token(dto.access_token) is None
+    assert await generator.validate_refresh_token(dto.refresh_token) is None
+
+
+async def test_provisioning_capture_covers_the_account_read():
+    """A revocation landing during provisioning's account read yields a
+    credential that is already dead — never one that survives the revoke."""
+    from faultmaven.modules.auth.domain.services.service_account_provisioning import (
+        SERVICE_ACCOUNT_KIND,
+        provision_service_account_credential,
+    )
+
+    store = InMemoryRevocationStore()
+    generator = _hs256(store)
+    user = SimpleNamespace(
+        user_id=USER_ID,
+        is_active=True,
+        username="svc-straddler",
+        email="svc@local.faultmaven",
+        roles=["user"],
+        organization_id=None,
+        account_kind=SERVICE_ACCOUNT_KIND,
+        display_name="svc",
+    )
+
+    class _StraddlingUserStore:
+        async def get_user_by_username(self, username):
+            now = datetime.now(timezone.utc)
+            await store.revoke_user_tokens_before(
+                user.user_id, int(now.timestamp()), TTL
+            )
+            await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
+            return user
+
+    credential = await provision_service_account_credential(
+        username="svc-straddler",
+        user_store=_StraddlingUserStore(),
+        token_generator=generator,
+    )
+
+    assert await generator.validate_refresh_token(credential.refresh_token) is None

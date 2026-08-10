@@ -166,14 +166,10 @@ class FakeAuditRepository:
 
 
 class FakeTokenGenerator:
-    async def generate_access_token(
-        self, user, state_read_at=datetime.now(timezone.utc)
-    ):
+    async def generate_access_token(self, user, *, state_read_at):
         return f"access-{user.user_id}"
 
-    async def generate_refresh_token(
-        self, user, state_read_at=datetime.now(timezone.utc)
-    ):
+    async def generate_refresh_token(self, user, *, state_read_at):
         return f"refresh-{user.user_id}"
 
 
@@ -326,7 +322,9 @@ async def test_callback_happy_path_issues_completion_code(store):
     assert params["return_to"] == "/cases"
     assert "error" not in params
     # The completion code is real and single-use in the store.
-    assert await store.consume_login(params["code"]) == {"user_id": "u-1"}
+    payload = await store.consume_login(params["code"])
+    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload == {"user_id": "u-1"}
     assert await store.consume_login(params["code"]) is None
 
 
@@ -498,7 +496,9 @@ async def test_callback_unknown_subject_provisions_user(store):
     # Never admin (D5): every JIT user gets exactly the base role.
     assert user.roles == ["user"]
     # The completion code points at the new user; no redundant profile sync.
-    assert await store.consume_login(params["code"]) == {"user_id": user.user_id}
+    payload = await store.consume_login(params["code"])
+    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload == {"user_id": user.user_id}
     assert repo.updated == []
 
 
@@ -587,7 +587,9 @@ async def test_jit_create_race_falls_back_to_concurrent_row(store):
     redirect = await callback(service, state=start.state)
 
     params = redirect_params(redirect)
-    assert await store.consume_login(params["code"]) == {"user_id": "u-won"}
+    payload = await store.consume_login(params["code"])
+    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload == {"user_id": "u-won"}
 
 
 # =============================================================================
@@ -697,9 +699,9 @@ async def test_audit_write_failure_does_not_fail_the_login(store):
     params = redirect_params(redirect)
     assert "error" not in params
     assert len(repo.created) == 1
-    assert await store.consume_login(params["code"]) == {
-        "user_id": repo.created[0].user_id
-    }
+    payload = await store.consume_login(params["code"])
+    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload == {"user_id": repo.created[0].user_id}
 
 
 async def test_no_audit_repository_is_fine(store):

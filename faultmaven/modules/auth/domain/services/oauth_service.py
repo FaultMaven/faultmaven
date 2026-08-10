@@ -223,9 +223,7 @@ class OAuthServiceImpl(IOAuthService):
         """
         start_time = time.time()
 
-        # Pre-read capture for the mints below (#831): before the code lookup
-        # and the user load, so a revocation landing during either kills the
-        # pair minted from what they read.
+        # #831: capture before this method's reads (code row, user row).
         state_read_at = datetime.now(timezone.utc)
 
         logger.info(
@@ -260,6 +258,28 @@ class OAuthServiceImpl(IOAuthService):
                 "Invalid or expired authorization code",
                 error_code="INVALID_AUTHORIZATION_CODE",
             )
+
+        # The claims also derive from state the AUTHORIZE leg read — the
+        # organization bound to the code (#872) — up to the code's TTL earlier.
+        # The code is not revocable (no iat, no watermark check), so the stamp
+        # must be the older of the two legs' bases, or a revoke-all landing
+        # between authorize and exchange would be survived by a pair carrying
+        # the pre-revocation tenant (#831). The authorize leg's instant is
+        # derived rather than stored: ``create_authorization_code`` computes
+        # ``expires_at = now + oauth_code_expiry_seconds`` from the same
+        # setting read here, so the difference reconstructs its ``now``. The
+        # residue is the milliseconds between the authorize handler's own
+        # state reads and that computation — versus the full code TTL without
+        # this. If the expiry setting changes while a code is in flight the
+        # derived instant shifts by the delta; the ``min`` still caps the
+        # stamp at this leg's entry, so the failure mode is a partially
+        # covered authorize leg for codes spanning the reconfiguration, never
+        # a stamp later than this handler's own capture.
+        state_read_at = min(
+            state_read_at,
+            code_data.expires_at
+            - timedelta(seconds=self.settings.oauth_code_expiry_seconds),
+        )
 
         # Check if code already used (replay attack prevention)
         if code_data.used:
@@ -527,8 +547,10 @@ class OAuthServiceImpl(IOAuthService):
         Raises:
             InvalidGrantError: If refresh token invalid, expired, or revoked
         """
-        # Pre-read capture for the mints below (#831): before the presented
-        # token's validation and the user load, as POST /auth/refresh does.
+        # #831: capture before the presented token's validation and the user
+        # load, as POST /auth/refresh does. No leg-1 instant to merge here:
+        # the presented refresh token is itself watermark-checked, so the
+        # artifact this grant redeems is already revocable.
         state_read_at = datetime.now(timezone.utc)
 
         logger.info(

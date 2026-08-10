@@ -73,7 +73,7 @@ class _FakeUserStore:
 def _token_generator(expires_in_days: int = 7):
     """A generator that mints a real, decodable refresh JWT."""
 
-    async def generate_refresh_token(user, state_read_at=datetime.now(timezone.utc)):
+    async def generate_refresh_token(user, *, state_read_at):
         return jwt.encode(
             {
                 "sub": user.user_id,

@@ -286,9 +286,8 @@ async def local_login(
     """
     correlation_id = str(uuid.uuid4())
 
-    # Captured before the first read of any state the tokens derive from, so a
-    # revocation landing between that read and the mint kills what we mint
-    # (#831). Every mint below stamps ``iat`` from this.
+    # #831: captured before the first read of any state the tokens derive
+    # from (the user row); the mints below stamp ``iat`` from it.
     state_read_at = datetime.now(timezone.utc)
 
     try:
@@ -457,7 +456,7 @@ async def local_register(
     """
     correlation_id = str(uuid.uuid4())
 
-    # Pre-read capture for the mints below (#831) — see dev_login.
+    # #831: capture before the first store read — see local_login.
     state_read_at = datetime.now(timezone.utc)
 
     try:
@@ -597,10 +596,9 @@ async def refresh_tokens(
     """
     correlation_id = str(uuid.uuid4())
 
-    # Pre-read capture for the mints below (#831). Deliberately before the
-    # refresh-token validation, not just the user load: the presented token's
-    # still-unrevoked status is itself state this handler reads, and a
-    # revocation landing after that read must kill the pair minted from it.
+    # #831: capture before the refresh-token validation, not just the user
+    # load — the presented token's still-unrevoked status is itself state
+    # this handler reads.
     state_read_at = datetime.now(timezone.utc)
 
     try:

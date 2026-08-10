@@ -290,6 +290,12 @@ class SSOLoginService:
         client_ip: str | None = None,
         user_agent: str | None = None,
     ) -> str:
+        # #831: pre-read capture for THIS leg's state reads (org resolution,
+        # user provisioning). It rides the login payload so ``exchange`` can
+        # stamp the tokens from whichever leg read state first — the
+        # completion code itself is not revocable, so it must carry its basis.
+        state_read_at = datetime.now(UTC)
+
         if not state or len(state) > _MAX_STATE_LENGTH:
             logger.warning("sso_callback_rejected", reason="state_invalid")
             return self._dashboard_redirect(error=ERROR_STATE_INVALID)
@@ -378,7 +384,10 @@ class SSOLoginService:
             await self._sync_profile(user, identity)
 
         completion_code = secrets.token_urlsafe(32)
-        login_payload: dict[str, Any] = {"user_id": user.user_id}
+        login_payload: dict[str, Any] = {
+            "user_id": user.user_id,
+            "state_read_at": state_read_at.isoformat(),
+        }
         if organization is not None:
             # Mint-time tenancy rides the completion code: the user row has no
             # organization column, so this is how ``exchange`` knows which org
@@ -524,14 +533,30 @@ class SSOLoginService:
         or deactivated since the callback) — the router maps None to a uniform
         401 so the endpoint cannot be used to distinguish failure causes.
         """
-        # Pre-read capture for the mints below (#831): before the login
-        # payload is consumed and the user row re-read, so a revocation
-        # landing during either kills the pair minted from what they read.
+        # #831: capture before this leg's reads (login payload, user row).
         state_read_at = datetime.now(UTC)
 
         payload = await self._store.consume_login(code)
         if payload is None:
             return None
+
+        # The claims also derive from state the CALLBACK leg read (the org
+        # resolution stored in this payload), up to LOGIN_CODE_TTL_SECONDS
+        # earlier — so the stamp must be the older of the two legs' captures,
+        # or a revoke-all landing between the legs would be survived by a pair
+        # carrying the pre-revocation tenant (#831). Absent only for payloads
+        # written by a pre-#831 process during a rolling deploy; the 60s TTL
+        # bounds that window and this leg's capture still applies.
+        callback_read_at = payload.get("state_read_at")
+        if callback_read_at:
+            try:
+                state_read_at = min(
+                    state_read_at, datetime.fromisoformat(callback_read_at)
+                )
+            except ValueError:
+                logger.warning(
+                    "sso_exchange_bad_state_read_at", user_id=payload.get("user_id")
+                )
 
         user = await self._users.get(payload["user_id"])
         if (

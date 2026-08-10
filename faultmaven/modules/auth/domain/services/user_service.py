@@ -309,11 +309,9 @@ class UserService(BaseService):
 
         self.logger.debug(f"Password reset requested for: {email}")
 
-        # Pre-read capture for the mint (#831): before the account lookup, so
-        # a revoke-all landing during it kills the reset link minted from what
-        # it read — reset tokens are watermark-checked at redemption (#829).
-        # One instant for both branches: real and decoy mints must not differ
-        # by the lookup's latency in ``iat``.
+        # #831: capture before the account lookup. One instant for both
+        # branches — real and decoy mints must not differ by the lookup's
+        # latency in ``iat``.
         state_read_at = datetime.now(timezone.utc)
 
         mint = await self._mint_reset_token(signer, email, state_read_at)

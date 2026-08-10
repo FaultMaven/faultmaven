@@ -136,9 +136,7 @@ async def provision_service_account_credential(
     account_created = False
     account_kind_corrected = False
 
-    # Pre-read capture for the mint below (#831): before the account is read
-    # (or created), so a revocation landing during provisioning kills the
-    # credential minted from what it read.
+    # #831: capture before the account is read (or created).
     state_read_at = datetime.now(timezone.utc)
 
     user = await user_store.get_user_by_username(username)
