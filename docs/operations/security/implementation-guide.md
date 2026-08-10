@@ -203,15 +203,29 @@ def add_jitter(base_time: float) -> float:
 
 ### Hash Security
 
+Use a password KDF (PBKDF2, scrypt, argon2) only where the input really is a
+secret and the digest really is exposed — password storage. Do not reach for one
+to hash request content.
+
 ```python
-# Prevent hash collision attacks
-def secure_hash(content: str, salt: str) -> str:
-    """Cryptographically secure hashing with salt"""
-    return hashlib.pbkdf2_hmac('sha256',
-                              content.encode(),
-                              salt.encode(),
-                              100000).hex()
+# Content addressing: plain SHA-256 over length-prefixed components.
+# Length prefixes, not delimiters, so no component's content can pose as a
+# field boundary.
+def content_hash(*components: str) -> str:
+    digest = hashlib.sha256()
+    for component in components:
+        encoded = component.encode("utf-8")
+        digest.update(f"{len(encoded)}:".encode("ascii"))
+        digest.update(encoded)
+    return digest.hexdigest()
 ```
+
+A KDF here is not free caution — it is a live hazard. The dedup hasher used
+PBKDF2-HMAC-SHA256 at 100,000 iterations to derive a Redis key from request
+content: ~72–85 ms per call, run **synchronously inside async dispatch**, so it
+stalled the whole event loop rather than one request. The digest was never a
+secret and never returned to a client, and the salt was a literal in the source,
+so it bought nothing for the cost.
 
 ## Monitoring Integration
 
