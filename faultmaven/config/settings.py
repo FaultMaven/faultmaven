@@ -1320,7 +1320,7 @@ class AuthSettings(BaseSettings):
 
 
 class ProtectionSettings(BaseSettings):
-    """Unified protection configuration - PII, behavioral, and ML protection"""
+    """Unified protection configuration - PII redaction and request protection"""
 
     # Basic Protection Control
     # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio)
@@ -1331,7 +1331,6 @@ class ProtectionSettings(BaseSettings):
     # guarantee can set PROTECTION_FAIL_OPEN=true.
     fail_open: bool = Field(default=False, validation_alias="PROTECTION_FAIL_OPEN")
     basic_protection_enabled: bool = Field(default=False)
-    intelligent_protection_enabled: bool = Field(default=False)
 
     # PII Sanitization Control
     # When True: Always sanitize PII before sending to LLM (safer, recommended for external LLMs)
@@ -1372,31 +1371,6 @@ class ProtectionSettings(BaseSettings):
             "US_SSN",
         ],
     )
-
-    # Behavioral Analysis (merged from EnhancedProtectionSettings)
-    behavioral_analysis_enabled: bool = Field(default=True)
-    behavior_analysis_window: int = Field(default=3600)
-    behavior_pattern_threshold: float = Field(default=0.8)
-
-    # ML Anomaly Detection (merged from EnhancedProtectionSettings)
-    ml_anomaly_detection_enabled: bool = Field(default=True)
-    ml_model_path: str = Field(default="/tmp/faultmaven_ml")
-    ml_training_enabled: bool = Field(default=True)
-    ml_online_learning_enabled: bool = Field(default=True)
-
-    # Circuit Breaker (merged from EnhancedProtectionSettings)
-    smart_circuit_breakers_enabled: bool = Field(default=True)
-    circuit_failure_threshold: int = Field(default=5)
-    circuit_timeout_seconds: int = Field(default=60)
-
-    # Reputation System (merged from EnhancedProtectionSettings)
-    reputation_system_enabled: bool = Field(default=True)
-    reputation_decay_rate: float = Field(default=0.05)
-    reputation_recovery_threshold: float = Field(default=0.1)
-
-    # Monitoring Intervals (merged from EnhancedProtectionSettings)
-    protection_monitoring_interval: int = Field(default=300)
-    protection_cleanup_interval: int = Field(default=3600)
 
     model_config = {"env_prefix": "", "extra": "ignore"}
 

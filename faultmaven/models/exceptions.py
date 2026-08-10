@@ -70,15 +70,6 @@ class DataValidationError(FaultMavenError):
         super().__init__(message, error_code or "DATA_VALIDATION_ERROR", context)
 
 
-class ProtectionSystemError(FaultMavenError):
-    """Protection system failures"""
-
-    def __init__(
-        self, message: str, error_code: str = None, context: Dict[str, Any] = None
-    ):
-        super().__init__(message, error_code or "PROTECTION_SYSTEM_ERROR", context)
-
-
 class KnowledgeBaseError(FaultMavenError):
     """Knowledge base and RAG system errors"""
 

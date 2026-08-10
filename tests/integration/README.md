@@ -1,25 +1,22 @@
 # FaultMaven Integration Tests
 
-This directory contains integration tests that validate cross-layer functionality and complete system workflows after the major test architecture overhaul, featuring **new architecture workflow testing** with **Clean Architecture** and **dependency injection** patterns.
+This directory contains integration tests that validate cross-layer functionality and complete system workflows, using **Clean Architecture** and **dependency injection** patterns.
 
-## Overview - Post-Architecture Overhaul
+## Overview
 
 This directory contains integration test infrastructure focused on:
 
-1. **New Architecture Workflows** - End-to-end testing of Clean Architecture patterns with DI container
-2. **Container-Based Integration** - Cross-layer validation using dependency injection container
-3. **Interface Compliance Testing** - Integration testing with proper interface contracts
-4. **Mock API Infrastructure** - External service simulation for testing without dependencies
-5. **Cross-Layer Test Utilities** - Shared fixtures and test infrastructure with container support
+1. **Container-Based Integration** - Cross-layer validation using dependency injection container
+2. **Interface Compliance Testing** - Integration testing with proper interface contracts
+3. **Mock API Infrastructure** - External service simulation for testing without dependencies
+4. **Cross-Layer Test Utilities** - Shared fixtures and test infrastructure with container support
 
-## Current Test Structure - After Architecture Overhaul
+## Current Test Structure
 
-The integration directory contains comprehensive integration test infrastructure with new architecture workflow testing:
-
-### New Architecture Integration Tests
+The integration directory contains:
 
 #### `test_architectural_compliance.py` ✅ NEW (2025-10-24)
-Comprehensive spec compliance testing with 17 tests validating [case-and-session-concepts.md v2.0](../../docs/architecture/case-and-session-concepts.md):
+Comprehensive spec compliance testing with 17 tests validating [case-and-session-concepts.md v2.0](../../docs/architecture/case-and-session/case-and-session-concepts.md):
 
 - **Session Resumption Tests** (3 tests) - client_id-based session resumption validation
 - **Multi-Device Support Tests** (2 tests) - Concurrent sessions on multiple devices
@@ -39,23 +36,6 @@ Comprehensive spec compliance testing with 17 tests validating [case-and-session
 .venv/bin/pytest tests/integration/test_architectural_compliance.py::TestArchitecturalCompliance::test_session_resumption_with_same_client_id -v
 ```
 
-#### `test_new_architecture_workflows.py` ✅
-Comprehensive end-to-end architecture testing with 18+ tests across 5 test classes:
-
-- **TestSettingsContainerServicesFlow** (4 tests) - Settings → Container → Services integration flow
-- **TestEndToEndWorkflows** (4 tests) - Complete troubleshooting workflows through all layers
-- **TestErrorHandlingAcrossLayers** (4 tests) - Cross-layer error propagation and recovery
-- **TestInterfaceComplianceInRealScenarios** (3 tests) - Interface compliance in production scenarios
-- **TestCrossLayerCommunicationPatterns** (3 tests) - Layer communication and data flow patterns
-
-**Key Features Tested**:
-- Complete troubleshooting workflow from query to response
-- Settings system integration with container initialization
-- Multi-session case continuity with proper state management
-- Error handling and graceful degradation across architectural layers
-- Interface compliance validation in real usage scenarios
-- Cross-layer communication patterns and data flow
-
 ### Additional Integration Tests
 
 #### `test_kb_ingestion_and_indexing.py`
@@ -63,15 +43,6 @@ Knowledge base integration testing with vector store operations
 
 #### `test_readiness_and_redis.py`
 System readiness and Redis integration validation
-
-#### `test_case_persistence_end_to_end.py`
-Complete case persistence workflow testing
-
-#### `test_system_performance_integration.py`
-Performance integration testing across architectural layers
-
-#### `test_api_compliance_integration.py`
-API compliance and schema validation integration testing
 
 ### Core Infrastructure Files
 
@@ -170,21 +141,6 @@ with no PostgreSQL — now **fails** instead of reporting green with skips.
 Provide the service (a real `DATABASE_URL`, a reachable Redis) or narrow the
 selection so the run stops claiming to cover it. Mixed runs, where some tests
 pass and environment-dependent ones skip, stay green.
-
-**Specific Integration Test Categories**:
-```bash
-# End-to-end troubleshooting workflow testing
-pytest tests/integration/test_new_architecture_workflows.py::TestEndToEndWorkflows -v
-
-# Settings and container integration flow
-pytest tests/integration/test_new_architecture_workflows.py::TestSettingsContainerServicesFlow -v
-
-# Cross-layer error handling validation
-pytest tests/integration/test_new_architecture_workflows.py::TestErrorHandlingAcrossLayers -v
-
-# Interface compliance in production scenarios
-pytest tests/integration/test_new_architecture_workflows.py::TestInterfaceComplianceInRealScenarios -v
-```
 
 ### Mock Server Testing
 
@@ -295,7 +251,7 @@ async def test_async_operation():
 
 **Mock Server Port Conflicts**: Run mock server tests individually
 ```bash
-pytest test_file.py::test_specific_mock_test -v -s
+pytest tests/integration/<file>.py::<test_name> -v -s
 ```
 
 **Logging Capture Issues**: Use proper logging fixtures
@@ -374,6 +330,5 @@ When adding new integration tests:
 ## Resources
 
 - [Main Test Suite Documentation](../README.md)
-- [Test Doubles and Utilities](../test_doubles.py)
 - [pytest-asyncio Documentation](https://pytest-asyncio.readthedocs.io/)
 - [FaultMaven Clean Architecture Guide](../../docs/architecture/)

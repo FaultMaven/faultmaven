@@ -284,10 +284,6 @@ class TestConfigurationDefaults:
         assert (
             ProtectionSettings.model_fields["basic_protection_enabled"].default is False
         )
-        assert (
-            ProtectionSettings.model_fields["intelligent_protection_enabled"].default
-            is False
-        )
 
     def test_community_performance_monitoring_defaults(self, monkeypatch):
         """Verify performance monitoring is disabled by default (code defaults)."""

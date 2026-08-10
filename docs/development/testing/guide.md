@@ -45,48 +45,31 @@ tests/
 ├── unit/                   # Architecture Component Testing (DI container, interfaces)
 │   ├── test_container_foundation.py # DI container foundation
 │   ├── test_dependency_injection.py # DI patterns validation
-│   ├── test_feature_flags.py       # Feature flag management
-│   ├── test_interface_compliance_new.py # Interface compliance validation
-│   ├── test_tools_registry.py      # Tools registry testing
-│   ├── test_settings_system_comprehensive.py # NEW: Settings system (37+ tests)
 │   └── test_container_integration_comprehensive.py # NEW: Container integration (38+ tests)
 ├── integration/            # Cross-Layer Integration Testing
 │   ├── conftest.py                 # Integration test fixtures
 │   ├── mock_servers.py             # Mock API servers
 │   ├── test_kb_ingestion_and_indexing.py # Knowledge base integration
 │   ├── test_readiness_and_redis.py # System readiness testing
-│   └── test_new_architecture_workflows.py # NEW: Architecture workflows (18+ tests)
 ├── performance/            # Performance Testing (Container overhead)
 │   ├── test_logging_overhead.py    # Logging performance validation
 │   └── test_context_overhead.py    # Context creation performance
 └── conftest.py             # Global test configuration and fixtures
 ```
 
-### New Comprehensive Test Files (130+ Tests)
+### Comprehensive Test Files
 
-**1. Settings System Testing** (`tests/unit/test_settings_system_comprehensive.py`)
-- 37+ tests across 10 test classes covering complete configuration system
-- Environment variable processing, validation, and integration
-- Production vs development configuration scenarios
-- Error handling and configuration recovery
-
-**2. LLM Registry Testing** (`tests/infrastructure/test_llm_registry_comprehensive.py`)
+**1. LLM Registry Testing** (`tests/infrastructure/test_llm_registry_comprehensive.py`)
 - 37+ tests across 7 test classes covering centralized provider management
 - Multi-provider fallback chains and health monitoring
 - API key security and provider registration
 - Registry state management and concurrency safety
 
-**3. Container Integration Testing** (`tests/unit/test_container_integration_comprehensive.py`)
+**2. Container Integration Testing** (`tests/unit/test_container_integration_comprehensive.py`)
 - 38+ tests across 9 test classes covering complete DI container system
 - Service lifecycle management and dependency resolution
 - Interface compliance and injection patterns
 - Container health monitoring and diagnostics
-
-**4. Architecture Workflow Testing** (`tests/integration/test_new_architecture_workflows.py`)
-- 18+ tests across 5 test classes covering end-to-end integration
-- Settings → Container → Services workflow validation
-- Cross-layer error handling and communication patterns
-- Interface compliance in production scenarios
 
 ## Clean Architecture Test Categories
 
@@ -117,11 +100,9 @@ SKIP_SERVICE_CHECKS=true pytest tests/unit/ -v        # Unit tests with containe
 pytest tests/services/ -v                            # Service tests with interface injection
 pytest tests/integration/ -v                         # Cross-layer workflow validation
 
-# New comprehensive architecture tests (130+ tests)
-pytest tests/unit/test_settings_system_comprehensive.py -v           # Settings system
+# Comprehensive architecture test suites
 pytest tests/infrastructure/test_llm_registry_comprehensive.py -v    # LLM registry
 pytest tests/unit/test_container_integration_comprehensive.py -v     # Container integration
-pytest tests/integration/test_new_architecture_workflows.py -v       # Architecture workflows
 
 # Performance testing with container overhead validation
 RUN_PERFORMANCE_TESTS=true pytest tests/performance/ -v
