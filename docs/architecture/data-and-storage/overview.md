@@ -73,9 +73,6 @@ For the data-type × backend × deployment breakdown, see:
              │    ├──> File system (model weights)
              │    └──> PostgreSQL (metadata)
              │
-             ├──> ReputationEngine
-             │    └──> Redis (reputation state)
-             │
              ├──> IntelligentCache
              │    ├──> L1: In-memory (< 1ms)
              │    ├──> L2: Redis (< 5ms)
