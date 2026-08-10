@@ -482,6 +482,21 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # An --enterprise-id that was passed but is empty is ambiguous, and the two
+    # readings are materially different: "put this under the enterprise I named"
+    # versus "resolve the enterprise from --slug". Falling through to the slug
+    # path silently joins — or creates — an enterprise the operator did not name,
+    # and an account under the wrong enterprise fails login closed
+    # (reason=enterprise_mismatch) and needs a manual migration to move. A bogus
+    # NON-empty id already refuses with LookupError; refusing the empty one keeps
+    # the boundary consistent instead of guessing. The documented kubectl recipe
+    # interpolates a shell variable here, which is exactly how it arrives empty.
+    if args.enterprise_id is not None and not args.enterprise_id.strip():
+        parser.error(
+            "--enterprise-id was given but is empty. Pass a real enterprise id, "
+            "or omit the flag entirely to resolve the enterprise from --slug."
+        )
+
     success = asyncio.run(
         provision(
             name=args.name,

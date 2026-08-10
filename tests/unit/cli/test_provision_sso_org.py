@@ -19,6 +19,7 @@ Exercised against a real in-memory SQLite engine built from the ORM metadata,
 so the refusals are checked against the schema that actually ships.
 """
 
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -289,6 +290,44 @@ async def test_the_default_team_is_created_once_then_resolved(session):
 
 
 # =============================================================================
+# The --enterprise-id argument boundary
+# =============================================================================
+
+
+def test_an_empty_enterprise_id_is_refused_not_guessed(monkeypatch, capsys):
+    """A bogus non-empty id refuses with LookupError, so an empty one must not
+    quietly mean something else. Falling through to slug resolution would put
+    the tenant under an enterprise the operator never named — recoverable only
+    by a manual account migration."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fm-provision-sso-org",
+            "--name",
+            "Acme",
+            "--slug",
+            "acme",
+            "--workos-org-id",
+            "org_01H",
+            "--enterprise-id",
+            "",
+        ],
+    )
+
+    def explode(*_a, **_kw):  # pragma: no cover - must never be reached
+        raise AssertionError("provision ran on an empty --enterprise-id")
+
+    monkeypatch.setattr(provision_sso_org, "provision", explode)
+
+    with pytest.raises(SystemExit) as exit_info:
+        provision_sso_org.main()
+
+    assert exit_info.value.code == 2  # argparse usage error, not a provisioning run
+    assert "--enterprise-id was given but is empty" in capsys.readouterr().err
+
+
+# =============================================================================
 # The role preflight (#887) — refuses before any write
 # =============================================================================
 
@@ -358,6 +397,13 @@ def provision_against(monkeypatch, session):
     The preflight is a no-op here (SQLite has no RLS, and the role posture is
     covered above); what this exercises is the alarm condition, which nothing
     reached before because both preflight tests stop at the session boundary.
+
+    The stub reproduces `get_db_session`'s contract rather than just yielding —
+    commit on clean exit, rollback and re-raise on exception. Without that, a
+    refusal changed from `raise` to `return False` would pass every test here
+    while committing a half-provisioned tenant, which is precisely the hazard
+    the comment above the session block claims to prevent. The rollback is a
+    real SQLite one; only the RLS the dialect lacks is out of scope.
     """
 
     async def allow(**_kwargs):
@@ -365,7 +411,12 @@ def provision_against(monkeypatch, session):
 
     @asynccontextmanager
     async def lend_session(*_a, **_kw):
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
     monkeypatch.setattr(
         provision_sso_org, "assert_provisioning_db_role_bypasses_rls", allow
@@ -448,6 +499,44 @@ async def test_an_empty_enterprise_id_still_warns_about_the_parent(
 
     assert ok is True
     assert "UNDER AN EXISTING ENTERPRISE" in capsys.readouterr().out
+
+
+async def test_a_refusal_leaves_no_half_provisioned_tenant(
+    provision_against, session, capsys
+):
+    """`provision` creates the enterprise, organization and team *before* it
+    learns the mapping is refused. Every refusal therefore raises out of the
+    session block rather than returning from inside it — returning would let
+    `get_db_session` commit a tenant with no mapping, the state that makes the
+    next run's slug lookup dangerous."""
+    from sqlalchemy import select
+
+    await _seed_mapping(session, "org_TAKEN", ORG_B)
+
+    ok = await provision_against(
+        name="Brand New",
+        slug="brand-new",
+        workos_org_id="org_TAKEN",
+        enterprise_id=None,
+    )
+
+    assert ok is False
+    assert (
+        "already mapped to a different FaultMaven organization"
+        in capsys.readouterr().out
+    )
+    # The enterprise/organization/team this run got as far as creating are gone.
+    survivors = (
+        (
+            await session.execute(
+                select(EnterpriseModel).where(EnterpriseModel.slug == "brand-new")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert survivors == []
+    assert await _mapping_rows(session) == [("workos", "org_TAKEN", ORG_B)]
 
 
 async def test_an_idempotent_re_run_stays_quiet(provision_against, capsys):
