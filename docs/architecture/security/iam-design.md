@@ -302,7 +302,7 @@ error (the #767 posture: never report a revocation that did not land).
 **`iat` is stamped from a pre-read instant, not from mint time (#831).**
 Persist-then-revoke closes the window a login could complete entirely inside,
 but not a request that *straddles* the whole sequence: one that reads the user
-row (old password hash, old roles) or validates a still-valid refresh token,
+row (old roles, old active flag) or validates a still-valid refresh token,
 loses the CPU while the admin action persists and watermarks, and only then
 mints. Stamped at mint time, that token's `iat` postdates the watermark and
 survives it while carrying pre-change state. So every
@@ -338,8 +338,12 @@ window bounded by the 60-second login-code TTL.
 
 The cost of pre-read stamping is that a token's effective lifetime is
 shortened by the span between its basis and the mint — sub-second on the
-single-request flows (dominated by the bcrypt verify on password flows), up
-to the artifact's TTL on a slowly-redeemed two-leg flow — and the
+single-request flows, up to the artifact's TTL on a slowly-redeemed two-leg
+flow. The OAuth exchange refuses a code whose basis is older than the
+access-token lifetime (the effective redemption window is min(code TTL,
+access lifetime)) — minting from it would return an already-expired access
+token as success; the SSO flow cannot reach that state, since the completion
+code's 60-second TTL never exceeds the minimum access lifetime. And the
 `expires_in` response field, which reports the configured lifetime, is
 nominal: it overstates the real remaining lifetime by that same span, so
 clients must refresh with margin (they already must, for clock skew). The

@@ -13,7 +13,8 @@ exercised end to end.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timezone
+import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
@@ -326,6 +327,37 @@ async def test_callback_happy_path_issues_completion_code(store):
     assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
     assert payload == {"user_id": "u-1"}
     assert await store.consume_login(params["code"]) is None
+
+
+async def test_login_payload_capture_precedes_the_callback_reads(store):
+    """#831 produce side: the carried ``state_read_at`` is the callback's
+    ENTRY capture, taken before the org/user reads — not a stamp taken when
+    the payload is built. A revoke-all landing during those reads must
+    postdate the carried basis, or the exchange would mint a surviving pair
+    from pre-revocation state. RED if the capture moves after the reads (or
+    into the payload construction): the carried instant then lands after the
+    read finished, and the assertion inverts."""
+    user = make_user()
+
+    read_finished: dict[str, datetime] = {}
+
+    class SlowRepo(FakeUserRepository):
+        async def get_by_sso(self, provider, provider_id):
+            await asyncio.sleep(0.3)
+            read_finished["at"] = datetime.now(UTC)
+            return await super().get_by_sso(provider, provider_id)
+
+    service = build_service(
+        store, repo=SlowRepo(users_by_subject={("workos", "user_wos_123"): user})
+    )
+    start = await service.begin_login(None)
+
+    redirect = await callback(service, state=start.state)
+
+    params = redirect_params(redirect)
+    payload = await store.consume_login(params["code"])
+    carried = datetime.fromisoformat(payload["state_read_at"])
+    assert carried < read_finished["at"]
 
 
 async def test_callback_without_state_is_rejected(store):

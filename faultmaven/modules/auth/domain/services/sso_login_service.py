@@ -549,11 +549,18 @@ class SSOLoginService:
         # bounds that window and this leg's capture still applies.
         callback_read_at = payload.get("state_read_at")
         if callback_read_at:
+            # TypeError included deliberately: the plausible malformations — a
+            # naive isoformat string (parses fine, then ``min`` across
+            # naive/aware raises TypeError) or a non-string value (TypeError
+            # inside ``fromisoformat``) — are NOT ValueErrors, and an escape
+            # here would 500 the exchange after ``consume_login`` already
+            # burned the single-use code. Degrading to this leg's capture is
+            # the intended posture for a foreign payload.
             try:
                 state_read_at = min(
                     state_read_at, datetime.fromisoformat(callback_read_at)
                 )
-            except ValueError:
+            except (TypeError, ValueError):
                 logger.warning(
                     "sso_exchange_bad_state_read_at", user_id=payload.get("user_id")
                 )

@@ -97,7 +97,8 @@ def _mint_instant(state_read_at: datetime) -> datetime:
             "passed a derived time (an expiry, now + lifetime) instead of a "
             "pre-read capture, or the wall clock stepped backwards by more "
             "than the tolerance mid-request (NTP step, VM resume) — the "
-            "former is a code bug; the latter self-heals on retry"
+            "former is a code bug; the latter is transient (though a "
+            "single-use flow may need to restart)"
         )
     return min(state_read_at, now)
 

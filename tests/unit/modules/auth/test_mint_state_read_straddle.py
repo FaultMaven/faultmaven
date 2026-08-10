@@ -49,8 +49,9 @@ import jwt as pyjwt
 import pytest
 
 from faultmaven.config.settings import AuthMode
+from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.api import auth as auth_routes
-from faultmaven.modules.auth.contracts import OAuthCodeDTO
+from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO, OAuthCodeDTO
 from faultmaven.modules.auth.domain.models.api_auth import (
     DevLoginRequest,
     TokenRefreshRequest,
@@ -708,3 +709,150 @@ async def test_provisioning_capture_covers_the_account_read():
     )
 
     assert await generator.validate_refresh_token(credential.refresh_token) is None
+
+
+async def test_oauth_exchange_refuses_a_code_older_than_the_access_lifetime():
+    """A still-valid code whose derived basis predates the access lifetime is
+    refused: minting from it would return an ALREADY-EXPIRED access token as
+    success, with the full nominal expires_in. Reachable under legal config —
+    ``oauth_code_expiry_seconds`` may exceed the access lifetime. The
+    effective redemption window is min(code TTL, access lifetime)."""
+    store = InMemoryRevocationStore()
+    generator = HS256JWTTokenGenerator(
+        secret_key=SECRET,
+        revocation_store=store,
+        access_token_expire_minutes=5,
+        refresh_token_expire_days=REFRESH_DAYS,
+        issuer=ISSUER,
+        audience=AUDIENCE,
+    )
+
+    code_verifier = "stale-verifier-" + "x" * 32
+    code_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+    expiry_seconds = 600  # 10-minute codes, 5-minute access tokens
+
+    def code_with_remaining(seconds_left):
+        return OAuthCodeDTO(
+            code="stale-code-831",
+            user_id=USER_ID,
+            redirect_uri="https://callback.example/cb",
+            code_challenge=code_challenge,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=seconds_left),
+            used=False,
+        )
+
+    class _CodeRepo:
+        def __init__(self, dto):
+            self.dto = dto
+
+        async def get_code(self, code):
+            return self.dto
+
+        async def claim_code(self, code):
+            return True
+
+    class _Users:
+        async def get(self, user_id):
+            return _user()
+
+    settings = SimpleNamespace(
+        oauth_code_expiry_seconds=expiry_seconds,
+        jwt_access_token_expire_minutes=5,
+        jwt_refresh_token_expire_days=REFRESH_DAYS,
+    )
+
+    # Alive for another 250s, but issued 350s ago: basis + 300s lifetime is
+    # in the past, so the mint would be born dead. Refused.
+    stale = _CodeRepo(code_with_remaining(250))
+    service = OAuthServiceImpl(stale, _Users(), generator, settings)
+    with pytest.raises(InvalidGrantError):
+        await service.exchange_code_for_token(
+            code="stale-code-831",
+            code_verifier=code_verifier,
+            redirect_uri="https://callback.example/cb",
+        )
+
+    # Control: issued 50s ago — redeems, and the pair is live.
+    fresh = _CodeRepo(code_with_remaining(expiry_seconds - 50))
+    service = OAuthServiceImpl(fresh, _Users(), generator, settings)
+    dto = await service.exchange_code_for_token(
+        code="stale-code-831",
+        code_verifier=code_verifier,
+        redirect_uri="https://callback.example/cb",
+    )
+    assert await generator.validate_access_token(dto.access_token) is not None
+
+
+async def test_oauth_derivation_matches_the_authorize_leg():
+    """Pin the derivation's two ends together, through the REAL authorize and
+    exchange paths: ``create_authorization_code`` computes ``expires_at`` as
+    now + TTL from the same setting the exchange subtracts, so the minted
+    ``iat`` must reconstruct the authorize instant. RED if either end drifts
+    (authorize adds slack to ``expires_at``, or the exchange derives from a
+    different setting) — the fabricated-DTO tests above cannot see that."""
+    store = InMemoryRevocationStore()
+    generator = _hs256(store)
+
+    code_verifier = "coupling-verifier-" + "x" * 32
+    code_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+    expiry_seconds = 600
+
+    saved = {}
+
+    class _Repo:
+        async def save_code(self, dto):
+            saved[dto.code] = dto
+
+        async def get_code(self, code):
+            return saved.get(code)
+
+        async def claim_code(self, code):
+            return True
+
+    class _Users:
+        async def get(self, user_id):
+            return _user()
+
+    settings = SimpleNamespace(
+        oauth_code_expiry_seconds=expiry_seconds,
+        jwt_access_token_expire_minutes=ACCESS_MINUTES,
+        jwt_refresh_token_expire_days=REFRESH_DAYS,
+        oauth_allowed_clients=["faultmaven-copilot"],
+        oauth_require_https_redirect=True,
+        oauth_redirect_uri_patterns=[r"https://callback\.example/.*"],
+    )
+    service = OAuthServiceImpl(_Repo(), _Users(), generator, settings)
+
+    t_authorize = datetime.now(timezone.utc)
+    code = await service.create_authorization_code(
+        USER_ID,
+        OAuthAuthorizationDTO(
+            client_id="faultmaven-copilot",
+            redirect_uri="https://callback.example/cb",
+            state="coupling-state",
+            code_challenge=code_challenge,
+        ),
+    )
+
+    # End 1: the stored artifact's expires_at reconstructs the authorize
+    # instant under the exchange's formula.
+    derived = saved[code].expires_at - timedelta(seconds=expiry_seconds)
+    assert abs((derived - t_authorize).total_seconds()) < 2
+
+    # End 2: the minted iat is that instant (bounded by the clocks around it).
+    dto = await service.exchange_code_for_token(
+        code=code,
+        code_verifier=code_verifier,
+        redirect_uri="https://callback.example/cb",
+    )
+    iat = _claims(dto.access_token)["iat"]
+    now_after = int(datetime.now(timezone.utc).timestamp())
+    assert int(t_authorize.timestamp()) - 2 <= iat <= now_after

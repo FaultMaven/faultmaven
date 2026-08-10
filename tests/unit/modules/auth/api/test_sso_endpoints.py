@@ -15,7 +15,7 @@ deployment.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 
