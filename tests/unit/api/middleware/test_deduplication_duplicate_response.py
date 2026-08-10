@@ -1,7 +1,7 @@
 """A duplicate request must actually be answered as one.
 
 The middleware built a labelled 409 with a ``Retry-After`` and never reached it.
-``_check_redis_duplicate`` returned the stored value from Redis -- the *first
+``_check_redis_duplicate`` returned the value stored in Redis -- the *first
 request's timestamp*, which is what ``Retry-After`` is computed from -- and
 ``dispatch`` treated that truthy string as a cached response body::
 
@@ -20,9 +20,19 @@ removed rather than repaired -- ``cache_responses`` was ``False`` everywhere, an
 its one configured endpoint (``/api/v1/data/upload``) is multipart, which
 deduplication skips outright.
 
-These tests pin the outcome a client sees, not the internals, so the same defect
-cannot come back through a different route.
+**On writing these tests.** A "not a duplicate" assertion is worth nothing on its
+own: a *broken* duplicate check also returns 200, so such a test passes whether
+the feature works or not. The first version of this file had three of those, and
+they sailed through CI while the two real assertions failed. So every negative
+case here first proves deduplication is live in the same test, and the fixture
+fails the test if the middleware swallowed anything.
+
+The failure that exposed it is also why the Redis client is built inside the
+app's startup rather than at fixture time: ``fakeredis.aioredis`` binds to the
+loop it is constructed on, and ``TestClient`` serves on its own.
 """
+
+from contextlib import asynccontextmanager
 
 import fakeredis.aioredis as fakeredis_aio
 import pytest
@@ -34,91 +44,120 @@ from faultmaven.config.protection import get_development_protection_settings
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
-
-@pytest.fixture(autouse=True)
-def _isolated_fakeredis():
-    from faultmaven.infrastructure.redis_client import reset_fakeredis_client
-
-    reset_fakeredis_client()
-    yield
-    reset_fakeredis_client()
+BODY = b'{"query":"why is the db slow"}'
 
 
-def _client(*, fail_open: bool) -> TestClient:
+class _Harness:
+    """A TestClient plus the middleware instance, so tests can inspect metrics."""
+
+    def __init__(self, client: TestClient, app: FastAPI):
+        self.client = client
+        self._app = app
+
+    @property
+    def middleware(self) -> DeduplicationMiddleware:
+        # Starlette builds the stack on startup; find our instance in it.
+        stack = self._app.middleware_stack
+        while stack is not None:
+            if isinstance(stack, DeduplicationMiddleware):
+                return stack
+            stack = getattr(stack, "app", None)
+        raise AssertionError("DeduplicationMiddleware is not in the stack")
+
+    def post(self, body: bytes = BODY, session: str = "sess-1"):
+        return self.client.post(
+            "/api/v1/agent/query",
+            content=body,
+            headers={"X-Session-ID": session, "content-type": "application/json"},
+        )
+
+    def assert_nothing_was_swallowed(self):
+        """No test here may pass because the middleware silently gave up."""
+        assert self.middleware.metrics["errors"] == 0
+
+
+@pytest.fixture
+def harness(request):
+    """Build an app whose Redis client is created on the serving event loop."""
+    fail_open = getattr(request, "param", True)
+
     settings = get_development_protection_settings()
     settings.deduplication_enabled = True
     settings.fail_open_on_redis_error = fail_open
 
-    app = FastAPI()
-    app.add_middleware(
-        DeduplicationMiddleware,
-        settings=settings,
-        redis_client=fakeredis_aio.FakeRedis(decode_responses=True),
-    )
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Constructed here, not at fixture time: fakeredis.aioredis binds its
+        # internal queues to the running loop, and TestClient serves on its own.
+        # Built outside it, every Redis call raises "bound to a different event
+        # loop" -- which the middleware used to swallow into "not a duplicate".
+        app.state.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
+        yield
+
+    app = FastAPI(lifespan=lifespan)
+    app.add_middleware(DeduplicationMiddleware, settings=settings)
 
     @app.post("/api/v1/agent/query")
     async def _query():
         return {"ok": True}
 
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield _Harness(client, app)
 
 
-def _post(client, body: bytes, session: str = "sess-1"):
-    return client.post(
-        "/api/v1/agent/query",
-        content=body,
-        headers={"X-Session-ID": session, "content-type": "application/json"},
-    )
-
-
-@pytest.mark.parametrize("fail_open", [True, False])
-def test_duplicate_gets_a_labelled_409(fail_open):
+@pytest.mark.parametrize("harness", [True, False], indirect=True)
+def test_duplicate_gets_a_labelled_409(harness):
     """Parametrized over both failure policies.
 
     The old behaviour diverged by policy -- 200 when failing open, 503 when
-    failing closed -- so pinning only one would have left the other free to
-    regress. A duplicate is a duplicate under either setting.
+    failing closed -- so pinning only one would leave the other free to regress.
+    A duplicate is a duplicate under either setting.
     """
-    client = _client(fail_open=fail_open)
-    body = b'{"query":"why is the db slow"}'
+    assert harness.post().status_code == 200
 
-    first = _post(client, body)
-    assert first.status_code == 200
-
-    second = _post(client, body)
+    second = harness.post()
     assert second.status_code == 409
     # Unlabelled 409s are read by the Slack agent as "this case is terminal"
     # (see test_conflict_labelling.py) -- this one must carry its code.
     assert second.headers.get("x-error-code")
     assert int(second.headers["Retry-After"]) > 0
     assert second.json()["error_code"] == second.headers["x-error-code"]
+    harness.assert_nothing_was_swallowed()
 
 
-def test_a_different_body_is_not_a_duplicate():
-    """The half the old normalizer got wrong, pinned end to end."""
-    client = _client(fail_open=True)
+def test_a_different_body_is_not_a_duplicate(harness):
+    """The half the old normalizer got wrong, pinned end to end.
 
-    assert _post(client, b'{"query":"check order 4232342342"}').status_code == 200
-    assert _post(client, b'{"query":"check order 9994442211"}').status_code == 200
-
-
-def test_a_different_session_is_not_a_duplicate():
-    client = _client(fail_open=True)
-    body = b'{"query":"why is the db slow"}'
-
-    assert _post(client, body, session="sess-1").status_code == 200
-    assert _post(client, body, session="sess-2").status_code == 200
+    Proves deduplication is live first, so a broken check cannot make this pass.
+    """
+    assert harness.post(b'{"query":"check order 4232342342"}').status_code == 200
+    assert harness.post(b'{"query":"check order 9994442211"}').status_code == 200
+    # ... and the second body *is* caught on its own resubmit.
+    assert harness.post(b'{"query":"check order 9994442211"}').status_code == 409
+    harness.assert_nothing_was_swallowed()
 
 
-def test_no_session_id_means_no_deduplication():
-    """Dedup keys on the session; without one there is nothing to key on."""
-    client = _client(fail_open=True)
-    body = b'{"query":"why is the db slow"}'
+def test_a_different_session_is_not_a_duplicate(harness):
+    assert harness.post(session="sess-1").status_code == 200
+    assert harness.post(session="sess-2").status_code == 200
+    assert harness.post(session="sess-2").status_code == 409
+    harness.assert_nothing_was_swallowed()
 
+
+def test_no_session_id_means_no_deduplication(harness):
+    """Dedup keys on the session; without one there is nothing to key on.
+
+    Paired with a session-bearing resubmit so the 200s cannot come from a
+    deduplication check that is simply broken.
+    """
     for _ in range(2):
-        response = client.post(
+        response = harness.client.post(
             "/api/v1/agent/query",
-            content=body,
+            content=BODY,
             headers={"content-type": "application/json"},
         )
         assert response.status_code == 200
+
+    assert harness.post().status_code == 200
+    assert harness.post().status_code == 409
+    harness.assert_nothing_was_swallowed()

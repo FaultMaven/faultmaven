@@ -263,16 +263,21 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
     async def _check_hash_duplicate(
         self, request_hash: str, endpoint: str
     ) -> Tuple[bool, Optional[datetime], int]:
-        """Check if hash represents a duplicate request via Redis."""
+        """Check if hash represents a duplicate request via Redis.
+
+        Redis failures are *not* caught here. They belong to ``dispatch``, which
+        is where ``fail_open_on_redis_error`` is honoured. Swallowing them here
+        answered "not a duplicate" on any backend error, so the fail-closed
+        setting production pins did not cover this path at all: a broken Redis
+        silently admitted every duplicate while the policy claimed the opposite.
+        Reporting an absence of duplicates is a claim, and it needs the store to
+        have actually answered.
+        """
         config = self.endpoint_configs.get(endpoint, {})
         ttl = config.get("ttl", self.settings.deduplication["default"].ttl)
         key = f"{self.redis_key_prefix}:{request_hash}"
 
-        try:
-            return await self._check_redis_duplicate(key, ttl)
-        except Exception as e:
-            self.logger.error(f"Duplicate check failed: {e}")
-            return False, None, ttl
+        return await self._check_redis_duplicate(key, ttl)
 
     async def _check_redis_duplicate(
         self, key: str, ttl: int
