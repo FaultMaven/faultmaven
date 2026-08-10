@@ -33,7 +33,13 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
     - Exact request hashing (session + method + path + query + body bytes)
     - Configurable TTL per endpoint type
     - Redis-backed (real or FakeRedis via central client factory)
-    - Optional response caching for duplicates
+
+    A duplicate is answered with a labelled 409 and a ``Retry-After``. There is
+    no response cache: the writer stored responses under ``{key}:response`` while
+    the only read was ``GET {key}``, so nothing was ever served from it, and the
+    read path instead fed the stored *timestamp* to ``json.loads`` -- which threw
+    on every duplicate and was swallowed by the outer handler. The 409 below was
+    unreachable until that was removed.
     """
 
     def __init__(
@@ -59,7 +65,6 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         self.endpoint_configs = {
             "/api/v1/data/upload": {
                 "ttl": self.settings.deduplication["default"].ttl,
-                "cache_responses": False,
                 "special_handler": None,
             }
         }
@@ -96,45 +101,33 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                 return await call_next(request)
 
             # Check for duplicate
-            is_duplicate, cached_response, original_timestamp, ttl = (
-                await self._check_duplicate(request)
-            )
+            is_duplicate, original_timestamp, ttl = await self._check_duplicate(request)
 
             if is_duplicate:
                 check_duration = time.time() - start_time
                 self._update_metrics(check_duration, duplicate_found=True)
 
-                if cached_response:
-                    self.logger.debug(
-                        f"Returning cached response for duplicate request"
-                    )
-                    self.metrics["cache_hits"] += 1
-                    return JSONResponse(content=json.loads(cached_response))
+                # Calculate TTL remaining
+                if original_timestamp:
+                    elapsed = (
+                        datetime.now(timezone.utc) - original_timestamp
+                    ).total_seconds()
+                    ttl_remaining = max(0, int(ttl - elapsed))
                 else:
-                    # Calculate TTL remaining
-                    if original_timestamp:
-                        elapsed = (
-                            datetime.now(timezone.utc) - original_timestamp
-                        ).total_seconds()
-                        ttl_remaining = max(0, int(ttl - elapsed))
-                    else:
-                        ttl_remaining = ttl
+                    ttl_remaining = ttl
 
-                    # If TTL has expired, allow the request through
-                    if ttl_remaining == 0:
-                        self.logger.debug(
-                            f"Duplicate request TTL expired, allowing request through"
-                        )
-                    else:
-                        return self._create_duplicate_response(
-                            request, original_timestamp, ttl_remaining
-                        )
+                # If TTL has expired, allow the request through
+                if ttl_remaining == 0:
+                    self.logger.debug(
+                        "Duplicate request TTL expired, allowing request through"
+                    )
+                else:
+                    return self._create_duplicate_response(
+                        request, original_timestamp, ttl_remaining
+                    )
 
             # Process request
             response = await call_next(request)
-
-            # Cache response if configured
-            await self._cache_response(request, response)
 
             # Update metrics
             check_duration = time.time() - start_time
@@ -211,12 +204,12 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
 
     async def _check_duplicate(
         self, request: Request
-    ) -> Tuple[bool, Optional[str], Optional[datetime], int]:
+    ) -> Tuple[bool, Optional[datetime], int]:
         """Check if request is a duplicate"""
         request_hash = await self._generate_request_hash(request)
 
         if not request_hash:
-            return False, None, None, 0
+            return False, None, 0
 
         return await self._check_hash_duplicate(request_hash, request.url.path)
 
@@ -247,26 +240,29 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             self.logger.error(f"Failed to generate request hash: {e}")
             return None
 
-    async def _get_request_body(self, request: Request) -> Optional[str]:
-        """Get request body for hashing"""
+    async def _get_request_body(self, request: Request) -> Optional[bytes]:
+        """Get the raw request body for hashing.
+
+        Returned undecoded: decoding here used to fold every non-UTF-8 body onto
+        ``None`` -- and so onto the same digest as a genuinely empty body, and as
+        each other. The hasher wants bytes anyway; nothing downstream reads this
+        as text.
+        """
         try:
             if hasattr(request, "_body"):
-                body = request._body
-            else:
-                body = await request.body()
-                request._body = body
+                return request._body
 
-            if body:
-                return body.decode("utf-8")
+            body = await request.body()
+            request._body = body
+            return body
 
         except Exception as e:
             self.logger.debug(f"Failed to read request body: {e}")
-
-        return None
+            return None
 
     async def _check_hash_duplicate(
         self, request_hash: str, endpoint: str
-    ) -> Tuple[bool, Optional[str], Optional[datetime], int]:
+    ) -> Tuple[bool, Optional[datetime], int]:
         """Check if hash represents a duplicate request via Redis."""
         config = self.endpoint_configs.get(endpoint, {})
         ttl = config.get("ttl", self.settings.deduplication["default"].ttl)
@@ -276,11 +272,11 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             return await self._check_redis_duplicate(key, ttl)
         except Exception as e:
             self.logger.error(f"Duplicate check failed: {e}")
-            return False, None, None, ttl
+            return False, None, ttl
 
     async def _check_redis_duplicate(
         self, key: str, ttl: int
-    ) -> Tuple[bool, Optional[str], Optional[datetime], int]:
+    ) -> Tuple[bool, Optional[datetime], int]:
         """Check for duplicate using Redis (real or FakeRedis)."""
         lua_script = """
         local key = KEYS[1]
@@ -306,48 +302,21 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         # not-duplicate branch ({0, nil}) comes back as a 1-element array ([0]).
         # Unpack defensively instead of assuming a fixed length.
         is_duplicate = bool(result[0]) if result else False
-        cached_data = result[1] if len(result) > 1 else None
+        # The stored value is the *first* request's timestamp -- it is what the
+        # Retry-After is computed from. It has never been a cached response.
+        stored_timestamp = result[1] if len(result) > 1 else None
 
         if is_duplicate:
             self.logger.debug(f"Duplicate request detected: {key}")
             try:
                 original_timestamp = datetime.fromisoformat(
-                    cached_data.replace("Z", "+00:00")
+                    stored_timestamp.replace("Z", "+00:00")
                 )
             except (ValueError, AttributeError):
                 original_timestamp = current_time
-            return True, cached_data, original_timestamp, ttl
+            return True, original_timestamp, ttl
 
-        return False, None, None, ttl
-
-    async def _cache_response(self, request: Request, response: Response) -> None:
-        """Cache response for future duplicate requests"""
-        if response.status_code != 200:
-            return
-
-        endpoint = request.url.path
-        config = self.endpoint_configs.get(endpoint, {})
-
-        if not config.get("cache_responses", False):
-            return
-
-        try:
-            request_hash = await self._generate_request_hash(request)
-            if not request_hash:
-                return
-
-            if hasattr(response, "body"):
-                response_content = response.body.decode("utf-8")
-            else:
-                return
-
-            key = f"{self.redis_key_prefix}:{request_hash}"
-            ttl = config.get("ttl", self.settings.deduplication["default"].ttl)
-
-            await self._redis.setex(f"{key}:response", ttl, response_content)
-
-        except Exception as e:
-            self.logger.debug(f"Response caching failed: {e}")
+        return False, None, ttl
 
     def _extract_session_id(self, request: Request) -> Optional[str]:
         """Extract session ID from request"""
@@ -455,7 +424,6 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                 "endpoint_configs": {
                     path: {
                         "ttl": config["ttl"],
-                        "cache_responses": config["cache_responses"],
                     }
                     for path, config in self.endpoint_configs.items()
                 },
