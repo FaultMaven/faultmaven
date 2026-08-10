@@ -47,6 +47,10 @@ pytestmark = [pytest.mark.unit, pytest.mark.security]
 BODY = b'{"query":"why is the db slow"}'
 
 
+async def _raise_redis_error(*_args, **_kwargs):
+    raise RuntimeError("redis is down")
+
+
 class _Harness:
     """A TestClient plus the middleware instance, so tests can inspect metrics."""
 
@@ -161,3 +165,127 @@ def test_no_session_id_means_no_deduplication(harness):
     assert harness.post().status_code == 200
     assert harness.post().status_code == 409
     harness.assert_nothing_was_swallowed()
+
+
+@pytest.mark.parametrize("harness", [False], indirect=True)
+def test_a_redis_failure_fails_closed(harness, monkeypatch):
+    """The fail-closed setting must actually cover the duplicate check.
+
+    `_check_hash_duplicate` used to catch every exception and answer "not a
+    duplicate", so `fail_open_on_redis_error=False` -- which production pins --
+    did not reach this path at all: a broken Redis quietly admitted every
+    duplicate while the policy claimed the opposite. Restoring that `except`
+    turns this test green-to-red, which is the point; without it the property
+    had no committed guard.
+    """
+    monkeypatch.setattr(
+        harness.middleware,
+        "_check_redis_duplicate",
+        _raise_redis_error,
+    )
+
+    assert harness.post().status_code == 503
+    assert harness.middleware.metrics["errors"] == 1
+
+
+@pytest.mark.parametrize("harness", [True], indirect=True)
+def test_a_redis_failure_fails_open_when_configured(harness, monkeypatch):
+    """The other half of the policy: fail-open still serves the request."""
+    monkeypatch.setattr(
+        harness.middleware,
+        "_check_redis_duplicate",
+        _raise_redis_error,
+    )
+
+    assert harness.post().status_code == 200
+
+
+@pytest.mark.parametrize("reply", [None, []])
+def test_an_empty_script_reply_is_not_a_duplicate(harness, monkeypatch, reply):
+    """A reply that says nothing must not crash the request.
+
+    Element 0 was guarded against a falsy reply but element 1 was not, so
+    `len(None)` raised -- and with the swallow gone that 503s every request
+    under fail-closed. Parametrized over both shapes Redis can return.
+    """
+
+    # One request first: the Redis client is resolved lazily from app.state on
+    # the first dispatch, so there is nothing to patch until it has run.
+    assert harness.post(b'{"warm":"up"}').status_code == 200
+
+    async def _empty(*_args, **_kwargs):
+        return reply
+
+    monkeypatch.setattr(harness.middleware._redis, "eval", _empty)
+
+    assert harness.post().status_code == 200
+    harness.assert_nothing_was_swallowed()
+
+
+def test_an_unreadable_body_is_not_treated_as_an_empty_one(harness, monkeypatch):
+    """A request we could not read is not a request we can call a duplicate.
+
+    `_get_request_body` used to swallow read errors and return `None`, which the
+    hasher maps to `b""` -- so an unreadable body deduplicated against a
+    genuinely empty one and against every other unreadable body. Now that a
+    duplicate is answered 409, that collision is user-visible.
+    """
+    calls = {"n": 0}
+
+    async def _fail_second_read(_self, request):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("stream consumed")
+        return b""
+
+    monkeypatch.setattr(DeduplicationMiddleware, "_get_request_body", _fail_second_read)
+
+    # An empty body establishes the digest for b"".
+    assert (
+        harness.client.post(
+            "/api/v1/agent/query",
+            content=b"",
+            headers={"X-Session-ID": "sess-1", "content-type": "application/json"},
+        ).status_code
+        == 200
+    )
+
+    # The unreadable one must not collide with it.
+    assert (
+        harness.client.post(
+            "/api/v1/agent/query",
+            content=b"anything",
+            headers={"X-Session-ID": "sess-1", "content-type": "application/json"},
+        ).status_code
+        == 200
+    )
+
+
+def test_idempotency_bearing_paths_are_skipped(harness):
+    """Deduplication must not pre-empt an idempotent replay.
+
+    Protection is installed *outside* the idempotency middleware, so dedup sees
+    a request first. A client resending with a stable `Idempotency-Key` expects
+    the cached replay; a 409 instead would break that contract. Today the two
+    paths the copilot sends a key on -- `POST /api/v1/cases` and the multipart
+    turn POST -- are both on the skip list, so the hazard is latent. Pinned here
+    so removing either from `_should_skip` fails loudly rather than silently
+    breaking idempotent retry.
+    """
+    from starlette.datastructures import Headers
+    from starlette.requests import Request as StarletteRequest
+
+    def _req(path: str, content_type: str) -> StarletteRequest:
+        return StarletteRequest(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": path,
+                "headers": Headers({"content-type": content_type}).raw,
+            }
+        )
+
+    assert harness.middleware._should_skip(_req("/api/v1/cases", "application/json"))
+    assert harness.middleware._should_skip(
+        _req("/api/v1/cases/abc/messages", "multipart/form-data; boundary=x")
+    )

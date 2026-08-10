@@ -6,7 +6,6 @@ within configured time windows using content-based hashing.
 Uses Redis (real or FakeRedis) for all storage — no dict fallbacks.
 """
 
-import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -73,7 +72,6 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         self.metrics = {
             "requests_checked": 0,
             "duplicates_found": 0,
-            "cache_hits": 0,
             "errors": 0,
             "avg_check_duration": 0.0,
         }
@@ -82,9 +80,18 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         self._disabled = False
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        """Main middleware dispatch with deduplication"""
+        """Main middleware dispatch with deduplication.
 
+        Only the deduplication decision is guarded. ``call_next`` sits outside
+        the handler deliberately: wrapping it made this middleware the reporter
+        of *any* unhandled route exception, so a bug in a handler surfaced as
+        ``503 "Deduplication service temporarily unavailable"`` under the
+        fail-closed setting production pins -- and under fail-open the handler
+        re-entered ``call_next`` on a request whose body stream had already been
+        consumed. A middleware may only answer for its own failures.
+        """
         start_time = time.time()
+        duplicate: Optional[Response] = None
 
         try:
             # Initialize if needed (resolves the Redis client from app.state,
@@ -92,48 +99,12 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             if not self._initialized:
                 await self._initialize(request)
 
-            # Skip deduplication if disabled or no Redis available
-            if not self.settings.deduplication_enabled or self._disabled:
-                return await call_next(request)
-
-            # Skip for certain request types
-            if self._should_skip(request):
-                return await call_next(request)
-
-            # Check for duplicate
-            is_duplicate, original_timestamp, ttl = await self._check_duplicate(request)
-
-            if is_duplicate:
-                check_duration = time.time() - start_time
-                self._update_metrics(check_duration, duplicate_found=True)
-
-                # Calculate TTL remaining
-                if original_timestamp:
-                    elapsed = (
-                        datetime.now(timezone.utc) - original_timestamp
-                    ).total_seconds()
-                    ttl_remaining = max(0, int(ttl - elapsed))
-                else:
-                    ttl_remaining = ttl
-
-                # If TTL has expired, allow the request through
-                if ttl_remaining == 0:
-                    self.logger.debug(
-                        "Duplicate request TTL expired, allowing request through"
-                    )
-                else:
-                    return self._create_duplicate_response(
-                        request, original_timestamp, ttl_remaining
-                    )
-
-            # Process request
-            response = await call_next(request)
-
-            # Update metrics
-            check_duration = time.time() - start_time
-            self._update_metrics(check_duration, duplicate_found=False)
-
-            return response
+            if (
+                self.settings.deduplication_enabled
+                and not self._disabled
+                and not self._should_skip(request)
+            ):
+                duplicate = await self._duplicate_response_for(request, start_time)
 
         except Exception as e:
             self.logger.error(
@@ -142,9 +113,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
             )
             self.metrics["errors"] += 1
 
-            if self.settings.fail_open_on_redis_error:
-                return await call_next(request)
-            else:
+            if not self.settings.fail_open_on_redis_error:
                 return JSONResponse(
                     status_code=503,
                     content={
@@ -152,6 +121,38 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                         "message": "Deduplication service temporarily unavailable",
                     },
                 )
+
+        if duplicate is not None:
+            return duplicate
+
+        response = await call_next(request)
+
+        self._update_metrics(time.time() - start_time, duplicate_found=False)
+        return response
+
+    async def _duplicate_response_for(
+        self, request: Request, start_time: float
+    ) -> Optional[Response]:
+        """Return the 409 for a duplicate, or ``None`` to let the request run."""
+        is_duplicate, original_timestamp, ttl = await self._check_duplicate(request)
+        if not is_duplicate:
+            return None
+
+        self._update_metrics(time.time() - start_time, duplicate_found=True)
+
+        if original_timestamp:
+            elapsed = (datetime.now(timezone.utc) - original_timestamp).total_seconds()
+            ttl_remaining = max(0, int(ttl - elapsed))
+        else:
+            ttl_remaining = ttl
+
+        if ttl_remaining == 0:
+            self.logger.debug("Duplicate request TTL expired, allowing request through")
+            return None
+
+        return self._create_duplicate_response(
+            request, original_timestamp, ttl_remaining
+        )
 
     async def _initialize(self, request: Request) -> None:
         """Resolve the Redis client lazily on the first request.
@@ -247,18 +248,20 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         ``None`` -- and so onto the same digest as a genuinely empty body, and as
         each other. The hasher wants bytes anyway; nothing downstream reads this
         as text.
+
+        A read failure is *not* caught here either. Swallowing it returned
+        ``None``, which the hasher maps to ``b""`` -- so an unreadable body
+        deduplicated against a genuinely empty one, and against every other
+        unreadable body. It propagates to ``_generate_request_hash``, which
+        declines to identify the request rather than misidentifying it: a
+        request we could not read is not a request we can call a duplicate.
         """
-        try:
-            if hasattr(request, "_body"):
-                return request._body
+        if hasattr(request, "_body"):
+            return request._body
 
-            body = await request.body()
-            request._body = body
-            return body
-
-        except Exception as e:
-            self.logger.debug(f"Failed to read request body: {e}")
-            return None
+        body = await request.body()
+        request._body = body
+        return body
 
     async def _check_hash_duplicate(
         self, request_hash: str, endpoint: str
@@ -306,10 +309,15 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         # Redis truncates trailing nils in Lua array replies, so the
         # not-duplicate branch ({0, nil}) comes back as a 1-element array ([0]).
         # Unpack defensively instead of assuming a fixed length.
+        # A falsy reply (``None``, ``[]``) means the script told us nothing, so
+        # the same guard has to cover *both* reads -- indexing element 1 after
+        # only element 0 was guarded raised ``TypeError`` on ``len(None)``,
+        # which, now that the surrounding catch is gone, 503s every request
+        # under the fail-closed setting.
         is_duplicate = bool(result[0]) if result else False
         # The stored value is the *first* request's timestamp -- it is what the
         # Retry-After is computed from. It has never been a cached response.
-        stored_timestamp = result[1] if len(result) > 1 else None
+        stored_timestamp = result[1] if result and len(result) > 1 else None
 
         if is_duplicate:
             self.logger.debug(f"Duplicate request detected: {key}")
