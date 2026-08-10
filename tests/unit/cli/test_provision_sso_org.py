@@ -19,6 +19,8 @@ Exercised against a real in-memory SQLite engine built from the ORM metadata,
 so the refusals are checked against the schema that actually ships.
 """
 
+import sys
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import pytest
@@ -212,54 +214,117 @@ async def test_a_second_organization_may_be_bound_to_its_own_idp_org(session):
 
 
 # =============================================================================
-# The bind-early invariant (F2)
+# Slug-keyed resolution — what makes a re-run a no-op
+# =============================================================================
+#
+# These used to assert that `_get_or_create_organization` bound the resolved
+# organization as the current tenant "so the writes stay inside policy even
+# where RLS is forced". That claim was false and is gone (#935): the whole run
+# shares one transaction, and the engine's `begin` listener samples the tenant
+# contextvar at BEGIN — before the first SELECT in `_get_or_create_enterprise`,
+# and never again. The old assertions read the Python contextvar at
+# `session.add` time, a proxy that passed while PostgreSQL still held the
+# Standalone sentinel, so they would have gone on passing had the listener
+# never fired at all. What actually keeps provisioning legal is the RLS-exempt
+# role, checked by the preflight below.
+
+
+async def test_a_new_slug_creates_an_organization_under_the_enterprise(session):
+    organization, created = await provision_sso_org._get_or_create_organization(
+        session, enterprise_id=ENTERPRISE_ID, name="Acme New", slug="acme-new"
+    )
+
+    assert created is True
+    assert organization.enterprise_id == ENTERPRISE_ID
+    assert organization.slug == "acme-new"
+    assert organization.organization_id not in (ORG_A, ORG_B)
+
+
+async def test_an_existing_slug_resolves_onto_the_existing_organization(session):
+    """Identity is (enterprise_id, slug), so re-running is a no-op rather than a
+    second tenant — the property the script's idempotency claim rests on."""
+    organization, created = await provision_sso_org._get_or_create_organization(
+        session, enterprise_id=ENTERPRISE_ID, name="Acme A", slug="acme-a"
+    )
+
+    assert created is False
+    assert organization.organization_id == ORG_A
+
+
+# The `created` flags are not decoration: `org_created` decides whether
+# `provision` prints the REUSING AN EXISTING TENANT alarm — the warning that
+# stands between a slug collision and a new customer's users landing in someone
+# else's tenant. A helper that reported "created" for a row it merely found
+# would silence it. The alarm itself is exercised further down.
+
+
+async def test_an_existing_enterprise_slug_resolves_rather_than_creating(session):
+    enterprise, created = await provision_sso_org._get_or_create_enterprise(
+        session, enterprise_id=None, name="Acme", slug="acme"
+    )
+
+    assert created is False
+    assert enterprise.enterprise_id == ENTERPRISE_ID
+
+
+async def test_a_new_enterprise_slug_creates_one(session):
+    enterprise, created = await provision_sso_org._get_or_create_enterprise(
+        session, enterprise_id=None, name="Globex", slug="globex"
+    )
+
+    assert created is True
+    assert enterprise.enterprise_id != ENTERPRISE_ID
+
+
+async def test_the_default_team_is_created_once_then_resolved(session):
+    team, created = await provision_sso_org._get_or_create_default_team(
+        session, organization_id=ORG_A
+    )
+    assert created is True
+
+    again, created_again = await provision_sso_org._get_or_create_default_team(
+        session, organization_id=ORG_A
+    )
+    assert created_again is False
+    assert again.team_id == team.team_id
+
+
+# =============================================================================
+# The --enterprise-id argument boundary
 # =============================================================================
 
 
-async def test_the_organization_is_bound_as_tenant_before_its_insert(session):
-    """`organizations` is RLS-tenanted and its policy doubles as WITH CHECK, so
-    the INSERT has to run inside the new organization's own scope."""
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
+def test_an_empty_enterprise_id_is_refused_not_guessed(monkeypatch, capsys):
+    """A bogus non-empty id refuses with LookupError, so an empty one must not
+    quietly mean something else. Falling through to slug resolution would put
+    the tenant under an enterprise the operator never named — recoverable only
+    by a manual account migration."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "fm-provision-sso-org",
+            "--name",
+            "Acme",
+            "--slug",
+            "acme",
+            "--workos-org-id",
+            "org_01H",
+            "--enterprise-id",
+            "",
+        ],
+    )
 
-    set_current_org_id(STANDALONE_ORG_ID)
-    bound_at_insert = []
+    def explode(*_a, **_kw):  # pragma: no cover - must never be reached
+        raise AssertionError("provision ran on an empty --enterprise-id")
 
-    original_add = session.add
+    monkeypatch.setattr(provision_sso_org, "provision", explode)
 
-    def spy_add(instance):
-        if isinstance(instance, OrganizationModel):
-            bound_at_insert.append(get_current_org_id())
-        return original_add(instance)
+    with pytest.raises(SystemExit) as exit_info:
+        provision_sso_org.main()
 
-    session.add = spy_add
-    try:
-        organization, created = await provision_sso_org._get_or_create_organization(
-            session, enterprise_id=ENTERPRISE_ID, name="Acme New", slug="acme-new"
-        )
-    finally:
-        session.add = original_add
-        set_current_org_id(STANDALONE_ORG_ID)
-
-    assert created is True
-    # Bound to its OWN id at the moment the row was added, not the sentinel.
-    assert bound_at_insert == [organization.organization_id]
-
-
-async def test_resolving_an_existing_organization_also_binds_it(session):
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
-
-    set_current_org_id(STANDALONE_ORG_ID)
-    try:
-        organization, created = await provision_sso_org._get_or_create_organization(
-            session, enterprise_id=ENTERPRISE_ID, name="Acme A", slug="acme-a"
-        )
-        assert created is False
-        assert organization.organization_id == ORG_A
-        assert get_current_org_id() == ORG_A
-    finally:
-        set_current_org_id(STANDALONE_ORG_ID)
+    assert exit_info.value.code == 2  # argparse usage error, not a provisioning run
+    assert "--enterprise-id was given but is empty" in capsys.readouterr().err
 
 
 # =============================================================================
@@ -318,3 +383,177 @@ async def test_provision_proceeds_when_the_role_is_rls_exempt(monkeypatch):
         )
 
     assert reached == [True]
+
+
+# =============================================================================
+# The REUSING AN EXISTING TENANT alarm
+# =============================================================================
+
+
+@pytest.fixture
+def provision_against(monkeypatch, session):
+    """Run the real `provision()` against the in-memory session.
+
+    The preflight is a no-op here (SQLite has no RLS, and the role posture is
+    covered above); what this exercises is the alarm condition, which nothing
+    reached before because both preflight tests stop at the session boundary.
+
+    The stub reproduces `get_db_session`'s contract rather than just yielding —
+    commit on clean exit, rollback and re-raise on exception. Without that, a
+    refusal changed from `raise` to `return False` would pass every test here
+    while committing a half-provisioned tenant, which is precisely the hazard
+    the comment above the session block claims to prevent. The rollback is a
+    real SQLite one; only the RLS the dialect lacks is out of scope.
+    """
+
+    async def allow(**_kwargs):
+        return "faultmaven"
+
+    @asynccontextmanager
+    async def lend_session(*_a, **_kw):
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+    monkeypatch.setattr(
+        provision_sso_org, "assert_provisioning_db_role_bypasses_rls", allow
+    )
+    monkeypatch.setattr(provision_sso_org, "get_db_session", lend_session)
+    return provision_sso_org.provision
+
+
+async def test_binding_a_new_idp_org_onto_an_existing_tenant_warns(
+    provision_against, capsys
+):
+    """The slug collision this whole module exists to catch: --slug resolves onto
+    a tenant somebody else already owns, and its cases come with it.
+
+    Paired with the test below — same enterprise, and only the slug differs
+    between "you are about to join someone else's tenant" and "you just made
+    your own"."""
+    ok = await provision_against(
+        name="Not Acme",
+        slug="acme-a",
+        workos_org_id="org_NEW",
+        enterprise_id=ENTERPRISE_ID,
+    )
+
+    assert ok is True
+    out = capsys.readouterr().out
+    assert "REUSING AN EXISTING TENANT" in out
+    assert ORG_A in out
+
+
+async def test_a_new_org_under_an_existing_enterprise_does_not_warn(
+    provision_against, capsys
+):
+    """The documented --enterprise-id recipe (a second organization for the same
+    customer). The organization is the isolation boundary and this run created
+    it, so there is no reuse to confirm — warning here would tell the operator
+    that a tenant they just made is somebody else's."""
+    ok = await provision_against(
+        name="Acme EU",
+        slug="acme-eu",
+        workos_org_id="org_EU",
+        enterprise_id=ENTERPRISE_ID,
+    )
+
+    assert ok is True
+    out = capsys.readouterr().out
+    assert "REUSING AN EXISTING TENANT" not in out
+    # Named explicitly, so the parent is the operator's stated intent.
+    assert "UNDER AN EXISTING ENTERPRISE" not in out
+
+
+async def test_an_enterprise_matched_by_slug_warns_about_the_parent(
+    provision_against, capsys
+):
+    """The other half of the collision: --slug matches an existing *enterprise*,
+    so a new customer is silently parented under an existing one. No isolation
+    breach — the organization is new — but an account under the wrong enterprise
+    fails login closed and needs a manual migration to move."""
+    ok = await provision_against(
+        name="Acme Reseller", slug="acme", workos_org_id="org_RES", enterprise_id=None
+    )
+
+    assert ok is True
+    out = capsys.readouterr().out
+    assert "UNDER AN EXISTING ENTERPRISE" in out
+    assert ENTERPRISE_ID in out
+    # The tenant itself is new, so the louder alarm must stay silent.
+    assert "REUSING AN EXISTING TENANT" not in out
+
+
+async def test_an_empty_enterprise_id_still_warns_about_the_parent(
+    provision_against, capsys
+):
+    """`--enterprise-id ""` — an unset shell variable in the documented kubectl
+    recipe. `_get_or_create_enterprise` tests truthiness, so it takes the slug
+    path; the warning must read it the same way rather than as a named parent."""
+    ok = await provision_against(
+        name="Acme Reseller", slug="acme", workos_org_id="org_RES2", enterprise_id=""
+    )
+
+    assert ok is True
+    assert "UNDER AN EXISTING ENTERPRISE" in capsys.readouterr().out
+
+
+async def test_a_refusal_leaves_no_half_provisioned_tenant(
+    provision_against, session, capsys
+):
+    """`provision` creates the enterprise, organization and team *before* it
+    learns the mapping is refused. Every refusal therefore raises out of the
+    session block rather than returning from inside it — returning would let
+    `get_db_session` commit a tenant with no mapping, the state that makes the
+    next run's slug lookup dangerous."""
+    from sqlalchemy import select
+
+    await _seed_mapping(session, "org_TAKEN", ORG_B)
+
+    ok = await provision_against(
+        name="Brand New",
+        slug="brand-new",
+        workos_org_id="org_TAKEN",
+        enterprise_id=None,
+    )
+
+    assert ok is False
+    assert (
+        "already mapped to a different FaultMaven organization"
+        in capsys.readouterr().out
+    )
+    # The enterprise/organization/team this run got as far as creating are gone.
+    survivors = (
+        (
+            await session.execute(
+                select(EnterpriseModel).where(EnterpriseModel.slug == "brand-new")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert survivors == []
+    assert await _mapping_rows(session) == [("workos", "org_TAKEN", ORG_B)]
+
+
+async def test_an_idempotent_re_run_stays_quiet(provision_against, capsys):
+    """Re-running with the same arguments resolves onto the tenant it created
+    last time. The organization is reused, but the binding is not new, so the
+    alarm must not cry wolf on the script's documented no-op."""
+    args = dict(
+        name="Fresh Co", slug="fresh", workos_org_id="org_FRESH", enterprise_id=None
+    )
+
+    ok = await provision_against(**args)
+    assert ok is True
+    assert "⚠️" not in capsys.readouterr().out
+
+    ok_again = await provision_against(**args)
+
+    assert ok_again is True
+    # Neither warning: the tenant is reused, but this run created it and the
+    # binding already points here.
+    assert "⚠️" not in capsys.readouterr().out
