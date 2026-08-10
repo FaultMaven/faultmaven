@@ -52,6 +52,7 @@ _REPO = (
     "knowledge_item_repository.DatabaseKnowledgeItemRepository"
 )
 
+COMMITTED_AT = datetime(2026, 6, 1, tzinfo=timezone.utc)
 OLD_CONTENT = "# Draining a node\n\nCordon, then drain."
 NEW_CONTENT = "# Draining a node\n\nCordon, drain, then uncordon."
 
@@ -124,6 +125,10 @@ def _service(state, *, commit_raises=None, commit_lands=True):
 
     async def _update(obj):
         calls.append(("sql_commit", obj.content))
+        # The real `repo.update` stamps this on the object it is handed, as its
+        # first statement — so the committed object, not the snapshot, is the
+        # only place the stored timestamp can be read from.
+        obj.updated_at = COMMITTED_AT
         if commit_raises is None or commit_lands:
             state["title"] = obj.title
             state["content"] = obj.content
@@ -444,3 +449,99 @@ async def test_a_failed_restore_names_the_state_and_tells_the_operator_what_to_d
     assert (
         "re-save" in logged.lower()
     ), "the operator is told a bad thing happened but not what to do about it"
+
+
+# ---------------------------------------------------------------------------
+# The response describes the COMMITTED row, and the whole write is compensated
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_unpublish_also_drops_the_vectors_we_re_added():
+    """Re-reading fixes the SQL half of a retirement. It does not undo the
+    chunks this update already re-added — and retrieval does not honour
+    `is_published` (which is exactly why `delete_document` deletes vectors
+    rather than only clearing the flag). Leaving them keeps a retired runbook
+    queryable through chunks we wrote."""
+    state = _state()
+    service, repo, calls = _service(state)
+
+    async def _embed_then_someone_unpublishes(texts):
+        state["is_published"] = False
+        return [[0.1] * 1024 for _ in texts]
+
+    with patch(_REPO, return_value=repo):
+        with patch(_EMBED_TEXTS, new=_embed_then_someone_unpublishes):
+            await service.update_document_metadata(
+                document_id="doc-1", content=NEW_CONTENT
+            )
+
+    assert state["is_published"] is False, "the retirement was reverted in SQL"
+    assert _kinds(calls) == [
+        "vector_delete",
+        "vector_add",
+        "sql_commit",
+        "vector_delete",
+    ], (
+        "a retired runbook kept the vectors this update wrote, so it stays "
+        f"retrievable despite being unpublished: {_kinds(calls)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_response_describes_the_committed_row_not_the_snapshot():
+    """The row is read long before it is written. Reporting the snapshot back
+    would return the PRE-EDIT timestamp, and would describe a concurrent
+    writer's field as whatever we happened to read at the start."""
+    state = _state()
+    service, repo, calls = _service(state)
+
+    async def _embed_then_someone_retitles(texts):
+        state["title"] = "Renamed by someone else"
+        return [[0.1] * 1024 for _ in texts]
+
+    with patch(_REPO, return_value=repo):
+        with patch(_EMBED_TEXTS, new=_embed_then_someone_retitles):
+            result = await service.update_document_metadata(
+                document_id="doc-1", content=NEW_CONTENT
+            )
+
+    assert (
+        result["updated_at"] == COMMITTED_AT.isoformat()
+    ), "the response carries the pre-edit timestamp from the snapshot"
+    assert (
+        result["title"] == "Renamed by someone else"
+    ), "the response describes a title that was never stored"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_re_read_is_compensated_like_a_failing_commit():
+    """The vectors are already ahead of the row once the swap succeeds, so
+    everything after it has to be compensated — not just `repo.update`. A
+    re-read that raises would otherwise leave the mispairing with no repair
+    and no log."""
+    state = _state()
+    service, repo, calls = _service(state)
+
+    reads = {"n": 0}
+
+    async def _read_then_fail(_id):
+        reads["n"] += 1
+        if reads["n"] == 2:  # the re-read inside the write session
+            raise RuntimeError("connection lost before the re-read")
+        return _row_from(state)
+
+    repo.get_by_id = AsyncMock(side_effect=_read_then_fail)
+
+    with patch(_REPO, return_value=repo):
+        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+            with pytest.raises(RuntimeError):
+                await service.update_document_metadata(
+                    document_id="doc-1", content=NEW_CONTENT
+                )
+
+    adds = [content for kind, content in calls if kind == "vector_add"]
+    assert adds == [NEW_CONTENT, OLD_CONTENT], (
+        "a failure before the commit left the vectors holding content the row "
+        f"never got: {adds}"
+    )
