@@ -114,6 +114,14 @@ that is not an `Environment` member — selects the second.
 | `per_session_read` | 600 / 60s | 120 / 60s |
 | `per_session_read_hourly` | 6000 / 3600s | 1200 / 3600s |
 
+**Environments must not share a Redis instance.** The preset also fixes the
+Redis key prefix — `faultmaven_dev` for development, `faultmaven_prod` for the
+production preset — so since fm#1023 routed staging to the production preset,
+staging and production now share the `faultmaven_prod` namespace. Pointed at one
+Redis, their rate-limit counters and deduplication keys collide across
+environments: a staging load test consumes production's quota, and an identical
+request submitted in both is answered `409` in the second.
+
 **A missing read bucket narrows, it never widens.** The limiter allows anything
 it holds no configuration for, so routing reads at an unconfigured bucket would
 leave them unmetered. The middleware therefore requires *both* read keys to be
@@ -315,10 +323,19 @@ class AgentTimeoutManager:
 These are read on every deployment:
 
 ```bash
-# Which preset the protection middleware is installed from. `development`
-# selects the lenient preset (roomier limits, bypass headers); EVERY other
-# value — `staging`, `production`, anything unrecognised — selects production's.
-# There is no value that installs no protection.
+# Which preset the protection middleware is installed from.
+#
+# UNSET IS NOT STRICT. An absent ENVIRONMENT falls to the settings default,
+# which is `development` — the permissive preset, with `X-Dev-Bypass` and
+# `X-Test-Bypass` LIVE: the mere presence of either header skips all rate
+# limiting. Never leave this unset on an internet-facing box.
+#
+# Absent, or `development`  -> lenient preset, bypass headers live
+# Any other EXPLICIT value  -> production's preset (`staging`, `production`,
+#                              and anything unrecognised alike)
+#
+# No value installs an empty protection stack; the choice is which preset, not
+# whether.
 ENVIRONMENT=production
 
 # Degrade policy for rate limiting and deduplication when Redis is
@@ -333,11 +350,30 @@ PROTECTION_RATE_LIMIT_FAIL_OPEN=true
 PROTECTION_TRUSTED_PROXIES=
 ```
 
-**There are no `RATE_LIMIT_*`, `DEDUP_*` or `TIMEOUT_*` keys.** A loader reading
+**No environment variable sets a limit, a TTL or a timeout.** A loader reading
 them once existed, but nothing on a healthy deployment reached it: it ran only
 when `get_settings()` itself raised, and on every other path the numbers came
 from code. Setting those variables therefore changed nothing, and they were
 removed along with the loader (fm#1023) rather than left looking configurable.
+The exact spellings that are now gone:
+
+- `RATE_LIMITING_ENABLED`, `DEDUPLICATION_ENABLED`, `TIMEOUTS_ENABLED`
+- `RATE_LIMIT_GLOBAL`, `RATE_LIMIT_PER_SESSION`, `RATE_LIMIT_PER_SESSION_HOURLY`,
+  `RATE_LIMIT_PER_SESSION_READ`, `RATE_LIMIT_PER_SESSION_READ_HOURLY`,
+  `RATE_LIMIT_TITLE_GENERATION` — each a `requests:window` pair
+- `DEDUP_DEFAULT_TTL`
+- `TIMEOUT_AGENT_TOTAL`, `TIMEOUT_AGENT_PHASE`, `TIMEOUT_LLM_CALL`,
+  `TIMEOUT_EMERGENCY_SHUTDOWN`
+- `BASIC_PROTECTION_ENABLED`, `PROTECTION_BYPASS_HEADERS`, `REDIS_KEY_PREFIX`
+
+**Two legacy `RATE_LIMIT_*` spellings do still exist, and nothing in the
+protection stack reads them.** `RATE_LIMIT_ENABLED` and
+`RATE_LIMIT_REQUESTS_PER_MINUTE` are live `settings.security` fields, are
+documented in `.env.example`, and are reported by `GET /admin/config/status` —
+but no enforcement path consults either. `RATE_LIMIT_ENABLED=false` does not
+turn rate limiting off, and `RATE_LIMIT_REQUESTS_PER_MINUTE` is not any bucket's
+limit; the only thing that reads them is a frontend-compatibility report that
+warns when the first is false. Their removal is tracked in fm#985.
 
 Changing the limits a deployment actually runs on means changing the preset in
 `faultmaven/config/protection.py`.

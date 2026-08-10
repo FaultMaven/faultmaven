@@ -10,7 +10,7 @@ resolves its Redis client lazily from ``app.state`` on the first request.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from fastapi import FastAPI
 
@@ -19,6 +19,7 @@ from ..config.protection import (
     get_production_protection_settings,
     validate_protection_settings,
 )
+from ..config.settings import Environment
 from ..models.protection import ProtectionSettings
 from .middleware import DeduplicationMiddleware, RateLimitMiddleware
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 def setup_protection_middleware(
     app: FastAPI,
     settings: Optional[ProtectionSettings] = None,
-    environment: str = "production",
+    environment: Union[str, Environment] = Environment.PRODUCTION,
 ) -> Dict[str, Any]:
     """Setup protection middleware (sync).
 
@@ -46,10 +47,17 @@ def setup_protection_middleware(
     configuration, not a hypothetical one.
 
     The routing is now fail-safe in both directions: the default argument is
-    ``production``, and an environment name nobody anticipated lands on the
-    strict preset rather than on the permissive one. Loosening protection has to
-    be *asked for* by naming ``development`` exactly, which is the only value for
-    which the looser numbers and the bypass headers are appropriate.
+    ``Environment.PRODUCTION``, and an environment name nobody anticipated lands
+    on the strict preset rather than on the permissive one. Loosening protection
+    has to be *asked for* by naming ``development`` exactly, which is the only
+    value for which the looser numbers and the bypass headers are appropriate.
+
+    The discriminator is the ``Environment`` member rather than a bare literal:
+    ``main.py`` passes ``settings.server.environment``, which is an
+    ``Environment``, and a rename of the member's value would otherwise leave a
+    stale string here that silently stops matching — sending development to the
+    production preset. ``Environment`` subclasses ``str``, so plain strings from
+    other callers still compare equal.
     """
     setup_info: Dict[str, Any] = {
         "protection_enabled": False,
@@ -62,7 +70,7 @@ def setup_protection_middleware(
     try:
         # Load settings if not provided
         if settings is None:
-            if environment == "development":
+            if environment == Environment.DEVELOPMENT:
                 settings = get_development_protection_settings()
                 setup_info["settings_source"] = "development_defaults"
             else:
@@ -80,6 +88,22 @@ def setup_protection_middleware(
             return setup_info
 
         if not settings.enabled:
+            # "No protection middleware anywhere" must never be a silent state.
+            # That is exactly what fm#1023 was — an empty middleware stack whose
+            # only trace was one line nobody was looking for — and the loader
+            # that used to announce it went with the fix. Neither preset can
+            # reach this branch (both pin ``enabled=True``), so getting here
+            # means a caller handed in its own disabled settings object; that is
+            # a deliberate act, and it still deserves to be legible in the logs
+            # of the deployment it disarms.
+            logger.warning(
+                "Protection is DISABLED (ProtectionSettings.enabled=False): "
+                "rate limiting and request deduplication will NOT be installed, "
+                "deployment-wide. Every client can issue unlimited requests and "
+                "an exact resubmit will be processed again. Neither preset "
+                "produces this — it can only come from a caller-supplied "
+                "settings object."
+            )
             return setup_info
 
         setup_info["protection_enabled"] = True
@@ -108,7 +132,12 @@ def setup_protection_middleware(
     except Exception as e:
         logger.error(f"Failed to setup protection middleware: {e}")
         setup_info["error"] = str(e)
-        if settings and not settings.fail_open_on_redis_error:
+        # ``settings is None`` means the *preset call itself* raised, so nothing
+        # ever declared a degrade policy. Swallowing that booted the app with no
+        # rate limiting and no deduplication and one ERROR line to say so — the
+        # same silent-unprotected state fm#1023 fixed, reached by a different
+        # door. An unknown policy is not permission to fail open.
+        if settings is None or not settings.fail_open_on_redis_error:
             raise
 
     return setup_info

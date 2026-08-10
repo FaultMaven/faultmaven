@@ -13,6 +13,7 @@ assembles a URL": every ``ProtectionSettings`` producer leaves ``redis_url`` as
 which does read ``REDIS_PASSWORD``.
 """
 
+import logging
 import os
 from unittest.mock import patch
 
@@ -94,32 +95,84 @@ def test_no_loader_assembles_a_redis_url(cloud_discrete_credentials, loader):
     )
 
 
-@pytest.mark.parametrize("loader", _LOADERS, ids=lambda f: f.__name__)
-def test_a_blank_redis_url_reads_as_unset_on_every_loader(loader):
-    """A present-but-empty REDIS_URL means "not configured", on every producer.
+def test_a_blank_redis_url_reads_as_unset_at_the_factory():
+    """A present-but-empty ``REDIS_URL`` means "not configured", not ``''``.
 
-    An unset ConfigMap key yields ``''``, not absence. Producers used to
-    disagree about the same deployment: some said ``None``, one said ``''``.
-    Every consumer happens to test truthiness today, so nothing broke — but the
-    invariant this branch exists to hold is "no producer carries a Redis URL it
-    was not given", and an empty string is not a URL.
+    An unset ConfigMap key yields ``''``, not absence. The behaviour is not the
+    presets' — both hardcode ``redis_url=None``, so asserting it of them checks
+    a constant. It lives in ``RedisClientFactory._build_config``, which decides
+    URL-vs-discrete on truthiness, and the near-miss is what matters: ``''`` must
+    fall through to the discrete credentials rather than reach
+    ``redis.from_url('')``, which would drop the password lookup entirely — the
+    fm#897 failure mode, with a blank string standing in for a self-assembled
+    URL.
     """
     with patch.dict(os.environ, {}, clear=False):
-        _apply_env({"REDIS_URL": "", "REDIS_HOST": _HOST, "REDIS_PASSWORD": _PASSWORD})
+        _apply_env(
+            {
+                "REDIS_URL": "",
+                "REDIS_HOST": _HOST,
+                "REDIS_PORT": _PORT,
+                "REDIS_DB": _DB,
+                "REDIS_PASSWORD": _PASSWORD,
+            }
+        )
         try:
-            settings = loader()
+            # The blank really did survive as far as settings — otherwise this
+            # test passes against a value that was never empty to begin with.
+            from faultmaven.config.settings import get_settings
 
-            assert settings.redis_url is None, (
-                f"{loader.__name__} carried a blank REDIS_URL forward as "
-                f"{settings.redis_url!r} instead of treating it as unset"
-            )
+            assert get_settings().database.redis_url == ""
 
-            # And the password still resolves centrally, as it must.
-            config = RedisClientFactory._build_config(
-                settings.redis_url, None, None, None
+            config = RedisClientFactory._build_config(None, None, None, None)
+
+            assert not config["url"], (
+                f"a blank REDIS_URL was carried forward as {config['url']!r}; "
+                "an explicit URL short-circuits the password lookup"
             )
-            assert config["password"] == _PASSWORD
             assert config["host"] == _HOST
+            assert config["port"] == int(_PORT)
+            assert config["db"] == int(_DB)
+            assert config["password"] == _PASSWORD
+        finally:
+            reset_settings()
+
+
+def test_a_blank_redis_url_is_never_handed_to_from_url():
+    """And the consequence, at the construction surface that would break.
+
+    ``_build_config`` returning a falsy URL is only half the property: the
+    branch that acts on it must take the discrete path. Pinned by watching the
+    two constructors — ``redis.from_url('')`` raises on a real client, so a
+    regression here is an outage, not a silent weakening.
+    """
+    from unittest.mock import MagicMock
+
+    import faultmaven.infrastructure.redis_client as redis_client_module
+
+    with patch.dict(os.environ, {}, clear=False):
+        _apply_env(
+            {
+                "REDIS_URL": "",
+                "REDIS_HOST": _HOST,
+                "REDIS_PORT": _PORT,
+                "REDIS_DB": _DB,
+                "REDIS_PASSWORD": _PASSWORD,
+            }
+        )
+        try:
+            fake_redis_module = MagicMock()
+            with (
+                patch.object(redis_client_module, "redis", fake_redis_module),
+                patch.object(redis_client_module, "REDIS_AVAILABLE", True),
+            ):
+                RedisClientFactory.create_client()
+
+            fake_redis_module.from_url.assert_not_called()
+            fake_redis_module.Redis.assert_called_once()
+            kwargs = fake_redis_module.Redis.call_args.kwargs
+            assert kwargs["host"] == _HOST
+            assert kwargs["password"] == _PASSWORD
         finally:
             reset_settings()
 
@@ -297,6 +350,51 @@ def test_an_explicitly_disabled_settings_object_installs_nothing():
 
     assert setup_info["protection_enabled"] is False
     assert setup_info["middleware_added"] == []
+
+
+def test_disabled_protection_is_announced_not_silent(caplog):
+    """ "No protection middleware anywhere" must not be a silent state.
+
+    fm#1023 was exactly this state — an empty middleware stack on every staging
+    box — and what made it survive was that nothing said so at a level anyone
+    reads. The loader that used to carry the announcement was removed with the
+    fix; the announcement belongs to the branch that installs nothing, which is
+    here. Whether a deployment may disable protection is the owner's call; being
+    legible about it is not.
+    """
+    settings = get_production_protection_settings()
+    settings.enabled = False
+
+    with caplog.at_level(logging.WARNING, logger="faultmaven.api.protection"):
+        setup_info = _install_middleware(settings)
+
+    assert setup_info["middleware_added"] == []
+
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "faultmaven.api.protection"
+    ]
+    assert any(
+        "rate limiting" in message.lower() and "deduplication" in message.lower()
+        for message in warnings
+    ), f"nothing warned that both protections were skipped; got {warnings}"
+
+
+def test_installed_protection_does_not_warn(caplog):
+    """The converse, so the warning stays a signal rather than constant noise."""
+    settings = get_production_protection_settings()
+    assert settings.enabled is True
+
+    with caplog.at_level(logging.WARNING, logger="faultmaven.api.protection"):
+        setup_info = _install_middleware(settings)
+
+    assert setup_info["protection_enabled"] is True
+    assert [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "faultmaven.api.protection"
+    ] == []
 
 
 def test_an_explicitly_configured_redis_url_is_still_honoured():

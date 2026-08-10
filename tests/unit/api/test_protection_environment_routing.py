@@ -8,7 +8,7 @@ installed no rate limiting and no deduplication at all: ``app.user_middleware``
 came back empty. The on-prem box and the flip-rehearsal overlay both run
 staging.
 
-Two properties are pinned:
+Three properties are pinned:
 
 1. **Coverage.** Every ``Environment`` member — iterated, not enumerated, so a
    fourth member is covered the day it is added — plus a string that is not an
@@ -17,6 +17,9 @@ Two properties are pinned:
    unknown names get production's, which is fail-*closed* on a Redis error —
    the discriminator that separates this fix from one that merely routed
    staging somewhere that happened to install middleware.
+3. **Fail closed on setup failure.** A preset that raises propagates rather than
+   leaving a bare app behind, which is the same unprotected state arrived at
+   from a different direction.
 """
 
 import pytest
@@ -76,14 +79,23 @@ def test_every_environment_installs_both_middlewares(environment):
     assert set(setup_info["middleware_added"]) == {"rate_limiting", "deduplication"}
 
 
-def test_development_still_gets_the_development_preset():
+@pytest.mark.parametrize(
+    "environment",
+    [Environment.DEVELOPMENT, "development"],
+    ids=["enum_member", "plain_string"],
+)
+def test_development_still_gets_the_development_preset(environment):
     """The one value that may loosen protection, asserted explicitly.
 
     Otherwise a fix that routed *everything* to production would pass the sweep
     above while quietly removing the development bypass headers and the roomier
     limits that make local iteration workable.
+
+    Both spellings, because the discriminator is the ``Environment`` member:
+    ``Environment`` subclasses ``str``, so a caller holding a plain string must
+    still land here rather than be quietly hardened into production's preset.
     """
-    app, setup_info = _install(Environment.DEVELOPMENT)
+    app, setup_info = _install(environment)
 
     assert setup_info["settings_source"] == "development_defaults"
     settings = _resolved_settings(app)
@@ -136,6 +148,31 @@ def test_the_default_environment_argument_is_production():
     assert setup_info["settings_source"] == "production_defaults"
     assert _resolved_settings(app).fail_open_on_redis_error is False
     assert _installed(app) == {RateLimitMiddleware, DeduplicationMiddleware}
+
+
+def test_a_failing_preset_refuses_to_boot_rather_than_serve_unprotected(monkeypatch):
+    """A preset that raises must propagate, not leave the app unprotected.
+
+    The handler asked ``settings.fail_open_on_redis_error`` — but when the
+    *preset call* is what raised, ``settings`` is still ``None`` and the guard
+    read as "swallow". The app then booted with an empty middleware stack and a
+    single ERROR line: fm#1023's failure mode reached through a second door.
+    Nothing ever stated a degrade policy, and an unknown policy is not
+    permission to fail open.
+
+    The dependency is monkeypatched, not the function under test: patching
+    ``setup_protection_middleware`` itself would prove nothing about it.
+    """
+    monkeypatch.setattr(
+        "faultmaven.api.protection.get_production_protection_settings",
+        lambda: (_ for _ in ()).throw(RuntimeError("preset exploded")),
+    )
+
+    app = FastAPI()
+    with pytest.raises(RuntimeError, match="preset exploded"):
+        setup_protection_middleware(app, environment=Environment.STAGING)
+
+    assert _installed(app) == set(), "an unprotected app survived a failed preset"
 
 
 def test_the_settings_driven_source_is_gone():
