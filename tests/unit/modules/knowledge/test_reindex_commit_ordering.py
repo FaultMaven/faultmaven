@@ -21,10 +21,17 @@ severity:
 So the fix is an ordering one: index first, commit last. The most likely
 failure by far (the embedder is unavailable) then touches neither store.
 
-These tests pin the ordering itself, not one instance of it — a fix that
-happened to work for the embedder-unavailable case while still committing early
-on a ChromaDB failure would pass a narrower test and leave the mispairing
-reachable.
+Moving the write after the embed opens a second problem these tests also pin:
+the row is read long before it is written, and ``repo.update`` writes EVERY
+column from the object it is given. Committing the pre-embed snapshot would
+revert whatever another writer changed meanwhile — including ``is_published``,
+which is how a built-in runbook is retired. Hence the re-read at commit time.
+
+The fake below models the ROW, not a single mock object: reads return a fresh
+view of current state and a successful commit is what changes it. That is what
+lets these tests tell "the commit failed" apart from "the commit landed but
+raised" — a distinction the compensation now turns on, and which a
+single-shared-mock fake silently collapses.
 """
 
 from datetime import datetime, timezone
@@ -49,27 +56,48 @@ OLD_CONTENT = "# Draining a node\n\nCordon, then drain."
 NEW_CONTENT = "# Draining a node\n\nCordon, drain, then uncordon."
 
 
-def _item():
-    """A ``knowledge_items`` row as loaded for update."""
-    item = MagicMock()
-    item.item_id = "doc-1"
-    item.title = "Draining a node"
-    item.content = OLD_CONTENT
-    item.item_type = MagicMock(value="runbook")
-    item.tags = []
-    item.source_url = None
-    item.scope = MagicMock(value="global")
-    item.owner_id = None
-    item.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    item.updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    item.metadata = {}
-    return item
+def _state():
+    """The persisted row, as a plain dict — the source of truth for the fake."""
+    return {
+        "present": True,
+        "title": "Draining a node",
+        "content": OLD_CONTENT,
+        "tags": [],
+        "is_published": True,
+        "updated_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+    }
 
 
-def _service(item, *, calls=None):
-    """A service wired so every store write appends to ``calls`` in order."""
+def _row_from(state):
+    """A freshly materialised row view, as `get_by_id` would return one."""
+    if not state["present"]:
+        return None
+    row = MagicMock()
+    row.item_id = "doc-1"
+    row.title = state["title"]
+    row.content = state["content"]
+    row.tags = list(state["tags"])
+    row.is_published = state["is_published"]
+    row.item_type = MagicMock(value="runbook")
+    row.source_url = None
+    row.scope = MagicMock(value="global")
+    row.owner_id = None
+    row.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    row.updated_at = state["updated_at"]
+    row.metadata = {}
+    return row
+
+
+def _service(state, *, commit_raises=None, commit_lands=True):
+    """Service wired so every store write appends to `calls`, in order.
+
+    Args:
+        commit_raises: exception `repo.update` raises, if any.
+        commit_lands: whether a raising commit nonetheless PERSISTED. Models
+            the ack-lost case (connection dropped after the server committed).
+    """
     service = KnowledgeService.__new__(KnowledgeService)
-    calls = [] if calls is None else calls
+    calls = []
 
     vector_store = MagicMock()
 
@@ -78,9 +106,10 @@ def _service(item, *, calls=None):
         return 1
 
     async def _add(doc_dicts, embeddings=None):
-        # Record what the vectors will DESCRIBE, not just that a write happened
-        # — the compensation test turns on which content was written back.
+        # Record what the vectors DESCRIBE, not merely that a write happened —
+        # the compensation tests turn on which content was written back.
         calls.append(("vector_add", doc_dicts[0]["content"]))
+        calls.append(("chunk_updated_at", doc_dicts[0]["metadata"].get("updated_at")))
 
     vector_store.delete_documents_by_parent_id = AsyncMock(side_effect=_delete)
     vector_store.add_documents = AsyncMock(side_effect=_add)
@@ -91,11 +120,17 @@ def _service(item, *, calls=None):
     service._sanitizer.asanitize = AsyncMock(side_effect=lambda text: text)
 
     repo = MagicMock()
-    repo.get_by_id = AsyncMock(return_value=item)
+    repo.get_by_id = AsyncMock(side_effect=lambda _id: _row_from(state))
 
-    async def _update(updated):
-        calls.append(("sql_commit", updated.content))
-        return updated
+    async def _update(obj):
+        calls.append(("sql_commit", obj.content))
+        if commit_raises is None or commit_lands:
+            state["title"] = obj.title
+            state["content"] = obj.content
+            state["is_published"] = obj.is_published
+        if commit_raises is not None:
+            raise commit_raises
+        return obj
 
     repo.update = AsyncMock(side_effect=_update)
 
@@ -107,6 +142,10 @@ def _service(item, *, calls=None):
     return service, repo, calls
 
 
+def _kinds(calls):
+    return [kind for kind, _ in calls if kind != "chunk_updated_at"]
+
+
 # ---------------------------------------------------------------------------
 # The row must not move when the vectors cannot
 # ---------------------------------------------------------------------------
@@ -116,8 +155,8 @@ def _service(item, *, calls=None):
 async def test_row_is_not_committed_when_the_embedder_is_unavailable():
     """The common failure. Before #952 this committed the new content and left
     the old vectors in place — undetectably mispaired."""
-    item = _item()
-    service, repo, calls = _service(item)
+    state = _state()
+    service, repo, calls = _service(state)
 
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=AsyncMock(return_value=None)):
@@ -126,8 +165,8 @@ async def test_row_is_not_committed_when_the_embedder_is_unavailable():
                     document_id="doc-1", content=NEW_CONTENT
                 )
 
-    assert calls == [], "the update wrote to a store despite failing: " f"{calls}"
-    repo.update.assert_not_awaited()
+    assert calls == [], f"the update wrote to a store despite failing: {calls}"
+    assert state["content"] == OLD_CONTENT
 
 
 @pytest.mark.asyncio
@@ -135,8 +174,8 @@ async def test_row_is_not_committed_when_the_vector_swap_fails():
     """The OTHER indexing failure — ChromaDB rejecting the add, AFTER the
     delete. The row must still not move: leaving it correct is what makes the
     missing vectors repairable from it."""
-    item = _item()
-    service, repo, calls = _service(item)
+    state = _state()
+    service, repo, calls = _service(state)
     service._vector_store.add_documents = AsyncMock(
         side_effect=RuntimeError("chromadb unreachable")
     )
@@ -148,8 +187,8 @@ async def test_row_is_not_committed_when_the_vector_swap_fails():
                     document_id="doc-1", content=NEW_CONTENT
                 )
 
-    repo.update.assert_not_awaited()
-    assert not any(kind == "sql_commit" for kind, _ in calls)
+    assert "sql_commit" not in _kinds(calls)
+    assert state["content"] == OLD_CONTENT
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +200,8 @@ async def test_row_is_not_committed_when_the_vector_swap_fails():
 async def test_vectors_are_written_before_the_row_commits():
     """The gate must be able to pass, and pass in the right ORDER — a fix that
     simply stopped committing would satisfy the failure tests above."""
-    item = _item()
-    service, repo, calls = _service(item)
+    state = _state()
+    service, repo, calls = _service(state)
 
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
@@ -171,12 +210,33 @@ async def test_vectors_are_written_before_the_row_commits():
             )
 
     assert result["content"] == NEW_CONTENT
-    kinds = [kind for kind, _ in calls]
-    assert kinds == ["vector_delete", "vector_add", "sql_commit"], (
+    assert _kinds(calls) == ["vector_delete", "vector_add", "sql_commit"], (
         "the SQL commit must be the LAST store write, so no failure before it "
-        f"can leave the row ahead of the vectors: {kinds}"
+        f"can leave the row ahead of the vectors: {_kinds(calls)}"
     )
     assert ("vector_add", NEW_CONTENT) in calls
+
+
+@pytest.mark.asyncio
+async def test_indexed_chunks_carry_the_updated_timestamp_not_the_previous_one():
+    """The chunks are built before the row is written, so their `updated_at`
+    would otherwise be the PREVIOUS value — the document would look stale to
+    any recency signal the moment it was edited."""
+    state = _state()
+    service, repo, calls = _service(state)
+    before = datetime.now(timezone.utc)
+
+    with patch(_REPO, return_value=repo):
+        with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
+            await service.update_document_metadata(
+                document_id="doc-1", content=NEW_CONTENT
+            )
+
+    stamped = [value for kind, value in calls if kind == "chunk_updated_at"]
+    assert stamped and stamped[0], "chunks carry no updated_at at all"
+    assert (
+        stamped[0] >= before.isoformat()
+    ), f"chunk metadata carries the pre-update timestamp {stamped[0]!r}"
 
 
 @pytest.mark.asyncio
@@ -185,12 +245,21 @@ async def test_a_content_edit_still_commits_when_no_vector_store_is_wired():
     already no-ops on it. The rollback snapshot must be gated on the same
     condition as the re-index, or taking it would start dereferencing row
     fields on a path that never touched them."""
-    item = _item()
-    service, repo, calls = _service(item)
+    state = _state()
+    service, repo, calls = _service(state)
     service._vector_store = None
-    # Fields the index model reads, but a store-less deployment never needs.
-    item.scope = None
-    item.item_type.value = "runbook"
+
+    original = _row_from
+
+    def _row_without_scope(s):
+        row = original(s)
+        if row is not None:
+            # Fields the index model reads, which a store-less deployment
+            # never needs — if the snapshot is built anyway, this trips.
+            row.scope = None
+        return row
+
+    repo.get_by_id = AsyncMock(side_effect=lambda _id: _row_without_scope(state))
 
     with patch(_REPO, return_value=repo):
         result = await service.update_document_metadata(
@@ -198,15 +267,15 @@ async def test_a_content_edit_still_commits_when_no_vector_store_is_wired():
         )
 
     assert result["content"] == NEW_CONTENT
-    assert [kind for kind, _ in calls] == ["sql_commit"]
+    assert _kinds(calls) == ["sql_commit"]
 
 
 @pytest.mark.asyncio
 async def test_metadata_only_update_commits_without_touching_the_vectors():
     """Re-indexing is content-triggered. A title/tag edit must still commit —
     otherwise the ordering fix would have disabled metadata editing."""
-    item = _item()
-    service, repo, calls = _service(item)
+    state = _state()
+    service, repo, calls = _service(state)
 
     with patch(_REPO, return_value=repo):
         result = await service.update_document_metadata(
@@ -214,7 +283,74 @@ async def test_metadata_only_update_commits_without_touching_the_vectors():
         )
 
     assert result is not None
-    assert [kind for kind, _ in calls] == ["sql_commit"]
+    assert _kinds(calls) == ["sql_commit"]
+
+
+# ---------------------------------------------------------------------------
+# The row is re-read at commit time, not written from the stale snapshot
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_concurrent_unpublish_is_not_resurrected_by_the_commit():
+    """The regression that moving the write after the embed introduces.
+
+    `repo.update` writes every column from the object it is handed. The row is
+    now read up to a cold load before it is written, so committing the snapshot
+    would silently restore any column another writer changed meanwhile — and
+    `delete_document` retires a built-in runbook precisely by setting
+    `is_published=False` and dropping its vectors. Since this method re-adds
+    vectors, a snapshot write would bring a retired runbook back in BOTH
+    stores, with nothing logged.
+    """
+    state = _state()
+    service, repo, calls = _service(state)
+
+    async def _embed_then_someone_unpublishes(texts):
+        # The concurrent retirement lands while we are embedding.
+        state["is_published"] = False
+        return [[0.1] * 1024 for _ in texts]
+
+    with patch(_REPO, return_value=repo):
+        with patch(_EMBED_TEXTS, new=_embed_then_someone_unpublishes):
+            await service.update_document_metadata(
+                document_id="doc-1", content=NEW_CONTENT
+            )
+
+    assert (
+        state["is_published"] is False
+    ), "the update resurrected a runbook that was retired while it embedded"
+    assert state["content"] == NEW_CONTENT, "the edit itself should still apply"
+
+
+@pytest.mark.asyncio
+async def test_vectors_are_discarded_when_the_row_was_deleted_mid_update():
+    """Deleted while we embedded. Restoring "the previous content" would leave
+    chunks for a row that no longer exists, and orphan pruning only covers
+    built-in pack ids — an authored document would stay searchable after
+    deletion. Undo our own write instead, and report not-found."""
+    state = _state()
+    service, repo, calls = _service(state)
+
+    async def _embed_then_someone_deletes(texts):
+        state["present"] = False
+        return [[0.1] * 1024 for _ in texts]
+
+    with patch(_REPO, return_value=repo):
+        with patch(_EMBED_TEXTS, new=_embed_then_someone_deletes):
+            result = await service.update_document_metadata(
+                document_id="doc-1", content=NEW_CONTENT
+            )
+
+    assert result is None, "a document deleted mid-update must report not-found"
+    # Counted, not merely "a delete happened": the swap itself deletes once
+    # before it adds, so `await_count >= 1` is satisfied by the swap and would
+    # pass with no compensation at all.
+    assert _kinds(calls) == [
+        "vector_delete",
+        "vector_add",
+        "vector_delete",
+    ], f"chunks for a deleted row were left behind: {_kinds(calls)}"
 
 
 # ---------------------------------------------------------------------------
@@ -225,11 +361,12 @@ async def test_metadata_only_update_commits_without_touching_the_vectors():
 @pytest.mark.asyncio
 async def test_a_failed_commit_puts_the_previous_vectors_back():
     """The one window the ordering cannot close on its own. If the row fails to
-    commit after the swap, the vectors are ahead of it — and that mispairing is
-    the undetectable kind, so it is compensated rather than tolerated."""
-    item = _item()
-    service, repo, calls = _service(item)
-    repo.update = AsyncMock(side_effect=RuntimeError("database gone"))
+    commit after the swap, the vectors are ahead of it — the undetectable kind
+    of mispairing — so it is compensated rather than tolerated."""
+    state = _state()
+    service, repo, calls = _service(
+        state, commit_raises=RuntimeError("database gone"), commit_lands=False
+    )
 
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
@@ -246,46 +383,47 @@ async def test_a_failed_commit_puts_the_previous_vectors_back():
 
 
 @pytest.mark.asyncio
-async def test_vectors_are_removed_when_the_row_was_deleted_mid_update():
-    """`repo.update` raises ValueError on rowcount == 0 — the row was deleted
-    while we were embedding. Restoring "the previous content" would then leave
-    chunks for a row that no longer exists, and the reconcile pass only prunes
-    orphan vectors for built-in pack ids, so an authored document would stay
-    searchable after deletion. The right compensation here is the opposite
-    one: undo our own write."""
-    item = _item()
-    service, repo, calls = _service(item)
-    repo.update = AsyncMock(side_effect=ValueError("Knowledge item doc-1 not found"))
+async def test_a_commit_that_landed_but_raised_is_not_rolled_back():
+    """A raised commit does NOT prove the write failed — a connection dropped
+    after the server committed raises here with the new content durably stored.
+
+    Restoring the previous content on that signal alone would re-index
+    superseded text under an updated row: the compensation would manufacture
+    the exact mispairing #952 exists to prevent. So the row is re-read and the
+    OBSERVED state decides.
+    """
+    state = _state()
+    service, repo, calls = _service(
+        state, commit_raises=RuntimeError("connection lost"), commit_lands=True
+    )
 
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
-            with pytest.raises(ValueError):
+            with pytest.raises(RuntimeError):
                 await service.update_document_metadata(
                     document_id="doc-1", content=NEW_CONTENT
                 )
 
-    # Counted, not merely "a delete happened": the swap itself deletes once
-    # before it adds, so `await_count >= 1` is satisfied by the swap and would
-    # pass with no compensation at all. The compensating removal is the SECOND
-    # delete, and nothing may be re-added after it.
-    kinds = [kind for kind, _ in calls]
-    assert kinds == ["vector_delete", "vector_add", "vector_delete"], (
-        "the chunks written for a row that no longer exists were left behind, "
-        f"or the previous content was restored under a deleted row: {kinds}"
+    adds = [content for kind, content in calls if kind == "vector_add"]
+    assert adds == [NEW_CONTENT], (
+        "the compensation re-indexed the OLD content over a row that actually "
+        f"holds the new content — it created the mispairing: {adds}"
     )
 
 
 @pytest.mark.asyncio
-async def test_a_failed_restore_is_reported_as_a_mispairing_by_name():
+async def test_a_failed_restore_names_the_state_and_tells_the_operator_what_to_do():
     """If the compensation fails too, nothing downstream can find the state —
-    the row has vectors and looks healthy. The log line is the only signal, so
-    it has to name what happened rather than log a generic failure."""
-    item = _item()
-    service, repo, calls = _service(item)
-    repo.update = AsyncMock(side_effect=RuntimeError("database gone"))
-
-    add = AsyncMock(side_effect=[None, RuntimeError("chromadb gone too")])
-    service._vector_store.add_documents = add
+    the row has vectors and looks healthy. The log is the only signal, so it
+    must both name the condition and carry the recovery step; a bare marker
+    with no remedy leaves the operator with a greppable word and no action."""
+    state = _state()
+    service, repo, calls = _service(
+        state, commit_raises=RuntimeError("database gone"), commit_lands=False
+    )
+    service._vector_store.add_documents = AsyncMock(
+        side_effect=[None, RuntimeError("chromadb gone too")]
+    )
 
     with patch(_REPO, return_value=repo):
         with patch(_EMBED_TEXTS, new=AsyncMock(return_value=[[0.1] * 1024])):
@@ -298,7 +436,11 @@ async def test_a_failed_restore_is_reported_as_a_mispairing_by_name():
                         document_id="doc-1", content=NEW_CONTENT
                     )
 
-    assert log.error.called
-    logged = " ".join(str(a) for call in log.error.call_args_list for a in call.args)
-    assert "MISPAIRED" in logged
-    assert "doc-1" in logged
+    logged = " ".join(
+        str(arg) for call in log.error.call_args_list for arg in call.args
+    )
+    assert "MISPAIRED" in logged, "the state is not named"
+    assert "doc-1" in logged, "the affected document is not identified"
+    assert (
+        "re-save" in logged.lower()
+    ), "the operator is told a bad thing happened but not what to do about it"

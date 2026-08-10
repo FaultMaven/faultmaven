@@ -11,8 +11,12 @@ that difference is a request that never answers.
 The bound is deliberately proportional to the batch rather than a flat ceiling:
 a fixed number tight enough to be useful for a 3-chunk edit would make a large
 document permanently un-editable, trading a hang for a silent capability loss.
-And it is opt-OUT rather than opt-in, so an unbounded wait is a decision visible
-at its call site instead of the condition a new caller inherits by default.
+There is no way to opt out of it — an earlier revision of this change carried a
+`bounded=False` knob for the boot repair path, and it was removed once the
+argument for it turned out to be wrong (the per-boot chunk budget bounds how
+much work a boot starts, not how long one call may take). The only remaining
+way to embed unbounded is to bypass this module, which several write-side sites
+still do; see its docstring.
 """
 
 import asyncio
@@ -134,13 +138,19 @@ async def test_a_healthy_embed_returns_its_vectors():
 
 @pytest.mark.asyncio
 async def test_a_slow_but_progressing_embed_is_not_cut_off():
-    """The bound must only fire on work that has stopped. An embed that is
-    merely slow — the normal case on a CPU-limited pod — has to finish, or the
-    bound would trade a hang for a document nobody can save."""
+    """The bound must fire on work that has STOPPED, not work that is merely
+    slow — the normal case on a CPU-limited pod.
+
+    Pinned against a bound deliberately tightened to just above the embed's
+    own duration, so this constrains the boundary rather than restating
+    "a fast embed succeeds" with the 180s default doing the work.
+    """
     with patch(_EMBED_TEXTS, new=_slow_but_finishes):
-        vectors = await embed_texts_or_raise(
-            ["chunk"], subject="Indexing", operation="test"
-        )
+        with patch.object(embedding_guard, "EMBED_BATCH_LOAD_SECONDS", 1.0):
+            with patch.object(embedding_guard, "EMBED_BATCH_PER_TEXT_SECONDS", 0.0):
+                vectors = await embed_texts_or_raise(
+                    ["chunk"], subject="Indexing", operation="test"
+                )
 
     assert vectors == [[0.1] * 1024]
 
@@ -225,11 +235,21 @@ async def test_boot_repair_is_bounded_too_so_a_hang_cannot_crashloop_the_pod():
     session.__aexit__ = AsyncMock(return_value=False)
     service._db_session_factory = MagicMock(return_value=session)
 
-    with patch(_EMBED_TEXTS, new=_never_returns):
+    embed_calls = []
+
+    async def _hang_but_record(texts):
+        embed_calls.append(len(texts))
+        await asyncio.sleep(3600)
+
+    with patch(_EMBED_TEXTS, new=_hang_but_record):
         with patch.object(embedding_guard, "EMBED_BATCH_LOAD_SECONDS", 0.05):
             with patch.object(embedding_guard, "EMBED_BATCH_PER_TEXT_SECONDS", 0.0):
                 chunks = await service.reindex_missing_vectors("doc-1")
 
-    # Returns rather than hangs, and degrades rather than raising — the repair
-    # pass must not abort startup either way (#945).
-    assert chunks == 0
+    # `chunks == 0` alone is ambiguous — a repair that silently did NOTHING
+    # returns 0 too, so that assertion would bless gutting boot repair
+    # entirely. Pin that the repair was actually ATTEMPTED and then gave up:
+    # the embed ran, and the destructive delete did not.
+    assert embed_calls, "boot repair never attempted the embed at all"
+    assert chunks == 0, "a timed-out repair must degrade, not claim success"
+    assert service._vector_store.delete_documents_by_parent_id.await_count == 0

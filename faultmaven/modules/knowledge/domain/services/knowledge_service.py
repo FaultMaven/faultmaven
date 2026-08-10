@@ -694,7 +694,8 @@ class KnowledgeService:
         describing the row as it was at this instant even after the row is
         mutated in place. ``update_document_metadata`` depends on that: it
         takes one of these before applying the update and one after, and the
-        first is the only surviving record of what the current vectors mean.
+        first is the only in-process record of what the current vectors mean
+        once the snapshot has been mutated.
         """
         return KnowledgeBaseDocument(
             document_id=item.item_id,
@@ -854,6 +855,117 @@ class KnowledgeService:
                 f"Vector indexing failed for {document.document_id}: {e}",
                 error_code="KNOWLEDGE_INDEXING_FAILED",
             ) from e
+
+    async def _discard_vectors_for_vanished_row(self, document_id: str) -> None:
+        """Drop vectors written for a row that was deleted mid-update (#952).
+
+        Separate from :meth:`_remove_from_vector_store`, which swallows its
+        errors because its callers are deleting a document and a failed vector
+        delete is one more orphan among many the reconcile pass can find. Here
+        the failure is not equivalent: these chunks carry content that was
+        never saved, under an id that now 404s, and orphan pruning only covers
+        built-in pack ids — so for an authored document nothing will ever
+        remove them. That earns a loud, specific log rather than a shrug.
+
+        Still does not raise: the caller is already abandoning the update and
+        reporting that: a secondary failure must not replace the primary one.
+        """
+        try:
+            await self._vector_store.delete_documents_by_parent_id(document_id)
+        except Exception as discard_error:
+            logger.error(
+                "ORPHANED KNOWLEDGE VECTORS %s: the document was deleted "
+                "during an update, and removing the chunks written for that "
+                "update failed (%s). They describe content that was never "
+                "saved, under an id that no longer resolves, and orphan "
+                "pruning does not cover authored documents. Remove them by "
+                "hand or re-create and re-delete the document.",
+                document_id,
+                discard_error,
+            )
+
+    async def _resynchronise_after_failed_commit(
+        self,
+        document_id: str,
+        previous_document: KnowledgeBaseDocument,
+        *,
+        attempted_content: str,
+        commit_error: Exception,
+    ) -> None:
+        """Realign the vectors after ``repo.update`` failed, by OBSERVING the row.
+
+        The vectors already describe the attempted update. The obvious response
+        — put the previous content back — is right only if the write actually
+        failed, and a raised commit does not prove that: a connection dropped
+        after the server committed raises here with the new content durably
+        stored. Restoring on that signal alone would re-index superseded text
+        under an updated row, manufacturing the exact undetectable mispairing
+        this whole change exists to prevent.
+
+        So the row is re-read first and the outcome decides:
+
+        * row gone → drop the vectors (nothing left to describe)
+        * row holds the attempted content → the commit landed; leave the
+          vectors alone, they already match
+        * row holds anything else → the write failed; restore the previous
+          content
+
+        If the re-read itself fails, nothing is done and the state is reported
+        as UNKNOWN rather than guessed at — an unverified corrective write is
+        how the mispairing gets created rather than repaired.
+        """
+        try:
+            async with self._db_session_factory() as session:
+                from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+                    DatabaseKnowledgeItemRepository,
+                )
+
+                observed = await DatabaseKnowledgeItemRepository(session).get_by_id(
+                    document_id
+                )
+        except Exception as reread_error:
+            logger.error(
+                "UNRESOLVED KNOWLEDGE DOCUMENT %s: committing an update failed "
+                "(%s) and the row could not be re-read to decide what its "
+                "vectors should describe (%s). The vectors currently hold the "
+                "attempted update; whether the row does is unknown. Re-save "
+                "the document to resynchronise.",
+                document_id,
+                commit_error,
+                reread_error,
+            )
+            return
+
+        if observed is not None and observed.content == attempted_content:
+            # The commit landed despite raising. The vectors already match it;
+            # touching them here is what would break the pairing.
+            logger.warning(
+                "Update of document %s reported a failure (%s) but the row "
+                "holds the new content — the commit landed. Leaving the "
+                "vectors, which already match it, in place.",
+                document_id,
+                commit_error,
+            )
+            return
+
+        try:
+            if observed is None:
+                await self._discard_vectors_for_vanished_row(document_id)
+            else:
+                await self._index_document_in_vector_store(previous_document)
+        except Exception as restore_error:
+            logger.error(
+                "MISPAIRED KNOWLEDGE DOCUMENT %s: the update did not commit "
+                "(%s), so the row still holds its previous content, and "
+                "realigning the vectors to it failed too (%s). They now "
+                "describe the update that was never saved, or part of it, or "
+                "nothing — and a row with vectors present looks healthy to "
+                "every consistency check there is, so nothing else will "
+                "report this. Re-save the document to resynchronise.",
+                document_id,
+                commit_error,
+                restore_error,
+            )
 
     async def _remove_from_vector_store(self, document_id: str) -> None:
         """Remove all chunks for a document from the vector store.
@@ -2106,22 +2218,35 @@ class KnowledgeService:
         this). ``get_by_id`` returns a detached domain object, so nothing
         between them needs a connection — and embedding can take a cold BGE-M3
         load's 60-120s, which is a long time to hold a pool slot idle in
-        transaction and long enough for ``idle_in_transaction_session_timeout``
-        to kill the connection the commit still needs.
+        transaction (and, where a deployment sets
+        ``idle_in_transaction_session_timeout``, long enough to have the
+        connection killed out from under the commit).
 
-        The cost is an explicitly wider read-modify-write window: a concurrent
-        edit landing between the read and the write is overwritten last-write-
-        wins. That race already existed — there is no optimistic locking on
-        this row — and it is the better trade, because it fails by losing one
-        concurrent edit rather than by mispairing every document edited while
-        the embedder is cold.
+        Splitting them would widen the read-modify-write window to cover the
+        whole embed, so the row is RE-READ inside the write session and the
+        update applied to that fresh copy. ``repo.update`` writes every column
+        from the object it is handed, so writing the pre-embed snapshot would
+        revert any column another writer touched meanwhile — and one of those,
+        ``is_published``, is how a built-in runbook is retired. The window is
+        therefore back to milliseconds, as it was before the re-index moved
+        ahead of the write.
 
-        Residual, stated rather than papered over: if the vector swap succeeds
-        and ``repo.update`` then fails, the vectors are ahead of the row. That
-        is compensated below by re-indexing the previous content, which is
-        cheap and near-certain to succeed (the model just embedded, so it is
-        warm). If the compensation ALSO fails, that is logged by name — it is
-        the one state here nothing else will describe.
+        Residuals, stated rather than papered over:
+
+        * The re-index itself is not atomic. If ``add_documents`` fails after
+          the delete, the row keeps its previous content and the vectors are
+          missing or partial — the recoverable class above, not a mispairing,
+          but not "unchanged" either.
+        * If the vector swap succeeds and ``repo.update`` then fails, the
+          vectors are ahead of the row. That is compensated by
+          :meth:`_resynchronise_after_failed_commit`, which re-reads the row
+          and decides from what it OBSERVES — a raised commit does not prove
+          the write failed, and restoring on that assumption alone would
+          manufacture the mispairing rather than repair it.
+        * Nothing compensates a process that dies, or a task cancelled
+          (``CancelledError`` is not an ``Exception``), between the swap and
+          the commit. No non-2PC design closes that window; it is named here so
+          it is not mistaken for one that is covered.
         """
         try:
             from faultmaven.modules.knowledge.domain.models.knowledge_item import (
@@ -2162,26 +2287,37 @@ class KnowledgeService:
             needs_reindex = content_changed and bool(self._vector_store)
             previous_document = self._build_index_model(item) if needs_reindex else None
 
+            # Apply the requested changes ONCE, as data. The same values are
+            # applied twice — to the snapshot, to build what gets embedded, and
+            # to a freshly re-read row at commit time (see below). Computing
+            # them once is what keeps those two from drifting.
+            updates = {}
             if kwargs.get("title"):
-                item.title = await self._sanitizer.asanitize(kwargs["title"])
+                updates["title"] = await self._sanitizer.asanitize(kwargs["title"])
             if kwargs.get("content"):
-                item.content = await self._sanitizer.asanitize(kwargs["content"])
+                updates["content"] = await self._sanitizer.asanitize(kwargs["content"])
             if "tags" in kwargs:
-                item.tags = [str(t) for t in (kwargs["tags"] or [])]
+                updates["tags"] = [str(t) for t in (kwargs["tags"] or [])]
             if kwargs.get("category"):
-                item.category = kwargs["category"]
+                updates["category"] = kwargs["category"]
             if kwargs.get("document_type"):
                 try:
-                    item.item_type = KnowledgeItemType(kwargs["document_type"])
+                    updates["item_type"] = KnowledgeItemType(kwargs["document_type"])
                 except ValueError:
                     logger.info(
                         f"Ignoring unknown document_type "
                         f"'{kwargs['document_type']}' on update"
                     )
-            if "version" in kwargs:
-                meta = dict(item.metadata or {})
-                meta["version"] = kwargs["version"]
-                item.metadata = meta
+
+            def _apply(target) -> None:
+                for field, value in updates.items():
+                    setattr(target, field, value)
+                if "version" in kwargs:
+                    meta = dict(target.metadata or {})
+                    meta["version"] = kwargs["version"]
+                    target.metadata = meta
+
+            _apply(item)
 
             # Re-index ChromaDB BEFORE the row is written. The indexing path
             # embeds before it deletes, so an unavailable or hung embedder
@@ -2190,53 +2326,63 @@ class KnowledgeService:
             # (#945 made it stop reporting success; #952 makes it stop
             # half-applying).
             #
-            # `repo.update` will stamp its own `updated_at`; matching it here
-            # keeps the chunk metadata from carrying the PREVIOUS timestamp.
-            # The two differ by the milliseconds between this line and the
-            # commit, which no retrieval filter can resolve.
+            # `repo.update` stamps its own `updated_at`; stamping here too keeps
+            # the chunk metadata from carrying the PREVIOUS timestamp. The row's
+            # value ends up LATER than the chunks' by however long the embed
+            # takes — seconds, or a cold load's minutes. They are close in
+            # intent, not equal; nothing compares them, and retrieval reads the
+            # chunk value only as a recency signal.
+            indexed_at = None
             if needs_reindex:
-                item.updated_at = datetime.now(timezone.utc)
+                indexed_at = datetime.now(timezone.utc)
+                item.updated_at = indexed_at
                 await self._index_document_in_vector_store(
                     self._build_index_model(item)
                 )
 
             async with self._db_session_factory() as session:
                 repo = DatabaseKnowledgeItemRepository(session)
-                try:
-                    await repo.update(item)  # commits + bumps updated_at
-                except ValueError:
-                    # `repo.update` raises ValueError for rowcount == 0: the row
-                    # was deleted while we were embedding. Restoring its vectors
-                    # would be wrong in the other direction — chunks for a row
-                    # that no longer exists, which the reconcile pass only
-                    # prunes for built-in pack ids. Undo our own write instead.
+
+                # RE-READ before writing, and apply the update to the fresh row.
+                # `repo.update` writes EVERY column from the object it is given,
+                # so committing the snapshot would silently revert whatever
+                # another writer changed while we embedded. That is not a
+                # hypothetical lost edit: `delete_document` retires a built-in
+                # runbook by setting `is_published=False` and dropping its
+                # vectors, and this method re-adds vectors — so a snapshot write
+                # would resurrect a retired runbook in BOTH stores, unlogged.
+                # Re-reading returns the read-modify-write window to the
+                # milliseconds it was before the re-index moved ahead of it,
+                # rather than the whole embed.
+                current = await repo.get_by_id(document_id)
+                if current is None:
+                    # Deleted while we embedded. Our vectors now describe a row
+                    # that no longer exists, and the reconcile pass only prunes
+                    # orphan vectors for built-in pack ids — an authored
+                    # document would stay searchable after deletion. Undo our
+                    # own write rather than leave it.
                     if needs_reindex:
-                        await self._remove_from_vector_store(document_id)
-                    raise
-                except Exception:
-                    # The vectors are now ahead of the row. Put them back: the
-                    # previous content is in hand and the embedder is warm, so
-                    # this is the cheap half of the compensation pair (the
-                    # expensive half would be undoing a commit).
-                    #
-                    # Non-None exactly when the re-index ran, so this is the
-                    # whole condition — there is no second one to keep in sync.
+                        await self._discard_vectors_for_vanished_row(document_id)
+                    logger.warning(
+                        f"Document {document_id} was deleted during its update; "
+                        "the update was abandoned"
+                    )
+                    return None
+
+                _apply(current)
+                if indexed_at is not None:
+                    current.updated_at = indexed_at
+
+                try:
+                    await repo.update(current)  # commits + bumps updated_at
+                except Exception as commit_error:
                     if previous_document is not None:
-                        try:
-                            await self._index_document_in_vector_store(
-                                previous_document
-                            )
-                        except Exception as restore_error:
-                            logger.error(
-                                "MISPAIRED KNOWLEDGE DOCUMENT %s: the row kept "
-                                "its previous content, the update failed to "
-                                "commit, and restoring the vectors failed too "
-                                "(%s). They now describe either the "
-                                "uncommitted update or nothing at all. Re-save "
-                                "the document to resynchronise.",
-                                document_id,
-                                restore_error,
-                            )
+                        await self._resynchronise_after_failed_commit(
+                            document_id,
+                            previous_document,
+                            attempted_content=current.content,
+                            commit_error=commit_error,
+                        )
                     raise
 
             logger.info(f"Successfully updated document {document_id}")

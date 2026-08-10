@@ -27,10 +27,16 @@ correctly, with its own copy of the logic — and the copy had silently dropped
 the time bound. A site that hand-rolls this is a bug even when its refusal looks
 right.
 
-The write side is here for the same reason. ``embed_texts_or_raise`` bounds the
-BATCH embed that indexing does, which had refused an unavailable model correctly
-in its own hand-rolled copy but carried no time bound at all — the asymmetry
-#953 found.
+The write side is here for the same reason, but does NOT yet have the same
+coverage, and the difference matters. ``embed_texts_or_raise`` bounds exactly
+one indexing embed: ``KnowledgeService._index_document_in_vector_store``, the
+one #953 was about. Three write-side sites still hand-roll their own answer with
+no time bound — ``ingestion.py`` ``_process_and_store`` (no route caller today),
+``core/preprocessing/vector_storage.py`` (live via the ``vectorize_file`` agent
+tool) and ``runbook_kb.py``'s runbook indexing. They are the same drift this
+module exists to end; they are simply not ended yet. Read "one policy" below as
+an intent this module holds for the sites routed through it, not as a claim
+about every embed in the codebase.
 
 The two bounds are deliberately DIFFERENT numbers, and this module is where
 that stays visible. A query may give up before a cold load finishes, because
@@ -79,11 +85,15 @@ EMBED_BATCH_LOAD_SECONDS = 180.0
 
 # Per-text allowance on top of the load budget.
 #
-# Anchored to the worst case this repo has actually measured rather than picked:
-# the pre-embedded KB pack exists because embedding its 1244 chunks on a
-# CPU-limited pod takes "tens of minutes" (~1s/chunk — see
-# ``_index_document_in_vector_store``'s ``prechunked`` docstring). This doubles
-# that for headroom, so the bound only fires on work that is not progressing.
+# Anchored to the worst case this repo describes rather than one picked to look
+# round — though "describes" is the honest verb: the pre-embedded KB pack exists
+# because embedding the shipped runbooks (~1244-1319 chunks, depending which
+# docstring you read) on a CPU-limited pod takes "tens of minutes", and the
+# analysis file that number came from is no longer in the tree. Read at the
+# lower bound that is ~1s/chunk, so 2s carries a 2x margin; read at 40 minutes
+# it is ~2s/chunk and the margin is gone. The bound is still useful there — it
+# fires on work that has STOPPED, and a batch that merely runs long is bounded
+# by the caller's own timeout — but it is not the 2x it looks like.
 EMBED_BATCH_PER_TEXT_SECONDS = 2.0
 
 
@@ -97,9 +107,11 @@ def batch_embed_timeout(text_count: int) -> float:
     trades a hang for a silent capability loss.
 
     The consequence is that a big enough document can outlast the caller's own
-    client timeout. That is a bounded, visible failure: the client gives up, the
-    server does not hang forever, and (#952) the document is left consistent
-    either way.
+    client timeout. That is a bounded, visible failure: the client gives up and
+    the server does not hang forever. Under #952 the two stores are left
+    describing the same text on every path that RETURNS — including this one,
+    since a timeout raises before the destructive delete. A process killed
+    mid-swap is not covered by that, or by anything short of 2PC.
     """
     return EMBED_BATCH_LOAD_SECONDS + EMBED_BATCH_PER_TEXT_SECONDS * max(text_count, 0)
 
