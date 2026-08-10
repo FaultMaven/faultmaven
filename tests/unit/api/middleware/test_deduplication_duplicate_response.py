@@ -106,6 +106,10 @@ def harness(request):
     async def _query():
         return {"ok": True}
 
+    @app.post("/api/v1/agent/boom")
+    async def _boom():
+        raise RuntimeError("the route itself is broken")
+
     with TestClient(app) as client:
         yield _Harness(client, app)
 
@@ -282,3 +286,27 @@ def test_idempotency_bearing_paths_are_skipped(harness):
     assert harness.middleware._should_skip(
         _req("/api/v1/cases/abc/messages", "multipart/form-data; boundary=x")
     )
+
+
+@pytest.mark.parametrize("harness", [False], indirect=True)
+def test_a_broken_route_is_not_reported_as_a_deduplication_failure(harness):
+    """A middleware may only answer for its own failures.
+
+    `call_next` used to sit inside the same `except` that owns the dedup
+    policy, so any unhandled route exception came back as
+    `503 "Deduplication service temporarily unavailable"` under the
+    fail-closed setting production pins -- sending an operator to debug Redis
+    for a bug in a handler. Parametrized fail-closed because that is the
+    setting under which the misattribution occurred.
+    """
+    client = TestClient(harness.client.app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/v1/agent/boom",
+        content=b"{}",
+        headers={"X-Session-ID": "sess-1", "content-type": "application/json"},
+    )
+
+    assert response.status_code == 500
+    assert "Deduplication" not in response.text
+    assert harness.middleware.metrics["errors"] == 0
