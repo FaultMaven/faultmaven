@@ -67,9 +67,9 @@ to least preferred:
    fail-closed gets a refusal rather than a per-replica approximation.
 3. **Fail open** — requests pass unlimited. Governed by
    `fail_open_on_redis_error`, sourced from `PROTECTION_RATE_LIMIT_FAIL_OPEN`
-   (default `true`) on the general load paths and the development preset. The
-   production loader does not read the key: it pins fail-**closed** (see
-   "Production fails closed" below).
+   (default `true`) on the development preset. The production preset does not
+   read the key: it pins fail-**closed** (see "Production fails closed" below),
+   and it is what every deployment other than `ENVIRONMENT=development` runs.
 
 `fail_open_on_redis_error` governs *policy*, never *reporting*.
 `RedisRateLimiter.initialize` returning normally always means a usable client
@@ -82,15 +82,16 @@ nothing else. It is deliberately distinct from `PROTECTION_FAIL_OPEN`, which
 binds `settings.protection.fail_open` (default `false`) and governs whether
 PII redaction may pass un-analyzed text to a provider when Presidio is
 unavailable. The two policies are independent and their defaults differ
-(redaction closed; rate limiting open on the general paths), so sharing one key
+(redaction closed; rate limiting open on the development preset), so sharing one key
 would mean an operator hardening redaction silently converts a Redis blip into a
 service-wide 503 — a coupling neither policy asked for.
 
 ### Production fails closed
 
 `get_production_protection_settings` pins `fail_open_on_redis_error=False` and
-does not read `PROTECTION_RATE_LIMIT_FAIL_OPEN`. It is the only loader that
-pins the policy.
+does not read `PROTECTION_RATE_LIMIT_FAIL_OPEN`. It is the only preset that
+pins the policy, and the one every deployment other than
+`ENVIRONMENT=development` runs.
 
 Defaulting production open would rest on the claim that rung 3 is nearly
 unreachable because rungs 1 and 2 enforce limits first. **That claim is false
@@ -99,7 +100,7 @@ today.** The sliding window counts seconds, not requests: the Lua script does
 score *and* member, so same-second requests update one member instead of adding
 entries and `ZCARD` can never exceed the window's length in seconds. Every
 `global` limit configured in `config/protection.py` (production 500/60,
-development 5000/60, settings path 1000/60) is therefore unreachable —
+development 5000/60) is therefore unreachable —
 measured: 5000 requests from one IP against production's 500/60 blocked none,
 final `ZCARD` 6 — and `global` is the only limit that applies to
 unauthenticated traffic. Under that defect rungs 1 and 2 do not enforce the
@@ -112,9 +113,9 @@ a security *and* cost control, and the trade-off against a total API outage is
 only answerable once the intermediate rungs limit anything. Revisit this pin
 then — not before.
 
-The general load paths and the development preset do honour
-`PROTECTION_RATE_LIMIT_FAIL_OPEN` (default `true`), which is what removes the
-hardcode; production opts out explicitly rather than by omission.
+The development preset does honour `PROTECTION_RATE_LIMIT_FAIL_OPEN` (default
+`true`), which is what removes the hardcode; production opts out explicitly
+rather than by omission.
 
 **Initialization latches in neither direction.** A failed
 `RateLimitMiddleware._initialize` leaves `_initialized` false so a later

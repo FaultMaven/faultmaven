@@ -207,7 +207,7 @@ and `ZCARD` could never exceed the number of distinct seconds in the window.
 Consequences:
 
 - Any limit with `requests > window` (production `global` 500/60s,
-  development 5000/60s, `_load_from_settings` 1000/60s) was unreachable —
+  development 5000/60s) was unreachable —
   measured: 5000 requests from one IP, 0 blocked. `global` is the only limit
   covering unauthenticated traffic, so a single-IP flood was never limited.
 - Limits with `requests < window` tripped on distinct *seconds*, so every

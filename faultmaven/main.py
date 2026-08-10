@@ -1249,15 +1249,10 @@ def setup_middleware():
             logger.info("Adding PerformanceTrackingMiddleware to FastAPI app")
         # Same trusted-proxy list the limiter keys on, from the same single
         # reader, so the address a request is *labelled* with and the address
-        # it is *limited* by cannot disagree.
-        #
-        # Read directly rather than via ``load_protection_settings``: that
-        # builds a whole ProtectionSettings down the ``_load_from_settings``
-        # path, which warns "rate limiting, deduplication and request timeouts
-        # are all disabled deployment-wide" whenever BASIC_PROTECTION_ENABLED is
-        # unset. Production installs those via ``get_production_protection_settings``,
-        # so calling the general loader here just to fetch one field would emit
-        # a warning that is false on exactly the deployment that reads it.
+        # it is *limited* by cannot disagree. Building a whole
+        # ProtectionSettings here just to read one field would give the trust
+        # policy a second source; ``get_trusted_proxies`` is the one the presets
+        # call too.
         from .config.protection import get_trusted_proxies
 
         app.add_middleware(

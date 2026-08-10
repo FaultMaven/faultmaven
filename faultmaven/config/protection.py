@@ -33,9 +33,8 @@ def _fail_open_default() -> bool:
     that way — an operator hardening redaction to fail closed must not thereby
     turn a Redis blip into a 503 on every request.
 
-    One reader, so the settings path, the environment path and the development
-    preset cannot disagree about what the deployment asked for; the settings path
-    used to hardcode ``True`` and ignore the operator entirely.
+    One reader, so no producer of a ``ProtectionSettings`` can disagree with
+    another about what the deployment asked for.
 
     ``get_production_protection_settings`` deliberately does *not* call this: it
     pins fail-closed, for the reason given in its docstring.
@@ -65,266 +64,16 @@ def get_trusted_proxies() -> list:
     forwarding headers arrive from an address that is not configured here.
 
     One reader, for the same reason ``_fail_open_default`` is one reader: the
-    four loader paths must not be able to disagree about what the deployment
-    asked for. Production honours this key rather than pinning it — unlike the
-    degrade policy, there is no value here that is right for every deployment.
+    presets and ``PerformanceTrackingMiddleware`` must not be able to disagree
+    about what the deployment asked for. Production honours this key rather than
+    pinning it — unlike the degrade policy, there is no value here that is right
+    for every deployment.
     """
     return [
         entry.strip()
         for entry in os.getenv("PROTECTION_TRUSTED_PROXIES", "").split(",")
         if entry.strip()
     ]
-
-
-def load_protection_settings(settings=None) -> ProtectionSettings:
-    """
-    Load protection settings from unified settings or environment variables (fallback).
-
-    Args:
-        settings: FaultMavenSettings instance (if None, attempts to load from get_settings())
-
-    Returns:
-        ProtectionSettings instance with loaded configuration
-
-    Design Notes:
-        - Prefer the settings path. ``_load_from_settings`` is the
-          canonical, deployment-agnostic source.
-        - Degrade to ``_load_from_environment`` only when settings
-          construction itself raises (very early init, or env-var
-          validator rejection). That is the *only* way to reach it, so
-          the ``RATE_LIMIT_*`` / ``DEDUP_*`` / ``TIMEOUT_*`` env vars it
-          reads are dead config on a healthy deployment — the
-          settings-side migration for those keys is incomplete (see TODO
-          in ``_load_from_environment``).
-    """
-
-    if settings is None:
-        try:
-            from faultmaven.config.settings import get_settings
-
-            settings = get_settings()
-        except Exception:
-            settings = None
-
-    if settings is not None:
-        return _load_from_settings(settings)
-    return _load_from_environment()
-
-
-def _load_from_settings(settings) -> ProtectionSettings:
-    """Load protection settings from unified settings"""
-    enabled = settings.protection.basic_protection_enabled
-
-    if not enabled:
-        # Loud rather than silent. ``setup_protection_middleware`` returns early
-        # when this is False, so the whole deployment runs with no rate
-        # limiting, no deduplication and no timeout middleware installed
-        # anywhere — a state that otherwise produces not one line of output.
-        logger.warning(
-            "Protection middleware will NOT be installed: "
-            "settings.protection.basic_protection_enabled is False (its "
-            "default). Rate limiting, deduplication and request timeouts are "
-            "all disabled deployment-wide. Set BASIC_PROTECTION_ENABLED=true "
-            "to enable them."
-        )
-
-    # Basic protection settings are available in the settings
-    return ProtectionSettings(
-        # General - use protection and database settings.
-        #
-        # This used to read ``settings.security.protection_enabled``, a field
-        # that exists on no settings section at all, so the call raised
-        # AttributeError every time and this "canonical" path was dead.
-        #
-        # The replacement is ``basic_protection_enabled``, not
-        # ``protection_enabled``: the latter is the PII/Presidio gate
-        # (``redaction.py`` branches on it, and the admin API reports it as
-        # ``pii_redaction_enabled``), whereas ``basic_protection_enabled`` is
-        # the field this loader maps onto ``ProtectionSettings.enabled``, which
-        # ``setup_protection_middleware`` checks before installing rate limiting
-        # and deduplication. Note this loader runs only on the settings-driven
-        # path; the ``production`` and ``development`` presets hardcode
-        # ``enabled=True`` and never consult the flag. Gating middleware on the
-        # redaction toggle would be the same one-key-two-meanings defect this
-        # branch removed from the fail-open policy.
-        enabled=enabled,
-        fail_open_on_redis_error=_fail_open_default(),
-        protection_bypass_headers=[],  # No bypasses from settings
-        trusted_proxies=get_trusted_proxies(),
-        # Redis: ``None`` unless an operator set REDIS_URL explicitly, in which
-        # case the complete URL genuinely is the configured source. Everything
-        # else resolves centrally through RedisClientFactory.
-        #
-        # ``or None`` for the same reason the environment path has it: a
-        # present-but-blank REDIS_URL (an unset ConfigMap key) yields ``''``,
-        # and this loader must agree with the other two that blank means "not
-        # configured" rather than carrying an empty string forward.
-        redis_url=settings.database.redis_url or None,
-        redis_key_prefix="faultmaven",
-        # Rate limiting - use defaults since not in basic settings
-        rate_limiting_enabled=True,
-        rate_limits={
-            "global": RateLimitConfig(enabled=True, requests=1000, window=60),
-            "per_session": RateLimitConfig(enabled=True, requests=20, window=60),
-            "per_session_hourly": RateLimitConfig(
-                enabled=True, requests=100, window=3600
-            ),
-            "per_session_read": RateLimitConfig(enabled=True, requests=240, window=60),
-            "per_session_read_hourly": RateLimitConfig(
-                enabled=True, requests=3000, window=3600
-            ),
-            "title_generation": RateLimitConfig(enabled=True, requests=1, window=300),
-        },
-        # Deduplication - use defaults
-        deduplication_enabled=True,
-        deduplication={
-            # 30s is the accidental-resubmit window: a double-click or a
-            # client's immediate auto-retry. It is deliberately *not* sized for
-            # deliberate retries -- those carry a stable ``Idempotency-Key`` and
-            # are replayed by the idempotency middleware, which is why this can
-            # stay well under the 120s server turn timeout. A longer window is
-            # actively harmful now that an exact-match duplicate is answered
-            # 409: it refuses a user who legitimately re-sends the same text.
-            "default": DeduplicationConfig(enabled=True, ttl=30),
-        },
-        # Timeouts - use defaults
-        timeouts=TimeoutConfig(
-            enabled=True,
-            agent_total=300,
-            agent_phase=120,
-            llm_call=30,
-            emergency_shutdown=600,
-        ),
-    )
-
-
-def _load_from_environment() -> ProtectionSettings:
-    """Load protection settings directly from environment variables.
-
-    **This is the settings-construction-failure path, and nothing else.**
-    ``load_protection_settings`` reaches it only when ``get_settings()`` itself
-    raises — a broken env-var validator, or very early init before settings can
-    be built. Every other call goes to ``_load_from_settings``.
-
-    That has a consequence worth stating plainly: the ``RATE_LIMIT_*``,
-    ``DEDUP_*`` and ``TIMEOUT_*`` env vars read below are **not** operator
-    knobs. An operator who sets them on a healthy deployment changes nothing,
-    because the settings path never reads them and uses hardcoded defaults for
-    the same values. They are only honoured in the degraded case this function
-    exists for. They are kept, rather than deleted, so that a process which has
-    already lost its settings still starts from the deployment's intended
-    numbers instead of from constants.
-
-    TODO: Promote ``RATE_LIMIT_*``, ``DEDUP_*``, ``TIMEOUT_*`` into
-    ``ProtectionSettings`` so the keys become live on the normal path too.
-    """
-
-    # Helper function to parse rate limit string
-    def parse_rate_limit(
-        value: str, default_requests: int, default_window: int
-    ) -> RateLimitConfig:
-        if not value:
-            return RateLimitConfig(
-                enabled=True, requests=default_requests, window=default_window
-            )
-
-        try:
-            requests_str, window_str = value.split(":")
-            return RateLimitConfig(
-                enabled=True, requests=int(requests_str), window=int(window_str)
-            )
-        except (ValueError, IndexError):
-            return RateLimitConfig(
-                enabled=True, requests=default_requests, window=default_window
-            )
-
-    # General settings.
-    #
-    # ``BASIC_PROTECTION_ENABLED``, not ``PROTECTION_ENABLED``: the latter is
-    # the PII/Presidio gate, and using it here would let an operator who
-    # disabled PII redaction silently lose rate limiting too. The default stays
-    # permissive (``true``) rather than matching the settings field's ``false``
-    # — this path only runs when settings construction itself failed, and an
-    # already-degraded process should keep its request-path protections rather
-    # than shed them.
-    protection_enabled = os.getenv("BASIC_PROTECTION_ENABLED", "true").lower() == "true"
-    fail_open = _fail_open_default()
-    bypass_headers = [
-        header.strip()
-        for header in os.getenv("PROTECTION_BYPASS_HEADERS", "").split(",")
-        if header.strip()
-    ]
-
-    # Redis: the complete-URL form only, never hand-assembled from REDIS_HOST /
-    # REDIS_PORT — that assembly is what dropped REDIS_PASSWORD on the floor.
-    # This is the one place ``REDIS_URL`` is read from the environment rather
-    # than from settings, because this path exists precisely for when
-    # ``get_settings()`` itself raised. ``or None`` is load-bearing: an empty
-    # REDIS_URL must read as "not configured", not as a falsy URL that later
-    # code treats as an explicit source. ``None`` means resolve centrally.
-    redis_url = os.getenv("REDIS_URL") or None
-    redis_key_prefix = os.getenv("REDIS_KEY_PREFIX", "faultmaven")
-
-    # Rate limiting settings
-    rate_limiting_enabled = os.getenv("RATE_LIMITING_ENABLED", "true").lower() == "true"
-
-    rate_limits = {
-        "global": parse_rate_limit(os.getenv("RATE_LIMIT_GLOBAL", "1000:60"), 1000, 60),
-        "per_session": parse_rate_limit(
-            os.getenv("RATE_LIMIT_PER_SESSION", "20:60"), 20, 60
-        ),
-        "per_session_hourly": parse_rate_limit(
-            os.getenv("RATE_LIMIT_PER_SESSION_HOURLY", "100:3600"), 100, 3600
-        ),
-        "per_session_read": parse_rate_limit(
-            os.getenv("RATE_LIMIT_PER_SESSION_READ", "240:60"), 240, 60
-        ),
-        "per_session_read_hourly": parse_rate_limit(
-            os.getenv("RATE_LIMIT_PER_SESSION_READ_HOURLY", "3000:3600"), 3000, 3600
-        ),
-        "title_generation": parse_rate_limit(
-            os.getenv("RATE_LIMIT_TITLE_GENERATION", "1:300"), 1, 300
-        ),
-    }
-
-    # Deduplication settings
-    deduplication_enabled = os.getenv("DEDUPLICATION_ENABLED", "true").lower() == "true"
-
-    deduplication = {
-        "default": DeduplicationConfig(
-            enabled=True, ttl=int(os.getenv("DEDUP_DEFAULT_TTL", "30"))
-        ),
-    }
-
-    # Timeout settings
-    timeouts_enabled = os.getenv("TIMEOUTS_ENABLED", "true").lower() == "true"
-
-    timeouts = TimeoutConfig(
-        enabled=timeouts_enabled,
-        agent_total=int(os.getenv("TIMEOUT_AGENT_TOTAL", "300")),
-        agent_phase=int(os.getenv("TIMEOUT_AGENT_PHASE", "120")),
-        llm_call=int(os.getenv("TIMEOUT_LLM_CALL", "30")),
-        emergency_shutdown=int(os.getenv("TIMEOUT_EMERGENCY_SHUTDOWN", "600")),
-    )
-
-    return ProtectionSettings(
-        # General
-        enabled=protection_enabled,
-        fail_open_on_redis_error=fail_open,
-        protection_bypass_headers=bypass_headers,
-        trusted_proxies=get_trusted_proxies(),
-        # Redis
-        redis_url=redis_url,
-        redis_key_prefix=redis_key_prefix,
-        # Rate limiting
-        rate_limiting_enabled=rate_limiting_enabled,
-        rate_limits=rate_limits,
-        # Deduplication
-        deduplication_enabled=deduplication_enabled,
-        deduplication=deduplication,
-        # Timeouts
-        timeouts=timeouts,
-    )
 
 
 def get_development_protection_settings() -> ProtectionSettings:
@@ -335,8 +84,12 @@ def get_development_protection_settings() -> ProtectionSettings:
     - Shorter timeouts for faster feedback
     - Bypass headers enabled
     - Redis degrade policy from ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` (default
-      open), like the two general load paths. Production pins fail-closed
-      instead — see ``get_production_protection_settings``.
+      open). Production pins fail-closed instead — see
+      ``get_production_protection_settings``.
+
+    Reached only when ``ENVIRONMENT`` is exactly ``development``: every other
+    value, including ``staging`` and anything unrecognised, routes to the
+    production preset (fm#1023).
     """
     return ProtectionSettings(
         # General
@@ -387,7 +140,13 @@ def get_production_protection_settings() -> ProtectionSettings:
     - **Fails closed** on a Redis error, and does not read
       ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` — see below
 
-    Production is the one loader that pins the degrade policy rather than
+    **This is the default preset, not just production's.** Only
+    ``ENVIRONMENT=development`` selects the other one; ``staging`` and any
+    unrecognised value land here, so a deployment nobody classified is protected
+    rather than unprotected (fm#1023). Read the numbers below as the floor every
+    non-development deployment runs on.
+
+    Production is the one preset that pins the degrade policy rather than
     honouring the key, and it pins it *closed*.
 
     Defaulting it open rests on the claim that the fail-open rung is nearly
@@ -421,10 +180,9 @@ def get_production_protection_settings() -> ProtectionSettings:
     how the pinned path reports itself, and an argument for fixing the report —
     not for unpinning.
 
-    The general load paths and the development preset do honour
-    ``PROTECTION_RATE_LIMIT_FAIL_OPEN``, which removes the real hardcode this
-    branch set out to remove; production opts out explicitly rather than by
-    omission. ``PROTECTION_TRUSTED_PROXIES`` is *not* pinned here — unlike the
+    The development preset does honour ``PROTECTION_RATE_LIMIT_FAIL_OPEN``;
+    production opts out explicitly rather than by omission.
+    ``PROTECTION_TRUSTED_PROXIES`` is *not* pinned here — unlike the
     degrade policy, no value for it is right for every deployment, and the
     empty default is already the safe one. It is, however, the one preset that
     warns when it is left empty: see below.

@@ -17,7 +17,6 @@ from fastapi import FastAPI
 from ..config.protection import (
     get_development_protection_settings,
     get_production_protection_settings,
-    load_protection_settings,
     validate_protection_settings,
 )
 from ..models.protection import ProtectionSettings
@@ -30,13 +29,27 @@ logger = logging.getLogger(__name__)
 def setup_protection_middleware(
     app: FastAPI,
     settings: Optional[ProtectionSettings] = None,
-    environment: str = "development",
+    environment: str = "production",
 ) -> Dict[str, Any]:
     """Setup protection middleware (sync).
 
     Starlette/FastAPI middleware must be added *before* the application starts.
     This function is intentionally synchronous so it can be called at import-time
     (module initialization) before lifespan/startup executes.
+
+    **Only ``development`` is special; everything else gets production.**
+    ``Environment`` has a third member, ``staging``, and this used to route it —
+    along with every unrecognised string — to a settings-driven loader gated on
+    ``basic_protection_enabled``, whose default was ``False``. A deployment with
+    ``ENVIRONMENT=staging`` therefore installed no rate limiting and no
+    deduplication at all, silently (fm#1023) — and staging is a deployed
+    configuration, not a hypothetical one.
+
+    The routing is now fail-safe in both directions: the default argument is
+    ``production``, and an environment name nobody anticipated lands on the
+    strict preset rather than on the permissive one. Loosening protection has to
+    be *asked for* by naming ``development`` exactly, which is the only value for
+    which the looser numbers and the bypass headers are appropriate.
     """
     setup_info: Dict[str, Any] = {
         "protection_enabled": False,
@@ -49,15 +62,12 @@ def setup_protection_middleware(
     try:
         # Load settings if not provided
         if settings is None:
-            if environment == "production":
-                settings = get_production_protection_settings()
-                setup_info["settings_source"] = "production_defaults"
-            elif environment == "development":
+            if environment == "development":
                 settings = get_development_protection_settings()
                 setup_info["settings_source"] = "development_defaults"
             else:
-                settings = load_protection_settings()
-                setup_info["settings_source"] = "environment"
+                settings = get_production_protection_settings()
+                setup_info["settings_source"] = "production_defaults"
         else:
             setup_info["settings_source"] = "provided"
 

@@ -62,8 +62,8 @@ ALLOWLIST = {
     # for the same reason as the key above: it populates ProtectionSettings,
     # which is a plain BaseModel rather than a BaseSettings section. Mirroring
     # it onto settings would give the trust policy a second source, and the
-    # whole point of the key is that the four loader paths cannot disagree
-    # about which proxies a deployment believes.
+    # whole point of the key is that the presets and the performance
+    # middleware cannot disagree about which proxies a deployment believes.
     "PROTECTION_TRUSTED_PROXIES",
 }
 
