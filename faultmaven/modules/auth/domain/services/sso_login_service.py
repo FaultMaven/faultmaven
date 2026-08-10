@@ -524,6 +524,11 @@ class SSOLoginService:
         or deactivated since the callback) — the router maps None to a uniform
         401 so the endpoint cannot be used to distinguish failure causes.
         """
+        # Pre-read capture for the mints below (#831): before the login
+        # payload is consumed and the user row re-read, so a revocation
+        # landing during either kills the pair minted from what they read.
+        state_read_at = datetime.now(UTC)
+
         payload = await self._store.consume_login(code)
         if payload is None:
             return None
@@ -547,8 +552,12 @@ class SSOLoginService:
         if organization_id:
             user.organization_id = organization_id
 
-        access_token = await self._tokens.generate_access_token(user)
-        refresh_token = await self._tokens.generate_refresh_token(user)
+        access_token = await self._tokens.generate_access_token(
+            user, state_read_at=state_read_at
+        )
+        refresh_token = await self._tokens.generate_refresh_token(
+            user, state_read_at=state_read_at
+        )
 
         session, _resumed = await self._sessions.create_session(
             user_id=user.user_id,

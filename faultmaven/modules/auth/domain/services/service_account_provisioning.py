@@ -136,6 +136,11 @@ async def provision_service_account_credential(
     account_created = False
     account_kind_corrected = False
 
+    # Pre-read capture for the mint below (#831): before the account is read
+    # (or created), so a revocation landing during provisioning kills the
+    # credential minted from what it read.
+    state_read_at = datetime.now(timezone.utc)
+
     user = await user_store.get_user_by_username(username)
     if user is None:
         user = await user_store.create_user(
@@ -168,7 +173,9 @@ async def provision_service_account_credential(
         # claim. Mirrors `/auth/refresh` step 2b (#869, #873).
         setattr(user, "organization_id", organization_id)
 
-    refresh_token = await token_generator.generate_refresh_token(user)
+    refresh_token = await token_generator.generate_refresh_token(
+        user, state_read_at=state_read_at
+    )
     if not refresh_token:
         raise ServiceAccountProvisioningError(
             f"Token generator returned no refresh token for '{username}'"

@@ -95,7 +95,9 @@ async def test_refresh_returns_new_token_pair_and_rotates():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_generator(store)
-    old_refresh = await generator.generate_refresh_token(user)
+    old_refresh = await generator.generate_refresh_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
 
     request = _fake_request(_FakeUserStore(user), revocation_store=store)
     response = SimpleNamespace(headers={})
@@ -128,7 +130,9 @@ async def test_refresh_rejects_reused_old_token_after_rotation():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_generator(store)
-    old_refresh = await generator.generate_refresh_token(user)
+    old_refresh = await generator.generate_refresh_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
 
     request = _fake_request(_FakeUserStore(user), revocation_store=store)
     response = SimpleNamespace(headers={})
@@ -151,7 +155,9 @@ async def test_refresh_rejects_an_access_token_in_place_of_refresh():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_generator(store)
-    access_token = await generator.generate_access_token(user)
+    access_token = await generator.generate_access_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
 
     request = _fake_request(_FakeUserStore(user), revocation_store=store)
     response = SimpleNamespace(headers={})
@@ -169,7 +175,9 @@ async def test_refresh_rejects_when_user_no_longer_exists():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_generator(store)
-    refresh = await generator.generate_refresh_token(user)
+    refresh = await generator.generate_refresh_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
 
     # User store no longer has the account.
     request = _fake_request(_FakeUserStore(None), revocation_store=store)

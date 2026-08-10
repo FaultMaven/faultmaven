@@ -126,7 +126,11 @@ async def test_forged_access_token_has_the_live_mint_claim_set(auth_service, gen
     would let the forger keep emitting an extra claim (which is exactly the
     `permissions` defect), and a superset assertion would let it drop one.
     """
-    live = _claims(await generator.generate_access_token(_user()))
+    live = _claims(
+        await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
+    )
     forged = _claims(
         forge_access_token(
             auth_service,
@@ -152,7 +156,11 @@ async def test_forged_refresh_token_has_the_live_mint_claim_set(
     auth_service, generator
 ):
     """Same rule for the refresh payload."""
-    live = _claims(await generator.generate_refresh_token(_user()))
+    live = _claims(
+        await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
+    )
     forged = _claims(
         forge_refresh_token(auth_service, user_id=USER_ID, organization_id=ORG_ID)
     )
@@ -175,8 +183,16 @@ async def test_no_mint_emits_a_permissions_claim(generator):
     directly so the property survives someone "fixing" the parity test by adding
     the claim to both.
     """
-    access = _claims(await generator.generate_access_token(_user()))
-    refresh = _claims(await generator.generate_refresh_token(_user()))
+    access = _claims(
+        await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
+    )
+    refresh = _claims(
+        await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
+    )
 
     assert "permissions" not in access
     assert "permissions" not in refresh
@@ -197,7 +213,9 @@ async def test_identity_from_a_live_token_carries_no_permissions(
     that adopts it 403s in production, and this test is where that is written
     down. Roles, which the mint *does* emit, survive the trip.
     """
-    token = await generator.generate_access_token(_user())
+    token = await generator.generate_access_token(
+        _user(), state_read_at=datetime.now(timezone.utc)
+    )
 
     user = auth_service.extract_user_from_token(token)
 

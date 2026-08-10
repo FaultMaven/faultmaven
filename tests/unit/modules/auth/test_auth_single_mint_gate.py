@@ -368,7 +368,9 @@ async def test_no_token_of_any_kind_is_minted_for_a_deactivated_account(
     """
     generator = _generator_named(generator_name)
     with pytest.raises(InactiveAccountError):
-        await getattr(generator, method)(_user(is_active=False))
+        await getattr(generator, method)(
+            _user(is_active=False), state_read_at=datetime.now(timezone.utc)
+        )
 
 
 @pytest.mark.unit
@@ -379,7 +381,9 @@ async def test_no_token_of_any_kind_is_minted_for_a_deactivated_account(
 async def test_an_active_account_is_unaffected(method, generator_name):
     """The negative control: the gate must not refuse everyone."""
     generator = _generator_named(generator_name)
-    assert await getattr(generator, method)(_user(is_active=True))
+    assert await getattr(generator, method)(
+        _user(is_active=True), state_read_at=datetime.now(timezone.utc)
+    )
 
 
 @pytest.mark.unit

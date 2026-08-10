@@ -26,6 +26,7 @@ maintained and tested, not because a form is live.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -307,7 +308,9 @@ class TestDeactivatedAccountsAreNotEnumerable:
         generator = user_service.token_generator
 
         real_token = await user_service.request_password_reset(email=EMAIL.upper())
-        decoy = await generator.generate_dummy_reset_token(EMAIL.upper())
+        decoy = await generator.generate_dummy_reset_token(
+            EMAIL.upper(), state_read_at=datetime.now(timezone.utc)
+        )
 
         real_claims = await generator.verify_password_reset_token(real_token)
         decoy_claims = await generator.verify_password_reset_token(decoy.token)
@@ -395,7 +398,8 @@ class TestTheGeneratorRefusesWhatIsNotAResetToken:
                 roles=["member"],
                 is_active=True,
                 organization_id="org-1",
-            )
+            ),
+            state_read_at=datetime.now(timezone.utc),
         )
 
         with pytest.raises(pyjwt.InvalidTokenError):

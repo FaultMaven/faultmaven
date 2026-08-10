@@ -21,7 +21,7 @@ instead of silently passing a dead gate.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlsplit
@@ -272,10 +272,14 @@ class FakeUserRepository:
 
 
 class FakeTokenGenerator:
-    async def generate_access_token(self, user):
+    async def generate_access_token(
+        self, user, state_read_at=datetime.now(timezone.utc)
+    ):
         return f"access-{user.user_id}"
 
-    async def generate_refresh_token(self, user):
+    async def generate_refresh_token(
+        self, user, state_read_at=datetime.now(timezone.utc)
+    ):
         return f"refresh-{user.user_id}"
 
 

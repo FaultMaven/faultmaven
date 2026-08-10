@@ -223,6 +223,11 @@ class OAuthServiceImpl(IOAuthService):
         """
         start_time = time.time()
 
+        # Pre-read capture for the mints below (#831): before the code lookup
+        # and the user load, so a revocation landing during either kills the
+        # pair minted from what they read.
+        state_read_at = datetime.now(timezone.utc)
+
         logger.info(
             "OAuth token exchange requested",
             extra={
@@ -466,8 +471,12 @@ class OAuthServiceImpl(IOAuthService):
             )
 
         # Generate access token and refresh token
-        access_token = await self.token_generator.generate_access_token(user)
-        refresh_token = await self.token_generator.generate_refresh_token(user)
+        access_token = await self.token_generator.generate_access_token(
+            user, state_read_at=state_read_at
+        )
+        refresh_token = await self.token_generator.generate_refresh_token(
+            user, state_read_at=state_read_at
+        )
 
         logger.info(
             "OAuth tokens issued",
@@ -518,6 +527,10 @@ class OAuthServiceImpl(IOAuthService):
         Raises:
             InvalidGrantError: If refresh token invalid, expired, or revoked
         """
+        # Pre-read capture for the mints below (#831): before the presented
+        # token's validation and the user load, as POST /auth/refresh does.
+        state_read_at = datetime.now(timezone.utc)
+
         logger.info(
             "OAuth token refresh requested",
             extra={
@@ -604,7 +617,9 @@ class OAuthServiceImpl(IOAuthService):
         setattr(user, "organization_id", payload.get("organization_id") or None)
 
         # Generate new access token
-        new_access_token = await self.token_generator.generate_access_token(user)
+        new_access_token = await self.token_generator.generate_access_token(
+            user, state_read_at=state_read_at
+        )
 
         # Rotate the refresh token: the presented token is single-use. Matches
         # POST /auth/refresh, so both refresh paths carry the same contract and a
@@ -615,7 +630,9 @@ class OAuthServiceImpl(IOAuthService):
         # no replacement — a lockout only an operator can undo. This order costs
         # nothing: if the revoke fails the caller simply retries with a token
         # that is still valid.
-        new_refresh_token = await self.token_generator.generate_refresh_token(user)
+        new_refresh_token = await self.token_generator.generate_refresh_token(
+            user, state_read_at=state_read_at
+        )
         await self.token_generator.revoke_refresh_token(refresh_token)
         logger.debug(
             "OAuth refresh token rotated",

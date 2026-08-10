@@ -19,7 +19,7 @@ site, mint, verify the signature, and measure ``exp - iat``.
 from __future__ import annotations
 
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -190,7 +190,9 @@ class TestCloudMintHonoursTheKnob:
             _revocation_store(),
             _auth_service(private_pem, public_pem),
         )
-        token = await generator.generate_access_token(_user())
+        token = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         payload = jwt.decode(
             token,
@@ -218,7 +220,9 @@ class TestCloudMintHonoursTheKnob:
             _revocation_store(),
             _auth_service(private_pem, public_pem),
         )
-        token = await generator.generate_refresh_token(_user())
+        token = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         payload = jwt.decode(
             token,
@@ -250,7 +254,9 @@ class TestLocalMintHonoursTheSameKnob:
         generator = auth_api._build_local_jwt_generator(_revocation_store())
 
         access = jwt.decode(
-            await generator.generate_access_token(_user()),
+            await generator.generate_access_token(
+                _user(), state_read_at=datetime.now(timezone.utc)
+            ),
             SECRET,
             algorithms=["HS256"],
             audience=AUDIENCE,
@@ -259,7 +265,9 @@ class TestLocalMintHonoursTheSameKnob:
         # The HS256 refresh payload takes the generator's iss/aud like every
         # other mint here (#938), so this verifies them rather than opting out.
         refresh = jwt.decode(
-            await generator.generate_refresh_token(_user()),
+            await generator.generate_refresh_token(
+                _user(), state_read_at=datetime.now(timezone.utc)
+            ),
             SECRET,
             algorithms=["HS256"],
             audience=AUDIENCE,

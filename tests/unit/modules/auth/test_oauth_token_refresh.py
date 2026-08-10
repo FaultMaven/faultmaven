@@ -120,7 +120,9 @@ async def test_oauth_refresh_returns_new_pair_and_rotates():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
-    old_refresh = await generator.generate_refresh_token(user)
+    old_refresh = await generator.generate_refresh_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
 
     request = _fake_request(_FakeUserStore(user), generator)
     response = SimpleNamespace(headers={})
@@ -151,7 +153,9 @@ async def test_oauth_refresh_rejects_replayed_rotated_token():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
-    old_refresh = await generator.generate_refresh_token(user)
+    old_refresh = await generator.generate_refresh_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
 
     request = _fake_request(_FakeUserStore(user), generator)
     response = SimpleNamespace(headers={})
@@ -171,7 +175,9 @@ async def test_oauth_refresh_rejects_access_token_in_place_of_refresh():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
-    access_token = await generator.generate_access_token(user)
+    access_token = await generator.generate_access_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
 
     request = _fake_request(_FakeUserStore(user), generator)
     response = SimpleNamespace(headers={})
@@ -188,7 +194,9 @@ async def test_oauth_refresh_rejects_when_user_gone():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
-    refresh = await generator.generate_refresh_token(user)
+    refresh = await generator.generate_refresh_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
 
     request = _fake_request(_FakeUserStore(None), generator)
     response = SimpleNamespace(headers={})
@@ -209,7 +217,9 @@ async def test_oauth_refresh_rejects_inactive_user():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
-    refresh = await generator.generate_refresh_token(user)
+    refresh = await generator.generate_refresh_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
     user.is_active = False
 
     request = _fake_request(_FakeUserStore(user), generator)
@@ -228,7 +238,9 @@ async def test_oauth_refresh_503_when_generator_not_attached():
     user = _make_user()
     store = InMemoryRevocationStore()
     generator = _make_rs256_generator(store)
-    refresh = await generator.generate_refresh_token(user)
+    refresh = await generator.generate_refresh_token(
+        user, state_read_at=datetime.now(timezone.utc)
+    )
 
     request = _fake_request(_FakeUserStore(user), jwt_token_generator=None)
     response = SimpleNamespace(headers={})

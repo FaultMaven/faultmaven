@@ -299,6 +299,30 @@ revocation meant to kill it. Persisting first inverts that, at the accepted
 cost that a store-write failure leaves the change committed while returning an
 error (the #767 posture: never report a revocation that did not land).
 
+**`iat` is stamped from a pre-read instant, not from mint time (#831).**
+Persist-then-revoke closes the window a login could complete entirely inside,
+but not a request that *straddles* the whole sequence: one that reads the user
+row (old password hash, old roles) or validates a still-valid refresh token,
+loses the CPU while the admin action persists and watermarks, and only then
+mints. Stamped at mint time, that token's `iat` postdates the watermark and
+survives it while carrying pre-change state. So every
+`IJWTTokenGenerator.generate_*` method requires a `state_read_at` argument —
+captured by the caller before its first read of any state the claims derive
+from (the user row, the presented refresh token, the authorization code, the
+SSO login payload, the reset-request account lookup) — and stamps `iat` and
+`exp` from it. A mint whose reads straddled a revocation then necessarily
+carries `iat <= watermark` and dies with it. The argument is required with no
+default, so a future mint path that forgets it fails loudly rather than
+silently reopening the straddle; a `state_read_at` more than a couple of
+seconds in the future is refused outright (a miswired caller passing a
+derived time, not clock slew), and a marginally-future one degrades to `now`,
+the smaller and therefore more-revocable stamp. The cost is that a token's
+effective lifetime is shortened by its handler's read-to-mint latency —
+sub-second everywhere, dominated by the bcrypt verify on password flows. The
+password-reset decoy takes the same captured instant as the real mint, so
+`iat` cannot carry the account lookup's latency and answer the existence
+question the decoy refuses.
+
 The admin endpoint performs the revocation *before* resolving the user, and
 never conditions it on that lookup. `DatabaseUserStore.get_user` swallows its
 exceptions and returns `None`, making a database outage indistinguishable from

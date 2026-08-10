@@ -22,6 +22,7 @@ These tests pin the unified contract with the PRODUCTION store class
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -112,8 +113,12 @@ class TestLocalGeneratorWithProductionStore:
         generator = _generator(store)
         user = _user()
 
-        access = await generator.generate_access_token(user)
-        refresh = await generator.generate_refresh_token(user)
+        access = await generator.generate_access_token(
+            user, state_read_at=datetime.now(timezone.utc)
+        )
+        refresh = await generator.generate_refresh_token(
+            user, state_read_at=datetime.now(timezone.utc)
+        )
 
         assert await generator.validate_access_token(access) is not None
         assert await generator.validate_refresh_token(refresh) is not None
@@ -128,7 +133,9 @@ class TestLocalGeneratorWithProductionStore:
         store = _store(redis)
         generator = _generator(store)
 
-        access = await generator.generate_access_token(_user())
+        access = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
         await generator.revoke_access_token(access)
 
         keys = [k async for k in redis.scan_iter("*")]
@@ -149,7 +156,9 @@ class TestGeneratorRevocationVisibleToRequestPath:
         ):
             auth_service = AuthService(revocation_store=store)
 
-            access = await generator.generate_access_token(_user())
+            access = await generator.generate_access_token(
+                _user(), state_read_at=datetime.now(timezone.utc)
+            )
 
             # Sanity: passes the request-path check before revocation
             claims = await auth_service.verify_token_with_revocation_check(
@@ -173,8 +182,12 @@ class TestFailurePosture:
     async def test_validate_fails_closed_on_store_error(self):
         store = _store(_fake_redis())
         generator = _generator(store)
-        access = await generator.generate_access_token(_user())
-        refresh = await generator.generate_refresh_token(_user())
+        access = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         async def boom(jti):
             raise ConnectionError("store down")
@@ -187,7 +200,9 @@ class TestFailurePosture:
     async def test_revoke_propagates_store_write_error(self):
         store = _store(_fake_redis())
         generator = _generator(store)
-        refresh = await generator.generate_refresh_token(_user())
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         async def boom(jti, ttl):
             raise ConnectionError("store down")
@@ -248,7 +263,9 @@ class TestLogoutRevokesViaSharedStore:
         store = _store(_fake_redis())
         generator = _generator(store)
         user = _user()
-        access = await generator.generate_access_token(user)
+        access = await generator.generate_access_token(
+            user, state_read_at=datetime.now(timezone.utc)
+        )
 
         result = await auth_routes.logout(
             _logout_request(store), current_user=user, token=access
@@ -266,7 +283,9 @@ class TestLogoutRevokesViaSharedStore:
         store = _store(_fake_redis())
         generator = _generator(store)
         user = _user()
-        access = await generator.generate_access_token(user)
+        access = await generator.generate_access_token(
+            user, state_read_at=datetime.now(timezone.utc)
+        )
 
         async def boom(jti, ttl):
             raise ConnectionError("store down")
@@ -306,7 +325,9 @@ class TestLocalRouteGeneratorFactory:
 
         assert generator.revocation_store is store
 
-        refresh = await generator.generate_refresh_token(_user())
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
         assert await generator.validate_refresh_token(refresh) is not None
         await generator.revoke_refresh_token(refresh)
         assert await generator.validate_refresh_token(refresh) is None
