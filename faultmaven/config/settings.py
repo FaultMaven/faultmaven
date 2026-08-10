@@ -1340,6 +1340,29 @@ class ProtectionSettings(BaseSettings):
     # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio libraries)
     sanitize_pii: bool = Field(default=False)
 
+    # Key for the redaction pseudonym HMAC (#971). Placeholders must be
+    # unguessable from redacted output AND identical for the same value across
+    # separately-sanitized artifacts, which only a keyed digest gives — see
+    # infrastructure/security/pseudonym_key.py. Unset is normal in standalone
+    # (a key is generated beside the data on first use) and REFUSED in cloud,
+    # where per-pod generation would diverge.
+    pseudonym_key: Optional[SecretStr] = Field(
+        default=None,
+        validation_alias="REDACTION_PSEUDONYM_KEY",
+        description=(
+            "Secret keying redaction pseudonyms. Required in cloud; "
+            "auto-generated and persisted in standalone when unset."
+        ),
+    )
+    pseudonym_key_path: str = Field(
+        default="./data/.redaction_pseudonym_key",
+        validation_alias="REDACTION_PSEUDONYM_KEY_PATH",
+        description=(
+            "Where standalone persists its generated pseudonym key. Ignored "
+            "when REDACTION_PSEUDONYM_KEY is set."
+        ),
+    )
+
     # TTL for case-scoped redaction registries in Redis (hours).
     # Controls how long the bidirectional PII mapping is kept for a case.
     # After expiry, a new registry starts (placeholders may renumber).

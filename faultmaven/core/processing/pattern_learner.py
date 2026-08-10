@@ -930,7 +930,10 @@ class PatternLearner:
     ) -> str:
         """Generate unique ID for a pattern"""
         content = f"{pattern_type.value}:{regex_pattern}"
-        return hashlib.md5(content.encode()).hexdigest()[:16]
+        # Fingerprint of a learned regex, not a secret: the input is the
+        # pattern text itself, which is not confidential and is stored
+        # alongside this id.
+        return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()[:16]
 
     def _hash_content(self, content: str) -> str:
         """Generate hash for content"""

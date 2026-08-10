@@ -623,8 +623,12 @@ jobs:
 
       - name: Run security linter (bandit)
         # Gate on bandit's own exit code at HIGH severity + HIGH confidence —
-        # no report parser to fail open (#969). Same effective gate as before
-        # (the old parser only failed on HIGH/HIGH). B324 skipped: MD5 here is
-        # caching/fingerprinting, not security.
+        # no report parser to fail open (#969). B324 (weak hash) is NOT
+        # skipped: the blanket skip meant any future `hashlib.md5(secret)`
+        # passed this gate silently, which is how the redaction pseudonyms
+        # kept an MD5 of the PII they were hiding (#971). Sites that really
+        # are fingerprints carry `usedforsecurity=False` at the call, so the
+        # justification lives next to the code a reviewer is reading rather
+        # than in this workflow.
         run: |
-          bandit -r faultmaven/ --severity-level high --confidence-level high --skip B324
+          bandit -r faultmaven/ --severity-level high --confidence-level high

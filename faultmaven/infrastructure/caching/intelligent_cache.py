@@ -675,7 +675,15 @@ class IntelligentCache(BaseExternalClient):
 
         # Create semantic hash from context
         context_str = json.dumps(context, sort_keys=True)
-        context_hash = hashlib.md5(context_str.encode()).hexdigest()[:8]
+        # Fingerprint that varies a cache key by context, not a secret. This
+        # keyed path has no live caller at all: the only reference to
+        # IntelligentCache is the observability dashboard, which calls
+        # get_cache_statistics() and never get/set, and nothing in production
+        # constructs either object (the container getters read attributes that
+        # are never assigned). So the suffix is not a tenant boundary.
+        context_hash = hashlib.md5(
+            context_str.encode(), usedforsecurity=False
+        ).hexdigest()[:8]
 
         return f"{key}:{context_hash}"
 

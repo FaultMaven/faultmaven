@@ -1902,11 +1902,12 @@ class ConversionService:
         if len(runbook_id) > 60:
             import hashlib as _hashlib
 
-            runbook_id = (
-                runbook_id[:55]
-                + "-"
-                + _hashlib.md5(runbook_id.encode()).hexdigest()[:4]
-            )
+            # Disambiguating suffix for a truncated slug, not a secret (see
+            # generate_runbook_id in knowledge/domain/models/conversion.py).
+            suffix = _hashlib.md5(
+                runbook_id.encode(), usedforsecurity=False
+            ).hexdigest()[:4]
+            runbook_id = runbook_id[:55] + "-" + suffix
 
         symptom_str = ", ".join(symptom_class)
         tags_str = ", ".join(tags) if tags else ""

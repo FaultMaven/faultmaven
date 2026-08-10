@@ -604,5 +604,8 @@ def generate_runbook_id(failure_mode: FailureModeAnalysis) -> str:
     base = f"{failure_mode.service}-{failure_mode.title}"
     slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
     if len(slug) > 60:
-        slug = slug[:55] + "-" + hashlib.md5(slug.encode()).hexdigest()[:4]
+        # Disambiguating suffix for a truncated slug, not a secret: the input
+        # is the slug, which is the id's own visible prefix.
+        suffix = hashlib.md5(slug.encode(), usedforsecurity=False).hexdigest()[:4]
+        slug = slug[:55] + "-" + suffix
     return slug

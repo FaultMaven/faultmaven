@@ -4,11 +4,13 @@ Maintains consistent placeholder mappings across all evidence files
 and tool results within a single investigation case. Backed by Redis
 for persistence across requests within the same case.
 
-The key insight: each `DataSanitizer.sanitize()` call creates a fresh
-entity registry, so different files in the same case get colliding
-placeholders (e.g., two different IPs both become `<IP_ADDRESS_1>`).
-This class provides a case-scoped registry that persists across calls,
-ensuring cross-file consistency.
+The key insight: each `DataSanitizer.sanitize()` call creates a fresh entity
+registry, so nothing in a bare sanitize call remembers what an earlier one
+assigned. Placeholder *agreement* across calls comes from the pseudonym being
+a keyed function of the value (#971), but agreement is not enough on its own —
+reversing a placeholder needs the mapping, and a throwaway registry discards
+it. This class provides a case-scoped registry that persists across calls, so
+the case keeps the only mapping back to the original values.
 
 Usage:
     ctx = CaseRedactionContext(case_id, sanitizer, redis_client)
@@ -128,7 +130,7 @@ class CaseRedactionContext:
             text: Input text to redact.
 
         Returns:
-            Text with PII replaced by indexed placeholders.
+            Text with PII replaced by ``<TYPE_digest>`` placeholders.
         """
         if not self.enabled or not text or not isinstance(text, str):
             return text

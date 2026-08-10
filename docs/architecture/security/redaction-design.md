@@ -73,14 +73,138 @@ every call.
 
 Regex patterns always apply regardless (they are local and cannot fail-open).
 Presidio is gated on the **analyzer** only (the anonymizer service is not used —
-replacement is done in-process for stable placeholders).
+replacement is done in-process so each value gets our own keyed pseudonym).
 
 ## Placeholders
 
-Detected values in **text** map to a stable, reversible pseudonym
-`<TYPE_hash>` within their scope (the case registry gives cross-file
-consistency; the hash is wide enough that distinct values don't collide onto one
-placeholder). Values of **dict keys that name a secret** (`password`, `api_key`,
+Detected values in **text** map to a reversible pseudonym `<TYPE_digest>`,
+where the digest is `HMAC-SHA256(deployment pseudonym key, value)` truncated to
+64 bits.
+
+The construction has to satisfy two requirements that pull against each other:
+
+- **Unguessable from redacted output.** The spaces redaction protects run
+  10^7–10^10 candidates — internal IPs, SSNs, phone numbers — so an *unkeyed*
+  digest is a commitment to the plaintext: anyone holding the redacted text can
+  enumerate the space offline and match digests. (Until #971 this was
+  `md5(value)[:12]`, exactly that.)
+- **The same for the same value across separately-sanitized artifacts.**
+  Evidence files are redacted one at a time and persisted, the KB at ingestion,
+  prompts per turn — each with its own registry. If one host reads as two
+  placeholders across those, the investigation loses the co-reference it exists
+  to find, and an LLM told about two hosts can conclude something false about
+  either.
+
+Only a keyed deterministic function satisfies both: a random per-registry token
+gives the first and destroys the second, an unkeyed hash the reverse.
+
+Truncation is 64 bits, wider than the 48 of the digest it replaced. A collision
+maps two distinct values onto one placeholder and the reverse map then resolves
+one of them to the **wrong** original — a wrong value handed back, not merely a
+lost one. The redaction registry is unbounded (`entity_registry_cap_per_type`
+caps a different subsystem's extractor, not this one), so the size to plan for
+is however many distinct entities a large log holds: over 10^5 entries the
+birthday bound is ~2e-5 at 48 bits and ~3e-10 at 64.
+
+Consequence to be explicit about: within a deployment the same value always
+produces the same placeholder, so redacted artifacts *can* be correlated by
+anyone who can already read them. That is the co-reference above, not a
+separate leak — it cannot be removed without removing the correlation the
+product depends on. Cross-tenant reads are stopped by RLS, not by the digest.
+
+### The pseudonym key
+
+Owned by `infrastructure/security/pseudonym_key.py` and deployment-wide, never
+per-tenant: global KB content is shared across tenants, so a per-tenant key
+would break co-reference between a shared runbook and a tenant's own case.
+
+| Deployment | Source |
+|---|---|
+| Cloud | `REDACTION_PSEUDONYM_KEY`, supplied as a deployment secret. **Required** — startup refuses without it. |
+| Standalone | `REDACTION_PSEUDONYM_KEY` if set, otherwise generated once and persisted at `REDACTION_PSEUDONYM_KEY_PATH` (default `./data/.redaction_pseudonym_key`, mode 0600). |
+
+Cloud refuses to generate because replicas do not share a data volume: each pod
+would mint its own key and silently produce a different placeholder for the
+same host. The key is resolved at startup, so a missing one fails the boot
+rather than scattered requests, and the standalone key file is never created by
+a live request.
+
+Every path fails closed, because a weak key is worse than a missing one — it
+looks configured, and `HMAC-SHA256("", value)` is a fixed publicly-recomputable
+function of the value, i.e. the original defect wearing a keyed API:
+
+- Both sources are whitespace-stripped, so the same secret supplied as a file
+  and as an env var (k8s Secrets and `base64 <<< "key"` append newlines) keys
+  the same HMAC.
+- A configured key shorter than 16 characters is refused. A blank or
+  whitespace-only one counts as *unset* rather than as an empty key — taking it
+  literally would give every deployment that exported it blank the same key.
+- The generated file is published by writing a temp file, fsyncing, and
+  `link()`-ing it into place. `O_CREAT|O_EXCL` alone serializes the create but
+  not the create-and-write, so a second worker reading in that window gets zero
+  bytes — and standalone supports `WORKERS>1`, whose processes race on first
+  start. Where `link()` is unsupported (some network and bind mounts) the
+  fallback takes an exclusive `flock`, **re-reads under it**, and lands the
+  content with an atomic `replace`. Re-deciding under the lock is what makes
+  racers converge: `replace` is unconditional, so a racer holding its own
+  candidate would otherwise overwrite the winner.
+- A key file that exists but is empty or too short is refused, not replaced.
+  The reason is not concurrency — a lock makes replacement race-free, and the
+  fallback above uses one. It is that a corrupt file means the previous key is
+  *gone*, so any replacement disagrees with every placeholder already written
+  into stored evidence, KB content and transcripts: the same host reads as one
+  placeholder in old material and another from then on. No protocol can repair
+  that, because the information needed no longer exists. The cost of refusing
+  is real — a corrupt file stops the boot even with redaction switched off —
+  and it is accepted because a wrong-conclusion risk outranks an availability
+  loss.
+
+### Agreement across processes
+
+Resolving a key does not establish the invariant that matters: that *every*
+process redacting for this deployment uses the same one. Whether a generated
+key is shared is a property of the topology — one process, or several sharing a
+durable filesystem, is fine; several pods with no shared volume is not — and
+the application cannot see its own topology. It used to infer from
+`DEPLOYMENT_MODE=cloud`, which is a proxy an operator can simply not set: the
+on-prem cluster does not, so a multi-replica Deployment took the standalone
+path and minted a key per pod, silently, with no crashloop and no failed
+rollout.
+
+So the invariant is checked rather than guessed at. At startup each process
+publishes `sha256(key)` to `redaction:pseudonym_key_fingerprint` in Redis under
+`SETNX` — the one store every replica genuinely shares — and any process that
+finds a *different* fingerprint already there refuses to serve. This holds
+whatever the deployment mode claims, however the key was obtained, and whatever
+the topology turns out to be; it also catches a half-rolled-out change to the
+secret, and pods started against different values of it.
+
+Two properties worth stating:
+
+- **A digest is published, never the key.** This same Redis holds the
+  placeholder→plaintext registry, and the design turns on not putting the key
+  beside it. A SHA-256 of a 256-bit random value discloses nothing.
+- **An unreachable Redis degrades rather than blocks.** An unavailable check is
+  not evidence of disagreement, and failing closed on it would make redaction
+  depend on Redis uptime. Standalone's in-process FakeRedis makes this a
+  self-check that always agrees — correct, since one process cannot disagree
+  with itself, and workers sharing the key file converge anyway.
+
+The cloud refusal above remains, but as an earlier and clearer error rather
+than the guarantee; this check is the guarantee.
+
+It is deliberately kept out of the stores holding redacted data or the mapping
+back from it. `CaseRedactionContext` persists the placeholder→plaintext registry
+in **Redis** (`redaction:{case_id}`), and the redacted artifacts themselves live
+in the application database; a key in either would hand a single compromise both
+halves.
+
+Rotating the key renumbers every future placeholder; placeholders already
+written into stored evidence, KB content and transcripts keep the digest they
+were written with and stop reversing. Rotation is therefore a deliberate act,
+not routine hygiene.
+
+Values of **dict keys that name a secret** (`password`, `api_key`,
 `auth_token`, …) are fully redacted to a fixed `[TYPE_REDACTED]` marker instead
 — the value is discarded, not pseudonymized, because it should never be
 recoverable. Secret-key names are matched as whole segments, so `monkey` /

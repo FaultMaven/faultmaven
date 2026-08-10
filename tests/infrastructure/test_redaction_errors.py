@@ -34,6 +34,9 @@ def _fail_open_settings():
     settings.protection.presidio_anonymizer_url = "http://fake:8081"
     settings.protection.sanitize_pii = True
     settings.protection.fail_open = True
+    # Real str, not the MagicMock attribute: the pseudonym key is fed to hmac,
+    # which rejects anything not bytes-like.
+    settings.protection.pseudonym_key = "test-pseudonym-key"
     settings.server.skip_service_checks = True
     return settings
 
