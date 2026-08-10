@@ -38,6 +38,7 @@ Covered here:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -134,16 +135,31 @@ def _claims(token: str) -> dict:
     return pyjwt.decode(token, options={"verify_signature": False}, audience=AUDIENCE)
 
 
-async def _watermark_now(store, user_id: str = USER_ID) -> int:
-    """Write the user's watermark at the current instant, as a revocation does."""
-    revoked_at = int(datetime.now(timezone.utc).timestamp())
-    await store.revoke_user_tokens_before(user_id, revoked_at, TTL)
-    return revoked_at
-
-
 # ---------------------------------------------------------------------------
 # 1. The straddle: pre-revocation read, post-revocation mint => dead token
 # ---------------------------------------------------------------------------
+#
+# The window is simulated by backdating: the read's capture sits 10s in the
+# past, the watermark 5s in the past, and the mint runs now. That keeps the
+# ordering of the real race (read began, THEN the revocation landed, THEN the
+# mint ran) while spanning whole seconds — necessary because ``iat`` has
+# 1-second granularity and the comparison is ``<=``: with all three events in
+# the same second, even a mint-time ``iat`` equals the watermark and is
+# rejected, and the test would pass against the pre-#831 code it exists to
+# refute. Verified by mutation: with ``_mint_instant`` returning ``now``,
+# these go RED; a same-second version stayed GREEN.
+
+#: read capture ... 5s ... watermark ... 5s ... mint (now)
+STRADDLE_READ_AGE = timedelta(seconds=10)
+STRADDLE_WATERMARK_AGE = timedelta(seconds=5)
+
+
+async def _straddle(store, user_id: str = USER_ID) -> datetime:
+    """Arrange the straddle; returns the pre-read capture to mint with."""
+    state_read_at = datetime.now(timezone.utc) - STRADDLE_READ_AGE
+    watermark = datetime.now(timezone.utc) - STRADDLE_WATERMARK_AGE
+    await store.revoke_user_tokens_before(user_id, int(watermark.timestamp()), TTL)
+    return state_read_at
 
 
 @pytest.mark.parametrize("algo", GENERATORS)
@@ -156,8 +172,7 @@ async def test_access_token_from_straddling_mint_is_rejected(algo):
     store = InMemoryRevocationStore()
     generator = GENERATORS[algo](store)
 
-    state_read_at = datetime.now(timezone.utc)  # the handler's capture
-    await _watermark_now(store)  # admin action lands mid-request
+    state_read_at = await _straddle(store)
 
     token = await generator.generate_access_token(_user(), state_read_at=state_read_at)
     assert await generator.validate_access_token(token) is None
@@ -168,8 +183,7 @@ async def test_refresh_token_from_straddling_mint_is_rejected(algo):
     store = InMemoryRevocationStore()
     generator = GENERATORS[algo](store)
 
-    state_read_at = datetime.now(timezone.utc)
-    await _watermark_now(store)
+    state_read_at = await _straddle(store)
 
     token = await generator.generate_refresh_token(_user(), state_read_at=state_read_at)
     assert await generator.validate_refresh_token(token) is None
@@ -186,8 +200,7 @@ async def test_reset_token_from_straddling_mint_is_revoked(algo):
     store = InMemoryRevocationStore()
     generator = GENERATORS[algo](store)
 
-    state_read_at = datetime.now(timezone.utc)
-    await _watermark_now(store)
+    state_read_at = await _straddle(store)
 
     mint = await generator.generate_password_reset_token(
         _user(), state_read_at=state_read_at
@@ -330,10 +343,17 @@ async def test_marginally_future_state_read_at_degrades_to_now():
 # inside the straddle window. If a handler moved its capture after the read,
 # the minted pair would postdate the watermark and these go RED, with the
 # generator fix intact.
+#
+# The read then stalls past the next whole second before returning. Without
+# that, the capture, the watermark and the mint all land in the same second,
+# where ``iat <= watermark`` rejects the pair even for a mint-time (or
+# post-read) stamp — and the test would pass against exactly the defects it
+# exists to catch. Real wall-clock delay, not a mocked clock: the handler's
+# capture must be the thing under test.
 
 
 class _StraddlingUserStore:
-    """Returns the user, but a revocation lands during the read."""
+    """Returns the user, but a revocation lands (and time passes) mid-read."""
 
     def __init__(self, user: DevUser, store: InMemoryRevocationStore) -> None:
         self._user = user
@@ -342,6 +362,10 @@ class _StraddlingUserStore:
     async def _read(self, matches: bool) -> DevUser | None:
         revoked_at = int(datetime.now(timezone.utc).timestamp())
         await self._store.revoke_user_tokens_before(self._user.user_id, revoked_at, TTL)
+        # Stall into the second after the watermark, so anything stamped
+        # after this read observably postdates it.
+        while int(datetime.now(timezone.utc).timestamp()) <= revoked_at:
+            await asyncio.sleep(0.05)
         return self._user if matches else None
 
     async def get_user_by_username(self, username: str) -> DevUser | None:
