@@ -1275,31 +1275,6 @@ def setup_middleware():
                 "Skipping PerformanceTrackingMiddleware (SKIP_SERVICE_CHECKS=True)"
             )
 
-    # 8. System-wide optimization middleware (Phase 2 optimization) - skip in test environments
-    if not settings.server.skip_service_checks and not _is_test_environment():
-        from .api.middleware.system_optimization import SystemOptimizationMiddleware
-
-        if logging_enabled:
-            logger.info("Adding SystemOptimizationMiddleware to FastAPI app")
-        app.add_middleware(
-            SystemOptimizationMiddleware,
-            enable_compression=True,
-            enable_caching=True,
-            enable_background_optimization=True,
-            enable_resource_cleanup=True,
-            cache_ttl_seconds=300,
-            compression_threshold=1024,
-        )
-    else:
-        if logging_enabled:
-            logger.info(
-                "Skipping SystemOptimizationMiddleware (test environment or SKIP_SERVICE_CHECKS=True)"
-            )
-    if logging_enabled:
-        logger.info(
-            f"After SystemOptimizationMiddleware: {[type(m).__name__ for m in app.user_middleware]}"
-        )
-
     # 9. Opik tracing middleware (if available) - skip in test environments
     if (
         OPIK_AVAILABLE
@@ -2462,22 +2437,6 @@ async def get_alert_status():
 async def get_system_optimization_metrics():
     """Get comprehensive system optimization metrics."""
     try:
-        # Find system optimization middleware
-        system_opt_middleware = None
-        for middleware in app.user_middleware:
-            if (
-                hasattr(middleware, "cls")
-                and middleware.cls.__name__ == "SystemOptimizationMiddleware"
-            ):
-                system_opt_middleware = middleware.cls
-                break
-
-        optimization_metrics = {}
-        if system_opt_middleware and hasattr(
-            system_opt_middleware, "get_optimization_metrics"
-        ):
-            optimization_metrics = system_opt_middleware.get_optimization_metrics()
-
         # Get resource optimization metrics if available
         resource_metrics = {}
         try:
@@ -2505,24 +2464,25 @@ async def get_system_optimization_metrics():
 
         return {
             "timestamp": to_json_compatible(datetime.now(UTC)),
-            "system_optimization": optimization_metrics,
             "resource_optimization": resource_metrics,
             "llm_optimization": llm_optimization_metrics,
             "optimization_summary": {
                 "total_optimizations_applied": sum(
                     [
-                        optimization_metrics.get("requests_processed", 0),
                         resource_metrics.get("optimization_metrics", {}).get(
                             "memory_pools_created", 0
                         ),
                         llm_optimization_metrics.get("requests_batched", 0),
                     ]
                 ),
+                # `response_compression` and `cache_hit_rate` were reported here
+                # from SystemOptimizationMiddleware. They were always 0.0: the
+                # middleware's compression and caching sat behind a
+                # `hasattr(response, "body")` guard that never holds, because
+                # BaseHTTPMiddleware hands `call_next` a `_StreamingResponse`.
+                # Reporting a measured-looking zero for a feature that cannot
+                # run is worse than not reporting it.
                 "performance_improvements": {
-                    "response_compression": optimization_metrics.get(
-                        "compression_ratio", 0.0
-                    ),
-                    "cache_hit_rate": optimization_metrics.get("cache_hit_rate", 0.0),
                     "memory_pool_efficiency": resource_metrics.get(
                         "memory_pools", {}
                     ).get("efficiency", 0.0),
@@ -2568,26 +2528,6 @@ async def trigger_system_cleanup():
             "objects_collected": collected_objects,
             "memory_freed": True,
         }
-
-        # Clear system optimization middleware caches if available
-        for middleware in app.user_middleware:
-            if (
-                hasattr(middleware, "cls")
-                and middleware.cls.__name__ == "SystemOptimizationMiddleware"
-            ):
-                try:
-                    if hasattr(middleware.cls, "_response_cache"):
-                        cache_size = len(middleware.cls._response_cache)
-                        middleware.cls._response_cache.clear()
-                        middleware.cls._cache_access_times.clear()
-                        middleware.cls._cache_hit_counts.clear()
-                        cleanup_results["cache_cleanup"] = {
-                            "entries_cleared": cache_size,
-                            "cache_reset": True,
-                        }
-                except Exception as e:
-                    cleanup_results["cache_cleanup"] = {"error": str(e)}
-                break
 
         cleanup_results["timestamp"] = to_json_compatible(datetime.now(UTC))
         cleanup_results["cleanup_triggered"] = True
