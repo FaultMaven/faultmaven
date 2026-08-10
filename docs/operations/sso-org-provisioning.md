@@ -108,9 +108,11 @@ create in this run, it says so before writing:
 
 ```text
 ⚠️  REUSING AN EXISTING TENANT — confirm this is the right one.
+    enterprise   3333…  (Acme / acme) already existed
     organization 2222…  (Acme Corp / acme) already existed
     workos:org_01J… is being bound to it, so its users will land in
-    that tenant and see its cases. …
+    that tenant and see its cases. If this is a different customer, stop and
+    re-provision under a distinct --slug.
 ```
 
 That is correct and expected when you are adding a **second** IdP organization
@@ -118,6 +120,39 @@ for a customer you already provisioned. If the name on the existing tenant is
 not the customer you are onboarding, **stop** — re-run with a distinct `--slug`
 (or an explicit `--enterprise-id`). Binding two customers to one organization
 pools their cases.
+
+This warning is about the **organization**, which is the isolation boundary —
+cases belong to it, so reusing one is what pools two customers' data. Creating a
+new organization under an existing enterprise is a different, milder situation
+and gets its own message, below.
+
+### If it warns about the enterprise parent
+
+With no `--enterprise-id`, the enterprise is resolved by `--slug` too. A slug
+that matches an existing *enterprise* therefore parents the new organization
+under it:
+
+```text
+⚠️  NEW ORGANIZATION UNDER AN EXISTING ENTERPRISE.
+    enterprise   3333…  (Acme / acme) already existed and was matched
+                 by --slug, not named with --enterprise-id.
+    If this customer does not belong to that enterprise, stop and re-run
+    with a distinct --slug (or an explicit --enterprise-id). …
+```
+
+Nothing is pooled — the organization is new and its cases are its own — so this
+is not a data-isolation incident. It is flagged because it is expensive to
+correct later: a user account created under the wrong enterprise fails login
+closed with `reason=enterprise_mismatch`, and moving it is an account migration
+(see that section below), not a configuration change.
+
+It is silent when you pass `--enterprise-id` explicitly, because naming the
+parent *is* the confirmation this message asks for.
+
+An `--enterprise-id` that is present but empty — an unset shell variable in the
+`kubectl exec` recipe above — is refused outright rather than treated as absent.
+The two readings ("use the enterprise I named" and "resolve one from `--slug`")
+lead to different tenants, so the script will not guess between them.
 
 ### If it refuses: organization already claimed
 

@@ -23,12 +23,28 @@ membership-level consequences (see
 **Run it with the owner DSN.** ``organizations`` and ``teams`` are RLS-tenanted
 (migration 018) and this script writes rows for a tenant that does not exist
 yet, so it needs the RLS-owning role (``faultmaven``), not the limited
-application role (``faultmaven_app``). It also binds the new organization as the
-current tenant while it writes, so the writes stay inside policy even where RLS
-is forced. A preflight verifies the connected role really is RLS-exempt and
-refuses before any write if it is not — the pod's own ``DATABASE_URL`` is the
-application role by design, so an unqualified ``kubectl exec`` would otherwise
-run under exactly the role this script forbids.
+application role (``faultmaven_app``). A preflight verifies the connected role
+really is RLS-exempt and refuses before any write if it is not — the pod's own
+``DATABASE_URL`` is the application role by design, so an unqualified
+``kubectl exec`` would otherwise run under exactly the role this script forbids.
+
+That exemption is the mechanism. Nothing here scopes the writes to the new
+tenant: the tenant policies key on ``organization_id``, while this script
+resolves an organization by ``(enterprise_id, slug)`` — the id is what the
+lookup exists to learn. So under FORCE ROW LEVEL SECURITY a scoped role could
+not read that row whatever it bound, and the INSERT that followed would trip the
+policy's WITH CHECK arm (migration 018 omits ``FOR``, so USING doubles as WITH
+CHECK). FORCE RLS subjects a table's *owner* to its policies — superusers and
+``BYPASSRLS`` roles are never forced — and FaultMaven enables it nowhere.
+
+Slug-keyed resolution is what forces that, and it *could* be avoided:
+``sso_org_mappings`` is deliberately untenanted (migration 038), so a re-run
+could recover the organization id from the mapping and bind it before opening
+the session. That is not done, and not from inertia — it would only help
+bindings that already exist, and a first run would then meet a slug collision as
+a raw unique-constraint error rather than as ``OrgAlreadyClaimed`` and the
+REUSING alarm below. Those refusals are the point of this script; trading them
+for resilience against a setting nothing sets would be a bad exchange.
 
 Admin binding is manual and post-hoc (ADR-015 D5): no login path grants
 elevated roles, so the first user signs in via SSO and an operator promotes
@@ -63,7 +79,6 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 
 from faultmaven.config.deployment_coherence import DeploymentCoherenceError
-from faultmaven.config.tenant_context import set_current_org_id
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
@@ -123,15 +138,13 @@ async def _get_or_create_organization(
 ) -> tuple[OrganizationModel, bool]:
     """Return (organization, created). Identity is (enterprise_id, slug).
 
-    **Binds the resolved organization as the current tenant** before returning,
-    and — when creating — before the INSERT. ``organizations`` is RLS-tenanted
-    (migration 018) and its policy has no ``FOR`` clause, so USING doubles as
-    WITH CHECK: under FORCE ROW LEVEL SECURITY the insert only passes inside its
-    own tenant scope. Binding here rather than in the caller is what lets every
-    RLS-tenanted write in this script (this row, the team, nothing else) happen
-    under the right ``app.current_org_id``. ``enterprises`` is not tenanted (no
-    ``organization_id`` column — see migration 018), so the enterprise write
-    above needs no bind.
+    Resolving by slug is what makes re-running a no-op — and it is also why the
+    script needs an RLS-exempt role. ``organizations`` is RLS-tenanted
+    (migration 018) and its policy keys on ``organization_id``, so a role that
+    RLS applies to could not read this row without already knowing the id this
+    lookup exists to find. See the module docstring. ``enterprises`` is not
+    tenanted (no ``organization_id`` column — migration 018), so the enterprise
+    write above is unaffected either way.
     """
     existing = (
         await session.execute(
@@ -142,12 +155,9 @@ async def _get_or_create_organization(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        set_current_org_id(existing.organization_id)
         return existing, False
 
-    # Generate the id first so the tenant is bound before the row is written.
     organization_id = str(uuid.uuid4())
-    set_current_org_id(organization_id)
 
     organization = OrganizationModel(
         organization_id=organization_id,
@@ -305,9 +315,6 @@ async def provision(
                 session, enterprise_id=enterprise_id, name=name, slug=slug
             )
 
-            # _get_or_create_organization binds the resolved organization as the
-            # current tenant before its INSERT — every RLS-tenanted write below
-            # is already in scope.
             organization, org_created = await _get_or_create_organization(
                 session,
                 enterprise_id=enterprise.enterprise_id,
@@ -328,28 +335,65 @@ async def provision(
                 prior is None or prior.organization_id != organization.organization_id
             )
 
-            if binding_is_new and not (enterprise_created and org_created):
-                # A brand-new IdP binding onto a tenant this run did not create.
-                # Legitimate (a second IdP org for an existing customer), but it
-                # is also exactly what a slug collision looks like — say so
-                # loudly, and say it before the mapping is written.
+            if binding_is_new and not org_created:
+                # A brand-new IdP binding onto an organization this run did not
+                # create. Legitimate (a second IdP org for an existing customer),
+                # but it is also exactly what a slug collision looks like — say
+                # so loudly, and say it before the mapping is written.
+                #
+                # The organization is the isolation boundary — RLS keys on
+                # organization_id — so reusing the *enterprise* alone is not the
+                # hazard: a new organization under an existing enterprise is the
+                # documented --enterprise-id recipe, and warning about it would
+                # tell the operator that a tenant they just created is somebody
+                # else's. Gating on org_created alone also makes the enterprise
+                # line below unconditional: an organization this run did not
+                # create implies the enterprise holding it already existed.
                 print("")
                 print("⚠️  REUSING AN EXISTING TENANT — confirm this is the right one.")
-                if not enterprise_created:
-                    print(
-                        f"    enterprise   {enterprise.enterprise_id} "
-                        f"({enterprise.name} / {enterprise.slug}) already existed"
-                    )
-                if not org_created:
-                    print(
-                        f"    organization {organization.organization_id} "
-                        f"({organization.name} / {organization.slug}) already existed"
-                    )
+                print(
+                    f"    enterprise   {enterprise.enterprise_id} "
+                    f"({enterprise.name} / {enterprise.slug}) already existed"
+                )
+                print(
+                    f"    organization {organization.organization_id} "
+                    f"({organization.name} / {organization.slug}) already existed"
+                )
                 print(
                     f"    {PROVIDER}:{workos_org_id} is being bound to it, so its "
                     "users will land in\n    that tenant and see its cases. If this "
                     "is a different customer, stop and\n    re-provision under a "
                     "distinct --slug."
+                )
+            elif org_created and not enterprise_id and not enterprise_created:
+                # The organization is new, so there is no tenant to confuse — but
+                # its PARENT was matched by --slug rather than named with
+                # --enterprise-id, which is how a new customer silently ends up
+                # owned by an existing one. Not an isolation breach (cases belong
+                # to the organization), and so deliberately quieter than the
+                # alarm above; it is expensive because it is hard to undo — an
+                # account under the wrong enterprise fails login closed with
+                # reason=enterprise_mismatch and needs a manual migration.
+                #
+                # Truthiness rather than `is None`, to match the test
+                # _get_or_create_enterprise itself applies when it picks the slug
+                # path: an empty --enterprise-id (an unset shell variable in the
+                # documented kubectl recipe) IS the matched-by-slug case, and
+                # must not be read as the operator naming a parent.
+                print("")
+                print("⚠️  NEW ORGANIZATION UNDER AN EXISTING ENTERPRISE.")
+                print(
+                    f"    enterprise   {enterprise.enterprise_id} "
+                    f"({enterprise.name} / {enterprise.slug}) already existed and "
+                    "was matched\n                 by --slug, not named with "
+                    "--enterprise-id."
+                )
+                print(
+                    "    If this customer does not belong to that enterprise, stop "
+                    "and re-run\n    with a distinct --slug (or an explicit "
+                    "--enterprise-id). Moving an account\n    between enterprises "
+                    "later is a manual migration, not a login fix — see\n    "
+                    "docs/operations/sso-org-provisioning.md."
                 )
 
             mapping_created = await _ensure_mapping(
@@ -437,6 +481,21 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    # An --enterprise-id that was passed but is empty is ambiguous, and the two
+    # readings are materially different: "put this under the enterprise I named"
+    # versus "resolve the enterprise from --slug". Falling through to the slug
+    # path silently joins — or creates — an enterprise the operator did not name,
+    # and an account under the wrong enterprise fails login closed
+    # (reason=enterprise_mismatch) and needs a manual migration to move. A bogus
+    # NON-empty id already refuses with LookupError; refusing the empty one keeps
+    # the boundary consistent instead of guessing. The documented kubectl recipe
+    # interpolates a shell variable here, which is exactly how it arrives empty.
+    if args.enterprise_id is not None and not args.enterprise_id.strip():
+        parser.error(
+            "--enterprise-id was given but is empty. Pass a real enterprise id, "
+            "or omit the flag entirely to resolve the enterprise from --slug."
+        )
 
     success = asyncio.run(
         provision(

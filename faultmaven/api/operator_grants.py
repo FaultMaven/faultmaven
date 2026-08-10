@@ -173,6 +173,12 @@ def bind_grant_org_scope(access: OperatorContentAccess) -> None:
     Applied only under ``TENANT_PROVIDER=multi``. Under ``single`` every row
     carries the Standalone organization, so rebinding to anything else would
     make the read return nothing.
+
+    Rebinding here works because the grant lookup and audit write that precede
+    it each ran in their own repository session, and the content reads that
+    follow open theirs after. The engine's ``begin`` listener samples the
+    contextvar at BEGIN only, so a rebind inside an already-open transaction is
+    a silent no-op (#935) — this one must stay between transactions.
     """
     if access.grant is None:
         return

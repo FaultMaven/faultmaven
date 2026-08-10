@@ -3,8 +3,10 @@
 PostgreSQL Row-Level Security for tenant isolation (ADR-010 forward-consolidation
 P2). Enables RLS and a per-table ``<table>_tenant_isolation`` policy on every table
 that carries ``organization_id`` (VARCHAR(36)), so a connection scoped via
-``SET LOCAL app.current_org_id`` (the persistence-layer ``apply_tenant_context``
-chokepoint) can only read rows for its own organization.
+``app.current_org_id`` can only read rows for its own organization. The scope is
+applied by the engine's ``begin`` listener in
+``faultmaven/infrastructure/persistence/database.py``, which sets the GUC once
+per transaction from the tenant contextvar.
 
 The policy is created with USING only and no ``FOR`` clause, which in PostgreSQL
 means ``FOR ALL`` with the USING expression ALSO applied as the WITH CHECK on
