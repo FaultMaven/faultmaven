@@ -178,8 +178,14 @@ def _load_from_settings(settings) -> ProtectionSettings:
         # Deduplication - use defaults
         deduplication_enabled=True,
         deduplication={
-            "default": DeduplicationConfig(enabled=True, ttl=300),
-            "agent_query": DeduplicationConfig(enabled=True, ttl=60),
+            # 30s is the accidental-resubmit window: a double-click or a
+            # client's immediate auto-retry. It is deliberately *not* sized for
+            # deliberate retries -- those carry a stable ``Idempotency-Key`` and
+            # are replayed by the idempotency middleware, which is why this can
+            # stay well under the 120s server turn timeout. A longer window is
+            # actively harmful now that an exact-match duplicate is answered
+            # 409: it refuses a user who legitimately re-sends the same text.
+            "default": DeduplicationConfig(enabled=True, ttl=30),
         },
         # Timeouts - use defaults
         timeouts=TimeoutConfig(
@@ -286,10 +292,7 @@ def _load_from_environment() -> ProtectionSettings:
 
     deduplication = {
         "default": DeduplicationConfig(
-            enabled=True, ttl=int(os.getenv("DEDUP_DEFAULT_TTL", "300"))
-        ),
-        "agent_query": DeduplicationConfig(
-            enabled=True, ttl=int(os.getenv("DEDUP_AGENT_QUERY_TTL", "60"))
+            enabled=True, ttl=int(os.getenv("DEDUP_DEFAULT_TTL", "30"))
         ),
     }
 
@@ -361,8 +364,7 @@ def get_development_protection_settings() -> ProtectionSettings:
         # Deduplication (shorter TTLs for faster iteration)
         deduplication_enabled=True,
         deduplication={
-            "default": DeduplicationConfig(enabled=True, ttl=60),
-            "agent_query": DeduplicationConfig(enabled=True, ttl=30),
+            "default": DeduplicationConfig(enabled=True, ttl=30),
         },
         # Timeouts (shorter for faster feedback)
         timeouts=TimeoutConfig(
@@ -478,8 +480,7 @@ def get_production_protection_settings() -> ProtectionSettings:
         # Deduplication (longer TTLs for better protection)
         deduplication_enabled=True,
         deduplication={
-            "default": DeduplicationConfig(enabled=True, ttl=600),  # 10 minutes
-            "agent_query": DeduplicationConfig(enabled=True, ttl=180),  # 3 minutes
+            "default": DeduplicationConfig(enabled=True, ttl=30),
         },
         # Timeouts (longer for reliability)
         timeouts=TimeoutConfig(
