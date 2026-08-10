@@ -281,37 +281,6 @@ class OAuthServiceImpl(IOAuthService):
             - timedelta(seconds=self.settings.oauth_code_expiry_seconds),
         )
 
-        # Refuse a code whose basis is older than the access-token lifetime.
-        # ``oauth_code_expiry_seconds`` may legally exceed the access lifetime,
-        # and minting from such a basis produces an access token whose ``exp``
-        # is already in the past — returned as success with the full nominal
-        # ``expires_in``. The effective redemption window is therefore
-        # min(code TTL, access lifetime); a caller refused here re-authorizes,
-        # exactly as for an expired code.
-        if datetime.now(timezone.utc) >= state_read_at + timedelta(
-            minutes=self.settings.jwt_access_token_expire_minutes
-        ):
-            logger.warning(
-                "OAuth token exchange refused: code older than the access-token "
-                "lifetime would mint an already-expired token",
-                extra={
-                    "user_id": code_data.user_id,
-                    "code_prefix": code[:8],
-                    "error": "CODE_EXPIRED",
-                },
-            )
-            oauth_metrics.record_token_exchange(
-                grant_type="authorization_code",
-                client_id="unknown",
-                duration_seconds=time.time() - start_time,
-                success=False,
-                error_code="CODE_EXPIRED",
-            )
-            raise InvalidGrantError(
-                "Authorization code expired",
-                error_code="CODE_EXPIRED",
-            )
-
         # Check if code already used (replay attack prevention)
         if code_data.used:
             logger.warning(
@@ -354,6 +323,41 @@ class OAuthServiceImpl(IOAuthService):
                 grant_type="authorization_code",
                 client_id="unknown",
                 duration_seconds=duration_seconds,
+                success=False,
+                error_code="CODE_EXPIRED",
+            )
+            oauth_metrics.record_code_expired("unknown")
+            raise InvalidGrantError(
+                "Authorization code expired",
+                error_code="CODE_EXPIRED",
+            )
+
+        # Refuse a code whose basis is older than the access-token lifetime.
+        # ``oauth_code_expiry_seconds`` may legally exceed the access lifetime,
+        # and minting from such a basis produces an access token whose ``exp``
+        # is already in the past — returned as success with the full nominal
+        # ``expires_in``. The effective redemption window is therefore
+        # min(code TTL, access lifetime); a caller refused here re-authorizes,
+        # exactly as for an expired code. Deliberately AFTER the used and
+        # hard-expiry checks, so replay attempts and ordinary expiry keep
+        # their own refusals and metrics (a stale code that is also replayed
+        # must still register as a replay).
+        if datetime.now(timezone.utc) >= state_read_at + timedelta(
+            minutes=self.settings.jwt_access_token_expire_minutes
+        ):
+            logger.warning(
+                "OAuth token exchange refused: code older than the access-token "
+                "lifetime would mint an already-expired token",
+                extra={
+                    "user_id": code_data.user_id,
+                    "code_prefix": code[:8],
+                    "error": "CODE_EXPIRED",
+                },
+            )
+            oauth_metrics.record_token_exchange(
+                grant_type="authorization_code",
+                client_id="unknown",
+                duration_seconds=time.time() - start_time,
                 success=False,
                 error_code="CODE_EXPIRED",
             )

@@ -342,8 +342,12 @@ single-request flows, up to the artifact's TTL on a slowly-redeemed two-leg
 flow. The OAuth exchange refuses a code whose basis is older than the
 access-token lifetime (the effective redemption window is min(code TTL,
 access lifetime)) — minting from it would return an already-expired access
-token as success; the SSO flow cannot reach that state, since the completion
-code's 60-second TTL never exceeds the minimum access lifetime. And the
+token as success. The SSO exchange carries no such guard: its born-dead
+state needs the basis age (callback duration plus the completion code's
+60-second TTL) to reach the access lifetime, which requires the lifetime
+configured at or near its schema minimum of one minute — a pathological
+setting, but a legal one, so the safety condition is the strict inequality
+`callback duration + 60s < access lifetime`, not an impossibility. And the
 `expires_in` response field, which reports the configured lifetime, is
 nominal: it overstates the real remaining lifetime by that same span, so
 clients must refresh with margin (they already must, for clock skew). The
