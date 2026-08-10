@@ -140,8 +140,11 @@ def _load_from_settings(settings) -> ProtectionSettings:
         # ``protection_enabled``: the latter is the PII/Presidio gate
         # (``redaction.py`` branches on it, and the admin API reports it as
         # ``pii_redaction_enabled``), whereas ``basic_protection_enabled`` is
-        # the field ``ProtectionSystem`` already uses to decide whether to
-        # install rate limiting and deduplication. Gating middleware on the
+        # the field this loader maps onto ``ProtectionSettings.enabled``, which
+        # ``setup_protection_middleware`` checks before installing rate limiting
+        # and deduplication. Note this loader runs only on the settings-driven
+        # path; the ``production`` and ``development`` presets hardcode
+        # ``enabled=True`` and never consult the flag. Gating middleware on the
         # redaction toggle would be the same one-key-two-meanings defect this
         # branch removed from the fail-open policy.
         enabled=enabled,

@@ -30,84 +30,9 @@ All tests use the FaultMaven dependency injection container for:
 - **Mock Integration**: Test-specific mocks integrated through container patterns
 - **Lifecycle Management**: Proper initialization and cleanup of container services
 
-## New Comprehensive Test Architecture
+## Comprehensive Test Architecture
 
-### 1. Settings System Testing (`test_settings_system_comprehensive.py`)
-
-**Coverage**: 37+ tests across 10 test classes
-**Focus**: Complete replacement of legacy configuration system
-
-#### Test Classes Overview
-
-```python
-class TestServerSettings:
-    """Server configuration validation (7 tests)"""
-    def test_default_server_configuration(self)
-    def test_custom_host_port_configuration(self)
-    def test_debug_mode_configuration(self)
-    def test_environment_detection(self)
-    def test_cors_configuration_parsing(self)
-    def test_invalid_port_handling(self)
-    def test_server_settings_integration_with_environment(self)
-
-class TestLLMSettings:
-    """LLM provider configuration (4 tests)"""
-    def test_default_llm_configuration(self)
-    def test_provider_specific_configuration(self)
-    def test_api_key_security_and_masking(self)
-    def test_model_selection_validation(self)
-
-class TestFaultMavenSettings:
-    """Main settings class integration (8 tests)"""
-    def test_default_settings_initialization(self)
-    def test_environment_variable_override(self)
-    def test_nested_settings_integration(self)
-    def test_settings_validation_with_invalid_data(self)
-    def test_production_vs_development_settings(self)
-    def test_cors_and_redis_url_generation(self)
-    def test_comprehensive_environment_processing(self)
-    def test_settings_serialization_and_deserialization(self)
-```
-
-#### Key Testing Patterns
-
-**Environment Isolation Pattern**:
-```python
-@pytest.fixture
-def clean_env():
-    """Provide clean environment for settings testing."""
-    original_env = os.environ.copy()
-    # Clear all FaultMaven-related environment variables
-    for key in list(os.environ.keys()):
-        if any(prefix in key for prefix in ['CHAT_', 'REDIS_', 'CHROMADB_']):
-            del os.environ[key]
-
-    yield
-
-    # Restore original environment
-    os.environ.clear()
-    os.environ.update(original_env)
-
-def test_production_configuration(clean_env):
-    """Test production-like configuration scenarios."""
-    production_env = {
-        'ENVIRONMENT': 'production',
-        'DEBUG': 'false',
-        'CHAT_PROVIDER': 'fireworks',
-        'FIREWORKS_API_KEY': 'fw-prod-key',
-        'REDIS_HOST': '192.168.0.111',
-        'REDIS_PORT': '30379'
-    }
-
-    with patch.dict(os.environ, production_env):
-        settings = get_settings()
-        assert settings.environment == Environment.PRODUCTION
-        assert not settings.debug
-        assert settings.llm.provider == LLMProvider.FIREWORKS
-        assert settings.database.redis_host == '192.168.0.111'
-```
-
-### 2. LLM Registry Testing (`test_llm_registry_comprehensive.py`)
+### 1. LLM Registry Testing (`test_llm_registry_comprehensive.py`)
 
 **Coverage**: 37+ tests across 7 test classes
 **Focus**: Centralized 7-provider management with fallback chains
@@ -172,7 +97,7 @@ def test_provider_fallback_chain():
         assert len(available) == 3  # openai, fireworks, anthropic
 ```
 
-### 3. Container Integration Testing (`test_container_integration_comprehensive.py`)
+### 2. Container Integration Testing (`test_container_integration_comprehensive.py`)
 
 **Coverage**: 38+ tests across 9 test classes
 **Focus**: Complete dependency injection container system
@@ -234,82 +159,6 @@ def test_service_lifecycle_management():
     container.reset()
     assert container._agent_service is None
     assert container._llm_provider is None
-```
-
-### 4. Architecture Workflow Testing (`test_new_architecture_workflows.py`)
-
-**Coverage**: 18+ tests across 5 test classes
-**Focus**: End-to-end integration workflows
-
-#### Test Classes Overview
-
-```python
-class TestSettingsContainerServicesFlow:
-    """Settings → Container → Services flow (4 tests)"""
-    def test_environment_to_settings_integration(self)
-    def test_settings_to_container_initialization(self)
-    def test_container_to_service_resolution(self)
-    def test_end_to_end_configuration_flow(self)
-
-class TestEndToEndWorkflows:
-    """Complete troubleshooting workflows (4 tests)"""
-    def test_complete_troubleshooting_workflow(self)
-    def test_data_upload_and_analysis_integration(self)
-    def test_knowledge_base_integration_workflow(self)
-    def test_multi_session_case_continuity(self)
-
-class TestErrorHandlingAcrossLayers:
-    """Cross-layer error propagation (4 tests)"""
-    def test_api_to_service_error_propagation(self)
-    def test_service_to_infrastructure_error_handling(self)
-    def test_graceful_degradation_scenarios(self)
-    def test_error_recovery_and_fallback_mechanisms(self)
-```
-
-#### Key Testing Patterns
-
-**End-to-End Workflow Pattern**:
-```python
-@pytest.mark.asyncio
-async def test_complete_troubleshooting_workflow():
-    """Test complete workflow through all architectural layers."""
-    from faultmaven.container import container
-    from faultmaven.config.settings import get_settings
-
-    # Reset for clean state
-    container.reset()
-
-    # Test configuration layer
-    test_env = {
-        'CHAT_PROVIDER': 'fireworks',
-        'FIREWORKS_API_KEY': 'test-key',
-        'REDIS_HOST': 'localhost'
-    }
-
-    with patch.dict(os.environ, test_env):
-        # Validate settings layer
-        settings = get_settings()
-        assert settings.llm.provider == LLMProvider.FIREWORKS
-
-        # Validate container initialization
-        agent_service = container.get_agent_service()
-        assert agent_service is not None
-
-        # Test service layer operation
-        result = await agent_service.process_query(
-            "Server returning 500 errors consistently",
-            "workflow-test-session"
-        )
-
-        # Validate complete workflow results
-        assert result.session_id == "workflow-test-session"
-        assert len(result.response) > 100
-        assert any(keyword in result.response.lower()
-                  for keyword in ['server', '500', 'error'])
-
-        # Validate context propagation
-        assert hasattr(result, 'metadata')
-        assert result.metadata is not None
 ```
 
 ## Testing Patterns by Architectural Layer

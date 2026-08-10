@@ -994,12 +994,12 @@ These components provide **technical capabilities** and should remain horizontal
 - **Structure**: Keep as-is (component_monitor, sla_tracker)
 
 #### 6. **`infrastructure/protection/`** ❌ **KEEP HORIZONTAL**
-- **Purpose**: Client protection, rate limiting, anomaly detection
+- **Purpose**: Client protection — rate limiting and request deduplication
 - **Why Horizontal**:
   - Used by ALL API endpoints
   - Pure cross-cutting concern
   - No business logic
-- **Structure**: Keep as-is (rate_limiter, anomaly_detector, protection_coordinator)
+- **Structure**: Keep as-is (rate_limiter, request_hasher, window_math)
 
 #### 7. **`infrastructure/security/`** ❌ **KEEP HORIZONTAL**
 - **Purpose**: PII redaction, security assessment, data sanitization

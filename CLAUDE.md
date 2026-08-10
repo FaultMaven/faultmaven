@@ -31,17 +31,18 @@ faultmaven/
 ├── api/                    # Shared API middleware, dependencies, error handling
 │   ├── dependencies.py     # DI for legacy code
 │   ├── exception_handlers.py
-│   ├── middleware/         # 11 middleware modules
+│   ├── middleware/         # 12 middleware modules
 │   │   ├── auth.py                    # JWT/OAuth authentication
+│   │   ├── client_ip.py               # Trusted-proxy client IP resolution
 │   │   ├── contract_probe.py          # API contract validation
 │   │   ├── deduplication.py           # Request deduplication
 │   │   ├── idempotency.py             # Idempotent request handling
-│   │   ├── intelligent_protection.py  # Adaptive rate limiting
 │   │   ├── logging.py                 # Request/response logging
 │   │   ├── performance.py             # Performance monitoring
 │   │   ├── rate_limiting.py           # Rate limiting
 │   │   ├── request_id.py              # Request ID injection
 │   │   ├── system_optimization.py     # System optimization
+│   │   ├── tenant_scope.py            # Request-scoped tenant binding
 │   │   └── trailing_slash.py          # URL normalization
 │   ├── v1/                 # API v1 utilities and dependencies
 │   └── routes/             # Admin routes (admin.py, admin_config.py, sessions.py)

@@ -478,31 +478,51 @@ def test_validation_accepts_a_none_redis_url_so_middleware_is_installed(
     assert "deduplication" in setup_info["middleware_added"]
 
 
-async def test_health_endpoint_never_emits_a_redis_password():
-    """A configured URL carries its password inline; the endpoint masks it."""
-    from faultmaven.api.protection import get_protection_health_endpoints
+def test_a_configured_redis_url_is_masked_before_it_leaves_the_process():
+    """The password never survives into anything emitted.
 
+    This used to be asserted through ``get_protection_health_endpoints``, an
+    endpoint that was never registered on any router (#974). Deleting it would
+    have taken the only coverage of a *live* property with it: the masking is
+    ``RedisClientFactory._mask_url``, and its real callers are the Redis
+    construction log line and ``_scrub_redis_secrets``, whose reason string is
+    both logged and embedded in the boot-refusal message. Pinned at the helper
+    that does the work rather than at a caller that did not run.
+    """
     secret = "sup3rs3cr3t"
-    with patch.dict(os.environ, {}, clear=False):
-        _apply_env({"REDIS_URL": f"redis://:{secret}@redis.internal:6379/0"})
-        try:
-            payload = await get_protection_health_endpoints()["health"]()
-        finally:
-            reset_settings()
+    url = f"redis://:{secret}@redis.internal:6379/0"
 
-    assert secret not in repr(payload)
-    assert payload["redis_url"] == "redis://:***@redis.internal:6379/0"
-    assert payload["redis_source"] == "explicit-url"
+    masked = RedisClientFactory._mask_url(url)
+
+    assert secret not in masked
+    assert masked == "redis://:***@redis.internal:6379/0"
 
 
-async def test_health_endpoint_reports_central_resolution_when_unset(
-    cloud_discrete_credentials,
-):
-    """With no configured URL the endpoint says so rather than inventing one."""
-    from faultmaven.api.protection import get_protection_health_endpoints
+@pytest.mark.parametrize(
+    "url",
+    [
+        "redis://redis.internal:6379/0",  # no credentials at all
+        "rediss://user@redis.internal:6379/0",  # user, no password
+    ],
+)
+def test_masking_leaves_a_passwordless_url_intact(url):
+    """Masking must not corrupt the common case.
 
-    payload = await get_protection_health_endpoints()["health"]()
+    A mangled URL here would be reported back to an operator as their
+    configuration, sending them to debug a host that does not exist.
+    """
+    assert RedisClientFactory._mask_url(url) == url
 
-    assert payload["redis_url"] is None
-    assert payload["redis_source"] == "central-factory"
-    assert _PASSWORD not in repr(payload)
+
+def test_an_unparseable_url_is_still_scrubbed():
+    """The fallback fails safe.
+
+    ``_mask_url`` swallows parse errors, so this pins that the swallow does not
+    hand back the raw string: a URL malformed enough to defeat ``urlparse``
+    still must not carry its credentials onward.
+    """
+    mangled = "redis://:pw@@[not-a-host:6379"
+
+    masked = RedisClientFactory._mask_url(mangled)
+
+    assert "pw" not in masked or masked.startswith("redis://***@")

@@ -196,12 +196,10 @@ async def get_tracer(request: Request):
     return request.app.state.tracer
 
 
-async def get_protection_system(request: Request):
-    """Get protection system instance from app.extra"""
-    protection_system = request.app.extra.get("protection_system")
-    if not protection_system:
-        raise HTTPException(status_code=503, detail="Protection system not available")
-    return protection_system
+# ``get_protection_system`` used to sit here, reading app.extra["protection_system"].
+# Both writers of that slot were on the ``ProtectionSystem`` path, which never ran
+# and is gone (#974); the live path writes ``protection_info`` instead. With no
+# writer left the accessor could only ever raise 503, and no route depended on it.
 
 
 # Session Dependencies
