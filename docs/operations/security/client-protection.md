@@ -123,11 +123,18 @@ never having been told the bucket exists.
 **Purpose**: Prevent processing identical requests within short time windows.
 
 **Scope**:
-- Title generation: Block duplicates for 5 minutes per session
-- Agent queries: Block exact duplicates for 30 seconds per session
-- Hash-based identification: SHA-256 of (session_id + endpoint + request_body)
+- Blocks a resubmit of the *exact* same request within the endpoint's TTL
+- Hash-based identification: SHA-256 over length-prefixed
+  (session_id, method, path, canonical query, raw body bytes)
+- Keyed on the session — a request with no session id is not deduplicated
+- `GET`s, `/health*`, `/metrics*`, `/static*`, `POST /api/v1/cases`,
+  `POST /api/v1/sessions` and `multipart/form-data` are skipped
 
-**Cache Strategy**: Redis with TTL-based expiration.
+A duplicate is answered **409** with `Retry-After` and an `x-error-code`.
+
+**Cache Strategy**: Redis with TTL-based expiration. The stored value is the
+first request's timestamp, which is what `Retry-After` counts down from; no
+response body is cached.
 
 #### 3. Agent Execution Timeouts
 **Purpose**: Prevent runaway agent processes from consuming resources indefinitely.
@@ -244,7 +251,7 @@ class RequestDeduplicationMiddleware:
     - Exact request hashing (no content normalization)
     - Per-endpoint TTL configuration
     - Redis-backed storage
-    - Optional response caching
+    - Duplicates answered with a labelled 409 + Retry-After
     """
 ```
 
@@ -267,9 +274,14 @@ def generate_request_hash(session_id, endpoint, method, query_params, body) -> s
 timestamps, UUIDs, 10-digit numbers and `/tmp` paths to placeholders and dropped
 body fields by name. For a product whose request bodies are mostly IDs, epochs
 and log fragments, that collapsed genuinely different messages onto one digest —
-"check order 4232342342" and "check order 9994442211" hashed alike, so the
-second came back 409. Normalization can only manufacture false duplicates here:
-an accidental double-submit is byte-identical by construction.
+"check order 4232342342" and "check order 9994442211" hashed alike, so the user's
+second message was classified as a duplicate of the first. Normalization can only
+manufacture false duplicates here: an accidental double-submit is byte-identical
+by construction.
+
+Headers are deliberately excluded from the digest. An identical body resubmitted
+under a different `Accept-Encoding` — or retried after a content-type correction
+— is the same submit.
 
 ### Agent Execution Timeouts
 
