@@ -30,11 +30,10 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
     Request deduplication middleware
 
     Features:
-    - Content-based request hashing with normalization
+    - Exact request hashing (session + method + path + query + body bytes)
     - Configurable TTL per endpoint type
     - Redis-backed (real or FakeRedis via central client factory)
     - Optional response caching for duplicates
-    - Special handling for title generation requests
     """
 
     def __init__(
@@ -49,7 +48,7 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         self.logger = logging.getLogger(__name__)
 
         # Initialize request hasher
-        self.hasher = RequestHasher(salt="faultmaven_dedup_2025")
+        self.hasher = RequestHasher()
 
         # Redis connection: prefer injected client, fall back to URL-based init
         self.redis_url = redis_url or settings.redis_url
@@ -242,7 +241,6 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
                 method=request.method,
                 body=body,
                 query_params=dict(request.query_params),
-                headers=dict(request.headers),
             )
 
         except Exception as e:
