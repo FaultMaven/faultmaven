@@ -182,8 +182,18 @@ class DeduplicationMiddleware(BaseHTTPMiddleware):
         self._initialized = True
 
     def _should_skip(self, request: Request) -> bool:
-        """Check if request should skip deduplication"""
+        """Whether this request is exempt from deduplication.
 
+        ⚠ This list also carries an ordering constraint. ``main.py`` installs
+        protection *after* the idempotency middleware, and a later
+        ``add_middleware`` sits further out — so deduplication sees a request
+        first. A client resending with a stable ``Idempotency-Key`` expects the
+        cached replay; a 409 from here would pre-empt it. That is safe today
+        only because both paths the copilot sends a key on are exempt below:
+        ``POST /api/v1/cases`` explicitly, and the turn POST as multipart.
+        ``test_idempotency_bearing_paths_are_skipped`` pins it. Removing either
+        exemption means reordering the two middlewares, not just editing here.
+        """
         if request.method == "GET":
             return True
         if request.url.path.startswith("/health"):
