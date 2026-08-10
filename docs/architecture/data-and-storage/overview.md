@@ -16,7 +16,7 @@ FaultMaven's storage architecture supports **12 data categories** across primary
 ### Operational Infrastructure Data (5 categories)
 8. **Job Queue State** - Async background job tracking
 9. **ML Model Artifacts** - Confidence models, calibration data, feature metadata
-10. **Protection System State** - Rate limiting, reputation scores, behavioral analysis
+10. **Protection System State** - Rate limiting and request deduplication windows
 11. **Cache Data** - Multi-tier intelligent caching with pattern analysis
 12. **System Operational Data** - Metrics, traces, logs, audit trails (optional)
 
@@ -92,7 +92,7 @@ For the data-type × backend × deployment breakdown, see:
 │   - Session state (session:{id}, idle timeout 30 min / record TTL 24h)│
 │   - Job queue (job:{id}, TTL: 24 hours)                               │
 │   - Report metadata now in PostgreSQL (reports table)                 │
-│   - Protection state (reputation, rate limits)                        │
+│   - Protection state (rate limit windows, dedup keys)                │
 │   - Cache L2 (multi-tier caching)                                     │
 │   - Token revocation (JTI tracking with TTL)                          │
 │   - Request deduplication (content-hash with Lua scripts)             │
@@ -285,7 +285,6 @@ Summary targets below; per-backend latency breakdown is in [repository-pattern.m
 | Evidence query | < 10ms | 5ms avg |
 | KB semantic search | < 200ms | 150ms avg |
 | File preprocessing | < 30s | 5s median, 25s p95 |
-| Reputation check | < 5ms | 3ms avg |
 | Rate limit check | < 3ms | 1ms avg |
 | Cache L1 hit | < 1ms | 0.5ms avg |
 | Cache L2 hit | < 5ms | 3ms avg |

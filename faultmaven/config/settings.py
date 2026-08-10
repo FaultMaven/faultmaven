@@ -1320,7 +1320,7 @@ class AuthSettings(BaseSettings):
 
 
 class ProtectionSettings(BaseSettings):
-    """Unified protection configuration - PII, behavioral, and ML protection"""
+    """Unified protection configuration - PII redaction and request protection"""
 
     # Basic Protection Control
     # COMMUNITY DEFAULT: Disabled (enterprise feature - requires Presidio)

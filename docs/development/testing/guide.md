@@ -100,7 +100,7 @@ SKIP_SERVICE_CHECKS=true pytest tests/unit/ -v        # Unit tests with containe
 pytest tests/services/ -v                            # Service tests with interface injection
 pytest tests/integration/ -v                         # Cross-layer workflow validation
 
-# New comprehensive architecture tests (130+ tests)
+# Comprehensive architecture test suites
 pytest tests/infrastructure/test_llm_registry_comprehensive.py -v    # LLM registry
 pytest tests/unit/test_container_integration_comprehensive.py -v     # Container integration
 
