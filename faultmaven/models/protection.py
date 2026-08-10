@@ -378,19 +378,3 @@ class ProtectionMetrics:
                 "memory_usage_bytes": self.memory_usage,
             },
         }
-
-
-@dataclass
-class SystemMetrics:
-    """System-wide metrics for adaptive protection behavior"""
-
-    overall_health_score: float = 1.0  # 0.0 to 1.0
-    cpu_usage: float = 0.0  # 0.0 to 100.0
-    memory_usage: float = 0.0  # 0.0 to 100.0
-    active_connections: int = 0
-    error_rate: float = 0.0  # 0.0 to 1.0
-    timestamp: datetime = None
-
-    def __post_init__(self):
-        if self.timestamp is None:
-            self.timestamp = datetime.now(timezone.utc)
