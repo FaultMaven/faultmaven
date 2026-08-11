@@ -389,9 +389,9 @@ class TestTheOAuthLimiterNamesItsOwnBucket:
     """``LimitType.OAUTH`` covers six endpoints; the token must separate them.
 
     The limits differ by a factor of four (5/min on ``/token``, 20/min on
-    ``/sso/callback``), so publishing a bare ``oauth`` would hold the policy
-    steady while the advertised limit moved underneath a client pacing against
-    it — the ambiguity ``X-RateLimit-Policy`` exists to remove.
+    ``/revoke``), so publishing a bare ``oauth`` would hold the policy steady
+    while the advertised limit moved underneath a client pacing against it —
+    the ambiguity ``X-RateLimit-Policy`` exists to remove.
     """
 
     @pytest.fixture(autouse=True)

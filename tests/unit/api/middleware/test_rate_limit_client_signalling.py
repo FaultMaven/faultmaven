@@ -12,6 +12,7 @@ The headers now come from the ``RateLimitResult``s the checks already produced,
 so nothing here costs an extra Redis round trip.
 """
 
+import asyncio
 import itertools
 import json
 import time
@@ -722,3 +723,33 @@ async def test_a_checked_request_still_moves_the_check_metrics():
     await mw.dispatch(_request(app, _unique_client()), _call_next)
 
     assert mw.metrics["requests_checked"] == 1, mw.metrics
+
+
+async def test_the_check_duration_excludes_the_route():
+    """``avg_check_duration`` is the cost of checking, not of serving.
+
+    Sampled after ``call_next``, a five-second LLM turn recorded a five-second
+    "check" — while the refusal path, which never reaches the route, recorded
+    the check alone. One counter cannot mean two things, and the slow-route case
+    is the one an operator would actually look at the number during.
+
+    The route here sleeps far longer than any check against FakeRedis takes, so
+    the assertion separates the two without depending on a wall-clock threshold
+    that a loaded machine could trip.
+    """
+    mw = _middleware(_settings(global_requests=1000))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+    route_seconds = 0.25
+
+    async def _slow_call_next(request):
+        await asyncio.sleep(route_seconds)
+        return PlainTextResponse("ok")
+
+    response = await mw.dispatch(_request(app, _unique_client()), _slow_call_next)
+
+    assert response.status_code == 200
+    assert mw.metrics["requests_checked"] == 1
+    assert mw.metrics["avg_check_duration"] < route_seconds, (
+        "the route's latency was folded into the check duration: "
+        f"{mw.metrics['avg_check_duration']:.3f}s against a {route_seconds}s route"
+    )

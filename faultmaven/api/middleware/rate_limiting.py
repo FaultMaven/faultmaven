@@ -339,22 +339,36 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             self.logger.warning("Rate limiting failed, allowing request")
             results = None
 
+        # Sampled BEFORE the route runs, because ``avg_check_duration`` is the
+        # cost of checking and nothing else. Measuring after ``call_next`` folded
+        # the whole route into it — a five-second LLM turn recorded a
+        # five-second "check" — while the refusal path, which never reaches the
+        # route, recorded the check alone. One counter cannot mean two things.
+        check_duration = time.time() - start_time
+
         # The verdict is settled and the route has not run. Everything from here
         # is outside the handlers above, so a failure in the route — or in the
         # header path on the way back — can never re-enter ``call_next``.
         response = await call_next(request)
 
-        # ``results is None`` means no check happened — limiting is off, the
-        # request was bypassed, or the limiter failed and the deployment fails
-        # open. Those requests are not *checked* requests, so they neither
-        # advertise a limit nor move the check counters: folding them into
+        # ``results is None`` means no check was performed at all: limiting is
+        # off, the request was bypassed (headers, probe paths, static), there was
+        # no Redis client and policy allowed serving anyway, or something in the
+        # verdict block raised on a fail-open deployment. Such requests neither
+        # advertise a limit nor move the check counters — folding them into
         # ``requests_checked`` would dilute ``requests_blocked/requests_checked``
-        # toward zero on any pod whose liveness probes dominate its traffic, and
-        # folding their duration into ``avg_check_duration`` would average the
-        # route's latency into a number that means "cost of checking".
+        # toward zero on any pod whose liveness probes dominate its traffic.
+        #
+        # A *Redis outage* is deliberately not in that list. ``fallback_enabled``
+        # is this deployment's ``fail_open_on_redis_error``, so on a fail-open
+        # deployment a failed check does not raise — it returns results carrying
+        # ``limit == 0``. Those count as checked, because a check was performed
+        # and answered; they simply advertise nothing (the header path skips
+        # ``limit == 0``). Only a fail-CLOSED deployment re-raises, and there the
+        # request is refused rather than served.
         if results is not None:
             self._add_rate_limit_headers(results, request, response)
-            self._update_metrics(time.time() - start_time, blocked=False)
+            self._update_metrics(check_duration, blocked=False)
 
         return response
 
