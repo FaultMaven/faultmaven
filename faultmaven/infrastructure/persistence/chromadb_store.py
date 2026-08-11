@@ -8,6 +8,8 @@ Receives a shared ChromaDB client via constructor injection (Principle 5).
 import logging
 from typing import Any, Dict, List, Optional
 
+from pydantic import ValidationError
+
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.models.interfaces import IVectorStore
@@ -98,46 +100,89 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
             self.logger.error(f"Failed to connect to ChromaDB: {e}")
             raise
 
+    @staticmethod
+    def _normalize_metadata(md: Optional[Dict]) -> Dict:
+        """Put one metadata dict through the canonical ``VectorMetadata`` schema.
+
+        ``VectorMetadata`` is an ALLOWLIST: it declares the keys a row in this
+        collection may carry, and anything else it simply does not copy. That
+        used to happen silently, which is how a writer could build a dict, watch
+        the write succeed, and store none of it — ``index_runbook`` stamped
+        ``case_id``/``case_title``/``runbook_source`` on every runbook and
+        ChromaDB received none of them, so ``search_runbooks`` reconstructed
+        each one from ``.get()`` defaults (#912). A silently dropped key is
+        indistinguishable from a stored one at the call site: the write returns
+        success either way, and the loss only surfaces as a wrong value at read
+        time, arbitrarily later and somewhere else.
+
+        So an undeclared key is refused rather than dropped. It is always a
+        programming error — the writer believes the store holds something it
+        does not — and the fix is a one-line schema addition, so failing at the
+        first write turns a silent data-loss bug into an immediate, local one.
+
+        The check runs BEFORE the model is constructed, so the fallback below
+        can only ever see allowlisted KEYS. Note what that does and does not
+        buy: the two paths agree on which keys a row may carry, not on how the
+        values are encoded. The fallback stringifies rather than normalizing, so
+        a dict that fails validation still stores ``tags`` as ``"['a', 'b']"``
+        instead of ``"a,b"`` and a ``datetime`` in Python's default format
+        instead of ISO-8601 — and ``search_runbooks`` splits ``tags`` on commas.
+        Pre-existing, and out of scope here; do not read this guard as making
+        the two paths interchangeable.
+        """
+        from faultmaven.models.vector_metadata import VectorMetadata
+
+        md = md or {}
+        # The schema owns this rule, so writers that must check earlier than
+        # this (``index_runbook`` has its own retry wrapper around the call
+        # into here) enforce the same one rather than a second copy of it.
+        VectorMetadata.reject_undeclared_keys(md)
+
+        try:
+            return VectorMetadata(**md).to_chroma_metadata()
+        except ValidationError:
+            # A VALUE the schema could not coerce (a malformed timestamp, say),
+            # never an unknown key — those were refused above. Degrading to a
+            # type-sanitized copy keeps one bad field from failing the whole
+            # write; the keys are allowlisted either way.
+            sanitized: Dict = {}
+            for k, v in md.items():
+                if v is None:
+                    continue
+                if isinstance(v, (str, int, float, bool)):
+                    sanitized[k] = v
+                else:
+                    try:
+                        sanitized[k] = str(v)
+                    except Exception:
+                        continue
+            return sanitized
+
     async def add_documents(
         self,
         documents: List[Dict],
         embeddings: Optional[List[List[float]]] = None,
     ) -> None:
-        """Add documents to the vector store."""
+        """Add documents to the vector store.
+
+        Raises:
+            ValueError: If any metadata dict carries a key ``VectorMetadata``
+                does not declare. See :meth:`_normalize_metadata`.
+        """
+        ids = [doc["id"] for doc in documents]
+        contents = [doc["content"] for doc in documents]
+
+        # Normalized OUTSIDE call_external, deliberately. This is pure CPU with
+        # no external dependency, and the refusal below is a programming error,
+        # not a ChromaDB failure: raising it inside the wrapper would burn the
+        # retry budget on a deterministic failure and, worse, count towards the
+        # circuit breaker — five bad writes would then open the breaker and
+        # block the *healthy* KB writes sharing this client.
+        metadatas = [
+            self._normalize_metadata(doc.get("metadata", {})) for doc in documents
+        ]
 
         async def _add_wrapper():
-            ids = [doc["id"] for doc in documents]
-            contents = [doc["content"] for doc in documents]
-            raw_metadatas = [doc.get("metadata", {}) for doc in documents]
-
-            # Normalize metadata via canonical schema
-            from faultmaven.models.vector_metadata import VectorMetadata
-
-            metadatas: List[Dict] = []
-            for md in raw_metadatas:
-                try:
-                    vm = VectorMetadata(
-                        **{
-                            k: md.get(k)
-                            for k in VectorMetadata.model_fields
-                            if k in md or md.get(k) is not None
-                        }
-                    )
-                    metadatas.append(vm.to_chroma_metadata())
-                except Exception:
-                    sanitized: Dict = {}
-                    for k, v in (md or {}).items():
-                        if v is None:
-                            continue
-                        if isinstance(v, (str, int, float, bool)):
-                            sanitized[k] = v
-                        else:
-                            try:
-                                sanitized[k] = str(v)
-                            except Exception:
-                                continue
-                    metadatas.append(sanitized)
-
             add_kwargs: Dict = dict(ids=ids, documents=contents, metadatas=metadatas)
             if embeddings is not None:
                 add_kwargs["embeddings"] = embeddings

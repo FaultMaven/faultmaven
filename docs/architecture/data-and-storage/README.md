@@ -22,7 +22,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 
 - **[overview.md](./overview.md)** - Complete storage architecture overview
   - Three storage technologies: SQLite/PostgreSQL, ChromaDB, Redis/FakeRedis
-  - ChromaDB collection layout (faultmaven_kb, faultmaven_runbooks, knowledge_items, case_{id})
+  - ChromaDB collection layout (faultmaven_kb — documents and runbooks alike — plus ephemeral case_{id})
   - Shared client injection pattern (Principle 5)
   - Access patterns, interfaces, and DI wiring
   - Data retention, security, and performance targets
@@ -41,7 +41,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 - **[schemas/knowledge-schema.md](./schemas/knowledge-schema.md)** - Knowledge base storage
   - Unified KB collection (faultmaven_kb) with metadata-based scope filtering
   - Case working memory (ephemeral per-case collections)
-  - Scope fields: scope, owner_id, team_id
+  - Scope fields: scope, owner_id (team visibility is an id allowlist, never stored)
 
 ### Implementation Guides
 

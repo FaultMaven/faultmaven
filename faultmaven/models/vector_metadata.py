@@ -40,9 +40,32 @@ class VectorMetadata(BaseModel):
     # "runbook"`` into every query, so — like ``organization_id`` above — a value
     # this schema dropped would make every row the runbook path writes
     # unreachable by every runbook search. Restored for that reason (#912); the
-    # remaining runbook-identity keys (``report_id``, ``case_id``, ``case_title``,
-    # ``runbook_source``) are still dropped and still tracked there.
+    # remaining runbook-identity keys are carried by the block below.
     report_type: Optional[str] = None
+    # Runbook identity. ``search_runbooks`` rebuilds a ``CaseReport`` +
+    # ``SimilarRunbook`` out of the stored metadata, so every field it reads has
+    # to survive normalization or the reconstruction invents one. Before #912
+    # none of these were declared, so exercising the write path and then
+    # searching returned ``case_id="unknown"``, ``case_title="Unknown"`` and —
+    # worse than an absent value — a confident ``source=incident_driven`` for a
+    # document-driven runbook, because that is the ``.get()`` default. (Dormant
+    # rather than observed: ``index_runbook`` has no production caller yet. The
+    # hole is in the code, not in a deployment's data.) Wrong provenance stated
+    # as fact is the failure mode this project does not accept, so these travel
+    # with the row.
+    #
+    # There is deliberately NO ``report_id`` here. The report id IS the ChromaDB
+    # row id (``index_runbook`` passes it as ``documents[0]["id"]``) and
+    # ``search_runbooks`` reads it back from the ids list, so a metadata copy
+    # would be a second spelling of the same fact — free to drift, and no reader
+    # for it. This schema is shared by every vector writer; it earns a key only
+    # when a reader needs it.
+    case_id: Optional[str] = None
+    case_title: Optional[str] = None
+    runbook_source: Optional[str] = None
+    # Document-driven runbooks only: which uploaded document this came from.
+    document_title: Optional[str] = None
+    original_document_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # RAG-enrichment fields: extracted from runbook frontmatter at ingestion
@@ -56,6 +79,33 @@ class VectorMetadata(BaseModel):
     chunk_index: Optional[int] = None
     total_chunks: Optional[int] = None
     parent_document_id: Optional[str] = None
+
+    @classmethod
+    def reject_undeclared_keys(cls, md: Optional[Dict[str, Any]]) -> None:
+        """Raise if ``md`` carries a key this schema does not declare.
+
+        This model is an ALLOWLIST — it copies the keys it declares and ignores
+        the rest — so an undeclared key is not stored, and nothing about the
+        write says so. That is how ``index_runbook`` stamped four identity keys
+        on every runbook, saw the write succeed, and stored none of them: the
+        loss only surfaced later, elsewhere, as a wrong value at read time
+        (#912).
+
+        Callers must invoke this BEFORE any retry/circuit-breaker wrapper. The
+        failure is a deterministic programming error, so retrying it only
+        wastes the budget, and each attempt is recorded as a service failure —
+        enough of them open the breaker and start failing the healthy calls
+        that share it.
+        """
+        undeclared = sorted(set(md or {}) - set(cls.model_fields))
+        if undeclared:
+            raise ValueError(
+                f"Vector metadata carries key(s) VectorMetadata does not "
+                f"declare: {undeclared}. They would be dropped silently and the "
+                f"row would be stored without them — add them to "
+                f"faultmaven/models/vector_metadata.py (schema field AND "
+                f"to_chroma_metadata) or stop writing them."
+            )
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -76,6 +126,11 @@ class VectorMetadata(BaseModel):
         "owner_id",
         "organization_id",
         "report_type",
+        "case_id",
+        "case_title",
+        "runbook_source",
+        "document_title",
+        "original_document_id",
         "domain",
         "service",
         "last_updated",
@@ -109,6 +164,22 @@ class VectorMetadata(BaseModel):
             data["organization_id"] = self.organization_id
         if self.report_type:
             data["report_type"] = self.report_type
+        # ``is not None``, not truthiness, for the identity keys: the runbook
+        # search requires these to be PRESENT and skips any row missing one, so
+        # a truthiness gate would drop an empty-but-valid value at write time
+        # and make the row permanently unreadable — with the write still
+        # reporting success. Write-side "empty" and read-side "absent" have to
+        # mean the same thing, or the round trip is lossy again in a new way.
+        if self.case_id is not None:
+            data["case_id"] = self.case_id
+        if self.case_title is not None:
+            data["case_title"] = self.case_title
+        if self.runbook_source is not None:
+            data["runbook_source"] = self.runbook_source
+        if self.document_title is not None:
+            data["document_title"] = self.document_title
+        if self.original_document_id is not None:
+            data["original_document_id"] = self.original_document_id
         if self.created_at:
             data["created_at"] = to_json_compatible(self.created_at)
         if self.updated_at:

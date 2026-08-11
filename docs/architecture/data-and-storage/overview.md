@@ -99,10 +99,11 @@ For the data-type × backend × deployment breakdown, see:
 │   NOTE: Local deployment uses FakeRedis (in-process, full API parity) │
 │                                                                        │
 │ ChromaDB KB Instance (PersistentClient at data/chroma-kb/):           │
-│   - faultmaven_kb: All KB documents (global/personal/team scope,     │
-│     filtered by metadata: scope, owner_id, team_id)                  │
-│   - faultmaven_runbooks: Runbook similarity search (report_type,     │
-│     domain metadata — used for "this looks like runbook X")          │
+│   - faultmaven_kb: the instance's ONLY collection. All KB documents  │
+│     (filtered by metadata: scope, owner_id — team shares resolve to  │
+│     an id allowlist at query time) AND runbooks, which have no       │
+│     collection of their own and are told apart only by              │
+│     report_type="runbook"                                            │
 │   Lifecycle: permanent — backed up, never wiped.                     │
 │                                                                        │
 │ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/):│
@@ -116,7 +117,8 @@ For the data-type × backend × deployment breakdown, see:
 │   Cloud: both use HttpClient to external ChromaDB server             │
 │                                                                        │
 │   Scope isolation: faultmaven_kb queries use metadata filters        │
-│   (scope/owner_id/team_id). See vector-storage.md §1.1, §4.2, §1.3  │
+│   (scope/owner_id; team shares resolve to an id allowlist at query  │
+│   time, never stored). See vector-storage.md §1.1, §4.2, §1.3       │
 │   for collection design, scope-filter examples, and ingestion detail.│
 │                                                                        │
 │ S3-Compatible Storage:                                                │

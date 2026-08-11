@@ -12,6 +12,7 @@ import pytest
 
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.models.interfaces import IVectorStore
+from faultmaven.models.vector_metadata import VectorMetadata
 
 
 @pytest.fixture
@@ -124,6 +125,229 @@ class TestChromaDBVectorStore:
             documents=["Test content"],
             metadatas=[{}],
         )
+
+    @pytest.mark.asyncio
+    async def test_add_documents_refuses_a_key_the_schema_would_drop(
+        self, vector_store
+    ):
+        """An undeclared metadata key fails the write instead of vanishing.
+
+        ``VectorMetadata`` is an allowlist, and it used to discard undeclared
+        keys in silence: the writer saw a successful write, ChromaDB stored
+        none of the key, and the loss surfaced much later as a wrong value at
+        read time. That is exactly how ``index_runbook`` stamped four identity
+        keys on every runbook and stored none of them (#912).
+
+        Nothing may be written when a key is refused — a partial row is the
+        silent-drop failure with extra steps.
+        """
+        store, client, collection = vector_store
+
+        documents = [
+            {
+                "id": "doc1",
+                "content": "Test content",
+                "metadata": {"title": "Test Doc", "not_a_schema_field": "value"},
+            }
+        ]
+
+        with pytest.raises(ValueError, match="not_a_schema_field"):
+            await store.add_documents(documents)
+
+        collection.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_documents_refusal_does_not_reach_the_circuit_breaker(
+        self, mock_client
+    ):
+        """The refusal is raised before ``call_external``, deliberately.
+
+        A malformed metadata dict is a programming error, not a ChromaDB
+        failure. Raised inside the wrapper it would consume the retry budget on
+        a deterministic failure and count towards the circuit breaker — five of
+        them would open it and start failing the *healthy* KB writes sharing
+        this store. Pinned by asserting the external-call machinery is never
+        entered at all.
+        """
+        client, collection = mock_client
+        store = ChromaDBVectorStore(client=client, collection_name="test_collection")
+
+        documents = [
+            {"id": "doc1", "content": "c", "metadata": {"not_a_schema_field": "v"}}
+        ]
+
+        with patch.object(
+            ChromaDBVectorStore, "call_external", new=AsyncMock()
+        ) as mock_call:
+            with pytest.raises(ValueError, match="not_a_schema_field"):
+                await store.add_documents(documents)
+
+        mock_call.assert_not_called()
+
+    def test_normalize_metadata_keeps_every_key_the_schema_declares(self):
+        """The allowlist stores everything it declares — the refusal's other half.
+
+        The refusal above only covers keys the schema does NOT declare. The
+        opposite defect — a field declared on the model but never emitted by
+        ``to_chroma_metadata`` — passes it and still drops the value on every
+        write. That is not hypothetical: it is exactly the state ``report_type``
+        and the runbook identity keys were in (#912).
+
+        Asserted over EVERY field rather than a sample, because a sample only
+        protects the fields someone thought to list: with eight of twenty-four
+        covered, dropping ``severity`` and ``symptom_class`` from the emitter
+        left the whole suite green while every KB row silently lost them. The
+        coverage assertion below makes adding a schema field force a decision
+        here rather than silently widening the gap.
+        """
+        # Every value is UNIQUE, and that is load-bearing rather than tidy: a
+        # cross-wire mutation is only detectable if the two fields it confuses
+        # hold different values. An earlier version of this sample reused
+        # "runbook" for document_type and report_type, and "doc-77" for
+        # original_document_id and parent_document_id — so swapping either pair
+        # in to_chroma_metadata passed the whole suite. The uniqueness assertion
+        # below keeps that from creeping back.
+        sample = {
+            "title": "Runbook: Connection pool exhaustion",
+            "document_type": "operational_runbook",
+            "tags": "postgresql,database",
+            "source_url": "https://example.invalid/runbook",
+            "scope": "global",
+            "owner_id": "user-1",
+            "organization_id": "org-a",
+            "report_type": "runbook",
+            "case_id": "case-42",
+            "case_title": "Pool exhaustion in prod",
+            "runbook_source": "document_driven",
+            "document_title": "PostgreSQL Operations Guide",
+            "original_document_id": "srcdoc-77",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+            "domain": "database",
+            "service": "postgresql",
+            "last_updated": "2026-01-01",
+            "status": "verified",
+            "severity": "high",
+            "symptom_class": "resource_exhaustion",
+            "chunk_index": 0,
+            "total_chunks": 3,
+            "parent_document_id": "parentdoc-99",
+        }
+
+        values = [str(v) for v in sample.values()]
+        assert len(set(values)) == len(values), (
+            "two fields share a value, so a mutation swapping them would be "
+            "invisible here — give every field a distinct one"
+        )
+
+        assert set(sample) == set(VectorMetadata.model_fields), (
+            "every declared field needs a sample value here — a new field "
+            "without one is a field this test does not protect"
+        )
+
+        stored = ChromaDBVectorStore._normalize_metadata(sample)
+
+        # Proves the NORMAL path ran. If the sample ever stops validating, the
+        # ValidationError fallback copies every key verbatim and would satisfy
+        # the key-set assertion below while never calling to_chroma_metadata at
+        # all — the test would pass having checked nothing. Only the normal path
+        # comma-joins tags.
+        assert stored["tags"] == "postgresql,database", (
+            "sample fell through to the sanitizing fallback — this test is "
+            "vacuous until the sample validates again"
+        )
+
+        missing = set(sample) - set(stored)
+        assert not missing, (
+            f"declared but not emitted by to_chroma_metadata: {sorted(missing)} — "
+            f"these are written by callers and silently dropped"
+        )
+
+        # VALUES, not just keys. A key-presence assertion cannot tell a correct
+        # emitter from one that cross-wires fields (`data["severity"] =
+        # self.status`), and a declared key carrying another field's value is
+        # the same "wrong value stated as fact" defect this issue is about —
+        # arguably worse, since the row looks complete. The uniqueness
+        # assertion above is what makes this able to see a swap at all.
+        expected = dict(sample)
+        expected["tags"] = "postgresql,database"  # list -> comma-joined
+        expected["created_at"] = "2026-01-01T00:00:00Z"  # datetime -> ISO-8601
+        expected["updated_at"] = "2026-01-02T00:00:00Z"
+        assert stored == expected
+
+    @pytest.mark.parametrize(
+        "identity_key",
+        [
+            "case_id",
+            "case_title",
+            "runbook_source",
+            "document_title",
+            "original_document_id",
+        ],
+    )
+    def test_normalize_metadata_emits_an_empty_identity_value(self, identity_key):
+        """An empty identity value is stored, not dropped.
+
+        ``search_runbooks`` requires these keys to be PRESENT and skips any row
+        missing one, so gating the write on truthiness would turn an
+        empty-but-valid value into a row that is permanently unreadable — while
+        ``index_runbook`` still logged the write as a success.
+
+        Parametrized over EVERY identity key, not the two that first came to
+        mind: each is emitted at its own line, so covering a subset leaves the
+        rest free to revert to a truthiness gate. `document_title` and
+        `original_document_id` in particular round-trip into `RunbookMetadata`,
+        where a dropped empty string becomes an observable `None`.
+        """
+        stored = ChromaDBVectorStore._normalize_metadata(
+            {"report_type": "runbook", identity_key: ""}
+        )
+
+        assert identity_key in stored, (
+            f"{identity_key} was gated on truthiness, so an empty value is "
+            f"dropped and the row becomes unreadable at search time"
+        )
+        assert stored[identity_key] == ""
+
+    def test_normalize_metadata_degrades_rather_than_writing_a_bare_row(self):
+        """The fallback keeps the allowlisted keys when a VALUE fails validation.
+
+        This path is the guard's own fail-open surface, and it was untested:
+        gutting it to `return {}` writes rows carrying no metadata at all —
+        unreachable by every scoped search, tenant predicate included — which is
+        precisely the #912 failure class the refusal exists to prevent, arrived
+        at from the other direction.
+
+        `chunk_index` is declared `Optional[int]`; a non-numeric value fails
+        validation and sends the whole dict down the fallback.
+        """
+        stored = ChromaDBVectorStore._normalize_metadata(
+            {
+                "report_type": "runbook",
+                "organization_id": "org-a",
+                "case_id": "case-42",
+                "tags": ["postgresql", "database"],
+                "case_title": None,
+                "chunk_index": "not-an-int",
+            }
+        )
+
+        assert stored, "a validation failure must not erase the row's metadata"
+        # The tenant + type predicates are what every scoped search filters on.
+        assert stored["organization_id"] == "org-a"
+        assert stored["report_type"] == "runbook"
+        assert stored["case_id"] == "case-42"
+
+        # It must SANITIZE, not just copy. ChromaDB rejects list and None
+        # values outright, so a fallback that passed the dict through unchanged
+        # would fail the entire write — the opposite of the degradation it
+        # exists to provide. Asserting only the keys above cannot tell those
+        # two implementations apart.
+        assert stored["tags"] == "['postgresql', 'database']"
+        assert "case_title" not in stored
+        assert all(
+            isinstance(v, (str, int, float, bool)) for v in stored.values()
+        ), f"non-primitive survived the fallback: {stored}"
 
     @pytest.mark.asyncio
     async def test_search_success(self, vector_store):

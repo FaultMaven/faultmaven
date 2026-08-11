@@ -26,9 +26,8 @@
 ```
 ChromaDB KB Instance (PersistentClient at data/chroma-kb/ for local, HttpClient for cloud)
 ├── Collections:
-│   ├── faultmaven_kb         (all KB docs: global/personal/team, metadata-filtered)
-│   ├── faultmaven_runbooks   (runbook similarity recommendations)
-│   └── knowledge_items       (knowledge module search service)
+│   └── faultmaven_kb         (all KB docs: global/personal/team, metadata-filtered,
+│                              AND runbooks, tagged report_type="runbook")
 
 ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local, HttpClient for cloud)
 ├── Collections:
@@ -38,15 +37,21 @@ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local,
 
 **Architecture**: Two ChromaDB clients created in the DI container — one for permanent KB collections (`kb_chromadb_client` at `data/chroma-kb/`), one for ephemeral case evidence (`evidence_chromadb_client` at `data/chroma-evidence/`). Local deployment uses `PersistentClient` (file-based), cloud uses `HttpClient` to external server. Separate instances ensure KB data is protected from evidence churn and can be backed up independently.
 
-**Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Scope fields (`scope`, `owner_id`, `team_id`) are stored at ingestion time. `KnowledgeVectorStore` enforces a scope-invariant check that rejects any query to `faultmaven_kb` without a scope filter. The unified `answer_from_kb` tool (in `faultmaven/modules/agent/tools/kb_qa.py`) builds a combined filter:
+**Scope Isolation**: The `faultmaven_kb` collection uses metadata filtering — NOT separate collections per user/team. Vector metadata carries only the **immutable visibility floor**: `scope` (`personal` or `global`) and `owner_id`. `team_id` is deliberately **never written** — team visibility is mutable, and a chunk tagged with a team would be orphaned on unshare (matching no filter branch). It lives in the `resource_shares` table and is resolved to an **id allowlist at query time** (ADR-013 §D4 / ADR-011 D3).
+
+⚠️ **Two adapters write this one collection, and only one enforces the schema.** `KnowledgeService` is wired with `knowledge_vector_store or vector_store`, and `knowledge_vector_store` is registered in every normal deployment — so the production document path is **`KnowledgeVectorStore.add_documents`, which type-sanitizes and does NOT normalize through `VectorMetadata`**. The `#912` refusal on undeclared keys lives in `ChromaDBVectorStore.add_documents`, which serves the runbook path and the fallback wiring. What keeps KB documents allowlisted today is the *caller*: `KnowledgeService._index_document_in_vector_store` builds its dict as `VectorMetadata(...).to_chroma_metadata()`. Writing `team_id` straight through `KnowledgeVectorStore` would be silently **stored** — neither raised nor dropped.
+
+`KnowledgeVectorStore` enforces a scope-invariant check that rejects any query to `faultmaven_kb` without a scope filter. `build_kb_scope_filter` (in `knowledge_service.py`) builds the combined filter the unified `answer_from_kb` tool uses:
 
 ```python
 {"$or": [
-    {"scope": "global"},
-    {"$and": [{"scope": "personal"}, {"owner_id": user_id}]},
-    {"$and": [{"scope": "team"}, {"team_id": {"$in": team_ids}}]},
+    {"scope": "global"},                              # platform corpus
+    {"owner_id": owner_id},                           # own items, any scope
+    {"parent_document_id": {"$in": shared_ids}},      # shared to one of the caller's teams
 ]}
 ```
+
+`shared_ids` comes from `resolve_shared_kb_ids`, which reads `resource_shares` in SQL. The `owner_id` arm is unshare-proof precisely because it is keyed on the caller, not on a stored team tag; the team arm is omitted when the list is empty (ChromaDB rejects an empty `$in`), collapsing retrieval to `personal ∪ global` — the fail-closed outcome.
 
 ### 1.2 Embedding Model
 
@@ -94,7 +99,7 @@ CaseVectorStore(client=evidence_client)    # dynamic case_{id} collections
 **Lifecycle**: Permanent (user/admin-controlled deletion)
 **Implementation**: `faultmaven/infrastructure/persistence/chromadb_store.py` (ChromaDBVectorStore)
 
-**Scope Isolation**: Metadata fields `scope`, `owner_id`, `team_id` stored at ingestion. The unified `answer_from_kb` tool automatically filters by the user's accessible scopes.
+**Scope Isolation**: Metadata carries `scope` and `owner_id` only — never `team_id` (see §1.1). The unified `answer_from_kb` tool automatically filters by the user's accessible scopes, resolving team visibility to an id allowlist at query time.
 
 **Characteristics**:
 
@@ -117,9 +122,21 @@ CaseVectorStore(client=evidence_client)    # dynamic case_{id} collections
 - Case-scoped search (only within current case)
 - Used by the `answer_from_case_evidence` tool
 
-### 2.3 Additional Collections
+### 2.3 Runbooks — no collection of their own
 
-**`faultmaven_runbooks`** — Runbook similarity recommendations (report_type, domain metadata). Used by `RunbookKB` for "this incident looks like runbook X" matching.
+Runbook similarity ("this incident looks like runbook X") runs against
+`faultmaven_kb`, the collection above. `RunbookKnowledgeBase` is injected that
+store and never selects a collection of its own; its `COLLECTION_NAME =
+"faultmaven_runbooks"` constant is decorative, appearing in a single log line at
+init.
+
+Runbooks and KB documents therefore share one collection, and the `report_type`
+metadata value is the **only** discriminator between them — which is why
+`search_runbooks` ANDs `report_type == "runbook"` into every query, alongside
+the mandatory `organization_id` predicate. Both keys, and the runbook identity
+keys the search reconstructs its results from (`case_id`, `case_title`,
+`runbook_source`, `document_title`, `original_document_id`), must be declared by
+`VectorMetadata` or the write path silently drops them (#912).
 
 ---
 
@@ -210,7 +227,7 @@ POST /api/v1/knowledge/documents
 
 # Service flow
 1. Validate document (format, size, ownership)
-2. Store in faultmaven_kb collection with scope/owner_id/team_id metadata
+2. Store in faultmaven_kb collection with scope/owner_id metadata (never team_id)
 3. ChromaDB generates embeddings server-side
 4. Return document_id to client
 
@@ -218,7 +235,9 @@ POST /api/v1/knowledge/documents
 await vector_store.add_documents([doc_dict])  # ChromaDBVectorStore
 ```
 
-**Metadata passthrough**: `ChromaDBVectorStore.add_documents()` normalizes metadata through `VectorMetadata` which includes all scope fields (`scope`, `owner_id`, `team_id`). Tags are serialized as comma-joined strings (ChromaDB rejects list values in metadata).
+**Metadata passthrough**: `ChromaDBVectorStore.add_documents()` normalizes metadata through `VectorMetadata`, which declares the visibility floor (`scope`, `owner_id`) — **not** `team_id`. Tags are serialized as comma-joined strings (ChromaDB rejects list values in metadata).
+
+`VectorMetadata` is an **allowlist**: it stores the keys it declares. Since #912 an undeclared key **raises** instead of being dropped in silence, because a dropped key is indistinguishable from a stored one at the call site and only surfaces later as a wrong value at read time. Add the field to the schema (declaration **and** `to_chroma_metadata`) or stop writing it.
 
 ### 3.2.1 Document Listing and Retrieval
 
@@ -313,8 +332,8 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
         scope_filter={
             "$or": [
                 {"scope": "global"},
-                {"$and": [{"scope": "personal"}, {"owner_id": user_id}]},
-                {"$and": [{"scope": "team"}, {"team_id": {"$in": user_teams}}]},
+                {"owner_id": user_id},
+                {"parent_document_id": {"$in": shared_ids}},
             ]
         },
     )
@@ -358,7 +377,7 @@ async def search_kb(user_id: str, query: str, k: int = 5) -> List[Document]:
 
 - Global-scope built-in content: ships in the KB pack, ingested by the startup bootstrap (`kb_init.py`)
 - Personal-scope content: added via `POST /api/v1/knowledge/documents` by the owner
-- Team-scope content: added via the same endpoint with `scope=team` and a `team_id`
+- Team-shared content: added via the same endpoint, then shared to a team; the share lives in `resource_shares`, and the vector row keeps its `personal` floor
 - Deletion of individual documents via `delete_documents_by_parent_id()`
 
 **Backup**:
@@ -525,7 +544,7 @@ chromadb.embedding_generation_ms:
   - p95: 150ms
 
 chromadb.collection_count:
-  - faultmaven_kb: 1 (plus faultmaven_runbooks, knowledge_items)
+  - faultmaven_kb: 1 (the KB instance's only collection)
   - case_*: ~500 (active cases)
 
 chromadb.document_count:
@@ -618,7 +637,7 @@ Source files live in `data/knowledge/` (markdown) and `data/evidence/` (raw uplo
 - `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` - Unified KB vector store (`faultmaven_kb`)
 - `faultmaven/infrastructure/persistence/chromadb_store.py` - Generic ChromaDB adapter (`ChromaDBVectorStore`)
 - `faultmaven/infrastructure/persistence/case_vector_store.py` - Case Working Memory (ephemeral `case_{id}` collections)
-- `faultmaven/infrastructure/knowledge/runbook_kb.py` - Runbook similarity KB (`faultmaven_runbooks`)
+- `faultmaven/infrastructure/knowledge/runbook_kb.py` - Runbook similarity KB (over the injected `faultmaven_kb` store; no collection of its own)
 
 **Ingestion & Query**:
 

@@ -148,6 +148,95 @@ async def test_failed_dedup_yields_a_caveat_not_a_clean_suggestion(ready_case):
 
 
 @pytest.mark.asyncio
+async def test_an_unreadable_result_set_caveat_names_the_right_remedy(ready_case):
+    """The caveat must not tell the user to wait for something already working.
+
+    Every other dedup failure is transient and clears on retry.
+    ``RUNBOOK_RESULTS_UNREADABLE`` never does: the knowledge base answered, and
+    the closest runbooks stay unreadable until someone re-indexes them. Saying
+    "the knowledge base search is unavailable" points at a subsystem that is
+    not broken.
+
+    This is the agent-facing half of the fix made for the HTTP 503. It was
+    missed the first time and nothing failed — the message had no test.
+    """
+    kb = _kb()
+    kb.search_by_text = AsyncMock(
+        side_effect=KnowledgeBaseError(
+            "matched rows could not be read",
+            error_code="RUNBOOK_RESULTS_UNREADABLE",
+        )
+    )
+
+    suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
+
+    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
+    assert "could not check" in suggestion.message
+    assert "need re-indexing" in suggestion.message
+    assert "knowledge base search is unavailable" not in suggestion.message
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_dedup_blames_nothing(ready_case):
+    """No knowledge base wired: the search did not run, nothing is broken.
+
+    The remedy flags are only ever ASSIGNED in the exception handler, so every
+    path that never raises — no KB, no usable tenant, too little case content —
+    keeps their initial values. Flipping either initialiser is invisible to a
+    test that exercises only the raising path: with ``dedup_unreadable``
+    initialised ``True`` this caveat claimed runbooks "need re-indexing" for a
+    knowledge base that does not exist, and 129 tests passed.
+    """
+    suggestion = await tt.evaluate_runbook_suggestion(ready_case, runbook_kb=None)
+
+    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
+    assert "did not run" in suggestion.message
+    assert "re-indexing" not in suggestion.message
+    assert "unavailable" not in suggestion.message
+
+
+@pytest.mark.asyncio
+async def test_an_unsearchable_case_blames_nothing_either(ready_case):
+    """A case with no usable tenant never issues a search — same honesty rule.
+
+    ``_find_similar_runbooks_for_case`` returns ``None`` without searching, so
+    no exception is raised and the flags keep their initial values. Calling that
+    "unavailable" would misattribute a healthy knowledge base.
+    """
+    ready_case.organization_id = None
+    kb = _kb()
+
+    suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
+
+    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
+    assert "did not run" in suggestion.message
+    assert "unavailable" not in suggestion.message
+    assert "re-indexing" not in suggestion.message
+
+
+@pytest.mark.asyncio
+async def test_a_transient_dedup_failure_keeps_the_unavailable_wording(ready_case):
+    """The transient causes keep the wording that fits them.
+
+    Pins the other side of the branch: without it, always emitting the
+    re-indexing text would satisfy the test above while misdescribing every
+    genuine outage.
+    """
+    kb = _kb()
+    kb.search_by_text = AsyncMock(
+        side_effect=KnowledgeBaseError(
+            "chromadb unreachable", error_code="RUNBOOK_SEARCH_FAILED"
+        )
+    )
+
+    suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
+
+    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
+    assert "knowledge base search is unavailable" in suggestion.message
+    assert "re-indexing" not in suggestion.message
+
+
+@pytest.mark.asyncio
 async def test_absent_kb_also_yields_a_caveat(ready_case):
     suggestion = await tt.evaluate_runbook_suggestion(ready_case, runbook_kb=None)
 

@@ -46,6 +46,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
 )
+from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
@@ -1458,6 +1459,19 @@ async def evaluate_runbook_suggestion(
     # never reach it, or a dedup result gets stated that was never obtained
     # (#944).
     dedup_ran = False
+    # Why dedup did not complete, when it did not. Three causes, three
+    # remedies, and naming the wrong one sends the user after the wrong thing.
+    #
+    # The flags NEST rather than partition: `dedup_failed` means an exception
+    # reached us at all, and `dedup_unreadable` narrows that to the one
+    # deterministic cause (re-index; retrying never clears it), so
+    # `dedup_unreadable` implies `dedup_failed`. The branch ORDER below is what
+    # makes them behave as three cases — do not read either flag on its own as
+    # "transient". Neither set means the search simply never ran: no KB wired,
+    # no usable tenant, or too little case content to query with, where calling
+    # anything "unavailable" would be false.
+    dedup_failed = False
+    dedup_unreadable = False
     if not runbook_kb:
         logger.warning(
             f"Runbook deduplication skipped for case {case.case_id}: "
@@ -1498,6 +1512,13 @@ async def evaluate_runbook_suggestion(
                     )
         except Exception as e:
             # `dedup_ran` stays False, so the caveat branch below owns this.
+            # `dedup_unreadable` separates the one cause whose remedy differs:
+            # everything else here is a transient failure that retrying clears,
+            # but RUNBOOK_RESULTS_UNREADABLE means the search ran, the KB is
+            # up, and the closest runbooks are unreadable until someone
+            # re-indexes them. Telling the user to wait would be wrong (#912).
+            dedup_failed = True
+            dedup_unreadable = getattr(e, "error_code", None) == RESULTS_UNREADABLE_CODE
             logger.warning(
                 f"Runbook deduplication check failed for case {case.case_id}: {e}.",
                 extra={"case_id": case.case_id, "metric": "runbook.dedup_failed"},
@@ -1516,11 +1537,23 @@ async def evaluate_runbook_suggestion(
     # the final SUGGEST below honest: it means "checked, nothing similar
     # found", which an unchecked case is not entitled to.
     if not dedup_ran:
+        if dedup_unreadable:
+            cause = (
+                "the closest-matching runbooks could not be read and need "
+                "re-indexing"
+            )
+        elif dedup_failed:
+            cause = "the knowledge base search is unavailable"
+        else:
+            # Skipped, not failed: no knowledge base wired, no usable tenant, or
+            # too little case content to form a query. Nothing is broken and
+            # there is nothing to retry, so calling it "unavailable" would be a
+            # false statement about a healthy system (#912).
+            cause = "the knowledge base search did not run"
         caveats.append(
-            "I could not check whether a similar runbook already exists — the "
-            "knowledge base search is unavailable. Creating one now risks "
-            "duplicating existing content; you may want to check the "
-            "Dashboard Knowledge Base first."
+            f"I could not check whether a similar runbook already exists — "
+            f"{cause}. Creating one now risks duplicating existing content; "
+            f"you may want to check the Dashboard Knowledge Base first."
         )
 
     if caveats:

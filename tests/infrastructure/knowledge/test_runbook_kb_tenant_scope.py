@@ -26,6 +26,7 @@ import pytest
 
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import (
     CaseReport,
     ReportStatus,
@@ -68,8 +69,29 @@ class _ChromaBackedStore(ChromaDBVectorStore):
 
     def __init__(self, name: str):
         import chromadb
+        from chromadb.config import Settings as ChromaSettings
 
-        super().__init__(chromadb.EphemeralClient(), collection_name=name)
+        # Settings are PINNED, for the same reason ``create_persistent_client``
+        # pins them (#823): chromadb caches one System per identifier and
+        # refuses a second client for it whose ``Settings`` differ in any field
+        # — and ``Settings.environment`` defaults to the ambient ENVIRONMENT
+        # variable, which tests in this suite set and clear. With bare
+        # ``EphemeralClient()`` that made every store built after the first
+        # such change raise "An instance of Chroma already exists for ephemeral
+        # with different settings", so this file's tests errored out or passed
+        # purely on collection order. A gate that only runs in some orders is
+        # not a gate.
+        super().__init__(
+            chromadb.EphemeralClient(
+                settings=ChromaSettings(
+                    anonymized_telemetry=False,
+                    allow_reset=False,
+                    environment="",
+                    is_persistent=False,
+                )
+            ),
+            collection_name=name,
+        )
         self.queries: List[Optional[Dict[str, Any]]] = []
 
     async def seed(
@@ -89,21 +111,24 @@ class _ChromaBackedStore(ChromaDBVectorStore):
 
 
 def _normalized(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Run a metadata dict through the exact normalization ``add_documents`` applies."""
-    vm = VectorMetadata(
-        **{
-            k: raw.get(k)
-            for k in VectorMetadata.model_fields
-            if k in raw or raw.get(k) is not None
-        }
-    )
-    return vm.to_chroma_metadata()
+    """Run a metadata dict through the exact normalization ``add_documents`` applies.
+
+    Calls the production normalizer rather than re-implementing it — a local
+    copy would drift from the real allowlist and start agreeing with itself.
+    """
+    return ChromaDBVectorStore._normalize_metadata(raw)
 
 
 def _runbook_metadata(organization_id: str, doc_id: str) -> Dict[str, Any]:
-    """Indexed metadata for a runbook. Identical across tenants but for the org."""
+    """Indexed metadata for a runbook. Identical across tenants but for the org.
+
+    Deliberately the same key set ``index_runbook`` writes — no ``report_id``,
+    which is the row id rather than a metadata field. ``add_documents`` refuses
+    any key ``VectorMetadata`` does not declare, so a hand-seeded dict that
+    drifts from the production one fails here instead of silently seeding rows
+    production could never write (#912).
+    """
     return {
-        "report_id": doc_id,
         "organization_id": organization_id,
         "case_id": "case-1",
         "case_title": "Connection pool exhaustion",
@@ -114,6 +139,23 @@ def _runbook_metadata(organization_id: str, doc_id: str) -> Dict[str, Any]:
         "tags": "postgresql",
         "created_at": "2026-01-01T00:00:00Z",
     }
+
+
+def _drop_identity(md: Dict[str, Any]) -> Dict[str, Any]:
+    """Unreadable via the identity handler: a stamp this path always writes."""
+    return {k: v for k, v in md.items() if k != "runbook_source"}
+
+
+def _fail_validation(md: Dict[str, Any]) -> Dict[str, Any]:
+    """Unreadable via the reconstruction handler: ``title`` has min_length=10."""
+    return {**md, "title": "short"}
+
+
+#: The two ways a candidate can be unreadable. They are handled by SEPARATE
+#: ``except`` blocks with their own copies of the running-maximum bookkeeping,
+#: so any test asserting something about "unreadable rows" has to cover both or
+#: it pins only one of the two implementations.
+_BREAK_IDS = ["missing-identity-key", "fails-CaseReport-validation"]
 
 
 @pytest.fixture
@@ -192,6 +234,485 @@ async def test_an_indexed_runbook_round_trips_to_its_own_tenant_and_no_other(
         "isolation at all"
     )
     assert theirs == []
+
+
+@pytest.mark.asyncio
+async def test_an_indexed_runbook_round_trips_every_field_it_was_written_with(
+    kb, store
+):
+    """The whole row survives the write path, not just the two predicate keys.
+
+    ``search_runbooks`` does not return the stored row — it rebuilds a
+    ``CaseReport``/``SimilarRunbook`` out of the stored metadata. Any key
+    normalization drops is therefore not merely missing at read time: it is
+    replaced by whatever the reconstruction falls back to. Before #912
+    ``VectorMetadata`` declared none of the identity keys, so every runbook came
+    back with ``case_id="unknown"``, ``case_title="Unknown"``, no document
+    linkage, and — the reason this is a correctness bug rather than a cosmetic
+    one — ``source=incident_driven``, asserted with full confidence about a
+    runbook that was document-driven.
+
+    A DOCUMENT_DRIVEN runbook is used deliberately: ``incident_driven`` was the
+    old fallback, so an incident-driven fixture would pass this test while the
+    bug was fully present.
+
+    Every value below is distinct and non-default, so no assertion can be
+    satisfied by a coincidence.
+    """
+    report = CaseReport(
+        report_id="rb-identity",
+        case_id="case-REAL-42",
+        report_type=ReportType.RUNBOOK,
+        title="Runbook: Connection pool exhaustion",
+        content="# Runbook\n\nrestart the pool",
+        format="markdown",
+        generation_status=ReportStatus.COMPLETED,
+        generated_at="2026-01-01T00:00:00Z",
+        generation_time_ms=1,
+        is_current=True,
+        version=1,
+        linked_to_closure=False,
+        metadata=RunbookMetadata(
+            source=RunbookSource.DOCUMENT_DRIVEN,
+            domain="database",
+            tags=["postgresql"],
+            document_title="PostgreSQL Operations Guide",
+            original_document_id="doc-77",
+        ),
+    )
+
+    with patch(
+        "faultmaven.infrastructure.model_cache.model_cache.aembed_query",
+        AsyncMock(return_value=_vec(0.5)),
+    ):
+        await kb.index_runbook(
+            report,
+            organization_id=ORG_A,
+            source=RunbookSource.DOCUMENT_DRIVEN,
+            case_title="Pool exhaustion in prod",
+        )
+
+    found = await kb.search_runbooks(
+        query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+    )
+    assert len(found) == 1, "the row the production writer just wrote must come back"
+    match = found[0]
+
+    # The report id is the ChromaDB row id, not a metadata key — pinned here so
+    # that stays true if anyone reintroduces a metadata copy of it.
+    assert match.runbook.report_id == "rb-identity"
+
+    assert match.runbook.case_id == "case-REAL-42"
+    assert match.case_id == "case-REAL-42"
+    assert match.case_title == "Pool exhaustion in prod"
+    assert match.runbook.metadata.source is RunbookSource.DOCUMENT_DRIVEN
+    assert match.runbook.metadata.document_title == "PostgreSQL Operations Guide"
+    assert match.runbook.metadata.original_document_id == "doc-77"
+
+    # The NON-identity fields the writer stamps, which also have ``.get()``
+    # defaults waiting behind them: dropping these three from the write dict
+    # left the whole suite green while reconstruction confidently invented
+    # ``domain="general"``, ``tags=[]`` and a ``generated_at`` of "now" — the
+    # same wrong-value-as-fact class, one field over.
+    assert match.runbook.metadata.domain == "database"
+    assert match.runbook.metadata.tags == ["postgresql"]
+    assert match.runbook.generated_at == "2026-01-01T00:00:00Z"
+
+    # And the fabricated stand-ins are gone, named explicitly so a regression
+    # that reinstates them fails on the symptom the issue was filed for.
+    assert match.runbook.case_id != "unknown"
+    assert match.case_title != "Unknown"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_key", ["case_id", "case_title", "runbook_source"])
+async def test_a_runbook_row_missing_an_identity_key_is_skipped_not_invented(
+    kb, store, missing_key
+):
+    """A row this write path could not have produced is dropped, not guessed at.
+
+    The collection is shared with KB documents and ``report_type`` is the only
+    discriminator, so the search predicate can match a row that is not a runbook
+    this path wrote. Reconstructing one anyway is how a confident, wrong
+    ``source``/``case_id``/``case_title`` reaches the caller. Absence must read
+    as absence.
+
+    Parametrized over EVERY identity key rather than one representative: the
+    reconstruction reads each key at its own call site, so a test covering one
+    of them leaves the others free to go back to a ``.get(default)`` — which is
+    the whole defect. Each seeded row is identical to a good one but for the one
+    missing key, so the exclusion can only be due to that key.
+    """
+    good = _runbook_metadata(ORG_A, "rb-good")
+    incomplete = {k: v for k, v in good.items() if k != missing_key}
+
+    await store.seed("rb-good", good, _vec(0.5))
+    await store.seed("rb-incomplete", incomplete, _vec(0.5))
+
+    found = await kb.search_runbooks(
+        query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+    )
+
+    assert [r.runbook.report_id for r in found] == ["rb-good"], (
+        f"the row missing {missing_key!r} must be skipped — and the complete "
+        "row must still come back, or this passes because nothing was returned"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_result_set_that_is_entirely_unreadable_refuses(kb, store):
+    """Skipping every match must not be reported as "nothing similar".
+
+    Skipping keeps a fabricated result out, but if it empties the result set the
+    caller gets the same ``[]`` an empty KB produces — and both dedup callers
+    read ``[]`` as the affirmative "no similar runbook exists" and propose
+    generating a duplicate. That is the #944 collapse: an answer about the KB's
+    contents derived from a search that could not be read. It has to refuse.
+    """
+    incomplete = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
+    await store.seed("rb-only-unreadable", incomplete, _vec(0.5))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+async def test_an_identity_value_it_cannot_interpret_counts_as_unreadable(kb, store):
+    """A foreign identity VALUE is as unreadable as a missing key.
+
+    ``runbook_source="manual"`` is present but means nothing to
+    ``RunbookSource``. Judged on a different axis from absence it would raise
+    ``ValueError`` instead of ``KeyError``, land in the generic skip handler,
+    and not be counted — so a result set of entirely foreign rows would collapse
+    back to ``[]`` and be read as "no similar runbook exists", which is the
+    #944 collapse the refusal exists to close. Presence and validity are one
+    question: can this row be read?
+    """
+    foreign = _runbook_metadata(ORG_A, "rb-1")
+    foreign["runbook_source"] = "manual"  # not a RunbookSource member
+    await store.seed("rb-foreign-source", foreign, _vec(0.5))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+async def test_a_dissimilar_unreadable_row_does_not_manufacture_a_refusal(kb, store):
+    """The threshold is applied BEFORE a row is judged unreadable.
+
+    Every other test here searches at ``min_similarity=0.0``, which makes this
+    ordering unobservable — and the refusal's correctness depends on it. A row
+    that fails the similarity threshold was never a candidate, so its
+    readability is irrelevant; counting it would turn "nothing similar enough
+    matched" — an honest, correct empty answer — into a hard 503.
+
+    Seeded here: one unreadable row far from the query, nothing else above the
+    threshold. The right answer is an empty list, not a refusal.
+    """
+    incomplete = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
+    await store.seed("rb-distant-unreadable", incomplete, _vec(-0.9))
+
+    found = await kb.search_runbooks(
+        query_embedding=_vec(0.9), organization_id=ORG_A, min_similarity=0.65
+    )
+
+    assert found == []
+
+
+@pytest.mark.asyncio
+async def test_the_similarity_scale_is_pinned_between_its_endpoints(kb, store):
+    """The distance→similarity conversion, at a point that is not 0.0 or 1.0.
+
+    Every other test here sits at an endpoint: identical vectors (similarity 1.0
+    under any divisor) or far apart (below threshold either way). That leaves
+    ``1 - distance/2`` free to become ``1 - distance/3`` with the suite green —
+    and that constant sets the meaning of every "N% match" shown to a user and
+    of the 0.65/0.70/0.85 decision thresholds the callers apply.
+
+    Pinned by bracketing: a row whose true similarity is just above 0.65 must be
+    returned at the caller's real threshold, and excluded once the threshold
+    rises past it. A wrong divisor moves the score out of that bracket.
+    """
+    # Squared-L2 distance 1.0 -> similarity 0.5 under the real formula.
+    stored_vec = [1.0] + [0.0] * (_DIM - 1)
+    query_vec = [0.0] * _DIM
+    await store.seed("rb-mid", _runbook_metadata(ORG_A, "rb-1"), stored_vec)
+
+    found = await kb.search_runbooks(
+        query_embedding=query_vec, organization_id=ORG_A, min_similarity=0.45
+    )
+    assert [r.runbook.report_id for r in found] == ["rb-mid"]
+    assert found[0].similarity_score == pytest.approx(0.5), (
+        "the distance→similarity scale changed; every displayed match "
+        "percentage and every caller threshold shifts with it"
+    )
+
+    excluded = await kb.search_runbooks(
+        query_embedding=query_vec, organization_id=ORG_A, min_similarity=0.55
+    )
+    assert excluded == []
+
+
+@pytest.mark.asyncio
+async def test_an_all_unreadable_set_at_zero_similarity_still_refuses(kb, store):
+    """The "nothing readable" sentinel must sit BELOW every real score.
+
+    ``best_readable`` falls back to a sentinel when nothing was reconstructed,
+    and the comparison is strict, so a sentinel of ``0.0`` would tie with a
+    genuine zero-similarity row and let an all-unreadable set return ``[]`` —
+    the affirmative negative, at the one score where the guard is easiest to
+    get wrong. Only a sentinel below the 0.0 floor holds here.
+
+    Both production callers use 0.65, so this pins the method's contract at the
+    boundary rather than a live path — which is exactly where an untested edge
+    would otherwise sit.
+    """
+    incomplete = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
+    stored_vec = [1.0] + [0.0] * (_DIM - 1)
+    query_vec = [0.0, 1.0] + [0.0] * (_DIM - 2)
+    await store.seed("rb-zero-similarity", incomplete, stored_vec)
+
+    # The boundary is only exercised if the row really scores 0.0, and that
+    # depends on the collection's distance metric — which the store does not
+    # set, so ChromaDB's default (squared L2) applies and these orthogonal unit
+    # vectors land at distance 2.0 -> similarity 0.0. Under cosine they would
+    # score 0.5 and this test would still pass while pinning nothing. Assert
+    # the precondition so a metric change fails HERE, loudly, instead of
+    # silently vacating the assertion below.
+    raw = await store.query_by_embedding(
+        query_embedding=query_vec,
+        where={"$and": [{"report_type": "runbook"}, {"organization_id": ORG_A}]},
+        top_k=5,
+    )
+    distance = raw["distances"][0][0]
+    assert max(0.0, 1.0 - (distance / 2.0)) == 0.0, (
+        f"expected a 0.0-similarity row (distance 2.0), got distance {distance} "
+        f"— the collection's distance metric changed and this test no longer "
+        f"exercises the sentinel boundary"
+    )
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=query_vec,
+            organization_id=ORG_A,
+            min_similarity=0.0,
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+async def test_the_refusal_states_the_right_numbers(kb, store):
+    """The message's own facts are asserted, not just its error code.
+
+    This whole issue is about a wrong value stated as fact, so the error raised
+    to prevent that must not itself carry one. Asserting only ``error_code``
+    lets the count and the score drift to anything: swapping ``best_unreadable``
+    for ``best_readable`` in the f-string changes nothing observable.
+
+    Two unreadable candidates above one readable row — the message must say 2,
+    and must quote the unreadable high-water mark, not the readable score.
+    """
+    for name, seed in (("rb-bad-a", 0.5), ("rb-bad-b", 0.45)):
+        bad = _drop_identity(_runbook_metadata(ORG_A, name))
+        await store.seed(name, bad, _vec(seed))
+    await store.seed("rb-readable", _runbook_metadata(ORG_A, "rb-ok"), _vec(-0.4))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    message = str(excinfo.value)
+    assert "2 runbook(s)" in message, f"wrong unreadable count: {message}"
+    # The perfect match is unreadable, so the high-water mark is 100%; the
+    # readable row sits far below and must not be the number reported.
+    assert "100%" in message, f"quoted the wrong similarity: {message}"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_result_set_is_refused_without_retrying(kb, store):
+    """The refusal must cost ONE query, not three, and no breaker credit.
+
+    Parsing runs outside ``call_external`` for the same reason the write-side
+    refusal does: it cannot fail transiently, so retrying it burns backoff on a
+    deterministic outcome and books each attempt as a RunbookKB failure. Five
+    of those open a breaker shared with ``index_runbook`` — which would block
+    the re-index that repairs the very rows being refused.
+
+    Counting queries is the observable proxy: one issued query means the parse
+    failure was never retried.
+    """
+    incomplete = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
+    await store.seed("rb-only-unreadable", incomplete, _vec(0.5))
+    store.queries.clear()
+
+    with pytest.raises(KnowledgeBaseError):
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert len(store.queries) == 1, (
+        f"the parse failure was retried ({len(store.queries)} queries) — it is "
+        "back inside call_external and now counts against the shared breaker"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_row_outranking_the_readable_ones_refuses(kb, store):
+    """The refusal is about the BEST candidate, not about the set being empty.
+
+    This is the partial case, and it is the dangerous one: an unreadable row at
+    high similarity next to a readable row at low similarity. Firing only on an
+    empty result set returns the runner-up, and the caller reports its score as
+    the best available match — "existing runbooks have low similarity (2%),
+    generate a new one" — when the real best match was an exact duplicate it
+    could not read. A false negative dressed as a measurement.
+    """
+    unreadable = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
+    await store.seed("rb-strong-unreadable", unreadable, _vec(0.5))
+    await store.seed("rb-weak-readable", _runbook_metadata(ORG_A, "rb-2"), _vec(-0.4))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "break_it",
+    [
+        pytest.param(lambda m: m.pop("runbook_source"), id="missing-identity-key"),
+        pytest.param(
+            lambda m: m.update(title="short"), id="fails-CaseReport-validation"
+        ),
+    ],
+)
+async def test_the_reason_a_candidate_is_unreadable_does_not_change_the_verdict(
+    kb, store, break_it
+):
+    """Both ways of being unreadable cost the same, so both must count.
+
+    A missing identity key means the row was not written by this path; a row
+    failing ``CaseReport`` validation means it WAS — which makes it more likely
+    to be the duplicate being asked about, not less. Either way the caller is
+    handed the runner-up's score as the best available match.
+
+    Parametrized because pinning only one of them leaves the other free to stop
+    counting: a version that tracked missing keys but silently skipped
+    validation failures passed every other test in this file.
+    """
+    strong = _runbook_metadata(ORG_A, "rb-1")
+    break_it(strong)
+    await store.seed("rb-strong-unreadable", strong, _vec(0.5))
+    await store.seed("rb-weak-readable", _runbook_metadata(ORG_A, "rb-2"), _vec(-0.4))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("break_it", [_drop_identity, _fail_validation], ids=_BREAK_IDS)
+async def test_the_strongest_unreadable_row_decides_not_the_last_one_seen(
+    kb, store, break_it
+):
+    """Several unreadable candidates: the STRONGEST is what matters.
+
+    ChromaDB returns matches in descending similarity, so the *weakest*
+    unreadable row is processed last. Tracking "the last unreadable score" —
+    rather than the maximum — therefore reads as correct on every single-bad-row
+    test while silently comparing the wrong number, and the guard degrades back
+    into returning a mediocre readable row as the best available match.
+
+    Seeded here: a perfect-match unreadable row, a mid readable row, and a
+    distant unreadable row processed after both. Only a running maximum
+    refuses.
+
+    Parametrized over BOTH ways a candidate is unreadable because the running
+    maximum is written at two separate call sites, one per handler. Seeding
+    only identity failures pins only the first: the twin line in the
+    reconstruction handler degraded to last-write-wins with all 98 tests
+    passing.
+    """
+    strong_bad = break_it(_runbook_metadata(ORG_A, "rb-1"))
+    weak_bad = break_it(_runbook_metadata(ORG_A, "rb-3"))
+    await store.seed("rb-strong-unreadable", strong_bad, _vec(0.5))
+    await store.seed("rb-mid-readable", _runbook_metadata(ORG_A, "rb-2"), _vec(0.1))
+    await store.seed("rb-distant-unreadable", weak_bad, _vec(-0.5))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_row_below_the_best_match_does_not_refuse(kb, store):
+    """A skipped candidate that could not have won is not a reason to fail.
+
+    Every caller consumes the top match and nothing else, so an unread row
+    scoring below one we did read cannot change the verdict. Refusing anyway
+    would turn a correct, useful answer into a 503 over a row that was never in
+    contention — the over-strict mirror of the defect above.
+    """
+    await store.seed("rb-strong-readable", _runbook_metadata(ORG_A, "rb-1"), _vec(0.5))
+    weak_bad = _runbook_metadata(ORG_A, "rb-2")
+    weak_bad["title"] = "short"  # CaseReport.title has min_length=10
+    await store.seed("rb-weak-unreadable", weak_bad, _vec(-0.4))
+
+    found = await kb.search_runbooks(
+        query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+    )
+
+    assert [r.runbook.report_id for r in found] == ["rb-strong-readable"]
+
+
+@pytest.mark.asyncio
+async def test_indexing_an_undeclared_key_never_reaches_the_shared_breaker(kb, store):
+    """The write path's refusal must not be able to take the read path down.
+
+    ``index_runbook`` runs inside ``RunbookKnowledgeBase.call_external``, whose
+    circuit breaker is SHARED with ``search_runbooks``/``search_by_text``. A
+    refusal raised inside that wrapper would be retried three times and recorded
+    as three service failures, so five bad index calls would open the breaker
+    and start failing every runbook *search* — a deterministic programming error
+    in the writer taking out the reader. The refusal therefore has to happen
+    before the wrapper is entered.
+
+    The undeclared key is produced by narrowing the schema rather than by
+    patching the refusal: ``case_title`` is a key ``index_runbook`` genuinely
+    writes, so dropping it from the declared set exercises the real check on a
+    real write, and the assertion is about WHERE that check runs.
+    """
+    narrowed = {
+        k: v for k, v in VectorMetadata.model_fields.items() if k != "case_title"
+    }
+
+    with patch.object(VectorMetadata, "model_fields", narrowed):
+        with patch.object(
+            RunbookKnowledgeBase, "call_external", new=AsyncMock()
+        ) as mock_call:
+            with pytest.raises(ValueError, match="case_title"):
+                await kb.index_runbook(_report("rb-undeclared"), organization_id=ORG_A)
+
+    mock_call.assert_not_called()
 
 
 # =============================================================================

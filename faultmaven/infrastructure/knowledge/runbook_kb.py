@@ -28,9 +28,16 @@ from faultmaven.models.report import (
     RunbookSource,
     SimilarRunbook,
 )
+from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
+
+#: Error code for "the closest candidates could not be read". Named once and
+#: imported by both consumers rather than spelled as a literal in three files:
+#: the whole point of the code is that callers branch on it, so a typo on one
+#: side silently restores the misleading generic message.
+RESULTS_UNREADABLE_CODE = "RUNBOOK_RESULTS_UNREADABLE"
 
 
 class RunbookKnowledgeBase(BaseExternalClient):
@@ -109,9 +116,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
         Raises:
             KnowledgeBaseError: If the embedding model is unavailable or its
-                load exceeds ``EMBED_TIMEOUT_SECONDS``. The caller must NOT
-                render either as "no similar runbooks found" — that is the
-                affirmative negative this method exists to end.
+                load exceeds ``EMBED_TIMEOUT_SECONDS``; also anything
+                :meth:`search_runbooks` raises, which this method delegates to
+                and does not catch (``RUNBOOK_SEARCH_UNSCOPED``,
+                ``RUNBOOK_SEARCH_FAILED``, ``RUNBOOK_RESULTS_UNREADABLE``). The
+                caller must NOT render any of them as "no similar runbooks
+                found" — that is the affirmative negative this method exists to
+                end.
         """
         # Refuse an unscoped search HERE rather than relying on
         # search_runbooks' falsy-org guard. That guard fails closed by
@@ -188,6 +199,15 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
         Returns:
             List of SimilarRunbook objects sorted by similarity score (descending)
+
+        Raises:
+            KnowledgeBaseError: ``RUNBOOK_SEARCH_FAILED`` if the vector query
+                itself failed, or ``RUNBOOK_RESULTS_UNREADABLE`` if rows matched
+                but none carried a usable identity. Neither may be rendered as
+                "no similar runbooks found": callers turn an empty list into
+                "generate a new runbook", so a search that could not be
+                completed or could not be read must not answer as one that was
+                (#944).
         """
         if not organization_id:
             logger.warning(
@@ -195,7 +215,18 @@ class RunbookKnowledgeBase(BaseExternalClient):
             )
             return []
 
-        async def _search_wrapper():
+        async def _query():
+            """The external call, and ONLY the external call.
+
+            Result parsing used to live in here too. It must not: parsing is
+            pure CPU that cannot fail transiently, but everything inside this
+            function runs under ``call_external``'s retry-and-circuit-breaker
+            policy. A deterministic parse failure was therefore retried three
+            times with backoff and recorded as three RunbookKB failures — and
+            five of those open a breaker shared with ``index_runbook``, so an
+            unreadable row would have blocked the very re-index that repairs
+            it. Retries belong to the query; the parse gets none.
+            """
             # Build the ChromaDB where clause. Every condition is a separate
             # single-key dict combined under an explicit ``$and``: ChromaDB
             # (>=1.0) validates that a ``where`` mapping carries exactly one
@@ -228,8 +259,37 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     error_code="RUNBOOK_SEARCH_FAILED",
                 ) from e
 
+            return results
+
+        results = await self.call_external(
+            operation_name="search_runbooks",
+            call_func=_query,
+            timeout=5.0,  # 5 seconds for vector search
+            retries=2,
+        )
+
+        def _parse(results) -> List[SimilarRunbook]:
             # Parse results and filter by minimum similarity
-            similar_runbooks = []
+            similar_runbooks: List[SimilarRunbook] = []
+            # Candidates that cleared the similarity threshold and could NOT be
+            # turned into a result — for any reason: a missing identity key, or
+            # a stored row that no longer satisfies ``CaseReport``. Both are
+            # tracked the same way on purpose. The caller does not consume the
+            # list, it consumes the TOP match, so what makes an answer
+            # trustworthy is not "did we read most rows" but "did we read the
+            # best one". A candidate we could not read might have been the
+            # duplicate, and reporting the runner-up's score as the best
+            # available match is a false negative dressed as a measurement
+            # (#944).
+            #
+            # ONE list, appended from both handlers, rather than a count and a
+            # running maximum maintained separately in each. The duplicated form
+            # meant four bookkeeping statements where two would do, and a test
+            # covering one handler left the other free to drift: both the
+            # maximum and the count independently degraded to last-write-wins
+            # with the whole suite green. Derived once, below, from the only
+            # state either handler updates.
+            unreadable_scores: List[float] = []
 
             if not results or "ids" not in results or not results["ids"]:
                 logger.debug("No runbooks found matching query")
@@ -254,11 +314,60 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 metadata = metadatas_list[i] if i < len(metadatas_list) else {}
                 content = documents_list[i] if i < len(documents_list) else ""
 
-                # Reconstruct CaseReport from stored data
+                # Reconstruct CaseReport from stored data.
+                #
+                # The identity keys are read with ``[]``, not ``.get(default)``.
+                # ``index_runbook`` stamps all of them on every row it writes,
+                # so a row missing one was not written by this path and cannot
+                # be reconstructed — and the defaults that used to stand in for
+                # them did not read as "missing", they read as facts:
+                # ``case_id="unknown"`` and ``case_title="Unknown"`` for every
+                # row this path wrote, because normalization dropped the real
+                # values before ChromaDB ever saw them (#912). The handler below
+                # turns a missing key into a logged skip, which is the honest
+                # answer.
+                # Identity is resolved FIRST, catching absence and
+                # uninterpretability together: a missing ``runbook_source`` and
+                # a ``runbook_source="manual"`` both mean "not written by this
+                # path", and both must count towards ``unreadable``.
+                #
+                # ``ValueError`` in this tuple is load-bearing, not decorative:
+                # this is its OWN ``try``, so a bad ``RunbookSource`` value
+                # caught here cannot fall through to the reconstruction handler
+                # below. Narrow it to ``except KeyError`` and the ValueError
+                # escapes ``search_runbooks`` raw — past the typed
+                # ``except (KnowledgeBaseError, ...)`` at the route, turning a
+                # 503 refusal into a generic 500. (The 500's body is static, so
+                # nothing leaks — what is lost is the refusal itself: the caller
+                # can no longer tell "could not read the candidates" from any
+                # other server error, and the caveat naming the remedy is gone.)
+                #
+                # No defaults anywhere here. The ones that used to stand in did
+                # not read as "missing", they read as facts: ``case_id="unknown"``
+                # and ``case_title="Unknown"`` for every row this path wrote, and
+                # a ``"incident_driven"`` fallback that labelled document-driven
+                # runbooks as incident-driven (#912).
+                try:
+                    identity_case_id = metadata["case_id"]
+                    identity_case_title = metadata["case_title"]
+                    identity_source = RunbookSource(metadata["runbook_source"])
+                except (KeyError, ValueError) as e:
+                    unreadable_scores.append(similarity)
+                    logger.warning(
+                        f"Runbook {report_id} carries no usable identity "
+                        f"({e!r}), skipping it",
+                        extra={
+                            "report_id": report_id,
+                            "similarity": similarity,
+                            "metadata_keys": sorted(metadata),
+                        },
+                    )
+                    continue
+
                 try:
                     runbook = CaseReport(
                         report_id=report_id,
-                        case_id=metadata.get("case_id", "unknown"),
+                        case_id=identity_case_id,
                         report_type=ReportType.RUNBOOK,
                         title=metadata.get("title", "Untitled Runbook"),
                         content=content,
@@ -272,9 +381,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                         version=1,
                         linked_to_closure=False,
                         metadata=RunbookMetadata(
-                            source=RunbookSource(
-                                metadata.get("runbook_source", "incident_driven")
-                            ),
+                            source=identity_source,
                             domain=metadata.get("domain", "general"),
                             tags=(
                                 metadata.get("tags", "").split(",")
@@ -282,6 +389,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                                 else []
                             ),
                             document_title=metadata.get("document_title"),
+                            original_document_id=metadata.get("original_document_id"),
                             case_context=None,  # Not reconstructed from search
                         ),
                     )
@@ -289,18 +397,73 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     similar_runbook = SimilarRunbook(
                         runbook=runbook,
                         similarity_score=similarity,
-                        case_title=metadata.get("case_title", "Unknown"),
-                        case_id=metadata.get("case_id", "unknown"),
+                        case_title=identity_case_title,
+                        case_id=identity_case_id,
                     )
 
                     similar_runbooks.append(similar_runbook)
 
                 except Exception as e:
-                    logger.warning(f"Failed to reconstruct runbook {report_id}: {e}")
+                    # Any other reconstruction failure — a stored row that no
+                    # longer satisfies ``CaseReport``, say. Counted exactly like
+                    # a missing identity key above: these rows ARE runbooks this
+                    # path wrote, which makes them MORE likely to be the
+                    # duplicate the caller is asking about, not less. Skipping
+                    # them quietly and answering with the runner-up is the same
+                    # false negative either way, so the reason we could not read
+                    # a candidate does not change what it costs.
+                    unreadable_scores.append(similarity)
+                    logger.warning(
+                        f"Failed to reconstruct runbook {report_id}, skipping it: {e!r}",
+                        extra={"report_id": report_id, "similarity": similarity},
+                    )
                     continue
 
             # Sort by similarity score descending
             similar_runbooks.sort(key=lambda x: x.similarity_score, reverse=True)
+
+            # Refuse when an unread candidate could have been the answer.
+            #
+            # "Some rows were skipped" is not by itself a reason to fail — a
+            # skipped row that scores below a match we DID read cannot change
+            # the verdict, because every caller consumes the top match and
+            # nothing else. What is not survivable is an unread candidate
+            # scoring STRICTLY ABOVE the best readable one: the caller then gets
+            # a similarity number presented as the best available, computed from
+            # a set whose actual best was discarded. Both dedup callers turn
+            # that into "generate a new runbook", stating a fact about the KB's
+            # contents that the search did not establish — the #944 collapse,
+            # reached through the partial case rather than the empty one.
+            #
+            # A TIE is deliberately not a refusal. Every caller decides on the
+            # top score, so at equal similarity the readable row produces the
+            # same verdict and names a runbook that really does exist at that
+            # score — nothing in the answer is unestablished. Refusing there
+            # would fail a correct answer over a row that could not have
+            # changed it.
+            #
+            # The empty case needs no branch of its own: the sentinel makes
+            # "nothing readable" the degenerate instance of the same rule, where
+            # any unread candidate is strictly the best.
+            best_readable = (
+                similar_runbooks[0].similarity_score if similar_runbooks else -1.0
+            )
+            unreadable = len(unreadable_scores)
+            best_unreadable = max(unreadable_scores, default=0.0)
+            if unreadable and best_unreadable > best_readable:
+                # States only what is established. ``unreadable`` counts
+                # candidates that MET the threshold and could not be read — not
+                # the number of rows matched, since rows read successfully and
+                # then correctly discarded as dissimilar are neither.
+                raise KnowledgeBaseError(
+                    f"{unreadable} runbook(s) scoring up to "
+                    f"{best_unreadable:.0%} met the similarity threshold but "
+                    f"could not be read, outranking every readable match; "
+                    f"refusing to report a best match from a result set whose "
+                    f"strongest candidate was unreadable. Re-index the affected "
+                    f"rows — retrying the search cannot clear this.",
+                    error_code=RESULTS_UNREADABLE_CODE,
+                )
 
             logger.info(
                 f"Found {len(similar_runbooks)} similar runbooks",
@@ -316,12 +479,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
             return similar_runbooks
 
-        return await self.call_external(
-            operation_name="search_runbooks",
-            call_func=_search_wrapper,
-            timeout=5.0,  # 5 seconds for vector search
-            retries=2,
-        )
+        return _parse(results)
 
     async def index_runbook(
         self,
@@ -371,38 +529,54 @@ class RunbookKnowledgeBase(BaseExternalClient):
             )
             return
 
+        # Extract metadata
+        metadata_obj = runbook.metadata
+        final_domain = domain or (metadata_obj.domain if metadata_obj else "general")
+        final_tags = tags or (metadata_obj.tags if metadata_obj else [])
+        final_case_title = case_title or runbook.title
+
+        # Build metadata dict for ChromaDB.
+        #
+        # Every key here must be declared by ``VectorMetadata``, which
+        # ``ChromaDBVectorStore.add_documents`` normalizes through — it stores
+        # the keys it declares and refuses the ones it does not, rather than
+        # dropping them silently as it did when the identity keys below were
+        # being discarded on every write (#912).
+        #
+        # ``report_id`` is deliberately absent: it is the row id (see
+        # ``documents`` below), which is where ``search_runbooks`` reads it
+        # from. Writing it here as well would store the same fact twice.
+        chroma_metadata = {
+            "organization_id": organization_id,
+            "case_id": runbook.case_id,
+            "case_title": final_case_title,
+            "title": runbook.title,
+            "report_type": "runbook",
+            "runbook_source": source.value,
+            "domain": final_domain,
+            "tags": ",".join(final_tags),  # ChromaDB stores as string
+            "created_at": runbook.generated_at,
+        }
+
+        # Add source-specific metadata
+        if source == RunbookSource.DOCUMENT_DRIVEN and metadata_obj:
+            if metadata_obj.document_title:
+                chroma_metadata["document_title"] = metadata_obj.document_title
+            if metadata_obj.original_document_id:
+                chroma_metadata["original_document_id"] = (
+                    metadata_obj.original_document_id
+                )
+
+        # Refused HERE, outside ``call_external``, and not left to the identical
+        # check inside ``add_documents``. That one runs inside THIS method's
+        # retry wrapper, so an undeclared key would be retried three times with
+        # backoff and recorded as three RunbookKB service failures — five such
+        # calls open RunbookKB's circuit breaker, which is shared with
+        # ``search_runbooks``/``search_by_text``. A deterministic programming
+        # error in the write path would then take the read path down with it.
+        VectorMetadata.reject_undeclared_keys(chroma_metadata)
+
         async def _index_wrapper():
-            # Extract metadata
-            metadata_obj = runbook.metadata
-            final_domain = domain or (
-                metadata_obj.domain if metadata_obj else "general"
-            )
-            final_tags = tags or (metadata_obj.tags if metadata_obj else [])
-            final_case_title = case_title or runbook.title
-
-            # Build metadata dict for ChromaDB
-            chroma_metadata = {
-                "report_id": runbook.report_id,
-                "organization_id": organization_id,
-                "case_id": runbook.case_id,
-                "case_title": final_case_title,
-                "title": runbook.title,
-                "report_type": "runbook",
-                "runbook_source": source.value,
-                "domain": final_domain,
-                "tags": ",".join(final_tags),  # ChromaDB stores as string
-                "created_at": runbook.generated_at,
-            }
-
-            # Add source-specific metadata
-            if source == RunbookSource.DOCUMENT_DRIVEN and metadata_obj:
-                if metadata_obj.document_title:
-                    chroma_metadata["document_title"] = metadata_obj.document_title
-                if metadata_obj.original_document_id:
-                    chroma_metadata["original_document_id"] = (
-                        metadata_obj.original_document_id
-                    )
-
             # Generate BGE-M3 embedding explicitly to match collection dimensions
             from faultmaven.infrastructure.model_cache import model_cache
 
