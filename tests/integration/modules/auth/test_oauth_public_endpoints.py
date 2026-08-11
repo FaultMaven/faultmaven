@@ -32,16 +32,15 @@ os.environ["OAUTH_ENABLED"] = "true"
 # earlier import clears a singleton nothing reads while the freshly imported
 # module keeps handing production code a stale cached settings object.
 from faultmaven.config.settings import reset_settings
+from tests.integration.modules.auth._rebuilt_app import rebuild_app
 
 reset_settings()
-if "faultmaven.main" in sys.modules:
-    del sys.modules["faultmaven.main"]
 
 import pytest
 from fastapi import Request, status
 from httpx import ASGITransport, AsyncClient
 
-from faultmaven.main import app
+app = rebuild_app()
 from faultmaven.modules.auth.contracts import OAuthTokenDTO
 
 

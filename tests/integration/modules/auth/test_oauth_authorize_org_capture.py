@@ -31,16 +31,15 @@ os.environ["OAUTH_ENABLED"] = "true"
 # *singleton*; never drop faultmaven.config.settings from sys.modules (that
 # leaves a second module object, each with its own cached instance).
 from faultmaven.config.settings import reset_settings
+from tests.integration.modules.auth._rebuilt_app import rebuild_app
 
 reset_settings()
-if "faultmaven.main" in sys.modules:
-    del sys.modules["faultmaven.main"]
 
 import pytest
 from fastapi import Request, status
 from httpx import ASGITransport, AsyncClient
 
-from faultmaven.main import app
+app = rebuild_app()
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
 TENANT = "org_acme_7f3c"

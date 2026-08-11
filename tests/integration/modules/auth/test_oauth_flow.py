@@ -30,6 +30,7 @@ os.environ["OAUTH_REQUIRE_CONSENT"] = "false"  # Auto-approve for E2E flow tests
 import sys
 
 from faultmaven.config.settings import reset_settings
+from tests.integration.modules.auth._rebuilt_app import rebuild_app
 
 # Force the app below to be built with OAuth enabled.
 #
@@ -39,10 +40,8 @@ from faultmaven.config.settings import reset_settings
 # earlier import clears a singleton nothing reads while the freshly imported
 # module keeps handing production code a stale cached settings object.
 reset_settings()
-if "faultmaven.main" in sys.modules:
-    del sys.modules["faultmaven.main"]
 
-from faultmaven.main import app
+app = rebuild_app()
 
 
 @pytest.fixture
