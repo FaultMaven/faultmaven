@@ -42,6 +42,19 @@ from faultmaven.models.protection import LimitType, RateLimitResult
 logger = logging.getLogger(__name__)
 
 
+def _endpoint_policy(endpoint_name: str) -> str:
+    """The ``X-RateLimit-Policy`` token for one OAuth/SSO endpoint.
+
+    ``LimitType.OAUTH`` covers six endpoints whose limits differ by a factor of
+    four, so the bare type is not an identity a client can pace against: it
+    would see the policy hold steady at "oauth" while the advertised limit moved
+    between 5, 10 and 20 depending on which endpoint answered. Qualifying it
+    with the endpoint makes each bucket nameable, and matches how ``_limits``
+    keys them.
+    """
+    return f"oauth:{endpoint_name}"
+
+
 class OAuthRateLimiter:
     """In-memory rate limiter for OAuth endpoints.
 
@@ -184,6 +197,12 @@ class OAuthRateLimiter:
                     # The same instant ``Retry-After`` is derived from, as a
                     # timestamp — one measurement, two renderings.
                     "X-RateLimit-Reset": str(int(frees_at)),
+                    # Which bucket refused. Stamped here rather than left to
+                    # ``RateLimitMiddleware``, which returns early on any 429 —
+                    # so without this the tightest limiter in the stack would be
+                    # the one refusal that never names itself, which is the
+                    # defect the header exists for.
+                    "X-RateLimit-Policy": _endpoint_policy(endpoint_name),
                 },
             )
 
@@ -209,6 +228,7 @@ class OAuthRateLimiter:
             limit=limit,
             current_count=current_count,
             frees_at=frees_at,
+            endpoint_name=endpoint_name,
         )
 
         logger.debug(
@@ -218,7 +238,12 @@ class OAuthRateLimiter:
 
     @staticmethod
     def _publish_allowed(
-        request: Request, *, limit: int, current_count: int, frees_at: float
+        request: Request,
+        *,
+        limit: int,
+        current_count: int,
+        frees_at: float,
+        endpoint_name: str,
     ) -> None:
         """Offer this limit's state to the served-response header path.
 
@@ -248,6 +273,7 @@ class OAuthRateLimiter:
                 current_count=current_count,
                 limit=limit,
                 reset_time=datetime.fromtimestamp(frees_at, tz=timezone.utc),
+                policy=_endpoint_policy(endpoint_name),
             )
         )
 

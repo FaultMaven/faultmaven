@@ -91,6 +91,19 @@ def is_cheap_read(method: str, path: str) -> bool:
     return not any(pattern.match(path) for pattern in EXPENSIVE_READ_PATTERNS)
 
 
+def _result_policy(result: RateLimitResult) -> str:
+    """The policy token for a result, preferring one the enforcer named itself.
+
+    Most limit types are one bucket, so the type *is* the identity. The OAuth
+    limiter is not: six endpoints share ``LimitType.OAUTH`` with limits from 5
+    to 20, so publishing the bare type would tell a client pacing ``/token``
+    (5/min) and ``/authorize`` (10/min) that both are "oauth" while the
+    advertised limit changed underneath it. An enforcer that owns several
+    buckets under one type therefore names its own.
+    """
+    return result.policy or _policy_name(result.limit_type)
+
+
 def _policy_name(limit_type) -> str:
     """The bucket's configuration key, as advertised in ``X-RateLimit-Policy``.
 
@@ -273,12 +286,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
 
             # Advertise across both sources: the windows decided here, and
-            # whatever an inner enforcer contributed while the route ran.
-            # "Tightest wins" is computable over them precisely because they are
-            # results rather than already-written headers.
-            self._add_rate_limit_headers(
-                [*results, *request.state.rate_limit_results], response
-            )
+            # whatever an inner enforcer contributed while the route ran. The
+            # inbox is read inside the helper, under its own try/except —
+            # reading it here would put a shared-namespace access in the body of
+            # a try whose handler calls ``call_next`` again, so a route that
+            # replaced the attribute with a non-iterable would be executed a
+            # second time with its side effects applied twice.
+            self._add_rate_limit_headers(results, request, response)
 
             # Update metrics
             check_duration = time.time() - start_time
@@ -622,7 +636,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return resolve_client_ip_once(request, self.trusted_proxies)
 
     def _add_rate_limit_headers(
-        self, results: List[RateLimitResult], response: Response
+        self, results: List[RateLimitResult], request: Request, response: Response
     ) -> None:
         """Advertise, on a served response, the limit closest to being exhausted.
 
@@ -688,7 +702,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             if "X-RateLimit-Limit" in response.headers:
                 return
 
-            advertisable = [result for result in results if result.limit > 0]
+            # The inner-enforcer inbox is a shared namespace anything in the
+            # stack can write, so it is validated rather than trusted: an
+            # unexpected shape means "nothing contributed", never an exception.
+            contributed = getattr(request.state, "rate_limit_results", None)
+            if not isinstance(contributed, list):
+                contributed = []
+
+            advertisable = [
+                result for result in (*results, *contributed) if result.limit > 0
+            ]
             if not advertisable:
                 return
 
@@ -698,7 +721,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             response.headers["X-RateLimit-Remaining"] = str(
                 max(0, tightest.limit - tightest.current_count)
             )
-            response.headers["X-RateLimit-Policy"] = _policy_name(tightest.limit_type)
+            response.headers["X-RateLimit-Policy"] = _result_policy(tightest)
             if tightest.reset_time is not None:
                 response.headers["X-RateLimit-Reset"] = str(
                     int(tightest.reset_time.timestamp())

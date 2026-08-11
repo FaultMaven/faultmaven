@@ -85,8 +85,10 @@ local oldest_scores = {}
 local blocked = 0
 
 -- Pass one: prune each window, count what survives, and note the oldest
--- survivor. Nothing is written here, so the decision below is taken against a
--- consistent view of every window.
+-- survivor. The prune does write — it drops entries that have aged out, which
+-- is idempotent and owed regardless of this request's verdict. What pass one
+-- never does is INSERT, so no window has counted this request when the verdict
+-- below is taken, and the decision sees a consistent view of every window.
 for i = 1, n do
     local key = KEYS[i]
     local base = 2 + (i - 1) * 3
@@ -652,7 +654,12 @@ class RedisRateLimiter:
                     duration,
                 )
 
-            self._record_check_success(epoch)
+                # Only a check that actually reached Redis says anything about
+                # the client's liveness. Recording success for a call that
+                # issued no command would clear a genuine failure run against a
+                # dead pool and keep the degrade ladder from being re-entered.
+                self._record_check_success(epoch)
+
             return [by_index[index] for index in range(len(specs))]
 
         except asyncio.CancelledError as e:

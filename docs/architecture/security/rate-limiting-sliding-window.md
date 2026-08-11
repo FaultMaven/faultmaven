@@ -1,7 +1,7 @@
 # Rate Limiting — Sliding Window Semantics
 
 **Status:** Current
-**Component:** `faultmaven/infrastructure/protection/rate_limiter.py` (`RedisRateLimiter._check_redis_rate_limit`)
+**Component:** `faultmaven/infrastructure/protection/rate_limiter.py` (`RedisRateLimiter.check_rate_limits`)
 **Issue:** fm#920
 
 ## What the window counts
@@ -131,7 +131,11 @@ Response headers:
   precisely those callers with nothing to pace against.
 - Both also carry **`X-RateLimit-Policy`**, naming which bucket the numbers
   describe, in the same token the configuration uses (`global`,
-  `per_session_read_hourly`, `oauth`, …). Five buckets can produce the same
+  `per_session_read_hourly`, …). An enforcer that owns several buckets under
+  one limit type qualifies the token itself: the OAuth limiter publishes
+  `oauth:/token`, `oauth:/authorize` and so on, because those six endpoints
+  share `LimitType.OAUTH` with limits from 5 to 20 and a client pacing against
+  a bare `oauth` would see the limit move underneath it. Five buckets can produce the same
   `Limit`/`Remaining` pair, and on a 429 the response body carries counts and a
   wait but no limit type — so without this header a refused client knows how
   long to wait and not what it hit, which is the difference between "slow this

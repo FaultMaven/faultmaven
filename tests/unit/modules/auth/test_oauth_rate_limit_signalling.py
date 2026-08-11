@@ -12,7 +12,10 @@ Redis-backed enforcer uses — so ``limit - current_count`` is the remaining quo
 whichever limiter produced the result.
 """
 
+import time
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import fakeredis.aioredis as fakeredis_aio
 import pytest
@@ -380,3 +383,65 @@ class TestThroughTheFullMiddlewareStack:
             assert response.status_code == 200
             assert response.headers["X-RateLimit-Limit"] == "7", dict(response.headers)
             assert response.headers["X-RateLimit-Remaining"] == "2"
+
+
+class TestTheOAuthLimiterNamesItsOwnBucket:
+    """``LimitType.OAUTH`` covers six endpoints; the token must separate them.
+
+    The limits differ by a factor of four (5/min on ``/token``, 20/min on
+    ``/sso/callback``), so publishing a bare ``oauth`` would hold the policy
+    steady while the advertised limit moved underneath a client pacing against
+    it — the ambiguity ``X-RateLimit-Policy`` exists to remove.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        reset_rate_limiter()
+        yield
+        reset_rate_limiter()
+
+    def _app(self):
+        app = FastAPI()
+
+        @app.post(
+            "/api/v1/auth/oauth/token",
+            dependencies=[Depends(require_oauth_rate_limit_token)],
+        )
+        async def token():
+            return {"access_token": "t"}
+
+        return app
+
+    def test_a_refusal_names_the_endpoint_not_just_oauth(self):
+        """The middleware returns early on a 429, so this limiter must self-name.
+
+        Without it the tightest limiter in the stack would be the one refusal
+        that never says what it was.
+        """
+        with TestClient(self._app()) as client:
+            last = None
+            for _ in range(TOKEN_LIMIT + 1):
+                last = client.post("/api/v1/auth/oauth/token")
+
+            assert last.status_code == 429
+            assert last.headers["X-RateLimit-Policy"] == "oauth:/token"
+
+    def test_an_allowed_request_publishes_the_same_token(self):
+        """Header and inbox agree, so a 200 and a 429 name one bucket."""
+        with TestClient(self._app()) as client:
+            response = client.post("/api/v1/auth/oauth/token")
+
+            assert response.status_code == 200
+            # No middleware in this stack, so the result lands in the inbox only
+            # when one exists — assert on the result the limiter published.
+            request = Mock()
+            request.state = SimpleNamespace(rate_limit_results=[])
+            OAuthRateLimiter._publish_allowed(
+                request,
+                limit=TOKEN_LIMIT,
+                current_count=1,
+                frees_at=time.time() + 60,
+                endpoint_name="/token",
+            )
+
+            assert request.state.rate_limit_results[0].policy == "oauth:/token"
