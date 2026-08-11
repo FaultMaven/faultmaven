@@ -1107,7 +1107,7 @@ def setup_middleware():
     """Setup middleware - only log when not in test mode"""
     import sys
 
-    from faultmaven.config.settings import Environment, get_settings
+    from faultmaven.config.settings import get_settings
 
     settings = get_settings()
 
@@ -1204,10 +1204,6 @@ def setup_middleware():
                 if protection_info.get("protection_enabled"):
                     middleware_names = protection_info.get("middleware_added", [])
                     logger.info(f"✅ Protection middleware enabled: {middleware_names}")
-                    if protection_info.get("warnings"):
-                        logger.warning(
-                            f"Protection warnings: {protection_info['warnings']}"
-                        )
                 else:
                     logger.info("ℹ️ Protection middleware disabled")
             app.extra["protection_info"] = protection_info
@@ -1215,9 +1211,18 @@ def setup_middleware():
             if logging_enabled:
                 logger.info("Skipping Protection middleware (SKIP_SERVICE_CHECKS=True)")
     except Exception as e:
-        if logging_enabled:
-            logger.warning(f"Failed to setup protection middleware: {e}")
-        if settings.server.environment != Environment.DEVELOPMENT:
+        # Never gated on ``logging_enabled``: a swallowed setup failure must not
+        # be a zero-output event. Under the carve-out below this line is the only
+        # trace that the app is running unprotected.
+        logger.warning(f"Failed to setup protection middleware: {e}")
+        # The carve-out, named explicitly: **development only** — which is also
+        # what an unset ``ENVIRONMENT`` reads as — deliberately boots
+        # unprotected-with-a-warning when protection setup fails, so a broken
+        # local config does not block iteration. Every other environment
+        # (``staging``, ``production``, any unrecognised value) refuses to boot,
+        # re-muting the fail-closed raise ``api/protection.py`` makes for exactly
+        # one environment rather than for all of them.
+        if not settings.is_development():
             raise
 
     if logging_enabled:

@@ -62,8 +62,12 @@ ALLOWLIST = {
     # for the same reason as the key above: it populates ProtectionSettings,
     # which is a plain BaseModel rather than a BaseSettings section. Mirroring
     # it onto settings would give the trust policy a second source, and the
-    # whole point of the key is that the presets and the performance
-    # middleware cannot disagree about which proxies a deployment believes.
+    # whole point of the key is that all of its consumers cannot disagree about
+    # which proxies a deployment believes. In full: both presets in
+    # config/protection.py, PerformanceTrackingMiddleware
+    # (api/middleware/performance.py), the OAuth/SSO limiter
+    # (modules/auth/api/rate_limiting.py) and the logging middleware
+    # (api/middleware/logging.py).
     "PROTECTION_TRUSTED_PROXIES",
 }
 

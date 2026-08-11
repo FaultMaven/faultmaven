@@ -114,13 +114,20 @@ that is not an `Environment` member — selects the second.
 | `per_session_read` | 600 / 60s | 120 / 60s |
 | `per_session_read_hourly` | 6000 / 3600s | 1200 / 3600s |
 
-**Environments must not share a Redis instance.** The preset also fixes the
-Redis key prefix — `faultmaven_dev` for development, `faultmaven_prod` for the
-production preset — so since fm#1023 routed staging to the production preset,
-staging and production now share the `faultmaven_prod` namespace. Pointed at one
-Redis, their rate-limit counters and deduplication keys collide across
-environments: a staging load test consumes production's quota, and an identical
-request submitted in both is answered `409` in the second.
+**Sharing a Redis instance across environments is still not recommended, but the
+protection keys no longer collide.** The Redis key prefix is fixed by
+environment rather than configurable: `faultmaven_dev` for development,
+`faultmaven_prod` for production, and `faultmaven_staging` for staging. Staging
+runs production's *preset* — strict limits, no bypass headers, fail-closed on a
+Redis error — but is given its own *namespace*, because sharing production's
+would mean a staging load test consuming production's quota and an identical
+request submitted in both being answered `409` in the second. Staging installed
+no protection middleware at all before fm#1023, so it has never written keys
+under any prefix and the split orphans nothing.
+
+That closes the collision that mattered, not every reason to keep the instances
+apart: the prefix scopes only the protection stack's own keys, and nothing
+separates two deployments' memory budget, eviction policy or a stray `FLUSHDB`.
 
 **A missing read bucket narrows, it never widens.** The limiter allows anything
 it holds no configuration for, so routing reads at an unconfigured bucket would
@@ -373,12 +380,14 @@ The exact spellings that are now gone:
 
 **Two legacy `RATE_LIMIT_*` spellings do still exist, and nothing in the
 protection stack reads them.** `RATE_LIMIT_ENABLED` and
-`RATE_LIMIT_REQUESTS_PER_MINUTE` are live `settings.security` fields, are
-documented in `.env.example`, and are reported by `GET /admin/config/status` —
-but no enforcement path consults either. `RATE_LIMIT_ENABLED=false` does not
-turn rate limiting off, and `RATE_LIMIT_REQUESTS_PER_MINUTE` is not any bucket's
-limit; the only thing that reads them is a frontend-compatibility report that
-warns when the first is false. Their removal is tracked in fm#985.
+`RATE_LIMIT_REQUESTS_PER_MINUTE` are live `settings.security` fields and are
+documented in `.env.example`, but no enforcement path consults either.
+`RATE_LIMIT_ENABLED=false` does not turn rate limiting off, and
+`RATE_LIMIT_REQUESTS_PER_MINUTE` is not any bucket's limit. Of the two, only
+`rate_limit_enabled` surfaces on `GET /admin/config/status` —
+`EnvConfigStatusResponse` has no requests-per-minute field at all — where it
+feeds a frontend-compatibility report that warns when it is false. Their removal
+is tracked in fm#985.
 
 Changing the limits a deployment actually runs on means changing the preset in
 `faultmaven/config/protection.py`.

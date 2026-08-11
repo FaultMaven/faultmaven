@@ -95,9 +95,25 @@ environment chooses is *which preset*: `ENVIRONMENT=development` (or an unset
 every other explicit value — `staging`, `production`, anything unrecognised —
 selects production's (fm#1023). The settings-driven loader that once read
 per-field environment variables was unreachable and has been removed, along with
-the `RATE_LIMITING_ENABLED` / `DEDUPLICATION_ENABLED` / `TIMEOUT_*` /
-`RATE_LIMIT_*` / `DEDUP_*` / `BASIC_PROTECTION_ENABLED` /
-`PROTECTION_BYPASS_HEADERS` keys it read. Setting any of them today does nothing.
+the keys it read. Setting any of these today does nothing — they are enumerated
+rather than globbed because a `RATE_LIMIT_*` glob would wrongly sweep in two
+spellings that are still live:
+
+- `RATE_LIMITING_ENABLED`, `DEDUPLICATION_ENABLED`, `TIMEOUTS_ENABLED`
+- `RATE_LIMIT_GLOBAL`, `RATE_LIMIT_PER_SESSION`, `RATE_LIMIT_PER_SESSION_HOURLY`,
+  `RATE_LIMIT_PER_SESSION_READ`, `RATE_LIMIT_PER_SESSION_READ_HOURLY`,
+  `RATE_LIMIT_TITLE_GENERATION` — each a `requests:window` pair
+- `DEDUP_DEFAULT_TTL`
+- `TIMEOUT_AGENT_TOTAL`, `TIMEOUT_AGENT_PHASE`, `TIMEOUT_LLM_CALL`,
+  `TIMEOUT_EMERGENCY_SHUTDOWN`
+- `BASIC_PROTECTION_ENABLED`, `PROTECTION_BYPASS_HEADERS`, `REDIS_KEY_PREFIX`
+
+`RATE_LIMIT_ENABLED` and `RATE_LIMIT_REQUESTS_PER_MINUTE` were **not** removed.
+They remain live `settings.security` fields documented in `.env.example`, and no
+enforcement path consults either — setting `RATE_LIMIT_ENABLED=false` does not
+turn rate limiting off. Their removal is tracked in fm#985. See
+[client-protection.md](client-protection.md) for the same list from the
+operator's side.
 
 Two keys do still reach the presets, and only these two:
 

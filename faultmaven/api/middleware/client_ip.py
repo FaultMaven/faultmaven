@@ -89,12 +89,19 @@ def parse_trusted_proxies(values: Optional[Iterable[str] | str]) -> TrustedProxi
     * Skipping fails closed on the axis that matters. A dropped entry means one
       fewer address is trusted, so the worst case is a limit keyed on the proxy
       rather than a limit a caller can evade.
-    * Raising here would propagate a ``ValueError`` out of
-      ``setup_protection_middleware`` (which re-raises that type rather than
-      applying the Redis degrade policy to it) and refuse the boot. That is at
-      least fail-closed now — but a typo in one proxy entry does not warrant a
-      total outage when dropping the entry already leaves every limit intact
-      and merely coarser. The skip is the proportionate refusal.
+    * Raising here would not produce a clean boot refusal, and could not be
+      reported as one. Every caller is a middleware ``__init__`` —
+      ``RateLimitMiddleware``, ``PerformanceTrackingMiddleware``,
+      ``LoggingMiddleware``, the OAuth/SSO limiter — and none of them runs
+      inside ``setup_protection_middleware``: ``add_middleware`` only records a
+      ``Middleware(cls, ...)`` entry, and Starlette instantiates the classes
+      later, in ``build_middleware_stack()`` at app start. The ``ValueError``
+      would surface there, outside every handler the composition root wraps
+      around protection setup — an uncatchable crash during ASGI stack
+      construction rather than a refusal anything can log or degrade. A typo in
+      one proxy entry does not warrant that, when dropping the entry already
+      leaves every limit intact and merely coarser. The skip is the only
+      proportionate refusal, and it narrows trust rather than widening it.
 
     Parsing is **strict** about host bits, and that is the whole point rather
     than pedantry. ``ipaddress.ip_network`` defaults to ``strict=False``, which

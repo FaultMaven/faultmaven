@@ -19,14 +19,25 @@ Three properties are pinned:
    staging somewhere that happened to install middleware.
 3. **Fail closed on setup failure.** A preset that raises — or settings that do
    not validate — propagates rather than leaving a bare app behind, which is the
-   same unprotected state arrived at from a different direction.
+   same unprotected state arrived at from a different direction, and it says so
+   at ERROR on the way out.
+4. **Honest reporting.** ``protection_enabled`` describes what was installed, not
+   what was intended: an install that fails reports ``False``. Both swallowing
+   callers (the Redis fail-open policy, and the composition root's development
+   carve-out) read this dict, so a hopeful flag would be believed.
+5. **Staging owns its Redis namespace.** Production's semantics, but not
+   production's keys — otherwise the two collide on a shared Redis.
 """
+
+import logging
 
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from faultmaven.api.middleware import DeduplicationMiddleware, RateLimitMiddleware
 from faultmaven.api.protection import setup_protection_middleware
+from faultmaven.config.protection import get_production_protection_settings
 from faultmaven.config.settings import Environment
 from faultmaven.models.protection import ProtectionSettings, RateLimitConfig
 
@@ -205,15 +216,99 @@ def test_settings_that_do_not_validate_refuse_to_boot():
     assert _installed(app) == set(), "an unprotected app survived invalid settings"
 
 
-def test_the_settings_driven_source_is_gone():
-    """No environment resolves to the loader this issue removed.
+def test_a_validation_failure_is_logged_before_it_propagates(caplog):
+    """The refusal must be legible, not just fatal.
 
-    ``settings_source == "environment"`` was the value the staging path
-    reported. Nothing may reintroduce it: it is the label of a branch whose
-    gate defaulted to off.
+    The ``ValueError`` handler used to re-raise silently. That is survivable
+    where the raise reaches an operator — but the composition root's development
+    carve-out swallows it, so on a development box this log line is the only
+    statement of *why* the app is running unprotected.
     """
-    sources = {
-        _install(environment)[1]["settings_source"] for environment in ALL_ENVIRONMENTS
-    }
+    invalid = ProtectionSettings(
+        rate_limits={"global": RateLimitConfig(requests=0, window=60)}
+    )
 
-    assert sources == {"development_defaults", "production_defaults"}
+    with caplog.at_level(logging.ERROR, logger="faultmaven.api.protection"):
+        with pytest.raises(ValueError, match="validation failed"):
+            setup_protection_middleware(FastAPI(), settings=invalid)
+
+    errors = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.ERROR and r.name == "faultmaven.api.protection"
+    ]
+    assert any(
+        "protection" in message.lower() for message in errors
+    ), f"the refusal named no reason at ERROR; got {errors}"
+
+
+def test_protection_enabled_is_not_reported_until_the_installs_land():
+    """``protection_enabled`` is a report, not an intention.
+
+    The flag used to be set before the two ``add_middleware`` calls, so any
+    failure in them left ``protection_enabled: True`` on an app carrying no
+    protection middleware. That matters precisely because a caller can swallow
+    the failure: ``fail_open_on_redis_error`` is ``True`` by default, and the
+    composition root's development carve-out swallows too — both then read back a
+    dict claiming protection is on.
+
+    The failure is provoked at the real surface rather than by patching:
+    Starlette refuses ``add_middleware`` once an application has started, and
+    entering a ``TestClient`` context starts it.
+    """
+    app = FastAPI()
+    fail_open = get_production_protection_settings()
+    fail_open.fail_open_on_redis_error = True
+
+    with TestClient(app):
+        setup_info = setup_protection_middleware(app, settings=fail_open)
+
+    assert setup_info["protection_enabled"] is False, (
+        "an app that installed nothing reported protection as enabled; "
+        f"setup_info={setup_info}"
+    )
+    assert setup_info["error"], "the swallowed failure left no trace in setup_info"
+    assert _installed(app) == set()
+
+
+class TestStagingOwnsItsRedisNamespace:
+    """Production semantics, but never production's keys.
+
+    fm#1023 put staging on the production preset, which pins
+    ``redis_key_prefix="faultmaven_prod"``. Pointed at one Redis instance the two
+    environments would then share every rate-limit counter and every dedup key —
+    a staging load test spending production's quota, and an identical request
+    issued in both answered ``409`` in the second.
+    """
+
+    def test_staging_gets_its_own_prefix(self):
+        app, _ = _install(Environment.STAGING)
+
+        assert _resolved_settings(app).redis_key_prefix == "faultmaven_staging"
+
+    def test_production_keeps_its_own(self):
+        """The override must be scoped to staging, not applied to the preset."""
+        app, _ = _install(Environment.PRODUCTION)
+
+        assert _resolved_settings(app).redis_key_prefix == "faultmaven_prod"
+
+    def test_an_unknown_environment_stays_on_the_production_prefix(self):
+        """Only ``staging`` is carved out; a name nobody anticipated is not.
+
+        An unrecognised value already lands on production's *settings*; giving it
+        a third namespace would mean a typo silently detached a deployment from
+        the counters its peers share.
+        """
+        app, _ = _install(UNKNOWN_ENVIRONMENT)
+
+        assert _resolved_settings(app).redis_key_prefix == "faultmaven_prod"
+
+    def test_the_two_environments_do_not_collide(self):
+        """The property, not the two constants."""
+        staging, _ = _install(Environment.STAGING)
+        production, _ = _install(Environment.PRODUCTION)
+
+        assert (
+            _resolved_settings(staging).redis_key_prefix
+            != _resolved_settings(production).redis_key_prefix
+        )

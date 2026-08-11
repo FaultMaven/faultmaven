@@ -1,18 +1,31 @@
 """
 Protection configuration for FaultMaven
 
-Loads rate limiting, deduplication, and timeout settings from environment
-variables with sensible defaults.
+**The rate limits, deduplication TTLs and timeouts are code, not configuration.**
+They live in the two presets below — development and production — and
+``setup_protection_middleware`` chooses between them by environment name. No
+environment variable sets a limit, a TTL or a timeout; the loader that once read
+per-field variables was unreachable on every healthy deployment and was removed
+rather than left looking configurable (fm#1023).
+
+Exactly two environment keys reach these presets:
+
+* ``PROTECTION_RATE_LIMIT_FAIL_OPEN`` — the Redis degrade policy, read by
+  ``_fail_open_default``. Honoured by the development preset; the production
+  preset pins fail-*closed* and ignores it.
+* ``PROTECTION_TRUSTED_PROXIES`` — which proxies' forwarding headers may be
+  believed, read by ``get_trusted_proxies``. Honoured by both presets, empty by
+  default.
+
+Changing anything else means changing the preset.
 """
 
 import logging
 import os
-from datetime import timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from ..models.protection import (
     DeduplicationConfig,
-    LimitType,
     ProtectionSettings,
     RateLimitConfig,
     TimeoutConfig,
@@ -63,11 +76,23 @@ def get_trusted_proxies() -> list:
     ``client_ip.resolve_client_ip`` warns at request time (throttled) when
     forwarding headers arrive from an address that is not configured here.
 
-    One reader, for the same reason ``_fail_open_default`` is one reader: the
-    presets and ``PerformanceTrackingMiddleware`` must not be able to disagree
-    about what the deployment asked for. Production honours this key rather than
-    pinning it — unlike the degrade policy, there is no value here that is right
-    for every deployment.
+    One reader, for the same reason ``_fail_open_default`` is one reader: no
+    consumer may disagree with another about which proxies the deployment
+    believes. The consumers, in full:
+
+    1. ``get_development_protection_settings`` — populates
+       ``ProtectionSettings.trusted_proxies`` for ``RateLimitMiddleware``.
+    2. ``get_production_protection_settings`` — the same, and the one preset
+       that warns when this key is left empty.
+    3. ``PerformanceTrackingMiddleware`` (``api/middleware/performance.py``) —
+       so the address a request is *labelled* with cannot disagree with the one
+       it is *limited* by.
+    4. The OAuth/SSO limiter (``modules/auth/api/rate_limiting.py``), which
+       calls this directly rather than reading a ``ProtectionSettings``.
+    5. ``LoggingMiddleware`` (``api/middleware/logging.py``), likewise.
+
+    Production honours this key rather than pinning it — unlike the degrade
+    policy, there is no value here that is right for every deployment.
     """
     return [
         entry.strip()

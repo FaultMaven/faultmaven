@@ -204,12 +204,18 @@ def test_password_reaches_the_client_config_through_every_loader(
 def test_special_character_password_survives_intact(cloud_discrete_credentials):
     """No encoding, no escaping, no truncation at any URL-special character.
 
-    The discrete path never interpolates the password into a URL, so it must
-    arrive byte-identical (fm#898).
+    ``None`` is passed literally, which is what selects the branch under test:
+    with no explicit URL, ``_build_config`` takes the discrete-credentials path
+    and never interpolates the password into a URL, so it must arrive
+    byte-identical (fm#898). Routing that ``None`` through
+    ``get_production_protection_settings().redis_url`` used to dress it up as a
+    chain, but that field is hardcoded ``None`` — the call added no coverage and
+    read as though the preset were being exercised. That the presets really do
+    yield ``None`` is pinned by ``test_no_loader_assembles_a_redis_url``, and the
+    full preset→middleware→factory chain by
+    ``test_password_reaches_the_client_config_through_every_loader``.
     """
-    config = RedisClientFactory._build_config(
-        get_production_protection_settings().redis_url, None, None, None
-    )
+    config = RedisClientFactory._build_config(None, None, None, None)
 
     assert config["password"] == _PASSWORD
     for special in "@:/#?%":
@@ -321,19 +327,26 @@ def test_turning_pii_redaction_off_leaves_the_middleware_installed(monkeypatch, 
     monkeypatch.setenv("PROTECTION_ENABLED", "false")  # PII/Presidio off
     reset_settings()
 
-    # The key really is live on the redaction side — otherwise this asserts
-    # nothing about a coupling that could exist.
-    from faultmaven.config.settings import get_settings
+    try:
+        # The key really is live on the redaction side — otherwise this asserts
+        # nothing about a coupling that could exist.
+        from faultmaven.config.settings import get_settings
 
-    assert get_settings().protection.protection_enabled is False
+        assert get_settings().protection.protection_enabled is False
 
-    settings = loader()
-    assert settings.enabled is True
+        settings = loader()
+        assert settings.enabled is True
 
-    setup_info = _install_middleware(settings)
-    assert setup_info["protection_enabled"] is True
-    assert "rate_limiting" in setup_info["middleware_added"]
-    assert "deduplication" in setup_info["middleware_added"]
+        setup_info = _install_middleware(settings)
+        assert setup_info["protection_enabled"] is True
+        assert "rate_limiting" in setup_info["middleware_added"]
+        assert "deduplication" in setup_info["middleware_added"]
+    finally:
+        # ``monkeypatch`` restores the env var but not the settings singleton
+        # this test built from it: without this, every later test in the session
+        # reads a ``get_settings()`` frozen with PII redaction off. Same
+        # try/finally the ``REDIS_URL`` tests above use.
+        reset_settings()
 
 
 def test_an_explicitly_disabled_settings_object_installs_nothing():
@@ -421,9 +434,12 @@ def test_validation_accepts_a_none_redis_url_so_middleware_is_installed(
 ):
     """Guards the "no protection at all" hazard.
 
-    ``setup_protection_middleware`` returns early when validation fails, so a
-    validator that rejected the normal ``redis_url=None`` case would leave the
-    app with neither rate limiting nor deduplication installed.
+    ``setup_protection_middleware`` now *raises* ``ValueError`` when validation
+    fails and refuses the boot — except in development, where the composition
+    root catches it, warns, and continues unprotected. So a validator that
+    rejected the normal ``redis_url=None`` case would take out every deployed
+    environment outright, and leave development with neither rate limiting nor
+    deduplication installed.
     """
     from fastapi import FastAPI
 

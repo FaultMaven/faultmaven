@@ -248,6 +248,60 @@ class TestZeroConfigDetection:
             result = detect_zero_config_preset()
             assert result is None
 
+    @pytest.mark.parametrize(
+        "environment",
+        ["staging", "STAGING", "weird-env"],
+        ids=["staging", "staging_uppercase", "unrecognised"],
+    )
+    def test_detect_zero_config_declines_any_named_non_development_environment(
+        self, environment
+    ):
+        """An under-configured deployment is not a request for local defaults.
+
+        The gate used to name ``production`` alone, so ``ENVIRONMENT=staging`` on
+        a box with no LLM key and no Redis fell through and got the ``local``
+        preset — which carries ``DEBUG=true``, ``SANITIZE_PII=false`` and
+        ``PROTECTION_ENABLED=false``. Naming an environment is an act of
+        classification; "merely under-configured" must not silently reclassify a
+        deployed box as a development one. The unrecognised value is the
+        near-miss, and it has to fail the same way.
+        """
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, {"ENVIRONMENT": environment}, clear=True):
+            assert detect_zero_config_preset() is None
+
+    @pytest.mark.parametrize(
+        "environment", ["", "   "], ids=["empty", "whitespace_only"]
+    )
+    def test_detect_zero_config_still_applies_the_local_preset_when_unnamed(
+        self, environment
+    ):
+        """Unset — and a ConfigMap key that reads as blank — stay zero-config.
+
+        Tightening the gate must not cost the path its purpose: nobody has
+        classified this box, so the quick-start default still applies. Explicit
+        ``development`` is covered by
+        ``test_detect_zero_config_returns_local_preset``' clean environment.
+        """
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, {"ENVIRONMENT": environment}, clear=True):
+            result = detect_zero_config_preset()
+
+        assert result is not None
+        assert result.value == "local"
+
+    def test_detect_zero_config_still_applies_it_for_explicit_development(self):
+        """``development`` named outright is the one value that keeps the preset."""
+        from faultmaven.config.presets import detect_zero_config_preset
+
+        with patch.dict(os.environ, {"ENVIRONMENT": "development"}, clear=True):
+            result = detect_zero_config_preset()
+
+        assert result is not None
+        assert result.value == "local"
+
 
 class TestPresetValidation:
     """Test preset validation."""

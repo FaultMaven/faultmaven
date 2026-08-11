@@ -6,9 +6,9 @@ are pinned here:
 
 1. ``RateLimitMiddleware`` keys the ``global`` limit on the resolver's answer —
    so a forged ``X-Forwarded-For`` cannot select the bucket.
-2. Every ``ProtectionSettings`` producer reads ``PROTECTION_TRUSTED_PROXIES``
-   from the one reader, so the presets and ``PerformanceTrackingMiddleware``
-   cannot disagree about what the deployment asked for.
+2. Both presets read ``PROTECTION_TRUSTED_PROXIES`` from the one reader, so the
+   presets and ``PerformanceTrackingMiddleware`` cannot disagree about what the
+   deployment asked for.
 """
 
 import contextlib
@@ -24,7 +24,7 @@ from faultmaven.config.protection import (
     get_development_protection_settings,
     get_production_protection_settings,
 )
-from faultmaven.models.protection import LimitType, RateLimitResult
+from faultmaven.models.protection import RateLimitResult
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -115,28 +115,28 @@ class TestTheLimiterKeysOnTheResolvedAddress:
         assert len(keys) == 49
 
 
-class TestEveryLoaderReadsTheKey:
+class TestEveryPresetReadsTheKey:
     """One reader, every preset — the pattern ``_fail_open_default`` established."""
 
-    LOADERS = {
+    PRESETS = {
         "development": get_development_protection_settings,
         "production": get_production_protection_settings,
     }
 
-    @pytest.mark.parametrize("name", sorted(LOADERS))
+    @pytest.mark.parametrize("name", sorted(PRESETS))
     def test_configured_value_reaches_the_settings(self, name):
         with patch.dict(
             os.environ, {"PROTECTION_TRUSTED_PROXIES": "10.42.0.0/16, 10.43.0.1"}
         ):
-            settings = self.LOADERS[name]()
+            settings = self.PRESETS[name]()
 
         assert settings.trusted_proxies == ["10.42.0.0/16", "10.43.0.1"]
 
-    @pytest.mark.parametrize("name", sorted(LOADERS))
+    @pytest.mark.parametrize("name", sorted(PRESETS))
     def test_unset_means_trust_nothing(self, name):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PROTECTION_TRUSTED_PROXIES", None)
-            settings = self.LOADERS[name]()
+            settings = self.PRESETS[name]()
 
         assert settings.trusted_proxies == []
 
