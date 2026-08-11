@@ -348,8 +348,10 @@ payload from the callback's entry, the OAuth code row from
 the code TTL while codes are in flight cannot shift the stamp in either
 direction. Each exchange stamps `iat` from the *older* of the two legs'
 bases, and treats a present-but-unusable carried value as absent, with a
-warning (`is not None`, then a broad except — an escape would 500 the
-exchange after the single-use artifact was already consumed). The refresh
+warning (`is not None`, then a broad except; on the SSO side an escape would
+500 the exchange after `consume_login` already burned the single-use code —
+the OAuth parse runs before the code is claimed, where the posture is the
+same but the cost of an escape is only a retryable 500). The refresh
 grants need no such carry: the presented refresh token is itself
 watermark-checked, so that artifact is already revocable. Residues, stated
 precisely: the stored capture postdates the request's middleware org-binding

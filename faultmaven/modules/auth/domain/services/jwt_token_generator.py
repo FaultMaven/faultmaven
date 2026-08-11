@@ -1803,8 +1803,11 @@ class ITokenRevocationStore(ABC):
             user_id: User whose tokens are being revoked
             revoked_at: Revocation instant as a Unix timestamp (seconds)
             ttl: Time to live in seconds; must outlive the longest-lived token
-                the deployment issues, or tokens could outlive the watermark
-                that revokes them
+                the deployment issues MEASURED FROM ITS BASIS — the configured
+                lifetime plus ``MAX_MINT_BASIS_CARRY_SECONDS``, since ``iat``
+                (what the watermark compares against) can trail the mint by up
+                to the hand-off artifact's TTL (#831) — or tokens could
+                outlive the watermark that revokes them
         """
         ...
 

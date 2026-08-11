@@ -349,7 +349,7 @@ class TestRevocationWatermarkTracksTheSingleSource:
     """
 
     @pytest.mark.parametrize("minutes,days", LIFETIME_PAIRS)
-    def test_watermark_ttl_equals_configured_refresh_lifetime(
+    def test_watermark_ttl_is_refresh_lifetime_plus_basis_carry(
         self, monkeypatch, minutes, days
     ):
         monkeypatch.setenv("JWT_SECRET_KEY", SECRET)
@@ -360,7 +360,17 @@ class TestRevocationWatermarkTracksTheSingleSource:
         monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
         service = auth_module.AuthService(revocation_store=_revocation_store())
 
-        assert service._longest_token_lifetime_seconds() == days * 86400
+        from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
+
+        # The pad is the #831 basis carry: iat (what the watermark compares
+        # against) can trail the mint by up to the hand-off artifact's TTL,
+        # while exp is mint-time plus the lifetime — so the entry must cover
+        # lifetime + carry, or a revoked pair minted from a slowly-redeemed
+        # code would outlive the watermark and rotate back to life.
+        assert (
+            service._longest_token_lifetime_seconds()
+            == days * 86400 + MAX_MINT_BASIS_CARRY_SECONDS
+        )
 
     def test_watermark_covers_a_maximal_access_lifetime(self, monkeypatch):
         """Access expiry is covered too: nothing ties it to the refresh knob.
@@ -376,7 +386,12 @@ class TestRevocationWatermarkTracksTheSingleSource:
         monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
         service = auth_module.AuthService(revocation_store=_revocation_store())
 
-        assert service._longest_token_lifetime_seconds() == 1440 * 60
+        from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
+
+        assert (
+            service._longest_token_lifetime_seconds()
+            == 1440 * 60 + MAX_MINT_BASIS_CARRY_SECONDS
+        )
 
     def test_a_non_positive_lifetime_raises_instead_of_defaulting(self, monkeypatch):
         """A mis-wired source fails loudly; it does not default to 7 days.

@@ -951,6 +951,22 @@ MAX_REFRESH_TOKEN_EXPIRY_DAYS = 90
 #: past this one must fail loudly.
 MAX_TOKEN_LIFETIME_DAYS = MAX_REFRESH_TOKEN_EXPIRY_DAYS
 
+#: Schema maximum for ``OAUTH_CODE_EXPIRY_SECONDS`` — also the ``le=`` bound on
+#: the field, so the two cannot drift.
+MAX_OAUTH_CODE_EXPIRY_SECONDS = 1800
+
+#: The longest a mint's pre-read basis can trail the mint itself (#831). Tokens
+#: stamp ``iat`` from the basis carried by a hand-off artifact (the OAuth code,
+#: whose TTL bound dominates the SSO completion code's fixed 60 seconds) but
+#: ``exp`` from mint time — so a token's life measured FROM ITS BASIS can
+#: exceed the configured lifetime by up to this. The per-user revocation
+#: watermark keys on ``iat`` (the basis) and its entry must outlive every token
+#: it revokes, so the watermark TTL pads by this on top of the longest
+#: configured lifetime. Without the pad, a revoked pair minted from a
+#: slowly-redeemed code would outlive the watermark entry and rotate back to
+#: life for up to this window.
+MAX_MINT_BASIS_CARRY_SECONDS = MAX_OAUTH_CODE_EXPIRY_SECONDS
+
 #: Every env name that has EVER addressed the two token-expiry fields except the
 #: current pair, mapped to the current name that replaces it. Two generations:
 #:
@@ -1169,7 +1185,7 @@ class AuthSettings(BaseSettings):
     oauth_code_expiry_seconds: int = Field(
         default=600,
         ge=60,
-        le=1800,
+        le=MAX_OAUTH_CODE_EXPIRY_SECONDS,
         description="Authorization code expiry (10 minutes default, PKCE-protected)",
     )
 
