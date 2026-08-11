@@ -2799,10 +2799,10 @@ class FaultMavenSettings(BaseSettings):
         # pin it on, and whether the middleware is installed is a property of
         # the built app, which a settings object cannot see. The check that used
         # to live here read a field no enforcement path consulted, so it warned
-        # on the development preset (which sets RATE_LIMIT_ENABLED=false and
-        # rate limits anyway) and stayed silent when protection setup was
-        # skipped outright. GET /admin/config/status answers this question from
-        # the middleware stack instead.
+        # under CONFIG_PRESET=local — which used to set RATE_LIMIT_ENABLED=false
+        # while rate limiting anyway — and stayed silent when protection setup
+        # was skipped outright. GET /admin/config/status answers this question
+        # from the middleware stack instead.
 
         # Upload size warnings
         if self.upload.max_upload_size_mb > 50:

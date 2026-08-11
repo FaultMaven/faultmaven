@@ -405,8 +405,9 @@ That distinction is the whole point of the field. While it was sourced from
 `settings.security.rate_limit_enabled` it was wrong in both directions and right
 only by accident:
 
-- `CONFIG_PRESET=local` sets `RATE_LIMIT_ENABLED=false`, so it reported
-  **disabled** on a deployment the development preset was rate limiting.
+- `CONFIG_PRESET=local` used to set `RATE_LIMIT_ENABLED=false`, so it reported
+  **disabled** on a deployment the `development` protection preset — which that
+  same preset selects, via `ENVIRONMENT=development` — was rate limiting.
 - `SKIP_SERVICE_CHECKS=true` skips protection setup entirely, and the
   development carve-out in `main.py` boots unprotected when setup raises. Both
   reported **enabled**, over a deployment anyone could flood.

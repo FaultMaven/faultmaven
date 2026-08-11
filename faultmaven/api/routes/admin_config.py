@@ -427,9 +427,9 @@ def _rate_limiting_installed(app) -> bool:
 
     * ``settings.security.rate_limit_enabled`` — the field this replaces
       (fm#985 item 16) — was read by no enforcement path at all. It reported
-      *disabled* under ``CONFIG_PRESET=local``, which sets
-      ``RATE_LIMIT_ENABLED=false`` while the development protection preset rate
-      limits regardless; and it reported *enabled* under
+      *disabled* under ``CONFIG_PRESET=local``, which used to set
+      ``RATE_LIMIT_ENABLED=false`` while the ``development`` *protection* preset
+      it selects rate limits regardless; and it reported *enabled* under
       ``SKIP_SERVICE_CHECKS=True``, which installs no protection middleware
       whatsoever. Wrong in both directions, and never right except by accident.
     * ``settings.protection`` — that is PII redaction, a different subsystem.

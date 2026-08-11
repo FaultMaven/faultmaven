@@ -696,24 +696,9 @@ class TestGetEnvConfigStatus:
 
         assert result.rate_limit_enabled is False
 
-    @pytest.mark.asyncio
-    async def test_rate_limit_enabled_ignores_a_rate_limit_env_key(
-        self, mock_admin_user, mock_settings, rate_limited_app, monkeypatch
-    ):
-        """The retired env keys cannot talk the field out of the truth.
-
-        The other half of item 16: ``RATE_LIMIT_ENABLED=false`` used to make the
-        admin API report rate limiting off while the presets enforced it. The
-        keys are gone from ``SecuritySettings``, and ``extra="ignore"`` means a
-        stale ``.env`` or k8s manifest still carrying them is inert rather than
-        fatal — so setting them here must change nothing.
-        """
-        monkeypatch.setenv("RATE_LIMIT_ENABLED", "false")
-        monkeypatch.setenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "600")
-
-        with patch(SETTINGS_PATCH, return_value=mock_settings):
-            result = await get_env_config_status(
-                request=_request_for(rate_limited_app), current_user=mock_admin_user
-            )
-
-        assert result.rate_limit_enabled is True
+    # The "a retired env key cannot talk this field out of the truth" case is
+    # NOT tested here, deliberately. This module patches ``get_settings`` to a
+    # MagicMock, so a monkeypatched RATE_LIMIT_ENABLED never reaches a settings
+    # object and the test would assert nothing while appearing to. It is tested
+    # where it can bite, against a real ``SecuritySettings``:
+    # tests/unit/config/test_settings_mapping.py::TestRateLimitingIsNotASetting.
