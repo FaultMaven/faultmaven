@@ -472,5 +472,64 @@ class TestSettingsIntegration:
                 assert config.LOG_DEDUPE is False
 
 
+class TestRateLimitingIsNotASetting:
+    """No ``settings.security`` field may claim to configure rate limiting.
+
+    ``RATE_LIMIT_ENABLED``, ``RATE_LIMIT_REQUESTS_PER_MINUTE`` and
+    ``RATE_LIMIT_BURST_SIZE`` were fields on ``SecuritySettings`` that no
+    enforcement path read (fm#985 item 16). The limits, the windows and the
+    on/off decision live in the protection presets in ``config/protection.py``,
+    chosen by environment name — there is nothing here for a field to hold, and
+    a field that looks like it holds one is how the admin API came to report
+    rate limiting *disabled* on a deployment that was rate limiting.
+    """
+
+    def test_security_settings_has_no_rate_limit_field(self):
+        from faultmaven.config.settings import SecuritySettings
+
+        # Matched by prefix rather than by the three retired names, so a
+        # differently-spelled resurrection is caught too.
+        offenders = sorted(
+            name
+            for name in SecuritySettings.model_fields
+            if name.startswith("rate_limit")
+        )
+        assert offenders == []
+
+    def test_retired_keys_are_inert_rather_than_fatal(self):
+        """A stale ``.env`` or k8s manifest carrying them must still boot.
+
+        The whole settings tree is built, not just ``SecuritySettings``, because
+        that is where a refusal would come from and the point of the test is
+        that none arrives. This is the deliberate difference from the retired
+        JWT expiry names, which DO refuse to boot (#888): those had a live
+        replacement an operator had to migrate to, and these have none, so
+        failing a boot over them would punish an operator for a key that never
+        did anything. A ``model_validator`` added later to reject these names —
+        the obvious thing to reach for, by analogy with #888 — turns this red.
+
+        NOT guarded by ``extra="ignore"``, despite the resemblance. ``extra``
+        governs keys passed to the constructor; pydantic-settings' env source
+        reads only *declared* fields, so an undeclared ``RATE_LIMIT_ENABLED``
+        never becomes an "extra" for it to have an opinion about. Flipping the
+        model to ``extra="forbid"`` leaves this test green — verified — so
+        citing it here would have been a mechanism the test does not exercise.
+        """
+        from faultmaven.config.settings import FaultMavenSettings, SecuritySettings
+
+        with patch.dict(
+            os.environ,
+            {
+                "RATE_LIMIT_ENABLED": "false",
+                "RATE_LIMIT_REQUESTS_PER_MINUTE": "600",
+                "RATE_LIMIT_BURST_SIZE": "99",
+            },
+        ):
+            security = SecuritySettings()
+            FaultMavenSettings()  # must not raise
+
+        assert not hasattr(security, "rate_limit_enabled")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

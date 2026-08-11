@@ -380,19 +380,47 @@ The exact spellings that are now gone:
   `TIMEOUT_EMERGENCY_SHUTDOWN`
 - `BASIC_PROTECTION_ENABLED`, `PROTECTION_BYPASS_HEADERS`, `REDIS_KEY_PREFIX`
 
-**Two legacy `RATE_LIMIT_*` spellings do still exist, and nothing in the
-protection stack reads them.** `RATE_LIMIT_ENABLED` and
-`RATE_LIMIT_REQUESTS_PER_MINUTE` are live `settings.security` fields and are
-documented in `.env.example`, but no enforcement path consults either.
-`RATE_LIMIT_ENABLED=false` does not turn rate limiting off, and
-`RATE_LIMIT_REQUESTS_PER_MINUTE` is not any bucket's limit. Of the two, only
-`rate_limit_enabled` surfaces on `GET /admin/config/status` —
-`EnvConfigStatusResponse` has no requests-per-minute field at all — where it
-feeds a frontend-compatibility report that warns when it is false. Their removal
-is tracked in fm#985.
+Three further spellings were removed for the same reason (fm#985 item 16). They
+were `settings.security` fields rather than loader inputs, so they survived
+fm#1023, but no enforcement path read them either:
+
+- `RATE_LIMIT_ENABLED` — did **not** turn rate limiting off
+- `RATE_LIMIT_REQUESTS_PER_MINUTE` — was not any bucket's limit
+- `RATE_LIMIT_BURST_SIZE` — read by nothing at all, not even a report
+
+Setting any of them today is inert: `SecuritySettings` ignores unknown keys, so a
+stale `.env` or manifest still carrying one is dropped rather than rejected.
 
 Changing the limits a deployment actually runs on means changing the preset in
 `faultmaven/config/protection.py`.
+
+### Checking whether a deployment is rate limited
+
+`GET /admin/config/status` reports `rate_limit_enabled`, and the dashboard draws
+it as the **Rate Limiting** row. It answers one question — is
+`RateLimitMiddleware` installed on this app — read from the running middleware
+stack rather than from configuration.
+
+That distinction is the whole point of the field. While it was sourced from
+`settings.security.rate_limit_enabled` it was wrong in both directions and right
+only by accident:
+
+- `CONFIG_PRESET=local` used to set `RATE_LIMIT_ENABLED=false`, so it reported
+  **disabled** on a deployment the `development` protection preset — which that
+  same preset selects, via `ENVIRONMENT=development` — was rate limiting.
+- `SKIP_SERVICE_CHECKS=true` skips protection setup entirely, and the
+  development carve-out in `main.py` boots unprotected when setup raises. Both
+  reported **enabled**, over a deployment anyone could flood.
+
+An installed limiter that is degrading on a Redis outage still reports
+`true`. That is deliberate: the degrade is transient, and production pins
+fail-closed so the condition surfaces as a `503` rather than as silence. This
+field is about what is installed, not about what Redis is doing this second.
+
+Note that the fail-*open* degrade is genuinely quiet — it emits no
+`X-RateLimit-*` headers at all, and their absence is indistinguishable from a
+bypassed request or a probe path. Redis health is a question for the logs and
+for `/metrics`, not for this field or for the response.
 
 ### Per-endpoint rate limits
 

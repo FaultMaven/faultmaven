@@ -87,9 +87,9 @@ PRESETS: Dict[str, PresetDefinition] = {
             "CHAT_PROVIDER": "local",
             "LOCAL_LLM_URL": "http://localhost:11434/v1",  # Ollama default
             "LOCAL_LLM_MODEL": "llama2",
-            # Protection - lenient for development
+            # PII redaction only. Rate limiting is not configurable here (or
+            # anywhere): the protection presets in config/protection.py own it.
             "PROTECTION_ENABLED": "false",
-            "RATE_LIMIT_ENABLED": "false",
             "SANITIZE_PII": "false",
             # Observability - minimal for local
             "LOG_LEVEL": "DEBUG",
@@ -135,11 +135,9 @@ PRESETS: Dict[str, PresetDefinition] = {
             "CHROMADB_URL": "http://localhost:8001",
             # LLM - Fireworks as default cloud provider (good balance of cost/quality)
             "CHAT_PROVIDER": "fireworks",
-            # Protection - enabled for production
+            # PII redaction only — see the local preset's note on rate limiting.
             "PROTECTION_ENABLED": "true",
-            "RATE_LIMIT_ENABLED": "true",
             "SANITIZE_PII": "true",
-            "RATE_LIMIT_REQUESTS_PER_MINUTE": "60",
             # Observability
             "LOG_LEVEL": "INFO",
             "ENABLE_PERFORMANCE_MONITORING": "true",
@@ -182,11 +180,9 @@ PRESETS: Dict[str, PresetDefinition] = {
             "USER_STORAGE_TYPE": "database",
             # LLM - OpenAI as enterprise default
             "CHAT_PROVIDER": "openai",
-            # Protection - strict for enterprise
+            # PII redaction only — see the local preset's note on rate limiting.
             "PROTECTION_ENABLED": "true",
-            "RATE_LIMIT_ENABLED": "true",
             "SANITIZE_PII": "true",
-            "RATE_LIMIT_REQUESTS_PER_MINUTE": "120",
             "AUTO_SANITIZE_BASED_ON_PROVIDER": "true",
             # Observability - full monitoring
             "LOG_LEVEL": "INFO",

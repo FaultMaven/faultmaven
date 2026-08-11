@@ -414,8 +414,6 @@ def clean_test_environment():
         "VECTOR_STORAGE_TYPE",
         "USER_STORAGE_TYPE",
         "CASE_STORAGE_TYPE",
-        "RATE_LIMIT_ENABLED",
-        "RATE_LIMIT_REQUESTS_PER_MINUTE",
         "MAX_UPLOAD_SIZE_MB",
         "CORS_ALLOW_CREDENTIALS",
         "CORS_ALLOW_ORIGINS",

@@ -108,10 +108,13 @@ spellings that are still live:
   `TIMEOUT_EMERGENCY_SHUTDOWN`
 - `BASIC_PROTECTION_ENABLED`, `PROTECTION_BYPASS_HEADERS`, `REDIS_KEY_PREFIX`
 
-`RATE_LIMIT_ENABLED` and `RATE_LIMIT_REQUESTS_PER_MINUTE` were **not** removed.
-They remain live `settings.security` fields documented in `.env.example`, and no
-enforcement path consults either — setting `RATE_LIMIT_ENABLED=false` does not
-turn rate limiting off. Their removal is tracked in fm#985. See
+`RATE_LIMIT_ENABLED`, `RATE_LIMIT_REQUESTS_PER_MINUTE` and
+`RATE_LIMIT_BURST_SIZE` are gone too (fm#985 item 16). They were
+`settings.security` fields rather than loader inputs, so fm#1023 left them
+standing, but no enforcement path read them either. Setting one is now inert
+rather than fatal — `SecuritySettings` ignores unknown keys. Whether a
+deployment is actually rate limited is answered by `GET /admin/config/status`,
+which reads the middleware stack. See
 [client-protection.md](client-protection.md) for the same list from the
 operator's side.
 

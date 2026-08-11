@@ -5251,7 +5251,7 @@ Read-only environment configuration status for dashboard display.
 - `features` (object, optional) — Optional features and their configuration status
 - `llm_provider` (string, required) — Primary LLM provider name
 - `pii_redaction_enabled` (boolean, required)
-- `rate_limit_enabled` (boolean, required)
+- `rate_limit_enabled` (boolean, required) — Rate limiting middleware is installed on this deployment. Read from the running middleware stack rather than from configuration: no rate-limit setting exists, the protection presets decide by environment name, and a deployment that skipped protection setup (SKIP_SERVICE_CHECKS) reports false here.
 - `session_storage` (string, required) — 'inmemory' or 'redis'
 - `timestamp` (string, required)
 - `vector_storage` (string, required) — 'inmemory' or 'chromadb'
