@@ -265,12 +265,18 @@ class RunbookKnowledgeBase(BaseExternalClient):
         def _parse(results) -> List[SimilarRunbook]:
             # Parse results and filter by minimum similarity
             similar_runbooks: List[SimilarRunbook] = []
-            # Rows that matched the query but were not written by this path —
-            # they are missing an identity key ``index_runbook`` always stamps.
-            # Counted because a skip and a miss are the same ``[]`` to the
-            # caller, and both dedup callers read ``[]`` as the affirmative
-            # "the KB holds nothing similar" (#944).
+            # Candidates that cleared the similarity threshold and could NOT be
+            # turned into a result — for any reason: a missing identity key, or
+            # a stored row that no longer satisfies ``CaseReport``. Both are
+            # tracked the same way on purpose. The caller does not consume the
+            # list, it consumes the TOP match, so what makes an answer
+            # trustworthy is not "did we read most rows" but "did we read the
+            # best one". A candidate we could not read might have been the
+            # duplicate, and reporting the runner-up's score as the best
+            # available match is a false negative dressed as a measurement
+            # (#944).
             unreadable = 0
+            best_unreadable = 0.0
 
             if not results or "ids" not in results or not results["ids"]:
                 logger.debug("No runbooks found matching query")
@@ -328,11 +334,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     identity_source = RunbookSource(metadata["runbook_source"])
                 except (KeyError, ValueError) as e:
                     unreadable += 1
+                    best_unreadable = max(best_unreadable, similarity)
                     logger.warning(
                         f"Runbook {report_id} carries no usable identity "
                         f"({e!r}), skipping it",
                         extra={
                             "report_id": report_id,
+                            "similarity": similarity,
                             "metadata_keys": sorted(metadata),
                         },
                     )
@@ -378,44 +386,65 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     similar_runbooks.append(similar_runbook)
 
                 except Exception as e:
-                    # Any other reconstruction failure — a stored row that
-                    # violates a model constraint, say. Pre-existing behaviour,
-                    # left alone deliberately: these rows ARE runbooks this path
-                    # wrote, retrying cannot fix them, and escalating them to a
-                    # refusal would turn a shorter result list into a 503 that
-                    # tells the operator the knowledge base is unavailable when
-                    # it is merely holding one bad row.
+                    # Any other reconstruction failure — a stored row that no
+                    # longer satisfies ``CaseReport``, say. Counted exactly like
+                    # a missing identity key above: these rows ARE runbooks this
+                    # path wrote, which makes them MORE likely to be the
+                    # duplicate the caller is asking about, not less. Skipping
+                    # them quietly and answering with the runner-up is the same
+                    # false negative either way, so the reason we could not read
+                    # a candidate does not change what it costs.
+                    unreadable += 1
+                    best_unreadable = max(best_unreadable, similarity)
                     logger.warning(
                         f"Failed to reconstruct runbook {report_id}, skipping it: {e!r}",
-                        extra={"report_id": report_id},
+                        extra={"report_id": report_id, "similarity": similarity},
                     )
                     continue
 
-            # Skipping a row keeps a wrong answer out of the results, but if it
-            # leaves NOTHING to return then the caller receives the same ``[]``
-            # a genuinely empty KB produces — and turns it into "no similar
-            # runbook exists, generate a new one". That is the affirmative
-            # negative from a search that did not really run (#944), so refuse
-            # instead: rows matched, and none of them was readable.
-            if unreadable and not similar_runbooks:
-                # Says only what is true. ``unreadable`` counts rows that met
-                # the similarity threshold and carried no usable identity — NOT
-                # the number of rows the query matched, and other rows may well
-                # have been read successfully and then correctly discarded for
-                # being dissimilar. Claiming the whole result set "could not be
-                # read" would be a second wrong statement of fact, in the error
-                # raised to prevent the first.
+            # Sort by similarity score descending
+            similar_runbooks.sort(key=lambda x: x.similarity_score, reverse=True)
+
+            # Refuse when an unread candidate could have been the answer.
+            #
+            # "Some rows were skipped" is not by itself a reason to fail — a
+            # skipped row that scores below a match we DID read cannot change
+            # the verdict, because every caller consumes the top match and
+            # nothing else. What is not survivable is an unread candidate
+            # scoring STRICTLY ABOVE the best readable one: the caller then gets
+            # a similarity number presented as the best available, computed from
+            # a set whose actual best was discarded. Both dedup callers turn
+            # that into "generate a new runbook", stating a fact about the KB's
+            # contents that the search did not establish — the #944 collapse,
+            # reached through the partial case rather than the empty one.
+            #
+            # A TIE is deliberately not a refusal. Every caller decides on the
+            # top score, so at equal similarity the readable row produces the
+            # same verdict and names a runbook that really does exist at that
+            # score — nothing in the answer is unestablished. Refusing there
+            # would fail a correct answer over a row that could not have
+            # changed it.
+            #
+            # The empty case needs no branch of its own: the sentinel makes
+            # "nothing readable" the degenerate instance of the same rule, where
+            # any unread candidate is strictly the best.
+            best_readable = (
+                similar_runbooks[0].similarity_score if similar_runbooks else -1.0
+            )
+            if unreadable and best_unreadable > best_readable:
+                # States only what is established. ``unreadable`` counts
+                # candidates that MET the threshold and could not be read — not
+                # the number of rows matched, since rows read successfully and
+                # then correctly discarded as dissimilar are neither.
                 raise KnowledgeBaseError(
-                    f"{unreadable} runbook(s) met the similarity threshold but "
-                    f"carried no usable identity, and no readable runbook met "
-                    f"it; refusing to report 'no similar runbooks' when the "
-                    f"only candidates could not be read. Re-index the affected "
+                    f"{unreadable} runbook(s) scoring up to "
+                    f"{best_unreadable:.0%} met the similarity threshold but "
+                    f"could not be read, outranking every readable match; "
+                    f"refusing to report a best match from a result set whose "
+                    f"strongest candidate was unreadable. Re-index the affected "
                     f"rows — retrying the search cannot clear this.",
                     error_code="RUNBOOK_RESULTS_UNREADABLE",
                 )
-
-            # Sort by similarity score descending
-            similar_runbooks.sort(key=lambda x: x.similarity_score, reverse=True)
 
             logger.info(
                 f"Found {len(similar_runbooks)} similar runbooks",

@@ -442,24 +442,51 @@ async def test_an_unreadable_result_set_is_refused_without_retrying(kb, store):
 
 
 @pytest.mark.asyncio
-async def test_a_row_that_fails_validation_is_skipped_without_refusing(kb, store):
-    """Only a MISSING identity key makes the result set untrustworthy.
+async def test_an_unreadable_row_outranking_the_readable_ones_refuses(kb, store):
+    """The refusal is about the BEST candidate, not about the set being empty.
 
-    A row carrying every identity key but violating some other model constraint
-    is a runbook this path really did write; it is merely unusable. Escalating
-    that to a refusal would surface as a 503 telling the operator the knowledge
-    base is unavailable — when it is available and holding one bad row, and no
-    amount of retrying will change it. Skip it and keep answering.
+    This is the partial case, and it is the dangerous one: an unreadable row at
+    high similarity next to a readable row at low similarity. Firing only on an
+    empty result set returns the runner-up, and the caller reports its score as
+    the best available match — "existing runbooks have low similarity (2%),
+    generate a new one" — when the real best match was an exact duplicate it
+    could not read. A false negative dressed as a measurement.
     """
-    bad_title = _runbook_metadata(ORG_A, "rb-bad")
-    bad_title["title"] = "short"  # CaseReport.title has min_length=10
-    await store.seed("rb-bad-title", bad_title, _vec(0.5))
+    unreadable = {
+        k: v
+        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
+        if k != "runbook_source"
+    }
+    await store.seed("rb-strong-unreadable", unreadable, _vec(0.5))
+    await store.seed("rb-weak-readable", _runbook_metadata(ORG_A, "rb-2"), _vec(-0.4))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_row_below_the_best_match_does_not_refuse(kb, store):
+    """A skipped candidate that could not have won is not a reason to fail.
+
+    Every caller consumes the top match and nothing else, so an unread row
+    scoring below one we did read cannot change the verdict. Refusing anyway
+    would turn a correct, useful answer into a 503 over a row that was never in
+    contention — the over-strict mirror of the defect above.
+    """
+    await store.seed("rb-strong-readable", _runbook_metadata(ORG_A, "rb-1"), _vec(0.5))
+    weak_bad = _runbook_metadata(ORG_A, "rb-2")
+    weak_bad["title"] = "short"  # CaseReport.title has min_length=10
+    await store.seed("rb-weak-unreadable", weak_bad, _vec(-0.4))
 
     found = await kb.search_runbooks(
         query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
     )
 
-    assert found == []
+    assert [r.runbook.report_id for r in found] == ["rb-strong-readable"]
 
 
 @pytest.mark.asyncio
