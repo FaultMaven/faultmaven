@@ -583,3 +583,30 @@ async def test_all_windows_are_decided_in_one_round_trip():
     assert len(calls) == 1, f"expected one round trip, got {len(calls)}: {calls}"
     # And it really did decide all three windows, rather than one cheaply.
     assert len(calls[0]) == 3, calls[0]
+
+
+async def test_a_route_that_poisons_the_inbox_does_not_run_twice():
+    """The inbox is a shared namespace, and dispatch's catch-all re-runs the route.
+
+    ``request.state.rate_limit_results`` is written by inner enforcers, so
+    anything in the stack can put anything in it. Reading it inside dispatch's
+    ``try`` body — rather than inside the header helper's own ``except`` — meant
+    an unexpected shape raised into the handler that calls ``call_next`` a
+    second time, applying every route side effect twice. Failing to advertise a
+    header is a cosmetic loss; running a POST handler twice is not.
+    """
+    from starlette.responses import JSONResponse
+
+    mw = _middleware(_settings(global_requests=1000))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+    calls = []
+
+    async def _poisoning_call_next(request):
+        calls.append(1)
+        request.state.rate_limit_results = object()
+        return JSONResponse(status_code=200, content={"ok": True})
+
+    response = await mw.dispatch(_request(app, _unique_client()), _poisoning_call_next)
+
+    assert response.status_code == 200
+    assert len(calls) == 1, f"the route ran {len(calls)} times"
