@@ -318,13 +318,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 # a ``runbook_source="manual"`` both mean "not written by this
                 # path", and both must count towards ``unreadable``.
                 #
-                # Since every unreadable candidate now counts regardless of
-                # cause, this split is about the LOG LINE, not the arithmetic —
-                # the identity case can name which stamps the row carries,
-                # which a bare ``CaseReport`` validation error cannot. Narrowing
-                # it back to ``except KeyError`` is an equivalent mutation
-                # today; it stops being one the moment the two branches diverge
-                # again, which is why they stay explicit.
+                # ``ValueError`` in this tuple is load-bearing, not decorative:
+                # this is its OWN ``try``, so a bad ``RunbookSource`` value
+                # caught here cannot fall through to the reconstruction handler
+                # below. Narrow it to ``except KeyError`` and the ValueError
+                # escapes ``search_runbooks`` raw — past the typed
+                # ``except (KnowledgeBaseError, ...)`` at the route, turning a
+                # 503 refusal into a 500 with exception text.
                 #
                 # No defaults anywhere here. The ones that used to stand in did
                 # not read as "missing", they read as facts: ``case_id="unknown"``

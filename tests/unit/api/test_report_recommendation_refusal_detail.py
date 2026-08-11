@@ -12,6 +12,7 @@ remediation, passed the entire API suite.
 
 import pytest
 
+from faultmaven.infrastructure.base_client import CircuitBreakerError
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.case.api.routes import _recommendation_unavailable_detail
 
@@ -61,16 +62,21 @@ def test_the_unreadable_refusal_does_not_claim_every_row_was_unreadable():
         KnowledgeBaseError("boom", error_code="RUNBOOK_SEARCH_FAILED"),
         KnowledgeBaseError("no tenant", error_code="RUNBOOK_SEARCH_UNSCOPED"),
         TimeoutError("timed out"),
-        RuntimeError("circuit open"),
+        # The REAL CircuitBreakerError, not a stand-in: it defines its own
+        # ``error_code`` (it forwards the code of whatever tripped the breaker),
+        # so a `RuntimeError` substitute would exercise the ``getattr`` default
+        # on a type that never reaches it and prove nothing about this one.
+        CircuitBreakerError("circuit open for RunbookKB"),
+        CircuitBreakerError("circuit open", error_code="RUNBOOK_SEARCH_FAILED"),
     ],
 )
 def test_every_transient_cause_keeps_the_retry_advice(exc):
     """The other causes ARE transient, and must keep the advice that fits them.
 
-    Covers the exception types this handler catches, including the two that
-    arrive unwrapped from ``call_external`` and carry no ``error_code`` at all
-    — the ``getattr`` default has to route those here, not to the deterministic
-    message.
+    Covers every exception type this handler catches, including the two that
+    arrive unwrapped from ``call_external``. An open breaker is transient by
+    construction — it closes on its own — so it must never inherit the
+    "retrying will not clear this" wording.
     """
     detail = _recommendation_unavailable_detail(exc)
 

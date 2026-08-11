@@ -1458,6 +1458,14 @@ async def evaluate_runbook_suggestion(
     # never reach it, or a dedup result gets stated that was never obtained
     # (#944).
     dedup_ran = False
+    # Why dedup did not complete, when it did not. Three causes with three
+    # different remedies, and saying the wrong one sends the user after the
+    # wrong thing: `dedup_failed` marks an actual error (transient — retry),
+    # `dedup_unreadable` marks the deterministic one (re-index; retrying never
+    # clears it). Neither set means the search simply never ran — no KB wired,
+    # no usable tenant, or too little case content to query with — where
+    # claiming anything is "unavailable" would be false.
+    dedup_failed = False
     dedup_unreadable = False
     if not runbook_kb:
         logger.warning(
@@ -1504,6 +1512,7 @@ async def evaluate_runbook_suggestion(
             # but RUNBOOK_RESULTS_UNREADABLE means the search ran, the KB is
             # up, and the closest runbooks are unreadable until someone
             # re-indexes them. Telling the user to wait would be wrong (#912).
+            dedup_failed = True
             dedup_unreadable = (
                 getattr(e, "error_code", None) == "RUNBOOK_RESULTS_UNREADABLE"
             )
@@ -1525,11 +1534,19 @@ async def evaluate_runbook_suggestion(
     # the final SUGGEST below honest: it means "checked, nothing similar
     # found", which an unchecked case is not entitled to.
     if not dedup_ran:
-        cause = (
-            "the closest-matching runbooks could not be read and need " "re-indexing"
-            if dedup_unreadable
-            else "the knowledge base search is unavailable"
-        )
+        if dedup_unreadable:
+            cause = (
+                "the closest-matching runbooks could not be read and need "
+                "re-indexing"
+            )
+        elif dedup_failed:
+            cause = "the knowledge base search is unavailable"
+        else:
+            # Skipped, not failed: no knowledge base wired, no usable tenant, or
+            # too little case content to form a query. Nothing is broken and
+            # there is nothing to retry, so calling it "unavailable" would be a
+            # false statement about a healthy system (#912).
+            cause = "the knowledge base search did not run"
         caveats.append(
             f"I could not check whether a similar runbook already exists — "
             f"{cause}. Creating one now risks duplicating existing content; "

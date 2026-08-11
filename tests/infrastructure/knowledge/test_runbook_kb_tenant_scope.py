@@ -141,6 +141,23 @@ def _runbook_metadata(organization_id: str, doc_id: str) -> Dict[str, Any]:
     }
 
 
+def _drop_identity(md: Dict[str, Any]) -> Dict[str, Any]:
+    """Unreadable via the identity handler: a stamp this path always writes."""
+    return {k: v for k, v in md.items() if k != "runbook_source"}
+
+
+def _fail_validation(md: Dict[str, Any]) -> Dict[str, Any]:
+    """Unreadable via the reconstruction handler: ``title`` has min_length=10."""
+    return {**md, "title": "short"}
+
+
+#: The two ways a candidate can be unreadable. They are handled by SEPARATE
+#: ``except`` blocks with their own copies of the running-maximum bookkeeping,
+#: so any test asserting something about "unreadable rows" has to cover both or
+#: it pins only one of the two implementations.
+_BREAK_IDS = ["missing-identity-key", "fails-CaseReport-validation"]
+
+
 @pytest.fixture
 def store(request):
     return _ChromaBackedStore(f"runbook-tenant-{abs(hash(request.node.name)) % 10**8}")
@@ -343,11 +360,7 @@ async def test_a_result_set_that_is_entirely_unreadable_refuses(kb, store):
     generating a duplicate. That is the #944 collapse: an answer about the KB's
     contents derived from a search that could not be read. It has to refuse.
     """
-    incomplete = {
-        k: v
-        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
-        if k != "runbook_source"
-    }
+    incomplete = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
     await store.seed("rb-only-unreadable", incomplete, _vec(0.5))
 
     with pytest.raises(KnowledgeBaseError) as excinfo:
@@ -395,11 +408,7 @@ async def test_a_dissimilar_unreadable_row_does_not_manufacture_a_refusal(kb, st
     Seeded here: one unreadable row far from the query, nothing else above the
     threshold. The right answer is an empty list, not a refusal.
     """
-    incomplete = {
-        k: v
-        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
-        if k != "runbook_source"
-    }
+    incomplete = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
     await store.seed("rb-distant-unreadable", incomplete, _vec(-0.9))
 
     found = await kb.search_runbooks(
@@ -423,18 +432,33 @@ async def test_an_all_unreadable_set_at_zero_similarity_still_refuses(kb, store)
     boundary rather than a live path — which is exactly where an untested edge
     would otherwise sit.
     """
-    incomplete = {
-        k: v
-        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
-        if k != "runbook_source"
-    }
-    # Orthogonal to the query: cosine distance 1.0 -> similarity 0.0.
-    orthogonal = [1.0] + [0.0] * (_DIM - 1)
-    await store.seed("rb-zero-similarity", incomplete, orthogonal)
+    incomplete = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
+    stored_vec = [1.0] + [0.0] * (_DIM - 1)
+    query_vec = [0.0, 1.0] + [0.0] * (_DIM - 2)
+    await store.seed("rb-zero-similarity", incomplete, stored_vec)
+
+    # The boundary is only exercised if the row really scores 0.0, and that
+    # depends on the collection's distance metric — which the store does not
+    # set, so ChromaDB's default (squared L2) applies and these orthogonal unit
+    # vectors land at distance 2.0 -> similarity 0.0. Under cosine they would
+    # score 0.5 and this test would still pass while pinning nothing. Assert
+    # the precondition so a metric change fails HERE, loudly, instead of
+    # silently vacating the assertion below.
+    raw = await store.query_by_embedding(
+        query_embedding=query_vec,
+        where={"$and": [{"report_type": "runbook"}, {"organization_id": ORG_A}]},
+        top_k=5,
+    )
+    distance = raw["distances"][0][0]
+    assert max(0.0, 1.0 - (distance / 2.0)) == 0.0, (
+        f"expected a 0.0-similarity row (distance 2.0), got distance {distance} "
+        f"— the collection's distance metric changed and this test no longer "
+        f"exercises the sentinel boundary"
+    )
 
     with pytest.raises(KnowledgeBaseError) as excinfo:
         await kb.search_runbooks(
-            query_embedding=[0.0, 1.0] + [0.0] * (_DIM - 2),
+            query_embedding=query_vec,
             organization_id=ORG_A,
             min_similarity=0.0,
         )
@@ -455,11 +479,7 @@ async def test_the_refusal_states_the_right_numbers(kb, store):
     and must quote the unreadable high-water mark, not the readable score.
     """
     for name, seed in (("rb-bad-a", 0.5), ("rb-bad-b", 0.45)):
-        bad = {
-            k: v
-            for k, v in _runbook_metadata(ORG_A, name).items()
-            if k != "runbook_source"
-        }
+        bad = _drop_identity(_runbook_metadata(ORG_A, name))
         await store.seed(name, bad, _vec(seed))
     await store.seed("rb-readable", _runbook_metadata(ORG_A, "rb-ok"), _vec(-0.4))
 
@@ -488,11 +508,7 @@ async def test_an_unreadable_result_set_is_refused_without_retrying(kb, store):
     Counting queries is the observable proxy: one issued query means the parse
     failure was never retried.
     """
-    incomplete = {
-        k: v
-        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
-        if k != "runbook_source"
-    }
+    incomplete = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
     await store.seed("rb-only-unreadable", incomplete, _vec(0.5))
     store.queries.clear()
 
@@ -518,11 +534,7 @@ async def test_an_unreadable_row_outranking_the_readable_ones_refuses(kb, store)
     generate a new one" — when the real best match was an exact duplicate it
     could not read. A false negative dressed as a measurement.
     """
-    unreadable = {
-        k: v
-        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
-        if k != "runbook_source"
-    }
+    unreadable = _drop_identity(_runbook_metadata(ORG_A, "rb-1"))
     await store.seed("rb-strong-unreadable", unreadable, _vec(0.5))
     await store.seed("rb-weak-readable", _runbook_metadata(ORG_A, "rb-2"), _vec(-0.4))
 
@@ -572,7 +584,10 @@ async def test_the_reason_a_candidate_is_unreadable_does_not_change_the_verdict(
 
 
 @pytest.mark.asyncio
-async def test_the_strongest_unreadable_row_decides_not_the_last_one_seen(kb, store):
+@pytest.mark.parametrize("break_it", [_drop_identity, _fail_validation], ids=_BREAK_IDS)
+async def test_the_strongest_unreadable_row_decides_not_the_last_one_seen(
+    kb, store, break_it
+):
     """Several unreadable candidates: the STRONGEST is what matters.
 
     ChromaDB returns matches in descending similarity, so the *weakest*
@@ -584,17 +599,15 @@ async def test_the_strongest_unreadable_row_decides_not_the_last_one_seen(kb, st
     Seeded here: a perfect-match unreadable row, a mid readable row, and a
     distant unreadable row processed after both. Only a running maximum
     refuses.
+
+    Parametrized over BOTH ways a candidate is unreadable because the running
+    maximum is written at two separate call sites, one per handler. Seeding
+    only identity failures pins only the first: the twin line in the
+    reconstruction handler degraded to last-write-wins with all 98 tests
+    passing.
     """
-    strong_bad = {
-        k: v
-        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
-        if k != "runbook_source"
-    }
-    weak_bad = {
-        k: v
-        for k, v in _runbook_metadata(ORG_A, "rb-3").items()
-        if k != "runbook_source"
-    }
+    strong_bad = break_it(_runbook_metadata(ORG_A, "rb-1"))
+    weak_bad = break_it(_runbook_metadata(ORG_A, "rb-3"))
     await store.seed("rb-strong-unreadable", strong_bad, _vec(0.5))
     await store.seed("rb-mid-readable", _runbook_metadata(ORG_A, "rb-2"), _vec(0.1))
     await store.seed("rb-distant-unreadable", weak_bad, _vec(-0.5))
