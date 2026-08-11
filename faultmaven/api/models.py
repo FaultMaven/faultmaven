@@ -505,9 +505,10 @@ class EnvConfigStatusResponse(BaseModel):
     rate_limit_enabled: bool = Field(
         description=(
             "Rate limiting middleware is installed on this deployment. Read "
-            "from the running middleware stack, not from configuration — no "
-            "environment variable turns rate limiting on or off (the protection "
-            "presets do, by environment name)."
+            "from the running middleware stack rather than from configuration: "
+            "no rate-limit setting exists, the protection presets decide by "
+            "environment name, and a deployment that skipped protection setup "
+            "(SKIP_SERVICE_CHECKS) reports false here."
         )
     )
     features: Dict[str, FeatureStatus] = Field(

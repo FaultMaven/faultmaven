@@ -413,9 +413,14 @@ only by accident:
   reported **enabled**, over a deployment anyone could flood.
 
 An installed limiter that is degrading on a Redis outage still reports
-`true`. That is deliberate: the degrade is transient and per-request, it is
-already visible in the response headers, and production pins fail-closed. This
+`true`. That is deliberate: the degrade is transient, and production pins
+fail-closed so the condition surfaces as a `503` rather than as silence. This
 field is about what is installed, not about what Redis is doing this second.
+
+Note that the fail-*open* degrade is genuinely quiet — it emits no
+`X-RateLimit-*` headers at all, and their absence is indistinguishable from a
+bypassed request or a probe path. Redis health is a question for the logs and
+for `/metrics`, not for this field or for the response.
 
 ### Per-endpoint rate limits
 

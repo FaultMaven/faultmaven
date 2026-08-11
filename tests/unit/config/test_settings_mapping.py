@@ -499,13 +499,23 @@ class TestRateLimitingIsNotASetting:
     def test_retired_keys_are_inert_rather_than_fatal(self):
         """A stale ``.env`` or k8s manifest carrying them must still boot.
 
-        ``extra="ignore"`` is what makes removal safe to land before the infra
-        manifest is cleaned up: the key is dropped, not rejected. This is the
-        deliberate difference from the retired JWT expiry names, which DO refuse
-        to boot (#888) — those had a live replacement an operator had to migrate
-        to, and these have none.
+        The whole settings tree is built, not just ``SecuritySettings``, because
+        that is where a refusal would come from and the point of the test is
+        that none arrives. This is the deliberate difference from the retired
+        JWT expiry names, which DO refuse to boot (#888): those had a live
+        replacement an operator had to migrate to, and these have none, so
+        failing a boot over them would punish an operator for a key that never
+        did anything. A ``model_validator`` added later to reject these names —
+        the obvious thing to reach for, by analogy with #888 — turns this red.
+
+        NOT guarded by ``extra="ignore"``, despite the resemblance. ``extra``
+        governs keys passed to the constructor; pydantic-settings' env source
+        reads only *declared* fields, so an undeclared ``RATE_LIMIT_ENABLED``
+        never becomes an "extra" for it to have an opinion about. Flipping the
+        model to ``extra="forbid"`` leaves this test green — verified — so
+        citing it here would have been a mechanism the test does not exercise.
         """
-        from faultmaven.config.settings import SecuritySettings
+        from faultmaven.config.settings import FaultMavenSettings, SecuritySettings
 
         with patch.dict(
             os.environ,
@@ -515,9 +525,10 @@ class TestRateLimitingIsNotASetting:
                 "RATE_LIMIT_BURST_SIZE": "99",
             },
         ):
-            settings = SecuritySettings()
+            security = SecuritySettings()
+            FaultMavenSettings()  # must not raise
 
-        assert not hasattr(settings, "rate_limit_enabled")
+        assert not hasattr(security, "rate_limit_enabled")
 
 
 if __name__ == "__main__":

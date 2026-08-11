@@ -664,7 +664,7 @@ Key configuration in `.env`:
 | OAuth | `OAUTH_ENABLED`, `JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH` | OAuth 2.0 settings |
 | JWT | `JWT_ACCESS_TOKEN_EXPIRY_MINUTES`, `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Access token lifetime in minutes (default 15, max 1440); refresh token lifetime in DAYS (default 7, max 90). Single source, effective in **both** auth modes (local/HS256 and cloud/RS256). Out-of-range values fail at startup; the retired `JWT_*_EXPIRE_*` spelling is rejected at startup |
 | Security | `CORS_ALLOW_ORIGINS`, `CORS_ALLOW_CREDENTIALS` | CORS settings |
-| Limits | `MAX_UPLOAD_SIZE_MB` | Evidence upload bounds. Rate limiting is **not** configurable by environment — the limits, windows and on/off decision live in the presets in `faultmaven/config/protection.py`, chosen by `ENVIRONMENT` |
+| Limits | `MAX_UPLOAD_SIZE_MB` | Evidence upload bounds. There is **no rate-limit knob** — limits, windows and the on/off decision live in the presets in `faultmaven/config/protection.py`, chosen by `ENVIRONMENT`. (`SKIP_SERVICE_CHECKS=true` does switch it off, by skipping protection setup entirely — test runs only) |
 
 ### Storage Backends
 
