@@ -7,7 +7,7 @@ stack a deployment ever runs. Before this module there was no assertion anywhere
 in ``tests/integration/`` that the protection layer can produce a 429 at all: the
 suite drove the real app thousands of times and would not have noticed the
 limiter being removed, bypassed, or permanently failed open. It did not notice
-exactly that — see ``test_the_published_app_carries_the_protection_stack``.
+exactly that — see ``test_the_app_under_test_carries_the_protection_stack``.
 
 **Isolation.** The ``global`` bucket is keyed on the *client address* rather than
 on a process-wide constant (``rate_limiting.py``, ``_check_global_rate_limit``),
@@ -103,29 +103,29 @@ def _serving_with_global_limit(app, requests: int, window: int = 60):
             limiter.configure_limits(original)
 
 
-def test_the_published_app_carries_the_protection_stack(real_app):
-    """``faultmaven.main.app`` must be the protected app, whoever imports it.
+def test_the_app_under_test_carries_the_protection_stack(real_app):
+    """The app this suite drives must be the protected one.
 
-    This is the guard for the defect fm#990 actually names. ``faultmaven.main``
-    holds the app as a module-level singleton, and a test module that rebuilds it
-    under ``SKIP_SERVICE_CHECKS`` — as the OAuth integration modules must, to get
-    an OAuth-enabled app — used to leave the rebuilt, *unprotected* app published
-    in ``sys.modules``. Because pytest imports every test module during
-    collection, that silently replaced the app for every module collected
-    afterwards, and the suite ran split-brain: four modules held a protected app
-    and the rest, including ``tests/integration/test_main_app.py``, held one with
-    no rate limiting, deduplication, idempotency or request-id middleware.
+    This is the guard for the gate fm#990 removed. ``setup_middleware`` used to
+    install the protection stack only when ``skip_service_checks`` was false —
+    and every test entrypoint there is sets that flag: ``tests/conftest.py``,
+    ``scripts/tests.py``, and both CI pytest jobs. The result was that no test
+    anywhere ran against the app ``main.py`` builds; the suite drove an app whose
+    entire middleware stack was ``[CORS, Logging, GZip, TrailingSlash]`` and
+    would not have noticed the limiter being deleted.
 
-    Nothing failed when that happened, which is the problem: an unprotected app
-    serves every request the suite makes, just without any of the layers under
-    test here. Asserting on the published singleton is therefore the point — a
-    test that built its own app would keep passing through the same regression.
+    Nothing failed while that was true, which is exactly why it needs an
+    assertion rather than a comment: an unprotected app serves every request the
+    suite makes, just without any of the layers under test here. The two tests
+    below would fail if the gate came back, but they would fail as a missing
+    middleware instance rather than as the configuration mistake it is, so this
+    names the condition directly.
     """
     installed = [entry.cls.__name__ for entry in real_app.user_middleware]
 
     assert "RateLimitMiddleware" in installed, (
-        "the published app carries no rate limiting — something rebuilt "
-        f"faultmaven.main under SKIP_SERVICE_CHECKS and published it: {installed}"
+        "the app under test carries no rate limiting — the protection install "
+        f"has been re-gated on an environment flag: {installed}"
     )
 
 
@@ -184,9 +184,13 @@ def test_the_limiter_answers_from_redis_rather_than_degrading(real_app):
         limiter = middleware.rate_limiter
 
         assert limiter._redis is not None, "the limiter never obtained a Redis client"
+        # Says only what it can: the limiter reached its *configured* client
+        # rather than falling back internally. Whether that client is shared
+        # across replicas is a deployment question — here it is the in-process
+        # FakeRedis by configuration, so this is not a claim about that.
         assert limiter.is_degraded is False, (
-            "the limiter is running on the per-replica stand-in, so limits are "
-            "per-process rather than per-deployment"
+            "the limiter fell back to the per-replica stand-in instead of the "
+            "client it was configured with"
         )
         assert (
             middleware.metrics["errors"] == errors_before

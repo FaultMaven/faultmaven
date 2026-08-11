@@ -24,8 +24,10 @@ restored. The caller keeps the app it asked for; nobody else is affected.
 
 The environment variables are deliberately *not* restored here: the modules that
 call this set them before importing anything and rely on the settings singleton
-built from them for the rest of their run. Only the ``sys.modules`` entry is
-process-wide state that no caller asked to change.
+built from them for the rest of their run. That leak is real but bounded — a
+later importer of ``faultmaven.main`` rebuilds under it — and it is not this
+helper's to fix, because its callers depend on the mutated values. What *is*
+fixed here is the published module object, which no caller asked to change.
 """
 
 import sys
@@ -46,7 +48,23 @@ def rebuild_app():
     finally:
         # Restore whatever was published before, including "nothing" — a caller
         # that ran before anything imported the app must not leave one behind.
+        #
+        # The parent package attribute has to be restored alongside the
+        # ``sys.modules`` entry, because ``import faultmaven.main`` above bound
+        # the rebuilt module onto the ``faultmaven`` package object and a later
+        # import of an already-published module never re-binds it. Restoring
+        # only one of the two would leave ``from faultmaven.main import app``
+        # and ``faultmaven.main.app`` resolving to *different* applications —
+        # a smaller edition of the split-brain this module exists to prevent.
+        package = sys.modules.get("faultmaven")
         if previous is not None:
             sys.modules["faultmaven.main"] = previous
+            if package is not None:
+                package.main = previous
         else:
             sys.modules.pop("faultmaven.main", None)
+            if package is not None:
+                # Not ``delattr``: the attribute is absent whenever the import
+                # above failed before binding it, and an AttributeError raised
+                # from this ``finally`` would mask the real one.
+                package.__dict__.pop("main", None)
