@@ -11,9 +11,32 @@ exactly that — see ``test_the_app_under_test_carries_the_protection_stack``.
 
 **Isolation.** The ``global`` bucket is keyed on the *client address* rather than
 on a process-wide constant (``rate_limiting.py``, ``_check_global_rate_limit``),
-so each test claims an address no other test uses and gets a private window. The
-counters live in the process-wide FakeRedis for the whole session, which is why
-sharing an address would make these tests order-dependent.
+so each test claims an address no other test uses and gets a private window.
+
+**Each test also adopts a FakeRedis of its own, and that is not tidiness.**
+``get_fakeredis_client`` returns one instance for the whole process, and the
+response queue inside it is an ``asyncio.Queue`` — bound, permanently, to the
+first event loop that runs a command on it. ``TestClient`` runs the app in a
+*new* loop per context, so from the second one onward the shared singleton hands
+the limiter a connection belonging to some earlier test's loop.
+
+Whether that is fatal depends on a package that is not in every lockfile. When
+``hiredis`` is installed, redis-py selects its parser, and that parser's
+``can_read_destructive()`` — called whenever a pooled connection is handed out —
+really reads the stream. The read touches the foreign-loop queue and raises
+``RuntimeError: ... is bound to a different event loop``. The limiter catches it,
+the development preset these tests run under fails open, and every request is
+served unlimited: the tests below saw five ``401``\\ s and never a 429. The
+pure-Python parser never touches that queue, so nothing happens without hiredis —
+and ``hiredis`` is pinned in ``requirements/cloud.txt`` and in neither
+``test.txt`` nor ``dev.txt``. That is the whole of why this module passed under
+the standalone lockfile and failed under the cloud one (fm#990).
+
+What the per-test client gives up is worth naming: these tests no longer say
+anything about the process-wide singleton surviving a change of event loop. They
+never meant to — no deployment has more than one loop, and the cloud lockfile's
+hiredis never meets FakeRedis outside CI — so the property was accidental
+coverage of a configuration that exists nowhere.
 
 **Why the assertions are shaped the way they are.** A test that only asserted
 "the 4th request was a 429" would also pass against a limiter that refuses
@@ -76,6 +99,40 @@ def real_app():
     return app
 
 
+def _offer_a_fakeredis_bound_to_this_loop(app, middleware):
+    """Put a fresh FakeRedis on ``app.state`` and make the limiter re-adopt it.
+
+    Returns the client that was there, so the caller can put it back — ``app`` is
+    the process-wide one every other test in the session shares.
+
+    The client is constructed here but *connects* on its first command, which
+    happens inside the running ``TestClient``'s loop. That is what binds its
+    queue to the loop that is about to drive it, and it is the entire point of
+    the exercise; see this module's docstring for what the shared singleton does
+    instead.
+
+    The swap is offered through ``app.state`` and adopted by the middleware's own
+    ``_initialize`` rather than installed onto the limiter by hand. That path is
+    what a running deployment uses, and it is also what sets ``is_degraded`` —
+    the property two of the tests below assert on. Installing the client
+    directly would turn those assertions into statements about this helper.
+
+    Both flags have to be cleared for the adoption to happen at all:
+    ``_initialized`` short-circuits ``_initialize`` before it looks at
+    ``app.state``, and ``_last_attempt_at`` holds re-entry off for the whole
+    back-off window even once ``_initialized`` is false.
+    """
+    import fakeredis.aioredis as fakeredis_aio
+
+    previous = getattr(app.state, "redis_client", None)
+    app.state.redis_client = fakeredis_aio.FakeRedis(decode_responses=True)
+
+    middleware._initialized = False
+    middleware._degraded = False
+    middleware._last_attempt_at = None
+    return previous
+
+
 @contextlib.contextmanager
 def _serving_with_global_limit(app, requests: int, window: int = 60):
     """Run ``app`` with its ``global`` bucket tightened, then put the limits back.
@@ -91,6 +148,7 @@ def _serving_with_global_limit(app, requests: int, window: int = 60):
     """
     with TestClient(app, client=(next(_ADDRESS), 51000)) as client:
         middleware = _live_rate_limit_middleware(app)
+        previous_client = _offer_a_fakeredis_bound_to_this_loop(app, middleware)
         limiter = middleware.rate_limiter
         original = dict(limiter._configs)
         tightened = dict(original)
@@ -102,6 +160,12 @@ def _serving_with_global_limit(app, requests: int, window: int = 60):
             yield client, middleware
         finally:
             limiter.configure_limits(original)
+            # Hand the shared app back exactly as it was found, and leave the
+            # limiter ready to re-adopt it: everything after this test sees the
+            # composition root's client again, not this test's stand-in.
+            app.state.redis_client = previous_client
+            middleware._initialized = False
+            middleware._last_attempt_at = None
 
 
 def test_the_app_under_test_carries_the_protection_stack(real_app):
@@ -226,8 +290,9 @@ def test_the_limiter_answers_from_redis_rather_than_degrading(real_app):
         assert limiter._redis is not None, "the limiter never obtained a Redis client"
         # Says only what it can: the limiter reached its *configured* client
         # rather than falling back internally. Whether that client is shared
-        # across replicas is a deployment question — here it is the in-process
-        # FakeRedis by configuration, so this is not a claim about that.
+        # across replicas is a deployment question — here it is the per-test
+        # in-process FakeRedis this module installs, so this is not a claim
+        # about that.
         assert limiter.is_degraded is False, (
             "the limiter fell back to the per-replica stand-in instead of the "
             "client it was configured with"
