@@ -2521,6 +2521,7 @@
             "type": "boolean"
           },
           "rate_limit_enabled": {
+            "description": "Rate limiting middleware is installed on this deployment. Read from the running middleware stack, not from configuration \u2014 no environment variable turns rate limiting on or off (the protection presets do, by environment name).",
             "title": "Rate Limit Enabled",
             "type": "boolean"
           },

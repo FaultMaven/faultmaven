@@ -1102,10 +1102,15 @@ class SecuritySettings(BaseSettings):
         ],
     )
 
-    # Rate limiting
-    rate_limit_enabled: bool = Field(default=True)
-    rate_limit_requests_per_minute: int = Field(default=60)
-    rate_limit_burst_size: int = Field(default=10)
+    # Rate limiting is deliberately absent from this class. The limits, the
+    # windows and the on/off decision are code, not configuration: they live in
+    # the two presets in ``config/protection.py`` and are chosen by environment
+    # name. ``RATE_LIMIT_ENABLED``, ``RATE_LIMIT_REQUESTS_PER_MINUTE`` and
+    # ``RATE_LIMIT_BURST_SIZE`` were fields here that no enforcement path ever
+    # read (fm#985 item 16), so they are gone rather than left looking
+    # configurable — the same disposition fm#1023 gave the per-field preset
+    # loader. Whether a deployment is *actually* rate limited is now answered by
+    # the middleware stack itself: see ``api/routes/admin_config.py``.
 
     @model_validator(mode="after")
     def reject_retired_jwt_expiry_names(self):
@@ -2788,11 +2793,16 @@ class FaultMavenSettings(BaseSettings):
         if missing_headers:
             issues.append(f"Missing exposed headers: {missing_headers}")
 
-        # Rate limiting validation
-        if not self.security.rate_limit_enabled:
-            warnings.append(
-                "Rate limiting disabled - frontend expects rate limit headers"
-            )
+        # Rate limiting is deliberately NOT checked here. This report answers
+        # "can a browser client work against this configuration?", and rate
+        # limiting is not part of the configuration — both protection presets
+        # pin it on, and whether the middleware is installed is a property of
+        # the built app, which a settings object cannot see. The check that used
+        # to live here read a field no enforcement path consulted, so it warned
+        # on the development preset (which sets RATE_LIMIT_ENABLED=false and
+        # rate limits anyway) and stayed silent when protection setup was
+        # skipped outright. GET /admin/config/status answers this question from
+        # the middleware stack instead.
 
         # Upload size warnings
         if self.upload.max_upload_size_mb > 50:
@@ -2829,8 +2839,12 @@ class FaultMavenSettings(BaseSettings):
                 "user": self.database.user_storage_type,
             },
             "llm_provider": self.llm.provider.value if self.llm.provider else "not_set",
+            # ``protection_enabled`` here is PII redaction (ProtectionSettings
+            # in config/settings.py), not the request-path protections. Rate
+            # limiting is absent on purpose: no setting governs it, so a
+            # settings summary has nothing truthful to say about it. Ask
+            # GET /admin/config/status, which reads the middleware stack.
             "protection_enabled": self.protection.protection_enabled,
-            "rate_limit_enabled": self.security.rate_limit_enabled,
         }
 
 

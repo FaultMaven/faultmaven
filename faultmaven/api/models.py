@@ -502,7 +502,14 @@ class EnvConfigStatusResponse(BaseModel):
     vector_storage: str = Field(description="'inmemory' or 'chromadb'")
     llm_provider: str = Field(description="Primary LLM provider name")
     pii_redaction_enabled: bool
-    rate_limit_enabled: bool
+    rate_limit_enabled: bool = Field(
+        description=(
+            "Rate limiting middleware is installed on this deployment. Read "
+            "from the running middleware stack, not from configuration — no "
+            "environment variable turns rate limiting on or off (the protection "
+            "presets do, by environment name)."
+        )
+    )
     features: Dict[str, FeatureStatus] = Field(
         default_factory=dict,
         description="Optional features and their configuration status",
