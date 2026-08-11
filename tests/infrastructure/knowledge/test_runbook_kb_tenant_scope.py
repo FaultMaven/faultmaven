@@ -359,6 +359,59 @@ async def test_a_result_set_that_is_entirely_unreadable_refuses(kb, store):
 
 
 @pytest.mark.asyncio
+async def test_an_unreadable_result_set_is_refused_without_retrying(kb, store):
+    """The refusal must cost ONE query, not three, and no breaker credit.
+
+    Parsing runs outside ``call_external`` for the same reason the write-side
+    refusal does: it cannot fail transiently, so retrying it burns backoff on a
+    deterministic outcome and books each attempt as a RunbookKB failure. Five
+    of those open a breaker shared with ``index_runbook`` — which would block
+    the re-index that repairs the very rows being refused.
+
+    Counting queries is the observable proxy: one issued query means the parse
+    failure was never retried.
+    """
+    incomplete = {
+        k: v
+        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
+        if k != "runbook_source"
+    }
+    await store.seed("rb-only-unreadable", incomplete, _vec(0.5))
+    store.queries.clear()
+
+    with pytest.raises(KnowledgeBaseError):
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert len(store.queries) == 1, (
+        f"the parse failure was retried ({len(store.queries)} queries) — it is "
+        "back inside call_external and now counts against the shared breaker"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_fails_validation_is_skipped_without_refusing(kb, store):
+    """Only a MISSING identity key makes the result set untrustworthy.
+
+    A row carrying every identity key but violating some other model constraint
+    is a runbook this path really did write; it is merely unusable. Escalating
+    that to a refusal would surface as a 503 telling the operator the knowledge
+    base is unavailable — when it is available and holding one bad row, and no
+    amount of retrying will change it. Skip it and keep answering.
+    """
+    bad_title = _runbook_metadata(ORG_A, "rb-bad")
+    bad_title["title"] = "short"  # CaseReport.title has min_length=10
+    await store.seed("rb-bad-title", bad_title, _vec(0.5))
+
+    found = await kb.search_runbooks(
+        query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+    )
+
+    assert found == []
+
+
+@pytest.mark.asyncio
 async def test_indexing_an_undeclared_key_never_reaches_the_shared_breaker(kb, store):
     """The write path's refusal must not be able to take the read path down.
 

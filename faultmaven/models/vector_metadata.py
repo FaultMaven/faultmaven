@@ -44,12 +44,15 @@ class VectorMetadata(BaseModel):
     report_type: Optional[str] = None
     # Runbook identity. ``search_runbooks`` rebuilds a ``CaseReport`` +
     # ``SimilarRunbook`` out of the stored metadata, so every field it reads has
-    # to survive normalization or the reconstruction invents one: before #912
-    # all four were dropped, and a document-driven runbook came back with
-    # ``case_id="unknown"``, ``case_title="Unknown"`` and — worse than an absent
-    # value — a confident ``source=incident_driven``, because that is the
-    # ``.get()`` default. Wrong provenance stated as fact is the failure mode
-    # this project does not accept, so these travel with the row.
+    # to survive normalization or the reconstruction invents one. Before #912
+    # none of these were declared, so exercising the write path and then
+    # searching returned ``case_id="unknown"``, ``case_title="Unknown"`` and —
+    # worse than an absent value — a confident ``source=incident_driven`` for a
+    # document-driven runbook, because that is the ``.get()`` default. (Dormant
+    # rather than observed: ``index_runbook`` has no production caller yet. The
+    # hole is in the code, not in a deployment's data.) Wrong provenance stated
+    # as fact is the failure mode this project does not accept, so these travel
+    # with the row.
     #
     # There is deliberately NO ``report_id`` here. The report id IS the ChromaDB
     # row id (``index_runbook`` passes it as ``documents[0]["id"]``) and

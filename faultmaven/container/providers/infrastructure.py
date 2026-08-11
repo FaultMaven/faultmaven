@@ -295,9 +295,12 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
 
 
 def create_kb_chromadb_client(settings: FaultMavenSettings):
-    """Create ChromaDB client for permanent KB collections.
+    """Create ChromaDB client for the permanent KB collection.
 
-    Stores: faultmaven_kb, faultmaven_runbooks, knowledge_items.
+    Stores: faultmaven_kb — one collection, holding KB documents and runbooks
+    alike. Runbooks have no collection of their own: ``RunbookKnowledgeBase`` is
+    injected this store and its ``COLLECTION_NAME = "faultmaven_runbooks"`` is
+    decorative, so ``report_type == "runbook"`` is the only discriminator (#912).
     Lifecycle: permanent — backed up, never wiped.
     """
     persist_dir = getattr(
@@ -649,7 +652,7 @@ async def register_infrastructure(container: BaseDIContainer) -> None:
         )
 
     # ChromaDB clients — split by lifecycle:
-    #   KB client: permanent collections (faultmaven_kb, faultmaven_runbooks, knowledge_items)
+    #   KB client: one permanent collection (faultmaven_kb — documents AND runbooks)
     #   Evidence client: ephemeral per-case collections (case_{case_id})
     # The factories own the SKIP_SERVICE_CHECKS branch (returning None on
     # standalone, refusing under cloud) so the skip path cannot bypass the

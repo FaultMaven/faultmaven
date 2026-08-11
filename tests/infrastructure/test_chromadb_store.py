@@ -234,6 +234,16 @@ class TestChromaDBVectorStore:
 
         stored = ChromaDBVectorStore._normalize_metadata(sample)
 
+        # Proves the NORMAL path ran. If the sample ever stops validating, the
+        # ValidationError fallback copies every key verbatim and would satisfy
+        # the key-set assertion below while never calling to_chroma_metadata at
+        # all — the test would pass having checked nothing. Only the normal path
+        # comma-joins tags.
+        assert stored["tags"] == "postgresql,database", (
+            "sample fell through to the sanitizing fallback — this test is "
+            "vacuous until the sample validates again"
+        )
+
         missing = set(sample) - set(stored)
         assert not missing, (
             f"declared but not emitted by to_chroma_metadata: {sorted(missing)} — "

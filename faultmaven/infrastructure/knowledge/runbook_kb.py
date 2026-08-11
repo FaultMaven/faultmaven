@@ -196,7 +196,18 @@ class RunbookKnowledgeBase(BaseExternalClient):
             )
             return []
 
-        async def _search_wrapper():
+        async def _query():
+            """The external call, and ONLY the external call.
+
+            Result parsing used to live in here too. It must not: parsing is
+            pure CPU that cannot fail transiently, but everything inside this
+            function runs under ``call_external``'s retry-and-circuit-breaker
+            policy. A deterministic parse failure was therefore retried three
+            times with backoff and recorded as three RunbookKB failures — and
+            five of those open a breaker shared with ``index_runbook``, so an
+            unreadable row would have blocked the very re-index that repairs
+            it. Retries belong to the query; the parse gets none.
+            """
             # Build the ChromaDB where clause. Every condition is a separate
             # single-key dict combined under an explicit ``$and``: ChromaDB
             # (>=1.0) validates that a ``where`` mapping carries exactly one
@@ -229,12 +240,23 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     error_code="RUNBOOK_SEARCH_FAILED",
                 ) from e
 
+            return results
+
+        results = await self.call_external(
+            operation_name="search_runbooks",
+            call_func=_query,
+            timeout=5.0,  # 5 seconds for vector search
+            retries=2,
+        )
+
+        def _parse(results) -> List[SimilarRunbook]:
             # Parse results and filter by minimum similarity
-            similar_runbooks = []
-            # Rows that matched the query but could not be reconstructed. Counted
-            # because a skip and a miss are the same ``[]`` to the caller, and
-            # both dedup callers read ``[]`` as the affirmative "the KB holds
-            # nothing similar" (#944).
+            similar_runbooks: List[SimilarRunbook] = []
+            # Rows that matched the query but were not written by this path —
+            # they are missing an identity key ``index_runbook`` always stamps.
+            # Counted because a skip and a miss are the same ``[]`` to the
+            # caller, and both dedup callers read ``[]`` as the affirmative
+            # "the KB holds nothing similar" (#944).
             unreadable = 0
 
             if not results or "ids" not in results or not results["ids"]:
@@ -267,11 +289,11 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 # so a row missing one was not written by this path and cannot
                 # be reconstructed — and the defaults that used to stand in for
                 # them did not read as "missing", they read as facts:
-                # ``case_id="unknown"`` and ``case_title="Unknown"`` were
-                # returned for every runbook in the collection, because
-                # normalization dropped the real values before ChromaDB ever
-                # saw them (#912). The handler below turns a missing key into a
-                # logged skip, which is the honest answer.
+                # ``case_id="unknown"`` and ``case_title="Unknown"`` for every
+                # row this path wrote, because normalization dropped the real
+                # values before ChromaDB ever saw them (#912). The handler below
+                # turns a missing key into a logged skip, which is the honest
+                # answer.
                 try:
                     runbook = CaseReport(
                         report_id=report_id,
@@ -320,18 +342,37 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
                     similar_runbooks.append(similar_runbook)
 
-                except Exception as e:
-                    # Skipped, not guessed at. Logs the keys the row actually
-                    # carries: a KeyError's message is just the key name, and
-                    # the useful question is which of the identity keys the
-                    # write path was supposed to stamp are missing (#912).
+                except KeyError as e:
+                    # An identity key ``index_runbook`` always stamps is absent,
+                    # so this row was not written by this path and there is
+                    # nothing to reconstruct it from. Counted separately from
+                    # the failures below because only this class of row makes
+                    # the result set untrustworthy rather than merely shorter.
+                    # Logs the keys the row actually carries: a KeyError's
+                    # message is just the key name, and the useful question is
+                    # which of the stamps are missing (#912).
                     unreadable += 1
                     logger.warning(
-                        f"Failed to reconstruct runbook {report_id}, skipping it: {e!r}",
+                        f"Runbook {report_id} is missing identity key {e}, "
+                        f"skipping it",
                         extra={
                             "report_id": report_id,
                             "metadata_keys": sorted(metadata),
                         },
+                    )
+                    continue
+
+                except Exception as e:
+                    # Any other reconstruction failure — a stored row that
+                    # violates a model constraint, say. Pre-existing behaviour,
+                    # left alone deliberately: these rows ARE runbooks this path
+                    # wrote, retrying cannot fix them, and escalating them to a
+                    # refusal would turn a shorter result list into a 503 that
+                    # tells the operator the knowledge base is unavailable when
+                    # it is merely holding one bad row.
+                    logger.warning(
+                        f"Failed to reconstruct runbook {report_id}, skipping it: {e!r}",
+                        extra={"report_id": report_id},
                     )
                     continue
 
@@ -340,12 +381,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
             # a genuinely empty KB produces — and turns it into "no similar
             # runbook exists, generate a new one". That is the affirmative
             # negative from a search that did not really run (#944), so refuse
-            # instead: rows matched, and none of them could be read.
+            # instead: rows matched, and none of them was readable.
             if unreadable and not similar_runbooks:
                 raise KnowledgeBaseError(
                     f"Runbook similarity search matched {unreadable} row(s) but "
-                    f"could not reconstruct any of them; refusing to report "
-                    f"'no similar runbooks' from an unreadable result set",
+                    f"none carried the identity keys needed to read them; "
+                    f"refusing to report 'no similar runbooks' from a result "
+                    f"set that could not be read",
                     error_code="RUNBOOK_RESULTS_UNREADABLE",
                 )
 
@@ -366,12 +408,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
             return similar_runbooks
 
-        return await self.call_external(
-            operation_name="search_runbooks",
-            call_func=_search_wrapper,
-            timeout=5.0,  # 5 seconds for vector search
-            retries=2,
-        )
+        return _parse(results)
 
     async def index_runbook(
         self,

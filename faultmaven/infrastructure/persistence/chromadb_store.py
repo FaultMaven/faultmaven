@@ -120,10 +120,15 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         does not — and the fix is a one-line schema addition, so failing at the
         first write turns a silent data-loss bug into an immediate, local one.
 
-        The check runs BEFORE the model is constructed, which also keeps the
-        fallback below honest: with undeclared keys already refused, every dict
-        reaching it has allowlisted keys only, so the two paths cannot write
-        two different shapes into one collection.
+        The check runs BEFORE the model is constructed, so the fallback below
+        can only ever see allowlisted KEYS. Note what that does and does not
+        buy: the two paths agree on which keys a row may carry, not on how the
+        values are encoded. The fallback stringifies rather than normalizing, so
+        a dict that fails validation still stores ``tags`` as ``"['a', 'b']"``
+        instead of ``"a,b"`` and a ``datetime`` in Python's default format
+        instead of ISO-8601 — and ``search_runbooks`` splits ``tags`` on commas.
+        Pre-existing, and out of scope here; do not read this guard as making
+        the two paths interchangeable.
         """
         from faultmaven.models.vector_metadata import VectorMetadata
 
