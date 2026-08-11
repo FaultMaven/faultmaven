@@ -1195,21 +1195,35 @@ def setup_middleware():
     try:
         from .api.protection import setup_protection_middleware
 
-        if not settings.server.skip_service_checks:
-            protection_info = setup_protection_middleware(
-                app,
-                environment=settings.server.environment,
-            )
-            if logging_enabled:
-                if protection_info.get("protection_enabled"):
-                    middleware_names = protection_info.get("middleware_added", [])
-                    logger.info(f"✅ Protection middleware enabled: {middleware_names}")
-                else:
-                    logger.info("ℹ️ Protection middleware disabled")
-            app.extra["protection_info"] = protection_info
-        else:
-            if logging_enabled:
-                logger.info("Skipping Protection middleware (SKIP_SERVICE_CHECKS=True)")
+        # Deliberately *not* gated on ``skip_service_checks`` (fm#990).
+        #
+        # That flag means "do not require external services": it tells the DI
+        # container not to create stores it would otherwise health-check, and
+        # Redis degrades to the in-process FakeRedis instead. Protection needs
+        # no external service — the limiter and the deduplicator resolve their
+        # client from ``app.state``, which is populated either way — so the
+        # flag's contract never covered them.
+        #
+        # The measured consequence was a CI blind spot: every pytest job sets
+        # the flag in its workflow ``env`` (as does ``scripts/tests.py``), so
+        # the app under test carried ``[CORS, Logging, GZip, TrailingSlash]``
+        # and nothing more, and no job would have noticed the limiter being
+        # deleted. No deployment sets the flag today — it appears in CI and test
+        # tooling only — so the "boots unprotected" reading of this gate was
+        # latent rather than live. It was still the shape fm#1023 closed for
+        # ``staging``, reachable through one more door, which is why the gate
+        # is removed rather than narrowed.
+        protection_info = setup_protection_middleware(
+            app,
+            environment=settings.server.environment,
+        )
+        if logging_enabled:
+            if protection_info.get("protection_enabled"):
+                middleware_names = protection_info.get("middleware_added", [])
+                logger.info(f"✅ Protection middleware enabled: {middleware_names}")
+            else:
+                logger.info("ℹ️ Protection middleware disabled")
+        app.extra["protection_info"] = protection_info
     except Exception as e:
         # Never gated on ``logging_enabled``: a swallowed setup failure must not
         # be a zero-output event. Under the carve-out below this line is the only

@@ -66,10 +66,36 @@ NON_MANDATORY_AUTH_DEPENDENCIES = frozenset(
 
 @pytest.fixture(scope="module")
 def app():
-    """The live app. Imported lazily — see test_openapi_schema_naming."""
-    from faultmaven.main import app as fastapi_app
+    """An app carrying every authenticated router, built here rather than found.
 
-    return fastapi_app
+    Reading the published singleton used to work only by accident: the OAuth
+    integration modules rebuilt ``faultmaven.main`` under ``OAUTH_ENABLED`` at
+    import time and left the rebuilt app published, so whether this gate saw the
+    OAuth operations depended on whether those modules had been collected.
+    Running this file on its own covered none of them, and nothing said so — the
+    assertions below simply had fewer routes to walk.
+
+    fm#990 stopped that rebuild from leaking, which would have made the omission
+    permanent instead of intermittent. So the routers are asked for explicitly:
+    a documentation gate that silently covers a different surface depending on
+    collection order is the same failure it exists to catch.
+    """
+    import os
+
+    from faultmaven.config.settings import reset_settings
+    from tests.integration._app_rebuild import rebuild_app
+
+    previous = os.environ.get("OAUTH_ENABLED")
+    os.environ["OAUTH_ENABLED"] = "true"
+    reset_settings()
+    try:
+        return rebuild_app()
+    finally:
+        if previous is None:
+            os.environ.pop("OAUTH_ENABLED", None)
+        else:
+            os.environ["OAUTH_ENABLED"] = previous
+        reset_settings()
 
 
 def _qualified_name(call) -> str:
@@ -108,6 +134,28 @@ def _documented_as_secured(spec, route: APIRoute, method: str) -> bool:
     operation = spec.get("paths", {}).get(route.path, {}).get(method.lower(), {})
     # An empty or absent `security` means "no credentials required".
     return bool(operation.get("security"))
+
+
+@pytest.mark.integration
+def test_the_surface_under_test_includes_the_oauth_router(app):
+    """The gate must not pass by having nothing to check.
+
+    Every assertion in this module quantifies over the app's routes, so a build
+    that mounts fewer routers passes more easily — silently. The OAuth router is
+    the one that comes and goes with configuration here, so its presence is
+    asserted rather than assumed.
+
+    The SSO router is deliberately not asserted: it mounts only under
+    ``sso_configured`` (``auth_mode=oauth`` plus real WorkOS credentials), so it
+    is absent from this surface and was absent before fm#990 too. This gate has
+    never covered it, and saying so is better than an assertion that would have
+    to fake a credential to hold.
+    """
+    mounted = {route.path for route in app.routes if isinstance(route, APIRoute)}
+
+    assert {
+        path for path in mounted if "/auth/oauth/" in path
+    }, f"no OAuth routes on the app under test: {sorted(mounted)[:20]}"
 
 
 @pytest.mark.integration

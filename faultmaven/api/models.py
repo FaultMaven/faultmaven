@@ -507,8 +507,9 @@ class EnvConfigStatusResponse(BaseModel):
             "Rate limiting middleware is installed on this deployment. Read "
             "from the running middleware stack rather than from configuration: "
             "no rate-limit setting exists, the protection presets decide by "
-            "environment name, and a deployment that skipped protection setup "
-            "(SKIP_SERVICE_CHECKS) reports false here."
+            "environment name, and no environment variable turns it off. A "
+            "deployment reports false here only if protection setup raised and "
+            "the development carve-out let it boot anyway."
         )
     )
     features: Dict[str, FeatureStatus] = Field(

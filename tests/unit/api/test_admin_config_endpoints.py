@@ -169,9 +169,10 @@ def rate_limited_app() -> FastAPI:
 def unprotected_app() -> FastAPI:
     """An app with NO protection middleware.
 
-    Not hypothetical: ``SKIP_SERVICE_CHECKS=True`` skips
-    ``setup_protection_middleware`` outright, and the development carve-out in
-    ``main.py`` boots this way when protection setup raises.
+    Not hypothetical: the development carve-out in ``main.py`` boots this way
+    when protection setup raises. ``SKIP_SERVICE_CHECKS=True`` used to skip
+    ``setup_protection_middleware`` outright as well, until fm#990 removed that
+    gate; the carve-out is now the only route to an app in this state.
     """
     return FastAPI()
 
@@ -684,10 +685,12 @@ class TestGetEnvConfigStatus:
 
         This is the half of fm#985 item 16 that mattered. The removed
         ``settings.security.rate_limit_enabled`` defaulted to ``True`` and was
-        read by no enforcement path, so ``SKIP_SERVICE_CHECKS=True`` — which
-        installs no protection middleware at all — still reported *enabled*, and
-        the dashboard drew a green "Rate Limiting: enabled" row over a
-        deployment anyone could flood.
+        read by no enforcement path, so ``SKIP_SERVICE_CHECKS=True`` — which at
+        the time installed no protection middleware at all — still reported
+        *enabled*, and the dashboard drew a green "Rate Limiting: enabled" row
+        over a deployment anyone could flood. fm#990 has since removed that
+        gate, but the development carve-out still produces the same app, so the
+        property this asserts is unchanged.
         """
         with patch(SETTINGS_PATCH, return_value=mock_settings):
             result = await get_env_config_status(
