@@ -101,9 +101,32 @@ class TestPresetDefinitions:
         # Should be multi-tenant
         assert defaults.get("DEPLOYMENT_MODE") == "multi-tenant"
 
-        # Should have protection enabled
+        # Should have PII redaction enabled
         assert defaults.get("PROTECTION_ENABLED") == "true"
-        assert defaults.get("RATE_LIMIT_ENABLED") == "true"
+
+    def test_no_preset_sets_a_rate_limit_key(self):
+        """No preset may hand out a rate-limiting env key.
+
+        Rate limiting is not configurable by environment at all — the protection
+        presets in ``config/protection.py`` own it. A preset writing
+        ``RATE_LIMIT_*`` into ``os.environ`` is how the removed
+        ``settings.security`` knobs came to report *disabled* on a deployment
+        that was rate limiting (fm#985 item 16): ``CONFIG_PRESET=local`` set
+        ``RATE_LIMIT_ENABLED=false`` and nothing enforcing ever read it.
+
+        Asserted over every preset rather than the three known keys, so a new
+        preset cannot reintroduce the class under a new name.
+        """
+        from faultmaven.config.presets import PRESETS
+
+        offenders = {
+            preset.name: sorted(
+                k for k in preset.defaults if k.startswith("RATE_LIMIT")
+            )
+            for preset in PRESETS.values()
+            if any(k.startswith("RATE_LIMIT") for k in preset.defaults)
+        }
+        assert offenders == {}
 
 
 class TestPresetLoading:

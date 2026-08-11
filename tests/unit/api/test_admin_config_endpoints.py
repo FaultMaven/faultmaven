@@ -10,7 +10,7 @@ Tests:
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from faultmaven.api.models import LLMConfigUpdateRequest, LLMConnectionTestRequest
 from faultmaven.api.routes.admin_config import (
@@ -19,6 +19,7 @@ from faultmaven.api.routes.admin_config import (
     get_llm_config,
     update_llm_config,
 )
+from faultmaven.config.settings import Environment
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 SETTINGS_PATCH = "faultmaven.config.settings.get_settings"
@@ -128,8 +129,51 @@ def mock_settings():
     settings.database.session_storage_type = "inmemory"
     settings.database.vector_storage_type = "chromadb"
     settings.protection.protection_enabled = False
-    settings.security.rate_limit_enabled = True
     return settings
+
+
+def _request_for(app: FastAPI) -> Request:
+    """A Request carrying a REAL app, because ``rate_limit_enabled`` reads it.
+
+    The field is derived from ``app.user_middleware``, so a ``MagicMock`` app
+    would answer the question with a mock and assert nothing. Building the app
+    for real is the point: the assertion then depends on whether
+    ``RateLimitMiddleware`` was actually installed.
+    """
+    return Request({"type": "http", "method": "GET", "path": "/", "app": app})
+
+
+@pytest.fixture
+def rate_limited_app() -> FastAPI:
+    """An app wired by the REAL production path, not by a hand-rolled stand-in.
+
+    ``setup_protection_middleware`` is what ``main.py`` calls, so building the
+    fixture with it means the test cannot pass by agreeing with itself: if that
+    function ever installs something ``_rate_limiting_installed`` does not
+    recognise, this goes red rather than quietly measuring a fixture nobody
+    runs. ``production`` is the default preset — every environment but
+    ``development`` lands on it (fm#1023).
+    """
+    from faultmaven.api.protection import setup_protection_middleware
+
+    app = FastAPI()
+    info = setup_protection_middleware(app, environment=Environment.PRODUCTION)
+    # The fixture's own premise, asserted: a preset that stopped installing rate
+    # limiting would otherwise make every test below vacuously agree with an
+    # unprotected app.
+    assert "rate_limiting" in info["middleware_added"]
+    return app
+
+
+@pytest.fixture
+def unprotected_app() -> FastAPI:
+    """An app with NO protection middleware.
+
+    Not hypothetical: ``SKIP_SERVICE_CHECKS=True`` skips
+    ``setup_protection_middleware`` outright, and the development carve-out in
+    ``main.py`` boots this way when protection setup raises.
+    """
+    return FastAPI()
 
 
 # ============================================================
@@ -584,10 +628,14 @@ class TestGetEnvConfigStatus:
     """Tests for get_env_config_status endpoint."""
 
     @pytest.mark.asyncio
-    async def test_returns_env_config(self, mock_admin_user, mock_settings):
+    async def test_returns_env_config(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
         """Returns all environment configuration fields."""
         with patch(SETTINGS_PATCH, return_value=mock_settings):
-            result = await get_env_config_status(current_user=mock_admin_user)
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
 
         assert result.auth_mode == "local"
         assert result.deployment == "standalone"
@@ -601,7 +649,7 @@ class TestGetEnvConfigStatus:
 
     @pytest.mark.asyncio
     async def test_cloud_config(
-        self, mock_admin_user, mock_settings, tmp_path, monkeypatch
+        self, mock_admin_user, mock_settings, rate_limited_app, tmp_path, monkeypatch
     ):
         """Returns correct values for cloud deployment config."""
         mock_settings.auth.auth_mode = "oauth"
@@ -617,7 +665,9 @@ class TestGetEnvConfigStatus:
         monkeypatch.chdir(tmp_path)
 
         with patch(SETTINGS_PATCH, return_value=mock_settings):
-            result = await get_env_config_status(current_user=mock_admin_user)
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
 
         assert result.auth_mode == "oauth"
         assert result.deployment == "cloud"
@@ -625,3 +675,30 @@ class TestGetEnvConfigStatus:
         assert result.session_storage == "redis"
         assert result.vector_storage == "chromadb"
         assert result.pii_redaction_enabled is True
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_enabled_is_false_when_middleware_absent(
+        self, mock_admin_user, mock_settings, unprotected_app
+    ):
+        """An unprotected app must not report itself rate limited.
+
+        This is the half of fm#985 item 16 that mattered. The removed
+        ``settings.security.rate_limit_enabled`` defaulted to ``True`` and was
+        read by no enforcement path, so ``SKIP_SERVICE_CHECKS=True`` — which
+        installs no protection middleware at all — still reported *enabled*, and
+        the dashboard drew a green "Rate Limiting: enabled" row over a
+        deployment anyone could flood.
+        """
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(unprotected_app), current_user=mock_admin_user
+            )
+
+        assert result.rate_limit_enabled is False
+
+    # The "a retired env key cannot talk this field out of the truth" case is
+    # NOT tested here, deliberately. This module patches ``get_settings`` to a
+    # MagicMock, so a monkeypatched RATE_LIMIT_ENABLED never reaches a settings
+    # object and the test would assert nothing while appearing to. It is tested
+    # where it can bite, against a real ``SecuritySettings``:
+    # tests/unit/config/test_settings_mapping.py::TestRateLimitingIsNotASetting.

@@ -30,7 +30,7 @@ from fastapi import HTTPException, Request, status
 from faultmaven.api.middleware.client_ip import (
     TrustedProxies,
     parse_trusted_proxies,
-    resolve_client_ip,
+    resolve_client_ip_once,
 )
 from faultmaven.config.protection import get_trusted_proxies
 from faultmaven.infrastructure.protection.window_math import (
@@ -40,6 +40,19 @@ from faultmaven.infrastructure.protection.window_math import (
 from faultmaven.models.protection import LimitType, RateLimitResult
 
 logger = logging.getLogger(__name__)
+
+
+def _endpoint_policy(endpoint_name: str) -> str:
+    """The ``X-RateLimit-Policy`` token for one OAuth/SSO endpoint.
+
+    ``LimitType.OAUTH`` covers six endpoints whose limits differ by a factor of
+    four, so the bare type is not an identity a client can pace against: it
+    would see the policy hold steady at "oauth" while the advertised limit moved
+    between 5, 10 and 20 depending on which endpoint answered. Qualifying it
+    with the endpoint makes each bucket nameable, and matches how ``_limits``
+    keys them.
+    """
+    return f"oauth:{endpoint_name}"
 
 
 class OAuthRateLimiter:
@@ -117,11 +130,12 @@ class OAuthRateLimiter:
           against, so it cannot tell a tight endpoint limit from the roomy global
           one and cannot pace itself before the next refusal.
         - An allowed request contributes a ``RateLimitResult`` to
-          ``request.state.rate_limit_results``, the list ``RateLimitMiddleware``
-          picks the least-remaining limit out of on the way back. That is what
-          makes the OAuth limit visible on a 2xx: without it the served response
-          advertised only the roomy limits this caller is nowhere near, while
-          the one it is five requests from was never mentioned.
+          ``request.state.rate_limit_results``, the inbox ``RateLimitMiddleware``
+          merges with its own results to pick the least-remaining limit on the
+          way back. That is what makes the OAuth limit visible on a 2xx: without
+          it the served response advertised only the roomy limits this caller is
+          nowhere near, while the one it is five requests from was never
+          mentioned.
 
         The header authority stays single: the component that enforced a limit
         is the one that publishes it, here as everywhere.
@@ -135,7 +149,7 @@ class OAuthRateLimiter:
         """
         # Get client IP. Not the raw socket peer: behind an ingress that is one
         # address for every client, and this limit would then be shared.
-        client_ip = resolve_client_ip(request, self.trusted_proxies)
+        client_ip = resolve_client_ip_once(request, self.trusted_proxies)
 
         # Get rate limit for this endpoint
         limit = self._limits.get(endpoint_name, 10)  # Default 10/min
@@ -183,6 +197,12 @@ class OAuthRateLimiter:
                     # The same instant ``Retry-After`` is derived from, as a
                     # timestamp — one measurement, two renderings.
                     "X-RateLimit-Reset": str(int(frees_at)),
+                    # Which bucket refused. Stamped here rather than left to
+                    # ``RateLimitMiddleware``, which returns early on any 429 —
+                    # so without this the tightest limiter in the stack would be
+                    # the one refusal that never names itself, which is the
+                    # defect the header exists for.
+                    "X-RateLimit-Policy": _endpoint_policy(endpoint_name),
                 },
             )
 
@@ -208,6 +228,7 @@ class OAuthRateLimiter:
             limit=limit,
             current_count=current_count,
             frees_at=frees_at,
+            endpoint_name=endpoint_name,
         )
 
         logger.debug(
@@ -217,17 +238,29 @@ class OAuthRateLimiter:
 
     @staticmethod
     def _publish_allowed(
-        request: Request, *, limit: int, current_count: int, frees_at: float
+        request: Request,
+        *,
+        limit: int,
+        current_count: int,
+        frees_at: float,
+        endpoint_name: str,
     ) -> None:
         """Offer this limit's state to the served-response header path.
 
-        ``RateLimitMiddleware`` creates ``request.state.rate_limit_results``
-        before route dependencies run and reads it after the route returns, so
-        an entry appended here is seen when it picks the tightest limit to
-        advertise. The attribute is read with ``getattr`` and never created:
-        its absence means the middleware is not in the stack — reduced test
-        stacks, or any app mounting these routers alone — and manufacturing the
-        list there would build a collection nothing ever reads.
+        ``request.state.rate_limit_results`` is the inbox ``RateLimitMiddleware``
+        opens for inner enforcers: it creates the list once its own windows have
+        admitted the request — before route dependencies run — and reads it after
+        the route returns, merging whatever is in it with its own results to pick
+        the tightest limit to advertise. An entry appended here is therefore seen.
+
+        It carries only inner enforcers' results; the middleware's own windows
+        travel as a return value, so nothing here can be shadowed by, or shadow,
+        the general limits.
+
+        The attribute is read with ``getattr`` and never created: its absence
+        means the middleware is not in the stack — reduced test stacks, or any
+        app mounting these routers alone — and manufacturing the list there would
+        build a collection nothing ever reads.
         """
         results = getattr(request.state, "rate_limit_results", None)
         if results is None:
@@ -240,6 +273,7 @@ class OAuthRateLimiter:
                 current_count=current_count,
                 limit=limit,
                 reset_time=datetime.fromtimestamp(frees_at, tz=timezone.utc),
+                policy=_endpoint_policy(endpoint_name),
             )
         )
 

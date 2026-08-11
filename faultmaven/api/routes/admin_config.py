@@ -14,7 +14,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from faultmaven.api.middleware.auth import require_platform_admin
 from faultmaven.api.models import (
@@ -418,8 +418,45 @@ async def check_llm_connection(
         )
 
 
+def _rate_limiting_installed(app) -> bool:
+    """Whether this app is actually rate limiting, read off the middleware stack.
+
+    The only honest answer to "is rate limiting on?" is whether
+    ``RateLimitMiddleware`` is in the stack, so that is what is asked. Every
+    cheaper proxy for it has been wrong in production:
+
+    * ``settings.security.rate_limit_enabled`` — the field this replaces
+      (fm#985 item 16) — was read by no enforcement path at all. It reported
+      *disabled* under ``CONFIG_PRESET=local``, which used to set
+      ``RATE_LIMIT_ENABLED=false`` while the ``development`` *protection* preset
+      it selects rate limits regardless; and it reported *enabled* under
+      ``SKIP_SERVICE_CHECKS=True``, which installs no protection middleware
+      whatsoever. Wrong in both directions, and never right except by accident.
+    * ``settings.protection`` — that is PII redaction, a different subsystem.
+    * ``app.extra["protection_info"]`` — a record of what setup *intended*, and
+      absent entirely on the paths that skip or fail setup.
+
+    ``user_middleware`` cannot disagree with what is installed, because it is
+    what Starlette builds the stack from. ``main.py``'s CORS-outermost guard
+    reads it the same way.
+
+    "Installed" is the claim, and it is the whole claim: an installed limiter
+    that is degrading on a Redis outage still counts as on. That is a transient
+    condition, it is reported per-request in the response headers, and
+    production pins fail-closed anyway — none of which a deployment-status field
+    should try to average into a boolean.
+    """
+    from faultmaven.api.middleware import RateLimitMiddleware
+
+    return any(
+        middleware.cls is RateLimitMiddleware
+        for middleware in getattr(app, "user_middleware", [])
+    )
+
+
 @router.get("/config/status", response_model=EnvConfigStatusResponse)
 async def get_env_config_status(
+    request: Request,
     current_user: AuthenticatedUser = Depends(require_platform_admin),
 ) -> EnvConfigStatusResponse:
     """Get environment configuration status (read-only).
@@ -539,7 +576,7 @@ async def get_env_config_status(
                 settings.llm.provider.value if settings.llm.provider else "not_set"
             ),
             pii_redaction_enabled=settings.protection.protection_enabled,
-            rate_limit_enabled=settings.security.rate_limit_enabled,
+            rate_limit_enabled=_rate_limiting_installed(request.app),
             features=features,
             timestamp=datetime.now(timezone.utc),
         )

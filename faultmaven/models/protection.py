@@ -34,7 +34,7 @@ class LimitType(str, Enum):
     # buckets rather than in ``per_session``/``per_session_hourly``. Sharing the
     # write buckets is what made a burst of GETs refuse the next POST turn; the
     # split is what keeps a read flood out of the quota that protects LLM
-    # compute. See ``RateLimitMiddleware._check_session_rate_limits``.
+    # compute. See ``RateLimitMiddleware._check_rate_limits``.
     PER_SESSION_READ = "per_session_read"
     PER_SESSION_READ_HOURLY = "per_session_read_hourly"
     TITLE_GENERATION = "title_generation"
@@ -153,18 +153,21 @@ class ProtectionSettings(BaseModel):
     )
 
 
-@dataclass
-class RateLimitState:
-    """Current state of a rate limit bucket"""
+@dataclass(frozen=True)
+class RateLimitSpec:
+    """One window to weigh as part of an all-or-nothing rate limit decision.
+
+    A request is usually subject to several windows at once (an address-keyed
+    global limit, a session-keyed per-minute and hourly pair). They are passed
+    together rather than checked one at a time so that a refusal by any of them
+    consumes quota in none of them — see ``_WINDOWS_SCRIPT``.
+
+    Order is precedence: the first window to refuse is the one the client is
+    told about.
+    """
 
     key: str
     limit_type: LimitType
-    current_count: int
-    limit: int
-    window: int
-    reset_time: datetime
-    penalty_multiplier: float = 1.0
-    violation_count: int = 0
 
 
 @dataclass
@@ -177,6 +180,13 @@ class RateLimitResult:
     limit: int
     retry_after: Optional[int] = None
     reset_time: Optional[datetime] = None
+    # What ``X-RateLimit-Policy`` should name, when the limit type alone is not
+    # the identity. Left ``None`` by every enforcer whose type maps to exactly
+    # one bucket — the header path then derives the name from ``limit_type``.
+    # The OAuth limiter sets it, because six endpoints with different limits
+    # share ``LimitType.OAUTH`` and a client cannot pace against a token that
+    # names all of them.
+    policy: Optional[str] = None
 
 
 class ProtectionError(Exception):
