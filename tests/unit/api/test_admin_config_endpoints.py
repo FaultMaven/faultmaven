@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI, HTTPException, Request
 
-from faultmaven.api.middleware import RateLimitMiddleware
 from faultmaven.api.models import LLMConfigUpdateRequest, LLMConnectionTestRequest
 from faultmaven.api.routes.admin_config import (
     check_llm_connection,
@@ -20,7 +19,7 @@ from faultmaven.api.routes.admin_config import (
     get_llm_config,
     update_llm_config,
 )
-from faultmaven.models.protection import ProtectionSettings
+from faultmaven.config.settings import Environment
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 
 SETTINGS_PATCH = "faultmaven.config.settings.get_settings"
@@ -146,9 +145,23 @@ def _request_for(app: FastAPI) -> Request:
 
 @pytest.fixture
 def rate_limited_app() -> FastAPI:
-    """An app with the rate limiting middleware installed, as production has."""
+    """An app wired by the REAL production path, not by a hand-rolled stand-in.
+
+    ``setup_protection_middleware`` is what ``main.py`` calls, so building the
+    fixture with it means the test cannot pass by agreeing with itself: if that
+    function ever installs something ``_rate_limiting_installed`` does not
+    recognise, this goes red rather than quietly measuring a fixture nobody
+    runs. ``production`` is the default preset — every environment but
+    ``development`` lands on it (fm#1023).
+    """
+    from faultmaven.api.protection import setup_protection_middleware
+
     app = FastAPI()
-    app.add_middleware(RateLimitMiddleware, settings=ProtectionSettings())
+    info = setup_protection_middleware(app, environment=Environment.PRODUCTION)
+    # The fixture's own premise, asserted: a preset that stopped installing rate
+    # limiting would otherwise make every test below vacuously agree with an
+    # unprotected app.
+    assert "rate_limiting" in info["middleware_added"]
     return app
 
 
