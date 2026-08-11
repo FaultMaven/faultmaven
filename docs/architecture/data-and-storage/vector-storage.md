@@ -27,7 +27,7 @@
 ChromaDB KB Instance (PersistentClient at data/chroma-kb/ for local, HttpClient for cloud)
 ├── Collections:
 │   └── faultmaven_kb         (all KB docs: global/personal/team, metadata-filtered,
-│                              AND runbooks, tagged report_type="runbook")
+│                              AND runbooks, tagged document_type="runbook")
 
 ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local, HttpClient for cloud)
 ├── Collections:
@@ -126,17 +126,18 @@ CaseVectorStore(client=evidence_client)    # dynamic case_{id} collections
 
 Runbook similarity ("this incident looks like runbook X") runs against
 `faultmaven_kb`, the collection above. `RunbookKnowledgeBase` is injected that
-store and never selects a collection of its own; its `COLLECTION_NAME =
-"faultmaven_runbooks"` constant is decorative, appearing in a single log line at
-init.
+store and never selects a collection of its own.
 
-Runbooks and KB documents therefore share one collection, and the `report_type`
-metadata value is the **only** discriminator between them — which is why
-`search_runbooks` ANDs `report_type == "runbook"` into every query, alongside
-the mandatory `organization_id` predicate. Both keys, and the runbook identity
-keys the search reconstructs its results from (`case_id`, `case_title`,
-`runbook_source`, `document_title`, `original_document_id`), must be declared by
-`VectorMetadata` or the write path silently drops them (#912).
+Runbooks and KB documents therefore share one collection, and the
+`document_type` metadata value — stamped by the one live KB writer
+(`KnowledgeService._index_document_in_vector_store`) — is the **only**
+discriminator between them. `search_runbooks` ANDs `document_type == "runbook"`
+into every query, alongside the caller-supplied KB scope filter (global ∪
+owned ∪ team-shared; the searching principal's allowlist, refused when absent).
+Identity comes from the same chunk keys every KB read uses (`title`,
+`parent_document_id`, `scope`); there is no runbook-specific metadata schema
+and no `report_type` key (fm#1030). See
+[runbook-dedup.md](../knowledge-and-ai/runbook-dedup.md).
 
 ---
 

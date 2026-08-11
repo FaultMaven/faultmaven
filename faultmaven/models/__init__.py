@@ -5,6 +5,10 @@ Models are now primarily located in their respective modules under faultmaven/mo
 """
 
 # Import agentic models from the new module location
+# RunbookMatch is the dedup search-result type, defined at the models layer so
+# infrastructure (RunbookKnowledgeBase) can return it without importing module
+# internals.
+from faultmaven.models.report import RunbookMatch
 from faultmaven.modules.agent.domain.models.agentic import SuggestedAction
 
 # Import session model from auth module
@@ -22,8 +26,8 @@ from faultmaven.modules.case.contracts import (
     ReportType,
     RunbookMetadata,
     RunbookRecommendation,
+    RunbookRef,
     RunbookSource,
-    SimilarRunbook,
 )
 
 # Import case models from the new module location
@@ -165,7 +169,8 @@ __all__ = [
     "RunbookSource",
     "RunbookMetadata",
     "CaseReport",
-    "SimilarRunbook",
+    "RunbookMatch",
+    "RunbookRef",
     "RunbookRecommendation",
     "ReportRecommendation",
     "ReportGenerationRequest",

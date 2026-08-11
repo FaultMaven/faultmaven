@@ -61,6 +61,7 @@ def create_milestone_engine(
     da_model: str | None = None,
     sanitizer: Any | None = None,
     redis_client: Any | None = None,
+    runbook_kb: Any | None = None,
 ) -> Any | None:
     """Create milestone engine for investigation workflow.
 
@@ -73,6 +74,9 @@ def create_milestone_engine(
         da_model: Model to use with da_provider (e.g., claude-sonnet-4-5).
         sanitizer: DataSanitizer for case-scoped PII redaction at LLM boundary.
         redis_client: Async Redis client for persisting redaction registries.
+        runbook_kb: RunbookKnowledgeBase for terminal-turn runbook dedup
+            (fm#1030). None without a KB vector store — the engine then takes
+            its honest "dedup did not run" caveat.
     """
     if not case_repository:
         return None
@@ -89,6 +93,7 @@ def create_milestone_engine(
             sanitizer=sanitizer,
             redis_client=redis_client,
             trace_enabled=True,
+            runbook_kb=runbook_kb,
         )
         logger.debug("MilestoneEngine initialized with investigation tools")
         return engine
@@ -1138,6 +1143,19 @@ def register_services(container: BaseDIContainer) -> None:
     sanitizer = container.get_service("sanitizer", required=False)
     redis_client = getattr(container, "redis_client", None)
 
+    # Runbook dedup KB for the engine's terminal-turn suggestion (fm#1030).
+    # Injected explicitly — the engine used to probe
+    # ``hasattr(knowledge_service, "runbook_kb")``, which was permanently
+    # False, so dedup never ran. Reads the same KB collection the live
+    # writer (KnowledgeService.ingest_runbook) populates.
+    runbook_kb = None
+    if vector_store:
+        from faultmaven.infrastructure.knowledge.runbook_kb import (
+            RunbookKnowledgeBase,
+        )
+
+        runbook_kb = RunbookKnowledgeBase(vector_store=vector_store)
+
     milestone_engine = create_milestone_engine(
         llm_provider,
         case_repository,
@@ -1146,6 +1164,7 @@ def register_services(container: BaseDIContainer) -> None:
         da_model=da_model,
         sanitizer=sanitizer,
         redis_client=redis_client,
+        runbook_kb=runbook_kb,
     )
     container.milestone_engine = milestone_engine
     if milestone_engine:

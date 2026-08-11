@@ -417,8 +417,12 @@ async def get_report_recommendations(
                 },
             )
 
-        # Get recommendations
-        recommendation = await rec_service.get_available_report_types(case)
+        # Get recommendations, scoped to the requester (fm#1030)
+        recommendation = await rec_service.get_available_report_types(
+            case,
+            requester_user_id=current_user.user_id,
+            requester_organization_id=getattr(current_user, "organization_id", None),
+        )
 
         return ReportRecommendationResponse(
             case_id=recommendation.case_id,
@@ -430,7 +434,7 @@ async def get_report_recommendations(
                 "similarity_score": recommendation.runbook_recommendation.similarity_score,
                 "reason": recommendation.runbook_recommendation.reason,
                 "existing_runbook_id": (
-                    recommendation.runbook_recommendation.existing_runbook.report_id
+                    recommendation.runbook_recommendation.existing_runbook.item_id
                     if recommendation.runbook_recommendation.existing_runbook
                     else None
                 ),

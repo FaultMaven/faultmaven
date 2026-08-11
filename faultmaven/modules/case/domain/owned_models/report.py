@@ -128,35 +128,36 @@ class CaseReport(BaseModel):
     )
 
 
-class SimilarRunbook(BaseModel):
-    """Similar runbook search result from knowledge base"""
+class RunbookRef(BaseModel):
+    """Reference to an existing published runbook in the knowledge base.
 
-    runbook: CaseReport = Field(..., description="The similar runbook")
-    similarity_score: float = Field(
-        ..., ge=0.0, le=1.0, description="Cosine similarity score from vector search"
-    )
-    case_title: str = Field(
-        ..., description="Title of case that generated this runbook (or document title)"
-    )
-    case_id: str = Field(
-        ..., description="Case ID (or 'doc-derived' for document-driven runbooks)"
+    An honest reference to a live KB item (``knowledge_items`` row), not a
+    reconstructed report. The previous shape minted a ``CaseReport`` with an
+    invented ``generation_status``/``version`` and a defaulted ``generated_at``
+    — a report row that never existed.
+    """
+
+    item_id: str = Field(..., description="KB item id (knowledge_items.item_id)")
+    title: str = Field(..., description="Runbook title")
+    scope: str = Field(
+        ..., description="Visibility floor of the KB item ('personal' or 'global')"
     )
 
 
 class RunbookRecommendation(BaseModel):
     """Runbook-specific recommendation with similarity analysis"""
 
-    action: Literal["reuse", "review_or_generate", "generate"] = Field(
+    action: Literal["review_or_generate", "generate"] = Field(
         ...,
         description=(
             "Recommended action:\n"
-            "- reuse: High similarity (>=85%), recommend using existing runbook\n"
-            "- review_or_generate: Moderate similarity (70-84%), offer both options\n"
+            "- review_or_generate: A similar runbook exists (>=70% best-chunk "
+            "similarity); review it or generate a new one\n"
             "- generate: Low/no similarity (<70%), recommend generating new runbook"
         ),
     )
-    existing_runbook: Optional[CaseReport] = Field(
-        None, description="Existing similar runbook (if found)"
+    existing_runbook: Optional[RunbookRef] = Field(
+        None, description="Existing similar runbook in the KB (if found)"
     )
     similarity_score: Optional[float] = Field(
         None, ge=0.0, le=1.0, description="Semantic similarity score (0.0-1.0)"
@@ -237,7 +238,7 @@ __all__ = [
     # Models
     "RunbookMetadata",
     "CaseReport",
-    "SimilarRunbook",
+    "RunbookRef",
     "RunbookRecommendation",
     "ReportRecommendation",
     # Request/Response DTOs

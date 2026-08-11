@@ -215,12 +215,6 @@ class TestChromaDBVectorStore:
             "scope": "global",
             "owner_id": "user-1",
             "organization_id": "org-a",
-            "report_type": "runbook",
-            "case_id": "case-42",
-            "case_title": "Pool exhaustion in prod",
-            "runbook_source": "document_driven",
-            "document_title": "PostgreSQL Operations Guide",
-            "original_document_id": "srcdoc-77",
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-02T00:00:00Z",
             "domain": "database",
@@ -276,8 +270,9 @@ class TestChromaDBVectorStore:
         assert stored == expected
 
     @pytest.mark.parametrize(
-        "identity_key",
+        "retired_key",
         [
+            "report_type",
             "case_id",
             "case_title",
             "runbook_source",
@@ -285,58 +280,47 @@ class TestChromaDBVectorStore:
             "original_document_id",
         ],
     )
-    def test_normalize_metadata_emits_an_empty_identity_value(self, identity_key):
-        """An empty identity value is stored, not dropped.
+    def test_a_retired_runbook_identity_key_is_refused_not_dropped(self, retired_key):
+        """The keys the dead runbook writer stamped now fail loudly (fm#1030).
 
-        ``search_runbooks`` requires these keys to be PRESENT and skips any row
-        missing one, so gating the write on truthiness would turn an
-        empty-but-valid value into a row that is permanently unreadable — while
-        ``index_runbook`` still logged the write as a success.
-
-        Parametrized over EVERY identity key, not the two that first came to
-        mind: each is emitted at its own line, so covering a subset leaves the
-        rest free to revert to a truthiness gate. `document_title` and
-        `original_document_id` in particular round-trip into `RunbookMetadata`,
-        where a dropped empty string becomes an observable `None`.
+        #912 declared these for ``RunbookKnowledgeBase.index_runbook``, a
+        writer with no live caller; fm#1030 deleted that write half and
+        repointed dedup at the live writer's keys. Removal is fail-loud by
+        construction — ``reject_undeclared_keys`` refuses them — which is the
+        safe direction: a writer that still believes in these keys finds out
+        at its first write, not as a silent drop read back arbitrarily later.
         """
-        stored = ChromaDBVectorStore._normalize_metadata(
-            {"report_type": "runbook", identity_key: ""}
-        )
-
-        assert identity_key in stored, (
-            f"{identity_key} was gated on truthiness, so an empty value is "
-            f"dropped and the row becomes unreadable at search time"
-        )
-        assert stored[identity_key] == ""
+        with pytest.raises(ValueError, match=retired_key):
+            ChromaDBVectorStore._normalize_metadata({retired_key: "value"})
 
     def test_normalize_metadata_degrades_rather_than_writing_a_bare_row(self):
         """The fallback keeps the allowlisted keys when a VALUE fails validation.
 
         This path is the guard's own fail-open surface, and it was untested:
         gutting it to `return {}` writes rows carrying no metadata at all —
-        unreachable by every scoped search, tenant predicate included — which is
+        unreachable by every scoped search, scope predicate included — which is
         precisely the #912 failure class the refusal exists to prevent, arrived
         at from the other direction.
 
-        `chunk_index` is declared `Optional[int]`; a non-numeric value fails
+        `total_chunks` is declared `Optional[int]`; a non-numeric value fails
         validation and sends the whole dict down the fallback.
         """
         stored = ChromaDBVectorStore._normalize_metadata(
             {
-                "report_type": "runbook",
-                "organization_id": "org-a",
-                "case_id": "case-42",
+                "document_type": "runbook",
+                "scope": "global",
+                "parent_document_id": "kb-42",
                 "tags": ["postgresql", "database"],
-                "case_title": None,
-                "chunk_index": "not-an-int",
+                "owner_id": None,
+                "total_chunks": "not-an-int",
             }
         )
 
         assert stored, "a validation failure must not erase the row's metadata"
-        # The tenant + type predicates are what every scoped search filters on.
-        assert stored["organization_id"] == "org-a"
-        assert stored["report_type"] == "runbook"
-        assert stored["case_id"] == "case-42"
+        # The scope + type predicates are what every scoped search filters on.
+        assert stored["document_type"] == "runbook"
+        assert stored["scope"] == "global"
+        assert stored["parent_document_id"] == "kb-42"
 
         # It must SANITIZE, not just copy. ChromaDB rejects list and None
         # values outright, so a fallback that passed the dict through unchanged
@@ -344,7 +328,7 @@ class TestChromaDBVectorStore:
         # exists to provide. Asserting only the keys above cannot tell those
         # two implementations apart.
         assert stored["tags"] == "['postgresql', 'database']"
-        assert "case_title" not in stored
+        assert "owner_id" not in stored
         assert all(
             isinstance(v, (str, int, float, bool)) for v in stored.values()
         ), f"non-primitive survived the fallback: {stored}"

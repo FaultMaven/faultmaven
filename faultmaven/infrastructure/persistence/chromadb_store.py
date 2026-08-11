@@ -107,9 +107,9 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         ``VectorMetadata`` is an ALLOWLIST: it declares the keys a row in this
         collection may carry, and anything else it simply does not copy. That
         used to happen silently, which is how a writer could build a dict, watch
-        the write succeed, and store none of it — ``index_runbook`` stamped
-        ``case_id``/``case_title``/``runbook_source`` on every runbook and
-        ChromaDB received none of them, so ``search_runbooks`` reconstructed
+        the write succeed, and store none of it — the since-deleted
+        ``index_runbook`` stamped its identity keys on every runbook and
+        ChromaDB received none of them, so its read path reconstructed
         each one from ``.get()`` defaults (#912). A silently dropped key is
         indistinguishable from a stored one at the call site: the write returns
         success either way, and the loss only surfaces as a wrong value at read
@@ -126,16 +126,14 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         values are encoded. The fallback stringifies rather than normalizing, so
         a dict that fails validation still stores ``tags`` as ``"['a', 'b']"``
         instead of ``"a,b"`` and a ``datetime`` in Python's default format
-        instead of ISO-8601 — and ``search_runbooks`` splits ``tags`` on commas.
-        Pre-existing, and out of scope here; do not read this guard as making
-        the two paths interchangeable.
+        instead of ISO-8601. Pre-existing, and out of scope here; do not read
+        this guard as making the two paths interchangeable.
         """
         from faultmaven.models.vector_metadata import VectorMetadata
 
         md = md or {}
-        # The schema owns this rule, so writers that must check earlier than
-        # this (``index_runbook`` has its own retry wrapper around the call
-        # into here) enforce the same one rather than a second copy of it.
+        # The schema owns this rule; a second hand-rolled copy of the check
+        # would be free to drift from it.
         VectorMetadata.reject_undeclared_keys(md)
 
         try:

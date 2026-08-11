@@ -14,12 +14,18 @@ valid query, and both were live with a completely healthy stack:
 
 The tests below therefore check two distinct properties:
 
-- **The query is actually issued** — a real 1024-dim vector, scoped to the
-  tenant. Asserting only on the returned recommendation would pass against
-  both the broken and the fixed code, because both return "generate" when the
-  KB is genuinely empty. That is the trap that let this rot silently, so the
-  signature/arguments are pinned directly.
+- **The query is actually issued** — a real 1024-dim vector, under the
+  searching principal's scope filter. Asserting only on the returned
+  recommendation would pass against both the broken and the fixed code,
+  because both return "generate" when the KB is genuinely empty. That is the
+  trap that let this rot silently, so the signature/arguments are pinned
+  directly.
 - **A search that could not run never reads as "none found"**.
+
+fm#1030 additions: dedup reads the LIVE writer's rows under the KB scope
+model, and the auto-"reuse"/EXISTING_COVERS verdict is withheld (owner
+decision) — a strong match is surfaced by title and score for the user to
+judge. Both are pinned here.
 """
 
 import inspect
@@ -30,6 +36,7 @@ import pytest
 from faultmaven.core.investigation import terminal_transitions as tt
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.report import RunbookMatch
 from faultmaven.modules.report.domain.services.report_recommendation_service import (
     ReportRecommendationService,
 )
@@ -37,6 +44,12 @@ from faultmaven.modules.report.domain.services.report_recommendation_service imp
 pytestmark = [pytest.mark.unit]
 
 _EMBED_QUERY = "faultmaven.infrastructure.model_cache.model_cache.aembed_query"
+
+_SCOPE = {"$or": [{"scope": "global"}, {"owner_id": "user-1"}]}
+
+
+async def _scope_resolver():
+    return dict(_SCOPE)
 
 
 def _kb(search_result=None) -> RunbookKnowledgeBase:
@@ -50,8 +63,8 @@ def _case() -> MagicMock:
     case.case_id = "case-1"
     case.title = "Pods OOMKilled after deploy"
     case.description = "memory limit too low"
+    case.user_id = "user-1"
     case.organization_id = "org-1"
-    case.domain = "kubernetes"
     case.tags = ["oom"]
     case.root_cause_conclusion = None
     case.solutions = []
@@ -64,7 +77,7 @@ def _case() -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_recommendation_issues_a_real_embedding_scoped_to_the_tenant():
+async def test_recommendation_issues_a_real_embedding_under_the_requesters_scope():
     """Pins the arguments, not just the verdict.
 
     The old code reached the same ``action="generate"`` while passing ``[]``
@@ -75,13 +88,17 @@ async def test_recommendation_issues_a_real_embedding_scoped_to_the_tenant():
     service = ReportRecommendationService(runbook_kb=kb)
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        await service.get_available_report_types(case=_case())
+        await service.get_available_report_types(
+            case=_case(),
+            requester_user_id="user-1",
+            requester_organization_id="org-1",
+        )
 
     kwargs = kb.search_runbooks.await_args.kwargs
     assert (
         len(kwargs["query_embedding"]) == 1024
     ), "the runbook search is still being issued without a usable embedding"
-    assert kwargs["organization_id"] == "org-1", "tenant predicate lost"
+    assert kwargs["scope_filter"] == _SCOPE, "requester scope predicate lost"
 
 
 @pytest.mark.asyncio
@@ -90,12 +107,12 @@ async def test_terminal_dedup_issues_a_real_query():
     kb = _kb()
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        await tt._find_similar_runbooks_for_case(_case(), kb)
+        await tt._find_similar_runbooks_for_case(_case(), kb, dict(_SCOPE))
 
     assert kb.search_runbooks.await_count == 1, "dedup still never queries"
     kwargs = kb.search_runbooks.await_args.kwargs
     assert len(kwargs["query_embedding"]) == 1024
-    assert kwargs["organization_id"] == "org-1"
+    assert kwargs["scope_filter"] == _SCOPE
 
 
 def test_search_by_text_exists_with_the_signature_both_callers_use():
@@ -103,8 +120,8 @@ def test_search_by_text_exists_with_the_signature_both_callers_use():
     the contract that made the probe silently False for so long."""
     sig = inspect.signature(RunbookKnowledgeBase.search_by_text)
     assert "query_text" in sig.parameters
-    assert "organization_id" in sig.parameters
-    assert sig.parameters["organization_id"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert "scope_filter" in sig.parameters
+    assert sig.parameters["scope_filter"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +135,9 @@ async def test_unavailable_embedder_refuses_instead_of_recommending_generate():
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError) as excinfo:
-            await service.get_available_report_types(case=_case())
+            await service.get_available_report_types(
+                case=_case(), requester_user_id="user-1"
+            )
 
     assert "No similar runbooks found" not in str(excinfo.value)
 
@@ -131,7 +150,7 @@ async def test_chromadb_failure_is_not_flattened_into_no_similar_runbooks():
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
         with pytest.raises(KnowledgeBaseError):
-            await kb.search_by_text(query_text="oom", organization_id="org-1")
+            await kb.search_by_text(query_text="oom", scope_filter=dict(_SCOPE))
 
 
 @pytest.mark.asyncio
@@ -141,7 +160,9 @@ async def test_failed_dedup_yields_a_caveat_not_a_clean_suggestion(ready_case):
     kb = _kb()
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=None)):
-        suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
+        suggestion = await tt.evaluate_runbook_suggestion(
+            ready_case, kb, scope_resolver=_scope_resolver
+        )
 
     assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
     assert "could not check" in suggestion.message
@@ -168,7 +189,9 @@ async def test_an_unreadable_result_set_caveat_names_the_right_remedy(ready_case
         )
     )
 
-    suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
+    suggestion = await tt.evaluate_runbook_suggestion(
+        ready_case, kb, scope_resolver=_scope_resolver
+    )
 
     assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
     assert "could not check" in suggestion.message
@@ -181,7 +204,7 @@ async def test_a_skipped_dedup_blames_nothing(ready_case):
     """No knowledge base wired: the search did not run, nothing is broken.
 
     The remedy flags are only ever ASSIGNED in the exception handler, so every
-    path that never raises — no KB, no usable tenant, too little case content —
+    path that never raises — no KB, no scope resolver, too little case content —
     keeps their initial values. Flipping either initialiser is invisible to a
     test that exercises only the raising path: with ``dedup_unreadable``
     initialised ``True`` this caveat claimed runbooks "need re-indexing" for a
@@ -193,25 +216,6 @@ async def test_a_skipped_dedup_blames_nothing(ready_case):
     assert "did not run" in suggestion.message
     assert "re-indexing" not in suggestion.message
     assert "unavailable" not in suggestion.message
-
-
-@pytest.mark.asyncio
-async def test_an_unsearchable_case_blames_nothing_either(ready_case):
-    """A case with no usable tenant never issues a search — same honesty rule.
-
-    ``_find_similar_runbooks_for_case`` returns ``None`` without searching, so
-    no exception is raised and the flags keep their initial values. Calling that
-    "unavailable" would misattribute a healthy knowledge base.
-    """
-    ready_case.organization_id = None
-    kb = _kb()
-
-    suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
-
-    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
-    assert "did not run" in suggestion.message
-    assert "unavailable" not in suggestion.message
-    assert "re-indexing" not in suggestion.message
 
 
 @pytest.mark.asyncio
@@ -229,7 +233,9 @@ async def test_a_transient_dedup_failure_keeps_the_unavailable_wording(ready_cas
         )
     )
 
-    suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
+    suggestion = await tt.evaluate_runbook_suggestion(
+        ready_case, kb, scope_resolver=_scope_resolver
+    )
 
     assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
     assert "knowledge base search is unavailable" in suggestion.message
@@ -255,7 +261,9 @@ async def test_a_clean_dedup_still_reaches_plain_suggest(ready_case):
     kb = _kb()
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
+        suggestion = await tt.evaluate_runbook_suggestion(
+            ready_case, kb, scope_resolver=_scope_resolver
+        )
 
     assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST
 
@@ -263,16 +271,83 @@ async def test_a_clean_dedup_still_reaches_plain_suggest(ready_case):
 @pytest.mark.asyncio
 async def test_an_existing_similar_runbook_is_still_detected(ready_case):
     """The other direction of the same gate: dedup must still be able to FIRE."""
-    match = MagicMock()
-    match.similarity_score = 0.91
-    match.runbook = MagicMock(title="OOMKilled recovery")
+    match = RunbookMatch(
+        item_id="kb-1",
+        title="OOMKilled recovery",
+        scope="global",
+        similarity_score=0.91,
+    )
     kb = _kb(search_result=[match])
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
+        suggestion = await tt.evaluate_runbook_suggestion(
+            ready_case, kb, scope_resolver=_scope_resolver
+        )
 
-    assert suggestion.verdict == tt.RunbookSuggestion.EXISTING_COVERS
+    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
     assert "OOMKilled recovery" in suggestion.message
+    assert "91%" in suggestion.message
+
+
+# ---------------------------------------------------------------------------
+# The "reuse" verdict is withheld (owner decision, fm#1030)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_even_a_near_perfect_match_never_auto_suppresses_generation(ready_case):
+    """Best-chunk-max detects OVERLAP, not whole-runbook equivalence, and the
+    old ≥0.85 auto-suppression threshold never fired against any real
+    distribution. However strong the match, the verdict surfaces it for the
+    USER to judge and generation stays available — there is no
+    EXISTING_COVERS verdict left to return."""
+    match = RunbookMatch(
+        item_id="kb-1",
+        title="OOMKilled recovery",
+        scope="global",
+        similarity_score=0.99,
+    )
+    kb = _kb(search_result=[match])
+
+    with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
+        suggestion = await tt.evaluate_runbook_suggestion(
+            ready_case, kb, scope_resolver=_scope_resolver
+        )
+
+    assert not hasattr(tt.RunbookSuggestion, "EXISTING_COVERS")
+    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
+    assert "generate a new one" in suggestion.message
+
+
+@pytest.mark.asyncio
+async def test_the_recommendation_service_never_answers_reuse():
+    """The route-side half of the same decision: a 0.99 best match yields
+    ``review_or_generate`` with an honest KB-item ref, never ``reuse`` — and
+    the action Literal no longer admits "reuse" at all."""
+    from faultmaven.modules.case.contracts import RunbookRecommendation
+
+    match = RunbookMatch(
+        item_id="kb-1",
+        title="OOMKilled recovery",
+        scope="global",
+        similarity_score=0.99,
+    )
+    service = ReportRecommendationService(runbook_kb=_kb())
+
+    rec = service._generate_runbook_recommendation([match])
+
+    assert rec.action == "review_or_generate"
+    assert rec.existing_runbook.item_id == "kb-1"
+    assert rec.existing_runbook.title == "OOMKilled recovery"
+    assert rec.existing_runbook.scope == "global"
+    assert rec.similarity_score == pytest.approx(0.99)
+    with pytest.raises(Exception):
+        RunbookRecommendation(action="reuse", reason="should not validate")
+
+
+# ---------------------------------------------------------------------------
+# The caveat must reach the USER, not just the verdict object
+# ---------------------------------------------------------------------------
 
 
 def _resolved_case() -> MagicMock:
@@ -302,9 +377,19 @@ def ready_case(monkeypatch):
     return _resolved_case()
 
 
-# ---------------------------------------------------------------------------
-# The caveat must reach the USER, not just the verdict object
-# ---------------------------------------------------------------------------
+def _engine_for_creation() -> "object":
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine.knowledge_service = MagicMock()
+    engine.runbook_kb = _kb()
+    engine.team_service = None
+    engine.share_repository = None
+    engine.conversion_service = MagicMock()
+    engine.conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+    engine._run_runbook_conversion = AsyncMock()
+    engine._remaining_regens_for = AsyncMock(return_value=3)
+    return engine
 
 
 @pytest.mark.asyncio
@@ -313,22 +398,14 @@ async def test_the_dedup_caveat_reaches_the_user_visible_turn(ready_case, monkey
 
     The tests above assert on ``suggestion.message``, an intermediate return
     value. That is insufficient on its own: ``_handle_runbook_creation``
-    surfaces ``suggestion.message`` for NOT_READY and EXISTING_COVERS ONLY, so
-    a SUGGEST_WITH_CAVEATS message can be produced correctly and still never be
+    surfaces ``suggestion.message`` for NOT_READY only, so a
+    SUGGEST_WITH_CAVEATS message can be produced correctly and still never be
     shown — the verdict-object assertions would pass while the user is told,
     unqualified, that a draft is being created. That is the same
     assert-on-an-intermediate mistake this campaign exists to close, so the
     property is pinned at the surface.
     """
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-
-    engine = MilestoneEngine.__new__(MilestoneEngine)
-    engine.knowledge_service = MagicMock()
-    engine.knowledge_service.runbook_kb = _kb()
-    engine.conversion_service = MagicMock()
-    engine.conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-    engine._run_runbook_conversion = AsyncMock()
-    engine._remaining_regens_for = AsyncMock(return_value=3)
+    engine = _engine_for_creation()
 
     monkeypatch.setattr(
         "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
@@ -352,15 +429,7 @@ async def test_the_dedup_caveat_reaches_the_user_visible_turn(ready_case, monkey
 @pytest.mark.asyncio
 async def test_a_clean_dedup_turn_carries_no_caveat(ready_case, monkeypatch):
     """The gate must be able to pass: a real, empty dedup adds no warning."""
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
-
-    engine = MilestoneEngine.__new__(MilestoneEngine)
-    engine.knowledge_service = MagicMock()
-    engine.knowledge_service.runbook_kb = _kb()
-    engine.conversion_service = MagicMock()
-    engine.conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-    engine._run_runbook_conversion = AsyncMock()
-    engine._remaining_regens_for = AsyncMock(return_value=3)
+    engine = _engine_for_creation()
 
     monkeypatch.setattr(
         "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
@@ -394,48 +463,10 @@ async def test_a_case_with_no_query_content_did_not_check_for_duplicates(ready_c
     kb = _kb()
 
     with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
+        suggestion = await tt.evaluate_runbook_suggestion(
+            ready_case, kb, scope_resolver=_scope_resolver
+        )
 
     assert kb.search_runbooks.await_count == 0, "expected no search to be issued"
     assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
     assert "could not check" in suggestion.message
-
-
-@pytest.mark.asyncio
-async def test_a_case_with_no_usable_tenant_did_not_check_for_duplicates(
-    ready_case, monkeypatch
-):
-    """Same rule for the tenant guard: refusing to search an unusable tenant is
-    a refusal, not a finding."""
-    from faultmaven.config.constants import STANDALONE_ORG_ID
-    from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
-
-    monkeypatch.setattr(
-        "faultmaven.providers.tenancy.factory.requested_tenant_provider",
-        lambda: BUILTIN_MULTI,
-    )
-    ready_case.organization_id = STANDALONE_ORG_ID
-    kb = _kb()
-
-    with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        suggestion = await tt.evaluate_runbook_suggestion(ready_case, kb)
-
-    assert kb.search_runbooks.await_count == 0
-    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
-
-
-@pytest.mark.asyncio
-async def test_recommendation_refuses_rather_than_generate_on_an_unscoped_search():
-    """``search_runbooks`` fails closed on a falsy org by returning ``[]``
-    WITHOUT querying — correct for tenancy, but the recommendation service
-    reads ``[]`` as "no similar runbooks" and answers ``generate``. The text
-    entry point must refuse instead, so a refused search is never a finding."""
-    service = ReportRecommendationService(runbook_kb=_kb())
-    case = _case()
-    case.organization_id = None
-
-    with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
-        with pytest.raises(KnowledgeBaseError) as excinfo:
-            await service.get_available_report_types(case=case)
-
-    assert excinfo.value.error_code == "RUNBOOK_SEARCH_UNSCOPED"

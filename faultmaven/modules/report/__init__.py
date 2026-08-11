@@ -28,8 +28,8 @@ from faultmaven.modules.case.contracts import (
     ReportType,
     RunbookMetadata,
     RunbookRecommendation,
+    RunbookRef,
     RunbookSource,
-    SimilarRunbook,
 )
 
 # Domain services - import directly to avoid circular imports:
@@ -44,7 +44,7 @@ __all__ = [
     # Models - Data
     "RunbookMetadata",
     "CaseReport",
-    "SimilarRunbook",
+    "RunbookRef",
     "RunbookRecommendation",
     "ReportRecommendation",
     # Models - Request/Response

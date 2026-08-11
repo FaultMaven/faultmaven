@@ -1,19 +1,26 @@
 """
 Report Recommendation Service - Intelligent Report Generation Recommendations
 
-Determines which reports to offer for generation with intelligent runbook
-similarity checking to prevent duplicate runbook generation.
+Determines which reports to offer for generation, with runbook similarity
+checking against the live knowledge base to warn about likely duplicates.
 
-Architecture Reference: docs/architecture/document-generation-and-closure-design.md
-Section 5.4: Intelligent Report Recommendation
+Scoped to the REQUESTER: the recommendation answers "should *you* generate a
+runbook?", and the requester is the principal who will act on the answer, so
+the search covers what the requester can read (global ∪ their own items ∪
+items shared to their teams). The engine's terminal-turn dedup scopes on the
+case owner for the same reason — the two call sites may legitimately disagree
+on the same case (owner decision, fm#1030).
+
+Architecture Reference: docs/architecture/knowledge-and-ai/runbook-dedup.md
 """
 
 import logging
-from typing import List
+from typing import Any, List, Optional
 
-from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.report import RunbookMatch
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.case.contracts import (
@@ -22,7 +29,11 @@ from faultmaven.modules.case.contracts import (
     ReportRecommendation,
     ReportType,
     RunbookRecommendation,
-    SimilarRunbook,
+    RunbookRef,
+)
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    build_kb_scope_filter,
+    resolve_shared_kb_ids,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,45 +44,72 @@ class ReportRecommendationService:
     Determines which reports to offer for generation.
 
     Key Features:
-    - Always offers: Incident Report, Post-Mortem (unique per incident)
+    - Always offers the terminal summary for the case's state
     - Conditionally offers: Runbook (based on similarity search)
-    - Prevents duplicate runbook generation through intelligent recommendations
+    - Surfaces likely duplicates by title and score for the user to judge
+
+    There is deliberately no "reuse" verdict. Best-chunk-max similarity
+    detects OVERLAP, not whole-runbook equivalence, and the old ≥0.85
+    auto-reuse threshold never fired against any real distribution — so the
+    service ships only the ≥0.70 review band and emits the top score as a
+    metric for later calibration (owner decision, fm#1030).
     """
 
-    # Similarity thresholds for recommendation logic
-    HIGH_SIMILARITY_THRESHOLD = 0.85  # ≥85%: Recommend reuse
-    MODERATE_SIMILARITY_THRESHOLD = 0.70  # 70-84%: Offer both options
+    # A match at or above this best-chunk similarity is surfaced for review.
+    REVIEW_SIMILARITY_THRESHOLD = 0.70
 
     def __init__(
         self,
         runbook_kb: RunbookKnowledgeBase,
+        *,
+        team_service: Any = None,
+        share_repository: Any = None,
     ):
         """
         Initialize report recommendation service.
 
         Args:
             runbook_kb: RunbookKnowledgeBase for similarity search
+            team_service: Optional team-membership resolver for the requester's
+                team arm. None in standalone — teams do not exist there, so the
+                arm is empty by construction (a skip, not a narrowed search).
+            share_repository: Optional ``IShareRepository`` backing that arm.
         """
         self.runbook_kb = runbook_kb
+        self._team_service = team_service
+        self._share_repository = share_repository
 
     @trace("get_available_report_types")
     async def get_available_report_types(
         self,
         case: Case,
+        *,
+        requester_user_id: str,
+        requester_organization_id: Optional[str] = None,
     ) -> ReportRecommendation:
         """
-        Determine which report types to offer for case.
+        Determine which report types to offer for case, for one requester.
 
         Logic:
-        - Incident Report: ALWAYS available (unique to this incident)
-        - Post-Mortem: ALWAYS available (unique to this incident)
+        - Terminal summary: ALWAYS available (unique to this incident)
         - Runbook: CONDITIONAL (check for existing similar runbooks)
 
         Args:
             case: Case object with investigation context
+            requester_user_id: The authenticated caller. The similarity search
+                is scoped to what THIS principal can read.
+            requester_organization_id: The caller's tenant claim; consumed only
+                by the team arm (``resolve_shared_kb_ids`` collapses the
+                Standalone sentinel under multi-tenant itself).
 
         Returns:
             ReportRecommendation with available types and runbook suggestion
+
+        Raises:
+            KnowledgeBaseError: When the similarity search could not run or
+                could not be read — including a requester scope that could not
+                be resolved. Never rendered as "no similar runbooks found";
+                the route turns it into a 503 refusal (#944).
         """
         logger.info(
             f"Getting report recommendations for case", extra={"case_id": case.case_id}
@@ -86,15 +124,19 @@ class ReportRecommendationService:
             ),
         ]
 
-        # Check for existing similar runbooks
-        existing_runbooks = await self._find_similar_runbooks(case)
+        # Check for existing similar runbooks, within the requester's scope
+        existing_runbooks = await self._find_similar_runbooks(
+            case,
+            requester_user_id=requester_user_id,
+            requester_organization_id=requester_organization_id,
+        )
 
         # Generate runbook recommendation based on similarity
         runbook_rec = self._generate_runbook_recommendation(existing_runbooks)
 
-        # If recommendation is to generate (low/no similarity), add runbook to available types
-        if runbook_rec.action in ["generate", "review_or_generate"]:
-            available_types.append(ReportType.RUNBOOK)
+        # Both actions leave generation available — the user judges. (The
+        # retired "reuse" action was the only one that withheld it.)
+        available_types.append(ReportType.RUNBOOK)
 
         recommendation = ReportRecommendation(
             case_id=case.case_id,
@@ -113,38 +155,62 @@ class ReportRecommendationService:
 
         return recommendation
 
+    async def _resolve_requester_scope(
+        self, requester_user_id: str, requester_organization_id: Optional[str]
+    ) -> dict:
+        """Resolve the requester's KB read scope for the similarity search.
+
+        global ∪ the requester's own items ∪ items shared to the requester's
+        teams — the same allowlist shape as KB retrieval (ADR-011 D3), built
+        from the caller's OWN ids so a filter built for user A can never
+        surface user B's personal runbooks.
+
+        A team-arm resolution failure is surfaced as a typed refusal, not
+        swallowed: a silently narrowed search would underpin a "checked,
+        nothing similar" claim it did not establish. The route renders the
+        refusal as its 503, alongside every other search-unavailable cause.
+        """
+        try:
+            team_ids: List[str] = []
+            if self._team_service:
+                team_ids = await self._team_service.list_all_user_team_ids(
+                    requester_user_id
+                )
+            shared_ids = await resolve_shared_kb_ids(
+                self._share_repository, team_ids, requester_organization_id
+            )
+        except Exception as e:
+            logger.warning(
+                f"Requester scope resolution failed for runbook dedup: {e}",
+                exc_info=True,
+            )
+            raise KnowledgeBaseError(
+                "Could not resolve the requester's knowledge-base scope; "
+                "refusing to run the runbook similarity search against a "
+                "narrower scope than the requester can read",
+                error_code="RUNBOOK_SCOPE_RESOLUTION_FAILED",
+            ) from e
+        return build_kb_scope_filter(requester_user_id, shared_ids)
+
     async def _find_similar_runbooks(
         self,
         case: Case,
-    ) -> List[SimilarRunbook]:
+        *,
+        requester_user_id: str,
+        requester_organization_id: Optional[str],
+    ) -> List[RunbookMatch]:
         """
-        Find existing runbooks similar to current case, within the case's tenant.
+        Find existing runbooks similar to current case, within the requester's
+        read scope.
 
-        Uses semantic similarity search on:
-        - Problem description
-        - Root cause (if available)
-        - Resolution steps (if available)
-        - Domain/technology tags
-
-        The tenant key comes from ``case.organization_id`` — a similarity search
-        is an id-free resolution path, so the org predicate is the only thing
-        keeping another tenant's runbooks out of the result set. It is resolved
-        through ``usable_tenant_id`` for the same reason
-        ``terminal_transitions._find_similar_runbooks_for_case`` does: the case
-        stamp comes from the *total* ``get_current_org_id``, so under
-        ``TENANT_PROVIDER=multi`` it can be the Standalone sentinel, which is not
-        a tenant there. ``search_runbooks`` then fails closed on the ``None``.
-
-        Args:
-            case: Case object
+        Uses semantic similarity search on the case's problem description.
 
         Returns:
             List of similar runbooks sorted by similarity score (descending)
         """
-        # Build filters for similarity search
-        filters = {}
-        if hasattr(case, "domain") and case.domain:
-            filters["domain"] = case.domain
+        scope_filter = await self._resolve_requester_scope(
+            requester_user_id, requester_organization_id
+        )
 
         # No try/except around this. Every failure mode here — an unavailable
         # embedder, an unreachable ChromaDB — used to collapse into [], which
@@ -155,8 +221,7 @@ class ReportRecommendationService:
         # (#944). The caller turns the typed error into a refusal.
         similar_runbooks = await self.runbook_kb.search_by_text(
             query_text=self._build_case_query_text(case),
-            organization_id=usable_tenant_id(case.organization_id),
-            filters=filters,
+            scope_filter=scope_filter,
             top_k=5,  # Get top 5 matches
             min_similarity=0.65,  # Minimum 65% similarity threshold
         )
@@ -166,6 +231,7 @@ class ReportRecommendationService:
                 f"Found {len(similar_runbooks)} similar runbooks",
                 extra={
                     "case_id": case.case_id,
+                    "metric": "runbook.dedup_top_similarity",
                     "top_similarity": similar_runbooks[0].similarity_score,
                 },
             )
@@ -193,10 +259,6 @@ class ReportRecommendationService:
         if case.description:
             searchable_parts.append(case.description)
 
-        # Add domain if available
-        if hasattr(case, "domain") and case.domain:
-            searchable_parts.append(f"Domain: {case.domain}")
-
         # Add tags if available
         if hasattr(case, "tags") and case.tags:
             searchable_parts.append(f"Tags: {', '.join(case.tags)}")
@@ -211,15 +273,15 @@ class ReportRecommendationService:
         return searchable_text
 
     def _generate_runbook_recommendation(
-        self, similar_runbooks: List[SimilarRunbook]
+        self, similar_runbooks: List[RunbookMatch]
     ) -> RunbookRecommendation:
         """
         Generate runbook recommendation based on similarity analysis.
 
-        Thresholds:
-        - ≥85% similarity: Recommend reuse existing
-        - 70-84% similarity: Offer both review OR generate
-        - <70% similarity: Recommend generation
+        Single band: a best-chunk match ≥70% is surfaced by title and score
+        for the user to judge; below that, generation is recommended without a
+        named candidate. There is no auto-"reuse" verdict — see the class
+        docstring.
 
         Args:
             similar_runbooks: List of similar runbooks from search
@@ -240,38 +302,29 @@ class ReportRecommendationService:
         best_match = similar_runbooks[0]
         similarity = best_match.similarity_score
 
-        if similarity >= self.HIGH_SIMILARITY_THRESHOLD:
-            # Very similar runbook exists (85%+ match)
-            return RunbookRecommendation(
-                action="reuse",
-                existing_runbook=best_match.runbook,
-                similarity_score=similarity,
-                reason=(
-                    f"Found existing runbook with {similarity:.0%} similarity. "
-                    "Recommend using existing runbook instead of generating new one."
-                ),
-            )
-
-        elif similarity >= self.MODERATE_SIMILARITY_THRESHOLD:
-            # Moderately similar runbook exists (70-84% match)
+        if similarity >= self.REVIEW_SIMILARITY_THRESHOLD:
             return RunbookRecommendation(
                 action="review_or_generate",
-                existing_runbook=best_match.runbook,
+                existing_runbook=RunbookRef(
+                    item_id=best_match.item_id,
+                    title=best_match.title,
+                    scope=best_match.scope,
+                ),
                 similarity_score=similarity,
                 reason=(
                     f"Found similar runbook ({similarity:.0%} match). "
-                    "Review existing runbook or generate new one if significantly different."
+                    "Review the existing runbook or generate a new one if "
+                    "significantly different."
                 ),
             )
 
-        else:
-            # Low similarity (<70%), offer generation
-            return RunbookRecommendation(
-                action="generate",
-                existing_runbook=None,
-                similarity_score=similarity,
-                reason=(
-                    f"Existing runbooks have low similarity ({similarity:.0%}). "
-                    "Generate new runbook for this specific scenario."
-                ),
-            )
+        # Low similarity (<70%), offer generation
+        return RunbookRecommendation(
+            action="generate",
+            existing_runbook=None,
+            similarity_score=similarity,
+            reason=(
+                f"Existing runbooks have low similarity ({similarity:.0%}). "
+                "Generate new runbook for this specific scenario."
+            ),
+        )

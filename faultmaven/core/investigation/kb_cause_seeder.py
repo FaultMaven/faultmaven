@@ -275,7 +275,8 @@ def confirmed_root_seed_origin(case: "Case") -> Optional[str]:
     not a conclusion. The worst outcome of a wrong answer here is a missing or
     redundant "generate runbook" affordance, never an incorrect conclusion or a
     collapse under pressure: the manual ``POST /knowledge/runbooks/create``
-    escape hatch and the async ``EXISTING_COVERS`` similarity backstop both
+    escape hatch and the async similarity dedup (which surfaces a ≥70% match
+    by title and score for the user to judge) both
     remain. Known false-negatives (a reused node the seeder never restamped, a
     ``BENIGN_DEDUP`` overlap, a retrieval miss) are exactly why this is a cheap
     SYNC tier ABOVE the similarity backstop, not a replacement for it.

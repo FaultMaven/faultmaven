@@ -126,11 +126,12 @@ class _KnowledgeStub:
 
 
 def _engine(knowledge_service, hypothesis_manager=None) -> MilestoneEngine:
-    """A MilestoneEngine with only the two attributes the seam touches set —
+    """A MilestoneEngine with only the attributes the seam touches set —
     ``__new__`` skips the heavy constructor."""
     engine = MilestoneEngine.__new__(MilestoneEngine)
     engine.knowledge_service = knowledge_service
     engine.hypothesis_manager = hypothesis_manager or create_hypothesis_manager()
+    engine.runbook_kb = None  # dedup honestly skipped in these seams (fm#1030)
     return engine
 
 
@@ -831,7 +832,7 @@ async def test_action_proceeds_when_cause_self_discovered(monkeypatch):
     )
     from faultmaven.core.investigation import terminal_transitions
 
-    async def _not_ready(case, runbook_kb=None):
+    async def _not_ready(case, runbook_kb=None, scope_resolver=None):
         return terminal_transitions.RunbookSuggestion(
             terminal_transitions.RunbookSuggestion.NOT_READY, "not ready"
         )

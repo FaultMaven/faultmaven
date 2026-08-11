@@ -1,490 +1,352 @@
-"""
-Unit tests for RunbookKnowledgeBase service.
+"""RunbookKnowledgeBase search behaviour over the live-writer row shape (fm#1030).
 
-Tests dual-source runbook similarity search and indexing.
+Dedup reads what ``KnowledgeService._index_document_in_vector_store`` writes:
+N chunk rows per runbook carrying ``document_type``, ``scope``, ``owner_id``,
+``title``, ``parent_document_id``. These tests pin the read path at the mock
+level — the query shape, the chunk→runbook collapse, the thresholds, and the
+typed refusals. The same properties are proven against a real ChromaDB client
+in ``test_runbook_kb_scope.py``, and end-to-end through the live
+``ingest_runbook`` writer in
+``tests/integration/test_runbook_dedup_live_path.py``.
 """
 
-from datetime import datetime
-from typing import Dict, List
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
-from faultmaven.models.exceptions import KnowledgeBaseError
-from faultmaven.models.report import (
-    CaseReport,
-    ReportStatus,
-    ReportType,
-    RunbookMetadata,
-    RunbookSource,
-    SimilarRunbook,
+from faultmaven.infrastructure.knowledge.runbook_kb import (
+    RESULTS_UNREADABLE_CODE,
+    RunbookKnowledgeBase,
 )
+from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.report import RunbookMatch
+
+pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
+
+_DIM = 8
+_SCOPE = {"$or": [{"scope": "global"}, {"owner_id": "user-a"}]}
 
 
-@pytest.fixture
-def mock_vector_store():
-    """Create mock vector store."""
-    store = Mock()
-    store.add_documents = AsyncMock()
-    store.query_by_embedding = AsyncMock()
-    return store
+def _vec(seed: float = 0.1) -> list:
+    return [seed] * _DIM
 
 
-@pytest.fixture
-def runbook_kb(mock_vector_store):
-    """Create RunbookKnowledgeBase instance with mocked dependencies."""
-    return RunbookKnowledgeBase(vector_store=mock_vector_store)
+def _chunk_meta(parent: str, title: str, scope: str = "global") -> dict:
+    """The key subset of what the LIVE writer stamps on every chunk."""
+    return {
+        "document_type": "runbook",
+        "scope": scope,
+        "title": title,
+        "parent_document_id": parent,
+        "chunk_index": 0,
+        "total_chunks": 1,
+    }
 
 
-@pytest.fixture
-def sample_incident_runbook():
-    """Create sample incident-driven runbook."""
-    return CaseReport(
-        report_id="report-123",
-        case_id="case-abc",
-        report_type=ReportType.RUNBOOK,
-        title="Runbook: Database Connection Pool Exhaustion",
-        content="# Runbook\n\n## Problem Description\n...",
-        format="markdown",
-        generation_status=ReportStatus.COMPLETED,
-        generated_at="2025-10-13T10:30:00Z",
-        generation_time_ms=12500,
-        is_current=True,
-        version=1,
-        linked_to_closure=False,
-        metadata=RunbookMetadata(
-            source=RunbookSource.INCIDENT_DRIVEN,
-            domain="database",
-            tags=["postgresql", "connection-pool", "performance"],
-            case_context={"root_cause": "Connection pool size too small"},
-        ),
-    )
+def _results(rows: list) -> dict:
+    """ChromaDB result shape: [(id, distance, metadata), ...]."""
+    return {
+        "ids": [[r[0] for r in rows]],
+        "distances": [[r[1] for r in rows]],
+        "metadatas": [[r[2] for r in rows]],
+        "documents": [["# chunk" for _ in rows]],
+    }
 
 
-@pytest.fixture
-def sample_document_runbook():
-    """Create sample document-driven runbook."""
-    return CaseReport(
-        report_id="report-456",
-        case_id="doc-derived",
-        report_type=ReportType.RUNBOOK,
-        title="Runbook: PostgreSQL Performance Troubleshooting",
-        content="# Runbook\n\n## Problem Description\n...",
-        format="markdown",
-        generation_status=ReportStatus.COMPLETED,
-        generated_at="2025-09-01T08:00:00Z",
-        generation_time_ms=0,
-        is_current=True,
-        version=1,
-        linked_to_closure=False,
-        metadata=RunbookMetadata(
-            source=RunbookSource.DOCUMENT_DRIVEN,
-            domain="database",
-            tags=["postgresql", "performance"],
-            document_title="PostgreSQL Operations Guide",
-            original_document_id="doc-789",
-        ),
-    )
+def _kb(rows=None) -> RunbookKnowledgeBase:
+    store = MagicMock()
+    store.query_by_embedding = AsyncMock(return_value=_results(rows or []))
+    return RunbookKnowledgeBase(vector_store=store)
 
 
-# =============================================================================
-# Test: search_runbooks
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Query shape
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_search_runbooks_high_similarity(
-    runbook_kb, mock_vector_store, sample_incident_runbook
-):
-    """Test searching for runbooks with high similarity match."""
-    # Mock ChromaDB response
-    mock_vector_store.query_by_embedding.return_value = {
-        "ids": [["report-123"]],
-        "distances": [[0.26]],  # Distance 0.26 → Similarity 0.87 (high)
-        "metadatas": [
-            [
-                {
-                    "report_id": "report-123",
-                    "case_id": "case-abc",
-                    "case_title": "Database Connection Pool Exhaustion",
-                    "title": "Runbook: Database Connection Pool Exhaustion",
-                    "report_type": "runbook",
-                    "runbook_source": "incident_driven",
-                    "domain": "database",
-                    "tags": "postgresql,connection-pool,performance",
-                    "created_at": "2025-10-13T10:30:00Z",
-                }
-            ]
-        ],
-        "documents": [["# Runbook\n\n## Problem Description\n..."]],
-    }
+async def test_the_query_filters_on_document_type_and_the_callers_scope():
+    """The where clause is exactly {"$and": [document_type, scope_filter]}.
 
-    # Search for similar runbooks
-    query_embedding = [0.1] * 1024  # Dummy embedding
-    results = await runbook_kb.search_runbooks(
-        query_embedding=query_embedding,
-        organization_id="org-A",
-        filters={"domain": "database"},
-        top_k=5,
-        min_similarity=0.65,
-    )
-
-    # Assertions
-    assert len(results) == 1
-    assert isinstance(results[0], SimilarRunbook)
-    assert results[0].similarity_score >= 0.85  # High similarity
-    assert results[0].runbook.report_type == ReportType.RUNBOOK
-    assert results[0].case_id == "case-abc"
-
-    # Verify vector store was called correctly
-    mock_vector_store.query_by_embedding.assert_called_once()
-    call_args = mock_vector_store.query_by_embedding.call_args[1]
-    assert call_args["query_embedding"] == query_embedding
-    # Explicit $and — ChromaDB >=1.0 rejects a multi-key implicit-AND `where`.
-    assert call_args["where"] == {
-        "$and": [
-            {"report_type": "runbook"},
-            {"organization_id": "org-A"},
-            {"domain": "database"},
-        ]
-    }
-    assert call_args["top_k"] == 5
-
-
-@pytest.mark.asyncio
-async def test_search_runbooks_no_results(runbook_kb, mock_vector_store):
-    """Test searching when no similar runbooks exist."""
-    # Mock empty ChromaDB response
-    mock_vector_store.query_by_embedding.return_value = {
-        "ids": [[]],
-        "distances": [[]],
-        "metadatas": [[]],
-        "documents": [[]],
-    }
-
-    query_embedding = [0.1] * 1024
-    results = await runbook_kb.search_runbooks(
-        query_embedding=query_embedding,
-        organization_id="org-A",
-        top_k=5,
-        min_similarity=0.65,
-    )
-
-    assert len(results) == 0
-
-
-@pytest.mark.asyncio
-async def test_search_runbooks_filters_by_similarity_threshold(
-    runbook_kb, mock_vector_store
-):
-    """Test that results below minimum similarity are filtered out."""
-    # Mock response with low similarity (distance 1.0 → similarity 0.50)
-    mock_vector_store.query_by_embedding.return_value = {
-        "ids": [["report-123"]],
-        "distances": [[1.0]],  # Low similarity
-        "metadatas": [
-            [
-                {
-                    "report_id": "report-123",
-                    "case_id": "case-abc",
-                    "case_title": "Test Runbook",
-                    "title": "Runbook: Test",
-                    "report_type": "runbook",
-                    "runbook_source": "incident_driven",
-                    "domain": "general",
-                    "tags": "",
-                    "created_at": "2025-10-13T10:30:00Z",
-                }
-            ]
-        ],
-        "documents": [["Test content"]],
-    }
-
-    results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024,
-        organization_id="org-A",
-        min_similarity=0.65,  # 65% threshold
-    )
-
-    # Result should be filtered out (similarity 0.50 < 0.65)
-    assert len(results) == 0
-
-
-@pytest.mark.asyncio
-async def test_search_runbooks_sorts_by_similarity(runbook_kb, mock_vector_store):
-    """Test that results are sorted by similarity score descending."""
-    # Mock response with multiple results
-    mock_vector_store.query_by_embedding.return_value = {
-        "ids": [["report-1", "report-2", "report-3"]],
-        "distances": [[0.4, 0.2, 0.6]],  # Similarities: 0.80, 0.90, 0.70
-        "metadatas": [
-            [
-                {
-                    "report_id": "report-1",
-                    "case_id": "case-1",
-                    "case_title": "Database Case 1",
-                    "title": "Runbook: Database Issue 1",
-                    "report_type": "runbook",
-                    "runbook_source": "incident_driven",
-                    "domain": "general",
-                    "tags": "",
-                    "created_at": "2025-10-13T10:00:00Z",
-                },
-                {
-                    "report_id": "report-2",
-                    "case_id": "case-2",
-                    "case_title": "Database Case 2",
-                    "title": "Runbook: Database Issue 2",
-                    "report_type": "runbook",
-                    "runbook_source": "document_driven",
-                    "domain": "general",
-                    "tags": "",
-                    "created_at": "2025-10-13T11:00:00Z",
-                },
-                {
-                    "report_id": "report-3",
-                    "case_id": "case-3",
-                    "case_title": "Database Case 3",
-                    "title": "Runbook: Database Issue 3",
-                    "report_type": "runbook",
-                    "runbook_source": "incident_driven",
-                    "domain": "general",
-                    "tags": "",
-                    "created_at": "2025-10-13T12:00:00Z",
-                },
-            ]
-        ],
-        "documents": [["Content 1", "Content 2", "Content 3"]],
-    }
-
-    results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024, organization_id="org-A", min_similarity=0.65
-    )
-
-    # Should be sorted: report-2 (0.90), report-1 (0.80), report-3 (0.70)
-    assert len(results) == 3
-    assert results[0].runbook.report_id == "report-2"
-    assert results[0].similarity_score >= 0.89  # ~0.90
-    assert results[1].runbook.report_id == "report-1"
-    assert results[1].similarity_score >= 0.79  # ~0.80
-    assert results[2].runbook.report_id == "report-3"
-    assert results[2].similarity_score >= 0.69  # ~0.70
-
-
-@pytest.mark.asyncio
-async def test_search_runbooks_surfaces_a_query_failure(runbook_kb, mock_vector_store):
-    """A failed query must not be reported as "no similar runbooks".
-
-    Inverted by #944. This previously asserted that a ChromaDB failure returns
-    ``[]`` and called that "graceful". It was not: every caller reads ``[]`` as
-    "the KB holds nothing similar" and proposes a new runbook, so an
-    unreachable vector store silently produced duplicate runbooks on every
-    resolution. Degrading a failure into a substantive negative is the defect,
-    not the handling.
+    ``document_type == "runbook"`` is what the LIVE writer stamps — the old
+    ``report_type`` predicate matched only rows a dead writer would have
+    written, so every dedup query could only return [] (fm#1030). The scope
+    filter is the caller's, composed as ONE ``$and`` operand.
     """
-    mock_vector_store.query_by_embedding.side_effect = Exception(
-        "ChromaDB connection failed"
+    kb = _kb()
+
+    await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE)
+
+    where = kb.vector_store.query_by_embedding.await_args.kwargs["where"]
+    assert where == {"$and": [{"document_type": "runbook"}, _SCOPE]}
+
+
+@pytest.mark.asyncio
+async def test_the_fetch_is_chunk_deep_not_result_shallow():
+    """top_k runbooks needs more than top_k CHUNKS fetched.
+
+    One runbook is N chunk rows, so a fetch of ``top_k`` chunks can be
+    entirely filled by one long runbook. The fetch depth must be
+    ``top_k * CHUNK_FETCH_MULTIPLIER``.
+    """
+    kb = _kb()
+
+    await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE, top_k=5)
+
+    kwargs = kb.vector_store.query_by_embedding.await_args.kwargs
+    assert kwargs["top_k"] == 5 * RunbookKnowledgeBase.CHUNK_FETCH_MULTIPLIER
+
+
+# ---------------------------------------------------------------------------
+# Chunk → runbook collapse
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_one_long_runbook_does_not_fill_every_result_slot():
+    """Chunks collapse by parent_document_id, best (max) chunk score wins."""
+    kb = _kb(
+        [
+            ("kb-long_chunk_0", 0.10, _chunk_meta("kb-long", "Long runbook")),
+            ("kb-long_chunk_1", 0.20, _chunk_meta("kb-long", "Long runbook")),
+            ("kb-long_chunk_2", 0.30, _chunk_meta("kb-long", "Long runbook")),
+            ("kb-other_chunk_0", 0.40, _chunk_meta("kb-other", "Other runbook")),
+        ]
+    )
+
+    matches = await kb.search_runbooks(
+        query_embedding=_vec(), scope_filter=_SCOPE, top_k=2
+    )
+
+    assert [m.item_id for m in matches] == ["kb-long", "kb-other"]
+    # MAX per parent: distance 0.10 → similarity 0.95, not the weaker chunks'.
+    assert matches[0].similarity_score == pytest.approx(0.95)
+    assert matches[1].similarity_score == pytest.approx(0.80)
+    assert isinstance(matches[0], RunbookMatch)
+    assert matches[0].title == "Long runbook"
+    assert matches[0].scope == "global"
+
+
+@pytest.mark.asyncio
+async def test_results_are_sorted_descending_and_truncated_to_top_k():
+    kb = _kb(
+        [
+            ("a_chunk_0", 0.60, _chunk_meta("a", "A")),
+            ("b_chunk_0", 0.20, _chunk_meta("b", "B")),
+            ("c_chunk_0", 0.40, _chunk_meta("c", "C")),
+        ]
+    )
+
+    matches = await kb.search_runbooks(
+        query_embedding=_vec(), scope_filter=_SCOPE, top_k=2
+    )
+
+    assert [m.item_id for m in matches] == ["b", "c"]
+    scores = [m.similarity_score for m in matches]
+    assert scores == sorted(scores, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_chunks_below_the_similarity_threshold_are_discarded():
+    kb = _kb(
+        [
+            ("near_chunk_0", 0.20, _chunk_meta("near", "Near")),
+            # distance 1.2 → similarity 0.40 < 0.65 default threshold
+            ("far_chunk_0", 1.20, _chunk_meta("far", "Far")),
+        ]
+    )
+
+    matches = await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE)
+
+    assert [m.item_id for m in matches] == ["near"]
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_miss_returns_an_empty_list():
+    kb = _kb([])
+
+    assert await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE) == []
+
+
+# ---------------------------------------------------------------------------
+# Typed refusals
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_scope", [None, {}, ""])
+async def test_an_unscoped_search_is_refused_without_querying(bad_scope):
+    """No scope filter → typed refusal, and the store is never queried.
+
+    Similarity search is id-free: without the caller's scope there is no
+    predicate keeping one principal's personal runbooks out of another's
+    results. The refusal is typed so it can never be read as "none found".
+    """
+    kb = _kb()
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(query_embedding=_vec(), scope_filter=bad_scope)
+
+    assert excinfo.value.error_code == "RUNBOOK_SEARCH_UNSCOPED"
+    kb.vector_store.query_by_embedding.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_scope", [None, {}])
+async def test_search_by_text_refuses_an_unscoped_search_before_embedding(
+    bad_scope, monkeypatch
+):
+    """The text entry point refuses BEFORE spending the embedding budget."""
+    embed = AsyncMock(return_value=_vec())
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.knowledge.runbook_kb.embed_query_or_raise", embed
+    )
+    kb = _kb()
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_by_text(query_text="oom", scope_filter=bad_scope)
+
+    assert excinfo.value.error_code == "RUNBOOK_SEARCH_UNSCOPED"
+    embed.assert_not_awaited()
+    kb.vector_store.query_by_embedding.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_query_failure_is_a_typed_error_not_an_empty_list():
+    kb = _kb()
+    kb.vector_store.query_by_embedding = AsyncMock(
+        side_effect=RuntimeError("chromadb unreachable")
     )
 
     with pytest.raises(KnowledgeBaseError) as excinfo:
-        await runbook_kb.search_runbooks(
-            query_embedding=[0.1] * 1024, organization_id="org-A"
-        )
+        await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE)
 
     assert excinfo.value.error_code == "RUNBOOK_SEARCH_FAILED"
 
 
-@pytest.mark.asyncio
-async def test_search_runbooks_still_returns_empty_for_a_genuine_miss(
-    runbook_kb, mock_vector_store
-):
-    """The gate must be able to pass: a working query that matches nothing is
-    still an honest empty result, not an error."""
-    mock_vector_store.query_by_embedding.return_value = {"ids": [[]]}
-
-    results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024, organization_id="org-A"
-    )
-
-    assert results == []
-
-
-# =============================================================================
-# Test: index_runbook
-# =============================================================================
+# ---------------------------------------------------------------------------
+# Unreadable identity
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_index_runbook_incident_driven(
-    runbook_kb, mock_vector_store, sample_incident_runbook
-):
-    """Test indexing an incident-driven runbook."""
-    await runbook_kb.index_runbook(
-        runbook=sample_incident_runbook,
-        organization_id="org-A",
-        source=RunbookSource.INCIDENT_DRIVEN,
-        case_title="Database Connection Pool Exhaustion",
-        domain="database",
-        tags=["postgresql", "connection-pool", "performance"],
-    )
-
-    # Verify vector store was called
-    mock_vector_store.add_documents.assert_called_once()
-    call_args = mock_vector_store.add_documents.call_args[0][0]
-
-    assert len(call_args) == 1
-    doc = call_args[0]
-    assert doc["id"] == "report-123"
-    assert doc["content"] == sample_incident_runbook.content
-    assert doc["metadata"]["report_type"] == "runbook"
-    assert doc["metadata"]["runbook_source"] == "incident_driven"
-    assert doc["metadata"]["domain"] == "database"
-    assert doc["metadata"]["tags"] == "postgresql,connection-pool,performance"
-
-
-@pytest.mark.asyncio
-async def test_index_runbook_document_driven(
-    runbook_kb, mock_vector_store, sample_document_runbook
-):
-    """Test indexing a document-driven runbook."""
-    await runbook_kb.index_runbook(
-        runbook=sample_document_runbook,
-        organization_id="org-A",
-        source=RunbookSource.DOCUMENT_DRIVEN,
-        case_title="PostgreSQL Operations Guide",
-        domain="database",
-        tags=["postgresql", "performance"],
-    )
-
-    # Verify vector store was called
-    mock_vector_store.add_documents.assert_called_once()
-    call_args = mock_vector_store.add_documents.call_args[0][0]
-
-    doc = call_args[0]
-    assert doc["metadata"]["runbook_source"] == "document_driven"
-    assert doc["metadata"]["document_title"] == "PostgreSQL Operations Guide"
-    assert doc["metadata"]["original_document_id"] == "doc-789"
-
-
-@pytest.mark.asyncio
-async def test_index_runbook_skips_non_runbook_types(runbook_kb, mock_vector_store):
-    """Test that non-runbook report types are not indexed."""
-    incident_report = CaseReport(
-        report_id="report-999",
-        case_id="case-xyz",
-        report_type=ReportType.RESOLUTION_SUMMARY,  # Not a runbook
-        title="Resolution Summary",
-        content="# Resolution Summary...",
-        format="markdown",
-        generation_status=ReportStatus.COMPLETED,
-        generated_at="2025-10-13T10:30:00Z",
-        generation_time_ms=10000,
-        is_current=True,
-        version=1,
-    )
-
-    await runbook_kb.index_runbook(
-        runbook=incident_report,
-        organization_id="org-A",
-        source=RunbookSource.INCIDENT_DRIVEN,
-    )
-
-    # Should NOT call vector store for non-runbook types
-    mock_vector_store.add_documents.assert_not_called()
-
-
-# =============================================================================
-# Test: index_document_derived_runbook
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_index_document_derived_runbook(runbook_kb, mock_vector_store):
-    """Test convenience method for indexing document-derived runbooks."""
-    runbook_id = await runbook_kb.index_document_derived_runbook(
-        runbook_content="# PostgreSQL Performance Runbook\n\n...",
-        document_title="PostgreSQL Operations Guide",
-        domain="database",
-        tags=["postgresql", "performance", "troubleshooting"],
-        organization_id="org-A",
-        original_document_id="doc-abc123",
-    )
-
-    # Should return a UUID
-    assert isinstance(runbook_id, str)
-    assert len(runbook_id) == 36  # UUID format
-
-    # Verify vector store was called
-    mock_vector_store.add_documents.assert_called_once()
-    call_args = mock_vector_store.add_documents.call_args[0][0]
-
-    doc = call_args[0]
-    assert doc["id"] == runbook_id
-    assert doc["metadata"]["case_id"] == "doc-derived"
-    assert doc["metadata"]["runbook_source"] == "document_driven"
-    assert doc["metadata"]["document_title"] == "PostgreSQL Operations Guide"
-    assert doc["metadata"]["original_document_id"] == "doc-abc123"
-    assert doc["metadata"]["domain"] == "database"
-    assert "postgresql" in doc["metadata"]["tags"]
-
-
-# =============================================================================
-# Test: Dual-Source Runbook Architecture
-# =============================================================================
-
-
-@pytest.mark.asyncio
-async def test_search_finds_both_incident_and_document_runbooks(
-    runbook_kb, mock_vector_store
-):
-    """Test that search returns runbooks from both sources."""
-    # Mock response with mixed sources
-    mock_vector_store.query_by_embedding.return_value = {
-        "ids": [["report-incident", "report-document"]],
-        "distances": [[0.2, 0.3]],  # Both high similarity
-        "metadatas": [
-            [
-                {
-                    "report_id": "report-incident",
-                    "case_id": "case-abc",
-                    "case_title": "Incident Case",
-                    "title": "Runbook from Incident",
-                    "report_type": "runbook",
-                    "runbook_source": "incident_driven",
-                    "domain": "database",
-                    "tags": "postgresql",
-                    "created_at": "2025-10-13T10:00:00Z",
-                },
-                {
-                    "report_id": "report-document",
-                    "case_id": "doc-derived",
-                    "case_title": "PostgreSQL Guide",
-                    "title": "Runbook from Documentation",
-                    "report_type": "runbook",
-                    "runbook_source": "document_driven",
-                    "domain": "database",
-                    "tags": "postgresql",
-                    "created_at": "2025-09-01T08:00:00Z",
-                    "document_title": "PostgreSQL Guide",
-                },
-            ]
-        ],
-        "documents": [["Incident runbook content", "Document runbook content"]],
+async def test_a_matched_chunk_without_a_title_is_unreadable_and_can_refuse():
+    """``title`` is truthiness-gated at write, so an empty-titled document's
+    chunks carry NO title key — reachable, not hypothetical. When such a chunk
+    outranks every readable match the search refuses instead of reporting the
+    runner-up as the best available (#944 via the partial case)."""
+    meta_no_title = {
+        "document_type": "runbook",
+        "scope": "global",
+        "parent_document_id": "kb-untitled",
+        "chunk_index": 0,
+        "total_chunks": 1,
     }
-
-    results = await runbook_kb.search_runbooks(
-        query_embedding=[0.1] * 1024, organization_id="org-A", min_similarity=0.65
+    kb = _kb(
+        [
+            ("kb-untitled_chunk_0", 0.10, meta_no_title),  # 0.95, unreadable
+            ("kb-ok_chunk_0", 0.40, _chunk_meta("kb-ok", "Readable")),  # 0.80
+        ]
     )
 
-    # Should find both types
-    assert len(results) == 2
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE)
 
-    # First result: incident-driven
-    assert results[0].runbook.metadata.source == RunbookSource.INCIDENT_DRIVEN
-    assert results[0].case_id == "case-abc"
+    assert excinfo.value.error_code == RESULTS_UNREADABLE_CODE
 
-    # Second result: document-driven
-    assert results[1].runbook.metadata.source == RunbookSource.DOCUMENT_DRIVEN
-    assert results[1].case_id == "doc-derived"
-    assert results[1].runbook.metadata.document_title == "PostgreSQL Guide"
+
+@pytest.mark.asyncio
+async def test_an_unreadable_chunk_below_the_best_readable_match_does_not_refuse():
+    """A skipped row that cannot change the top-match verdict is tolerated."""
+    meta_no_title = {
+        "document_type": "runbook",
+        "scope": "global",
+        "parent_document_id": "kb-untitled",
+    }
+    kb = _kb(
+        [
+            ("kb-ok_chunk_0", 0.10, _chunk_meta("kb-ok", "Readable")),  # 0.95
+            ("kb-untitled_chunk_0", 0.40, meta_no_title),  # 0.80, unreadable
+        ]
+    )
+
+    matches = await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE)
+
+    assert [m.item_id for m in matches] == ["kb-ok"]
+
+
+@pytest.mark.asyncio
+async def test_a_tie_between_unreadable_and_readable_is_not_a_refusal():
+    """At equal similarity the readable row produces the same verdict and
+    names a runbook that really exists at that score — refusing would fail a
+    correct answer over a row that could not have changed it."""
+    meta_no_title = {
+        "document_type": "runbook",
+        "scope": "global",
+        "parent_document_id": "kb-untitled",
+    }
+    kb = _kb(
+        [
+            ("kb-ok_chunk_0", 0.30, _chunk_meta("kb-ok", "Readable")),
+            ("kb-untitled_chunk_0", 0.30, meta_no_title),
+        ]
+    )
+
+    matches = await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE)
+
+    assert [m.item_id for m in matches] == ["kb-ok"]
+
+
+@pytest.mark.asyncio
+async def test_a_dissimilar_unreadable_chunk_is_not_counted_at_all():
+    """Rows correctly discarded as dissimilar are neither matches nor
+    unreadable — an unparseable row below the threshold cannot manufacture a
+    refusal."""
+    meta_no_title = {
+        "document_type": "runbook",
+        "scope": "global",
+        "parent_document_id": "kb-untitled",
+    }
+    kb = _kb(
+        [
+            # distance 1.4 → similarity 0.30 < threshold; also unreadable
+            ("kb-untitled_chunk_0", 1.40, meta_no_title),
+        ]
+    )
+
+    assert await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE) == []
+
+
+@pytest.mark.asyncio
+async def test_an_entirely_unreadable_result_set_refuses():
+    """The degenerate case of the same rule: with nothing readable, any
+    unread candidate is strictly the best (sentinel -1.0)."""
+    meta_no_title = {
+        "document_type": "runbook",
+        "scope": "global",
+        "parent_document_id": "kb-untitled",
+    }
+    kb = _kb([("kb-untitled_chunk_0", 0.10, meta_no_title)])
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE)
+
+    assert excinfo.value.error_code == RESULTS_UNREADABLE_CODE
+
+
+@pytest.mark.asyncio
+async def test_the_unreadable_refusal_is_not_retried():
+    """The parse runs OUTSIDE ``call_external``: a deterministic refusal must
+    not consume the retry budget or count towards the shared breaker (#912).
+    One query means the parse raised past the retry machinery."""
+    meta_no_title = {
+        "document_type": "runbook",
+        "scope": "global",
+        "parent_document_id": "kb-untitled",
+    }
+    kb = _kb([("kb-untitled_chunk_0", 0.10, meta_no_title)])
+
+    with pytest.raises(KnowledgeBaseError):
+        await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE)
+
+    assert kb.vector_store.query_by_embedding.await_count == 1
