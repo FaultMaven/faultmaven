@@ -110,9 +110,13 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
         Raises:
             KnowledgeBaseError: If the embedding model is unavailable or its
-                load exceeds ``EMBED_TIMEOUT_SECONDS``. The caller must NOT
-                render either as "no similar runbooks found" — that is the
-                affirmative negative this method exists to end.
+                load exceeds ``EMBED_TIMEOUT_SECONDS``; also anything
+                :meth:`search_runbooks` raises, which this method delegates to
+                and does not catch (``RUNBOOK_SEARCH_UNSCOPED``,
+                ``RUNBOOK_SEARCH_FAILED``, ``RUNBOOK_RESULTS_UNREADABLE``). The
+                caller must NOT render any of them as "no similar runbooks
+                found" — that is the affirmative negative this method exists to
+                end.
         """
         # Refuse an unscoped search HERE rather than relying on
         # search_runbooks' falsy-org guard. That guard fails closed by
@@ -189,6 +193,15 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
         Returns:
             List of SimilarRunbook objects sorted by similarity score (descending)
+
+        Raises:
+            KnowledgeBaseError: ``RUNBOOK_SEARCH_FAILED`` if the vector query
+                itself failed, or ``RUNBOOK_RESULTS_UNREADABLE`` if rows matched
+                but none carried a usable identity. Neither may be rendered as
+                "no similar runbooks found": callers turn an empty list into
+                "generate a new runbook", so a search that could not be
+                completed or could not be read must not answer as one that was
+                (#944).
         """
         if not organization_id:
             logger.warning(
@@ -294,10 +307,41 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 # values before ChromaDB ever saw them (#912). The handler below
                 # turns a missing key into a logged skip, which is the honest
                 # answer.
+                # Identity is resolved FIRST, and presence and validity are
+                # judged together. A key that is absent and a key holding a
+                # value this code cannot interpret (``runbook_source="manual"``)
+                # mean the same thing — the row was not written by this path —
+                # and they must be counted the same way. Judging them on
+                # different axes puts the invalid case in the generic handler
+                # below, which does not count it, so a result set of entirely
+                # foreign rows would collapse back to ``[]`` and be read as "no
+                # similar runbook exists" (#944).
+                #
+                # No defaults anywhere here. The ones that used to stand in did
+                # not read as "missing", they read as facts: ``case_id="unknown"``
+                # and ``case_title="Unknown"`` for every row this path wrote, and
+                # a ``"incident_driven"`` fallback that labelled document-driven
+                # runbooks as incident-driven (#912).
+                try:
+                    identity_case_id = metadata["case_id"]
+                    identity_case_title = metadata["case_title"]
+                    identity_source = RunbookSource(metadata["runbook_source"])
+                except (KeyError, ValueError) as e:
+                    unreadable += 1
+                    logger.warning(
+                        f"Runbook {report_id} carries no usable identity "
+                        f"({e!r}), skipping it",
+                        extra={
+                            "report_id": report_id,
+                            "metadata_keys": sorted(metadata),
+                        },
+                    )
+                    continue
+
                 try:
                     runbook = CaseReport(
                         report_id=report_id,
-                        case_id=metadata["case_id"],
+                        case_id=identity_case_id,
                         report_type=ReportType.RUNBOOK,
                         title=metadata.get("title", "Untitled Runbook"),
                         content=content,
@@ -311,16 +355,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                         version=1,
                         linked_to_closure=False,
                         metadata=RunbookMetadata(
-                            # No default. ``index_runbook`` stamps the real
-                            # source on every row, so a row without one was not
-                            # written by this path and its provenance is
-                            # unknown — the old ``"incident_driven"`` fallback
-                            # did not record that, it asserted the opposite,
-                            # returning document-driven runbooks labelled as
-                            # incident-driven (#912). A KeyError here is caught
-                            # by the handler below, which skips the row with a
-                            # warning instead of guessing.
-                            source=RunbookSource(metadata["runbook_source"]),
+                            source=identity_source,
                             domain=metadata.get("domain", "general"),
                             tags=(
                                 metadata.get("tags", "").split(",")
@@ -336,31 +371,11 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     similar_runbook = SimilarRunbook(
                         runbook=runbook,
                         similarity_score=similarity,
-                        case_title=metadata["case_title"],
-                        case_id=metadata["case_id"],
+                        case_title=identity_case_title,
+                        case_id=identity_case_id,
                     )
 
                     similar_runbooks.append(similar_runbook)
-
-                except KeyError as e:
-                    # An identity key ``index_runbook`` always stamps is absent,
-                    # so this row was not written by this path and there is
-                    # nothing to reconstruct it from. Counted separately from
-                    # the failures below because only this class of row makes
-                    # the result set untrustworthy rather than merely shorter.
-                    # Logs the keys the row actually carries: a KeyError's
-                    # message is just the key name, and the useful question is
-                    # which of the stamps are missing (#912).
-                    unreadable += 1
-                    logger.warning(
-                        f"Runbook {report_id} is missing identity key {e}, "
-                        f"skipping it",
-                        extra={
-                            "report_id": report_id,
-                            "metadata_keys": sorted(metadata),
-                        },
-                    )
-                    continue
 
                 except Exception as e:
                     # Any other reconstruction failure — a stored row that

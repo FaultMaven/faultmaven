@@ -116,7 +116,8 @@ For the data-type × backend × deployment breakdown, see:
 │   Cloud: both use HttpClient to external ChromaDB server             │
 │                                                                        │
 │   Scope isolation: faultmaven_kb queries use metadata filters        │
-│   (scope/owner_id/team_id). See vector-storage.md §1.1, §4.2, §1.3  │
+│   (scope/owner_id; team shares resolve to an id allowlist at query  │
+│   time, never stored). See vector-storage.md §1.1, §4.2, §1.3       │
 │   for collection design, scope-filter examples, and ingestion detail.│
 │                                                                        │
 │ S3-Compatible Storage:                                                │

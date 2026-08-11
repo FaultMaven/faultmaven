@@ -359,6 +359,30 @@ async def test_a_result_set_that_is_entirely_unreadable_refuses(kb, store):
 
 
 @pytest.mark.asyncio
+async def test_an_identity_value_it_cannot_interpret_counts_as_unreadable(kb, store):
+    """A foreign identity VALUE is as unreadable as a missing key.
+
+    ``runbook_source="manual"`` is present but means nothing to
+    ``RunbookSource``. Judged on a different axis from absence it would raise
+    ``ValueError`` instead of ``KeyError``, land in the generic skip handler,
+    and not be counted — so a result set of entirely foreign rows would collapse
+    back to ``[]`` and be read as "no similar runbook exists", which is the
+    #944 collapse the refusal exists to close. Presence and validity are one
+    question: can this row be read?
+    """
+    foreign = _runbook_metadata(ORG_A, "rb-1")
+    foreign["runbook_source"] = "manual"  # not a RunbookSource member
+    await store.seed("rb-foreign-source", foreign, _vec(0.5))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
 async def test_an_unreadable_result_set_is_refused_without_retrying(kb, store):
     """The refusal must cost ONE query, not three, and no breaker credit.
 
