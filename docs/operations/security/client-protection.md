@@ -394,13 +394,15 @@ Changing the limits a deployment actually runs on means changing the preset in
 
 ### Per-endpoint rate limits
 
-`RateLimitMiddleware.endpoint_configs` reserves a hook for limits attached to a
-single path. **No endpoint currently uses it** — the two entries present declare
-limit types that the dispatch path does not read, and neither carries a
-`special_handling` callable. The `title_generation` entry the presets configure,
-and the `agent_query` entry the `ProtectionSettings` model default carries, are
-likewise never checked — no code path calls `check_rate_limit` with either type.
-Per-session cost control is done by the read/write split above, not here.
+**There are none.** `RateLimitMiddleware` once reserved an `endpoint_configs`
+hook for limits attached to a single path; both entries declared limit types the
+dispatch path never read and neither carried a `special_handling` callable, so
+the check was an awaited no-op that left the feature looking configurable. It
+was removed in fm#985 item 12. The `title_generation` entry the presets
+configure, and the `agent_query` entry the `ProtectionSettings` model default
+carries, remain configured but unchecked — no code path passes either type to
+the limiter. Per-session cost control is done by the read/write split above, not
+here.
 
 There is no progressive penalty ladder. A refused client is told how long its
 own window actually takes to free quota, and nothing longer: repeat offenders

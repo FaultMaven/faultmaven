@@ -24,30 +24,49 @@ The script is registered once per adopted Redis client (`register_script`), so
 requests carry an EVALSHA rather than the script body, and redis-py reloads the
 body only if the server answers NOSCRIPT.
 
-Check algorithm (atomic, one Lua script):
+Check algorithm (atomic, one Lua script). A request is usually subject to
+several windows at once — an address-keyed `global` limit plus a session-keyed
+per-minute and hourly pair — and **all of them are decided in one script call**:
 
-1. **Prune.** Every entry whose score is less than or equal to `now − window`
-   is removed. The bound is *inclusive*, so an entry scored exactly one window
-   ago is outside the window: the window is the half-open interval
-   `(now − window, now]`.
-2. **Count** the entries still in the set — the number of requests inside the
-   window.
-3. **Read the oldest survivor's score** (`ZRANGE key 0 0 WITHSCORES`), before
-   any insert.
-4. If `count >= limit`: **blocked**; nothing is inserted (a blocked request
-   must not consume quota or extend the window).
-5. Otherwise insert the new member with the new score, refresh the key TTL
-   (`window + 60`), and allow.
+1. **Pass one, per window.** Prune every entry whose score is less than or equal
+   to `now − window`. The bound is *inclusive*, so an entry scored exactly one
+   window ago is outside the window: the window is the half-open interval
+   `(now − window, now]`. Then count the entries still in the set, and read the
+   oldest survivor's score (`ZRANGE key 0 0 WITHSCORES`) — before any insert.
+   Note the first window, in the order the caller passed them, whose
+   `count >= limit`.
+2. **Pass two.** If no window refused, insert the new member with the new score
+   into **every** window and refresh each key's TTL (`window + 60`). If any
+   window refused, insert nothing anywhere.
 
-The script returns **four** elements: `{count, limit, allowed, oldest_score}`.
-`oldest_score` is an empty string when the window held nothing — an empty
-string rather than nil, because a nil inside a Lua table truncates the array
-and the caller would receive a three-element reply indistinguishable from the
-pre-fm#931 contract.
+**All-or-nothing is a correctness property, not an optimisation** (fm#985 item
+8). Checked one window at a time, each admitted window inserted before the next
+had a chance to refuse — so a request the hourly bucket turned away had already
+consumed a unit of `global` and of the per-minute bucket, for a response nobody
+received. Behind a NAT that is how one throttled client fills the shared
+address-keyed window with entries for requests that were never served. Deciding
+them together makes a refusal free, and collapses three serial round trips into
+one.
+
+The **order** the windows are passed is precedence order (`global`, per-minute,
+hourly). At most one result is refused — the first — so a refused client is
+named the same limit it was named when these were three sequential checks.
+
+The reply is `{blocked_position, count₁, oldest₁, count₂, oldest₂, …}`.
+`blocked_position` is the 1-based index of the first window that refused, or `0`
+when every window admitted. Each `oldest` is an empty string when that window
+held nothing — an empty string rather than nil, because a nil inside a Lua table
+truncates the array and the caller would receive a short reply it could not
+distinguish from a different contract.
+
+The script is multi-key by construction, so it assumes a single Redis keyspace:
+the windows are keyed on different identities and would not share a hash slot
+under Redis Cluster. FaultMaven runs standalone Redis with replicas; a move to
+Cluster would need these keys hash-tagged onto one slot.
 
 ## Honest client signalling
 
-Everything the client is told is derived from `oldest_score`. The oldest entry
+Everything the client is told is derived from its window's `oldest` score. The oldest entry
 ages out exactly one window after it arrived, so **`oldest_score + window` is
 the instant the next unit of quota frees**:
 
@@ -85,10 +104,10 @@ the instant the next unit of quota frees**:
 Both numbers come from a single `frees_at`, computed once per check, so
 `reset_time` and `Retry-After` cannot name different instants. The formula lives
 in one place — `infrastructure/protection/window_math.py` (`quota_frees_at`,
-`retry_after_seconds`) — and all three enforcers call it: the Redis check path,
-the read-only status path, and the in-memory OAuth/SSO limiter in
-`modules/auth/api/rate_limiting.py`. It had been hand-expanded at each of those
-sites, so a correction to one was a silent divergence from the other two.
+`retry_after_seconds`) — and both enforcers call it: the Redis check path and
+the in-memory OAuth/SSO limiter in `modules/auth/api/rate_limiting.py`. It had
+been hand-expanded at each site, so a correction to one was a silent divergence
+from the other.
 
 `Retry-After` carries **no jitter and no cap**. The value is already
 per-client — each client's oldest entry arrived at its own time — so herd
@@ -110,11 +129,25 @@ Response headers:
   request carried a session id. `global` is the only limit covering
   unauthenticated traffic, so gating the headers on a session used to leave
   precisely those callers with nothing to pace against.
+- Both also carry **`X-RateLimit-Policy`**, naming which bucket the numbers
+  describe, in the same token the configuration uses (`global`,
+  `per_session_read_hourly`, `oauth`, …). Five buckets can produce the same
+  `Limit`/`Remaining` pair, and on a 429 the response body carries counts and a
+  wait but no limit type — so without this header a refused client knows how
+  long to wait and not what it hit, which is the difference between "slow this
+  endpoint down" and "back off everywhere".
 - Results reporting `limit == 0` are skipped: that is a disabled limit, and
   also what a check reports after failing open on a Redis error. Publishing it
   would tell every client it has no quota at all.
 
-All four header names are in the `cors_expose_headers` default. A header a
+"Least remaining quota" compares **absolute** remaining counts across windows of
+different sizes, deliberately. Window size governs when quota refills, not how
+much of it is left: a client with 50 requests left in an hourly bucket may send
+50 more right now whatever its per-minute bucket says, so the smallest remaining
+count is the binding constraint on the next request. `X-RateLimit-Policy` and
+`X-RateLimit-Reset` together say which window it belongs to and when it refills.
+
+All five header names are in the `cors_expose_headers` default. A header a
 cross-origin caller cannot read is a header not sent, and the responses that
 carry them are exactly the ones a browser client must act on.
 
@@ -122,8 +155,10 @@ carry them are exactly the ones a browser client must act on.
 general limits that is `RateLimitMiddleware`; for the auth endpoints it is the
 OAuth limiter dependencies in `modules/auth/api/rate_limiting.py`, which attach
 the full quartet to the 429 they raise and, on an allowed request, append their
-`RateLimitResult` to `request.state.rate_limit_results` so the served response
-advertises the OAuth limit whenever it is the tightest one the caller is under
+`RateLimitResult` to `request.state.rate_limit_results` — the inbox
+`RateLimitMiddleware` opens for inner enforcers and merges with its own results
+— so the served response advertises the OAuth limit whenever it is the tightest
+one the caller is under
 (it usually is — 5–10/min against the general limits' hundreds). Nothing else in
 the **request-protection stack** sets or defaults a rate-limit header, and
 `X-RateLimit-Window` is not emitted at all. Two writers can only agree by
@@ -239,19 +274,6 @@ shared across processes and replicas through Redis, so scores must be
 comparable across hosts. NTP-scale skew moves the window edge by the skew
 amount — acceptable for rate limiting; per-request uniqueness never depends
 on the clock (the uuid provides it even if time stands still).
-
-`get_rate_limit_status` (the read-only status path) derives its bound from the
-same shared helper as enforcement, so the two cannot disagree on where the
-window begins. It is strictly read-only: a `ZCOUNT` from the *exclusive* form
-of that bound to `+inf`, plus a `ZRANGEBYSCORE … LIMIT 0 1 WITHSCORES` for the
-oldest survivor, from which it derives the same `reset_time` enforcement
-derives. Exclusive is the exact complement of enforcement's inclusive prune —
-the prune removes scores at or below the bound, so the entries it would leave
-are those strictly above it. Counting rather than pruning-then-counting means
-reporting status never mutates a window a concurrent check is deciding against,
-and the call is safe to serve from a read replica. The two commands are not
-atomic with each other; an entry ageing out between them can only make the
-reported instant conservative, which is the safe direction for a status report.
 
 ## Test obligations
 
