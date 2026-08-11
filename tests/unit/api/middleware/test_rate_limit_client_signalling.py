@@ -455,21 +455,32 @@ async def test_the_headers_report_the_tightest_limit():
 async def test_the_headers_cost_no_extra_redis_round_trip():
     """They are emitted from results the checks already read.
 
-    The old path re-queried ``get_rate_limit_status`` on every served response —
-    an extra round trip per request to learn a number already in hand.
+    The old path re-queried the limiter on every served response — an extra
+    round trip per request to learn a number already in hand. Counted at the
+    script boundary: the guard used to stub ``get_rate_limit_status``, which
+    this work deleted, so it named a method nothing could call and would have
+    stayed green however many times the header path went back to Redis.
     """
     mw = _middleware(_settings(global_requests=5))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
 
-    async def _must_not_be_called(*args, **kwargs):
-        raise AssertionError("the header path queried Redis again")
+    # Warm the limiter so initialization is not counted as request-path work.
+    await mw.dispatch(_request(app, _unique_client()), _call_next)
 
-    mw.rate_limiter.get_rate_limit_status = _must_not_be_called
+    calls = []
+    real_script = mw.rate_limiter._window_script
+
+    async def _counting_script(*args, **kwargs):
+        calls.append(kwargs.get("keys"))
+        return await real_script(*args, **kwargs)
+
+    mw.rate_limiter._window_script = _counting_script
 
     response = await mw.dispatch(_request(app, _unique_client()), _call_next)
 
     assert response.status_code == 200
     assert response.headers["X-RateLimit-Limit"] == "5"
+    assert len(calls) == 1, f"the header path went back to Redis: {calls}"
 
 
 async def test_a_disabled_limit_is_not_advertised_as_a_limit_of_zero():
@@ -585,17 +596,44 @@ async def test_all_windows_are_decided_in_one_round_trip():
     assert len(calls[0]) == 3, calls[0]
 
 
-async def test_a_route_that_poisons_the_inbox_does_not_run_twice():
-    """The inbox is a shared namespace, and dispatch's catch-all re-runs the route.
+async def test_a_route_that_raises_is_not_executed_twice():
+    """``call_next`` must be invoked exactly once, whatever the route does.
 
-    ``request.state.rate_limit_results`` is written by inner enforcers, so
-    anything in the stack can put anything in it. Reading it inside dispatch's
-    ``try`` body — rather than inside the header helper's own ``except`` — meant
-    an unexpected shape raised into the handler that calls ``call_next`` a
-    second time, applying every route side effect twice. Failing to advertise a
-    header is a cosmetic loss; running a POST handler twice is not.
+    It used to sit inside the ``try`` whose ``except Exception`` handler also
+    calls ``call_next``, so an unhandled error anywhere at or after the route
+    re-ran the whole downstream application: a POST that raised had its side
+    effects applied twice, and the exception propagated anyway so nothing in the
+    response said so. The verdict is now taken first and the route served
+    afterwards, outside every handler.
+
+    Driven with a raising route because that is the dominant reachable case —
+    any 500 in any handler reached it. Asserting on the *count* rather than on
+    the response is the point: the second execution was invisible from outside.
     """
-    from starlette.responses import JSONResponse
+    mw = _middleware(_settings(global_requests=1000))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+    calls = []
+
+    async def _raising_call_next(request):
+        calls.append(1)
+        raise RuntimeError("boom in the route")
+
+    with pytest.raises(RuntimeError, match="boom in the route"):
+        await mw.dispatch(_request(app, _unique_client()), _raising_call_next)
+
+    assert len(calls) == 1, f"the route ran {len(calls)} times"
+
+
+async def test_a_route_that_poisons_the_inbox_still_serves_once():
+    """The inbox is a shared namespace anything in the stack can write to.
+
+    A route replacing ``request.state.rate_limit_results`` with a non-iterable
+    must cost at most the advertisement, never a second execution and never a
+    500. Two independent guards hold this — the shape check in the header path
+    and that path's own ``except`` — so this passes with either one removed;
+    it is a property test, not a mutation probe for either guard.
+    """
+    from starlette.responses import JSONResponse as _JSONResponse
 
     mw = _middleware(_settings(global_requests=1000))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
@@ -604,7 +642,7 @@ async def test_a_route_that_poisons_the_inbox_does_not_run_twice():
     async def _poisoning_call_next(request):
         calls.append(1)
         request.state.rate_limit_results = object()
-        return JSONResponse(status_code=200, content={"ok": True})
+        return _JSONResponse(status_code=200, content={"ok": True})
 
     response = await mw.dispatch(_request(app, _unique_client()), _poisoning_call_next)
 

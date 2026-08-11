@@ -176,7 +176,9 @@ class RateLimitMiddleware:
 
     Features:
     - Sliding window algorithm (counts requests, not seconds)
-    - Multiple limit types (global, per-session, per-endpoint)
+    - Multiple limit types (global, per-session read/write, per-session hourly)
+    - Every window a request is subject to decided in ONE atomic script, so a
+      refusal by any of them consumes quota in none
     - Graceful degradation when Redis unavailable
     """
 ```

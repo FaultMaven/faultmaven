@@ -25,7 +25,7 @@ from faultmaven.config.protection import (
     get_development_protection_settings,
     get_production_protection_settings,
 )
-from faultmaven.models.protection import RateLimitResult
+from faultmaven.models.protection import LimitType, RateLimitResult
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 

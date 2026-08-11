@@ -25,10 +25,20 @@ from .window_math import quota_frees_at, retry_after_seconds
 # Three, not one: a single timeout is the shape of a transient blip (one slow
 # round trip, one failover hiccup) and demoting on it would re-enter the ladder
 # constantly on a healthy but busy deployment. Three, not thirty: every limited
-# request performs at least one check, so on any pod carrying traffic three
+# request performs exactly one check, so on any pod carrying traffic three
 # consecutive failures is sub-second — a genuinely dead client cannot survive
 # long. The count is *consecutive* and resets on any success, so an intermittent
 # one-in-N error never accumulates into a demotion.
+#
+# One check per *request*, not per window: deciding every window in one script
+# call means a request against a dead pool contributes one failure rather than
+# up to three. Under the fail-closed production preset that is no change — the
+# first failing window already re-raised, so a request only ever contributed one
+# — but a fail-open deployment now takes three requests to demote instead of
+# one, and those three pass unlimited. That is the same bounded window the
+# threshold has always described, measured in requests rather than in windows,
+# and the alternative (counting each window) would let one dead pool demote on a
+# single request while an unauthenticated one still needed three.
 #
 # What the threshold does *not* bound is how much traffic goes unlimited before
 # the ladder is re-entered. That is a duration, not a request count: three
@@ -42,7 +52,8 @@ from .window_math import quota_frees_at, retry_after_seconds
 CHECK_FAILURE_DEMOTION_THRESHOLD = 3
 
 # Floor on how often a run of failing checks may log at ERROR. Without it the
-# catch-all logged once per check — up to four lines per request, indefinitely.
+# catch-all logged once per failing check, indefinitely — and when each window
+# was a separate check that was up to four lines per request.
 CHECK_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 
 # Every sliding window a request is subject to, decided as one atomic script:
@@ -155,14 +166,15 @@ def _format_window_start(now: float, window: int) -> str:
 
 
 def _parse_oldest_score(raw) -> Optional[float]:
-    """The script's fourth element as a float, or ``None`` when the window is empty.
+    """A window's oldest-entry element as a float, or ``None`` when it was empty.
 
     The script returns an empty string rather than nil for "no entries", because
-    a nil inside a Lua table truncates the array at that point and the caller
-    would see a three-element reply it could not distinguish from the old
-    contract. Anything that does not parse is treated as absent, which falls the
-    caller back to ``now + window`` — the conservative answer, never a shorter
-    wait than the truth.
+    a nil inside a Lua table truncates the array at that point — and the reply
+    interleaves one count and one oldest-score per window, so a truncation would
+    silently shorten the whole tail and misalign every window after it with the
+    spec it belongs to. Anything that does not parse is treated as absent, which
+    falls the caller back to ``now + window`` — the conservative answer, never a
+    shorter wait than the truth.
     """
     if raw is None or raw == "" or raw == b"":
         return None
@@ -179,9 +191,9 @@ class RedisRateLimiter:
     Redis-backed sliding window rate limiter
 
     Features:
-    - Multiple limit types (global, per-session, per-endpoint)
+    - Multiple limit types (global, per-session read/write, per-session hourly)
     - Sliding window algorithm for smooth rate limiting
-    - Lua scripts for atomic operations
+    - One Lua script per request, deciding every window atomically
     """
 
     def __init__(
@@ -608,6 +620,15 @@ class RedisRateLimiter:
         a window at all. It never reaches Redis and comes back as "allowed,
         limit 0" — the same answer the single-window path gave, and the one
         ``RateLimitMiddleware`` reads as "nothing to advertise here".
+
+        **Specs must resolve to distinct Redis keys.** One member id is written
+        into every admitted window so the entry that appears in each of them
+        names the same request; two specs sharing a key would therefore have the
+        second ``ZADD`` update the first's member rather than add one, consuming
+        one slot while both results report a count including this request. The
+        key is ``prefix:limit_type:key``, so distinct limit types are always
+        distinct keys and ``RateLimitMiddleware`` cannot construct the
+        collision — it is a constraint on callers, not a latent bug.
         """
         start_time = time.time()
 

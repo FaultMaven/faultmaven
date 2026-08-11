@@ -302,20 +302,21 @@ _CLIENT_IP_MEMO = "_resolved_client_ip"
 def resolve_client_ip_once(request: Request, trusted_proxies: TrustedProxies) -> str:
     """:func:`resolve_client_ip`, computed at most once per request.
 
-    Four layers ask the same question about the same request — the rate limiter
-    keys its ``global`` window on the answer, the logging middleware labels the
-    request line with it, the performance middleware attributes its timings to
-    it, and the OAuth limiter keys its own buckets on it. Each was walking the
+    Five call sites ask the same question about the same request — the rate
+    limiter keys its ``global`` window on the answer, the logging middleware
+    labels the request line with it, the performance middleware attributes its
+    timings to it, the OAuth limiter keys its own buckets on it, and the SSO
+    callback records it in the JIT audit trail. Each was walking the
     ``X-Forwarded-For`` chain again: parsing every hop, testing each against
     every trusted network, and on the refusal path the rate limiter did it a
     second time just to name the caller in a WARN line.
 
-    Recomputing is not merely wasteful, it is a place for the four answers to
+    Recomputing is not merely wasteful, it is a place for the five answers to
     drift apart if their configuration ever diverges — and "what is the client"
     has to have one answer, which is the premise this whole module is built on.
 
     **The memo is keyed on the trusted-proxy set it was computed with**, and that
-    is the correctness leg rather than a nicety. All four consumers read
+    is the correctness leg rather than a nicety. All five consumers read
     ``PROTECTION_TRUSTED_PROXIES`` through the same single reader today, so the
     key always matches and the memo always hits. If one ever gets a different
     list — injected in a test, or a future caller that scopes trust differently —

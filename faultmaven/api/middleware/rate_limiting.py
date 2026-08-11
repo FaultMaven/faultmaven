@@ -130,7 +130,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     Multi-level rate limiting middleware
 
     Features:
-    - Global, per-session, and per-endpoint rate limits
+    - Global and per-session rate limits, decided together so a refusal by one
+      consumes quota in none (there are no per-endpoint limits; the hook that
+      reserved them was an awaited no-op and was removed)
     - Redis-backed with in-memory fallback
     - Detailed metrics and logging
     - Security headers in responses
@@ -236,9 +238,31 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._init_lock = asyncio.Lock()
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        """Main middleware dispatch with rate limiting"""
+        """Decide the request's limit verdict, then serve it — exactly once.
+
+        **``call_next`` is invoked outside the guarded region, and that is a
+        correctness property rather than tidiness.** It used to sit inside the
+        ``try`` whose ``except Exception`` handler *also* calls ``call_next``, so
+        any exception raised at or after the route — an unhandled 500 in a
+        handler, or anything this middleware did on the way back out — re-ran the
+        entire downstream application. A POST that raised had its side effects
+        applied twice and then propagated the exception anyway, so nothing in the
+        response said it had happened. Deciding first and serving afterwards
+        makes the double-serve unrepresentable instead of merely unlikely.
+
+        The verdict is one of three things:
+
+        - a list of results — the request is limited and every window admitted
+          it, so the results are advertised on the way back;
+        - ``None`` — the request is not limited at all (limiting disabled, a
+          bypass header, a probe path), or the limiter failed and the deployment
+          fails open, so there is nothing to advertise;
+        - a response — refused, either by a limit (429) or by the fail-closed
+          policy with no usable client (503). Returned without the route running.
+        """
 
         start_time = time.time()
+        results: Optional[List[RateLimitResult]] = None
 
         try:
             # Resolve "does this request get rate limited at all" BEFORE
@@ -247,64 +271,49 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # to give on — least of all the liveness probes, whose 503 gets the
             # pod killed.
             if not self.settings.rate_limiting_enabled:
-                return await call_next(request)
-
-            # Check for bypass headers (development/testing) and probe paths
-            if self._should_bypass(request):
+                pass
+            elif self._should_bypass(request):
                 self.logger.debug("Rate limiting bypassed")
-                return await call_next(request)
+            elif not await self._initialize(request):
+                # No usable client. Whether that means pass or refuse is a
+                # policy decision, taken here because it is about serving
+                # unlimited traffic rather than about being inside a cooldown.
+                if not self._may_serve_without_a_limiter():
+                    self.metrics["errors"] += 1
+                    return JSONResponse(
+                        status_code=503,
+                        content={
+                            "error": "service_unavailable",
+                            "message": "Rate limiting service temporarily unavailable",
+                        },
+                    )
+            else:
+                # This middleware's own verdict comes back as a value rather
+                # than via ``request.state``. The old stash was written before
+                # the checks ran and appended to as they went, so a refusal left
+                # it holding whichever windows happened to be measured first —
+                # state that outlived the decision it belonged to and described
+                # it only partially. A return value cannot be partial: it exists
+                # only once every window has been decided.
+                results = await self._check_rate_limits(request)
 
-            # Initialize the rate limiter if needed (resolves the Redis client
-            # from app.state, which is populated by the lifespan composition
-            # root). Returns whether a usable client is available.
-            if not await self._initialize(request):
-                return await self._serve_without_a_limiter(request, call_next)
-
-            # This middleware's own verdict comes back as a value rather than
-            # via ``request.state``. The old stash was written before the checks
-            # ran and appended to as they went, so a refusal left it holding
-            # whichever windows happened to be measured first — state that
-            # outlived the decision it belonged to and described it only
-            # partially. A return value cannot be partial: it exists only once
-            # every window has been decided.
-            results = await self._check_rate_limits(request)
-
-            # ``rate_limit_results`` survives, but with one job instead of two:
-            # it is the inbox through which *inner* enforcers offer their state
-            # to this header path. The OAuth/SSO limiter runs as a route
-            # dependency, long after this point and with no way to return
-            # anything here, and its 5–10/min quota is the tightest an OAuth
-            # caller is under — the one it most needs advertised. It appends only
-            # when the attribute exists, so creating it here is what says "the
-            # middleware is in the stack and will publish what you put in".
-            #
-            # Created after the checks, so a refused request never leaves an
-            # inbox behind for a response that is never served.
-            request.state.rate_limit_results = []
-
-            # Process request
-            response = await call_next(request)
-
-            # Advertise across both sources: the windows decided here, and
-            # whatever an inner enforcer contributed while the route ran. The
-            # inbox is read inside the helper, under its own try/except —
-            # reading it here would put a shared-namespace access in the body of
-            # a try whose handler calls ``call_next`` again, so a route that
-            # replaced the attribute with a non-iterable would be executed a
-            # second time with its side effects applied twice.
-            self._add_rate_limit_headers(results, request, response)
-
-            # Update metrics
-            check_duration = time.time() - start_time
-            self._update_metrics(check_duration, blocked=False)
-
-            return response
+                # ``rate_limit_results`` survives, but with one job instead of
+                # two: it is the inbox through which *inner* enforcers offer
+                # their state to this header path. The OAuth/SSO limiter runs as
+                # a route dependency, long after this point and with no way to
+                # return anything here, and its 5–10/min quota is the tightest an
+                # OAuth caller is under — the one it most needs advertised. It
+                # appends only when the attribute exists, so creating it here is
+                # what says "the middleware is in the stack and will publish what
+                # you put in".
+                #
+                # Created after the checks, so a refused request never leaves an
+                # inbox behind for a response that is never served.
+                request.state.rate_limit_results = []
 
         except RateLimitError as e:
-            # Rate limit exceeded
             check_duration = time.time() - start_time
             self._update_metrics(check_duration, blocked=True)
-
             return self._create_rate_limit_response(e, request)
 
         except Exception as e:
@@ -315,11 +324,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             )
             self.metrics["errors"] += 1
 
-            # Fail open if configured
-            if self.settings.fail_open_on_redis_error:
-                self.logger.warning("Rate limiting failed, allowing request")
-                return await call_next(request)
-            else:
+            if not self.settings.fail_open_on_redis_error:
                 return JSONResponse(
                     status_code=503,
                     content={
@@ -327,6 +332,52 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         "message": "Rate limiting service temporarily unavailable",
                     },
                 )
+
+            # Fail open: serve the request below, with nothing to advertise.
+            self.logger.warning("Rate limiting failed, allowing request")
+            results = None
+
+        # The verdict is settled and the route has not run. Everything from here
+        # is outside the handlers above, so a failure in the route — or in the
+        # header path on the way back — can never re-enter ``call_next``.
+        response = await call_next(request)
+
+        if results is not None:
+            self._add_rate_limit_headers(results, request, response)
+
+        self._update_metrics(time.time() - start_time, blocked=False)
+        return response
+
+    def _may_serve_without_a_limiter(self) -> bool:
+        """Whether a request that would be limited may be served with no client.
+
+        Called only for requests that *would* be rate limited, so this is where
+        the fail-open/fail-closed policy belongs: it is a decision about serving
+        unlimited traffic, not about being inside a retry cooldown.
+
+        The check itself is skipped outright rather than run against a ``None``
+        client — doing that emitted one to four ERROR lines per request for the
+        whole cooldown window. The condition is logged once per window instead.
+
+        Returns the verdict rather than a response, so the caller keeps
+        ``call_next`` on its single un-guarded path.
+        """
+        now = time.monotonic()
+        if (
+            self._unavailable_logged_at is None
+            or now - self._unavailable_logged_at >= INIT_RETRY_COOLDOWN_SECONDS
+        ):
+            self._unavailable_logged_at = now
+            self.logger.error(
+                "Rate limiter has no Redis client; %s until it initializes",
+                (
+                    "requests pass unlimited"
+                    if self.settings.fail_open_on_redis_error
+                    else "requests are refused"
+                ),
+            )
+
+        return self.settings.fail_open_on_redis_error
 
     async def _initialize(self, request: Request) -> bool:
         """Ensure the limiter holds a usable Redis client; report whether it does.
@@ -447,46 +498,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     else "Rate limiting middleware initialized"
                 )
             return True
-
-    async def _serve_without_a_limiter(
-        self, request: Request, call_next: Callable
-    ) -> Response:
-        """Decide what a request means when there is no client to check against.
-
-        Called only for requests that *would* be rate limited, so this is where
-        the fail-open/fail-closed policy belongs: it is a decision about serving
-        unlimited traffic, not about being inside a retry cooldown.
-
-        The check itself is skipped outright rather than run against a ``None``
-        client — doing that emitted one to four ERROR lines per request for the
-        whole cooldown window. The condition is logged once per window instead.
-        """
-        now = time.monotonic()
-        if (
-            self._unavailable_logged_at is None
-            or now - self._unavailable_logged_at >= INIT_RETRY_COOLDOWN_SECONDS
-        ):
-            self._unavailable_logged_at = now
-            self.logger.error(
-                "Rate limiter has no Redis client; %s until it initializes",
-                (
-                    "requests pass unlimited"
-                    if self.settings.fail_open_on_redis_error
-                    else "requests are refused"
-                ),
-            )
-
-        if self.settings.fail_open_on_redis_error:
-            return await call_next(request)
-
-        self.metrics["errors"] += 1
-        return JSONResponse(
-            status_code=503,
-            content={
-                "error": "service_unavailable",
-                "message": "Rate limiting service temporarily unavailable",
-            },
-        )
 
     def _should_bypass(self, request: Request) -> bool:
         """Check if request should bypass rate limiting"""
