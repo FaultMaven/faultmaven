@@ -158,8 +158,19 @@ def _auth_service(private_pem: str, public_pem: str):
     )
 
 
-def _lifetime(payload: dict) -> timedelta:
-    return timedelta(seconds=payload["exp"] - payload["iat"])
+def _assert_lifetime(payload: dict, expected: timedelta) -> None:
+    """The configured lifetime reached the mint, within stamp granularity.
+
+    Under the #831 split, ``iat`` is the pre-read basis and ``exp`` is
+    mint-time plus the lifetime, so ``exp - iat`` exceeds the configured
+    lifetime by the basis-to-mint span — sub-second here (the tests capture
+    immediately before minting), but whole-second truncation can push the
+    difference to 1. What this file asserts is WHICH settings half supplies
+    the lifetime, and a wrong half is minutes-to-days off, far outside the
+    2-second window.
+    """
+    measured = timedelta(seconds=payload["exp"] - payload["iat"])
+    assert expected <= measured <= expected + timedelta(seconds=2)
 
 
 class TestCloudMintHonoursTheKnob:
@@ -201,7 +212,7 @@ class TestCloudMintHonoursTheKnob:
             audience=AUDIENCE,
             issuer=ISSUER,
         )
-        assert _lifetime(payload) == timedelta(minutes=minutes)
+        _assert_lifetime(payload, timedelta(minutes=minutes))
 
     @pytest.mark.parametrize("minutes,days", LIFETIME_PAIRS)
     @pytest.mark.asyncio
@@ -231,7 +242,7 @@ class TestCloudMintHonoursTheKnob:
             audience=AUDIENCE,
             issuer=ISSUER,
         )
-        assert _lifetime(payload) == timedelta(days=days)
+        _assert_lifetime(payload, timedelta(days=days))
 
 
 class TestLocalMintHonoursTheSameKnob:
@@ -274,8 +285,8 @@ class TestLocalMintHonoursTheSameKnob:
             issuer=ISSUER,
         )
 
-        assert _lifetime(access) == timedelta(minutes=minutes)
-        assert _lifetime(refresh) == timedelta(days=days)
+        _assert_lifetime(access, timedelta(minutes=minutes))
+        _assert_lifetime(refresh, timedelta(days=days))
 
 
 class TestRetiredSpellingIsRejected:

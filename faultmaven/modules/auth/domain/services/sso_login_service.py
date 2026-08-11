@@ -54,6 +54,9 @@ from faultmaven.models.interfaces_user import AuditCategory, AuditEventType
 from faultmaven.models.rbac import Role
 from faultmaven.models.rbac_seed import SYSTEM_ROLE_IDS
 from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    capture_state_read_at,
+)
 from faultmaven.modules.auth.exceptions import SSOAuthenticationError
 
 logger = structlog.get_logger(__name__)
@@ -294,7 +297,7 @@ class SSOLoginService:
         # user provisioning). It rides the login payload so ``exchange`` can
         # stamp the tokens from whichever leg read state first — the
         # completion code itself is not revocable, so it must carry its basis.
-        state_read_at = datetime.now(UTC)
+        state_read_at = capture_state_read_at()
 
         if not state or len(state) > _MAX_STATE_LENGTH:
             logger.warning("sso_callback_rejected", reason="state_invalid")
@@ -386,7 +389,9 @@ class SSOLoginService:
         completion_code = secrets.token_urlsafe(32)
         login_payload: dict[str, Any] = {
             "user_id": user.user_id,
-            "state_read_at": state_read_at.isoformat(),
+            # Epoch seconds, not isoformat: a number cannot be naive, so the
+            # exchange-side parse has no aware/naive failure class (#831).
+            "state_read_at": state_read_at.timestamp(),
         }
         if organization is not None:
             # Mint-time tenancy rides the completion code: the user row has no
@@ -533,8 +538,8 @@ class SSOLoginService:
         or deactivated since the callback) — the router maps None to a uniform
         401 so the endpoint cannot be used to distinguish failure causes.
         """
-        # #831: capture before this leg's reads (login payload, user row).
-        state_read_at = datetime.now(UTC)
+        # #831: before this leg's reads (login payload, user row).
+        state_read_at = capture_state_read_at()
 
         payload = await self._store.consume_login(code)
         if payload is None:
@@ -547,20 +552,21 @@ class SSOLoginService:
         # carrying the pre-revocation tenant (#831). Absent only for payloads
         # written by a pre-#831 process during a rolling deploy; the 60s TTL
         # bounds that window and this leg's capture still applies.
+        #
+        # ``is not None``, not truthiness: a present-but-unusable value must
+        # take the warn-and-degrade branch, never a silent skip. The broad
+        # except is deliberate — an escape here would 500 the exchange after
+        # ``consume_login`` already burned the single-use code, and
+        # ``fromtimestamp`` can raise TypeError (non-numeric), ValueError /
+        # OverflowError / OSError (out-of-range) depending on the garbage.
         callback_read_at = payload.get("state_read_at")
-        if callback_read_at:
-            # TypeError included deliberately: the plausible malformations — a
-            # naive isoformat string (parses fine, then ``min`` across
-            # naive/aware raises TypeError) or a non-string value (TypeError
-            # inside ``fromisoformat``) — are NOT ValueErrors, and an escape
-            # here would 500 the exchange after ``consume_login`` already
-            # burned the single-use code. Degrading to this leg's capture is
-            # the intended posture for a foreign payload.
+        if callback_read_at is not None:
             try:
                 state_read_at = min(
-                    state_read_at, datetime.fromisoformat(callback_read_at)
+                    state_read_at,
+                    datetime.fromtimestamp(callback_read_at, UTC),
                 )
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError, OSError):
                 logger.warning(
                     "sso_exchange_bad_state_read_at", user_id=payload.get("user_id")
                 )

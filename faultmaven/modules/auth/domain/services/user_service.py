@@ -52,6 +52,7 @@ from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     PASSWORD_RESET_TOKEN_EXPIRY_HOURS,
     PasswordResetMint,
+    capture_state_read_at,
 )
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
@@ -309,10 +310,10 @@ class UserService(BaseService):
 
         self.logger.debug(f"Password reset requested for: {email}")
 
-        # #831: capture before the account lookup. One instant for both
-        # branches — real and decoy mints must not differ by the lookup's
-        # latency in ``iat``.
-        state_read_at = datetime.now(timezone.utc)
+        # #831: before the account lookup. One instant for both branches —
+        # real and decoy mints must not differ by the lookup's latency in
+        # ``iat``.
+        state_read_at = capture_state_read_at()
 
         mint = await self._mint_reset_token(signer, email, state_read_at)
 

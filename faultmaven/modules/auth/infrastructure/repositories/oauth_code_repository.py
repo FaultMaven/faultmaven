@@ -218,6 +218,11 @@ class PostgresOAuthCodeRepository(IOAuthCodeRepository):
         )
 
         async with self.session_factory() as session:
+            # ``state_read_at`` (#831) is deliberately not persisted here:
+            # this repository is not wired by any composition path and its
+            # table has no such column. If it is ever wired, codes it stores
+            # fall back to the exchange leg's capture (bounded by the code
+            # TTL) until a column is added.
             model = OAuthAuthorizationCodeModel(
                 code=code_data.code,
                 user_id=code_data.user_id,

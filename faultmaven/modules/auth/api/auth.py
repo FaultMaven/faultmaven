@@ -62,6 +62,9 @@ from faultmaven.modules.auth.domain.models.auth import DevUser, TokenStatus
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    capture_state_read_at,
+)
 from faultmaven.utils.serialization import to_json_compatible
 
 # Initialize router and logger
@@ -286,9 +289,9 @@ async def local_login(
     """
     correlation_id = str(uuid.uuid4())
 
-    # #831: captured before the first read of any state the tokens derive
-    # from (the user row); the mints below stamp ``iat`` from it.
-    state_read_at = datetime.now(timezone.utc)
+    # #831: before the first read of any state the tokens derive from
+    # (the user row).
+    state_read_at = capture_state_read_at()
 
     try:
         # Get required services
@@ -456,8 +459,8 @@ async def local_register(
     """
     correlation_id = str(uuid.uuid4())
 
-    # #831: capture before the first store read — see local_login.
-    state_read_at = datetime.now(timezone.utc)
+    # #831: before the first store read — see local_login.
+    state_read_at = capture_state_read_at()
 
     try:
         # Get required services
@@ -596,10 +599,10 @@ async def refresh_tokens(
     """
     correlation_id = str(uuid.uuid4())
 
-    # #831: capture before the refresh-token validation, not just the user
-    # load — the presented token's still-unrevoked status is itself state
-    # this handler reads.
-    state_read_at = datetime.now(timezone.utc)
+    # #831: before the refresh-token validation, not just the user load —
+    # the presented token's still-unrevoked status is itself state this
+    # handler reads.
+    state_read_at = capture_state_read_at()
 
     try:
         user_store = await get_user_store(request)

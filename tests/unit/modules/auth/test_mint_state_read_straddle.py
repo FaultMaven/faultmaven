@@ -11,8 +11,11 @@ revocation while carrying pre-change state.
 
 The fix: every ``IJWTTokenGenerator`` mint requires ``state_read_at`` —
 captured by the caller before its first read of any state the claims derive
-from — and stamps ``iat``/``exp`` from it. A straddling mint then necessarily
-carries ``iat <= watermark`` and dies with it.
+from — and stamps ``iat`` from it (``exp`` stays a mint-time stamp: revocation
+consumes nothing from it, and deriving it from the basis could mint an
+already-expired token as success). A straddling mint then necessarily carries
+``iat <= watermark`` and dies with it. Two-leg flows carry the first leg's
+basis on the hand-off artifact as epoch seconds.
 
 Covered here:
 1. The straddle itself, at the generator surface: a token minted from a
@@ -21,8 +24,8 @@ Covered here:
    the pre-#831 code, where ``iat`` was mint-time ``now``.
 2. The negative control: a mint whose ``state_read_at`` postdates the
    watermark still validates — revocation does not become "revoke forever".
-3. The stamp property: ``iat`` equals the captured instant and ``exp`` keeps
-   the configured lifetime relative to it, for every token kind (one golden
+3. The stamp property: ``iat`` equals the captured instant while ``exp`` is
+   mint-time plus the configured lifetime, for every token kind (one golden
    vector, not per-path spot checks).
 4. Decoy parity: the reset decoy stamps the same instant as a real reset
    mint, so ``iat`` cannot leak the account lookup's latency.
@@ -49,7 +52,6 @@ import jwt as pyjwt
 import pytest
 
 from faultmaven.config.settings import AuthMode
-from faultmaven.models.exceptions import InvalidGrantError
 from faultmaven.modules.auth.api import auth as auth_routes
 from faultmaven.modules.auth.contracts import OAuthAuthorizationDTO, OAuthCodeDTO
 from faultmaven.modules.auth.domain.models.api_auth import (
@@ -170,6 +172,29 @@ STRADDLE_READ_AGE = timedelta(seconds=10)
 STRADDLE_WATERMARK_AGE = timedelta(seconds=5)
 
 
+async def _revoke_then_stall(store, user_id: str) -> None:
+    """Write the user's watermark NOW, then stall past that whole second.
+
+    The stall is load-bearing, not boilerplate: ``iat`` has 1-second
+    granularity and the comparison is ``<=``, so without stepping into the
+    second AFTER the watermark, a post-read or mint-time stamp would land in
+    the same second and be rejected anyway — the test would pass against the
+    very defect it exists to catch. One computed sleep, not a poll.
+    """
+    now = datetime.now(timezone.utc)
+    await store.revoke_user_tokens_before(user_id, int(now.timestamp()), TTL)
+    await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
+
+
+def _pkce(verifier: str) -> str:
+    """S256 code challenge for a verifier — the RFC 7636 derivation."""
+    return (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+
+
 async def _straddle(store, user_id: str = USER_ID) -> datetime:
     """Arrange the straddle; returns the pre-read capture to mint with."""
     state_read_at = datetime.now(timezone.utc) - STRADDLE_READ_AGE
@@ -255,29 +280,38 @@ async def test_mint_read_after_the_revocation_still_validates(algo):
 
 
 @pytest.mark.parametrize("algo", GENERATORS)
-async def test_iat_and_exp_derive_from_state_read_at(algo):
-    """``iat`` IS the captured instant; ``exp`` keeps the configured lifetime.
-
-    A clearly-past instant, so the expected values are exact — a partial
-    regression (e.g. ``iat`` captured but ``exp`` still mint-time) shows up as
-    a wrong lifetime, not as flake.
-    """
+async def test_iat_from_basis_exp_from_mint_time(algo):
+    """The split, per token kind: ``iat`` IS the captured instant (exact — a
+    clearly-past capture, so a mint-time regression shows as a 5s jump, not
+    flake), while ``exp`` is mint-time ``now`` plus the configured lifetime
+    (bounded by clocks read around the mint — an ``exp`` derived from the
+    backdated basis lands 5s below the lower bound and goes RED)."""
     generator = GENERATORS[algo](InMemoryRevocationStore())
     captured = datetime.now(timezone.utc) - timedelta(seconds=5)
     expected_iat = int(captured.timestamp())
 
+    def exp_bounds(before, after, lifetime_seconds):
+        return (before + lifetime_seconds, after + lifetime_seconds)
+
+    before = int(datetime.now(timezone.utc).timestamp())
     access = _claims(
         await generator.generate_access_token(_user(), state_read_at=captured)
     )
+    after = int(datetime.now(timezone.utc).timestamp())
     assert access["iat"] == expected_iat
-    assert access["exp"] == expected_iat + ACCESS_MINUTES * 60
+    lo, hi = exp_bounds(before, after, ACCESS_MINUTES * 60)
+    assert lo <= access["exp"] <= hi
 
+    before = int(datetime.now(timezone.utc).timestamp())
     refresh = _claims(
         await generator.generate_refresh_token(_user(), state_read_at=captured)
     )
+    after = int(datetime.now(timezone.utc).timestamp())
     assert refresh["iat"] == expected_iat
-    assert refresh["exp"] == expected_iat + REFRESH_DAYS * 86400
+    lo, hi = exp_bounds(before, after, REFRESH_DAYS * 86400)
+    assert lo <= refresh["exp"] <= hi
 
+    before = int(datetime.now(timezone.utc).timestamp())
     reset = _claims(
         (
             await generator.generate_password_reset_token(
@@ -285,8 +319,10 @@ async def test_iat_and_exp_derive_from_state_read_at(algo):
             )
         ).token
     )
+    after = int(datetime.now(timezone.utc).timestamp())
     assert reset["iat"] == expected_iat
-    assert reset["exp"] == expected_iat + PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600
+    lo, hi = exp_bounds(before, after, PASSWORD_RESET_TOKEN_EXPIRY_HOURS * 3600)
+    assert lo <= reset["exp"] <= hi
 
 
 # ---------------------------------------------------------------------------
@@ -305,8 +341,11 @@ async def test_decoy_and_real_reset_mints_stamp_the_same_instant(algo):
     decoy = await generator.generate_dummy_reset_token(
         "straddler@local.faultmaven", state_read_at=captured
     )
+    # iat parity is exact — both stamp the shared basis. exp is mint-time per
+    # branch under the split, so it may differ by the second boundary between
+    # the two mints; a 1s bound still refutes a lifetime-sized divergence.
     assert _claims(real.token)["iat"] == _claims(decoy.token)["iat"]
-    assert _claims(real.token)["exp"] == _claims(decoy.token)["exp"]
+    assert abs(_claims(real.token)["exp"] - _claims(decoy.token)["exp"]) <= 1
 
 
 # ---------------------------------------------------------------------------
@@ -384,13 +423,7 @@ class _StraddlingUserStore:
         self._store = store
 
     async def _read(self, matches: bool) -> DevUser | None:
-        now = datetime.now(timezone.utc)
-        revoked_at = int(now.timestamp())
-        await self._store.revoke_user_tokens_before(self._user.user_id, revoked_at, TTL)
-        # Stall into the second after the watermark, so anything stamped
-        # after this read observably postdates it. One computed sleep of the
-        # sub-second remainder, not a poll loop.
-        await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
+        await _revoke_then_stall(self._store, self._user.user_id)
         return self._user if matches else None
 
     async def get_user_by_username(self, username: str) -> DevUser | None:
@@ -514,7 +547,7 @@ async def test_sso_exchange_stamps_from_the_callback_legs_capture():
         async def consume_login(self, code):
             return {
                 "user_id": user.user_id,
-                "state_read_at": callback_capture.isoformat(),
+                "state_read_at": callback_capture.timestamp(),
             }
 
     class _Users:
@@ -556,11 +589,7 @@ async def test_sso_exchange_capture_covers_its_own_reads_without_a_leg1_stamp():
 
     class _StraddlingUsers:
         async def get(self, user_id):
-            now = datetime.now(timezone.utc)
-            await store.revoke_user_tokens_before(
-                user.user_id, int(now.timestamp()), TTL
-            )
-            await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
+            await _revoke_then_stall(store, user.user_id)
             return user
 
     class _Sessions:
@@ -584,16 +613,12 @@ async def test_sso_exchange_capture_covers_its_own_reads_without_a_leg1_stamp():
     assert await generator.validate_refresh_token(result.refresh_token) is None
 
 
-async def test_oauth_exchange_stamps_from_the_authorize_legs_instant():
+async def test_oauth_exchange_stamps_from_the_authorize_legs_stored_basis():
     store = InMemoryRevocationStore()
     generator = _hs256(store)
 
     code_verifier = "straddle-verifier-" + "x" * 32
-    code_challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
-    )
+    code_challenge = _pkce(code_verifier)
     expiry_seconds = 600
     code_created = datetime.now(timezone.utc) - STRADDLE_READ_AGE
     code_data = OAuthCodeDTO(
@@ -603,6 +628,7 @@ async def test_oauth_exchange_stamps_from_the_authorize_legs_instant():
         code_challenge=code_challenge,
         expires_at=code_created + timedelta(seconds=expiry_seconds),
         used=False,
+        state_read_at=code_created.timestamp(),
     )
 
     watermark = datetime.now(timezone.utc) - STRADDLE_WATERMARK_AGE
@@ -650,11 +676,7 @@ async def test_oauth_refresh_grant_capture_covers_its_own_reads():
 
     class _StraddlingUsers:
         async def get(self, user_id):
-            now = datetime.now(timezone.utc)
-            await store.revoke_user_tokens_before(
-                user.user_id, int(now.timestamp()), TTL
-            )
-            await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
+            await _revoke_then_stall(store, user.user_id)
             return user
 
     settings = SimpleNamespace(
@@ -695,11 +717,7 @@ async def test_provisioning_capture_covers_the_account_read():
 
     class _StraddlingUserStore:
         async def get_user_by_username(self, username):
-            now = datetime.now(timezone.utc)
-            await store.revoke_user_tokens_before(
-                user.user_id, int(now.timestamp()), TTL
-            )
-            await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
+            await _revoke_then_stall(store, user.user_id)
             return user
 
     credential = await provision_service_account_credential(
@@ -711,12 +729,14 @@ async def test_provisioning_capture_covers_the_account_read():
     assert await generator.validate_refresh_token(credential.refresh_token) is None
 
 
-async def test_oauth_exchange_refuses_a_code_older_than_the_access_lifetime():
-    """A still-valid code whose derived basis predates the access lifetime is
-    refused: minting from it would return an ALREADY-EXPIRED access token as
-    success, with the full nominal expires_in. Reachable under legal config —
-    ``oauth_code_expiry_seconds`` may exceed the access lifetime. The
-    effective redemption window is min(code TTL, access lifetime)."""
+async def test_old_code_redeems_with_full_lifetime_and_backdated_iat():
+    """Under the iat/exp split, a slowly-redeemed code mints a token with the
+    FULL configured lifetime from mint time — never a shortened or born-dead
+    one — while ``iat`` still carries the authorize leg's basis, so the
+    revocation property is intact. Replaces the deleted stale-code refusal:
+    with ``exp`` stamped from mint-time ``now``, a code older than the access
+    lifetime can no longer mint an already-expired token, so there is nothing
+    to refuse."""
     store = InMemoryRevocationStore()
     generator = HS256JWTTokenGenerator(
         secret_key=SECRET,
@@ -728,29 +748,22 @@ async def test_oauth_exchange_refuses_a_code_older_than_the_access_lifetime():
     )
 
     code_verifier = "stale-verifier-" + "x" * 32
-    code_challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
+    code_challenge = _pkce(code_verifier)
+    # Issued 350s ago — older than the 5-minute access lifetime — but alive.
+    basis = datetime.now(timezone.utc) - timedelta(seconds=350)
+    code_data = OAuthCodeDTO(
+        code="stale-code-831",
+        user_id=USER_ID,
+        redirect_uri="https://callback.example/cb",
+        code_challenge=code_challenge,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=250),
+        used=False,
+        state_read_at=basis.timestamp(),
     )
-    expiry_seconds = 600  # 10-minute codes, 5-minute access tokens
-
-    def code_with_remaining(seconds_left):
-        return OAuthCodeDTO(
-            code="stale-code-831",
-            user_id=USER_ID,
-            redirect_uri="https://callback.example/cb",
-            code_challenge=code_challenge,
-            expires_at=datetime.now(timezone.utc) + timedelta(seconds=seconds_left),
-            used=False,
-        )
 
     class _CodeRepo:
-        def __init__(self, dto):
-            self.dto = dto
-
         async def get_code(self, code):
-            return self.dto
+            return code_data
 
         async def claim_code(self, code):
             return True
@@ -760,50 +773,82 @@ async def test_oauth_exchange_refuses_a_code_older_than_the_access_lifetime():
             return _user()
 
     settings = SimpleNamespace(
-        oauth_code_expiry_seconds=expiry_seconds,
+        oauth_code_expiry_seconds=600,
         jwt_access_token_expire_minutes=5,
         jwt_refresh_token_expire_days=REFRESH_DAYS,
     )
+    service = OAuthServiceImpl(_CodeRepo(), _Users(), generator, settings)
 
-    # Alive for another 250s, but issued 350s ago: basis + 300s lifetime is
-    # in the past, so the mint would be born dead. Refused.
-    stale = _CodeRepo(code_with_remaining(250))
-    service = OAuthServiceImpl(stale, _Users(), generator, settings)
-    with pytest.raises(InvalidGrantError):
-        await service.exchange_code_for_token(
-            code="stale-code-831",
-            code_verifier=code_verifier,
-            redirect_uri="https://callback.example/cb",
-        )
-
-    # Control: issued 50s ago — redeems, and the pair is live.
-    fresh = _CodeRepo(code_with_remaining(expiry_seconds - 50))
-    service = OAuthServiceImpl(fresh, _Users(), generator, settings)
+    now_before = int(datetime.now(timezone.utc).timestamp())
     dto = await service.exchange_code_for_token(
         code="stale-code-831",
         code_verifier=code_verifier,
         redirect_uri="https://callback.example/cb",
     )
+
     assert await generator.validate_access_token(dto.access_token) is not None
+    claims = _claims(dto.access_token)
+    assert claims["iat"] == int(basis.timestamp())
+    assert claims["exp"] >= now_before + 5 * 60
 
 
-async def test_oauth_derivation_matches_the_authorize_leg():
-    """Pin the derivation's two ends together, through the REAL authorize and
-    exchange paths: ``create_authorization_code`` computes ``expires_at`` as
-    now + TTL from the same setting the exchange subtracts, so the minted
-    ``iat`` must reconstruct the authorize instant. RED if either end drifts
-    (authorize adds slack to ``expires_at``, or the exchange derives from a
-    different setting) — the fabricated-DTO tests above cannot see that."""
+async def test_oauth_code_without_a_basis_falls_back_to_the_exchange_capture():
+    """A code carrying no ``state_read_at`` (pre-#831 writer, or the unwired
+    Postgres repository) stamps from the exchange leg's own capture — the
+    documented rolling-deploy fallback, bounded by the code TTL."""
+    store = InMemoryRevocationStore()
+    generator = _hs256(store)
+
+    code_verifier = "fallback-verifier-" + "x" * 32
+    code_data = OAuthCodeDTO(
+        code="fallback-code-831",
+        user_id=USER_ID,
+        redirect_uri="https://callback.example/cb",
+        code_challenge=_pkce(code_verifier),
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=250),
+        used=False,
+    )
+    assert code_data.state_read_at is None
+
+    class _CodeRepo:
+        async def get_code(self, code):
+            return code_data
+
+        async def claim_code(self, code):
+            return True
+
+    class _Users:
+        async def get(self, user_id):
+            return _user()
+
+    settings = SimpleNamespace(
+        oauth_code_expiry_seconds=600,
+        jwt_access_token_expire_minutes=ACCESS_MINUTES,
+        jwt_refresh_token_expire_days=REFRESH_DAYS,
+    )
+    service = OAuthServiceImpl(_CodeRepo(), _Users(), generator, settings)
+
+    now_before = int(datetime.now(timezone.utc).timestamp())
+    dto = await service.exchange_code_for_token(
+        code="fallback-code-831",
+        code_verifier=code_verifier,
+        redirect_uri="https://callback.example/cb",
+    )
+
+    assert _claims(dto.access_token)["iat"] >= now_before
+
+
+async def test_oauth_basis_rides_the_code_through_the_real_authorize_and_exchange():
+    """Both ends of the carry, through the REAL paths: the authorize leg
+    stores its entry capture on the code, and the exchange stamps ``iat``
+    from exactly that stored value. RED if either end drifts — authorize
+    stamping at DTO-construction time instead of entry, or the exchange
+    reading a different field."""
     store = InMemoryRevocationStore()
     generator = _hs256(store)
 
     code_verifier = "coupling-verifier-" + "x" * 32
-    code_challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode()).digest())
-        .rstrip(b"=")
-        .decode()
-    )
-    expiry_seconds = 600
+    code_challenge = _pkce(code_verifier)
 
     saved = {}
 
@@ -822,7 +867,7 @@ async def test_oauth_derivation_matches_the_authorize_leg():
             return _user()
 
     settings = SimpleNamespace(
-        oauth_code_expiry_seconds=expiry_seconds,
+        oauth_code_expiry_seconds=600,
         jwt_access_token_expire_minutes=ACCESS_MINUTES,
         jwt_refresh_token_expire_days=REFRESH_DAYS,
         oauth_allowed_clients=["faultmaven-copilot"],
@@ -842,17 +887,16 @@ async def test_oauth_derivation_matches_the_authorize_leg():
         ),
     )
 
-    # End 1: the stored artifact's expires_at reconstructs the authorize
-    # instant under the exchange's formula.
-    derived = saved[code].expires_at - timedelta(seconds=expiry_seconds)
-    assert abs((derived - t_authorize).total_seconds()) < 2
+    # End 1: the stored basis is the authorize leg's entry capture.
+    stored = saved[code].state_read_at
+    assert stored is not None
+    assert abs(stored - t_authorize.timestamp()) < 2
 
-    # End 2: the minted iat is that instant (bounded by the clocks around it).
+    # End 2: the minted iat is exactly the floor of that stored basis (the
+    # exchange capture is strictly later, so min() must pick the stored one).
     dto = await service.exchange_code_for_token(
         code=code,
         code_verifier=code_verifier,
         redirect_uri="https://callback.example/cb",
     )
-    iat = _claims(dto.access_token)["iat"]
-    now_after = int(datetime.now(timezone.utc).timestamp())
-    assert int(t_authorize.timestamp()) - 2 <= iat <= now_after
+    assert _claims(dto.access_token)["iat"] == int(stored)

@@ -60,18 +60,41 @@ PASSWORD_RESET_TOKEN_TYPE = "password_reset"
 STATE_READ_AT_FUTURE_TOLERANCE_SECONDS = 2
 
 
+def capture_state_read_at() -> datetime:
+    """Capture the pre-read basis for a mint path (#831). THE idiom, one name.
+
+    Call at the ENTRY of the flow that will mint — before its first read of
+    any state the claims derive from (the user row, a presented token, a
+    hand-off artifact) — and pass the result to the ``generate_*`` mints as
+    ``state_read_at``. A greppable symbol so every capture can be audited for
+    placement; a caller that instead passes ``datetime.now()`` inline at the
+    mint site defeats the straddle protection undetectably, which is why each
+    mint path also carries a straddle placement test (see
+    ``test_mint_state_read_straddle.py`` section 6).
+    """
+    return datetime.now(timezone.utc)
+
+
 def _mint_instant(state_read_at: datetime) -> datetime:
-    """Resolve the instant a token's ``iat``/``exp`` are stamped from (#831).
+    """Resolve the instant a token's ``iat`` is stamped from (#831).
 
     ``state_read_at`` is captured by the caller BEFORE its first read of any
     state the claims derive from — the user row, the presented refresh token,
-    the authorization code, the SSO login payload. Stamping ``iat`` from it
-    (rather than from mint-time ``now``) is what ties the token to the state
-    it was minted from: a revocation watermark written after those reads
-    began is strictly later than ``state_read_at``, so a mint that straddled
-    the revocation carries ``iat <= watermark`` and dies with it. An
-    ``iat`` of "now" would postdate the watermark and survive it, carrying
-    pre-revocation roles or a pre-change password's authentication.
+    the basis carried by an authorization code or SSO login payload. Stamping
+    ``iat`` from it (rather than from mint-time ``now``) is what ties the
+    token to the state it was minted from: a revocation watermark written
+    after those reads began is strictly later than ``state_read_at``, so a
+    mint that straddled the revocation carries ``iat <= watermark`` and dies
+    with it. An ``iat`` of "now" would postdate the watermark and survive it,
+    carrying pre-revocation roles or claims.
+
+    ``iat`` ONLY. ``exp`` is stamped from mint-time ``now`` at each mint site:
+    revocation consumes nothing from ``exp``, and deriving it from the basis
+    taxed every slowly-redeemed two-leg login's real lifetime while
+    ``expires_in`` reported the nominal one — and could go negative (a token
+    expired at birth, returned as success) under legal config. With the
+    split, a token's remaining lifetime at the response is exactly the
+    configured one, and a born-dead mint is impossible by construction.
 
     Returns ``min(state_read_at, now)``: a ``state_read_at`` marginally in
     the future (clock slew between capture and mint) degrades to ``now``,
@@ -170,17 +193,25 @@ def _password_reset_claims(
     the SAME captured instant to both: the two paths differ in how long the
     account lookup between capture and mint took, and a decoy stamped at mint
     time while a real token is stamped at capture time would let ``iat``
-    answer the existence question the decoy refuses (#831).
+    answer the existence question the decoy refuses (#831). One caveat on the
+    record: under a sub-tolerance backward clock step, ``_mint_instant``
+    clamps to each branch's own mint-time ``now``, so the two branches can
+    stamp instants a second apart if the boundary falls inside their
+    post-lookup latency difference — a side channel requiring a mid-request
+    clock step, accepted rather than engineered around.
     """
-    now = _mint_instant(state_read_at)
-    expire = now + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS)
+    issued_at = _mint_instant(state_read_at)
+    # exp from mint-time now, iat from the basis — see _mint_instant.
+    expire = datetime.now(timezone.utc) + timedelta(
+        hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS
+    )
     return {
         "sub": subject,
         "email": (email or "").strip().lower(),
         "type": PASSWORD_RESET_TOKEN_TYPE,
         "iss": issuer,
         "aud": audience,
-        "iat": int(now.timestamp()),
+        "iat": int(issued_at.timestamp()),
         "exp": int(expire.timestamp()),
         "jti": str(uuid.uuid4()),
     }
@@ -580,8 +611,11 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         """
         _refuse_if_deactivated(user, "access")
 
-        now = _mint_instant(state_read_at)
-        expires_at = now + timedelta(minutes=self.access_token_expire_minutes)
+        issued_at = _mint_instant(state_read_at)
+        # exp from mint-time now, iat from the basis — see _mint_instant.
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            minutes=self.access_token_expire_minutes
+        )
 
         jti = str(uuid.uuid4())
 
@@ -602,7 +636,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 "knowledge:read",
             ],
             "exp": expires_at,
-            "iat": now,
+            "iat": issued_at,
             "iss": self.issuer,
             "aud": self.audience,
             "jti": jti,
@@ -655,15 +689,18 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         """
         _refuse_if_deactivated(user, "refresh")
 
-        now = _mint_instant(state_read_at)
-        expires_at = now + timedelta(days=self.refresh_token_expire_days)
+        issued_at = _mint_instant(state_read_at)
+        # exp from mint-time now, iat from the basis — see _mint_instant.
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=self.refresh_token_expire_days
+        )
 
         jti = str(uuid.uuid4())
 
         payload = {
             "sub": user.user_id,
             "exp": expires_at,
-            "iat": now,
+            "iat": issued_at,
             "iss": self.issuer,
             "aud": self.audience,
             "jti": jti,
@@ -1168,8 +1205,11 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         """
         _refuse_if_deactivated(user, "access")
 
-        now = _mint_instant(state_read_at)
-        expires_at = now + timedelta(minutes=self.access_token_expire_minutes)
+        issued_at = _mint_instant(state_read_at)
+        # exp from mint-time now, iat from the basis — see _mint_instant.
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            minutes=self.access_token_expire_minutes
+        )
 
         jti = str(uuid.uuid4())
 
@@ -1191,7 +1231,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 "knowledge:read",
             ],
             "exp": expires_at,  # Expiration time
-            "iat": now,  # Issued at
+            "iat": issued_at,  # Issued at
             "iss": self.issuer,  # Issuer
             "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)
@@ -1245,15 +1285,18 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         """
         _refuse_if_deactivated(user, "refresh")
 
-        now = _mint_instant(state_read_at)
-        expires_at = now + timedelta(days=self.refresh_token_expire_days)
+        issued_at = _mint_instant(state_read_at)
+        # exp from mint-time now, iat from the basis — see _mint_instant.
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=self.refresh_token_expire_days
+        )
 
         jti = str(uuid.uuid4())
 
         payload = {
             "sub": user.user_id,  # Subject (user ID)
             "exp": expires_at,  # Expiration time
-            "iat": now,  # Issued at
+            "iat": issued_at,  # Issued at
             "iss": self.issuer,  # Issuer
             "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)

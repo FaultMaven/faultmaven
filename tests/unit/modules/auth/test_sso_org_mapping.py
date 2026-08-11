@@ -474,7 +474,7 @@ async def test_mapped_org_is_bound_before_the_user_lookup_and_rides_the_code(
     assert users.subject_lookups_bound_to == [FM_ORG]
     # The completion code carries the tenant into the exchange.
     payload = await store.consume_login(params["code"])
-    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
     assert payload == {"user_id": "u-1", "organization_id": FM_ORG}
 
 
@@ -599,7 +599,7 @@ async def test_jit_user_is_anchored_to_the_mapped_orgs_enterprise(
     assert created.enterprise_id == FM_ENTERPRISE
     assert orgs.added == [(FM_ORG, created.user_id, SYSTEM_ROLE_IDS[Role.MEMBER])]
     payload = await store.consume_login(params["code"])
-    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
     assert payload == {"user_id": created.user_id, "organization_id": FM_ORG}
 
 
@@ -645,7 +645,7 @@ async def test_single_tenant_never_consults_the_mapping(store, as_tenant_provide
     # No organization on the completion payload: single-tenant tokens get the
     # Standalone sentinel from resolve_organization_claim instead.
     payload = await store.consume_login(params["code"])
-    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
     assert payload == {"user_id": "u-1"}
 
 

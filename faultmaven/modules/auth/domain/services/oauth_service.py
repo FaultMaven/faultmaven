@@ -21,6 +21,7 @@ from faultmaven.modules.auth.contracts import (
 )
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     account_may_hold_credentials,
+    capture_state_read_at,
 )
 from faultmaven.modules.auth.infrastructure.metrics import oauth_metrics
 
@@ -79,6 +80,12 @@ class OAuthServiceImpl(IOAuthService):
         Raises:
             InvalidRequestError: If request parameters invalid
         """
+        # #831: the basis stored on the code. Captured at this method's entry;
+        # the request's org/user state was bound by middleware milliseconds
+        # earlier, which is the residue of capturing here rather than at
+        # request start.
+        state_read_at = capture_state_read_at()
+
         logger.info(
             "OAuth authorization code requested",
             extra={
@@ -180,6 +187,7 @@ class OAuthServiceImpl(IOAuthService):
             expires_at=expires_at,
             used=False,
             organization_id=organization_id,
+            state_read_at=state_read_at.timestamp(),
         )
 
         await self.code_repository.save_code(code_data)
@@ -223,8 +231,8 @@ class OAuthServiceImpl(IOAuthService):
         """
         start_time = time.time()
 
-        # #831: capture before this method's reads (code row, user row).
-        state_read_at = datetime.now(timezone.utc)
+        # #831: before this method's reads (code row, user row).
+        state_read_at = capture_state_read_at()
 
         logger.info(
             "OAuth token exchange requested",
@@ -264,22 +272,26 @@ class OAuthServiceImpl(IOAuthService):
         # The code is not revocable (no iat, no watermark check), so the stamp
         # must be the older of the two legs' bases, or a revoke-all landing
         # between authorize and exchange would be survived by a pair carrying
-        # the pre-revocation tenant (#831). The authorize leg's instant is
-        # derived rather than stored: ``create_authorization_code`` computes
-        # ``expires_at = now + oauth_code_expiry_seconds`` from the same
-        # setting read here, so the difference reconstructs its ``now``. The
-        # residue is the milliseconds between the authorize handler's own
-        # state reads and that computation — versus the full code TTL without
-        # this. If the expiry setting changes while a code is in flight the
-        # derived instant shifts by the delta; the ``min`` still caps the
-        # stamp at this leg's entry, so the failure mode is a partially
-        # covered authorize leg for codes spanning the reconfiguration, never
-        # a stamp later than this handler's own capture.
-        state_read_at = min(
-            state_read_at,
-            code_data.expires_at
-            - timedelta(seconds=self.settings.oauth_code_expiry_seconds),
-        )
+        # the pre-revocation tenant (#831). The basis rides the code row as
+        # epoch seconds (a number cannot be naive), written by
+        # ``create_authorization_code`` from its own pre-read capture — stored,
+        # not derived, so reconfiguring the code TTL while codes are in flight
+        # cannot shift the stamp in either direction. Absent only for codes
+        # written by a pre-#831 process (or the unwired Postgres repository,
+        # which does not persist it); the fallback is this leg's capture,
+        # bounded by the code TTL.
+        if code_data.state_read_at is not None:
+            try:
+                state_read_at = min(
+                    state_read_at,
+                    datetime.fromtimestamp(code_data.state_read_at, timezone.utc),
+                )
+            except (TypeError, ValueError, OverflowError, OSError):
+                logger.warning(
+                    "OAuth token exchange: unusable state_read_at on code row; "
+                    "stamping from the exchange leg only",
+                    extra={"user_id": code_data.user_id, "code_prefix": code[:8]},
+                )
 
         # Check if code already used (replay attack prevention)
         if code_data.used:
@@ -323,41 +335,6 @@ class OAuthServiceImpl(IOAuthService):
                 grant_type="authorization_code",
                 client_id="unknown",
                 duration_seconds=duration_seconds,
-                success=False,
-                error_code="CODE_EXPIRED",
-            )
-            oauth_metrics.record_code_expired("unknown")
-            raise InvalidGrantError(
-                "Authorization code expired",
-                error_code="CODE_EXPIRED",
-            )
-
-        # Refuse a code whose basis is older than the access-token lifetime.
-        # ``oauth_code_expiry_seconds`` may legally exceed the access lifetime,
-        # and minting from such a basis produces an access token whose ``exp``
-        # is already in the past — returned as success with the full nominal
-        # ``expires_in``. The effective redemption window is therefore
-        # min(code TTL, access lifetime); a caller refused here re-authorizes,
-        # exactly as for an expired code. Deliberately AFTER the used and
-        # hard-expiry checks, so replay attempts and ordinary expiry keep
-        # their own refusals and metrics (a stale code that is also replayed
-        # must still register as a replay).
-        if datetime.now(timezone.utc) >= state_read_at + timedelta(
-            minutes=self.settings.jwt_access_token_expire_minutes
-        ):
-            logger.warning(
-                "OAuth token exchange refused: code older than the access-token "
-                "lifetime would mint an already-expired token",
-                extra={
-                    "user_id": code_data.user_id,
-                    "code_prefix": code[:8],
-                    "error": "CODE_EXPIRED",
-                },
-            )
-            oauth_metrics.record_token_exchange(
-                grant_type="authorization_code",
-                client_id="unknown",
-                duration_seconds=time.time() - start_time,
                 success=False,
                 error_code="CODE_EXPIRED",
             )
@@ -436,14 +413,14 @@ class OAuthServiceImpl(IOAuthService):
         # A deactivated account must not be able to redeem a code, exactly as
         # ``refresh_access_token`` below refuses to rotate one.
         #
-        # Deactivation revokes the account's existing tokens by writing a per-user
-        # watermark (#769), but a watermark only kills tokens minted BEFORE it —
-        # ``is_user_revoked`` compares ``iat <= watermark``. Tokens minted *here*
-        # are newer than the watermark by construction, so nothing downstream
-        # stops them. An authorization code lives ten minutes, which is a wide
-        # enough window for a code issued just before deactivation to be redeemed
-        # just after it, handing back a fresh access token and a fresh refresh
-        # token that then rotates indefinitely.
+        # Deactivation revokes the account's existing tokens by writing a
+        # per-user watermark (#769), and since #831 tokens minted here stamp
+        # ``iat`` from the code's carried basis, so a deactivation-with-revoke
+        # landing after the authorize leg DOES kill the pair downstream. This
+        # check still stands on its own: it is the direct refusal (a clean 401
+        # here beats a 200 with a dead pair), it covers codes carrying no
+        # basis (pre-#831 writers, the unwired Postgres repository), and it
+        # covers any deactivation path that did not write a watermark.
         #
         # Deactivation also soft-deletes (``user_service.deactivate_user`` sets
         # ``is_active = False`` alongside ``deleted_at``), so this one check
@@ -582,11 +559,11 @@ class OAuthServiceImpl(IOAuthService):
         Raises:
             InvalidGrantError: If refresh token invalid, expired, or revoked
         """
-        # #831: capture before the presented token's validation and the user
-        # load, as POST /auth/refresh does. No leg-1 instant to merge here:
-        # the presented refresh token is itself watermark-checked, so the
-        # artifact this grant redeems is already revocable.
-        state_read_at = datetime.now(timezone.utc)
+        # #831: before the presented token's validation and the user load, as
+        # POST /auth/refresh does. No leg-1 instant to merge here: the
+        # presented refresh token is itself watermark-checked, so the artifact
+        # this grant redeems is already revocable.
+        state_read_at = capture_state_read_at()
 
         logger.info(
             "OAuth token refresh requested",

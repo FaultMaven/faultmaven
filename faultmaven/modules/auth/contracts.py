@@ -113,6 +113,15 @@ class OAuthCodeDTO:
     #: carries none, and an absent value must mint an unusable claim rather than a
     #: guessed one.
     organization_id: Optional[str] = None
+    #: The authorize leg's pre-read capture, as epoch seconds (#831). The code
+    #: is a non-revocable hand-off artifact, so it carries the basis of the
+    #: state it was minted from; the exchange stamps ``iat`` from the older of
+    #: this and its own capture, so a revoke-all landing between the legs
+    #: kills the minted pair. Epoch seconds, not an isoformat string — a
+    #: number cannot be naive, and it rides the generic JSON round-trip
+    #: unaided. Optional for the same rolling-deploy reason as
+    #: ``organization_id``; absent falls back to the exchange leg's capture.
+    state_read_at: Optional[float] = None
 
 
 @dataclass

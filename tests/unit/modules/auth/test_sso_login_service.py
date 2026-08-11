@@ -324,7 +324,7 @@ async def test_callback_happy_path_issues_completion_code(store):
     assert "error" not in params
     # The completion code is real and single-use in the store.
     payload = await store.consume_login(params["code"])
-    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
     assert payload == {"user_id": "u-1"}
     assert await store.consume_login(params["code"]) is None
 
@@ -341,22 +341,29 @@ async def test_login_payload_capture_precedes_the_callback_reads(store):
 
     read_finished: dict[str, datetime] = {}
 
-    class SlowRepo(FakeUserRepository):
-        async def get_by_sso(self, provider, provider_id):
+    class SlowFirstReadStore(SSOEphemeralStore):
+        """Delay the CALLBACK's first read — ``consume_state`` — not a later
+        one: a capture regressed to after the state consume (but before the
+        org/user reads) must also go RED, since the org resolution between
+        them is exactly the leg-1 state the carry protects."""
+
+        async def consume_state(self, state):
             await asyncio.sleep(0.3)
             read_finished["at"] = datetime.now(UTC)
-            return await super().get_by_sso(provider, provider_id)
+            return await super().consume_state(state)
 
+    slow_store = SlowFirstReadStore(store._redis)
     service = build_service(
-        store, repo=SlowRepo(users_by_subject={("workos", "user_wos_123"): user})
+        slow_store,
+        repo=FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user}),
     )
     start = await service.begin_login(None)
 
     redirect = await callback(service, state=start.state)
 
     params = redirect_params(redirect)
-    payload = await store.consume_login(params["code"])
-    carried = datetime.fromisoformat(payload["state_read_at"])
+    payload = await slow_store.consume_login(params["code"])
+    carried = datetime.fromtimestamp(payload["state_read_at"], UTC)
     assert carried < read_finished["at"]
 
 
@@ -529,7 +536,7 @@ async def test_callback_unknown_subject_provisions_user(store):
     assert user.roles == ["user"]
     # The completion code points at the new user; no redundant profile sync.
     payload = await store.consume_login(params["code"])
-    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
     assert payload == {"user_id": user.user_id}
     assert repo.updated == []
 
@@ -620,7 +627,7 @@ async def test_jit_create_race_falls_back_to_concurrent_row(store):
 
     params = redirect_params(redirect)
     payload = await store.consume_login(params["code"])
-    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
     assert payload == {"user_id": "u-won"}
 
 
@@ -732,7 +739,7 @@ async def test_audit_write_failure_does_not_fail_the_login(store):
     assert "error" not in params
     assert len(repo.created) == 1
     payload = await store.consume_login(params["code"])
-    assert datetime.fromisoformat(payload.pop("state_read_at")).tzinfo is not None
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
     assert payload == {"user_id": repo.created[0].user_id}
 
 

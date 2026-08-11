@@ -23,6 +23,7 @@ import jwt
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     account_may_hold_credentials,
+    capture_state_read_at,
 )
 
 # ADR-012 account kinds. 'slack' is the service account that owns a workspace's
@@ -136,8 +137,8 @@ async def provision_service_account_credential(
     account_created = False
     account_kind_corrected = False
 
-    # #831: capture before the account is read (or created).
-    state_read_at = datetime.now(timezone.utc)
+    # #831: before the account is read (or created).
+    state_read_at = capture_state_read_at()
 
     user = await user_store.get_user_by_username(username)
     if user is None:
