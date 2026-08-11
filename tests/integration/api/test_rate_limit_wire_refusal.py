@@ -21,8 +21,9 @@ sharing an address would make these tests order-dependent.
 test pins both edges: the requests under the limit are served, the ones over it
 are refused. It then reads the middleware's own counters, because a 429 that
 arrived alongside a swallowed exception is not the refusal under test.
-``metrics["errors"]`` is incremented on precisely the swallow paths fm#990 was
-filed about, and ``is_degraded`` reports the per-replica stand-in.
+``metrics["errors"]`` covers the swallow path fm#990 was filed about — it is also
+incremented on the fail-*closed* 503 branch, which the development preset these
+tests run under never reaches — and ``is_degraded`` reports the stand-in.
 """
 
 import contextlib
@@ -107,25 +108,32 @@ def test_the_app_under_test_carries_the_protection_stack(real_app):
     """The app this suite drives must be the protected one.
 
     This is the guard for the gate fm#990 removed. ``setup_middleware`` used to
-    install the protection stack only when ``skip_service_checks`` was false —
-    and every test entrypoint there is sets that flag: ``tests/conftest.py``,
-    ``scripts/tests.py``, and both CI pytest jobs. The result was that no test
-    anywhere ran against the app ``main.py`` builds; the suite drove an app whose
-    entire middleware stack was ``[CORS, Logging, GZip, TrailingSlash]`` and
-    would not have noticed the limiter being deleted.
+    install the protection stack only when ``skip_service_checks`` was false, and
+    every CI pytest invocation sets that flag in its workflow ``env`` (as does
+    ``scripts/tests.py``). The result was that no CI job ran against the app
+    ``main.py`` builds; the suite drove an app whose entire middleware stack was
+    ``[CORS, Logging, GZip, TrailingSlash]`` and would not have noticed the
+    limiter being deleted.
 
     Nothing failed while that was true, which is exactly why it needs an
     assertion rather than a comment: an unprotected app serves every request the
-    suite makes, just without any of the layers under test here. The two tests
-    below would fail if the gate came back, but they would fail as a missing
-    middleware instance rather than as the configuration mistake it is, so this
-    names the condition directly.
+    suite makes, just without any of the layers under test here. The tests below
+    would fail if the gate came back, but they would fail as a missing middleware
+    instance rather than as the configuration mistake it is, so this names the
+    condition directly.
+
+    Both installs are asserted, not just the limiter. One call adds them
+    (``setup_protection_middleware`` reports ``middleware_added`` as
+    ``["deduplication", "rate_limiting"]``), so a change that dropped or re-gated
+    deduplication alone would leave every other test in this module passing —
+    they only ever exercise the limiter.
     """
     installed = [entry.cls.__name__ for entry in real_app.user_middleware]
 
-    assert "RateLimitMiddleware" in installed, (
-        "the app under test carries no rate limiting — the protection install "
-        f"has been re-gated on an environment flag: {installed}"
+    missing = {"RateLimitMiddleware", "DeduplicationMiddleware"} - set(installed)
+    assert not missing, (
+        f"the app under test is missing {sorted(missing)} — the protection "
+        f"install has been re-gated or narrowed: {installed}"
     )
 
 

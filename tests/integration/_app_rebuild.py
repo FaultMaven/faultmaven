@@ -12,12 +12,20 @@ had not yet been collected — receives the rebuilt app instead of the one the
 earlier modules are holding.
 
 That mattered because these rebuilds run under ``SKIP_SERVICE_CHECKS=true``,
-which ``main.setup_middleware`` reads to skip the entire protection stack. The
-published app therefore carried no rate limiting, no deduplication, no
-idempotency and no request-id middleware, and the suite ran split-brain: the
-four modules collected before these ones exercised a protected app, everything
+which ``main.setup_middleware`` read to skip the protection stack and still reads
+to skip idempotency. On a bare local run the suite therefore went split-brain:
+the modules collected before these ones held a protected app, and everything
 collected afterwards — including ``tests/integration/test_main_app.py``, whose
-subject *is* the real application — exercised an unprotected one (fm#990).
+subject *is* the real application — held one with no rate limiting, no
+deduplication and no idempotency (fm#990).
+
+Two things that reading is easy to overstate, so they are named here. In CI the
+flag is already set in the workflow ``env`` before collection, so there was no
+split-brain there — the app was uniformly unprotected, which is why removing that
+gate, not this restore, is what fixed CI. And ``RequestIdMiddleware`` is absent
+from any pytest-built app either way: it is independently gated on
+``_is_test_environment()``, and restoring the published module does not bring it
+back.
 
 So the rebuilt module is handed back as an object and the previous one is
 restored. The caller keeps the app it asked for; nobody else is affected.
