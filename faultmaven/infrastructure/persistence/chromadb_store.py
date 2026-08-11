@@ -128,15 +128,10 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
         from faultmaven.models.vector_metadata import VectorMetadata
 
         md = md or {}
-        undeclared = sorted(set(md) - set(VectorMetadata.model_fields))
-        if undeclared:
-            raise ValueError(
-                f"Vector metadata carries key(s) VectorMetadata does not "
-                f"declare: {undeclared}. They would be dropped silently and the "
-                f"row would be stored without them — add them to "
-                f"faultmaven/models/vector_metadata.py (schema field AND "
-                f"to_chroma_metadata) or stop writing them."
-            )
+        # The schema owns this rule, so writers that must check earlier than
+        # this (``index_runbook`` has its own retry wrapper around the call
+        # into here) enforce the same one rather than a second copy of it.
+        VectorMetadata.reject_undeclared_keys(md)
 
         try:
             return VectorMetadata(**md).to_chroma_metadata()

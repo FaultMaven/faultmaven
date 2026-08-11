@@ -28,6 +28,7 @@ from faultmaven.models.report import (
     RunbookSource,
     SimilarRunbook,
 )
+from faultmaven.models.vector_metadata import VectorMetadata
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -230,6 +231,11 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
             # Parse results and filter by minimum similarity
             similar_runbooks = []
+            # Rows that matched the query but could not be reconstructed. Counted
+            # because a skip and a miss are the same ``[]`` to the caller, and
+            # both dedup callers read ``[]`` as the affirmative "the KB holds
+            # nothing similar" (#944).
+            unreadable = 0
 
             if not results or "ids" not in results or not results["ids"]:
                 logger.debug("No runbooks found matching query")
@@ -319,6 +325,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     # carries: a KeyError's message is just the key name, and
                     # the useful question is which of the identity keys the
                     # write path was supposed to stamp are missing (#912).
+                    unreadable += 1
                     logger.warning(
                         f"Failed to reconstruct runbook {report_id}, skipping it: {e!r}",
                         extra={
@@ -327,6 +334,20 @@ class RunbookKnowledgeBase(BaseExternalClient):
                         },
                     )
                     continue
+
+            # Skipping a row keeps a wrong answer out of the results, but if it
+            # leaves NOTHING to return then the caller receives the same ``[]``
+            # a genuinely empty KB produces — and turns it into "no similar
+            # runbook exists, generate a new one". That is the affirmative
+            # negative from a search that did not really run (#944), so refuse
+            # instead: rows matched, and none of them could be read.
+            if unreadable and not similar_runbooks:
+                raise KnowledgeBaseError(
+                    f"Runbook similarity search matched {unreadable} row(s) but "
+                    f"could not reconstruct any of them; refusing to report "
+                    f"'no similar runbooks' from an unreadable result set",
+                    error_code="RUNBOOK_RESULTS_UNREADABLE",
+                )
 
             # Sort by similarity score descending
             similar_runbooks.sort(key=lambda x: x.similarity_score, reverse=True)
@@ -400,47 +421,54 @@ class RunbookKnowledgeBase(BaseExternalClient):
             )
             return
 
+        # Extract metadata
+        metadata_obj = runbook.metadata
+        final_domain = domain or (metadata_obj.domain if metadata_obj else "general")
+        final_tags = tags or (metadata_obj.tags if metadata_obj else [])
+        final_case_title = case_title or runbook.title
+
+        # Build metadata dict for ChromaDB.
+        #
+        # Every key here must be declared by ``VectorMetadata``, which
+        # ``ChromaDBVectorStore.add_documents`` normalizes through — it stores
+        # the keys it declares and refuses the ones it does not, rather than
+        # dropping them silently as it did when the identity keys below were
+        # being discarded on every write (#912).
+        #
+        # ``report_id`` is deliberately absent: it is the row id (see
+        # ``documents`` below), which is where ``search_runbooks`` reads it
+        # from. Writing it here as well would store the same fact twice.
+        chroma_metadata = {
+            "organization_id": organization_id,
+            "case_id": runbook.case_id,
+            "case_title": final_case_title,
+            "title": runbook.title,
+            "report_type": "runbook",
+            "runbook_source": source.value,
+            "domain": final_domain,
+            "tags": ",".join(final_tags),  # ChromaDB stores as string
+            "created_at": runbook.generated_at,
+        }
+
+        # Add source-specific metadata
+        if source == RunbookSource.DOCUMENT_DRIVEN and metadata_obj:
+            if metadata_obj.document_title:
+                chroma_metadata["document_title"] = metadata_obj.document_title
+            if metadata_obj.original_document_id:
+                chroma_metadata["original_document_id"] = (
+                    metadata_obj.original_document_id
+                )
+
+        # Refused HERE, outside ``call_external``, and not left to the identical
+        # check inside ``add_documents``. That one runs inside THIS method's
+        # retry wrapper, so an undeclared key would be retried three times with
+        # backoff and recorded as three RunbookKB service failures — five such
+        # calls open RunbookKB's circuit breaker, which is shared with
+        # ``search_runbooks``/``search_by_text``. A deterministic programming
+        # error in the write path would then take the read path down with it.
+        VectorMetadata.reject_undeclared_keys(chroma_metadata)
+
         async def _index_wrapper():
-            # Extract metadata
-            metadata_obj = runbook.metadata
-            final_domain = domain or (
-                metadata_obj.domain if metadata_obj else "general"
-            )
-            final_tags = tags or (metadata_obj.tags if metadata_obj else [])
-            final_case_title = case_title or runbook.title
-
-            # Build metadata dict for ChromaDB.
-            #
-            # Every key here must be declared by ``VectorMetadata``, which
-            # ``ChromaDBVectorStore.add_documents`` normalizes through — it
-            # stores the keys it declares and now refuses the ones it does not,
-            # rather than dropping them silently as it did when the identity
-            # keys below were being discarded on every write (#912).
-            #
-            # ``report_id`` is deliberately absent: it is the row id (see
-            # ``documents`` below), which is where ``search_runbooks`` reads it
-            # from. Writing it here as well would store the same fact twice.
-            chroma_metadata = {
-                "organization_id": organization_id,
-                "case_id": runbook.case_id,
-                "case_title": final_case_title,
-                "title": runbook.title,
-                "report_type": "runbook",
-                "runbook_source": source.value,
-                "domain": final_domain,
-                "tags": ",".join(final_tags),  # ChromaDB stores as string
-                "created_at": runbook.generated_at,
-            }
-
-            # Add source-specific metadata
-            if source == RunbookSource.DOCUMENT_DRIVEN and metadata_obj:
-                if metadata_obj.document_title:
-                    chroma_metadata["document_title"] = metadata_obj.document_title
-                if metadata_obj.original_document_id:
-                    chroma_metadata["original_document_id"] = (
-                        metadata_obj.original_document_id
-                    )
-
             # Generate BGE-M3 embedding explicitly to match collection dimensions
             from faultmaven.infrastructure.model_cache import model_cache
 

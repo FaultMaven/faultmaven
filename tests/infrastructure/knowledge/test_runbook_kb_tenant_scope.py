@@ -26,6 +26,7 @@ import pytest
 
 from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import (
     CaseReport,
     ReportStatus,
@@ -33,6 +34,7 @@ from faultmaven.models.report import (
     RunbookMetadata,
     RunbookSource,
 )
+from faultmaven.models.vector_metadata import VectorMetadata
 
 # Genuinely distinct tenants. Every cross-tenant assertion below relies on these
 # never being equal, and on the two seeded rows being identical in EVERY other
@@ -329,6 +331,62 @@ async def test_a_runbook_row_missing_an_identity_key_is_skipped_not_invented(
         f"the row missing {missing_key!r} must be skipped — and the complete "
         "row must still come back, or this passes because nothing was returned"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_result_set_that_is_entirely_unreadable_refuses(kb, store):
+    """Skipping every match must not be reported as "nothing similar".
+
+    Skipping keeps a fabricated result out, but if it empties the result set the
+    caller gets the same ``[]`` an empty KB produces — and both dedup callers
+    read ``[]`` as the affirmative "no similar runbook exists" and propose
+    generating a duplicate. That is the #944 collapse: an answer about the KB's
+    contents derived from a search that could not be read. It has to refuse.
+    """
+    incomplete = {
+        k: v
+        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
+        if k != "runbook_source"
+    }
+    await store.seed("rb-only-unreadable", incomplete, _vec(0.5))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+async def test_indexing_an_undeclared_key_never_reaches_the_shared_breaker(kb, store):
+    """The write path's refusal must not be able to take the read path down.
+
+    ``index_runbook`` runs inside ``RunbookKnowledgeBase.call_external``, whose
+    circuit breaker is SHARED with ``search_runbooks``/``search_by_text``. A
+    refusal raised inside that wrapper would be retried three times and recorded
+    as three service failures, so five bad index calls would open the breaker
+    and start failing every runbook *search* — a deterministic programming error
+    in the writer taking out the reader. The refusal therefore has to happen
+    before the wrapper is entered.
+
+    The undeclared key is produced by narrowing the schema rather than by
+    patching the refusal: ``case_title`` is a key ``index_runbook`` genuinely
+    writes, so dropping it from the declared set exercises the real check on a
+    real write, and the assertion is about WHERE that check runs.
+    """
+    narrowed = {
+        k: v for k, v in VectorMetadata.model_fields.items() if k != "case_title"
+    }
+
+    with patch.object(VectorMetadata, "model_fields", narrowed):
+        with patch.object(
+            RunbookKnowledgeBase, "call_external", new=AsyncMock()
+        ) as mock_call:
+            with pytest.raises(ValueError, match="case_title"):
+                await kb.index_runbook(_report("rb-undeclared"), organization_id=ORG_A)
+
+    mock_call.assert_not_called()
 
 
 # =============================================================================

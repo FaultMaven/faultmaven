@@ -12,6 +12,7 @@ import pytest
 
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 from faultmaven.models.interfaces import IVectorStore
+from faultmaven.models.vector_metadata import VectorMetadata
 
 
 @pytest.fixture
@@ -184,28 +185,75 @@ class TestChromaDBVectorStore:
         mock_call.assert_not_called()
 
     def test_normalize_metadata_keeps_every_key_the_schema_declares(self):
-        """The allowlist stores what it declares — the other half of the refusal.
+        """The allowlist stores everything it declares — the refusal's other half.
 
-        Without this, a schema that declared a field but forgot to emit it in
-        ``to_chroma_metadata`` would pass the refusal test above and still drop
-        the value. That split is precisely how ``report_type`` came to be
-        declared-but-dropped, and it is why the runbook predicate matched
-        nothing the write path produced.
+        The refusal above only covers keys the schema does NOT declare. The
+        opposite defect — a field declared on the model but never emitted by
+        ``to_chroma_metadata`` — passes it and still drops the value on every
+        write. That is not hypothetical: it is exactly the state ``report_type``
+        and the runbook identity keys were in (#912).
+
+        Asserted over EVERY field rather than a sample, because a sample only
+        protects the fields someone thought to list: with eight of twenty-four
+        covered, dropping ``severity`` and ``symptom_class`` from the emitter
+        left the whole suite green while every KB row silently lost them. The
+        coverage assertion below makes adding a schema field force a decision
+        here rather than silently widening the gap.
         """
-        declared = {
+        sample = {
             "title": "Runbook: Connection pool exhaustion",
-            "report_type": "runbook",
+            "document_type": "runbook",
+            "tags": "postgresql,database",
+            "source_url": "https://example.invalid/runbook",
+            "scope": "global",
+            "owner_id": "user-1",
             "organization_id": "org-a",
+            "report_type": "runbook",
             "case_id": "case-42",
             "case_title": "Pool exhaustion in prod",
             "runbook_source": "document_driven",
             "document_title": "PostgreSQL Operations Guide",
             "original_document_id": "doc-77",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+            "domain": "database",
+            "service": "postgresql",
+            "last_updated": "2026-01-01",
+            "status": "verified",
+            "severity": "high",
+            "symptom_class": "resource_exhaustion",
+            "chunk_index": 0,
+            "total_chunks": 3,
+            "parent_document_id": "doc-77",
         }
 
-        stored = ChromaDBVectorStore._normalize_metadata(declared)
+        assert set(sample) == set(VectorMetadata.model_fields), (
+            "every declared field needs a sample value here — a new field "
+            "without one is a field this test does not protect"
+        )
 
-        assert stored == declared
+        stored = ChromaDBVectorStore._normalize_metadata(sample)
+
+        missing = set(sample) - set(stored)
+        assert not missing, (
+            f"declared but not emitted by to_chroma_metadata: {sorted(missing)} — "
+            f"these are written by callers and silently dropped"
+        )
+
+    def test_normalize_metadata_emits_an_empty_identity_value(self):
+        """An empty identity value is stored, not dropped.
+
+        ``search_runbooks`` requires these keys to be PRESENT and skips any row
+        missing one, so gating the write on truthiness would turn an
+        empty-but-valid ``case_id`` into a row that is permanently unreadable —
+        while ``index_runbook`` still logged the write as a success.
+        """
+        stored = ChromaDBVectorStore._normalize_metadata(
+            {"report_type": "runbook", "case_id": "", "case_title": ""}
+        )
+
+        assert stored["case_id"] == ""
+        assert stored["case_title"] == ""
 
     @pytest.mark.asyncio
     async def test_search_success(self, vector_store):

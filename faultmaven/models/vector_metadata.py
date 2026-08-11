@@ -77,6 +77,33 @@ class VectorMetadata(BaseModel):
     total_chunks: Optional[int] = None
     parent_document_id: Optional[str] = None
 
+    @classmethod
+    def reject_undeclared_keys(cls, md: Optional[Dict[str, Any]]) -> None:
+        """Raise if ``md`` carries a key this schema does not declare.
+
+        This model is an ALLOWLIST — it copies the keys it declares and ignores
+        the rest — so an undeclared key is not stored, and nothing about the
+        write says so. That is how ``index_runbook`` stamped four identity keys
+        on every runbook, saw the write succeed, and stored none of them: the
+        loss only surfaced later, elsewhere, as a wrong value at read time
+        (#912).
+
+        Callers must invoke this BEFORE any retry/circuit-breaker wrapper. The
+        failure is a deterministic programming error, so retrying it only
+        wastes the budget, and each attempt is recorded as a service failure —
+        enough of them open the breaker and start failing the healthy calls
+        that share it.
+        """
+        undeclared = sorted(set(md or {}) - set(cls.model_fields))
+        if undeclared:
+            raise ValueError(
+                f"Vector metadata carries key(s) VectorMetadata does not "
+                f"declare: {undeclared}. They would be dropped silently and the "
+                f"row would be stored without them — add them to "
+                f"faultmaven/models/vector_metadata.py (schema field AND "
+                f"to_chroma_metadata) or stop writing them."
+            )
+
     @field_validator("tags", mode="before")
     @classmethod
     def _coerce_tags(cls, v: Any) -> List[str]:
@@ -134,15 +161,21 @@ class VectorMetadata(BaseModel):
             data["organization_id"] = self.organization_id
         if self.report_type:
             data["report_type"] = self.report_type
-        if self.case_id:
+        # ``is not None``, not truthiness, for the identity keys: the runbook
+        # search requires these to be PRESENT and skips any row missing one, so
+        # a truthiness gate would drop an empty-but-valid value at write time
+        # and make the row permanently unreadable — with the write still
+        # reporting success. Write-side "empty" and read-side "absent" have to
+        # mean the same thing, or the round trip is lossy again in a new way.
+        if self.case_id is not None:
             data["case_id"] = self.case_id
-        if self.case_title:
+        if self.case_title is not None:
             data["case_title"] = self.case_title
-        if self.runbook_source:
+        if self.runbook_source is not None:
             data["runbook_source"] = self.runbook_source
-        if self.document_title:
+        if self.document_title is not None:
             data["document_title"] = self.document_title
-        if self.original_document_id:
+        if self.original_document_id is not None:
             data["original_document_id"] = self.original_document_id
         if self.created_at:
             data["created_at"] = to_json_compatible(self.created_at)
