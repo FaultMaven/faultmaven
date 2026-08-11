@@ -70,7 +70,15 @@ def _app(redis_client):
     return SimpleNamespace(state=SimpleNamespace(redis_client=redis_client))
 
 
-def _request(app, client, headers=None, method="GET"):
+def _settings_with(**overrides):
+    """The default limits, with named ``ProtectionSettings`` fields overridden."""
+    settings = _settings(global_requests=1000)
+    for field, value in overrides.items():
+        setattr(settings, field, value)
+    return settings
+
+
+def _request(app, client, headers=None, method="GET", path="/api/v1/cases"):
     scope = {
         "type": "http",
         "http_version": "1.1",
@@ -78,8 +86,8 @@ def _request(app, client, headers=None, method="GET"):
         "scheme": "http",
         "server": ("testserver", 80),
         "root_path": "",
-        "path": "/api/v1/cases",
-        "raw_path": b"/api/v1/cases",
+        "path": path,
+        "raw_path": path.encode(),
         "query_string": b"",
         "headers": [
             (k.lower().encode(), v.encode()) for k, v in (headers or {}).items()
@@ -648,3 +656,69 @@ async def test_a_route_that_poisons_the_inbox_still_serves_once():
 
     assert response.status_code == 200
     assert len(calls) == 1, f"the route ran {len(calls)} times"
+
+
+@pytest.mark.parametrize(
+    "label,build",
+    [
+        ("disabled", lambda: _settings_with(rate_limiting_enabled=False)),
+        (
+            "bypassed",
+            lambda: _settings_with(protection_bypass_headers=["X-Dev-Bypass"]),
+        ),
+    ],
+)
+async def test_an_unchecked_request_does_not_move_the_check_metrics(label, build):
+    """``requests_checked`` counts requests this middleware *checked*.
+
+    Restructuring ``dispatch`` to serve on one path routed the unlimited
+    paths — limiting disabled, a bypass header, a probe, a fail-open limiter
+    failure — through the shared tail, which counted every one of them and
+    folded the whole route's latency into ``avg_check_duration``. On a pod whose
+    kubelet probes dominate its traffic that dilutes
+    ``requests_blocked / requests_checked`` toward zero indefinitely, and during
+    a Redis outage the "check" durations are route latencies. The counters are
+    the sibling ``DeduplicationMiddleware`` computes a block rate from, so the
+    wrong numbers read as a healthy service.
+
+    Nothing consumes ``get_metrics`` today, which is exactly why this needs
+    pinning: the defect is silent until something does.
+    """
+    settings = build()
+    mw = _middleware(settings)
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+
+    request = _request(app, _unique_client(), headers={"X-Dev-Bypass": "1"})
+    response = await mw.dispatch(request, _call_next)
+
+    assert response.status_code == 200
+    assert (
+        mw.metrics["requests_checked"] == 0
+    ), f"an unchecked ({label}) request was counted as checked: {mw.metrics}"
+    assert mw.metrics["avg_check_duration"] == 0.0
+
+
+async def test_a_probe_path_does_not_move_the_check_metrics():
+    """The liveness probes are the highest-volume unchecked path there is."""
+    mw = _middleware(_settings(global_requests=1000))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+
+    response = await mw.dispatch(
+        _request(app, _unique_client(), path="/health"), _call_next
+    )
+
+    assert response.status_code == 200
+    assert mw.metrics["requests_checked"] == 0, mw.metrics
+
+
+async def test_a_checked_request_still_moves_the_check_metrics():
+    """The counter must still count the thing it is for.
+
+    Without this the pair above is satisfied by never counting anything.
+    """
+    mw = _middleware(_settings(global_requests=1000))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+
+    await mw.dispatch(_request(app, _unique_client()), _call_next)
+
+    assert mw.metrics["requests_checked"] == 1, mw.metrics

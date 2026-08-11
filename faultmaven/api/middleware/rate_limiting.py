@@ -258,7 +258,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
           bypass header, a probe path), or the limiter failed and the deployment
           fails open, so there is nothing to advertise;
         - a response — refused, either by a limit (429) or by the fail-closed
-          policy with no usable client (503). Returned without the route running.
+          policy (503). The 503 has two origins: no usable client at all, and a
+          check that raised against a client that looked fine. Both are returned
+          without the route running.
         """
 
         start_time = time.time()
@@ -342,10 +344,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # header path on the way back — can never re-enter ``call_next``.
         response = await call_next(request)
 
+        # ``results is None`` means no check happened — limiting is off, the
+        # request was bypassed, or the limiter failed and the deployment fails
+        # open. Those requests are not *checked* requests, so they neither
+        # advertise a limit nor move the check counters: folding them into
+        # ``requests_checked`` would dilute ``requests_blocked/requests_checked``
+        # toward zero on any pod whose liveness probes dominate its traffic, and
+        # folding their duration into ``avg_check_duration`` would average the
+        # route's latency into a number that means "cost of checking".
         if results is not None:
             self._add_rate_limit_headers(results, request, response)
+            self._update_metrics(time.time() - start_time, blocked=False)
 
-        self._update_metrics(time.time() - start_time, blocked=False)
         return response
 
     def _may_serve_without_a_limiter(self) -> bool:
@@ -412,7 +422,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         Being inside the cooldown is *not* itself a verdict: this method never
         raises and never synthesizes a response. Whether "no limiter" means pass
         or refuse is a request-path decision, taken in ``dispatch`` where a
-        limit verdict is actually needed — see ``_serve_without_a_limiter``.
+        limit verdict is actually needed — see ``_may_serve_without_a_limiter``.
 
         **Attempts are serialised, and that is what bounds the re-entry window.**
         The window is not "one request wide": it is as wide as the attempt, which
