@@ -23,6 +23,7 @@ import jwt
 from faultmaven.modules.auth.domain.models.auth import DevUser
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     account_may_hold_credentials,
+    capture_state_read_at,
 )
 
 # ADR-012 account kinds. 'slack' is the service account that owns a workspace's
@@ -136,6 +137,9 @@ async def provision_service_account_credential(
     account_created = False
     account_kind_corrected = False
 
+    # #831: before the account is read (or created).
+    state_read_at = capture_state_read_at()
+
     user = await user_store.get_user_by_username(username)
     if user is None:
         user = await user_store.create_user(
@@ -168,7 +172,9 @@ async def provision_service_account_credential(
         # claim. Mirrors `/auth/refresh` step 2b (#869, #873).
         setattr(user, "organization_id", organization_id)
 
-    refresh_token = await token_generator.generate_refresh_token(user)
+    refresh_token = await token_generator.generate_refresh_token(
+        user, state_read_at=state_read_at
+    )
     if not refresh_token:
         raise ServiceAccountProvisioningError(
             f"Token generator returned no refresh token for '{username}'"

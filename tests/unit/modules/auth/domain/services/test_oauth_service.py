@@ -13,7 +13,7 @@ import base64
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import ANY, AsyncMock, MagicMock, Mock
 
 import pytest
 
@@ -281,8 +281,12 @@ class TestCodeExchange:
         mock_code_repository.claim_code.assert_called_once_with(authorization_code)
 
         # Verify tokens generated (with the user object returned by repository)
-        mock_token_generator.generate_access_token.assert_called_once_with(user_obj)
-        mock_token_generator.generate_refresh_token.assert_called_once_with(user_obj)
+        mock_token_generator.generate_access_token.assert_called_once_with(
+            user_obj, state_read_at=ANY
+        )
+        mock_token_generator.generate_refresh_token.assert_called_once_with(
+            user_obj, state_read_at=ANY
+        )
 
     @pytest.mark.asyncio
     async def test_exchange_code_for_token_invalid_code(

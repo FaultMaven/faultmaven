@@ -21,6 +21,7 @@ from faultmaven.modules.auth.contracts import (
 )
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     account_may_hold_credentials,
+    capture_state_read_at,
 )
 from faultmaven.modules.auth.infrastructure.metrics import oauth_metrics
 
@@ -79,6 +80,12 @@ class OAuthServiceImpl(IOAuthService):
         Raises:
             InvalidRequestError: If request parameters invalid
         """
+        # #831: the basis stored on the code. Captured at this method's entry;
+        # the request's org/user state was bound by middleware milliseconds
+        # earlier, which is the residue of capturing here rather than at
+        # request start.
+        state_read_at = capture_state_read_at()
+
         logger.info(
             "OAuth authorization code requested",
             extra={
@@ -180,6 +187,7 @@ class OAuthServiceImpl(IOAuthService):
             expires_at=expires_at,
             used=False,
             organization_id=organization_id,
+            state_read_at=state_read_at.timestamp(),
         )
 
         await self.code_repository.save_code(code_data)
@@ -223,6 +231,9 @@ class OAuthServiceImpl(IOAuthService):
         """
         start_time = time.time()
 
+        # #831: before this method's reads (code row, user row).
+        state_read_at = capture_state_read_at()
+
         logger.info(
             "OAuth token exchange requested",
             extra={
@@ -255,6 +266,32 @@ class OAuthServiceImpl(IOAuthService):
                 "Invalid or expired authorization code",
                 error_code="INVALID_AUTHORIZATION_CODE",
             )
+
+        # The claims also derive from state the AUTHORIZE leg read — the
+        # organization bound to the code (#872) — up to the code's TTL earlier.
+        # The code is not revocable (no iat, no watermark check), so the stamp
+        # must be the older of the two legs' bases, or a revoke-all landing
+        # between authorize and exchange would be survived by a pair carrying
+        # the pre-revocation tenant (#831). The basis rides the code row as
+        # epoch seconds (a number cannot be naive), written by
+        # ``create_authorization_code`` from its own pre-read capture — stored,
+        # not derived, so reconfiguring the code TTL while codes are in flight
+        # cannot shift the stamp in either direction. Absent only for codes
+        # written by a pre-#831 process (or the unwired Postgres repository,
+        # which does not persist it); the fallback is this leg's capture,
+        # bounded by the code TTL.
+        if code_data.state_read_at is not None:
+            try:
+                state_read_at = min(
+                    state_read_at,
+                    datetime.fromtimestamp(code_data.state_read_at, timezone.utc),
+                )
+            except (TypeError, ValueError, OverflowError, OSError):
+                logger.warning(
+                    "OAuth token exchange: unusable state_read_at on code row; "
+                    "stamping from the exchange leg only",
+                    extra={"user_id": code_data.user_id, "code_prefix": code[:8]},
+                )
 
         # Check if code already used (replay attack prevention)
         if code_data.used:
@@ -376,14 +413,14 @@ class OAuthServiceImpl(IOAuthService):
         # A deactivated account must not be able to redeem a code, exactly as
         # ``refresh_access_token`` below refuses to rotate one.
         #
-        # Deactivation revokes the account's existing tokens by writing a per-user
-        # watermark (#769), but a watermark only kills tokens minted BEFORE it —
-        # ``is_user_revoked`` compares ``iat <= watermark``. Tokens minted *here*
-        # are newer than the watermark by construction, so nothing downstream
-        # stops them. An authorization code lives ten minutes, which is a wide
-        # enough window for a code issued just before deactivation to be redeemed
-        # just after it, handing back a fresh access token and a fresh refresh
-        # token that then rotates indefinitely.
+        # Deactivation revokes the account's existing tokens by writing a
+        # per-user watermark (#769), and since #831 tokens minted here stamp
+        # ``iat`` from the code's carried basis, so a deactivation-with-revoke
+        # landing after the authorize leg DOES kill the pair downstream. This
+        # check still stands on its own: it is the direct refusal (a clean 401
+        # here beats a 200 with a dead pair), it covers codes carrying no
+        # basis (pre-#831 writers, the unwired Postgres repository), and it
+        # covers any deactivation path that did not write a watermark.
         #
         # Deactivation also soft-deletes (``user_service.deactivate_user`` sets
         # ``is_active = False`` alongside ``deleted_at``), so this one check
@@ -466,8 +503,12 @@ class OAuthServiceImpl(IOAuthService):
             )
 
         # Generate access token and refresh token
-        access_token = await self.token_generator.generate_access_token(user)
-        refresh_token = await self.token_generator.generate_refresh_token(user)
+        access_token = await self.token_generator.generate_access_token(
+            user, state_read_at=state_read_at
+        )
+        refresh_token = await self.token_generator.generate_refresh_token(
+            user, state_read_at=state_read_at
+        )
 
         logger.info(
             "OAuth tokens issued",
@@ -518,6 +559,12 @@ class OAuthServiceImpl(IOAuthService):
         Raises:
             InvalidGrantError: If refresh token invalid, expired, or revoked
         """
+        # #831: before the presented token's validation and the user load, as
+        # POST /auth/refresh does. No leg-1 instant to merge here: the
+        # presented refresh token is itself watermark-checked, so the artifact
+        # this grant redeems is already revocable.
+        state_read_at = capture_state_read_at()
+
         logger.info(
             "OAuth token refresh requested",
             extra={
@@ -604,7 +651,9 @@ class OAuthServiceImpl(IOAuthService):
         setattr(user, "organization_id", payload.get("organization_id") or None)
 
         # Generate new access token
-        new_access_token = await self.token_generator.generate_access_token(user)
+        new_access_token = await self.token_generator.generate_access_token(
+            user, state_read_at=state_read_at
+        )
 
         # Rotate the refresh token: the presented token is single-use. Matches
         # POST /auth/refresh, so both refresh paths carry the same contract and a
@@ -615,7 +664,9 @@ class OAuthServiceImpl(IOAuthService):
         # no replacement — a lockout only an operator can undo. This order costs
         # nothing: if the revoke fails the caller simply retries with a token
         # that is still valid.
-        new_refresh_token = await self.token_generator.generate_refresh_token(user)
+        new_refresh_token = await self.token_generator.generate_refresh_token(
+            user, state_read_at=state_read_at
+        )
         await self.token_generator.revoke_refresh_token(refresh_token)
         logger.debug(
             "OAuth refresh token rotated",

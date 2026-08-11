@@ -126,7 +126,9 @@ class TestAccessTokenGeneration:
     @pytest.mark.asyncio
     async def test_generate_access_token_success(self, token_generator, mock_user):
         """Test successful access token generation."""
-        token = await token_generator.generate_access_token(mock_user)
+        token = await token_generator.generate_access_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         # Verify token is non-empty string
         assert isinstance(token, str)
@@ -153,8 +155,12 @@ class TestAccessTokenGeneration:
     @pytest.mark.asyncio
     async def test_generate_access_token_unique_jti(self, token_generator, mock_user):
         """Test that each access token has unique JTI."""
-        token1 = await token_generator.generate_access_token(mock_user)
-        token2 = await token_generator.generate_access_token(mock_user)
+        token1 = await token_generator.generate_access_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
+        token2 = await token_generator.generate_access_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         payload1 = jwt.decode(
             token1, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
@@ -171,7 +177,9 @@ class TestAccessTokenGeneration:
         self, token_generator, mock_user
     ):
         """Test that generated token has valid RS256 signature."""
-        token = await token_generator.generate_access_token(mock_user)
+        token = await token_generator.generate_access_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         # This should not raise exception if signature is valid
         jwt.decode(
@@ -185,7 +193,9 @@ class TestRefreshTokenGeneration:
     @pytest.mark.asyncio
     async def test_generate_refresh_token_success(self, token_generator, mock_user):
         """Test successful refresh token generation."""
-        token = await token_generator.generate_refresh_token(mock_user)
+        token = await token_generator.generate_refresh_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         # Verify token is non-empty string
         assert isinstance(token, str)
@@ -212,8 +222,12 @@ class TestRefreshTokenGeneration:
     @pytest.mark.asyncio
     async def test_generate_refresh_token_unique_jti(self, token_generator, mock_user):
         """Test that each refresh token has unique JTI."""
-        token1 = await token_generator.generate_refresh_token(mock_user)
-        token2 = await token_generator.generate_refresh_token(mock_user)
+        token1 = await token_generator.generate_refresh_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
+        token2 = await token_generator.generate_refresh_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         payload1 = jwt.decode(
             token1, TEST_PUBLIC_KEY, algorithms=["RS256"], options={"verify_aud": False}
@@ -232,7 +246,9 @@ class TestTokenValidation:
     @pytest.mark.asyncio
     async def test_validate_access_token_success(self, token_generator, mock_user):
         """Test successful access token validation."""
-        token = await token_generator.generate_access_token(mock_user)
+        token = await token_generator.generate_access_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         # Validate token
         payload = await token_generator.validate_access_token(token)
@@ -295,7 +311,9 @@ class TestTokenValidation:
         self, token_generator, mock_user, mock_revocation_store
     ):
         """Test validation of revoked access token."""
-        token = await token_generator.generate_access_token(mock_user)
+        token = await token_generator.generate_access_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         # Mark token as revoked
         mock_revocation_store.is_revoked.return_value = True
@@ -311,7 +329,9 @@ class TestRefreshTokenValidation:
     @pytest.mark.asyncio
     async def test_validate_refresh_token_success(self, token_generator, mock_user):
         """Test successful refresh token validation."""
-        token = await token_generator.generate_refresh_token(mock_user)
+        token = await token_generator.generate_refresh_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         # Validate token
         payload = await token_generator.validate_refresh_token(token)
@@ -324,7 +344,9 @@ class TestRefreshTokenValidation:
     async def test_validate_refresh_token_wrong_type(self, token_generator, mock_user):
         """Test validation fails when access token used as refresh token."""
         # Generate access token
-        access_token = await token_generator.generate_access_token(mock_user)
+        access_token = await token_generator.generate_access_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         # Validation should return None
         result = await token_generator.validate_refresh_token(access_token)
@@ -357,7 +379,9 @@ class TestRefreshTokenValidation:
         self, token_generator, mock_user, mock_revocation_store
     ):
         """Test validation of revoked refresh token."""
-        token = await token_generator.generate_refresh_token(mock_user)
+        token = await token_generator.generate_refresh_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         # Mark token as revoked
         mock_revocation_store.is_revoked.return_value = True
@@ -375,7 +399,9 @@ class TestTokenRevocation:
         self, token_generator, mock_user, mock_revocation_store
     ):
         """Test access token revocation."""
-        token = await token_generator.generate_access_token(mock_user)
+        token = await token_generator.generate_access_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         await token_generator.revoke_access_token(token)
 
@@ -399,7 +425,9 @@ class TestTokenRevocation:
         self, token_generator, mock_user, mock_revocation_store
     ):
         """Test refresh token revocation."""
-        token = await token_generator.generate_refresh_token(mock_user)
+        token = await token_generator.generate_refresh_token(
+            mock_user, state_read_at=datetime.now(timezone.utc)
+        )
 
         await token_generator.revoke_refresh_token(token)
 

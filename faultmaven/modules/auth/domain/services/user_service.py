@@ -52,6 +52,7 @@ from faultmaven.models.rbac import Role, get_permissions_for_roles
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     PASSWORD_RESET_TOKEN_EXPIRY_HOURS,
     PasswordResetMint,
+    capture_state_read_at,
 )
 from faultmaven.services.base import BaseService
 from faultmaven.utils.password import (
@@ -309,7 +310,12 @@ class UserService(BaseService):
 
         self.logger.debug(f"Password reset requested for: {email}")
 
-        mint = await self._mint_reset_token(signer, email)
+        # #831: before the account lookup. One instant for both branches —
+        # real and decoy mints must not differ by the lookup's latency in
+        # ``iat``.
+        state_read_at = capture_state_read_at()
+
+        mint = await self._mint_reset_token(signer, email, state_read_at)
 
         # ONE write, reached by all three outcomes. Two write sites that must
         # agree is how the asymmetry got there the first time.
@@ -319,7 +325,9 @@ class UserService(BaseService):
 
         return mint.token
 
-    async def _mint_reset_token(self, signer: Any, email: str) -> PasswordResetMint:
+    async def _mint_reset_token(
+        self, signer: Any, email: str, state_read_at: datetime
+    ) -> PasswordResetMint:
         """Mint the reset token for an address: real if it can be, decoy if not.
 
         The jti is taken from the minter rather than read back off the token:
@@ -334,10 +342,14 @@ class UserService(BaseService):
             # In production this still answers "check your email" — the caller
             # cannot tell this branch from the one above.
             self.logger.debug(f"Password reset for non-existent email: {email}")
-            return await signer.generate_dummy_reset_token(email)
+            return await signer.generate_dummy_reset_token(
+                email, state_read_at=state_read_at
+            )
 
         try:
-            mint = await signer.generate_password_reset_token(user)
+            mint = await signer.generate_password_reset_token(
+                user, state_read_at=state_read_at
+            )
         except InactiveAccountError:
             # No live credential for a deactivated account — and no observable
             # that says so.
@@ -345,7 +357,9 @@ class UserService(BaseService):
                 "Password reset refused at mint",
                 extra={"refusal_reason": "account_inactive", "user_id": user.user_id},
             )
-            return await signer.generate_dummy_reset_token(email)
+            return await signer.generate_dummy_reset_token(
+                email, state_read_at=state_read_at
+            )
 
         self.logger.info(f"Password reset token generated for user: {user.user_id}")
         return mint

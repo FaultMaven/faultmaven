@@ -256,9 +256,9 @@ class TestServiceAccountRefreshLifecycle:
         real_mint = token_generator.generate_refresh_token
         real_revoke = token_generator.revoke_refresh_token
 
-        async def mint(user):
+        async def mint(user, **kwargs):
             order.append("mint")
-            return await real_mint(user)
+            return await real_mint(user, **kwargs)
 
         async def revoke(token):
             order.append("revoke")

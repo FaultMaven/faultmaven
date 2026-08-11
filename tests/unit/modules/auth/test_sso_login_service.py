@@ -13,6 +13,7 @@ exercised end to end.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
@@ -166,10 +167,10 @@ class FakeAuditRepository:
 
 
 class FakeTokenGenerator:
-    async def generate_access_token(self, user):
+    async def generate_access_token(self, user, *, state_read_at):
         return f"access-{user.user_id}"
 
-    async def generate_refresh_token(self, user):
+    async def generate_refresh_token(self, user, *, state_read_at):
         return f"refresh-{user.user_id}"
 
 
@@ -322,8 +323,48 @@ async def test_callback_happy_path_issues_completion_code(store):
     assert params["return_to"] == "/cases"
     assert "error" not in params
     # The completion code is real and single-use in the store.
-    assert await store.consume_login(params["code"]) == {"user_id": "u-1"}
+    payload = await store.consume_login(params["code"])
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
+    assert payload == {"user_id": "u-1"}
     assert await store.consume_login(params["code"]) is None
+
+
+async def test_login_payload_capture_precedes_the_callback_reads(store):
+    """#831 produce side: the carried ``state_read_at`` is the callback's
+    ENTRY capture, taken before the org/user reads — not a stamp taken when
+    the payload is built. A revoke-all landing during those reads must
+    postdate the carried basis, or the exchange would mint a surviving pair
+    from pre-revocation state. RED if the capture moves after the reads (or
+    into the payload construction): the carried instant then lands after the
+    read finished, and the assertion inverts."""
+    user = make_user()
+
+    read_finished: dict[str, datetime] = {}
+
+    class SlowFirstReadStore(SSOEphemeralStore):
+        """Delay the CALLBACK's first read — ``consume_state`` — not a later
+        one: a capture regressed to after the state consume (but before the
+        org/user reads) must also go RED, since the org resolution between
+        them is exactly the leg-1 state the carry protects."""
+
+        async def consume_state(self, state):
+            await asyncio.sleep(0.3)
+            read_finished["at"] = datetime.now(UTC)
+            return await super().consume_state(state)
+
+    slow_store = SlowFirstReadStore(store._redis)
+    service = build_service(
+        slow_store,
+        repo=FakeUserRepository(users_by_subject={("workos", "user_wos_123"): user}),
+    )
+    start = await service.begin_login(None)
+
+    redirect = await callback(service, state=start.state)
+
+    params = redirect_params(redirect)
+    payload = await slow_store.consume_login(params["code"])
+    carried = datetime.fromtimestamp(payload["state_read_at"], UTC)
+    assert carried < read_finished["at"]
 
 
 async def test_callback_without_state_is_rejected(store):
@@ -494,7 +535,9 @@ async def test_callback_unknown_subject_provisions_user(store):
     # Never admin (D5): every JIT user gets exactly the base role.
     assert user.roles == ["user"]
     # The completion code points at the new user; no redundant profile sync.
-    assert await store.consume_login(params["code"]) == {"user_id": user.user_id}
+    payload = await store.consume_login(params["code"])
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
+    assert payload == {"user_id": user.user_id}
     assert repo.updated == []
 
 
@@ -583,7 +626,9 @@ async def test_jit_create_race_falls_back_to_concurrent_row(store):
     redirect = await callback(service, state=start.state)
 
     params = redirect_params(redirect)
-    assert await store.consume_login(params["code"]) == {"user_id": "u-won"}
+    payload = await store.consume_login(params["code"])
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
+    assert payload == {"user_id": "u-won"}
 
 
 # =============================================================================
@@ -693,9 +738,9 @@ async def test_audit_write_failure_does_not_fail_the_login(store):
     params = redirect_params(redirect)
     assert "error" not in params
     assert len(repo.created) == 1
-    assert await store.consume_login(params["code"]) == {
-        "user_id": repo.created[0].user_id
-    }
+    payload = await store.consume_login(params["code"])
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
+    assert payload == {"user_id": repo.created[0].user_id}
 
 
 async def test_no_audit_repository_is_fine(store):

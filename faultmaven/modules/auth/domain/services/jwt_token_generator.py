@@ -52,6 +52,79 @@ PASSWORD_RESET_TOKEN_EXPIRY_HOURS = 1
 #: ``type`` claim discriminating a reset token from access/refresh tokens.
 PASSWORD_RESET_TOKEN_TYPE = "password_reset"
 
+#: How far into the future a caller's ``state_read_at`` may sit before the
+#: mint refuses it. Same-process NTP slew can step the clock back a few
+#: hundred milliseconds between capture and mint; a genuinely miswired
+#: argument (an expiry, a ``now + lifetime``) is minutes out. 2 seconds
+#: separates the two cleanly.
+STATE_READ_AT_FUTURE_TOLERANCE_SECONDS = 2
+
+
+def capture_state_read_at() -> datetime:
+    """Capture the pre-read basis for a mint path (#831). THE idiom, one name.
+
+    Call at the ENTRY of the flow that will mint — before its first read of
+    any state the claims derive from (the user row, a presented token, a
+    hand-off artifact) — and pass the result to the ``generate_*`` mints as
+    ``state_read_at``. A greppable symbol so every capture can be audited for
+    placement; a caller that instead passes ``datetime.now()`` inline at the
+    mint site defeats the straddle protection undetectably, which is why each
+    mint path also carries a straddle placement test (see
+    ``test_mint_state_read_straddle.py`` section 6).
+    """
+    return datetime.now(timezone.utc)
+
+
+def _mint_instant(state_read_at: datetime) -> datetime:
+    """Resolve the instant a token's ``iat`` is stamped from (#831).
+
+    ``state_read_at`` is captured by the caller BEFORE its first read of any
+    state the claims derive from — the user row, the presented refresh token,
+    the basis carried by an authorization code or SSO login payload. Stamping
+    ``iat`` from it (rather than from mint-time ``now``) is what ties the
+    token to the state it was minted from: a revocation watermark written
+    after those reads began is strictly later than ``state_read_at``, so a
+    mint that straddled the revocation carries ``iat <= watermark`` and dies
+    with it. An ``iat`` of "now" would postdate the watermark and survive it,
+    carrying pre-revocation roles or claims.
+
+    ``iat`` ONLY. ``exp`` is stamped from mint-time ``now`` at each mint site:
+    revocation consumes nothing from ``exp``, and deriving it from the basis
+    taxed every slowly-redeemed two-leg login's real lifetime while
+    ``expires_in`` reported the nominal one — and could go negative (a token
+    expired at birth, returned as success) under legal config. With the
+    split, a token's remaining lifetime at the response is exactly the
+    configured one, and a born-dead mint is impossible by construction.
+
+    Returns ``min(state_read_at, now)``: a ``state_read_at`` marginally in
+    the future (clock slew between capture and mint) degrades to ``now``,
+    which is the *smaller*, more-revocable stamp in that ordering. Beyond
+    ``STATE_READ_AT_FUTURE_TOLERANCE_SECONDS`` it refuses instead — a
+    far-future value is a miswired caller, and minting from it would quietly
+    reopen the straddle this exists to close.
+
+    Raises:
+        ValueError: ``state_read_at`` is naive (no tzinfo) or further in the
+            future than the tolerance.
+    """
+    if state_read_at.tzinfo is None:
+        raise ValueError(
+            "state_read_at must be timezone-aware; capture it with "
+            "datetime.now(timezone.utc) before the first auth-state read"
+        )
+    now = datetime.now(timezone.utc)
+    ahead = (state_read_at - now).total_seconds()
+    if ahead > STATE_READ_AT_FUTURE_TOLERANCE_SECONDS:
+        raise ValueError(
+            f"state_read_at is {ahead:.1f}s in the future. Either the caller "
+            "passed a derived time (an expiry, now + lifetime) instead of a "
+            "pre-read capture, or the wall clock stepped backwards by more "
+            "than the tolerance mid-request (NTP step, VM resume) — the "
+            "former is a code bug; the latter is transient (though a "
+            "single-use flow may need to restart)"
+        )
+    return min(state_read_at, now)
+
 
 class PasswordResetMint(NamedTuple):
     """A minted reset token, plus what the caller needs to file it.
@@ -88,6 +161,7 @@ def _password_reset_claims(
     email: str,
     issuer: str,
     audience: str,
+    state_read_at: datetime,
 ) -> Dict:
     """Build the claim set for a password-reset token — one shape, one place.
 
@@ -114,16 +188,30 @@ def _password_reset_claims(
 
     ``iat``/``exp`` are integers (not datetimes) because ``revocation_reason``
     compares ``iat`` against a Unix-timestamp watermark.
+
+    ``state_read_at`` is required on the decoy path too, and the caller passes
+    the SAME captured instant to both: the two paths differ in how long the
+    account lookup between capture and mint took, and a decoy stamped at mint
+    time while a real token is stamped at capture time would let ``iat``
+    answer the existence question the decoy refuses (#831). One caveat on the
+    record: under a sub-tolerance backward clock step, ``_mint_instant``
+    clamps to each branch's own mint-time ``now``, so the two branches can
+    stamp instants a second apart if the boundary falls inside their
+    post-lookup latency difference — a side channel requiring a mid-request
+    clock step, accepted rather than engineered around.
     """
-    now = datetime.now(timezone.utc)
-    expire = now + timedelta(hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS)
+    issued_at = _mint_instant(state_read_at)
+    # exp from mint-time now, iat from the basis — see _mint_instant.
+    expire = datetime.now(timezone.utc) + timedelta(
+        hours=PASSWORD_RESET_TOKEN_EXPIRY_HOURS
+    )
     return {
         "sub": subject,
         "email": (email or "").strip().lower(),
         "type": PASSWORD_RESET_TOKEN_TYPE,
         "iss": issuer,
         "aud": audience,
-        "iat": int(now.timestamp()),
+        "iat": int(issued_at.timestamp()),
         "exp": int(expire.timestamp()),
         "jti": str(uuid.uuid4()),
     }
@@ -266,11 +354,20 @@ class IJWTTokenGenerator(ABC):
     """
 
     @abstractmethod
-    async def generate_access_token(self, user: User) -> str:
+    async def generate_access_token(
+        self, user: User, *, state_read_at: datetime
+    ) -> str:
         """Generate short-lived access token (15 minutes).
 
         Args:
             user: User to generate token for
+            state_read_at: Instant captured by the caller BEFORE its first
+                read of any state these claims derive from (the user row, a
+                presented token, an authorization code). ``iat`` and ``exp``
+                are stamped from it, so a mint whose reads straddled a
+                revocation carries ``iat <= watermark`` and dies with it
+                (#831). Required with no default: a mint path that forgets it
+                fails loudly instead of silently reopening the straddle.
 
         Returns:
             JWT access token string
@@ -278,11 +375,15 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def generate_refresh_token(self, user: User) -> str:
+    async def generate_refresh_token(
+        self, user: User, *, state_read_at: datetime
+    ) -> str:
         """Generate long-lived refresh token (7 days).
 
         Args:
             user: User to generate token for
+            state_read_at: See ``generate_access_token`` — same contract,
+                same reason (#831).
 
         Returns:
             JWT refresh token string
@@ -290,7 +391,9 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def generate_password_reset_token(self, user: User) -> PasswordResetMint:
+    async def generate_password_reset_token(
+        self, user: User, *, state_read_at: datetime
+    ) -> PasswordResetMint:
         """Generate a single-use password-reset token (1 hour).
 
         Signed with the same key as every other token this deployment mints —
@@ -304,6 +407,10 @@ class IJWTTokenGenerator(ABC):
         Args:
             user: Account the reset is for. A deactivated one is refused at the
                 same chokepoint as an access-token mint.
+            state_read_at: See ``generate_access_token``. Reset tokens are
+                watermark-checked at redemption (#829), so a reset mint that
+                straddles a revoke-all must die with it like any other token
+                (#831).
 
         Returns:
             The signed token and its ``jti``, so the caller can file the
@@ -315,7 +422,9 @@ class IJWTTokenGenerator(ABC):
         ...
 
     @abstractmethod
-    async def generate_dummy_reset_token(self, email: str) -> PasswordResetMint:
+    async def generate_dummy_reset_token(
+        self, email: str, *, state_read_at: datetime
+    ) -> PasswordResetMint:
         """Generate an enumeration decoy for a request that mints nothing.
 
         Same claim shape, same claim VALUES bar ``sub``/``jti``, same key and
@@ -339,6 +448,11 @@ class IJWTTokenGenerator(ABC):
 
         Args:
             email: The address the caller asked about, echoed into the claims.
+            state_read_at: The SAME instant the caller would pass to the real
+                mint — captured before the account lookup, on both branches.
+                A decoy stamped at mint time while a real token is stamped at
+                capture time would let ``iat`` carry the lookup's latency and
+                answer the existence question (#831).
 
         Returns:
             The signed token, its ``jti``, and the random subject it names.
@@ -468,7 +582,9 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         self.issuer = issuer
         self.audience = audience
 
-    async def generate_access_token(self, user: User) -> str:
+    async def generate_access_token(
+        self, user: User, *, state_read_at: datetime
+    ) -> str:
         """Generate RS256-signed access token.
 
         Token Claims (per iam-design.md):
@@ -488,14 +604,18 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: User to generate token for
+            state_read_at: See interface (#831)
 
         Returns:
             JWT access token string
         """
         _refuse_if_deactivated(user, "access")
 
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(minutes=self.access_token_expire_minutes)
+        issued_at = _mint_instant(state_read_at)
+        # exp from mint-time now, iat from the basis — see _mint_instant.
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            minutes=self.access_token_expire_minutes
+        )
 
         jti = str(uuid.uuid4())
 
@@ -516,7 +636,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
                 "knowledge:read",
             ],
             "exp": expires_at,
-            "iat": now,
+            "iat": issued_at,
             "iss": self.issuer,
             "aud": self.audience,
             "jti": jti,
@@ -541,7 +661,9 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return token
 
-    async def generate_refresh_token(self, user: User) -> str:
+    async def generate_refresh_token(
+        self, user: User, *, state_read_at: datetime
+    ) -> str:
         """Generate RS256-signed refresh token.
 
         Token Claims:
@@ -560,21 +682,25 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: User to generate token for
+            state_read_at: See interface (#831)
 
         Returns:
             JWT refresh token string
         """
         _refuse_if_deactivated(user, "refresh")
 
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(days=self.refresh_token_expire_days)
+        issued_at = _mint_instant(state_read_at)
+        # exp from mint-time now, iat from the basis — see _mint_instant.
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=self.refresh_token_expire_days
+        )
 
         jti = str(uuid.uuid4())
 
         payload = {
             "sub": user.user_id,
             "exp": expires_at,
-            "iat": now,
+            "iat": issued_at,
             "iss": self.issuer,
             "aud": self.audience,
             "jti": jti,
@@ -598,11 +724,14 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return token
 
-    async def generate_password_reset_token(self, user: User) -> PasswordResetMint:
+    async def generate_password_reset_token(
+        self, user: User, *, state_read_at: datetime
+    ) -> PasswordResetMint:
         """Generate an RS256-signed password-reset token (see interface).
 
         Args:
             user: Account the reset is for
+            state_read_at: See interface (#831)
 
         Returns:
             The signed token and its ``jti``
@@ -614,6 +743,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             email=getattr(user, "email", "") or "",
             issuer=self.issuer,
             audience=self.audience,
+            state_read_at=state_read_at,
         )
         token = jwt.encode(claims, self.private_key, algorithm="RS256")
 
@@ -623,11 +753,14 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return PasswordResetMint(token=token, jti=claims["jti"], subject=claims["sub"])
 
-    async def generate_dummy_reset_token(self, email: str) -> PasswordResetMint:
+    async def generate_dummy_reset_token(
+        self, email: str, *, state_read_at: datetime
+    ) -> PasswordResetMint:
         """Generate an RS256-signed enumeration decoy (see interface).
 
         Args:
             email: The address the caller asked about
+            state_read_at: See interface (#831)
 
         Returns:
             The signed token, its ``jti``, and the random subject it names
@@ -637,6 +770,7 @@ class RS256JWTTokenGenerator(IJWTTokenGenerator):
             email=email,
             issuer=self.issuer,
             audience=self.audience,
+            state_read_at=state_read_at,
         )
         return PasswordResetMint(
             token=jwt.encode(claims, self.private_key, algorithm="RS256"),
@@ -1043,7 +1177,9 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         self.issuer = issuer
         self.audience = audience
 
-    async def generate_access_token(self, user: User) -> str:
+    async def generate_access_token(
+        self, user: User, *, state_read_at: datetime
+    ) -> str:
         """Generate HS256-signed access token.
 
         Token Claims (per iam-design.md):
@@ -1062,14 +1198,18 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: User to generate token for
+            state_read_at: See interface (#831)
 
         Returns:
             JWT access token string
         """
         _refuse_if_deactivated(user, "access")
 
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(minutes=self.access_token_expire_minutes)
+        issued_at = _mint_instant(state_read_at)
+        # exp from mint-time now, iat from the basis — see _mint_instant.
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            minutes=self.access_token_expire_minutes
+        )
 
         jti = str(uuid.uuid4())
 
@@ -1091,7 +1231,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
                 "knowledge:read",
             ],
             "exp": expires_at,  # Expiration time
-            "iat": now,  # Issued at
+            "iat": issued_at,  # Issued at
             "iss": self.issuer,  # Issuer
             "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)
@@ -1117,7 +1257,9 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return token
 
-    async def generate_refresh_token(self, user: User) -> str:
+    async def generate_refresh_token(
+        self, user: User, *, state_read_at: datetime
+    ) -> str:
         """Generate HS256-signed refresh token.
 
         Token Claims:
@@ -1136,21 +1278,25 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
 
         Args:
             user: User to generate token for
+            state_read_at: See interface (#831)
 
         Returns:
             JWT refresh token string
         """
         _refuse_if_deactivated(user, "refresh")
 
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(days=self.refresh_token_expire_days)
+        issued_at = _mint_instant(state_read_at)
+        # exp from mint-time now, iat from the basis — see _mint_instant.
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=self.refresh_token_expire_days
+        )
 
         jti = str(uuid.uuid4())
 
         payload = {
             "sub": user.user_id,  # Subject (user ID)
             "exp": expires_at,  # Expiration time
-            "iat": now,  # Issued at
+            "iat": issued_at,  # Issued at
             "iss": self.issuer,  # Issuer
             "aud": self.audience,  # Audience
             "jti": jti,  # JWT ID (unique identifier)
@@ -1174,11 +1320,14 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return token
 
-    async def generate_password_reset_token(self, user: User) -> PasswordResetMint:
+    async def generate_password_reset_token(
+        self, user: User, *, state_read_at: datetime
+    ) -> PasswordResetMint:
         """Generate an HS256-signed password-reset token (see interface).
 
         Args:
             user: Account the reset is for
+            state_read_at: See interface (#831)
 
         Returns:
             The signed token and its ``jti``
@@ -1190,6 +1339,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             email=getattr(user, "email", "") or "",
             issuer=self.issuer,
             audience=self.audience,
+            state_read_at=state_read_at,
         )
         token = jwt.encode(claims, self.secret_key, algorithm="HS256")
 
@@ -1199,11 +1349,14 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
         )
         return PasswordResetMint(token=token, jti=claims["jti"], subject=claims["sub"])
 
-    async def generate_dummy_reset_token(self, email: str) -> PasswordResetMint:
+    async def generate_dummy_reset_token(
+        self, email: str, *, state_read_at: datetime
+    ) -> PasswordResetMint:
         """Generate an HS256-signed enumeration decoy (see interface).
 
         Args:
             email: The address the caller asked about
+            state_read_at: See interface (#831)
 
         Returns:
             The signed token, its ``jti``, and the random subject it names
@@ -1213,6 +1366,7 @@ class HS256JWTTokenGenerator(IJWTTokenGenerator):
             email=email,
             issuer=self.issuer,
             audience=self.audience,
+            state_read_at=state_read_at,
         )
         return PasswordResetMint(
             token=jwt.encode(claims, self.secret_key, algorithm="HS256"),
@@ -1649,8 +1803,11 @@ class ITokenRevocationStore(ABC):
             user_id: User whose tokens are being revoked
             revoked_at: Revocation instant as a Unix timestamp (seconds)
             ttl: Time to live in seconds; must outlive the longest-lived token
-                the deployment issues, or tokens could outlive the watermark
-                that revokes them
+                the deployment issues MEASURED FROM ITS BASIS — the configured
+                lifetime plus ``MAX_MINT_BASIS_CARRY_SECONDS``, since ``iat``
+                (what the watermark compares against) can trail the mint by up
+                to the hand-off artifact's TTL (#831) — or tokens could
+                outlive the watermark that revokes them
         """
         ...
 

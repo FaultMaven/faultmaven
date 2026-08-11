@@ -26,6 +26,7 @@ maintained and tested, not because a form is live.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -293,8 +294,16 @@ class TestDeactivatedAccountsAreNotEnumerable:
             if claim not in time_claims and real[claim] != deactivated[claim]
         } == {"sub", "jti"}
 
-        # Lifetimes agree, so exp/iat cannot separate them either.
-        assert real["exp"] - real["iat"] == deactivated["exp"] - deactivated["iat"]
+        # Lifetimes agree within stamp granularity, so exp/iat cannot
+        # separate them either. Under the #831 split, exp - iat = lifetime
+        # plus the request's capture-to-mint span, so independently-minted
+        # tokens can differ by one whole second — exact equality here was a
+        # boundary-timing flake, and a 1s bound still refutes any real
+        # lifetime divergence.
+        assert (
+            abs((real["exp"] - real["iat"]) - (deactivated["exp"] - deactivated["iat"]))
+            <= 1
+        )
 
     async def test_the_submitted_spelling_does_not_leak_through_case(self):
         """Lookup is case-insensitive; the claim must be too.
@@ -307,7 +316,9 @@ class TestDeactivatedAccountsAreNotEnumerable:
         generator = user_service.token_generator
 
         real_token = await user_service.request_password_reset(email=EMAIL.upper())
-        decoy = await generator.generate_dummy_reset_token(EMAIL.upper())
+        decoy = await generator.generate_dummy_reset_token(
+            EMAIL.upper(), state_read_at=datetime.now(timezone.utc)
+        )
 
         real_claims = await generator.verify_password_reset_token(real_token)
         decoy_claims = await generator.verify_password_reset_token(decoy.token)
@@ -329,8 +340,14 @@ class TestDeactivatedAccountsAreNotEnumerable:
             pyjwt.get_unverified_header(unknown_token)
         )
         assert sorted(deactivated) == sorted(unknown)
-        assert deactivated["exp"] - deactivated["iat"] == (
-            unknown["exp"] - unknown["iat"]
+        # 1s bound, not equality — see the lifetime note in
+        # test_a_decoy_is_not_distinguishable_from_a_real_token above (#831).
+        assert (
+            abs(
+                (deactivated["exp"] - deactivated["iat"])
+                - (unknown["exp"] - unknown["iat"])
+            )
+            <= 1
         )
         # Each echoes the address it was asked about, and nothing else.
         assert deactivated["email"] == EMAIL.lower()
@@ -395,7 +412,8 @@ class TestTheGeneratorRefusesWhatIsNotAResetToken:
                 roles=["member"],
                 is_active=True,
                 organization_id="org-1",
-            )
+            ),
+            state_read_at=datetime.now(timezone.utc),
         )
 
         with pytest.raises(pyjwt.InvalidTokenError):

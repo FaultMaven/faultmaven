@@ -154,7 +154,9 @@ async def test_refresh_token_carries_the_organization_claim(
     as_tenant_provider(TenantProvider.MULTI)
     generator, verify_args = build_generator()
 
-    token = await generator.generate_refresh_token(_user(organization_id=REAL_ORG))
+    token = await generator.generate_refresh_token(
+        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+    )
 
     assert _decode(token, verify_args)["organization_id"] == REAL_ORG
 
@@ -169,7 +171,9 @@ async def test_refresh_token_of_an_orgless_user_carries_the_empty_claim(
     as_tenant_provider(TenantProvider.MULTI)
     generator, verify_args = build_generator()
 
-    token = await generator.generate_refresh_token(_user(organization_id=None))
+    token = await generator.generate_refresh_token(
+        _user(organization_id=None), state_read_at=datetime.now(timezone.utc)
+    )
 
     assert _decode(token, verify_args)["organization_id"] == ""
 
@@ -182,7 +186,9 @@ async def test_single_tenant_refresh_token_claims_the_standalone_org(
     as_tenant_provider(TenantProvider.SINGLE)
     generator, verify_args = build_generator()
 
-    token = await generator.generate_refresh_token(_user(organization_id=None))
+    token = await generator.generate_refresh_token(
+        _user(organization_id=None), state_read_at=datetime.now(timezone.utc)
+    )
 
     assert _decode(token, verify_args)["organization_id"] == STANDALONE_ORG_ID
 
@@ -197,7 +203,9 @@ async def test_validate_refresh_token_returns_the_organization_claim(
     as_tenant_provider(TenantProvider.MULTI)
     generator, _ = build_generator()
 
-    token = await generator.generate_refresh_token(_user(organization_id=REAL_ORG))
+    token = await generator.generate_refresh_token(
+        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+    )
     claims = await generator.validate_refresh_token(token)
 
     assert claims is not None
@@ -267,7 +275,7 @@ async def test_refresh_preserves_the_organization_across_rotation(as_tenant_prov
 
     # A refresh token minted for a mapped SSO login.
     old_refresh = await generator.generate_refresh_token(
-        _user(organization_id=REAL_ORG)
+        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
     )
 
     # The user store hands back an org-less DevUser (sentinel-stamped).
@@ -342,7 +350,9 @@ async def test_single_tenant_refresh_is_unaffected(as_tenant_provider):
     revocation_store = InMemoryRevocationStore()
     generator, verify_args = _hs256_generator(revocation_store)
 
-    old_refresh = await generator.generate_refresh_token(_dev_user())
+    old_refresh = await generator.generate_refresh_token(
+        _dev_user(), state_read_at=datetime.now(timezone.utc)
+    )
     request = _fake_request(_FakeUserStore(_dev_user()), revocation_store)
     response = SimpleNamespace(headers={})
 
@@ -413,7 +423,9 @@ async def test_oauth_refresh_grant_preserves_the_organization_on_both_tokens(
     revocation_store = InMemoryRevocationStore()
     generator, verify_args = build_generator(revocation_store)
 
-    presented = await generator.generate_refresh_token(_user(organization_id=REAL_ORG))
+    presented = await generator.generate_refresh_token(
+        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+    )
 
     dev_user = _dev_user()
     assert dev_user.organization_id == STANDALONE_ORG_ID  # what the store hands back
@@ -435,7 +447,9 @@ async def test_oauth_refresh_grant_survives_repeated_rotation(as_tenant_provider
     revocation_store = InMemoryRevocationStore()
     generator, verify_args = _hs256_generator(revocation_store)
 
-    token = await generator.generate_refresh_token(_user(organization_id=REAL_ORG))
+    token = await generator.generate_refresh_token(
+        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+    )
     service = _oauth_service(_dev_user(), generator)
 
     for _ in range(3):
@@ -459,7 +473,9 @@ async def test_oauth_refresh_grant_of_an_orgless_token_still_fails_closed(
     revocation_store = InMemoryRevocationStore()
     generator, verify_args = _hs256_generator(revocation_store)
 
-    presented = await generator.generate_refresh_token(_user(organization_id=None))
+    presented = await generator.generate_refresh_token(
+        _user(organization_id=None), state_read_at=datetime.now(timezone.utc)
+    )
     assert _decode(presented, verify_args)["organization_id"] == ""
 
     service = _oauth_service(_dev_user(), generator)
@@ -478,7 +494,9 @@ async def test_single_tenant_oauth_refresh_grant_is_unaffected(as_tenant_provide
     revocation_store = InMemoryRevocationStore()
     generator, verify_args = _hs256_generator(revocation_store)
 
-    presented = await generator.generate_refresh_token(_dev_user())
+    presented = await generator.generate_refresh_token(
+        _dev_user(), state_read_at=datetime.now(timezone.utc)
+    )
     service = _oauth_service(_dev_user(), generator)
 
     tokens = await service.refresh_access_token(

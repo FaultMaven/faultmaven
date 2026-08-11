@@ -19,7 +19,7 @@ site, mint, verify the signature, and measure ``exp - iat``.
 from __future__ import annotations
 
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -158,8 +158,19 @@ def _auth_service(private_pem: str, public_pem: str):
     )
 
 
-def _lifetime(payload: dict) -> timedelta:
-    return timedelta(seconds=payload["exp"] - payload["iat"])
+def _assert_lifetime(payload: dict, expected: timedelta) -> None:
+    """The configured lifetime reached the mint, within stamp granularity.
+
+    Under the #831 split, ``iat`` is the pre-read basis and ``exp`` is
+    mint-time plus the lifetime, so ``exp - iat`` exceeds the configured
+    lifetime by the basis-to-mint span — sub-second here (the tests capture
+    immediately before minting), but whole-second truncation can push the
+    difference to 1. What this file asserts is WHICH settings half supplies
+    the lifetime, and a wrong half is minutes-to-days off, far outside the
+    2-second window.
+    """
+    measured = timedelta(seconds=payload["exp"] - payload["iat"])
+    assert expected <= measured <= expected + timedelta(seconds=2)
 
 
 class TestCloudMintHonoursTheKnob:
@@ -190,7 +201,9 @@ class TestCloudMintHonoursTheKnob:
             _revocation_store(),
             _auth_service(private_pem, public_pem),
         )
-        token = await generator.generate_access_token(_user())
+        token = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         payload = jwt.decode(
             token,
@@ -199,7 +212,7 @@ class TestCloudMintHonoursTheKnob:
             audience=AUDIENCE,
             issuer=ISSUER,
         )
-        assert _lifetime(payload) == timedelta(minutes=minutes)
+        _assert_lifetime(payload, timedelta(minutes=minutes))
 
     @pytest.mark.parametrize("minutes,days", LIFETIME_PAIRS)
     @pytest.mark.asyncio
@@ -218,7 +231,9 @@ class TestCloudMintHonoursTheKnob:
             _revocation_store(),
             _auth_service(private_pem, public_pem),
         )
-        token = await generator.generate_refresh_token(_user())
+        token = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         payload = jwt.decode(
             token,
@@ -227,7 +242,7 @@ class TestCloudMintHonoursTheKnob:
             audience=AUDIENCE,
             issuer=ISSUER,
         )
-        assert _lifetime(payload) == timedelta(days=days)
+        _assert_lifetime(payload, timedelta(days=days))
 
 
 class TestLocalMintHonoursTheSameKnob:
@@ -250,7 +265,9 @@ class TestLocalMintHonoursTheSameKnob:
         generator = auth_api._build_local_jwt_generator(_revocation_store())
 
         access = jwt.decode(
-            await generator.generate_access_token(_user()),
+            await generator.generate_access_token(
+                _user(), state_read_at=datetime.now(timezone.utc)
+            ),
             SECRET,
             algorithms=["HS256"],
             audience=AUDIENCE,
@@ -259,15 +276,17 @@ class TestLocalMintHonoursTheSameKnob:
         # The HS256 refresh payload takes the generator's iss/aud like every
         # other mint here (#938), so this verifies them rather than opting out.
         refresh = jwt.decode(
-            await generator.generate_refresh_token(_user()),
+            await generator.generate_refresh_token(
+                _user(), state_read_at=datetime.now(timezone.utc)
+            ),
             SECRET,
             algorithms=["HS256"],
             audience=AUDIENCE,
             issuer=ISSUER,
         )
 
-        assert _lifetime(access) == timedelta(minutes=minutes)
-        assert _lifetime(refresh) == timedelta(days=days)
+        _assert_lifetime(access, timedelta(minutes=minutes))
+        _assert_lifetime(refresh, timedelta(days=days))
 
 
 class TestRetiredSpellingIsRejected:
@@ -330,7 +349,7 @@ class TestRevocationWatermarkTracksTheSingleSource:
     """
 
     @pytest.mark.parametrize("minutes,days", LIFETIME_PAIRS)
-    def test_watermark_ttl_equals_configured_refresh_lifetime(
+    def test_watermark_ttl_is_refresh_lifetime_plus_basis_carry(
         self, monkeypatch, minutes, days
     ):
         monkeypatch.setenv("JWT_SECRET_KEY", SECRET)
@@ -341,7 +360,17 @@ class TestRevocationWatermarkTracksTheSingleSource:
         monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
         service = auth_module.AuthService(revocation_store=_revocation_store())
 
-        assert service._longest_token_lifetime_seconds() == days * 86400
+        from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
+
+        # The pad is the #831 basis carry: iat (what the watermark compares
+        # against) can trail the mint by up to the hand-off artifact's TTL,
+        # while exp is mint-time plus the lifetime — so the entry must cover
+        # lifetime + carry, or a revoked pair minted from a slowly-redeemed
+        # code would outlive the watermark and rotate back to life.
+        assert (
+            service._longest_token_lifetime_seconds()
+            == days * 86400 + MAX_MINT_BASIS_CARRY_SECONDS
+        )
 
     def test_watermark_covers_a_maximal_access_lifetime(self, monkeypatch):
         """Access expiry is covered too: nothing ties it to the refresh knob.
@@ -357,7 +386,12 @@ class TestRevocationWatermarkTracksTheSingleSource:
         monkeypatch.setattr(auth_module, "get_settings", lambda: settings)
         service = auth_module.AuthService(revocation_store=_revocation_store())
 
-        assert service._longest_token_lifetime_seconds() == 1440 * 60
+        from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
+
+        assert (
+            service._longest_token_lifetime_seconds()
+            == 1440 * 60 + MAX_MINT_BASIS_CARRY_SECONDS
+        )
 
     def test_a_non_positive_lifetime_raises_instead_of_defaulting(self, monkeypatch):
         """A mis-wired source fails loudly; it does not default to 7 days.

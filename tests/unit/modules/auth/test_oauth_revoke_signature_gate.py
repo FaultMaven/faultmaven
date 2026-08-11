@@ -217,7 +217,9 @@ class TestGenuineTokensAreStillRevoked:
         redis = _fake_redis()
         store = _store(redis)
         generator = _rs256_generator(store)
-        access = await generator.generate_access_token(_user())
+        access = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         await _call_revoke(_oauth_service(generator), access, "access_token")
 
@@ -229,7 +231,9 @@ class TestGenuineTokensAreStillRevoked:
         redis = _fake_redis()
         store = _store(redis)
         generator = _rs256_generator(store)
-        refresh = await generator.generate_refresh_token(_user())
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         await _call_revoke(_oauth_service(generator), refresh, "refresh_token")
 
@@ -240,7 +244,9 @@ class TestGenuineTokensAreStillRevoked:
         redis = _fake_redis()
         store = _store(redis)
         generator = _rs256_generator(store)
-        refresh = await generator.generate_refresh_token(_user())
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         await _call_revoke(_oauth_service(generator), refresh, "access_token")
 
@@ -251,7 +257,9 @@ class TestGenuineTokensAreStillRevoked:
         redis = _fake_redis()
         store = _store(redis)
         generator = _hs256_generator(store)
-        refresh = await generator.generate_refresh_token(_user())
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         await generator.revoke_refresh_token(refresh)
 
@@ -364,7 +372,9 @@ class TestEntryNeverExpiresBeforeTheTokenItRevokes:
     async def test_refresh_token_keeps_its_full_entry_under_any_hint(self, hint):
         redis = _fake_redis()
         generator = _rs256_generator(_store(redis))
-        refresh = await generator.generate_refresh_token(_user())
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
         jti = pyjwt.decode(refresh, options={"verify_signature": False})["jti"]
 
         await _call_revoke(_oauth_service(generator), refresh, hint)
@@ -379,7 +389,9 @@ class TestEntryNeverExpiresBeforeTheTokenItRevokes:
         """The same rule in the other direction: no free extension either."""
         redis = _fake_redis()
         generator = _rs256_generator(_store(redis))
-        access = await generator.generate_access_token(_user())
+        access = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
         jti = pyjwt.decode(access, options={"verify_signature": False})["jti"]
 
         await _call_revoke(_oauth_service(generator), access, hint)
@@ -391,7 +403,9 @@ class TestEntryNeverExpiresBeforeTheTokenItRevokes:
         """The HS256 path routes by method name only — same ceiling rule."""
         redis = _fake_redis()
         generator = _hs256_generator(_store(redis))
-        refresh = await generator.generate_refresh_token(_user())
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
         jti = pyjwt.decode(refresh, options={"verify_signature": False})["jti"]
 
         # Deliberately the ACCESS method: nothing but the token's own claims
@@ -449,7 +463,9 @@ class TestEntryNeverExpiresBeforeTheTokenItRevokes:
             issuer="faultmaven",
             audience="faultmaven-api",
         )
-        refresh = await minting_generator.generate_refresh_token(_user())
+        refresh = await minting_generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
         jti = pyjwt.decode(refresh, options={"verify_signature": False})["jti"]
 
         # Same deployment, expiry now lowered to the 7-day default.

@@ -499,12 +499,26 @@ class AuthService:
         maximum (1 day) it exceeds the shortest permitted refresh lifetime and
         must be covered exactly like the refresh case.
 
+        Padded by ``MAX_MINT_BASIS_CARRY_SECONDS`` (#831): the watermark keys
+        on ``iat``, which is stamped from a pre-read basis that can trail the
+        mint by up to the OAuth code's TTL bound, while ``exp`` is mint-time
+        plus the lifetime — so a token's life measured from its *basis* (the
+        instant the watermark compares against) exceeds the configured
+        lifetime by up to that carry. Without the pad, a revoked pair minted
+        from a slowly-redeemed code would outlive the watermark entry that
+        revokes it and rotate back to life.
+
         Attributes are read directly rather than via ``getattr`` defaults, and a
         non-positive result raises: a missing or mis-wired settings half must
         fail loudly here rather than silently under-cover.
         """
+        from faultmaven.config.settings import MAX_MINT_BASIS_CARRY_SECONDS
+
         refresh_days = self._settings.auth.jwt_refresh_token_expire_days
         access_minutes = self._settings.auth.jwt_access_token_expire_minutes
+        # Checked BEFORE the pad: a positive constant added first would hide a
+        # mis-wired settings half behind a small-but-positive total, silently
+        # under-covering — the exact failure this raise exists to name.
         seconds = max(int(refresh_days) * 86400, int(access_minutes) * 60)
         if seconds <= 0:
             # Unreachable from a real settings object: expiry has one
@@ -520,7 +534,7 @@ class AuthService:
                 f"access_minutes={access_minutes!r}). The revocation watermark "
                 "cannot be bounded, so no revocation may be recorded against it."
             )
-        return seconds
+        return seconds + MAX_MINT_BASIS_CARRY_SECONDS
 
     async def revoke_user_tokens(
         self,

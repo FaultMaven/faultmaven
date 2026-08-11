@@ -272,10 +272,10 @@ class FakeUserRepository:
 
 
 class FakeTokenGenerator:
-    async def generate_access_token(self, user):
+    async def generate_access_token(self, user, *, state_read_at):
         return f"access-{user.user_id}"
 
-    async def generate_refresh_token(self, user):
+    async def generate_refresh_token(self, user, *, state_read_at):
         return f"refresh-{user.user_id}"
 
 
@@ -473,10 +473,9 @@ async def test_mapped_org_is_bound_before_the_user_lookup_and_rides_the_code(
     # ...and so was the user lookup that follows it.
     assert users.subject_lookups_bound_to == [FM_ORG]
     # The completion code carries the tenant into the exchange.
-    assert await store.consume_login(params["code"]) == {
-        "user_id": "u-1",
-        "organization_id": FM_ORG,
-    }
+    payload = await store.consume_login(params["code"])
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
+    assert payload == {"user_id": "u-1", "organization_id": FM_ORG}
 
 
 @pytest.mark.unit
@@ -599,10 +598,9 @@ async def test_jit_user_is_anchored_to_the_mapped_orgs_enterprise(
     # Not the standalone default the repository would otherwise fall back to.
     assert created.enterprise_id == FM_ENTERPRISE
     assert orgs.added == [(FM_ORG, created.user_id, SYSTEM_ROLE_IDS[Role.MEMBER])]
-    assert await store.consume_login(params["code"]) == {
-        "user_id": created.user_id,
-        "organization_id": FM_ORG,
-    }
+    payload = await store.consume_login(params["code"])
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
+    assert payload == {"user_id": created.user_id, "organization_id": FM_ORG}
 
 
 @pytest.mark.unit
@@ -646,7 +644,9 @@ async def test_single_tenant_never_consults_the_mapping(store, as_tenant_provide
     assert orgs.added == []
     # No organization on the completion payload: single-tenant tokens get the
     # Standalone sentinel from resolve_organization_claim instead.
-    assert await store.consume_login(params["code"]) == {"user_id": "u-1"}
+    payload = await store.consume_login(params["code"])
+    assert payload.pop("state_read_at") > 0  # epoch seconds (#831)
+    assert payload == {"user_id": "u-1"}
 
 
 @pytest.mark.unit

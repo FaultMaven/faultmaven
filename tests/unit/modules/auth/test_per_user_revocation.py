@@ -206,7 +206,9 @@ class TestAdminEndpointActuallyRevokes:
         auth_service = _auth_service(store)
         user = _user()
 
-        access = await generator.generate_access_token(user)
+        access = await generator.generate_access_token(
+            user, state_read_at=datetime.now(timezone.utc)
+        )
         # Sanity: the token authenticates before revocation.
         assert await generator.validate_access_token(access) is not None
 
@@ -260,7 +262,9 @@ class TestAdminEndpointActuallyRevokes:
         generator = _generator(store)
         auth_service = _auth_service(store)
 
-        access = await generator.generate_access_token(_user())
+        access = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             await auth_routes.revoke_user_tokens(
@@ -296,7 +300,9 @@ class TestAdminEndpointActuallyRevokes:
         generator = _generator(store)
         auth_service = _auth_service(store)
 
-        access = await generator.generate_access_token(_user())
+        access = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             await auth_routes.revoke_user_tokens(
@@ -347,8 +353,12 @@ class TestWatermarkCoversEveryMintPath:
         generator = _generator(store)
         auth_service = _auth_service(store)
 
-        access = await generator.generate_access_token(_user())
-        refresh = await generator.generate_refresh_token(_user())
+        access = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         await auth_service.revoke_user_tokens(USER_ID)
 
@@ -360,8 +370,12 @@ class TestWatermarkCoversEveryMintPath:
         generator = _rs256_generator(store)
         auth_service = _auth_service(store)
 
-        access = await generator.generate_access_token(_user())
-        refresh = await generator.generate_refresh_token(_user())
+        access = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
+        refresh = await generator.generate_refresh_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         await auth_service.revoke_user_tokens(USER_ID)
 
@@ -393,10 +407,18 @@ class TestWatermarkCoversEveryMintPath:
         user = _user()
 
         tokens = {
-            "hs256_access": await hs256.generate_access_token(user),
-            "hs256_refresh": await hs256.generate_refresh_token(user),
-            "rs256_access": await rs256.generate_access_token(user),
-            "rs256_refresh": await rs256.generate_refresh_token(user),
+            "hs256_access": await hs256.generate_access_token(
+                user, state_read_at=datetime.now(timezone.utc)
+            ),
+            "hs256_refresh": await hs256.generate_refresh_token(
+                user, state_read_at=datetime.now(timezone.utc)
+            ),
+            "rs256_access": await rs256.generate_access_token(
+                user, state_read_at=datetime.now(timezone.utc)
+            ),
+            "rs256_refresh": await rs256.generate_refresh_token(
+                user, state_read_at=datetime.now(timezone.utc)
+            ),
         }
 
         for name, token in tokens.items():
@@ -411,8 +433,12 @@ class TestWatermarkCoversEveryMintPath:
         generator = _generator(store)
         auth_service = _auth_service(store)
 
-        victim_token = await generator.generate_access_token(_user())
-        bystander_token = await generator.generate_access_token(_user("user-other"))
+        victim_token = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
+        bystander_token = await generator.generate_access_token(
+            _user("user-other"), state_read_at=datetime.now(timezone.utc)
+        )
 
         await auth_service.revoke_user_tokens(USER_ID)
 
@@ -440,7 +466,9 @@ class TestReLoginStillWorks:
         await store.revoke_user_tokens_before(USER_ID, past, ttl=3600)
 
         # The user logs back in; the fresh token is strictly newer.
-        fresh = await generator.generate_access_token(_user())
+        fresh = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         assert await generator.validate_access_token(fresh) is not None
 
@@ -449,7 +477,9 @@ class TestReLoginStillWorks:
         store = _store()
         generator = _generator(store)
 
-        stale = await generator.generate_access_token(_user())
+        stale = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
         future = int(datetime.now(timezone.utc).timestamp()) + 60
         await store.revoke_user_tokens_before(USER_ID, future, ttl=3600)
 
@@ -463,8 +493,12 @@ class TestRevocationArmsAreIndependent:
         store = _store()
         generator = _generator(store)
 
-        first = await generator.generate_access_token(_user())
-        second = await generator.generate_access_token(_user())
+        first = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
+        second = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         await generator.revoke_access_token(first)
 
@@ -785,7 +819,9 @@ class TestServiceFailurePosture:
         store = _store()
         generator = _generator(store)
         auth_service = _auth_service(store)
-        access = await generator.generate_access_token(_user())
+        access = await generator.generate_access_token(
+            _user(), state_read_at=datetime.now(timezone.utc)
+        )
 
         async def boom(user_id, issued_at):
             raise ConnectionError("store down")

@@ -197,7 +197,9 @@ async def test_multi_tenant_never_mints_the_sentinel_org_for_an_orgless_user(
     as_tenant_provider(TenantProvider.MULTI)
     generator, verify_args = build_generator()
 
-    token = await generator.generate_access_token(build_user())
+    token = await generator.generate_access_token(
+        build_user(), state_read_at=datetime.now(timezone.utc)
+    )
     claims = _decode(token, verify_args)
 
     assert claims["organization_id"] != STANDALONE_ORG_ID
@@ -217,7 +219,9 @@ async def test_orgless_multi_tenant_token_is_refused_by_the_binder(
     as_tenant_provider(TenantProvider.MULTI)
     generator, verify_args = build_generator()
 
-    token = await generator.generate_access_token(build_user())
+    token = await generator.generate_access_token(
+        build_user(), state_read_at=datetime.now(timezone.utc)
+    )
     user = AuthenticatedUser.from_jwt_claims(_decode(token, verify_args))
 
     # The binder's refusal predicate is `if not user.organization_id`.
@@ -236,7 +240,9 @@ async def test_single_tenant_still_claims_the_standalone_org(
     as_tenant_provider(TenantProvider.SINGLE)
     generator, verify_args = build_generator()
 
-    token = await generator.generate_access_token(build_user())
+    token = await generator.generate_access_token(
+        build_user(), state_read_at=datetime.now(timezone.utc)
+    )
 
     assert _decode(token, verify_args)["organization_id"] == STANDALONE_ORG_ID
 
@@ -252,7 +258,9 @@ async def test_a_real_org_is_carried_verbatim_in_both_modes(
     as_tenant_provider(provider)
     generator, verify_args = build_generator()
 
-    token = await generator.generate_access_token(_user(organization_id=REAL_ORG))
+    token = await generator.generate_access_token(
+        _user(organization_id=REAL_ORG), state_read_at=datetime.now(timezone.utc)
+    )
 
     assert _decode(token, verify_args)["organization_id"] == REAL_ORG
 

@@ -22,6 +22,7 @@ generator signs with — asserted by verifying a generator-minted token through
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -132,7 +133,8 @@ class TestUnconfiguredOAuthStandalone:
                 roles=["member"],
                 is_active=True,
                 organization_id="org-1",
-            )
+            ),
+            state_read_at=datetime.now(timezone.utc),
         )
 
         with patch(

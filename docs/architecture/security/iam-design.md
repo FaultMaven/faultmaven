@@ -299,6 +299,69 @@ revocation meant to kill it. Persisting first inverts that, at the accepted
 cost that a store-write failure leaves the change committed while returning an
 error (the #767 posture: never report a revocation that did not land).
 
+**`iat` is stamped from a pre-read instant, not from mint time (#831).**
+Persist-then-revoke closes the window a login could complete entirely inside,
+but not a request that *straddles* the whole sequence: one that reads the user
+row (old roles, old active flag) or validates a still-valid refresh token,
+loses the CPU while the admin action persists and watermarks, and only then
+mints. Stamped at mint time, that token's `iat` postdates the watermark and
+survives it while carrying pre-change state. So every
+`IJWTTokenGenerator.generate_*` method requires a `state_read_at` argument —
+captured by the caller before its first read of any state the claims derive
+from (the user row, the presented refresh token, the reset-request account
+lookup) — and stamps `iat` from it. A mint whose reads straddled a
+revocation then necessarily carries `iat <= watermark` and dies with it. The
+argument is required with no default, so a future mint path that forgets it
+fails loudly rather than silently reopening the straddle; a `state_read_at`
+more than a couple of seconds in the future is refused outright (a miswired
+caller passing a derived time, not clock slew), and a marginally-future one
+degrades to `now`, the smaller and therefore more-revocable stamp. Captures
+go through one exported helper, `capture_state_read_at()`, so every capture
+site is greppable; the helper cannot verify *placement*, which is why each
+mint path carries a straddle placement test.
+
+**`iat` only — `exp` stays a mint-time stamp.** Revocation consumes nothing
+from `exp`, and deriving it from the basis would tax every slowly-redeemed
+two-leg login's real lifetime while `expires_in` reported the nominal one —
+and could go negative under legal configuration, returning an
+already-expired token as a success. With the split, `exp` is mint-time
+`now` plus the configured lifetime: `expires_in` is truthful, a born-dead
+mint is impossible by construction, and `exp - iat` is no longer a fixed
+constant (it grows by the basis-to-mint span). The one cost the split keeps
+is inherent to the straddle kill itself: a login racing the *same user's*
+credential change (e.g. logging in immediately after completing a password
+reset) can begin before the watermark, read the *new* state, and still mint
+a pair whose backdated `iat` dies with the watermark — an HTTP 200 carrying
+a dead pair. The window is one handler's read duration; the retry logs in
+cleanly.
+
+**Two-leg flows carry the first leg's basis in the hand-off artifact.** The
+OAuth authorization code and the SSO completion code are minted from state
+read in an *earlier* request — most consequentially the organization the
+tokens will claim — and neither artifact is revocable (no `iat`, no
+watermark check), so capturing only at the exchange leg would let a
+revoke-all landing between the legs be survived by a pair carrying the
+pre-revocation tenant. Both artifacts therefore carry their leg's pre-read
+capture as **epoch seconds** (a number cannot be naive): the SSO login
+payload from the callback's entry, the OAuth code row from
+`create_authorization_code`'s entry — stored, not derived, so reconfiguring
+the code TTL while codes are in flight cannot shift the stamp in either
+direction. Each exchange stamps `iat` from the *older* of the two legs'
+bases, and treats a present-but-unusable carried value as absent, with a
+warning (`is not None`, then a broad except; on the SSO side an escape would
+500 the exchange after `consume_login` already burned the single-use code —
+the OAuth parse runs before the code is claimed, where the posture is the
+same but the cost of an escape is only a retryable 500). The refresh
+grants need no such carry: the presented refresh token is itself
+watermark-checked, so that artifact is already revocable. Residues, stated
+precisely: the stored capture postdates the request's middleware org-binding
+by milliseconds, and an artifact written by a pre-#831 process (or the
+unwired Postgres code repository, which does not persist the field) carries
+no basis and falls back to the exchange leg's capture — a window bounded by
+the artifact's TTL. The password-reset decoy takes the same captured instant
+as the real mint, so `iat` cannot carry the account lookup's latency and
+answer the existence question the decoy refuses.
+
 The admin endpoint performs the revocation *before* resolving the user, and
 never conditions it on that lookup. `DatabaseUserStore.get_user` swallows its
 exceptions and returns `None`, making a database outage indistinguishable from

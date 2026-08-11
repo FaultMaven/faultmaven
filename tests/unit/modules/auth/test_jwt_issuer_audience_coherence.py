@@ -144,8 +144,12 @@ def _build(algorithm, issuer, audience):
 
 async def _mint(generator, kind):
     if kind == "access":
-        return await generator.generate_access_token(_User())
-    return await generator.generate_refresh_token(_User())
+        return await generator.generate_access_token(
+            _User(), state_read_at=datetime.now(timezone.utc)
+        )
+    return await generator.generate_refresh_token(
+        _User(), state_read_at=datetime.now(timezone.utc)
+    )
 
 
 async def _validate(generator, kind, token):

@@ -62,6 +62,9 @@ from faultmaven.modules.auth.domain.models.auth import DevUser, TokenStatus
 from faultmaven.modules.auth.domain.services.auth_session_service import (
     AuthSessionService,
 )
+from faultmaven.modules.auth.domain.services.jwt_token_generator import (
+    capture_state_read_at,
+)
 from faultmaven.utils.serialization import to_json_compatible
 
 # Initialize router and logger
@@ -286,6 +289,10 @@ async def local_login(
     """
     correlation_id = str(uuid.uuid4())
 
+    # #831: before the first read of any state the tokens derive from
+    # (the user row).
+    state_read_at = capture_state_read_at()
+
     try:
         # Get required services
         user_store = await get_user_store(request)
@@ -331,11 +338,15 @@ async def local_login(
         settings = get_settings()
         jwt_generator = _build_local_jwt_generator(revocation_store)
 
-        access_token = await jwt_generator.generate_access_token(user)
+        access_token = await jwt_generator.generate_access_token(
+            user, state_read_at=state_read_at
+        )
         # Refresh token lets the client mint a new access token via
         # POST /auth/refresh instead of being forced to re-login when the
         # short-lived access token expires.
-        refresh_token = await jwt_generator.generate_refresh_token(user)
+        refresh_token = await jwt_generator.generate_refresh_token(
+            user, state_read_at=state_read_at
+        )
 
         # Create session for multi-turn conversations
         session = await session_service.create_session(
@@ -448,6 +459,9 @@ async def local_register(
     """
     correlation_id = str(uuid.uuid4())
 
+    # #831: before the first store read — see local_login.
+    state_read_at = capture_state_read_at()
+
     try:
         # Get required services
         user_store = await get_user_store(request)
@@ -479,8 +493,12 @@ async def local_register(
         settings = get_settings()
         jwt_generator = _build_local_jwt_generator(revocation_store)
 
-        access_token = await jwt_generator.generate_access_token(user)
-        refresh_token = await jwt_generator.generate_refresh_token(user)
+        access_token = await jwt_generator.generate_access_token(
+            user, state_read_at=state_read_at
+        )
+        refresh_token = await jwt_generator.generate_refresh_token(
+            user, state_read_at=state_read_at
+        )
 
         # Create session for multi-turn conversations
         session = await session_service.create_session(
@@ -581,6 +599,11 @@ async def refresh_tokens(
     """
     correlation_id = str(uuid.uuid4())
 
+    # #831: before the refresh-token validation, not just the user load —
+    # the presented token's still-unrevoked status is itself state this
+    # handler reads.
+    state_read_at = capture_state_read_at()
+
     try:
         user_store = await get_user_store(request)
         settings = get_settings()
@@ -643,8 +666,12 @@ async def refresh_tokens(
         setattr(user, "organization_id", claims.get("organization_id") or None)
 
         # 3. Mint a fresh pair.
-        new_access_token = await jwt_generator.generate_access_token(user)
-        new_refresh_token = await jwt_generator.generate_refresh_token(user)
+        new_access_token = await jwt_generator.generate_access_token(
+            user, state_read_at=state_read_at
+        )
+        new_refresh_token = await jwt_generator.generate_refresh_token(
+            user, state_read_at=state_read_at
+        )
 
         # 4. Rotation: revoke the old refresh token so a leaked/replayed token
         #    cannot be reused after a successful refresh.
