@@ -383,6 +383,33 @@ async def test_an_identity_value_it_cannot_interpret_counts_as_unreadable(kb, st
 
 
 @pytest.mark.asyncio
+async def test_a_dissimilar_unreadable_row_does_not_manufacture_a_refusal(kb, store):
+    """The threshold is applied BEFORE a row is judged unreadable.
+
+    Every other test here searches at ``min_similarity=0.0``, which makes this
+    ordering unobservable — and the refusal's correctness depends on it. A row
+    that fails the similarity threshold was never a candidate, so its
+    readability is irrelevant; counting it would turn "nothing similar enough
+    matched" — an honest, correct empty answer — into a hard 503.
+
+    Seeded here: one unreadable row far from the query, nothing else above the
+    threshold. The right answer is an empty list, not a refusal.
+    """
+    incomplete = {
+        k: v
+        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
+        if k != "runbook_source"
+    }
+    await store.seed("rb-distant-unreadable", incomplete, _vec(-0.9))
+
+    found = await kb.search_runbooks(
+        query_embedding=_vec(0.9), organization_id=ORG_A, min_similarity=0.65
+    )
+
+    assert found == []
+
+
+@pytest.mark.asyncio
 async def test_an_unreadable_result_set_is_refused_without_retrying(kb, store):
     """The refusal must cost ONE query, not three, and no breaker credit.
 

@@ -3022,14 +3022,28 @@ async def get_report_recommendations(
             extra={"case_id": case_id},
             exc_info=True,
         )
-        raise HTTPException(
-            status_code=503,
-            detail=(
+        # The remediation differs by cause, so the message must too. Every
+        # other error here is a transient unavailability that retrying clears;
+        # RUNBOOK_RESULTS_UNREADABLE is deterministic — the knowledge base is
+        # up and answering, and the offending rows will fail identically on
+        # every attempt until they are re-indexed. Telling an operator to
+        # "retry once the knowledge base is available" would point them at a
+        # subsystem that is not broken and at an action that cannot work
+        # (#912).
+        if getattr(e, "error_code", None) == "RUNBOOK_RESULTS_UNREADABLE":
+            detail = (
+                "Runbook similarity search found only runbooks it could not "
+                "read, so duplicate runbooks cannot be ruled out. The "
+                "knowledge base is available; the affected runbooks need "
+                "re-indexing. Retrying will not clear this."
+            )
+        else:
+            detail = (
                 "Runbook similarity search is unavailable, so duplicate "
                 "runbooks cannot be ruled out. Retry once the knowledge base "
                 "is available."
-            ),
-        )
+            )
+        raise HTTPException(status_code=503, detail=detail)
     except Exception as e:
         logger.error(
             f"Failed to get report recommendations for case {case_id}: {e}",

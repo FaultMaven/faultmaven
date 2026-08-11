@@ -398,11 +398,19 @@ class RunbookKnowledgeBase(BaseExternalClient):
             # negative from a search that did not really run (#944), so refuse
             # instead: rows matched, and none of them was readable.
             if unreadable and not similar_runbooks:
+                # Says only what is true. ``unreadable`` counts rows that met
+                # the similarity threshold and carried no usable identity — NOT
+                # the number of rows the query matched, and other rows may well
+                # have been read successfully and then correctly discarded for
+                # being dissimilar. Claiming the whole result set "could not be
+                # read" would be a second wrong statement of fact, in the error
+                # raised to prevent the first.
                 raise KnowledgeBaseError(
-                    f"Runbook similarity search matched {unreadable} row(s) but "
-                    f"none carried the identity keys needed to read them; "
-                    f"refusing to report 'no similar runbooks' from a result "
-                    f"set that could not be read",
+                    f"{unreadable} runbook(s) met the similarity threshold but "
+                    f"carried no usable identity, and no readable runbook met "
+                    f"it; refusing to report 'no similar runbooks' when the "
+                    f"only candidates could not be read. Re-index the affected "
+                    f"rows — retrying the search cannot clear this.",
                     error_code="RUNBOOK_RESULTS_UNREADABLE",
                 )
 
