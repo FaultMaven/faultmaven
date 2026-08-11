@@ -408,9 +408,11 @@ only by accident:
 - `CONFIG_PRESET=local` used to set `RATE_LIMIT_ENABLED=false`, so it reported
   **disabled** on a deployment the `development` protection preset — which that
   same preset selects, via `ENVIRONMENT=development` — was rate limiting.
-- `SKIP_SERVICE_CHECKS=true` skips protection setup entirely, and the
-  development carve-out in `main.py` boots unprotected when setup raises. Both
-  reported **enabled**, over a deployment anyone could flood.
+- `SKIP_SERVICE_CHECKS=true` skipped protection setup entirely until fm#990
+  removed that gate, and the development carve-out in `main.py` still boots
+  unprotected when setup raises. Both reported **enabled**, over a deployment
+  anyone could flood. Only the carve-out remains: no environment variable now
+  decides whether the limiter is installed.
 
 An installed limiter that is degrading on a Redis outage still reports
 `true`. That is deliberate: the degrade is transient, and production pins

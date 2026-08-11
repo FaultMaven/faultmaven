@@ -430,8 +430,10 @@ def _rate_limiting_installed(app) -> bool:
       *disabled* under ``CONFIG_PRESET=local``, which used to set
       ``RATE_LIMIT_ENABLED=false`` while the ``development`` *protection* preset
       it selects rate limits regardless; and it reported *enabled* under
-      ``SKIP_SERVICE_CHECKS=True``, which installs no protection middleware
-      whatsoever. Wrong in both directions, and never right except by accident.
+      ``SKIP_SERVICE_CHECKS=True``, which at the time installed no protection
+      middleware whatsoever — fm#990 has since removed that gate, so the flag
+      no longer affects what is installed. Wrong in both directions, and never
+      right except by accident.
     * ``settings.protection`` — that is PII redaction, a different subsystem.
     * ``app.extra["protection_info"]`` — a record of what setup *intended*, and
       absent entirely on the paths that skip or fail setup.
