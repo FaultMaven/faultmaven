@@ -99,10 +99,10 @@ For the data-type × backend × deployment breakdown, see:
 │   NOTE: Local deployment uses FakeRedis (in-process, full API parity) │
 │                                                                        │
 │ ChromaDB KB Instance (PersistentClient at data/chroma-kb/):           │
-│   - faultmaven_kb: All KB documents (global/personal/team scope,     │
-│     filtered by metadata: scope, owner_id, team_id)                  │
-│   - faultmaven_runbooks: Runbook similarity search (report_type,     │
-│     domain metadata — used for "this looks like runbook X")          │
+│   - faultmaven_kb: the instance's ONLY collection. All KB documents  │
+│     (global/personal/team scope, filtered by metadata: scope,        │
+│     owner_id, team_id) AND runbooks, which have no collection of     │
+│     their own and are told apart only by report_type="runbook"       │
 │   Lifecycle: permanent — backed up, never wiped.                     │
 │                                                                        │
 │ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/):│

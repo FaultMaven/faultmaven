@@ -26,9 +26,8 @@
 ```
 ChromaDB KB Instance (PersistentClient at data/chroma-kb/ for local, HttpClient for cloud)
 ├── Collections:
-│   ├── faultmaven_kb         (all KB docs: global/personal/team, metadata-filtered)
-│   ├── faultmaven_runbooks   (runbook similarity recommendations)
-│   └── knowledge_items       (knowledge module search service)
+│   └── faultmaven_kb         (all KB docs: global/personal/team, metadata-filtered,
+│                              AND runbooks, tagged report_type="runbook")
 
 ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/ for local, HttpClient for cloud)
 ├── Collections:
@@ -117,9 +116,21 @@ CaseVectorStore(client=evidence_client)    # dynamic case_{id} collections
 - Case-scoped search (only within current case)
 - Used by the `answer_from_case_evidence` tool
 
-### 2.3 Additional Collections
+### 2.3 Runbooks — no collection of their own
 
-**`faultmaven_runbooks`** — Runbook similarity recommendations (report_type, domain metadata). Used by `RunbookKB` for "this incident looks like runbook X" matching.
+Runbook similarity ("this incident looks like runbook X") runs against
+`faultmaven_kb`, the collection above. `RunbookKnowledgeBase` is injected that
+store and never selects a collection of its own; its `COLLECTION_NAME =
+"faultmaven_runbooks"` constant is decorative, appearing in a single log line at
+init.
+
+Runbooks and KB documents therefore share one collection, and the `report_type`
+metadata value is the **only** discriminator between them — which is why
+`search_runbooks` ANDs `report_type == "runbook"` into every query, alongside
+the mandatory `organization_id` predicate. Both keys, and the runbook identity
+keys the search reconstructs its results from (`case_id`, `case_title`,
+`runbook_source`, `document_title`, `original_document_id`), must be declared by
+`VectorMetadata` or the write path silently drops them (#912).
 
 ---
 
@@ -525,7 +536,7 @@ chromadb.embedding_generation_ms:
   - p95: 150ms
 
 chromadb.collection_count:
-  - faultmaven_kb: 1 (plus faultmaven_runbooks, knowledge_items)
+  - faultmaven_kb: 1 (the KB instance's only collection)
   - case_*: ~500 (active cases)
 
 chromadb.document_count:
@@ -618,7 +629,7 @@ Source files live in `data/knowledge/` (markdown) and `data/evidence/` (raw uplo
 - `faultmaven/infrastructure/knowledge/knowledge_vector_store.py` - Unified KB vector store (`faultmaven_kb`)
 - `faultmaven/infrastructure/persistence/chromadb_store.py` - Generic ChromaDB adapter (`ChromaDBVectorStore`)
 - `faultmaven/infrastructure/persistence/case_vector_store.py` - Case Working Memory (ephemeral `case_{id}` collections)
-- `faultmaven/infrastructure/knowledge/runbook_kb.py` - Runbook similarity KB (`faultmaven_runbooks`)
+- `faultmaven/infrastructure/knowledge/runbook_kb.py` - Runbook similarity KB (over the injected `faultmaven_kb` store; no collection of its own)
 
 **Ingestion & Query**:
 

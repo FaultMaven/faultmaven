@@ -40,9 +40,29 @@ class VectorMetadata(BaseModel):
     # "runbook"`` into every query, so — like ``organization_id`` above — a value
     # this schema dropped would make every row the runbook path writes
     # unreachable by every runbook search. Restored for that reason (#912); the
-    # remaining runbook-identity keys (``report_id``, ``case_id``, ``case_title``,
-    # ``runbook_source``) are still dropped and still tracked there.
+    # remaining runbook-identity keys are carried by the block below.
     report_type: Optional[str] = None
+    # Runbook identity. ``search_runbooks`` rebuilds a ``CaseReport`` +
+    # ``SimilarRunbook`` out of the stored metadata, so every field it reads has
+    # to survive normalization or the reconstruction invents one: before #912
+    # all four were dropped, and a document-driven runbook came back with
+    # ``case_id="unknown"``, ``case_title="Unknown"`` and — worse than an absent
+    # value — a confident ``source=incident_driven``, because that is the
+    # ``.get()`` default. Wrong provenance stated as fact is the failure mode
+    # this project does not accept, so these travel with the row.
+    #
+    # There is deliberately NO ``report_id`` here. The report id IS the ChromaDB
+    # row id (``index_runbook`` passes it as ``documents[0]["id"]``) and
+    # ``search_runbooks`` reads it back from the ids list, so a metadata copy
+    # would be a second spelling of the same fact — free to drift, and no reader
+    # for it. This schema is shared by every vector writer; it earns a key only
+    # when a reader needs it.
+    case_id: Optional[str] = None
+    case_title: Optional[str] = None
+    runbook_source: Optional[str] = None
+    # Document-driven runbooks only: which uploaded document this came from.
+    document_title: Optional[str] = None
+    original_document_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # RAG-enrichment fields: extracted from runbook frontmatter at ingestion
@@ -76,6 +96,11 @@ class VectorMetadata(BaseModel):
         "owner_id",
         "organization_id",
         "report_type",
+        "case_id",
+        "case_title",
+        "runbook_source",
+        "document_title",
+        "original_document_id",
         "domain",
         "service",
         "last_updated",
@@ -109,6 +134,16 @@ class VectorMetadata(BaseModel):
             data["organization_id"] = self.organization_id
         if self.report_type:
             data["report_type"] = self.report_type
+        if self.case_id:
+            data["case_id"] = self.case_id
+        if self.case_title:
+            data["case_title"] = self.case_title
+        if self.runbook_source:
+            data["runbook_source"] = self.runbook_source
+        if self.document_title:
+            data["document_title"] = self.document_title
+        if self.original_document_id:
+            data["original_document_id"] = self.original_document_id
         if self.created_at:
             data["created_at"] = to_json_compatible(self.created_at)
         if self.updated_at:

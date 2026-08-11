@@ -254,11 +254,22 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 metadata = metadatas_list[i] if i < len(metadatas_list) else {}
                 content = documents_list[i] if i < len(documents_list) else ""
 
-                # Reconstruct CaseReport from stored data
+                # Reconstruct CaseReport from stored data.
+                #
+                # The identity keys are read with ``[]``, not ``.get(default)``.
+                # ``index_runbook`` stamps all of them on every row it writes,
+                # so a row missing one was not written by this path and cannot
+                # be reconstructed — and the defaults that used to stand in for
+                # them did not read as "missing", they read as facts:
+                # ``case_id="unknown"`` and ``case_title="Unknown"`` were
+                # returned for every runbook in the collection, because
+                # normalization dropped the real values before ChromaDB ever
+                # saw them (#912). The handler below turns a missing key into a
+                # logged skip, which is the honest answer.
                 try:
                     runbook = CaseReport(
                         report_id=report_id,
-                        case_id=metadata.get("case_id", "unknown"),
+                        case_id=metadata["case_id"],
                         report_type=ReportType.RUNBOOK,
                         title=metadata.get("title", "Untitled Runbook"),
                         content=content,
@@ -272,9 +283,16 @@ class RunbookKnowledgeBase(BaseExternalClient):
                         version=1,
                         linked_to_closure=False,
                         metadata=RunbookMetadata(
-                            source=RunbookSource(
-                                metadata.get("runbook_source", "incident_driven")
-                            ),
+                            # No default. ``index_runbook`` stamps the real
+                            # source on every row, so a row without one was not
+                            # written by this path and its provenance is
+                            # unknown — the old ``"incident_driven"`` fallback
+                            # did not record that, it asserted the opposite,
+                            # returning document-driven runbooks labelled as
+                            # incident-driven (#912). A KeyError here is caught
+                            # by the handler below, which skips the row with a
+                            # warning instead of guessing.
+                            source=RunbookSource(metadata["runbook_source"]),
                             domain=metadata.get("domain", "general"),
                             tags=(
                                 metadata.get("tags", "").split(",")
@@ -282,6 +300,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                                 else []
                             ),
                             document_title=metadata.get("document_title"),
+                            original_document_id=metadata.get("original_document_id"),
                             case_context=None,  # Not reconstructed from search
                         ),
                     )
@@ -289,14 +308,24 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     similar_runbook = SimilarRunbook(
                         runbook=runbook,
                         similarity_score=similarity,
-                        case_title=metadata.get("case_title", "Unknown"),
-                        case_id=metadata.get("case_id", "unknown"),
+                        case_title=metadata["case_title"],
+                        case_id=metadata["case_id"],
                     )
 
                     similar_runbooks.append(similar_runbook)
 
                 except Exception as e:
-                    logger.warning(f"Failed to reconstruct runbook {report_id}: {e}")
+                    # Skipped, not guessed at. Logs the keys the row actually
+                    # carries: a KeyError's message is just the key name, and
+                    # the useful question is which of the identity keys the
+                    # write path was supposed to stamp are missing (#912).
+                    logger.warning(
+                        f"Failed to reconstruct runbook {report_id}, skipping it: {e!r}",
+                        extra={
+                            "report_id": report_id,
+                            "metadata_keys": sorted(metadata),
+                        },
+                    )
                     continue
 
             # Sort by similarity score descending
@@ -380,9 +409,18 @@ class RunbookKnowledgeBase(BaseExternalClient):
             final_tags = tags or (metadata_obj.tags if metadata_obj else [])
             final_case_title = case_title or runbook.title
 
-            # Build metadata dict for ChromaDB
+            # Build metadata dict for ChromaDB.
+            #
+            # Every key here must be declared by ``VectorMetadata``, which
+            # ``ChromaDBVectorStore.add_documents`` normalizes through — it
+            # stores the keys it declares and now refuses the ones it does not,
+            # rather than dropping them silently as it did when the identity
+            # keys below were being discarded on every write (#912).
+            #
+            # ``report_id`` is deliberately absent: it is the row id (see
+            # ``documents`` below), which is where ``search_runbooks`` reads it
+            # from. Writing it here as well would store the same fact twice.
             chroma_metadata = {
-                "report_id": runbook.report_id,
                 "organization_id": organization_id,
                 "case_id": runbook.case_id,
                 "case_title": final_case_title,

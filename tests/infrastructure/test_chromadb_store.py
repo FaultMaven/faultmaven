@@ -126,6 +126,88 @@ class TestChromaDBVectorStore:
         )
 
     @pytest.mark.asyncio
+    async def test_add_documents_refuses_a_key_the_schema_would_drop(
+        self, vector_store
+    ):
+        """An undeclared metadata key fails the write instead of vanishing.
+
+        ``VectorMetadata`` is an allowlist, and it used to discard undeclared
+        keys in silence: the writer saw a successful write, ChromaDB stored
+        none of the key, and the loss surfaced much later as a wrong value at
+        read time. That is exactly how ``index_runbook`` stamped four identity
+        keys on every runbook and stored none of them (#912).
+
+        Nothing may be written when a key is refused — a partial row is the
+        silent-drop failure with extra steps.
+        """
+        store, client, collection = vector_store
+
+        documents = [
+            {
+                "id": "doc1",
+                "content": "Test content",
+                "metadata": {"title": "Test Doc", "not_a_schema_field": "value"},
+            }
+        ]
+
+        with pytest.raises(ValueError, match="not_a_schema_field"):
+            await store.add_documents(documents)
+
+        collection.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_add_documents_refusal_does_not_reach_the_circuit_breaker(
+        self, mock_client
+    ):
+        """The refusal is raised before ``call_external``, deliberately.
+
+        A malformed metadata dict is a programming error, not a ChromaDB
+        failure. Raised inside the wrapper it would consume the retry budget on
+        a deterministic failure and count towards the circuit breaker — five of
+        them would open it and start failing the *healthy* KB writes sharing
+        this store. Pinned by asserting the external-call machinery is never
+        entered at all.
+        """
+        client, collection = mock_client
+        store = ChromaDBVectorStore(client=client, collection_name="test_collection")
+
+        documents = [
+            {"id": "doc1", "content": "c", "metadata": {"not_a_schema_field": "v"}}
+        ]
+
+        with patch.object(
+            ChromaDBVectorStore, "call_external", new=AsyncMock()
+        ) as mock_call:
+            with pytest.raises(ValueError, match="not_a_schema_field"):
+                await store.add_documents(documents)
+
+        mock_call.assert_not_called()
+
+    def test_normalize_metadata_keeps_every_key_the_schema_declares(self):
+        """The allowlist stores what it declares — the other half of the refusal.
+
+        Without this, a schema that declared a field but forgot to emit it in
+        ``to_chroma_metadata`` would pass the refusal test above and still drop
+        the value. That split is precisely how ``report_type`` came to be
+        declared-but-dropped, and it is why the runbook predicate matched
+        nothing the write path produced.
+        """
+        declared = {
+            "title": "Runbook: Connection pool exhaustion",
+            "report_type": "runbook",
+            "organization_id": "org-a",
+            "case_id": "case-42",
+            "case_title": "Pool exhaustion in prod",
+            "runbook_source": "document_driven",
+            "document_title": "PostgreSQL Operations Guide",
+            "original_document_id": "doc-77",
+        }
+
+        stored = ChromaDBVectorStore._normalize_metadata(declared)
+
+        assert stored == declared
+
+    @pytest.mark.asyncio
     async def test_search_success(self, vector_store):
         """Test successful document search using explicit BGE-M3 embeddings"""
         store, client, collection = vector_store

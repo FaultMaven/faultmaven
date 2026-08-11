@@ -22,7 +22,7 @@ Documentation for FaultMaven's persistence layer, database design, and storage a
 
 - **[overview.md](./overview.md)** - Complete storage architecture overview
   - Three storage technologies: SQLite/PostgreSQL, ChromaDB, Redis/FakeRedis
-  - ChromaDB collection layout (faultmaven_kb, faultmaven_runbooks, knowledge_items, case_{id})
+  - ChromaDB collection layout (faultmaven_kb — documents and runbooks alike — plus ephemeral case_{id})
   - Shared client injection pattern (Principle 5)
   - Access patterns, interfaces, and DI wiring
   - Data retention, security, and performance targets

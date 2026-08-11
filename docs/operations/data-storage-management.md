@@ -17,8 +17,8 @@ data/
 ├── chroma-kb/                 # ChromaDB instance — permanent KB vectors
 │   ├── chroma.sqlite3         #   Collection metadata, doc IDs, text, full-text index
 │   └── <uuid>/                #   HNSW vector index (one folder per collection)
-│       ├── data_level0.bin    #   Collections: faultmaven_kb, faultmaven_runbooks,
-│       ├── header.bin         #               knowledge_items
+│       ├── data_level0.bin    #   One collection: faultmaven_kb (KB documents
+│       ├── header.bin         #   AND runbooks — see "Expected collections")
 │       ├── length.bin
 │       └── link_lists.bin
 │
@@ -46,7 +46,7 @@ data/
 | Physical Path | Storage Technology | Logical Data | Lifecycle |
 | --- | --- | --- | --- |
 | `faultmaven.db` | SQLite | Cases, users, evidence metadata, hypotheses, solutions, messages, RBAC, audit logs, conversion jobs/drafts, knowledge items | Application-managed |
-| `chroma-kb/` | ChromaDB (permanent) | KB embeddings: `faultmaven_kb`, `faultmaven_runbooks`, `knowledge_items` collections. Backed up, never wiped. | Permanent |
+| `chroma-kb/` | ChromaDB (permanent) | KB embeddings: one `faultmaven_kb` collection holding KB documents and runbooks alike. Backed up, never wiped. | Permanent |
 | `chroma-evidence/` | ChromaDB (ephemeral) | Case evidence embeddings: `case_{case_id}` collections (one per active case). Excluded from backups, safe to wipe. | Per-case lifecycle |
 | `evidence/<organization_id>/<case_id>/<YYYY-MM-DD>/` | Filesystem | Raw uploaded files (logs, configs, CSVs, PDFs). Not vectors — original files only. UUID-prefixed filenames prevent collisions. | 90-day retention |
 | `resources/knowledge/pack/` | Image / `KB_PACK_DIR` | The **KB pack** — pre-deployed runbooks + build-time vectors. Ingested at startup with no embedding model; built by `faultmaven-kb-toolkit`. See [kb-pack-architecture.md](../architecture/knowledge-and-ai/kb-pack-architecture.md). | Shipped |
@@ -404,10 +404,18 @@ The table below is the operational expected-state checklist. For collection desi
 
 | Instance | Collection | Purpose |
 | --- | --- | --- |
-| `chroma-kb/` | `faultmaven_kb` | All KB documents (global/personal/team, metadata-filtered) |
-| `chroma-kb/` | `faultmaven_runbooks` | Runbook similarity matching for report recommendations |
-| `chroma-kb/` | `knowledge_items` | Knowledge module search service |
+| `chroma-kb/` | `faultmaven_kb` | All KB documents (global/personal/team, metadata-filtered) **and** runbooks (`report_type == "runbook"`) |
 | `chroma-evidence/` | `case_<case_id>` | Per-case evidence vectors (one per active investigation) |
+
+`chroma-kb/` holds exactly one collection. Earlier revisions of this table also
+listed `faultmaven_runbooks` and `knowledge_items`; neither has ever existed as
+a ChromaDB collection. `RunbookKnowledgeBase.COLLECTION_NAME =
+"faultmaven_runbooks"` is a decorative constant appearing in one log line — the
+class is injected the `faultmaven_kb` store and never selects a collection — and
+`knowledge_items` is a **SQL table**. Runbooks are therefore distinguished from
+KB documents only by their `report_type` metadata value, which is why runbook
+search ANDs that predicate into every query (#912). An operator finding no
+`faultmaven_runbooks` collection is looking at correct state.
 
 ### Mapping UUID folders to collections
 

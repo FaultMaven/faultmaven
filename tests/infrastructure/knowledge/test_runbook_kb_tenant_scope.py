@@ -33,7 +33,6 @@ from faultmaven.models.report import (
     RunbookMetadata,
     RunbookSource,
 )
-from faultmaven.models.vector_metadata import VectorMetadata
 
 # Genuinely distinct tenants. Every cross-tenant assertion below relies on these
 # never being equal, and on the two seeded rows being identical in EVERY other
@@ -68,8 +67,29 @@ class _ChromaBackedStore(ChromaDBVectorStore):
 
     def __init__(self, name: str):
         import chromadb
+        from chromadb.config import Settings as ChromaSettings
 
-        super().__init__(chromadb.EphemeralClient(), collection_name=name)
+        # Settings are PINNED, for the same reason ``create_persistent_client``
+        # pins them (#823): chromadb caches one System per identifier and
+        # refuses a second client for it whose ``Settings`` differ in any field
+        # — and ``Settings.environment`` defaults to the ambient ENVIRONMENT
+        # variable, which tests in this suite set and clear. With bare
+        # ``EphemeralClient()`` that made every store built after the first
+        # such change raise "An instance of Chroma already exists for ephemeral
+        # with different settings", so this file's tests errored out or passed
+        # purely on collection order. A gate that only runs in some orders is
+        # not a gate.
+        super().__init__(
+            chromadb.EphemeralClient(
+                settings=ChromaSettings(
+                    anonymized_telemetry=False,
+                    allow_reset=False,
+                    environment="",
+                    is_persistent=False,
+                )
+            ),
+            collection_name=name,
+        )
         self.queries: List[Optional[Dict[str, Any]]] = []
 
     async def seed(
@@ -89,21 +109,24 @@ class _ChromaBackedStore(ChromaDBVectorStore):
 
 
 def _normalized(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """Run a metadata dict through the exact normalization ``add_documents`` applies."""
-    vm = VectorMetadata(
-        **{
-            k: raw.get(k)
-            for k in VectorMetadata.model_fields
-            if k in raw or raw.get(k) is not None
-        }
-    )
-    return vm.to_chroma_metadata()
+    """Run a metadata dict through the exact normalization ``add_documents`` applies.
+
+    Calls the production normalizer rather than re-implementing it — a local
+    copy would drift from the real allowlist and start agreeing with itself.
+    """
+    return ChromaDBVectorStore._normalize_metadata(raw)
 
 
 def _runbook_metadata(organization_id: str, doc_id: str) -> Dict[str, Any]:
-    """Indexed metadata for a runbook. Identical across tenants but for the org."""
+    """Indexed metadata for a runbook. Identical across tenants but for the org.
+
+    Deliberately the same key set ``index_runbook`` writes — no ``report_id``,
+    which is the row id rather than a metadata field. ``add_documents`` refuses
+    any key ``VectorMetadata`` does not declare, so a hand-seeded dict that
+    drifts from the production one fails here instead of silently seeding rows
+    production could never write (#912).
+    """
     return {
-        "report_id": doc_id,
         "organization_id": organization_id,
         "case_id": "case-1",
         "case_title": "Connection pool exhaustion",
@@ -192,6 +215,114 @@ async def test_an_indexed_runbook_round_trips_to_its_own_tenant_and_no_other(
         "isolation at all"
     )
     assert theirs == []
+
+
+@pytest.mark.asyncio
+async def test_an_indexed_runbook_round_trips_every_field_it_was_written_with(
+    kb, store
+):
+    """The whole row survives the write path, not just the two predicate keys.
+
+    ``search_runbooks`` does not return the stored row — it rebuilds a
+    ``CaseReport``/``SimilarRunbook`` out of the stored metadata. Any key
+    normalization drops is therefore not merely missing at read time: it is
+    replaced by whatever the reconstruction falls back to. Before #912
+    ``VectorMetadata`` declared none of the identity keys, so every runbook came
+    back with ``case_id="unknown"``, ``case_title="Unknown"``, no document
+    linkage, and — the reason this is a correctness bug rather than a cosmetic
+    one — ``source=incident_driven``, asserted with full confidence about a
+    runbook that was document-driven.
+
+    A DOCUMENT_DRIVEN runbook is used deliberately: ``incident_driven`` was the
+    old fallback, so an incident-driven fixture would pass this test while the
+    bug was fully present.
+
+    Every value below is distinct and non-default, so no assertion can be
+    satisfied by a coincidence.
+    """
+    report = CaseReport(
+        report_id="rb-identity",
+        case_id="case-REAL-42",
+        report_type=ReportType.RUNBOOK,
+        title="Runbook: Connection pool exhaustion",
+        content="# Runbook\n\nrestart the pool",
+        format="markdown",
+        generation_status=ReportStatus.COMPLETED,
+        generated_at="2026-01-01T00:00:00Z",
+        generation_time_ms=1,
+        is_current=True,
+        version=1,
+        linked_to_closure=False,
+        metadata=RunbookMetadata(
+            source=RunbookSource.DOCUMENT_DRIVEN,
+            domain="database",
+            tags=["postgresql"],
+            document_title="PostgreSQL Operations Guide",
+            original_document_id="doc-77",
+        ),
+    )
+
+    with patch(
+        "faultmaven.infrastructure.model_cache.model_cache.aembed_query",
+        AsyncMock(return_value=_vec(0.5)),
+    ):
+        await kb.index_runbook(
+            report,
+            organization_id=ORG_A,
+            source=RunbookSource.DOCUMENT_DRIVEN,
+            case_title="Pool exhaustion in prod",
+        )
+
+    found = await kb.search_runbooks(
+        query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+    )
+    assert len(found) == 1, "the row the production writer just wrote must come back"
+    match = found[0]
+
+    # The report id is the ChromaDB row id, not a metadata key — pinned here so
+    # that stays true if anyone reintroduces a metadata copy of it.
+    assert match.runbook.report_id == "rb-identity"
+
+    assert match.runbook.case_id == "case-REAL-42"
+    assert match.case_id == "case-REAL-42"
+    assert match.case_title == "Pool exhaustion in prod"
+    assert match.runbook.metadata.source is RunbookSource.DOCUMENT_DRIVEN
+    assert match.runbook.metadata.document_title == "PostgreSQL Operations Guide"
+    assert match.runbook.metadata.original_document_id == "doc-77"
+
+    # And the fabricated stand-ins are gone, named explicitly so a regression
+    # that reinstates them fails on the symptom the issue was filed for.
+    assert match.runbook.case_id != "unknown"
+    assert match.case_title != "Unknown"
+
+
+@pytest.mark.asyncio
+async def test_a_runbook_row_missing_an_identity_key_is_skipped_not_invented(kb, store):
+    """A row this write path could not have produced is dropped, not guessed at.
+
+    The collection is shared with KB documents and ``report_type`` is the only
+    discriminator, so the search predicate can match a row that is not a
+    runbook this path wrote. Reconstructing one anyway is how a confident,
+    wrong ``source``/``case_id`` reaches the caller. Absence must read as
+    absence.
+
+    The row seeded here is byte-identical to a good one except that
+    ``runbook_source`` is missing, so the exclusion can only be due to that key.
+    """
+    good = _runbook_metadata(ORG_A, "rb-good")
+    incomplete = {k: v for k, v in good.items() if k != "runbook_source"}
+
+    await store.seed("rb-good", good, _vec(0.5))
+    await store.seed("rb-incomplete", incomplete, _vec(0.5))
+
+    found = await kb.search_runbooks(
+        query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+    )
+
+    assert [r.runbook.report_id for r in found] == ["rb-good"], (
+        "the row missing its provenance key must be skipped — and the complete "
+        "row must still come back, or this passes because nothing was returned"
+    )
 
 
 # =============================================================================
