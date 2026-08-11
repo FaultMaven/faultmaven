@@ -112,7 +112,7 @@ flowchart TB
         subgraph VECTOR["Vector · ChromaDB (two instances, lifecycle-separated)"]
             direction TB
             KBStore["KnowledgeVectorStore<br/>(faultmaven_kb · scope filter enforced)"]
-            RunbookKB["RunbookKB<br/>(faultmaven_kb · report_type=runbook)"]
+            RunbookKB["RunbookKB<br/>(faultmaven_kb · document_type=runbook)"]
             EvStore["CaseVectorStore<br/>(case_{case_id} · ephemeral)"]
             KBClient["kb_chromadb_client<br/>data/chroma-kb/"]
             EvClient["evidence_chromadb_client<br/>data/chroma-evidence/"]

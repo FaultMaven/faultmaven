@@ -1968,16 +1968,18 @@ DELETED: Use POST /{case_id}/turns instead.
 
 Get intelligent report recommendations for a resolved case.
 
-Returns recommendations for which reports to generate, including
-intelligent runbook suggestions based on similarity search of existing
-runbooks (both incident-driven and document-driven sources).
+Returns recommendations for which reports to generate, including runbook
+suggestions based on a similarity search of the published runbooks the
+REQUESTER can read (global ∪ their own ∪ shared to their teams). The
+requester is the principal who will act on the answer, so their scope
+governs here; the engine's terminal-turn dedup scopes on the case owner
+(fm#1030).
 
 Recommendation Logic:
-- Always available: Incident Report, Post-Mortem (unique per incident)
-- Conditional: Runbook (based on similarity search)
-    - ≥85% similarity: Recommend reuse existing runbook
-    - 70-84% similarity: Offer both review OR generate options
-    - <70% similarity: Recommend generate new runbook
+- Always available: the case's terminal summary
+- Runbook: a ≥70% best-chunk match is surfaced by title and score for the
+  user to judge; below that, generation is recommended. There is no
+  auto-"reuse" verdict.
 
 Args:
     case_id: Case identifier

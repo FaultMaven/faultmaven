@@ -158,11 +158,13 @@ The three parts each close a different way of losing the predicate:
   load (`get_document_visible`, `get_suggestion_visible`) that every route uses.
   The scoped form takes a required `organization_id` and returns nothing for an
   absent id and for an out-of-tenant id alike, so no caller can tell them apart.
-- **By similarity.** A vector query names no id, so the metadata predicate is the
-  only isolation there is. `RunbookKnowledgeBase.search_runbooks` requires an
-  `organization_id`, ANDs it into the ChromaDB `where` clause, and returns `[]`
-  without querying when it has none. Indexing refuses to write a row without the
-  same key — an untenanted row is unreachable by every scoped search.
+- **By similarity.** A vector query names no id, so the metadata predicate is
+  the only isolation there is. `RunbookKnowledgeBase.search_runbooks` requires
+  the searching principal's KB scope filter (`build_kb_scope_filter`: global ∪
+  owned ∪ team-shared, the same allowlist as every other KB read), ANDs it into
+  the ChromaDB `where` clause alongside `document_type == "runbook"`, and
+  **refuses with a typed error** — never a silent `[]` — when no scope filter
+  is supplied (fm#1030).
 - **By allowlist.** Team visibility resolves to a set of ids in SQL
   (`resource_shares`). Both directions of that resolution — the inventory
   clause's share sub-select and `IShareRepository.list_resource_ids` — match the

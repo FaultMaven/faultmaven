@@ -117,7 +117,8 @@ _STORES = [
             vector_store=ChromaDBVectorStore(client=client)
         ),
         lambda store: store.search_by_text(
-            query_text="disk pressure on the payment node", organization_id="org-1"
+            query_text="disk pressure on the payment node",
+            scope_filter={"scope": "global"},
         ),
         id="runbook_kb_search_by_text",
     ),

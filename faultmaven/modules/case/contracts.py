@@ -61,8 +61,8 @@ from faultmaven.modules.case.domain.owned_models.report import (
     ReportType,
     RunbookMetadata,
     RunbookRecommendation,
+    RunbookRef,
     RunbookSource,
-    SimilarRunbook,
 )
 
 # ============================================================
@@ -467,7 +467,7 @@ __all__ = [
     "RunbookSource",
     "RunbookMetadata",
     "CaseReport",
-    "SimilarRunbook",
+    "RunbookRef",
     "RunbookRecommendation",
     "ReportRecommendation",
     "ReportGenerationRequest",

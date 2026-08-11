@@ -2656,6 +2656,24 @@ REGENERATE_CLOSURE_SUMMARY_PAYLOAD = (
 
 GENERATE_RUNBOOK_PAYLOAD = "Generate a runbook from this resolved case"
 
+#: The explicit-confirmation payload for the SIMILAR_FOUND stop: dedup found a
+#: ≥0.70 match, the turn named it and created nothing, and this affordance is
+#: what makes the question answerable on the next turn. Routes back into
+#: ``_handle_runbook_creation`` with ``dedup_confirmed=True`` — the user has
+#: seen the candidate and chosen, so the similar-match stop (and only that
+#: stop) is waived.
+GENERATE_RUNBOOK_ANYWAY_PAYLOAD = "Generate a new runbook anyway"
+
+
+def _generate_runbook_anyway_suggestion() -> dict:
+    """The DECIDE affordance offered on the SIMILAR_FOUND stop turn."""
+    return {
+        "label": "Generate a new runbook anyway",
+        "action_type": "DECIDE",
+        "payload": GENERATE_RUNBOOK_ANYWAY_PAYLOAD,
+        "body": ("Create a new draft even though a similar runbook already exists."),
+    }
+
 
 def _runbook_suggestion(case) -> dict | None:
     """The runbook-generation DECIDE suggestion (RESOLVED-only), gated on the
@@ -2676,7 +2694,8 @@ def _runbook_suggestion(case) -> dict | None:
     (Phase 5.2b provenance-based uniqueness): generating one would only duplicate
     the runbook the case was resolved by applying. That is a knowledge-lifecycle
     decision, not a safety gate — the manual create path and the async
-    EXISTING_COVERS similarity backstop both remain for the residual
+    similarity dedup (which surfaces a ≥70% match by title and score for the
+    user to judge) both remain for the residual
     false-negatives (a reused node never restamped, a benign dedup overlap, a
     retrieval miss).
     """
@@ -2685,7 +2704,7 @@ def _runbook_suggestion(case) -> dict | None:
     # Cheap SYNC provenance read via the single offer-gate helper the
     # provenance-blindness invariant carves out for this module. Closes the #695
     # offered-then-refused drift at the offer boundary rather than only at
-    # action time (where the async EXISTING_COVERS check runs).
+    # action time (where the async similarity dedup runs).
     from faultmaven.core.investigation.kb_cause_seeder import (
         confirmed_root_seed_origin,
     )
@@ -2875,6 +2894,7 @@ class MilestoneEngine:
         report_service: Any | None = None,
         team_service: Any | None = None,
         share_repository: Any | None = None,
+        runbook_kb: Any | None = None,
     ):
         """Initialize milestone engine.
 
@@ -2906,6 +2926,14 @@ class MilestoneEngine:
                 standalone — the team arm then resolves empty.
             share_repository: Optional ``IShareRepository`` backing that team
                 arm. Both degrade gracefully to global ∪ owner-personal.
+            runbook_kb: Optional ``RunbookKnowledgeBase`` for terminal-turn
+                runbook deduplication, injected explicitly (fm#1030 — the old
+                ``hasattr(knowledge_service, "runbook_kb")`` probe was
+                permanently False; no such attribute exists on any
+                ``IKnowledgeService``). None is legitimate: local dev without
+                ChromaDB reaches the dedup site, and
+                ``evaluate_runbook_suggestion`` then takes its honest "did not
+                run" caveat.
         """
         self.llm_provider = llm_provider
         self.repository = repository
@@ -2920,6 +2948,7 @@ class MilestoneEngine:
         self.report_service = report_service
         self.team_service = team_service
         self.share_repository = share_repository
+        self.runbook_kb = runbook_kb
         self.hypothesis_manager = create_hypothesis_manager()
         self.state_validator = StateValidator()
         self.progress_monitor = ProgressMonitor()
@@ -3098,6 +3127,12 @@ class MilestoneEngine:
     # typing never does.
     _RUNBOOK_CREATION_PATTERNS = (GENERATE_RUNBOOK_PAYLOAD.lower(),)
 
+    # The explicit "generate anyway" confirmation offered on the
+    # SIMILAR_FOUND stop turn. Dispatched separately so the handler knows
+    # the user has already seen the similar-runbook candidate and chosen —
+    # the similar-match stop is waived, nothing else is.
+    _RUNBOOK_CONFIRM_PATTERNS = (GENERATE_RUNBOOK_ANYWAY_PAYLOAD.lower(),)
+
     async def _process_terminal_turn(
         self,
         case: "Case",
@@ -3132,6 +3167,10 @@ class MilestoneEngine:
         is_runbook_eligible = case.state == CaseState.RESOLVED
         if is_runbook_eligible and msg_lower in self._RUNBOOK_CREATION_PATTERNS:
             return await self._handle_runbook_creation(case, metadata)
+        if is_runbook_eligible and msg_lower in self._RUNBOOK_CONFIRM_PATTERNS:
+            return await self._handle_runbook_creation(
+                case, metadata, dedup_confirmed=True
+            )
 
         # Scenario 3: Q&A
         return await self._process_terminal_qa(
@@ -3239,6 +3278,7 @@ class MilestoneEngine:
         self,
         case: "Case",
         metadata: dict[str, Any],
+        dedup_confirmed: bool = False,
     ) -> dict[str, Any]:
         """Evaluate readiness + dedup, then create runbook draft (fire-and-forget).
 
@@ -3248,9 +3288,21 @@ class MilestoneEngine:
 
         Flow:
         1. Check content readiness (assess_runbook_readiness via evaluate_runbook_suggestion)
-        2. Check deduplication
+        2. Check deduplication. A SIMILAR_FOUND verdict STOPS the turn: the
+           candidate is named and nothing is created until the user chooses
+           (the "generate anyway" affordance routes back here with
+           ``dedup_confirmed=True``, which waives this stop and only this
+           stop). Dedup-failure caveats do not stop — the case is
+           runbook-worthy and only the duplicate check is uncertain, so
+           creation proceeds with the caveat stated (#944).
         3. If eligible: call ConversionService.convert_from_case() in background
         4. Return immediately with a message directing user to Dashboard Drafts
+
+        Args:
+            dedup_confirmed: True only on the explicit "generate anyway"
+                confirmation payload — the user has already been shown the
+                similar-runbook candidate on the previous turn and chosen to
+                proceed.
         """
         from faultmaven.core.investigation.kb_cause_seeder import (
             confirmed_root_seed_origin,
@@ -3263,7 +3315,8 @@ class MilestoneEngine:
         # Step 0: Provenance-based uniqueness (Phase 5.2b). A case resolved by
         # validating a cause the seeder planted from an existing runbook needs no
         # new runbook — it would duplicate that one. This is the cheap SYNC tier
-        # ABOVE the async EXISTING_COVERS embedding-similarity backstop (Step 2):
+        # ABOVE the async embedding-similarity dedup (Step 2, which stops and
+        # names a ≥70% match for the user to decide on):
         # a direct, certain "you applied runbook X" signal, so we short-circuit
         # with the covering runbook named before spending an embedding search.
         # (The offer gate already suppresses the affordance for these cases; this
@@ -3289,12 +3342,18 @@ class MilestoneEngine:
                 "metadata": metadata,
             }
 
-        # Step 1+2: Evaluate readiness and deduplication
-        runbook_kb = None
-        if self.knowledge_service and hasattr(self.knowledge_service, "runbook_kb"):
-            runbook_kb = self.knowledge_service.runbook_kb
-
-        suggestion = await evaluate_runbook_suggestion(case, runbook_kb)
+        # Step 1+2: Evaluate readiness and deduplication. The KB is injected
+        # explicitly (constructor param) — the old probe here,
+        # ``hasattr(self.knowledge_service, "runbook_kb")``, was permanently
+        # False (no such attribute on any IKnowledgeService), so the engine
+        # always passed None and dedup never ran (fm#1030). None stays
+        # legitimate: without ChromaDB, evaluate_runbook_suggestion takes its
+        # honest "did not run" caveat.
+        suggestion = await evaluate_runbook_suggestion(
+            case,
+            self.runbook_kb,
+            scope_resolver=self._runbook_dedup_scope_resolver(case),
+        )
 
         if suggestion.verdict == RunbookSuggestion.NOT_READY:
             return {
@@ -3304,10 +3363,21 @@ class MilestoneEngine:
                 "metadata": metadata,
             }
 
-        if suggestion.verdict == RunbookSuggestion.EXISTING_COVERS:
+        # A similar runbook was found: STOP and let the user choose, unless
+        # they already have. Surfacing a likely duplicate and then creating
+        # it anyway on the same turn would make the question rhetorical and
+        # defeat the point of checking — preventing duplicate runbooks is
+        # what dedup is FOR. This is not a coverage claim (best-chunk-max
+        # measures overlap, not equivalence — the message says so); the
+        # "generate anyway" affordance makes the choice answerable on the
+        # next turn, and the Dashboard KB link covers the review path.
+        if (
+            suggestion.verdict == RunbookSuggestion.SIMILAR_FOUND
+            and not dedup_confirmed
+        ):
             return {
                 "agent_response": suggestion.message,
-                "suggested_follow_ups": [],
+                "suggested_follow_ups": [_generate_runbook_anyway_suggestion()],
                 "case_updated": case,
                 "metadata": metadata,
             }
@@ -3379,7 +3449,7 @@ class MilestoneEngine:
                 "the Dashboard under **Knowledge > Drafts**."
             )
             # Carry the dedup caveat onto the user-visible turn. Only NOT_READY
-            # and EXISTING_COVERS surface `suggestion.message` above, so a
+            # surfaces `suggestion.message` above, so a
             # SUGGEST_WITH_CAVEATS verdict would otherwise reach the user as
             # the unqualified line above — silently implying the KB was checked
             # when it was not (#944). Draft creation still proceeds: the case is
@@ -3423,6 +3493,48 @@ class MilestoneEngine:
             "case_updated": case,
             "metadata": metadata,
         }
+
+    def _runbook_dedup_scope_resolver(self, case: "Case"):
+        """Build the CASE OWNER's KB-scope resolver for runbook dedup.
+
+        Dedup answers for the principal who will act on the answer — the case
+        owner, whose Dashboard the suggestion points at (owner decision,
+        fm#1030). Scope = global ∪ the owner's personal items ∪ items shared
+        to the owner's teams, the same allowlist shape as the KB seeder
+        pre-fetch (``_search_kb_for_runbooks``).
+
+        One deliberate divergence from that pre-fetch: NO try/except around
+        the team arm. The pre-fetch swallows a team-arm failure and degrades
+        to global ∪ personal — correct for seeding, wrong here, because a
+        silently narrowed search would underpin a "checked, nothing similar"
+        claim it did not establish. A failure raises out of the resolver, and
+        ``evaluate_runbook_suggestion`` (which awaits it inside its dedup
+        ``try``) takes the failure-caveat branch instead of answering.
+
+        Standalone is not a failure: ``team_service`` is None there, so the
+        team arm resolves empty by construction and the scope collapses to
+        global ∪ owner-personal.
+        """
+        from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+            build_kb_scope_filter,
+            resolve_shared_kb_ids,
+        )
+
+        async def _resolve() -> dict:
+            owner_id = getattr(case, "user_id", None)
+            shared_kb_ids: list[str] = []
+            team_service = getattr(self, "team_service", None)
+            share_repository = getattr(self, "share_repository", None)
+            if owner_id and team_service and share_repository:
+                owner_team_ids = await team_service.list_all_user_team_ids(owner_id)
+                shared_kb_ids = await resolve_shared_kb_ids(
+                    share_repository,
+                    owner_team_ids,
+                    getattr(case, "organization_id", None),
+                )
+            return build_kb_scope_filter(owner_id, shared_kb_ids)
+
+        return _resolve
 
     async def _run_runbook_conversion(
         self,

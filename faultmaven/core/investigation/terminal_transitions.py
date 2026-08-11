@@ -26,7 +26,6 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Optional
 
-from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.core.investigation.cause_assurance import (
     CONFIRMED_RCC_LIKELIHOOD_FLOOR,
     CauseAssuranceGrade,
@@ -1407,11 +1406,24 @@ class RunbookSuggestion:
     1. Content readiness (assess_runbook_readiness)
     2. User request/approval (not checked here — caller handles)
     3. No similar runbook already exists (deduplication via RunbookKnowledgeBase)
+
+    There is deliberately no "existing covers" verdict. Best-chunk-max
+    similarity detects OVERLAP, not whole-runbook equivalence, and the old
+    ≥0.85 auto-suppression threshold never fired against any real
+    distribution — so a match is never ASSERTED to cover the case (owner
+    decision, fm#1030). What a ≥0.70 match does do is return SIMILAR_FOUND:
+    the caller stops, names the candidate by title and score, and creates
+    nothing until the user explicitly chooses — surfacing a likely duplicate
+    only to create it anyway would defeat the point of checking. The top
+    score is emitted as a metric so the band can be calibrated later.
     """
 
     SUGGEST = "suggest"
     SUGGEST_WITH_CAVEATS = "suggest_with_caveats"
-    EXISTING_COVERS = "existing_covers"
+    #: A ≥0.70 best-chunk match exists. NOT a coverage claim — the caller
+    #: presents the candidate and lets the user decide; generation proceeds
+    #: only on explicit confirmation.
+    SIMILAR_FOUND = "similar_found"
     NOT_READY = "not_ready"
 
     def __init__(self, verdict: str, message: str):
@@ -1422,6 +1434,7 @@ class RunbookSuggestion:
 async def evaluate_runbook_suggestion(
     case: "Case",
     runbook_kb: Any = None,
+    scope_resolver: Any = None,
 ) -> RunbookSuggestion:
     """Evaluate whether to suggest runbook generation for a RESOLVED case.
 
@@ -1439,6 +1452,19 @@ async def evaluate_runbook_suggestion(
         case: RESOLVED case to evaluate.
         runbook_kb: Optional RunbookKnowledgeBase for similarity search.
             If None, deduplication check is skipped (suggestion still based on content).
+        scope_resolver: Zero-arg async callable returning the CASE OWNER's KB
+            read scope filter (``build_kb_scope_filter`` shape: global ∪ owned
+            ∪ team-shared). Supplied by the engine, which owns the
+            team-membership and share-table dependencies. Required for dedup to
+            run: without it the search cannot be honestly scoped, so dedup is
+            SKIPPED with the "did not run" caveat rather than quietly searching
+            a narrower scope. If the resolver RAISES (e.g. the team arm could
+            not be resolved), dedup is treated as FAILED — surfacing the
+            failure rather than degrading to global ∪ personal, because a
+            silently narrowed search would underpin a "checked, nothing
+            similar" claim it did not establish. (Deliberate divergence from
+            the KB seeder pre-fetch, which degrades — correct for seeding,
+            wrong for a dedup verdict.)
     """
     # Factor 1: Content readiness (cheap, no I/O)
     readiness = assess_runbook_readiness(case)
@@ -1479,35 +1505,52 @@ async def evaluate_runbook_suggestion(
             f"if a similar one already exists in the KB.",
             extra={"case_id": case.case_id, "metric": "runbook.dedup_skipped"},
         )
-    if runbook_kb:
+    elif scope_resolver is None:
+        # A KB with no scope resolver cannot run an honestly scoped search.
+        # Skipped, not failed: nothing is broken, but no search ran, so the
+        # "did not run" caveat below owns it — quietly falling back to a
+        # narrower scope would license a dedup verdict the search never
+        # established (#944).
+        logger.warning(
+            f"Runbook deduplication skipped for case {case.case_id}: "
+            f"no scope resolver supplied, so the search cannot be scoped to "
+            f"the case owner. Duplicate runbooks may be created if a similar "
+            f"one already exists in the KB.",
+            extra={"case_id": case.case_id, "metric": "runbook.dedup_skipped"},
+        )
+    if runbook_kb and scope_resolver is not None:
         try:
-            similar = await _find_similar_runbooks_for_case(case, runbook_kb)
-            # None means no search was issued (no usable tenant, or too little
-            # case content to form a query) — NOT "nothing similar found". Only
-            # a real search licenses the plain SUGGEST verdict below (#944).
+            # Scope resolution runs INSIDE this try on purpose: a failure here
+            # (team arm unresolvable, say) must surface as a failed dedup and
+            # take the caveat branch below — not narrow the scope and answer.
+            scope_filter = await scope_resolver()
+            similar = await _find_similar_runbooks_for_case(
+                case, runbook_kb, scope_filter
+            )
+            # None means no search was issued (too little case content to form
+            # a query) — NOT "nothing similar found". Only a real search
+            # licenses the plain SUGGEST verdict below (#944).
             dedup_ran = similar is not None
             if similar:
                 top_match = similar[0]
                 similarity = top_match.get("similarity_score", 0)
                 title = top_match.get("title", "existing runbook")
 
-                if similarity >= 0.85:
+                if similarity >= 0.70:
+                    # SIMILAR_FOUND, not a caveat on a proceeding creation:
+                    # the caller must STOP and let the user choose. The
+                    # wording states overlap, never coverage — best-chunk-max
+                    # cannot establish that the existing runbook covers this
+                    # case (owner decision, fm#1030).
                     return RunbookSuggestion(
-                        verdict=RunbookSuggestion.EXISTING_COVERS,
+                        verdict=RunbookSuggestion.SIMILAR_FOUND,
                         message=(
                             f"A similar runbook already exists: **{title}** "
-                            f"({similarity:.0%} match). "
-                            "You can view or update it from the Dashboard Knowledge Base."
-                        ),
-                    )
-                elif similarity >= 0.70:
-                    return RunbookSuggestion(
-                        verdict=RunbookSuggestion.SUGGEST_WITH_CAVEATS,
-                        message=(
-                            f"A partially similar runbook exists: **{title}** "
-                            f"({similarity:.0%} match). "
-                            "Would you like to generate a new one, or review the existing one first? "
-                            "You can manage runbooks from the Dashboard."
+                            f"({similarity:.0%} best-chunk match). That "
+                            "measures overlap, not full coverage, so I have "
+                            "not created a draft. Review the existing runbook "
+                            "in the Dashboard Knowledge Base, or generate a "
+                            "new one anyway."
                         ),
                     )
         except Exception as e:
@@ -1573,45 +1616,28 @@ async def evaluate_runbook_suggestion(
 
 
 async def _find_similar_runbooks_for_case(
-    case: "Case", runbook_kb: Any
+    case: "Case", runbook_kb: Any, scope_filter: dict
 ) -> Optional[list[dict]]:
-    """Search for existing runbooks similar to a resolved case, within its tenant.
+    """Search for existing runbooks similar to a resolved case, within a scope.
 
     Builds a query from case title + root cause + solution for semantic search.
 
     Returns:
         A list of matches (possibly empty) when a search actually ran, or
-        ``None`` when no search was issued at all — no usable tenant, or too
-        little case content to form a query.
+        ``None`` when no search was issued at all — too little case content to
+        form a query.
 
         The distinction is load-bearing: ``[]`` licenses the caller's "checked,
         nothing similar exists" verdict and ``None`` does not. Collapsing both
         into ``[]`` is what let an unsearched case reach the plain ``SUGGEST``
         branch, which asserts a dedup result that was never obtained (#944).
 
-    Scoped to ``case.organization_id`` and fail-closed: a case carrying no
-    usable tenant yields ``[]`` **without a search**, never a deployment-wide
-    one. The tenant key is passed to whichever similarity entry point the
-    injected KB exposes, so an implementation that does not accept it fails
-    loudly instead of quietly searching every tenant.
-
-    The org is resolved through ``usable_tenant_id``, not used raw:
-    ``CaseService.create_case`` stamps ``organization_id`` from the *total*
-    ``get_current_org_id``, so under ``TENANT_PROVIDER=multi`` a case written
-    from an execution context that never bound a tenant carries the Standalone
-    sentinel — which is not a tenant there, and must not become the similarity
-    predicate. ``search_by_text`` refuses a falsy org with a typed error, but
-    this check runs first so the common case is a quiet, logged skip rather
-    than an exception.
+    ``scope_filter`` is the case OWNER's KB read scope (global ∪ owned ∪
+    team-shared), resolved by the caller's ``scope_resolver``. It is passed
+    through to ``search_by_text``, which refuses a falsy one with a typed
+    error rather than searching unscoped — the fail-closed property that
+    replaced the old mandatory-org predicate (fm#1030).
     """
-    organization_id = usable_tenant_id(getattr(case, "organization_id", None))
-    if not organization_id:
-        logger.warning(
-            "Runbook similarity search skipped: case carries no usable tenant",
-            extra={"case_id": getattr(case, "case_id", None)},
-        )
-        return None  # no search ran — see the return contract above
-
     # Build search text from case context
     parts = []
     if case.title:
@@ -1645,12 +1671,12 @@ async def _find_similar_runbooks_for_case(
     # unnoticed. `evaluate_runbook_suggestion` decides how to handle it.
     results = await runbook_kb.search_by_text(
         query_text=query_text,
-        organization_id=organization_id,
+        scope_filter=scope_filter,
         top_k=3,
         min_similarity=0.65,
     )
     # Attributes are read directly, NOT via getattr with a default.
-    # ``search_by_text`` returns ``List[SimilarRunbook]``, so a missing
+    # ``search_by_text`` returns ``List[RunbookMatch]``, so a missing
     # attribute is a contract break — and a ``getattr(r, "similarity_score", 0)``
     # default would silently score it 0, drop it below every threshold, and
     # reproduce "no similar runbook found" from a match that WAS returned:
@@ -1658,7 +1684,7 @@ async def _find_similar_runbooks_for_case(
     return [
         {
             "similarity_score": r.similarity_score,
-            "title": r.runbook.title,
+            "title": r.title,
         }
         for r in results or []
     ]

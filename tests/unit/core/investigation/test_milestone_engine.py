@@ -1976,8 +1976,13 @@ class TestRunbookSuggestion:
         assert result.verdict == RunbookSuggestion.SUGGEST_WITH_CAVEATS
         assert "could not check" in result.message
 
-    async def test_existing_covers_when_high_similarity(self):
-        """KB returns ≥85% match → existing covers."""
+    async def test_a_high_similarity_match_is_surfaced_for_the_user(self):
+        """KB returns a ≥70% match → SIMILAR_FOUND: the caller stops, names
+        the candidate, and creates nothing until the user chooses. There is
+        no EXISTING_COVERS verdict — best-chunk-max detects overlap, not
+        whole-runbook equivalence, so coverage is never asserted (owner
+        decision, fm#1030); and the match is not a mere caveat on a
+        proceeding creation either (fm#1030 review, CORE 2)."""
         from faultmaven.core.investigation.terminal_transitions import (
             RunbookSuggestion,
             evaluate_runbook_suggestion,
@@ -2013,38 +2018,36 @@ class TestRunbookSuggestion:
         _confirm_root_counterfactually(case)
 
         # Mock runbook_kb that returns a high-similarity match. Returns real
-        # SimilarRunbook objects — the type search_by_text actually produces.
+        # RunbookMatch objects — the type search_by_text actually produces.
         # The dicts used here before matched the old raw-passthrough arm, not
         # the production contract (#944).
-        from faultmaven.models.report import (
-            CaseReport,
-            ReportStatus,
-            ReportType,
-            SimilarRunbook,
-        )
+        from faultmaven.models.report import RunbookMatch
 
         mock_kb = AsyncMock()
         mock_kb.search_by_text = AsyncMock(
             return_value=[
-                SimilarRunbook(
-                    runbook=CaseReport(
-                        case_id="prior-case",
-                        report_type=ReportType.RUNBOOK,
-                        title="Connection Pool Timeout Runbook",
-                        content="steps",
-                        generation_status=ReportStatus.COMPLETED,
-                        generation_time_ms=0,
-                    ),
+                RunbookMatch(
+                    item_id="kb-prior",
+                    title="Connection Pool Timeout Runbook",
+                    scope="global",
                     similarity_score=0.92,
-                    case_title="Connection Pool Timeout Runbook",
-                    case_id="prior-case",
                 )
             ]
         )
 
-        result = await evaluate_runbook_suggestion(case, runbook_kb=mock_kb)
-        assert result.verdict == RunbookSuggestion.EXISTING_COVERS
+        async def _scope():
+            return {"scope": "global"}
+
+        result = await evaluate_runbook_suggestion(
+            case, runbook_kb=mock_kb, scope_resolver=_scope
+        )
+        assert result.verdict == RunbookSuggestion.SIMILAR_FOUND
         assert "Connection Pool Timeout Runbook" in result.message
+        assert "generate a new one anyway" in result.message
+        assert (
+            "not full coverage" in result.message
+        ), "the message must state overlap, not assert coverage"
+        assert not hasattr(RunbookSuggestion, "EXISTING_COVERS")
 
     async def test_not_ready_when_content_insufficient(self):
         """No root cause, no solution → not ready (skip dedup entirely)."""
@@ -2080,23 +2083,19 @@ class TestRunbookSuggestion:
         assert result.verdict == RunbookSuggestion.NOT_READY
 
     @pytest.mark.security
-    async def test_sentinel_stamped_case_gets_no_dedup_verdict_under_multi(
-        self, monkeypatch
-    ):
-        """A case carrying the Standalone sentinel searches nothing under multi.
+    async def test_a_kb_without_a_scope_resolver_searches_nothing(self, monkeypatch):
+        """A dedup search that cannot be scoped to a principal never runs.
 
-        The counterpart of ``test_existing_covers_when_high_similarity``: same
-        content, same KB returning a 0.92 match, but the case's org is the
-        sentinel — which under ``TENANT_PROVIDER=multi`` is not a tenant but the
-        identity of the single-tenant deployment. ``create_case`` stamps the org
-        from the *total* ``get_current_org_id``, whose contextvar defaults to the
-        sentinel, so this case shape is reachable rather than hypothetical.
-
-        Asserting the KB was never awaited (not merely that the verdict differs)
-        is what makes this kill the guard rather than the surrounding logic: the
-        refusal must happen before the query, not by discarding its results.
+        The counterpart of the surfaced-match test above: same content, same
+        KB ready to return a 0.92 match, but no scope resolver — so there is
+        no honest answer to "whose corpus is being searched". The KB must not
+        be awaited at all (fm#1030's fail-closed transplant of the old
+        mandatory-tenant refusal), and the leaked title must not appear in the
+        message. Asserting the KB was never awaited (not merely that the
+        verdict differs) is what makes this kill the guard rather than the
+        surrounding logic: the refusal must happen before the query, not by
+        discarding its results.
         """
-        from faultmaven.config.constants import STANDALONE_ORG_ID
         from faultmaven.core.investigation.terminal_transitions import (
             RunbookSuggestion,
             evaluate_runbook_suggestion,
@@ -2106,16 +2105,10 @@ class TestRunbookSuggestion:
             InquiryData,
             ProblemVerification,
         )
-        from faultmaven.providers.tenancy.factory import BUILTIN_MULTI
-
-        monkeypatch.setattr(
-            "faultmaven.providers.tenancy.factory.requested_tenant_provider",
-            lambda: BUILTIN_MULTI,
-        )
 
         case = Case(
             user_id="u1",
-            organization_id=STANDALONE_ORG_ID,
+            organization_id="o1",
             title="Pool timeout issue",
             description="DB queries timing out",
             state=CaseState.INVESTIGATING,
@@ -2136,15 +2129,18 @@ class TestRunbookSuggestion:
         mock_kb = AsyncMock()
         mock_kb.search_by_text = AsyncMock(
             return_value=[
-                {"similarity_score": 0.92, "title": "Another Tenant's Runbook"},
+                {"similarity_score": 0.92, "title": "Another User's Runbook"},
             ]
         )
 
-        result = await evaluate_runbook_suggestion(case, runbook_kb=mock_kb)
+        result = await evaluate_runbook_suggestion(
+            case, runbook_kb=mock_kb, scope_resolver=None
+        )
 
         mock_kb.search_by_text.assert_not_awaited()
-        assert result.verdict != RunbookSuggestion.EXISTING_COVERS
-        assert "Another Tenant's Runbook" not in result.message
+        assert result.verdict == RunbookSuggestion.SUGGEST_WITH_CAVEATS
+        assert "Another User's Runbook" not in result.message
+        assert "did not run" in result.message
 
 
 class TestContradictingIntentCancelsPendingTransition:

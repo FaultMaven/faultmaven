@@ -579,12 +579,20 @@ async def _di_get_session_service_dependency(request: Request) -> ISessionServic
     return await _getter(request)
 
 
-async def _di_get_vector_store_dependency(request: Request):
-    """Get the DI-provided ChromaDB vector store for report services."""
+async def _di_get_runbook_kb_dependency(request: Request):
+    """Get the DI-provided runbook-dedup KB (fm#1030).
+
+    The container binds this reader to the SAME ChromaDB collection the KB
+    writer writes (``create_runbook_dedup_kb``). The route must not build its
+    own over ``container.vector_store`` — that store binds the
+    settings-derived collection name, which diverges from the production
+    writer's hardcoded ``KB_COLLECTION`` the moment ``CHROMADB_COLLECTION``
+    is overridden, silently reinstating the empty-result dedup.
+    """
     try:
         container = request.app.extra.get("di_container")
         if container:
-            return getattr(container, "vector_store", None)
+            return getattr(container, "runbook_kb", None)
         return None
     except Exception:
         return None
@@ -2957,23 +2965,26 @@ def _recommendation_unavailable_detail(unreadable: bool) -> str:
 @trace("api_get_report_recommendations")
 async def get_report_recommendations(
     case_id: str,
+    request: Request,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-    vector_store=Depends(_di_get_vector_store_dependency),
+    runbook_kb=Depends(_di_get_runbook_kb_dependency),
 ):
     """
     Get intelligent report recommendations for a resolved case.
 
-    Returns recommendations for which reports to generate, including
-    intelligent runbook suggestions based on similarity search of existing
-    runbooks (both incident-driven and document-driven sources).
+    Returns recommendations for which reports to generate, including runbook
+    suggestions based on a similarity search of the published runbooks the
+    REQUESTER can read (global ∪ their own ∪ shared to their teams). The
+    requester is the principal who will act on the answer, so their scope
+    governs here; the engine's terminal-turn dedup scopes on the case owner
+    (fm#1030).
 
     Recommendation Logic:
-    - Always available: Incident Report, Post-Mortem (unique per incident)
-    - Conditional: Runbook (based on similarity search)
-        - ≥85% similarity: Recommend reuse existing runbook
-        - 70-84% similarity: Offer both review OR generate options
-        - <70% similarity: Recommend generate new runbook
+    - Always available: the case's terminal summary
+    - Runbook: a ≥70% best-chunk match is surfaced by title and score for the
+      user to judge; below that, generation is recommended. There is no
+      auto-"reuse" verdict.
 
     Args:
         case_id: Case identifier
@@ -2988,7 +2999,6 @@ async def get_report_recommendations(
         404: Case not found or access denied
         500: Internal server error
     """
-    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
     from faultmaven.modules.case.contracts import ReportRecommendation
     from faultmaven.modules.report.domain.services.report_recommendation_service import (
         ReportRecommendationService,
@@ -3017,17 +3027,24 @@ async def get_report_recommendations(
                 },
             )
 
-        if vector_store is None:
+        if runbook_kb is None:
             raise HTTPException(
                 status_code=503,
                 detail="Vector store not available. Check ChromaDB configuration.",
             )
-        runbook_kb = RunbookKnowledgeBase(vector_store=vector_store)
-        recommendation_service = ReportRecommendationService(runbook_kb=runbook_kb)
+        # Requester-scope dependencies: None in standalone (no teams exist —
+        # the team arm is empty by construction, not a narrowed search).
+        recommendation_service = ReportRecommendationService(
+            runbook_kb=runbook_kb,
+            team_service=getattr(request.app.state, "team_service", None),
+            share_repository=getattr(request.app.state, "share_repository", None),
+        )
 
-        # Get intelligent recommendations
+        # Get intelligent recommendations, scoped to the requester
         recommendations = await recommendation_service.get_available_report_types(
-            case=case
+            case=case,
+            requester_user_id=current_user.user_id,
+            requester_organization_id=getattr(current_user, "organization_id", None),
         )
 
         logger.info(

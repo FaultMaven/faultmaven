@@ -26,46 +26,24 @@ class VectorMetadata(BaseModel):
     # unshare (it would match no filter branch). ADR-013 §D4 / ADR-011 D3.
     scope: Optional[str] = None
     owner_id: Optional[str] = None
-    # Owning tenant. Collections whose retrieval carries a mandatory tenant
-    # predicate (the runbook collection — see ``RunbookKnowledgeBase``) filter on
-    # this key, so it has to survive normalization: a stamp this schema dropped
-    # would leave the row unreachable by every scoped search. Unset on
-    # collections that scope by ``scope``/``owner_id`` instead.
+    # Owning tenant. No KB retrieval path filters on this key today: runbook
+    # dedup (``RunbookKnowledgeBase``) scopes by the same
+    # ``scope``/``owner_id``/``parent_document_id`` allowlist as every other KB
+    # read (fm#1030), and global rows are the org-free platform tier. Declared
+    # so a writer that stamps it is not silently dropped.
     organization_id: Optional[str] = None
-    # What kind of artifact the row is. The runbook collection is not a separate
-    # collection: ``RunbookKnowledgeBase`` is injected the general KB store
-    # (``faultmaven_kb``) and its ``COLLECTION_NAME`` constant is decorative, so
-    # runbooks and KB documents share one collection and this key is the ONLY
-    # discriminator between them. ``search_runbooks`` ANDs ``report_type ==
-    # "runbook"`` into every query, so — like ``organization_id`` above — a value
-    # this schema dropped would make every row the runbook path writes
-    # unreachable by every runbook search. Restored for that reason (#912); the
-    # remaining runbook-identity keys are carried by the block below.
-    report_type: Optional[str] = None
-    # Runbook identity. ``search_runbooks`` rebuilds a ``CaseReport`` +
-    # ``SimilarRunbook`` out of the stored metadata, so every field it reads has
-    # to survive normalization or the reconstruction invents one. Before #912
-    # none of these were declared, so exercising the write path and then
-    # searching returned ``case_id="unknown"``, ``case_title="Unknown"`` and —
-    # worse than an absent value — a confident ``source=incident_driven`` for a
-    # document-driven runbook, because that is the ``.get()`` default. (Dormant
-    # rather than observed: ``index_runbook`` has no production caller yet. The
-    # hole is in the code, not in a deployment's data.) Wrong provenance stated
-    # as fact is the failure mode this project does not accept, so these travel
-    # with the row.
-    #
-    # There is deliberately NO ``report_id`` here. The report id IS the ChromaDB
-    # row id (``index_runbook`` passes it as ``documents[0]["id"]``) and
-    # ``search_runbooks`` reads it back from the ids list, so a metadata copy
-    # would be a second spelling of the same fact — free to drift, and no reader
-    # for it. This schema is shared by every vector writer; it earns a key only
-    # when a reader needs it.
-    case_id: Optional[str] = None
-    case_title: Optional[str] = None
-    runbook_source: Optional[str] = None
-    # Document-driven runbooks only: which uploaded document this came from.
-    document_title: Optional[str] = None
-    original_document_id: Optional[str] = None
+    # There is deliberately NO ``report_type`` and no runbook-identity block
+    # (``case_id``/``case_title``/``runbook_source``/``document_title``/
+    # ``original_document_id``) here. #912 declared those for
+    # ``RunbookKnowledgeBase.index_runbook`` — a writer with no live caller,
+    # whose ``report_type == "runbook"`` stamp nothing but its own dead read
+    # path filtered on. fm#1030 deleted that write half: runbooks reach
+    # ChromaDB only through ``KnowledgeService._index_document_in_vector_store``,
+    # and dedup reads what it writes (``document_type``, ``scope``,
+    # ``owner_id``, ``title``, ``parent_document_id``). This schema is shared
+    # by every vector writer; it earns a key only when a live reader needs it,
+    # and ``reject_undeclared_keys`` makes any future attempt to write these
+    # fail loudly rather than silently.
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # RAG-enrichment fields: extracted from runbook frontmatter at ingestion
@@ -125,12 +103,6 @@ class VectorMetadata(BaseModel):
         "scope",
         "owner_id",
         "organization_id",
-        "report_type",
-        "case_id",
-        "case_title",
-        "runbook_source",
-        "document_title",
-        "original_document_id",
         "domain",
         "service",
         "last_updated",
@@ -162,24 +134,6 @@ class VectorMetadata(BaseModel):
             data["owner_id"] = self.owner_id
         if self.organization_id:
             data["organization_id"] = self.organization_id
-        if self.report_type:
-            data["report_type"] = self.report_type
-        # ``is not None``, not truthiness, for the identity keys: the runbook
-        # search requires these to be PRESENT and skips any row missing one, so
-        # a truthiness gate would drop an empty-but-valid value at write time
-        # and make the row permanently unreadable — with the write still
-        # reporting success. Write-side "empty" and read-side "absent" have to
-        # mean the same thing, or the round trip is lossy again in a new way.
-        if self.case_id is not None:
-            data["case_id"] = self.case_id
-        if self.case_title is not None:
-            data["case_title"] = self.case_title
-        if self.runbook_source is not None:
-            data["runbook_source"] = self.runbook_source
-        if self.document_title is not None:
-            data["document_title"] = self.document_title
-        if self.original_document_id is not None:
-            data["original_document_id"] = self.original_document_id
         if self.created_at:
             data["created_at"] = to_json_compatible(self.created_at)
         if self.updated_at:

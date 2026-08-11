@@ -372,7 +372,7 @@ async def get_report_recommendations(
     """Get report generation recommendations.
 
     Uses similarity search to recommend:
-    - Whether to generate new runbook or reuse existing
+    - Whether a similar runbook already exists (surfaced for the user to judge)
     - Which report types are available for generation
 
     Args:
@@ -404,21 +404,32 @@ async def get_report_recommendations(
             )
 
         if not rec_service:
-            # Return default recommendation if service unavailable
-            return ReportRecommendationResponse(
-                case_id=case_id,
-                available_for_generation=[
-                    ReportType.RESOLUTION_SUMMARY.value,
-                    ReportType.CLOSURE_SUMMARY.value,
-                ],
-                runbook_recommendation={
-                    "action": "generate",
-                    "reason": "Recommendation service unavailable - all report types available",
-                },
+            # Refuse rather than recommend (fm#1030 review). This branch used
+            # to answer action="generate" from a search that never ran — the
+            # #944 fail-open shape: the runbook recommendation IS a claim
+            # about what the knowledge base holds, and this service is not
+            # wired (the container registers None), so the claim was never
+            # established. 503 matches the case-module route's refusal
+            # contract; the working recommendation surface is named so the
+            # caller has somewhere to go. Static detail — no exception text
+            # crosses into the response.
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Report recommendations are not available on this "
+                    "endpoint — the recommendation service is not wired, so "
+                    "the runbook similarity search cannot run and duplicate "
+                    "runbooks cannot be ruled out. Use "
+                    "GET /api/v1/cases/{case_id}/report-recommendations."
+                ),
             )
 
-        # Get recommendations
-        recommendation = await rec_service.get_available_report_types(case)
+        # Get recommendations, scoped to the requester (fm#1030)
+        recommendation = await rec_service.get_available_report_types(
+            case,
+            requester_user_id=current_user.user_id,
+            requester_organization_id=getattr(current_user, "organization_id", None),
+        )
 
         return ReportRecommendationResponse(
             case_id=recommendation.case_id,
@@ -430,7 +441,7 @@ async def get_report_recommendations(
                 "similarity_score": recommendation.runbook_recommendation.similarity_score,
                 "reason": recommendation.runbook_recommendation.reason,
                 "existing_runbook_id": (
-                    recommendation.runbook_recommendation.existing_runbook.report_id
+                    recommendation.runbook_recommendation.existing_runbook.item_id
                     if recommendation.runbook_recommendation.existing_runbook
                     else None
                 ),

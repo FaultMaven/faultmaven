@@ -53,6 +53,55 @@ def create_case_service(
         return minimal_factory()
 
 
+def create_runbook_dedup_kb(
+    knowledge_vector_store: Any | None,
+    vector_store: Any | None,
+    kb_chromadb_client: Any | None,
+) -> Any | None:
+    """Create the runbook-dedup reader, bound to the KB WRITER's collection.
+
+    ``KnowledgeService`` writes through ``knowledge_vector_store or
+    vector_store`` (see the knowledge-service wiring below). The dedup reader
+    must land on the SAME collection as whichever writer is in force, by
+    construction — a reader/writer collection split silently reinstates the
+    empty-result dedup fm#1030 removed:
+
+    - Writer is ``KnowledgeVectorStore`` (the production default): its
+      ``add_documents`` targets the hardcoded ``KB_COLLECTION``, so the
+      reader is built over the same KB client bound to that same constant
+      (``RunbookKnowledgeBase.over_kb_collection``). A bare
+      ``ChromaDBVectorStore`` would bind the settings-derived collection
+      name instead, which diverges the moment ``CHROMADB_COLLECTION`` is
+      overridden.
+    - Writer is the fallback ``vector_store``: the reader is that SAME
+      object, so reader and writer agree by identity.
+    - Writer store present but its client is not (cannot happen in a
+      correctly built container, but stated rather than assumed): return
+      None — an honest "dedup did not run" beats a reader searching a
+      collection the writer never touches.
+    """
+    if knowledge_vector_store is not None:
+        if kb_chromadb_client is None:
+            logger.warning(
+                "Runbook dedup disabled: KB writer present but its ChromaDB "
+                "client is not — refusing to bind the dedup reader to a "
+                "collection the writer may not write"
+            )
+            return None
+        from faultmaven.infrastructure.knowledge.runbook_kb import (
+            RunbookKnowledgeBase,
+        )
+
+        return RunbookKnowledgeBase.over_kb_collection(kb_chromadb_client)
+    if vector_store:
+        from faultmaven.infrastructure.knowledge.runbook_kb import (
+            RunbookKnowledgeBase,
+        )
+
+        return RunbookKnowledgeBase(vector_store=vector_store)
+    return None
+
+
 def create_milestone_engine(
     llm_provider: Any,
     case_repository: Any | None,
@@ -61,6 +110,7 @@ def create_milestone_engine(
     da_model: str | None = None,
     sanitizer: Any | None = None,
     redis_client: Any | None = None,
+    runbook_kb: Any | None = None,
 ) -> Any | None:
     """Create milestone engine for investigation workflow.
 
@@ -73,6 +123,9 @@ def create_milestone_engine(
         da_model: Model to use with da_provider (e.g., claude-sonnet-4-5).
         sanitizer: DataSanitizer for case-scoped PII redaction at LLM boundary.
         redis_client: Async Redis client for persisting redaction registries.
+        runbook_kb: RunbookKnowledgeBase for terminal-turn runbook dedup
+            (fm#1030). None without a KB vector store — the engine then takes
+            its honest "dedup did not run" caveat.
     """
     if not case_repository:
         return None
@@ -89,6 +142,7 @@ def create_milestone_engine(
             sanitizer=sanitizer,
             redis_client=redis_client,
             trace_enabled=True,
+            runbook_kb=runbook_kb,
         )
         logger.debug("MilestoneEngine initialized with investigation tools")
         return engine
@@ -1138,6 +1192,21 @@ def register_services(container: BaseDIContainer) -> None:
     sanitizer = container.get_service("sanitizer", required=False)
     redis_client = getattr(container, "redis_client", None)
 
+    # Runbook dedup KB for the engine's terminal-turn suggestion (fm#1030).
+    # Injected explicitly — the engine used to probe
+    # ``hasattr(knowledge_service, "runbook_kb")``, which was permanently
+    # False, so dedup never ran. Bound to the collection the KB WRITER
+    # writes (see create_runbook_dedup_kb); also the single instance the
+    # report-recommendation route reads via ``container.runbook_kb``.
+    runbook_kb = create_runbook_dedup_kb(
+        knowledge_vector_store=getattr(container, "knowledge_vector_store", None),
+        vector_store=vector_store,
+        kb_chromadb_client=getattr(container, "kb_chromadb_client", None),
+    )
+    container.runbook_kb = runbook_kb
+    if runbook_kb:
+        container._register_service("runbook_kb", runbook_kb)
+
     milestone_engine = create_milestone_engine(
         llm_provider,
         case_repository,
@@ -1146,6 +1215,7 @@ def register_services(container: BaseDIContainer) -> None:
         da_model=da_model,
         sanitizer=sanitizer,
         redis_client=redis_client,
+        runbook_kb=runbook_kb,
     )
     container.milestone_engine = milestone_engine
     if milestone_engine:
