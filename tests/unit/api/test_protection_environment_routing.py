@@ -17,9 +17,9 @@ Three properties are pinned:
    unknown names get production's, which is fail-*closed* on a Redis error —
    the discriminator that separates this fix from one that merely routed
    staging somewhere that happened to install middleware.
-3. **Fail closed on setup failure.** A preset that raises propagates rather than
-   leaving a bare app behind, which is the same unprotected state arrived at
-   from a different direction.
+3. **Fail closed on setup failure.** A preset that raises — or settings that do
+   not validate — propagates rather than leaving a bare app behind, which is the
+   same unprotected state arrived at from a different direction.
 """
 
 import pytest
@@ -28,6 +28,7 @@ from fastapi import FastAPI
 from faultmaven.api.middleware import DeduplicationMiddleware, RateLimitMiddleware
 from faultmaven.api.protection import setup_protection_middleware
 from faultmaven.config.settings import Environment
+from faultmaven.models.protection import ProtectionSettings, RateLimitConfig
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -173,6 +174,35 @@ def test_a_failing_preset_refuses_to_boot_rather_than_serve_unprotected(monkeypa
         setup_protection_middleware(app, environment=Environment.STAGING)
 
     assert _installed(app) == set(), "an unprotected app survived a failed preset"
+
+
+def test_settings_that_do_not_validate_refuse_to_boot():
+    """Invalid settings must raise, not return an app with nothing installed.
+
+    The validation-failure branch logged an ERROR and ``return``ed ``setup_info``
+    — so a caller handing in settings the validator rejects got a bare app and
+    one log line: the same unprotected state as the preset-raises door next to
+    it, which does fail closed. The two are now symmetric.
+
+    The settings here are otherwise ordinary, and in particular carry the
+    ``fail_open_on_redis_error=True`` default. That is the point: the degrade
+    policy for a Redis *outage* must have no say over settings that never
+    validated, or the generic handler swallows the raise and returns the app
+    anyway.
+    """
+    invalid = ProtectionSettings(
+        rate_limits={"global": RateLimitConfig(requests=0, window=60)}
+    )
+    assert invalid.fail_open_on_redis_error is True, (
+        "this test is only meaningful while the fail-open default is True — "
+        "otherwise the generic handler would re-raise regardless"
+    )
+
+    app = FastAPI()
+    with pytest.raises(ValueError, match="validation failed"):
+        setup_protection_middleware(app, settings=invalid)
+
+    assert _installed(app) == set(), "an unprotected app survived invalid settings"
 
 
 def test_the_settings_driven_source_is_gone():

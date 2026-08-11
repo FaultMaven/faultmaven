@@ -82,10 +82,16 @@ def setup_protection_middleware(
         validation = validate_protection_settings(settings)
         setup_info["validation"] = validation
         if not validation["valid"]:
-            logger.error(
+            # Symmetric with the two branches below: settings we cannot trust
+            # buy no more leniency than a preset that raised. Returning here
+            # handed back an app with nothing installed — fm#1023's silent
+            # unprotected state through a third door.
+            #
+            # Unreachable from main.py: both presets are static and both
+            # validate. This guards caller-supplied settings only.
+            raise ValueError(
                 f"Protection settings validation failed: {validation['errors']}"
             )
-            return setup_info
 
         if not settings.enabled:
             # "No protection middleware anywhere" must never be a silent state.
@@ -129,6 +135,13 @@ def setup_protection_middleware(
             )
             setup_info["middleware_added"].append("rate_limiting")
 
+    except ValueError:
+        # Settings that do not validate are a configuration defect, not a Redis
+        # outage, so ``fail_open_on_redis_error`` has no say over them — and it
+        # would say the wrong thing: it defaults to ``True``, so the handler
+        # below would swallow the raise above and hand back the very
+        # unprotected app it was added to prevent.
+        raise
     except Exception as e:
         logger.error(f"Failed to setup protection middleware: {e}")
         setup_info["error"] = str(e)

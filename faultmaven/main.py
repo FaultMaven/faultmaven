@@ -1107,7 +1107,7 @@ def setup_middleware():
     """Setup middleware - only log when not in test mode"""
     import sys
 
-    from faultmaven.config.settings import get_settings
+    from faultmaven.config.settings import Environment, get_settings
 
     settings = get_settings()
 
@@ -1217,7 +1217,7 @@ def setup_middleware():
     except Exception as e:
         if logging_enabled:
             logger.warning(f"Failed to setup protection middleware: {e}")
-        if settings.server.environment != "development":
+        if settings.server.environment != Environment.DEVELOPMENT:
             raise
 
     if logging_enabled:
