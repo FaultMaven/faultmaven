@@ -469,6 +469,43 @@ async def test_an_unreadable_row_outranking_the_readable_ones_refuses(kb, store)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "break_it",
+    [
+        pytest.param(lambda m: m.pop("runbook_source"), id="missing-identity-key"),
+        pytest.param(
+            lambda m: m.update(title="short"), id="fails-CaseReport-validation"
+        ),
+    ],
+)
+async def test_the_reason_a_candidate_is_unreadable_does_not_change_the_verdict(
+    kb, store, break_it
+):
+    """Both ways of being unreadable cost the same, so both must count.
+
+    A missing identity key means the row was not written by this path; a row
+    failing ``CaseReport`` validation means it WAS — which makes it more likely
+    to be the duplicate being asked about, not less. Either way the caller is
+    handed the runner-up's score as the best available match.
+
+    Parametrized because pinning only one of them leaves the other free to stop
+    counting: a version that tracked missing keys but silently skipped
+    validation failures passed every other test in this file.
+    """
+    strong = _runbook_metadata(ORG_A, "rb-1")
+    break_it(strong)
+    await store.seed("rb-strong-unreadable", strong, _vec(0.5))
+    await store.seed("rb-weak-readable", _runbook_metadata(ORG_A, "rb-2"), _vec(-0.4))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
 async def test_an_unreadable_row_below_the_best_match_does_not_refuse(kb, store):
     """A skipped candidate that could not have won is not a reason to fail.
 
