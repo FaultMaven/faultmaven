@@ -18,7 +18,7 @@ import pytest
 
 import faultmaven.infrastructure.protection.rate_limiter as rate_limiter_module
 from faultmaven.infrastructure.protection.rate_limiter import RedisRateLimiter
-from faultmaven.models.protection import LimitType, RateLimitConfig
+from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitSpec
 
 pytestmark = pytest.mark.unit
 
@@ -71,7 +71,9 @@ async def _limiter(client, *, requests: int, window: int) -> RedisRateLimiter:
 
 
 async def _check(limiter, key):
-    result = await limiter.check_rate_limit(key, LimitType.GLOBAL)
+    (result,) = await limiter.check_rate_limits(
+        [RateLimitSpec(key=key, limit_type=LimitType.GLOBAL)]
+    )
     assert result.limit, "the check failed open on a Redis error instead of deciding"
     return result
 
@@ -208,52 +210,110 @@ async def test_an_empty_window_reports_a_full_window(clock, redis_client):
     assert first.reset_time.timestamp() == pytest.approx(T0 + 60)
 
 
-async def test_the_status_path_reports_the_same_instant(clock, redis_client):
-    """Status backs the same headers, so it must not disagree with enforcement."""
-    limiter = await _limiter(redis_client, requests=5, window=60)
-    key = "10.2.0.10"
-
-    enforced = await _check(limiter, key)
-    clock.advance(30)
-
-    status = await limiter.get_rate_limit_status(key, LimitType.GLOBAL)
-
-    assert status is not None
-    assert status.current_count == 1
-    assert status.reset_time.timestamp() == pytest.approx(
-        enforced.reset_time.timestamp()
-    )
-    assert status.reset_time.timestamp() == pytest.approx(T0 + 60)
-
-
-async def test_the_status_path_falls_back_when_the_window_is_empty(clock, redis_client):
-    limiter = await _limiter(redis_client, requests=5, window=60)
-
-    status = await limiter.get_rate_limit_status("10.2.0.11", LimitType.GLOBAL)
-
-    assert status is not None
-    assert status.current_count == 0
-    assert status.reset_time.timestamp() == pytest.approx(T0 + 60)
-
-
 async def test_the_script_returns_the_oldest_score_on_both_paths(clock, redis_client):
-    """The contract the two derivations depend on, asserted directly.
+    """The contract the derivations depend on, asserted directly.
 
-    Reverting the script to a three-element return would otherwise fail with an
-    unpacking error somewhere far from the change that caused it.
+    The reply is ``[blocked_position, count, oldest, count, oldest, ...]``.
+    Changing its shape would otherwise fail with an index error somewhere far
+    from the change that caused it.
     """
     limiter = await _limiter(redis_client, requests=1, window=60)
     key = f"{limiter.key_prefix}:{LimitType.GLOBAL.value}:10.2.0.12"
 
     allowed = await limiter._window_script(
-        keys=[key], args=[f"{T0 - 60:.6f}", f"{T0:.6f}", "member-a", 1, 120]
+        keys=[key], args=[f"{T0:.6f}", "member-a", f"{T0 - 60:.6f}", 1, 120]
     )
     blocked = await limiter._window_script(
-        keys=[key], args=[f"{T0 - 60:.6f}", f"{T0:.6f}", "member-b", 1, 120]
+        keys=[key], args=[f"{T0:.6f}", "member-b", f"{T0 - 60:.6f}", 1, 120]
     )
 
-    assert len(allowed) == 4 and len(blocked) == 4, (allowed, blocked)
+    # One leading verdict element plus two per window.
+    assert len(allowed) == 3 and len(blocked) == 3, (allowed, blocked)
+    # 0 means "every window admitted"; 1 names the first (only) window as the
+    # one that refused.
+    assert int(allowed[0]) == 0
+    assert int(blocked[0]) == 1
     # Empty window on the way in: nothing to report yet.
-    assert rate_limiter_module._parse_oldest_score(allowed[3]) is None
+    assert rate_limiter_module._parse_oldest_score(allowed[2]) is None
     # And once an entry exists, its score comes back on the blocked path.
-    assert rate_limiter_module._parse_oldest_score(blocked[3]) == pytest.approx(T0)
+    assert rate_limiter_module._parse_oldest_score(blocked[2]) == pytest.approx(T0)
+
+
+async def test_a_refusal_in_one_window_consumes_quota_in_none(clock, redis_client):
+    """fm#985 item 8: windows are decided together, so a refusal is free.
+
+    Checked in sequence, ``global`` inserted before the session window could
+    refuse — so a request nobody was served still cost a unit of the shared
+    address-keyed quota. Behind a NAT that is how one throttled client exhausts
+    everybody's global window.
+    """
+    limiter = RedisRateLimiter()
+    await limiter._adopt(redis_client, owns=False, degraded=False)
+    limiter.configure_limits(
+        {
+            # Roomy: this one must not be consumed by a request the tight
+            # window turns away.
+            LimitType.GLOBAL.value: RateLimitConfig(
+                enabled=True, requests=100, window=60
+            ),
+            LimitType.PER_SESSION.value: RateLimitConfig(
+                enabled=True, requests=1, window=60
+            ),
+        }
+    )
+    specs = [
+        RateLimitSpec(key="10.2.0.20", limit_type=LimitType.GLOBAL),
+        RateLimitSpec(key="session-a", limit_type=LimitType.PER_SESSION),
+    ]
+    global_key = f"{limiter.key_prefix}:{LimitType.GLOBAL.value}:10.2.0.20"
+
+    first = await limiter.check_rate_limits(specs)
+    assert all(r.allowed for r in first)
+    assert await redis_client.zcard(global_key) == 1
+
+    # The session window is now exhausted, so this one is refused.
+    second = await limiter.check_rate_limits(specs)
+    assert [r.allowed for r in second] == [True, False]
+    assert second[1].limit_type is LimitType.PER_SESSION
+
+    # The refusal cost nothing anywhere — including in the window that admitted.
+    assert (
+        await redis_client.zcard(global_key) == 1
+    ), "a refused request consumed quota in a window that had admitted it"
+
+
+async def test_the_first_window_in_precedence_order_is_the_one_reported(
+    clock, redis_client
+):
+    """Two exhausted windows: the client is told about the first, as before.
+
+    Spec order is precedence order, so replacing three sequential checks with
+    one atomic call must not change which limit a refused client is named.
+    """
+    limiter = RedisRateLimiter()
+    await limiter._adopt(redis_client, owns=False, degraded=False)
+    limiter.configure_limits(
+        {
+            LimitType.GLOBAL.value: RateLimitConfig(
+                enabled=True, requests=1, window=60
+            ),
+            LimitType.PER_SESSION.value: RateLimitConfig(
+                enabled=True, requests=1, window=60
+            ),
+        }
+    )
+    specs = [
+        RateLimitSpec(key="10.2.0.21", limit_type=LimitType.GLOBAL),
+        RateLimitSpec(key="session-b", limit_type=LimitType.PER_SESSION),
+    ]
+
+    assert all(r.allowed for r in await limiter.check_rate_limits(specs))
+
+    results = await limiter.check_rate_limits(specs)
+    refused = [r for r in results if not r.allowed]
+
+    assert len(refused) == 1, "more than one window claimed the refusal"
+    assert refused[0].limit_type is LimitType.GLOBAL
+    assert refused[0].retry_after is not None
+    # The window that did not refuse carries no wait to act on.
+    assert results[1].retry_after is None

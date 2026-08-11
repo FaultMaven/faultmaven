@@ -21,7 +21,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from faultmaven.api.middleware.client_ip import UNKNOWN_CLIENT_IP, resolve_client_ip
+from faultmaven.api.middleware.client_ip import (
+    UNKNOWN_CLIENT_IP,
+    resolve_client_ip_once,
+)
 from faultmaven.modules.auth.api.rate_limiting import (
     require_sso_rate_limit_callback,
     require_sso_rate_limit_exchange,
@@ -132,7 +135,7 @@ async def sso_callback(
     # proxy, so a caller cannot write its own address into the audit trail.
     # ``None`` when the transport exposes no peer: the column is nullable and
     # the sentinel string is not an address.
-    peer = resolve_client_ip(request, trusted_proxy_networks())
+    peer = resolve_client_ip_once(request, trusted_proxy_networks())
     redirect_url = await service.complete_callback(
         code=code,
         state=state,

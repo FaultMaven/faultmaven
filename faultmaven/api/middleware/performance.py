@@ -19,7 +19,7 @@ from ...infrastructure.logging.coordinator import LoggingCoordinator
 from ...infrastructure.observability.alerting import alert_manager
 from ...infrastructure.observability.apm_integration import apm_integration
 from ...infrastructure.observability.apm_metrics import metrics_collector
-from .client_ip import parse_trusted_proxies, resolve_client_ip
+from .client_ip import parse_trusted_proxies, resolve_client_ip_once
 
 
 class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
@@ -170,7 +170,7 @@ class PerformanceTrackingMiddleware(BaseHTTPMiddleware):
         Returns:
             Client IP address
         """
-        return resolve_client_ip(request, self.trusted_proxies)
+        return resolve_client_ip_once(request, self.trusted_proxies)
 
     def _categorize_endpoint(self, path: str) -> str:
         """Categorize endpoint for performance tracking.

@@ -5,7 +5,7 @@ client. On a flapping Redis the degrade ladder is re-entered on every death, so
 each cycle stranded one factory-built connection pool (``max_connections`` 20)
 for the pod's remaining life.
 
-The second half of the same issue: ``check_rate_limit`` caught ``Exception``,
+The second half of the same issue: ``check_rate_limits`` caught ``Exception``,
 and ``asyncio.CancelledError`` has been a ``BaseException`` since 3.8. A check
 stalled against a dead pool and cancelled by an outer per-request timeout never
 moved the failure counter, so a pool that only ever stalls could not reach the
@@ -20,7 +20,7 @@ from faultmaven.infrastructure.protection.rate_limiter import (
     CHECK_FAILURE_DEMOTION_THRESHOLD,
     RedisRateLimiter,
 )
-from faultmaven.models.protection import LimitType, RateLimitConfig
+from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitSpec
 
 pytestmark = pytest.mark.unit
 
@@ -171,7 +171,7 @@ async def test_the_close_observes_a_fully_installed_limiter():
     """The property the close must never violate, asserted from inside it.
 
     When the close was awaited inline it was a yield point, and anything running
-    during it — a concurrent ``check_rate_limit`` snapshotting ``_window_script``
+    during it — a concurrent ``check_rate_limits`` snapshotting ``_window_script``
     among them — saw the limiter still pointing at the client being torn down.
     Now that the close is dispatched it runs after ``_adopt`` has returned, so
     this holds by construction rather than by statement order; it is asserted
@@ -210,7 +210,9 @@ async def test_a_check_racing_the_teardown_lands_on_the_replacement():
         async def close(self):
             # Yield control while the teardown is in progress.
             await asyncio.sleep(0)
-            result = await limiter.check_rate_limit("10.5.0.9", LimitType.GLOBAL)
+            (result,) = await limiter.check_rate_limits(
+                [RateLimitSpec(key="10.5.0.9", limit_type=LimitType.GLOBAL)]
+            )
             landed.append(result)
             await super().close()
 
@@ -360,7 +362,9 @@ async def test_a_cancelled_check_propagates_and_counts_as_a_failure():
     await limiter._adopt(_StallingClient(), owns=False, degraded=False)
 
     check = asyncio.ensure_future(
-        limiter.check_rate_limit("10.5.0.1", LimitType.GLOBAL)
+        limiter.check_rate_limits(
+            [RateLimitSpec(key="10.5.0.1", limit_type=LimitType.GLOBAL)]
+        )
     )
     await asyncio.sleep(0)
     check.cancel()
@@ -379,7 +383,9 @@ async def test_a_run_of_cancelled_checks_demotes_the_client():
 
     for _ in range(CHECK_FAILURE_DEMOTION_THRESHOLD):
         check = asyncio.ensure_future(
-            limiter.check_rate_limit("10.5.0.2", LimitType.GLOBAL)
+            limiter.check_rate_limits(
+                [RateLimitSpec(key="10.5.0.2", limit_type=LimitType.GLOBAL)]
+            )
         )
         await asyncio.sleep(0)
         check.cancel()
@@ -397,7 +403,9 @@ async def test_a_successful_check_still_clears_a_cancellation_run():
     await limiter._adopt(_StallingClient(), owns=False, degraded=False)
 
     check = asyncio.ensure_future(
-        limiter.check_rate_limit("10.5.0.3", LimitType.GLOBAL)
+        limiter.check_rate_limits(
+            [RateLimitSpec(key="10.5.0.3", limit_type=LimitType.GLOBAL)]
+        )
     )
     await asyncio.sleep(0)
     check.cancel()
@@ -409,7 +417,9 @@ async def test_a_successful_check_still_clears_a_cancellation_run():
     await limiter._adopt(
         fakeredis_aio.FakeRedis(decode_responses=True), owns=False, degraded=False
     )
-    result = await limiter.check_rate_limit("10.5.0.3", LimitType.GLOBAL)
+    (result,) = await limiter.check_rate_limits(
+        [RateLimitSpec(key="10.5.0.3", limit_type=LimitType.GLOBAL)]
+    )
 
     assert result.allowed
     assert limiter._consecutive_check_failures == 0

@@ -290,3 +290,54 @@ def resolve_client_ip(request: Request, trusted_proxies: TrustedProxies) -> str:
     # degradation, and the fix is to have the proxy set `X-Forwarded-For` —
     # which every proxy in front of this service does, NGINX ingress included.
     return peer
+
+
+# Where the per-request memo lives on ``scope["state"]``. Every middleware
+# builds its own ``Request`` object around the same ASGI scope, and
+# ``Request.state`` is backed by that scope, so a value stashed by one layer is
+# visible to the next.
+_CLIENT_IP_MEMO = "_resolved_client_ip"
+
+
+def resolve_client_ip_once(request: Request, trusted_proxies: TrustedProxies) -> str:
+    """:func:`resolve_client_ip`, computed at most once per request.
+
+    Five call sites ask the same question about the same request — the rate
+    limiter keys its ``global`` window on the answer, the logging middleware
+    labels the request line with it, the performance middleware attributes its
+    timings to it, the OAuth limiter keys its own buckets on it, and the SSO
+    callback records it in the JIT audit trail. Each was walking the
+    ``X-Forwarded-For`` chain again: parsing every hop, testing each against
+    every trusted network, and on the refusal path the rate limiter did it a
+    second time just to name the caller in a WARN line.
+
+    Recomputing is not merely wasteful, it is a place for the five answers to
+    drift apart if their configuration ever diverges — and "what is the client"
+    has to have one answer, which is the premise this whole module is built on.
+
+    **The memo is keyed on the trusted-proxy set it was computed with**, and that
+    is the correctness leg rather than a nicety. All five consumers read
+    ``PROTECTION_TRUSTED_PROXIES`` through the same single reader today, so the
+    key always matches and the memo always hits. If one ever gets a different
+    list — injected in a test, or a future caller that scopes trust differently —
+    a cached answer computed under someone else's trust boundary would be exactly
+    the wrong thing to hand back, so the mismatch recomputes instead. Worst case
+    is today's behaviour; it cannot be worse.
+    """
+    # ``request.state`` is a namespace shared with every other layer, so what
+    # comes back is validated rather than trusted: anything that is not the
+    # ``(proxies, address)`` pair this function writes is treated as "no memo"
+    # and recomputed. Reading an unexpected shape must degrade to today's
+    # behaviour, never to an exception on the request path.
+    memo = getattr(request.state, _CLIENT_IP_MEMO, None)
+    if (
+        isinstance(memo, tuple)
+        and len(memo) == 2
+        and memo[0] == trusted_proxies
+        and isinstance(memo[1], str)
+    ):
+        return memo[1]
+
+    resolved = resolve_client_ip(request, trusted_proxies)
+    setattr(request.state, _CLIENT_IP_MEMO, (trusted_proxies, resolved))
+    return resolved
