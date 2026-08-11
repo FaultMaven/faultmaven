@@ -157,17 +157,19 @@ async def test_a_429_carries_the_reset_instant_the_limiter_measured():
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
     measured = datetime(2033, 5, 18, 3, 33, 20, tzinfo=timezone.utc)
 
-    async def _refuse(**kwargs):
-        return RateLimitResult(
-            allowed=False,
-            limit_type=LimitType.GLOBAL,
-            current_count=7,
-            limit=7,
-            retry_after=41,
-            reset_time=measured,
-        )
+    async def _refuse(specs):
+        return [
+            RateLimitResult(
+                allowed=False,
+                limit_type=LimitType.GLOBAL,
+                current_count=7,
+                limit=7,
+                retry_after=41,
+                reset_time=measured,
+            )
+        ]
 
-    mw.rate_limiter.check_rate_limit = _refuse
+    mw.rate_limiter.check_rate_limits = _refuse
 
     refused = await mw.dispatch(_request(app, _unique_client()), _call_next)
 
@@ -187,17 +189,19 @@ async def test_a_429_omits_the_reset_header_when_nothing_measured_one():
     mw = _middleware(_settings(global_requests=7))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
 
-    async def _refuse(**kwargs):
-        return RateLimitResult(
-            allowed=False,
-            limit_type=LimitType.GLOBAL,
-            current_count=7,
-            limit=7,
-            retry_after=41,
-            reset_time=None,
-        )
+    async def _refuse(specs):
+        return [
+            RateLimitResult(
+                allowed=False,
+                limit_type=LimitType.GLOBAL,
+                current_count=7,
+                limit=7,
+                retry_after=41,
+                reset_time=None,
+            )
+        ]
 
-    mw.rate_limiter.check_rate_limit = _refuse
+    mw.rate_limiter.check_rate_limits = _refuse
 
     refused = await mw.dispatch(_request(app, _unique_client()), _call_next)
 
@@ -241,17 +245,19 @@ async def test_an_unmeasured_wait_is_absent_not_defaulted():
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
     captured = []
 
-    async def _refuse(**kwargs):
-        return RateLimitResult(
-            allowed=False,
-            limit_type=LimitType.GLOBAL,
-            current_count=7,
-            limit=7,
-            retry_after=None,
-            reset_time=None,
-        )
+    async def _refuse(specs):
+        return [
+            RateLimitResult(
+                allowed=False,
+                limit_type=LimitType.GLOBAL,
+                current_count=7,
+                limit=7,
+                retry_after=None,
+                reset_time=None,
+            )
+        ]
 
-    mw.rate_limiter.check_rate_limit = _refuse
+    mw.rate_limiter.check_rate_limits = _refuse
 
     original = mw._create_rate_limit_response
 
@@ -300,7 +306,7 @@ async def test_no_raise_site_defaults_an_unmeasured_wait(refusing_type, method):
     then routed four limit types through those same two sites. A limit's own
     fallback is only reachable through the site that raises for it, so the
     sweep has to name each one: the method chosen per case is what decides
-    which pair ``_check_session_rate_limits`` selects.
+    which pair ``_check_rate_limits`` selects.
     """
     settings = get_development_protection_settings()
     settings.rate_limits = {
@@ -323,24 +329,32 @@ async def test_no_raise_site_defaults_an_unmeasured_wait(refusing_type, method):
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
     captured = []
 
-    async def _refuse_one(*, key, limit_type, identifier=""):
-        # Only the site under test refuses, and it refuses with nothing
-        # measured — every other check must allow, or the request would be
-        # refused by a site this case is not about.
-        if limit_type is refusing_type:
-            return RateLimitResult(
-                allowed=False,
-                limit_type=limit_type,
-                current_count=7,
-                limit=7,
-                retry_after=None,
-                reset_time=None,
+    async def _refuse_one(specs):
+        # Only the limit type under test refuses, and it refuses with nothing
+        # measured — every other window must admit, or the request would be
+        # refused by a limit this case is not about.
+        return [
+            (
+                RateLimitResult(
+                    allowed=False,
+                    limit_type=spec.limit_type,
+                    current_count=7,
+                    limit=7,
+                    retry_after=None,
+                    reset_time=None,
+                )
+                if spec.limit_type is refusing_type
+                else RateLimitResult(
+                    allowed=True,
+                    limit_type=spec.limit_type,
+                    current_count=1,
+                    limit=7,
+                )
             )
-        return RateLimitResult(
-            allowed=True, limit_type=limit_type, current_count=1, limit=7
-        )
+            for spec in specs
+        ]
 
-    mw.rate_limiter.check_rate_limit = _refuse_one
+    mw.rate_limiter.check_rate_limits = _refuse_one
 
     original = mw._create_rate_limit_response
 
@@ -380,17 +394,19 @@ async def test_the_measured_wait_reaches_the_header_however_small():
     mw = _middleware(_settings(global_requests=3))
     app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
 
-    async def _refuse(**kwargs):
-        return RateLimitResult(
-            allowed=False,
-            limit_type=LimitType.GLOBAL,
-            current_count=3,
-            limit=3,
-            retry_after=1,
-            reset_time=datetime.now(timezone.utc) + timedelta(seconds=1),
-        )
+    async def _refuse(specs):
+        return [
+            RateLimitResult(
+                allowed=False,
+                limit_type=LimitType.GLOBAL,
+                current_count=3,
+                limit=3,
+                retry_after=1,
+                reset_time=datetime.now(timezone.utc) + timedelta(seconds=1),
+            )
+        ]
 
-    mw.rate_limiter.check_rate_limit = _refuse
+    mw.rate_limiter.check_rate_limits = _refuse
 
     refused = await mw.dispatch(_request(app, _unique_client()), _call_next)
 
@@ -472,3 +488,98 @@ async def test_a_disabled_limit_is_not_advertised_as_a_limit_of_zero():
     assert response.status_code == 200
     assert "X-RateLimit-Limit" not in response.headers
     assert "X-RateLimit-Remaining" not in response.headers
+
+
+async def test_the_advertised_numbers_name_the_bucket_they_describe():
+    """fm#985 item 11: three numbers with no policy identity are uninterpretable.
+
+    Five buckets can produce the same ``Limit``/``Remaining`` pair, so a client
+    that cannot tell an hourly session bucket from a per-minute global one
+    cannot pace itself against either. The header names which one the numbers
+    came from, in the same token the configuration uses.
+    """
+    settings = _settings(global_requests=1000, session_requests=4)
+    mw = _middleware(settings)
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+
+    request = _request(app, _unique_client(), headers={"X-Session-ID": "s-policy"})
+    served = await mw.dispatch(request, _call_next)
+
+    assert served.status_code == 200
+    # The session bucket (4) is far tighter than the global one (1000), so it is
+    # the one advertised — and the policy header must say so rather than leaving
+    # the client to guess which of the two it is reading.
+    assert served.headers["X-RateLimit-Limit"] == "4"
+    assert served.headers["X-RateLimit-Policy"] == LimitType.PER_SESSION.value
+
+
+async def test_a_refusal_names_the_bucket_that_refused():
+    """The same identity on the response a client actually acts on."""
+    mw = _middleware(_settings(global_requests=1))
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+    ip = _unique_client()
+
+    assert (await mw.dispatch(_request(app, ip), _call_next)).status_code == 200
+    refused = await mw.dispatch(_request(app, ip), _call_next)
+
+    assert refused.status_code == 429
+    assert refused.headers["X-RateLimit-Policy"] == LimitType.GLOBAL.value
+
+    # And the header is the ONLY place that identity reaches the client: the
+    # body names counts and a wait but no bucket, so without this header a
+    # refused client cannot tell which of five windows turned it away. Pinned
+    # so that a future body change does not quietly make the header redundant
+    # without anyone noticing it was load-bearing.
+    body = json.loads(bytes(refused.body).decode())
+    assert LimitType.GLOBAL.value not in json.dumps(body), (
+        "the body now carries the bucket identity too — reconcile the two "
+        f"rather than leaving them to drift: {body}"
+    )
+
+
+async def test_the_policy_header_is_exposed_to_browser_clients():
+    """A header a browser cannot read is a header that was not sent.
+
+    The Copilot and Dashboard are the clients that pace themselves against these
+    numbers, and CORS hides any response header not named in ``expose_headers``.
+    Advertising the policy without exposing it would repeat exactly the defect
+    the other three headers were exposed to fix.
+    """
+    from faultmaven.config.settings import SecuritySettings
+
+    assert "X-RateLimit-Policy" in SecuritySettings().cors_expose_headers
+
+
+async def test_all_windows_are_decided_in_one_round_trip():
+    """fm#985 item 13: three serial round trips per authenticated request.
+
+    The windows are now one atomic script call, which is also what makes a
+    refusal consume no quota (item 8) — the two are the same change. Counted at
+    the script boundary rather than timed, so the assertion cannot pass by
+    being slow.
+    """
+    settings = _settings(global_requests=1000, session_requests=50)
+    mw = _middleware(settings)
+    app = _app(fakeredis_aio.FakeRedis(decode_responses=True))
+
+    # Force initialization so the count covers the request path only.
+    await mw.dispatch(
+        _request(app, _unique_client(), headers={"X-Session-ID": "warm"}), _call_next
+    )
+
+    calls = []
+    real_script = mw.rate_limiter._window_script
+
+    async def _counting_script(*args, **kwargs):
+        calls.append(kwargs.get("keys"))
+        return await real_script(*args, **kwargs)
+
+    mw.rate_limiter._window_script = _counting_script
+
+    request = _request(app, _unique_client(), headers={"X-Session-ID": "s-rtt"})
+    served = await mw.dispatch(request, _call_next)
+
+    assert served.status_code == 200
+    assert len(calls) == 1, f"expected one round trip, got {len(calls)}: {calls}"
+    # And it really did decide all three windows, rather than one cheaply.
+    assert len(calls[0]) == 3, calls[0]

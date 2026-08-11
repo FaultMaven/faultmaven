@@ -1,6 +1,6 @@
 """A Redis failure is an error, not a limit violation (fm#932).
 
-Under ``fail_open_on_redis_error=False`` — production's pin — ``check_rate_limit``
+Under ``fail_open_on_redis_error=False`` — production's pin — ``check_rate_limits``
 converted any Redis error into ``RateLimitError(retry_after=60, current_count=0,
 limit=0)``. The middleware then rendered a 429 reading "0/0 requests", counted it
 in ``requests_blocked`` and WARN-logged the caller as a rate-limit violator: a
@@ -26,7 +26,7 @@ from faultmaven.config.protection import get_development_protection_settings
 from faultmaven.infrastructure.protection.rate_limiter import (
     CHECK_FAILURE_DEMOTION_THRESHOLD,
 )
-from faultmaven.models.protection import LimitType, RateLimitConfig
+from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitSpec
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -199,6 +199,8 @@ async def test_the_limiter_re_raises_the_original_exception():
     )
 
     with pytest.raises(ConnectionError) as raised:
-        await limiter.check_rate_limit("10.4.9.1", LimitType.GLOBAL)
+        await limiter.check_rate_limits(
+            [RateLimitSpec(key="10.4.9.1", limit_type=LimitType.GLOBAL)]
+        )
 
     assert raised.value is boom

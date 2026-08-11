@@ -16,7 +16,10 @@ from typing import Callable, Optional
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from faultmaven.api.middleware.client_ip import parse_trusted_proxies, resolve_client_ip
+from faultmaven.api.middleware.client_ip import (
+    parse_trusted_proxies,
+    resolve_client_ip_once,
+)
 from faultmaven.config.protection import get_trusted_proxies
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.logging.config import get_logger
@@ -99,7 +102,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         http_context = {
             "method": request.method,
             "path": request.url.path,
-            "client_ip": resolve_client_ip(request, self._trusted_proxies),
+            "client_ip": resolve_client_ip_once(request, self._trusted_proxies),
             "user_agent": request.headers.get("user-agent", "unknown"),
             "query_params": str(request.query_params),
         }

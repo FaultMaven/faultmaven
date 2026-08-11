@@ -10,13 +10,12 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from ...models.protection import (
-    LimitType,
     RateLimitConfig,
     RateLimitResult,
-    RateLimitState,
+    RateLimitSpec,
 )
 from .window_math import quota_frees_at, retry_after_seconds
 
@@ -46,53 +45,93 @@ CHECK_FAILURE_DEMOTION_THRESHOLD = 3
 # catch-all logged once per check — up to four lines per request, indefinitely.
 CHECK_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 
-# The sliding-window check, as one atomic script: prune, count, read the oldest
-# survivor, refuse without inserting, otherwise insert and refresh the TTL. It
-# generates neither time nor randomness — the caller passes both in, so the
-# script stays deterministic.
+# Every sliding window a request is subject to, decided as one atomic script:
+# prune and count them all, refuse without inserting anywhere, otherwise insert
+# into all of them. It generates neither time nor randomness — the caller passes
+# both in, so the script stays deterministic.
 #
-# Four elements come back, not three. The fourth is the score of the oldest
-# entry still inside the window, and it is what makes the client-facing
-# signalling honest: that entry ages out exactly one window after it arrived,
-# so ``oldest + window`` is the instant the *next* unit of quota frees. Without
-# it the only answer available was "a whole window", which is the truth only
-# for a client refused at the instant its window opened.
-_WINDOW_SCRIPT = """
-local key = KEYS[1]
-local window_start = ARGV[1]
-local score = ARGV[2]
-local member = ARGV[3]
-local limit = tonumber(ARGV[4])
-local ttl = tonumber(ARGV[5])
+# **All-or-nothing is the correctness property, not an optimisation.** Checked
+# one window at a time, each allowed check inserts before the next one has had a
+# chance to refuse: a request that global and per-minute admitted but hourly
+# turned away had already consumed a unit of global and per-minute quota it was
+# never served for. Behind a NAT that is how one throttled client fills the
+# shared ``global`` window with entries for requests nobody received. Counting
+# every window first and inserting only if all of them admit is what makes a
+# refusal free — and it collapses three serial round trips into one.
+#
+# Two elements come back per window: the count, and the score of the oldest
+# entry still inside it. The second is what makes the client-facing signalling
+# honest — that entry ages out exactly one window after it arrived, so
+# ``oldest + window`` is the instant the *next* unit of quota frees. Without it
+# the only answer available was "a whole window", which is the truth only for a
+# client refused at the instant its window opened.
+#
+# The leading element is the 1-based position of the first window that refused,
+# or 0 when every window admitted. First, not tightest: the caller passes its
+# windows in precedence order, so the limit a client is told about is the same
+# one it would have been told about when these were three separate checks.
+#
+# Multi-key by construction, so it assumes a single Redis keyspace — the windows
+# are keyed on different identities (address, session) and would not share a hash
+# slot under Redis Cluster. FaultMaven runs standalone Redis with replicas; a
+# move to Cluster would need these keys hash-tagged onto one slot.
+_WINDOWS_SCRIPT = """
+local score = ARGV[1]
+local member = ARGV[2]
+local n = #KEYS
 
--- Remove entries that have fallen out of the window
-redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
+local counts = {}
+local oldest_scores = {}
+local blocked = 0
 
--- Count the requests still inside it
-local current_count = redis.call('ZCARD', key)
+-- Pass one: prune each window, count what survives, and note the oldest
+-- survivor. Nothing is written here, so the decision below is taken against a
+-- consistent view of every window.
+for i = 1, n do
+    local key = KEYS[i]
+    local base = 2 + (i - 1) * 3
+    local window_start = ARGV[base + 1]
+    local limit = tonumber(ARGV[base + 2])
 
--- The oldest survivor, read BEFORE any insert. On the allowed path that is
--- deliberate: if the set was empty this request is the oldest entry, and
--- ``now + window`` — the caller's fallback for an empty answer — is the same
--- number, so reading first costs nothing and keeps one code path.
-local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
-local oldest_score = ''
-if oldest[2] then
-    oldest_score = oldest[2]
+    redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
+    local count = redis.call('ZCARD', key)
+    counts[i] = count
+
+    -- Read BEFORE any insert. On the admitted path that is deliberate: if the
+    -- set was empty this request is the oldest entry, and ``now + window`` —
+    -- the caller's fallback for an empty answer — is the same number, so
+    -- reading first costs nothing and keeps one code path.
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    if oldest[2] then
+        oldest_scores[i] = oldest[2]
+    else
+        oldest_scores[i] = ''
+    end
+
+    if blocked == 0 and count >= limit then
+        blocked = i
+    end
 end
 
--- Check if limit exceeded. Nothing is inserted on this path: a refused
--- request must neither consume quota nor extend the window, or a client
--- that keeps hammering a limit would hold its own quota shut.
-if current_count >= limit then
-    return {current_count, limit, 0, oldest_score}  -- blocked
+-- Pass two: insert only if EVERY window admitted. A refused request must
+-- neither consume quota nor extend a window — in any of them — or a client
+-- that keeps hammering one limit would hold its own quota shut everywhere.
+if blocked == 0 then
+    for i = 1, n do
+        local base = 2 + (i - 1) * 3
+        local ttl = tonumber(ARGV[base + 3])
+        redis.call('ZADD', KEYS[i], score, member)
+        redis.call('EXPIRE', KEYS[i], ttl)
+        counts[i] = counts[i] + 1
+    end
 end
 
--- Add current request
-redis.call('ZADD', key, score, member)
-redis.call('EXPIRE', key, ttl)
-
-return {current_count + 1, limit, 1, oldest_score}  -- allowed
+local reply = {blocked}
+for i = 1, n do
+    reply[#reply + 1] = counts[i]
+    reply[#reply + 1] = oldest_scores[i]
+end
+return reply
 """
 
 
@@ -243,7 +282,7 @@ class RedisRateLimiter:
         failure run belonging to the new one.
 
         This cannot hide a genuine failure of the current client:
-        ``check_rate_limit`` snapshots the client and its epoch together with no
+        ``check_rate_limits`` snapshots the client and its epoch together with no
         await in between and issues the command against that snapshot, so a
         stamp that still matches ``_adoption_epoch`` names the installed client.
         """
@@ -457,7 +496,7 @@ class RedisRateLimiter:
         relative position of the dispatch, that makes the install atomic.
 
         - **No await between capture and install.** Any ``await`` in that span is
-          a point at which a concurrent ``check_rate_limit`` can snapshot
+          a point at which a concurrent ``check_rate_limits`` can snapshot
           ``_window_script`` — and when the close was awaited *first*, that
           snapshot was the script bound to the client being torn down, so the
           check went to a pool that was closing or already closed. Awaiting the
@@ -490,7 +529,7 @@ class RedisRateLimiter:
         owned_outgoing = self._owns_client
 
         self._redis = client
-        self._window_script = client.register_script(_WINDOW_SCRIPT)
+        self._window_script = client.register_script(_WINDOWS_SCRIPT)
         self._owns_client = owns
         self._degraded = degraded
         self._adoption_epoch += 1
@@ -549,10 +588,25 @@ class RedisRateLimiter:
         self._configs = limits.copy()
         self.logger.info(f"Configured {len(limits)} rate limit types")
 
-    async def check_rate_limit(
-        self, key: str, limit_type: LimitType, identifier: str = ""
-    ) -> RateLimitResult:
-        """Check if request is within rate limits."""
+    async def check_rate_limits(
+        self, specs: Sequence[RateLimitSpec]
+    ) -> List[RateLimitResult]:
+        """Decide every window a request is subject to, all or nothing.
+
+        Returns one result per spec, in spec order. Either every window admitted
+        the request and every one of them counted it, or one refused and **none**
+        of them counted it — there is no partial outcome, which is the whole
+        reason the windows are passed together rather than checked in sequence.
+
+        At most one result carries ``allowed=False``: the first window in
+        precedence order that refused. The rest report what they measured
+        without having been consumed, so a caller can still advertise them.
+
+        A spec whose limit type has no configuration, or a disabled one, is not
+        a window at all. It never reaches Redis and comes back as "allowed,
+        limit 0" — the same answer the single-window path gave, and the one
+        ``RateLimitMiddleware`` reads as "nothing to advertise here".
+        """
         start_time = time.time()
 
         # Snapshot the window script and the epoch its client was adopted under
@@ -565,26 +619,41 @@ class RedisRateLimiter:
         epoch = self._adoption_epoch
 
         try:
-            config = self._configs.get(limit_type.value)
-            if not config or not config.enabled:
-                return RateLimitResult(
-                    allowed=True, limit_type=limit_type, current_count=0, limit=0
+            # Partition first: unconfigured and disabled limits are answered
+            # locally, so they neither occupy a KEYS slot nor shift the
+            # positions the script reports blockage by.
+            by_index: Dict[int, RateLimitResult] = {}
+            enforced: List[Tuple[int, RateLimitSpec, RateLimitConfig]] = []
+            for index, spec in enumerate(specs):
+                config = self._configs.get(spec.limit_type.value)
+                if not config or not config.enabled:
+                    by_index[index] = RateLimitResult(
+                        allowed=True,
+                        limit_type=spec.limit_type,
+                        current_count=0,
+                        limit=0,
+                    )
+                    continue
+                enforced.append((index, spec, config))
+
+            if enforced:
+                by_index.update(await self._check_redis_rate_limits(script, enforced))
+
+                duration = time.time() - start_time
+                refused = next(
+                    (r for r in by_index.values() if not r.allowed),
+                    None,
+                )
+                self.logger.debug(
+                    "Rate limit check: windows=%s, allowed=%s%s, duration=%.3fs",
+                    len(enforced),
+                    refused is None,
+                    "" if refused is None else f", refused_by={refused.limit_type}",
+                    duration,
                 )
 
-            rate_limit_key = f"{self.key_prefix}:{limit_type.value}:{key}"
-            result = await self._check_redis_rate_limit(
-                script, rate_limit_key, config, limit_type
-            )
-
-            duration = time.time() - start_time
-            self.logger.debug(
-                f"Rate limit check: key={key}, type={limit_type.value}, "
-                f"allowed={result.allowed}, count={result.current_count}/"
-                f"{result.limit}, duration={duration:.3f}s"
-            )
-
             self._record_check_success(epoch)
-            return result
+            return [by_index[index] for index in range(len(specs))]
 
         except asyncio.CancelledError as e:
             # ``CancelledError`` has been a ``BaseException`` since 3.8, so the
@@ -616,9 +685,19 @@ class RedisRateLimiter:
             self._record_check_failure(e, epoch)
 
             if self.fallback_enabled:
-                return RateLimitResult(
-                    allowed=True, limit_type=limit_type, current_count=0, limit=0
-                )
+                # Fail open across every window at once. Nothing was inserted —
+                # the script is all-or-nothing and it did not complete — so this
+                # is "unmeasured", not "measured as empty": limit 0 is what the
+                # middleware reads as "no quota to advertise".
+                return [
+                    RateLimitResult(
+                        allowed=True,
+                        limit_type=spec.limit_type,
+                        current_count=0,
+                        limit=0,
+                    )
+                    for spec in specs
+                ]
 
             # Fail closed means "refuse the request", not "claim the client
             # exceeded a limit". This used to manufacture a
@@ -633,18 +712,23 @@ class RedisRateLimiter:
             # so the log names the Redis failure rather than a limit nobody hit.
             raise
 
-    async def _check_redis_rate_limit(
-        self, script, key: str, config: RateLimitConfig, limit_type: LimitType
-    ) -> RateLimitResult:
-        """Check rate limit using Redis sliding window with Lua script.
+    async def _check_redis_rate_limits(
+        self, script, enforced
+    ) -> Dict[int, RateLimitResult]:
+        """Run every enforced window through the atomic script, in one round trip.
 
         ``script`` is passed in rather than read off ``self`` so the command and
         the epoch stamped on its outcome refer to the same client even if an
         adoption lands mid-check — the registered script is bound to the client
         it was registered against.
 
-        The window is a sorted set holding one element per request inside it. Two
-        constraints on those elements are load-bearing:
+        ``enforced`` is the ``(spec_index, spec, config)`` triples that actually
+        have a configured, enabled window, in precedence order. The spec index
+        travels with each one so the caller can put the results back in the
+        order it asked for after the unconfigured ones were filtered out.
+
+        Each window is a sorted set holding one element per request inside it.
+        Two constraints on those elements are load-bearing:
 
         - the **score** is wall-clock ``time.time()``, not ``time.monotonic()``:
           entries are shared across processes and replicas, so scores have to be
@@ -653,156 +737,74 @@ class RedisRateLimiter:
           updating an existing member's score.
 
         Both are computed here and passed to the script as arguments (fm#920; see
-        ``docs/architecture/security/rate-limiting-sliding-window.md``).
+        ``docs/architecture/security/rate-limiting-sliding-window.md``). One
+        member is generated for the whole request and written into every window,
+        which is what lets the windows be reasoned about as one decision: the
+        entry that appears in each of them names the same request.
 
-        What the caller is *told* is derived from the script's fourth element,
-        the oldest entry still in the window. That entry ages out one window
-        after it arrived, so ``oldest + window`` is the instant the next unit of
-        quota frees — the only honest answer to "when may I retry". Both
-        branches use it, so ``reset_time`` means the same thing whether the
-        request was allowed or refused.
+        What the caller is *told* is derived from each window's oldest entry.
+        That entry ages out one window after it arrived, so ``oldest + window``
+        is the instant the next unit of quota frees — the only honest answer to
+        "when may I retry". Every window derives it the same way, so
+        ``reset_time`` means the same thing whether the request was admitted or
+        refused, and whichever window did the refusing.
         """
         current_time = time.time()
         member = uuid.uuid4().hex
 
-        result = await script(
-            keys=[key],
-            args=[
-                _format_window_start(current_time, config.window),
-                f"{current_time:.6f}",
-                member,
-                config.requests,
-                config.window + 60,
-            ],
-        )
+        keys = []
+        args: list = [f"{current_time:.6f}", member]
+        for _, spec, config in enforced:
+            keys.append(f"{self.key_prefix}:{spec.limit_type.value}:{spec.key}")
+            args.extend(
+                [
+                    _format_window_start(current_time, config.window),
+                    config.requests,
+                    config.window + 60,
+                ]
+            )
 
-        current_count, limit, allowed, oldest_raw = result
+        reply = await script(keys=keys, args=args)
 
-        # One derivation for both numbers, through the shared helper: a window
-        # whose oldest entry is ``None`` held nothing to age out (on the allowed
-        # path this request is that entry, so a full window is exactly right; on
-        # the blocked path it cannot happen with a positive limit), and a score
-        # from a host whose clock runs ahead is clamped so the answer can never
-        # exceed one window.
-        frees_at = quota_frees_at(
-            _parse_oldest_score(oldest_raw), config.window, current_time
-        )
+        # ``reply[0]`` is the 1-based position of the first window that refused,
+        # 0 if none did; then two elements per window, in the order they were
+        # passed.
+        blocked_position = int(reply[0])
 
-        reset_time = datetime.fromtimestamp(frees_at, tz=timezone.utc)
+        results: Dict[int, RateLimitResult] = {}
+        for position, (index, spec, config) in enumerate(enforced):
+            current_count = int(reply[1 + position * 2])
+            oldest_raw = reply[2 + position * 2]
 
-        if not allowed:
-            # The same instant ``reset_time`` names, expressed as a wait.
-            retry_after = retry_after_seconds(frees_at, current_time)
+            # One derivation for every number, through the shared helper: a
+            # window whose oldest entry is ``None`` held nothing to age out (on
+            # the admitted path this request is that entry, so a full window is
+            # exactly right; on the refused path it cannot happen with a
+            # positive limit), and a score from a host whose clock runs ahead is
+            # clamped so the answer can never exceed one window.
+            frees_at = quota_frees_at(
+                _parse_oldest_score(oldest_raw), config.window, current_time
+            )
+            reset_time = datetime.fromtimestamp(frees_at, tz=timezone.utc)
 
-            return RateLimitResult(
-                allowed=False,
-                limit_type=limit_type,
+            refused = blocked_position == position + 1
+
+            results[index] = RateLimitResult(
+                allowed=not refused,
+                limit_type=spec.limit_type,
                 current_count=current_count,
-                limit=limit,
-                retry_after=retry_after,
+                limit=config.requests,
+                # The same instant ``reset_time`` names, expressed as a wait.
+                # Only the window that actually refused carries one: a wait
+                # advertised beside an admitted result would invite a client to
+                # sleep on a limit it is nowhere near.
+                retry_after=(
+                    retry_after_seconds(frees_at, current_time) if refused else None
+                ),
                 reset_time=reset_time,
             )
 
-        return RateLimitResult(
-            allowed=True,
-            limit_type=limit_type,
-            current_count=current_count,
-            limit=limit,
-            reset_time=reset_time,
-        )
-
-    async def get_rate_limit_status(
-        self, key: str, limit_type: LimitType
-    ) -> Optional[RateLimitState]:
-        """Report a window's state without touching it.
-
-        A read-only inspection path, alongside ``reset_rate_limit``: neither is
-        on the request path. The response headers used to be built from here,
-        which cost a Redis round trip per served request to re-read counts the
-        check had already returned; they now come from the check's own result.
-        What this reports must nonetheless stay the same answer enforcement
-        would give — a status call that disagreed with the limit it describes
-        would be worse than no status at all — so it derives both the count and
-        the reset instant from exactly the entries the prune would have left.
-        """
-        config = self._configs.get(limit_type.value)
-        if not config:
-            return None
-
-        rate_limit_key = f"{self.key_prefix}:{limit_type.value}:{key}"
-
-        try:
-            # ZCOUNT rather than prune-then-ZCARD: reporting status must not
-            # mutate the window a concurrent check is deciding against, and a
-            # read-only path is also safe to serve from a read replica.
-            #
-            # The lower bound is the *exclusive* form of the same bound
-            # enforcement prunes by. The prune removes entries scored at or below
-            # it, so the entries it would have left are exactly those scored
-            # strictly above it — and the shared helper keeps the two from
-            # drifting apart on where the window begins.
-            current_time = time.time()
-            window_start = "(" + _format_window_start(current_time, config.window)
-
-            current_count = await self._redis.zcount(
-                rate_limit_key, window_start, "+inf"
-            )
-
-            # The oldest entry enforcement would still be counting, so the
-            # reported reset instant is derived the same way the enforcement
-            # path derives it rather than being a flat ``now + window``. One
-            # entry, not the whole window: a saturated production ``global`` key
-            # holds 500 of them. Two commands rather than one script, because
-            # this path must stay read-only — the cost is that an entry may age
-            # out between them, which can only make the reported instant
-            # slightly conservative.
-            oldest = await self._redis.zrangebyscore(
-                rate_limit_key,
-                window_start,
-                "+inf",
-                start=0,
-                num=1,
-                withscores=True,
-            )
-            frees_at = quota_frees_at(
-                float(oldest[0][1]) if oldest else None,
-                config.window,
-                current_time,
-            )
-
-            return RateLimitState(
-                key=key,
-                limit_type=limit_type,
-                current_count=current_count,
-                limit=config.requests,
-                window=config.window,
-                reset_time=datetime.fromtimestamp(frees_at, tz=timezone.utc),
-            )
-        except Exception as e:
-            self.logger.error(f"Failed to get rate limit status: {e}")
-
-        return None
-
-    async def reset_rate_limit(self, key: str, limit_type: LimitType) -> bool:
-        """Reset rate limit for a specific key (admin function).
-
-        The window key is the only key a limit owns. A companion
-        ``:violations`` counter used to be deleted alongside it; nothing writes
-        one any more, so deleting it would only ever inflate the returned count
-        by zero and imply state that does not exist.
-        """
-        rate_limit_key = f"{self.key_prefix}:{limit_type.value}:{key}"
-
-        try:
-            deleted = await self._redis.delete(rate_limit_key)
-            self.logger.info(
-                f"Reset rate limit for {key}:{limit_type.value} (deleted {deleted} keys)"
-            )
-            return deleted > 0
-        except Exception as e:
-            self.logger.error(f"Failed to reset rate limit: {e}")
-
-        return False
+        return results
 
     async def health_check(self) -> Dict[str, any]:
         """Perform health check and return status."""

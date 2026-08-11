@@ -9,7 +9,6 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import Request, Response
@@ -23,8 +22,9 @@ from ...models.protection import (
     ProtectionSettings,
     RateLimitError,
     RateLimitResult,
+    RateLimitSpec,
 )
-from .client_ip import parse_trusted_proxies, resolve_client_ip
+from .client_ip import parse_trusted_proxies, resolve_client_ip_once
 
 # How long to wait before re-attempting rate-limiter initialization.
 # Initialization deliberately does not latch — neither on failure nor on a
@@ -91,6 +91,27 @@ def is_cheap_read(method: str, path: str) -> bool:
     return not any(pattern.match(path) for pattern in EXPENSIVE_READ_PATTERNS)
 
 
+def _policy_name(limit_type) -> str:
+    """The bucket's configuration key, as advertised in ``X-RateLimit-Policy``.
+
+    Deliberately the same string an operator writes in ``rate_limits``, so the
+    bucket a client is told about and the bucket an operator configures are
+    named identically rather than in two spellings.
+
+    On a refusal this header is the *only* place the identity reaches the
+    client: ``ProtectionErrorResponse`` carries counts, a wait and suggestions,
+    but no limit type. Without it a refused caller knows how long to wait and
+    not what it hit, which is the difference between "slow this endpoint down"
+    and "back off everywhere".
+
+    ``ProtectionSettings`` is built with ``use_enum_values=True``, so a limit
+    type can reach a result already coerced to its string form; both shapes
+    render the same way here rather than one of them rendering as
+    ``LimitType.GLOBAL``.
+    """
+    return limit_type.value if isinstance(limit_type, LimitType) else str(limit_type)
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """
     Multi-level rate limiting middleware
@@ -128,7 +149,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Whether this deployment's configuration carries the read buckets.
         #
         # This has to be decided here rather than left to the limiter, because
-        # ``check_rate_limit`` answers "allowed, limit 0" for a limit type it
+        # ``check_rate_limits`` answers "allowed, limit 0" for a limit type it
         # holds no config for. Routing reads to an unconfigured bucket would
         # therefore not meter them at all — a settings object written before the
         # split would silently gain an unlimited read path. Absence narrows
@@ -167,18 +188,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 "navigation consumes the quota that protects LLM compute",
                 " and ".join(sorted(read_keys)),
             )
-
-        # Endpoint-specific configurations
-        self.endpoint_configs = {
-            "/api/v1/data/upload": {
-                "limit_types": [LimitType.PER_SESSION, LimitType.GLOBAL],
-                "special_handling": None,
-            },
-            "/api/v1/sessions/": {
-                "limit_types": [LimitType.PER_SESSION, LimitType.GLOBAL],
-                "special_handling": None,
-            },
-        }
 
         # Metrics tracking
         self.metrics = {
@@ -238,14 +247,38 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             if not await self._initialize(request):
                 return await self._serve_without_a_limiter(request, call_next)
 
-            # Perform rate limit checks
-            await self._check_rate_limits(request)
+            # This middleware's own verdict comes back as a value rather than
+            # via ``request.state``. The old stash was written before the checks
+            # ran and appended to as they went, so a refusal left it holding
+            # whichever windows happened to be measured first — state that
+            # outlived the decision it belonged to and described it only
+            # partially. A return value cannot be partial: it exists only once
+            # every window has been decided.
+            results = await self._check_rate_limits(request)
+
+            # ``rate_limit_results`` survives, but with one job instead of two:
+            # it is the inbox through which *inner* enforcers offer their state
+            # to this header path. The OAuth/SSO limiter runs as a route
+            # dependency, long after this point and with no way to return
+            # anything here, and its 5–10/min quota is the tightest an OAuth
+            # caller is under — the one it most needs advertised. It appends only
+            # when the attribute exists, so creating it here is what says "the
+            # middleware is in the stack and will publish what you put in".
+            #
+            # Created after the checks, so a refused request never leaves an
+            # inbox behind for a response that is never served.
+            request.state.rate_limit_results = []
 
             # Process request
             response = await call_next(request)
 
-            # Add rate limit headers to response
-            await self._add_rate_limit_headers(request, response)
+            # Advertise across both sources: the windows decided here, and
+            # whatever an inner enforcer contributed while the route ran.
+            # "Tightest wins" is computable over them precisely because they are
+            # results rather than already-written headers.
+            self._add_rate_limit_headers(
+                [*results, *request.state.rate_limit_results], response
+            )
 
             # Update metrics
             check_duration = time.time() - start_time
@@ -461,56 +494,26 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         return False
 
-    async def _check_rate_limits(self, request: Request) -> None:
-        """Perform all applicable rate limit checks.
+    async def _check_rate_limits(self, request: Request) -> List[RateLimitResult]:
+        """Decide every window this request is subject to, as one atomic check.
 
-        Every allowed result is stashed on ``request.state`` for
-        ``_add_rate_limit_headers``. The checks have already read the counts, so
-        advertising them costs nothing; asking Redis again on the way out would
-        be a second round trip per request to learn what is already in hand.
-        """
+        Returns the results so the caller can advertise them on the way out. The
+        check has already read the counts, so advertising them costs nothing;
+        asking Redis again on the way out would be a second round trip per
+        request to learn what is already in hand. They are returned rather than
+        stashed on ``request.state`` so that no half-decided view of this
+        request can ever be observed — see ``dispatch``, which keeps that
+        attribute for inner enforcers only.
 
-        session_id = self._extract_session_id(request)
-        endpoint = request.url.path
-        client_ip = self._get_client_ip(request)
-
-        results: List[RateLimitResult] = []
-        request.state.rate_limit_results = results
-
-        # Always check global rate limit
-        results.append(await self._check_global_rate_limit(client_ip))
-
-        # Check session-based limits if session available
-        if session_id:
-            results.extend(
-                await self._check_session_rate_limits(session_id, endpoint, request)
-            )
-
-        # Check endpoint-specific limits
-        await self._check_endpoint_rate_limits(endpoint, session_id, request)
-
-    async def _check_global_rate_limit(self, client_ip: str) -> RateLimitResult:
-        """Check global rate limit, returning the result it was decided on."""
-
-        result = await self.rate_limiter.check_rate_limit(
-            key=client_ip, limit_type=LimitType.GLOBAL, identifier=f"global:{client_ip}"
-        )
-
-        if not result.allowed:
-            raise RateLimitError(
-                retry_after=result.retry_after,
-                limit_type="global",
-                current_count=result.current_count,
-                limit=result.limit,
-                reset_time=result.reset_time,
-            )
-
-        return result
-
-    async def _check_session_rate_limits(
-        self, session_id: str, endpoint: str, request: Request
-    ) -> List[RateLimitResult]:
-        """Check session-based rate limits, returning the results they used.
+        **The windows are decided together, and that is a correctness property.**
+        Checked one at a time, each admitted window inserted before the next had
+        a chance to refuse — so a request the hourly bucket turned away had
+        already consumed a unit of ``global`` and of the per-minute bucket, for a
+        response nobody received. Behind a NAT that is how one throttled client
+        fills the shared ``global`` window with entries for requests that were
+        never served, and it is the general shape of a refusal costing quota
+        somewhere else. Passing the specs together means a refusal by any window
+        consumes quota in none of them.
 
         A session gets two independent pairs of buckets, chosen by what the
         request costs rather than by what it is called:
@@ -528,80 +531,57 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         up to an hour, and for its POST turns as well as its GETs. Reads can only
         exhaust reads; a flood of them cannot refuse the next turn.
 
-        Both pairs are additionally bounded by the ``global`` limit, which is
-        keyed on the client address rather than the session.
+        Spec order is precedence order — global, then per-minute, then hourly —
+        so the limit a refused client is told about is the same one it was told
+        about when these were three sequential checks.
 
-        Whichever pair is chosen, a blocked result always carries the wait and
-        the instant the limiter measured — ``_check_redis_rate_limit`` sets both
-        on the refusal path — so neither is defaulted here. The old ``or 60`` /
-        ``or 3600`` fallbacks were unreachable, and unreachable is the point:
-        had a limiter regression ever made them reachable they would have
-        quietly resurrected the flat-window answer the honest formula replaced,
-        on the one response where the client acts on it. Passing the measured
-        value through unguarded means such a regression fails loudly at render
-        instead. The hourly fallback was the worse of the two here — it would
-        have answered an hour to a read refusal that measured seconds.
+        Whichever window refuses, its result always carries the wait and the
+        instant the limiter measured, so neither is defaulted here. The old
+        ``or 60`` / ``or 3600`` fallbacks were unreachable, and unreachable is
+        the point: had a limiter regression ever made them reachable they would
+        have quietly resurrected the flat-window answer the honest formula
+        replaced, on the one response where the client acts on it. Passing the
+        measured value through unguarded means such a regression fails loudly at
+        render instead.
         """
 
-        if self._read_limits_configured and is_cheap_read(
-            request.method, request.url.path
-        ):
-            per_minute_type = LimitType.PER_SESSION_READ
-            hourly_type = LimitType.PER_SESSION_READ_HOURLY
-        else:
-            per_minute_type = LimitType.PER_SESSION
-            hourly_type = LimitType.PER_SESSION_HOURLY
+        session_id = self._extract_session_id(request)
+        client_ip = self._get_client_ip(request)
 
-        results: List[RateLimitResult] = []
+        # ``global`` is keyed on the client address and covers unauthenticated
+        # traffic; the session pair is keyed on the session and bounded by it.
+        specs = [RateLimitSpec(key=client_ip, limit_type=LimitType.GLOBAL)]
 
-        per_minute = await self.rate_limiter.check_rate_limit(
-            key=session_id,
-            limit_type=per_minute_type,
-            identifier=f"{per_minute_type.value}:{session_id}",
-        )
+        if session_id:
+            if self._read_limits_configured and is_cheap_read(
+                request.method, request.url.path
+            ):
+                per_minute_type = LimitType.PER_SESSION_READ
+                hourly_type = LimitType.PER_SESSION_READ_HOURLY
+            else:
+                per_minute_type = LimitType.PER_SESSION
+                hourly_type = LimitType.PER_SESSION_HOURLY
 
-        if not per_minute.allowed:
-            raise RateLimitError(
-                retry_after=per_minute.retry_after,
-                limit_type=per_minute_type.value,
-                current_count=per_minute.current_count,
-                limit=per_minute.limit,
-                reset_time=per_minute.reset_time,
-            )
+            specs.append(RateLimitSpec(key=session_id, limit_type=per_minute_type))
+            specs.append(RateLimitSpec(key=session_id, limit_type=hourly_type))
 
-        results.append(per_minute)
+        results = await self.rate_limiter.check_rate_limits(specs)
 
-        hourly = await self.rate_limiter.check_rate_limit(
-            key=session_id,
-            limit_type=hourly_type,
-            identifier=f"{hourly_type.value}:{session_id}",
-        )
+        for result in results:
+            if not result.allowed:
+                raise RateLimitError(
+                    retry_after=result.retry_after,
+                    limit_type=(
+                        result.limit_type.value
+                        if isinstance(result.limit_type, LimitType)
+                        else str(result.limit_type)
+                    ),
+                    current_count=result.current_count,
+                    limit=result.limit,
+                    reset_time=result.reset_time,
+                )
 
-        if not hourly.allowed:
-            raise RateLimitError(
-                retry_after=hourly.retry_after,
-                limit_type=hourly_type.value,
-                current_count=hourly.current_count,
-                limit=hourly.limit,
-                reset_time=hourly.reset_time,
-            )
-
-        results.append(hourly)
         return results
-
-    async def _check_endpoint_rate_limits(
-        self, endpoint: str, session_id: Optional[str], request: Request
-    ) -> None:
-        """Check endpoint-specific rate limits"""
-
-        # Check if this endpoint has special rate limiting
-        config = self.endpoint_configs.get(endpoint)
-        if not config:
-            return
-
-        # Special handling for specific endpoints
-        if config.get("special_handling"):
-            await config["special_handling"](request, session_id)
 
     def _extract_session_id(self, request: Request) -> Optional[str]:
         """Extract session ID from request"""
@@ -639,15 +619,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         every request, and ``global`` is the only limit that covers
         unauthenticated traffic, so it was not a limit at all.
         """
-        return resolve_client_ip(request, self.trusted_proxies)
+        return resolve_client_ip_once(request, self.trusted_proxies)
 
-    async def _add_rate_limit_headers(
-        self, request: Request, response: Response
+    def _add_rate_limit_headers(
+        self, results: List[RateLimitResult], response: Response
     ) -> None:
         """Advertise, on a served response, the limit closest to being exhausted.
 
         Emitted from the results ``_check_rate_limits`` already collected — no
-        extra Redis round trip on the request path.
+        extra Redis round trip on the request path, and no ``request.state``
+        round trip either: the results are passed in, so what is advertised is
+        necessarily the decision that admitted *this* request.
+
+        Synchronous, because nothing here awaits. It was ``async`` only because
+        it once re-queried the limiter; keeping the coroutine after that went
+        away cost a scheduling round trip per served response to run straight-line
+        code.
 
         Two defects are closed here. The old version was gated on a session id,
         so unauthenticated traffic — the only traffic the ``global`` limit
@@ -656,12 +643,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         the global limit it might actually be hitting first.
 
         "Closest to exhausted" (least remaining quota) is the right one to
-        report: a client that respects the tightest limit it is under respects
-        all of them, and reporting a roomier one would invite it to speed up
-        into the tighter one. Results with ``limit == 0`` carry no quota to
-        advertise — that is a disabled limit, and also what a check reports
-        after failing open — so they are skipped rather than published as a
-        limit of zero.
+        report, and it is deliberately an *absolute* remaining count rather than
+        a rate. Window size governs when quota refills, not how much of it is
+        left: a client with 50 requests left in an hourly bucket may send 50 more
+        right now whatever its per-minute bucket says, so the smallest remaining
+        count is genuinely the binding constraint on the next request. A client
+        that respects it respects all of them.
+
+        What the numbers alone cannot say is *which* limit they describe. Five
+        buckets can produce ``Limit: 1000, Remaining: 50``, and a client that
+        cannot tell an hourly session bucket from a per-minute global one cannot
+        pace itself against either — it sees a quota shrink and has no way to
+        know which window will refill it, even though ``X-RateLimit-Reset``
+        names the instant. ``X-RateLimit-Policy`` names the bucket, so the three
+        numbers become interpretable rather than merely present.
+
+        Results with ``limit == 0`` carry no quota to advertise — that is a
+        disabled limit, and also what a check reports after failing open — so
+        they are skipped rather than published as a limit of zero.
 
         Two responses are left alone entirely, and both are the single-writer
         invariant expressed on the way out rather than on the way in:
@@ -689,20 +688,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             if "X-RateLimit-Limit" in response.headers:
                 return
 
-            results = [
-                result
-                for result in getattr(request.state, "rate_limit_results", ())
-                if result.limit > 0
-            ]
-            if not results:
+            advertisable = [result for result in results if result.limit > 0]
+            if not advertisable:
                 return
 
-            tightest = min(results, key=lambda r: r.limit - r.current_count)
+            tightest = min(advertisable, key=lambda r: r.limit - r.current_count)
 
             response.headers["X-RateLimit-Limit"] = str(tightest.limit)
             response.headers["X-RateLimit-Remaining"] = str(
                 max(0, tightest.limit - tightest.current_count)
             )
+            response.headers["X-RateLimit-Policy"] = _policy_name(tightest.limit_type)
             if tightest.reset_time is not None:
                 response.headers["X-RateLimit-Reset"] = str(
                     int(tightest.reset_time.timestamp())
@@ -754,6 +750,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             response.headers["Retry-After"] = str(error.retry_after)
         response.headers["X-RateLimit-Limit"] = str(error.limit)
         response.headers["X-RateLimit-Remaining"] = "0"
+        # Which bucket refused, in the same token the served responses advertise
+        # and the body's ``limit_type`` carries. Without it a client that has
+        # been pacing itself against one policy cannot tell whether the refusal
+        # came from that one or from a different window entirely, which is the
+        # difference between "slow down" and "wait an hour".
+        response.headers["X-RateLimit-Policy"] = _policy_name(error.limit_type)
         if error.reset_time is not None:
             response.headers["X-RateLimit-Reset"] = str(
                 int(error.reset_time.timestamp())

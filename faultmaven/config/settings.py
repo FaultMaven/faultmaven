@@ -1094,6 +1094,11 @@ class SecuritySettings(BaseSettings):
             "X-RateLimit-Limit",
             "X-RateLimit-Remaining",
             "X-RateLimit-Reset",
+            # Names which bucket the three numbers above describe. Exposed for
+            # the same reason they are: a header a browser client cannot read is
+            # a header that was not sent, and the Copilot and Dashboard are the
+            # clients that pace themselves against these.
+            "X-RateLimit-Policy",
         ],
     )
 

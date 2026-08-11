@@ -15,7 +15,7 @@ import pytest
 
 import faultmaven.infrastructure.protection.rate_limiter as rate_limiter_module
 from faultmaven.infrastructure.protection.rate_limiter import RedisRateLimiter
-from faultmaven.models.protection import LimitType, RateLimitConfig
+from faultmaven.models.protection import LimitType, RateLimitConfig, RateLimitSpec
 
 pytestmark = pytest.mark.unit
 
@@ -67,13 +67,15 @@ def _window_key(limiter: RedisRateLimiter, key: str) -> str:
 async def _verdicts(limiter, key, count):
     """Drive ``count`` checks back to back; return the allow/block sequence.
 
-    Asserts each verdict came from a real check: ``check_rate_limit`` reports
+    Asserts each verdict came from a real check: ``check_rate_limits`` reports
     ``limit=0`` when it swallowed a Redis error and failed open, which would
     otherwise read as a legitimate "allowed".
     """
     out = []
     for _ in range(count):
-        result = await limiter.check_rate_limit(key, LimitType.GLOBAL)
+        (result,) = await limiter.check_rate_limits(
+            [RateLimitSpec(key=key, limit_type=LimitType.GLOBAL)]
+        )
         assert (
             result.limit == limiter._configs[LimitType.GLOBAL.value].requests
         ), "the check failed open on a Redis error instead of deciding"
@@ -165,34 +167,6 @@ async def test_blocked_requests_consume_no_quota(redis_client, monkeypatch):
     assert await redis_client.zcard(window_key) == 1
 
 
-async def test_status_and_enforcement_agree_on_the_window_edge(
-    redis_client, monkeypatch
-):
-    """The read-only status path measures from the same float bound as enforcement.
-
-    Truncating ``now`` to a whole second widens the status window by up to a
-    second, so status reported quota that enforcement had already released.
-    """
-    clock = _Clock(1_700_000_000.4)
-    monkeypatch.setattr(rate_limiter_module, "time", clock)
-
-    limiter = await _limiter(redis_client, requests=2, window=10)
-    key = "10.1.4.1"
-
-    assert await _verdicts(limiter, key, 1) == [True]
-
-    # Now sits 10.3s after the single entry: outside the float window, but
-    # inside a window measured from int(now).
-    clock.advance(10.3)
-
-    status = await limiter.get_rate_limit_status(key, LimitType.GLOBAL)
-
-    assert status is not None
-    assert (
-        status.current_count == 0
-    ), "status still counts an entry enforcement has released"
-
-
 async def test_an_entry_exactly_one_window_old_is_outside_the_window(
     redis_client, monkeypatch
 ):
@@ -204,9 +178,11 @@ async def test_an_entry_exactly_one_window_old_is_outside_the_window(
     window) and the one where an off-by-one in either path — enforcement's prune
     or status's count — leaves quota held for one extra tick.
 
-    Status is queried *before* the second check, so it reports the window as
-    enforcement would see it on the very next request rather than after that
-    request has already inserted.
+    Probed through enforcement rather than a status read: the entry sitting
+    exactly on the bound must be pruned by the very next check, which is
+    observable as that check being admitted against a limit of one and the set
+    still holding a single element afterwards. A second admitted request against
+    ``requests=1`` is only possible if the first was released.
     """
     clock = _Clock(1_700_000_000.0)
     monkeypatch.setattr(rate_limiter_module, "time", clock)
@@ -221,11 +197,9 @@ async def test_an_entry_exactly_one_window_old_is_outside_the_window(
     # Exactly on the bound, not past it.
     clock.advance(10)
 
-    status = await limiter.get_rate_limit_status(key, LimitType.GLOBAL)
-    assert status is not None
-    assert status.current_count == 0, "status counts an entry sitting on the bound"
-
-    # And the quota it reports free really is free.
-    assert await _verdicts(limiter, key, 1) == [True]
+    # The entry on the bound is released, so the quota it held is free.
+    assert await _verdicts(limiter, key, 1) == [
+        True
+    ], "an entry sitting exactly on the bound was still counted"
     # The aged-out entry was pruned rather than left alongside the new one.
     assert await redis_client.zcard(window_key) == 1

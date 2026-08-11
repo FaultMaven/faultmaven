@@ -153,18 +153,21 @@ class ProtectionSettings(BaseModel):
     )
 
 
-@dataclass
-class RateLimitState:
-    """Current state of a rate limit bucket"""
+@dataclass(frozen=True)
+class RateLimitSpec:
+    """One window to weigh as part of an all-or-nothing rate limit decision.
+
+    A request is usually subject to several windows at once (an address-keyed
+    global limit, a session-keyed per-minute and hourly pair). They are passed
+    together rather than checked one at a time so that a refusal by any of them
+    consumes quota in none of them — see ``_WINDOWS_SCRIPT``.
+
+    Order is precedence: the first window to refuse is the one the client is
+    told about.
+    """
 
     key: str
     limit_type: LimitType
-    current_count: int
-    limit: int
-    window: int
-    reset_time: datetime
-    penalty_multiplier: float = 1.0
-    violation_count: int = 0
 
 
 @dataclass

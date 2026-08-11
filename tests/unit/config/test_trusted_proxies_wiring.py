@@ -14,6 +14,7 @@ are pinned here:
 import contextlib
 import logging
 import os
+import types
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -41,6 +42,11 @@ def _request(peer, headers=None):
     """
     request = Mock()
     request.client = Mock(host=peer)
+    # A real namespace, not a Mock attribute: ``resolve_client_ip_once`` memoizes
+    # the resolved address here, and a Mock ``state`` cannot represent "nothing
+    # cached yet" — ``getattr`` on it returns a Mock rather than the default, so
+    # a fixture without this can neither exercise the memo nor observe a miss.
+    request.state = types.SimpleNamespace()
     request.headers = Headers(
         raw=[(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
     )
@@ -81,26 +87,33 @@ class TestTheLimiterKeysOnTheResolvedAddress:
     async def test_the_global_check_uses_that_key(self):
         """Pins the wiring, not just the helper.
 
-        ``_get_client_ip`` could be perfect and unused; this asserts the value
-        that reaches ``check_rate_limit`` is the resolved one.
+        ``_get_client_ip`` could be perfect and unused; this asserts the key the
+        ``global`` spec actually carries into the limiter is the resolved one.
         """
         middleware = _middleware([])
         recorded = {}
 
-        async def capture(key, limit_type, identifier):
-            recorded["key"] = key
-            recorded["identifier"] = identifier
-            return RateLimitResult(
-                allowed=True, limit_type=limit_type, current_count=1, limit=500
-            )
+        async def capture(specs):
+            recorded["specs"] = list(specs)
+            return [
+                RateLimitResult(
+                    allowed=True,
+                    limit_type=spec.limit_type,
+                    current_count=1,
+                    limit=500,
+                )
+                for spec in specs
+            ]
 
-        middleware.rate_limiter.check_rate_limit = AsyncMock(side_effect=capture)
+        middleware.rate_limiter.check_rate_limits = AsyncMock(side_effect=capture)
         request = _request(ATTACKER, {"X-Forwarded-For": "1.2.3.4"})
 
-        await middleware._check_global_rate_limit(middleware._get_client_ip(request))
+        await middleware._check_rate_limits(request)
 
-        assert recorded["key"] == ATTACKER
-        assert recorded["identifier"] == f"global:{ATTACKER}"
+        global_specs = [
+            spec for spec in recorded["specs"] if spec.limit_type is LimitType.GLOBAL
+        ]
+        assert [spec.key for spec in global_specs] == [ATTACKER]
 
     async def test_a_configured_proxy_still_separates_real_clients(self):
         middleware = _middleware(["10.42.0.0/16"])
@@ -183,9 +196,39 @@ class TestPerformanceMiddlewareUsesTheSameRule:
         perf = PerformanceTrackingMiddleware(
             app=Mock(), trusted_proxies=["10.42.0.0/16"]
         )
+        headers = {"X-Forwarded-For": "1.2.3.4, 203.0.113.50"}
+
+        # Separate requests, deliberately. The two layers share a per-request
+        # memo, so asking both about ONE request proves only that the memo
+        # returned what it stored — it would pass with either layer's own rule
+        # broken. Resolving independently is what compares the rules.
+        assert limiter._get_client_ip(
+            _request(INGRESS, headers)
+        ) == perf._get_client_ip(_request(INGRESS, headers))
+
+    def test_the_second_layer_reuses_the_first_layers_answer(self):
+        """The memo is what makes "one answer" structural rather than a coincidence.
+
+        Both layers ask about the same request; the second must not walk the
+        chain again. Asserted by breaking the underlying resolver after the
+        first call — if the memo were absent, the second call would raise.
+        """
+        from faultmaven.api.middleware import client_ip as client_ip_module
+        from faultmaven.api.middleware.performance import PerformanceTrackingMiddleware
+
+        limiter = _middleware(["10.42.0.0/16"])
+        perf = PerformanceTrackingMiddleware(
+            app=Mock(), trusted_proxies=["10.42.0.0/16"]
+        )
         request = _request(INGRESS, {"X-Forwarded-For": "1.2.3.4, 203.0.113.50"})
 
-        assert limiter._get_client_ip(request) == perf._get_client_ip(request)
+        first = limiter._get_client_ip(request)
+
+        def _must_not_run(*args, **kwargs):
+            raise AssertionError("client IP resolved a second time for one request")
+
+        with patch.object(client_ip_module, "resolve_client_ip", _must_not_run):
+            assert perf._get_client_ip(request) == first
 
 
 class TestProductionSaysSoWhenItIsUnconfigured:
