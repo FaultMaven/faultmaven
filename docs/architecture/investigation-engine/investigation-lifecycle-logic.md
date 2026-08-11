@@ -1273,7 +1273,7 @@ The gate is intentionally **substance-only**. Conversation depth (`message_count
 
 **Runbook generation — chat-side trigger + completion notification** (RESOLVED only):
 
-The runbook affordance on the RESOLVED ack-turn is a separate downstream artifact, not a summary. Clicking it routes via the same exact-match dispatch (`_RUNBOOK_CREATION_PATTERNS` in `milestone_engine.py`) to `_handle_runbook_creation`, which runs two pre-flight gates synchronously: content readiness (`assess_runbook_readiness` — does the case have a root cause + actionable solution?) and deduplication against the runbook KB (similarity ≥ 0.85 → an existing runbook covers this; 0.70–0.85 → suggest with caveats; < 0.70 → proceed). On `NOT_READY` or `EXISTING_COVERS`, the chat reply explains why and no draft is created. On proceed, the conversion runs as a **fire-and-forget background task** (`_run_runbook_conversion`); the chat reply returns immediately ("Creating your runbook draft… I'll let you know here when it's ready"). When the background task finishes (success, no-drafts, or exception), it appends a `role="system"` message to `case.messages` with the outcome — *"Your runbook draft 'X' is ready"* on success or a retry-hint on failure. The append is concurrency-safe (acquires the per-case lock from `_case_locks`) and best-effort (notification-write failures are logged but never propagate). Both call sites for runbook generation — the chat-side dispatcher and the `POST /knowledge/convert-from-case` API endpoint — use the shared `CaseConversionRequest.from_case` factory for case-data extraction, so the case-to-runbook input shape is single-sourced. See `document-to-runbook-conversion.md` for the full conversion pipeline.
+The runbook affordance on the RESOLVED ack-turn is a separate downstream artifact, not a summary. Clicking it routes via the same exact-match dispatch (`_RUNBOOK_CREATION_PATTERNS` in `milestone_engine.py`) to `_handle_runbook_creation`, which runs two pre-flight gates synchronously: content readiness (`assess_runbook_readiness` — does the case have a root cause + actionable solution?) and deduplication against the published-runbook corpus (`RunbookKnowledgeBase`, scoped to the case owner — see `runbook-dedup.md`). On `NOT_READY`, the chat reply explains why and no draft is created. On `SIMILAR_FOUND` (a ≥ 0.70 best-chunk match), the turn STOPS: the candidate is named by title and score — stated as overlap, never as coverage — no draft is created, and a *"Generate a new runbook anyway"* DECIDE affordance (`_RUNBOOK_CONFIRM_PATTERNS` → `dedup_confirmed=True`) makes the choice answerable on the next turn. On proceed (no match, or explicit confirmation, or a dedup-failure caveat — the case is runbook-worthy and only the duplicate check is uncertain), the conversion runs as a **fire-and-forget background task** (`_run_runbook_conversion`); the chat reply returns immediately ("Creating your runbook draft… I'll let you know here when it's ready"). When the background task finishes (success, no-drafts, or exception), it appends a `role="system"` message to `case.messages` with the outcome — *"Your runbook draft 'X' is ready"* on success or a retry-hint on failure. The append is concurrency-safe (acquires the per-case lock from `_case_locks`) and best-effort (notification-write failures are logged but never propagate). The chat-side dispatcher — the single live case-to-runbook trigger — uses the shared `CaseConversionRequest.from_case` factory for case-data extraction, so the case-to-runbook input shape is single-sourced. See `document-to-runbook-conversion.md` for the full conversion pipeline.
 
 #### 1.7.4 Session Cleanup on Terminal Transition
 
@@ -1883,10 +1883,14 @@ User confirms resolution
     → Agent offers DECIDE suggestion: "Would you like me to create a runbook?"
     → User accepts
         → System evaluates readiness + deduplication
-        → Four possible outcomes:
+        → Possible outcomes:
             SUCCESS           → Draft created, user redirected to Dashboard
             NOT_SUITABLE      → "Not enough data for a quality runbook" (no draft)
-            EXISTING_COVERS   → "Similar runbook exists: {title} ({score}% match)"
+            SIMILAR_FOUND     → "Similar runbook exists: {title} ({score}% best-chunk
+                                match)" — stated as overlap, not coverage. No draft;
+                                a "Generate a new runbook anyway" affordance is
+                                offered, and only that explicit confirmation creates
+                                one
             GENERATION_FAILED → "Generation failed, try again later"
     → User declines or ignores
         → No evaluation, no side effects
@@ -1906,13 +1910,13 @@ Maps case data to the 7 canonical runbook sections and checks coverage.
 | `NEEDS_ENRICHMENT` | Critical sections OK, but 2+ enrichment sections thin | Draft generated with quality warning |
 | `NOT_SUITABLE` | Missing problem definition or root cause with actionable fix | `NOT_SUITABLE` outcome — no draft |
 
-**Deduplication** (`RunbookKnowledgeBase` vector search):
+**Deduplication** (`RunbookKnowledgeBase` vector search over the published-runbook corpus, scoped to the case owner — see `runbook-dedup.md`):
 
-| Similarity | Verdict | Outcome |
+| Best-chunk similarity | Verdict | Outcome |
 |------------|---------|---------|
-| ≥85% | `EXISTING_COVERS` | No new draft — link to existing runbook |
-| 70-84% | `SUGGEST_WITH_CAVEATS` | Draft generated with note about similar runbook |
+| ≥70% | `SIMILAR_FOUND` | No draft on this turn — the candidate is named by title and score (overlap, never a coverage claim); a "Generate a new runbook anyway" affordance creates one on explicit confirmation |
 | <70% | No conflict | Draft generated normally |
+| Dedup failed/skipped | `SUGGEST_WITH_CAVEATS` | Draft generated, with the "could not check for duplicates" caveat stated |
 
 **Workflow** (canonical path via `ConversionService`, triggered after user accepts):
 

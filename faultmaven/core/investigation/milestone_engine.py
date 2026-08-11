@@ -2656,6 +2656,24 @@ REGENERATE_CLOSURE_SUMMARY_PAYLOAD = (
 
 GENERATE_RUNBOOK_PAYLOAD = "Generate a runbook from this resolved case"
 
+#: The explicit-confirmation payload for the SIMILAR_FOUND stop: dedup found a
+#: ≥0.70 match, the turn named it and created nothing, and this affordance is
+#: what makes the question answerable on the next turn. Routes back into
+#: ``_handle_runbook_creation`` with ``dedup_confirmed=True`` — the user has
+#: seen the candidate and chosen, so the similar-match stop (and only that
+#: stop) is waived.
+GENERATE_RUNBOOK_ANYWAY_PAYLOAD = "Generate a new runbook anyway"
+
+
+def _generate_runbook_anyway_suggestion() -> dict:
+    """The DECIDE affordance offered on the SIMILAR_FOUND stop turn."""
+    return {
+        "label": "Generate a new runbook anyway",
+        "action_type": "DECIDE",
+        "payload": GENERATE_RUNBOOK_ANYWAY_PAYLOAD,
+        "body": ("Create a new draft even though a similar runbook already exists."),
+    }
+
 
 def _runbook_suggestion(case) -> dict | None:
     """The runbook-generation DECIDE suggestion (RESOLVED-only), gated on the
@@ -3109,6 +3127,12 @@ class MilestoneEngine:
     # typing never does.
     _RUNBOOK_CREATION_PATTERNS = (GENERATE_RUNBOOK_PAYLOAD.lower(),)
 
+    # The explicit "generate anyway" confirmation offered on the
+    # SIMILAR_FOUND stop turn. Dispatched separately so the handler knows
+    # the user has already seen the similar-runbook candidate and chosen —
+    # the similar-match stop is waived, nothing else is.
+    _RUNBOOK_CONFIRM_PATTERNS = (GENERATE_RUNBOOK_ANYWAY_PAYLOAD.lower(),)
+
     async def _process_terminal_turn(
         self,
         case: "Case",
@@ -3143,6 +3167,10 @@ class MilestoneEngine:
         is_runbook_eligible = case.state == CaseState.RESOLVED
         if is_runbook_eligible and msg_lower in self._RUNBOOK_CREATION_PATTERNS:
             return await self._handle_runbook_creation(case, metadata)
+        if is_runbook_eligible and msg_lower in self._RUNBOOK_CONFIRM_PATTERNS:
+            return await self._handle_runbook_creation(
+                case, metadata, dedup_confirmed=True
+            )
 
         # Scenario 3: Q&A
         return await self._process_terminal_qa(
@@ -3250,6 +3278,7 @@ class MilestoneEngine:
         self,
         case: "Case",
         metadata: dict[str, Any],
+        dedup_confirmed: bool = False,
     ) -> dict[str, Any]:
         """Evaluate readiness + dedup, then create runbook draft (fire-and-forget).
 
@@ -3259,9 +3288,21 @@ class MilestoneEngine:
 
         Flow:
         1. Check content readiness (assess_runbook_readiness via evaluate_runbook_suggestion)
-        2. Check deduplication
+        2. Check deduplication. A SIMILAR_FOUND verdict STOPS the turn: the
+           candidate is named and nothing is created until the user chooses
+           (the "generate anyway" affordance routes back here with
+           ``dedup_confirmed=True``, which waives this stop and only this
+           stop). Dedup-failure caveats do not stop — the case is
+           runbook-worthy and only the duplicate check is uncertain, so
+           creation proceeds with the caveat stated (#944).
         3. If eligible: call ConversionService.convert_from_case() in background
         4. Return immediately with a message directing user to Dashboard Drafts
+
+        Args:
+            dedup_confirmed: True only on the explicit "generate anyway"
+                confirmation payload — the user has already been shown the
+                similar-runbook candidate on the previous turn and chosen to
+                proceed.
         """
         from faultmaven.core.investigation.kb_cause_seeder import (
             confirmed_root_seed_origin,
@@ -3274,8 +3315,8 @@ class MilestoneEngine:
         # Step 0: Provenance-based uniqueness (Phase 5.2b). A case resolved by
         # validating a cause the seeder planted from an existing runbook needs no
         # new runbook — it would duplicate that one. This is the cheap SYNC tier
-        # ABOVE the async embedding-similarity dedup (Step 2, which surfaces a
-        # ≥70% match by title and score for the user to judge):
+        # ABOVE the async embedding-similarity dedup (Step 2, which stops and
+        # names a ≥70% match for the user to decide on):
         # a direct, certain "you applied runbook X" signal, so we short-circuit
         # with the covering runbook named before spending an embedding search.
         # (The offer gate already suppresses the affordance for these cases; this
@@ -3318,6 +3359,25 @@ class MilestoneEngine:
             return {
                 "agent_response": suggestion.message,
                 "suggested_follow_ups": [],
+                "case_updated": case,
+                "metadata": metadata,
+            }
+
+        # A similar runbook was found: STOP and let the user choose, unless
+        # they already have. Surfacing a likely duplicate and then creating
+        # it anyway on the same turn would make the question rhetorical and
+        # defeat the point of checking — preventing duplicate runbooks is
+        # what dedup is FOR. This is not a coverage claim (best-chunk-max
+        # measures overlap, not equivalence — the message says so); the
+        # "generate anyway" affordance makes the choice answerable on the
+        # next turn, and the Dashboard KB link covers the review path.
+        if (
+            suggestion.verdict == RunbookSuggestion.SIMILAR_FOUND
+            and not dedup_confirmed
+        ):
+            return {
+                "agent_response": suggestion.message,
+                "suggested_follow_ups": [_generate_runbook_anyway_suggestion()],
                 "case_updated": case,
                 "metadata": metadata,
             }

@@ -1410,13 +1410,20 @@ class RunbookSuggestion:
     There is deliberately no "existing covers" verdict. Best-chunk-max
     similarity detects OVERLAP, not whole-runbook equivalence, and the old
     ≥0.85 auto-suppression threshold never fired against any real
-    distribution. A strong match is surfaced by title and score for the USER
-    to judge (owner decision, fm#1030); the top score is emitted as a metric
-    so the band can be calibrated later.
+    distribution — so a match is never ASSERTED to cover the case (owner
+    decision, fm#1030). What a ≥0.70 match does do is return SIMILAR_FOUND:
+    the caller stops, names the candidate by title and score, and creates
+    nothing until the user explicitly chooses — surfacing a likely duplicate
+    only to create it anyway would defeat the point of checking. The top
+    score is emitted as a metric so the band can be calibrated later.
     """
 
     SUGGEST = "suggest"
     SUGGEST_WITH_CAVEATS = "suggest_with_caveats"
+    #: A ≥0.70 best-chunk match exists. NOT a coverage claim — the caller
+    #: presents the candidate and lets the user decide; generation proceeds
+    #: only on explicit confirmation.
+    SIMILAR_FOUND = "similar_found"
     NOT_READY = "not_ready"
 
     def __init__(self, verdict: str, message: str):
@@ -1530,13 +1537,20 @@ async def evaluate_runbook_suggestion(
                 title = top_match.get("title", "existing runbook")
 
                 if similarity >= 0.70:
+                    # SIMILAR_FOUND, not a caveat on a proceeding creation:
+                    # the caller must STOP and let the user choose. The
+                    # wording states overlap, never coverage — best-chunk-max
+                    # cannot establish that the existing runbook covers this
+                    # case (owner decision, fm#1030).
                     return RunbookSuggestion(
-                        verdict=RunbookSuggestion.SUGGEST_WITH_CAVEATS,
+                        verdict=RunbookSuggestion.SIMILAR_FOUND,
                         message=(
                             f"A similar runbook already exists: **{title}** "
-                            f"({similarity:.0%} match). "
-                            "Would you like to generate a new one, or review the existing one first? "
-                            "You can manage runbooks from the Dashboard."
+                            f"({similarity:.0%} best-chunk match). That "
+                            "measures overlap, not full coverage, so I have "
+                            "not created a draft. Review the existing runbook "
+                            "in the Dashboard Knowledge Base, or generate a "
+                            "new one anyway."
                         ),
                     )
         except Exception as e:

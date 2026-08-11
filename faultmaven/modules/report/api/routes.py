@@ -404,17 +404,24 @@ async def get_report_recommendations(
             )
 
         if not rec_service:
-            # Return default recommendation if service unavailable
-            return ReportRecommendationResponse(
-                case_id=case_id,
-                available_for_generation=[
-                    ReportType.RESOLUTION_SUMMARY.value,
-                    ReportType.CLOSURE_SUMMARY.value,
-                ],
-                runbook_recommendation={
-                    "action": "generate",
-                    "reason": "Recommendation service unavailable - all report types available",
-                },
+            # Refuse rather than recommend (fm#1030 review). This branch used
+            # to answer action="generate" from a search that never ran — the
+            # #944 fail-open shape: the runbook recommendation IS a claim
+            # about what the knowledge base holds, and this service is not
+            # wired (the container registers None), so the claim was never
+            # established. 503 matches the case-module route's refusal
+            # contract; the working recommendation surface is named so the
+            # caller has somewhere to go. Static detail — no exception text
+            # crosses into the response.
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Report recommendations are not available on this "
+                    "endpoint — the recommendation service is not wired, so "
+                    "the runbook similarity search cannot run and duplicate "
+                    "runbooks cannot be ruled out. Use "
+                    "GET /api/v1/cases/{case_id}/report-recommendations."
+                ),
             )
 
         # Get recommendations, scoped to the requester (fm#1030)

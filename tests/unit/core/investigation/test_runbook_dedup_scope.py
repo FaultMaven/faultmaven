@@ -149,9 +149,10 @@ async def test_the_resolved_scope_filter_is_threaded_into_the_search():
     )
 
     assert kb.scopes == [scope]
-    # The 0.93 match is surfaced for the USER to judge — there is no
-    # auto-suppressing "existing covers" verdict anymore (owner decision).
-    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
+    # The 0.93 match stops the turn and is surfaced for the USER to decide —
+    # never asserted to cover the case (no "existing covers" verdict), and
+    # never silently created past (owner decision + fm#1030 review CORE 2).
+    assert suggestion.verdict == tt.RunbookSuggestion.SIMILAR_FOUND
     assert "Existing Pool Runbook" in suggestion.message
     assert not hasattr(tt.RunbookSuggestion, "EXISTING_COVERS")
 

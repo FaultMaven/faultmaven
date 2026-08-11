@@ -82,18 +82,32 @@ Failure semantics (all typed `KnowledgeBaseError`s; none may be rendered as
   deterministic parse failure is not retried and not charged to the breaker
   the read path shares.
 
-## Why there is no "reuse" verdict
+## The match verdict: no coverage claim, no silent creation
 
 Best-chunk-max similarity detects **overlap**, not whole-runbook equivalence,
 and the retired ≥0.85 thresholds (`action="reuse"`, the engine's
-`EXISTING_COVERS`) never fired against any real distribution. Auto-suppressing
-generation on an uncalibrated signal risks a false "already covered" — an
-incorrect conclusion, which FaultMaven does not accept.
+`EXISTING_COVERS`) never fired against any real distribution. Two invariants
+follow, and they pull in opposite directions on purpose:
 
-So there is a **single band**: a best-chunk match ≥ 0.70 is surfaced by title
-and score for the **user** to judge (`action="review_or_generate"` on the
-route; a caveated suggestion in the engine), and generation stays available in
-both. The top similarity score is emitted as a log metric
+- **A match is never asserted to cover the case.** Auto-suppressing generation
+  on an uncalibrated overlap signal risks a false "already covered" — an
+  incorrect conclusion, which FaultMaven does not accept. The wording always
+  states overlap, never coverage.
+- **A match is never silently created past.** Preventing duplicate runbooks is
+  what dedup is *for*; naming a likely duplicate and creating the draft on the
+  same turn would make the question rhetorical.
+
+So there is a **single band**, and it stops: a best-chunk match ≥ 0.70 yields
+the engine's `SIMILAR_FOUND` verdict — the turn names the candidate by title
+and score, creates **nothing**, and offers a *"Generate a new runbook anyway"*
+DECIDE affordance whose payload routes back with `dedup_confirmed=True`; only
+that explicit confirmation creates the draft. On the API route the same band is
+`action="review_or_generate"` with the candidate as an honest KB-item ref (the
+route never creates anything itself). Dedup-*failure* caveats do not stop the
+engine's creation — the case is runbook-worthy and only the duplicate check is
+uncertain, so the draft proceeds with the caveat stated (#944).
+
+The top similarity score is emitted as a log metric
 (`runbook.dedup_top_similarity`) so the band can be calibrated against real
 distributions later. The one auto-suppression that remains is provenance-based
 (engine Step 0): a case resolved by *applying* runbook X needs no new runbook
@@ -101,16 +115,31 @@ distributions later. The one auto-suppression that remains is provenance-based
 
 ## Wiring
 
-- The engine receives `RunbookKnowledgeBase` by **explicit constructor
-  injection** (`MilestoneEngine(runbook_kb=...)`, wired in the DI container
-  from the KB vector store). `None` is legitimate — local dev without ChromaDB
-  — and yields the honest "dedup did not run" caveat, as does a missing scope
-  resolver. There is no attribute probing: the previous
+- **One reader, bound to the writer's collection by construction.** The
+  container builds a single `RunbookKnowledgeBase`
+  (`create_runbook_dedup_kb`) that both call sites use. The production KB
+  writer is `KnowledgeVectorStore` (`knowledge_vector_store or vector_store`
+  in the container), whose `add_documents` targets the hardcoded
+  `KB_COLLECTION` — so the reader is built over the same KB ChromaDB client
+  bound to that same constant (`RunbookKnowledgeBase.over_kb_collection`),
+  NOT over the settings-named `container.vector_store`, which diverges the
+  moment `CHROMADB_COLLECTION` is overridden. When the writer is the fallback
+  `vector_store`, the reader is that same object; when the reader cannot be
+  bound to the writer's collection, it is `None` (dedup honestly skipped)
+  rather than mis-bound. A reader/writer collection split would silently
+  reinstate the empty-result dedup this design removes.
+- The engine receives that reader by **explicit constructor injection**
+  (`MilestoneEngine(runbook_kb=...)`). `None` is legitimate — local dev
+  without ChromaDB — and yields the honest "dedup did not run" caveat, as
+  does a missing scope resolver. There is no attribute probing: the previous
   `hasattr(knowledge_service, "runbook_kb")` was permanently False and
   silently disabled dedup.
-- The route builds the KB per-request over the DI vector store and refuses
-  with 503 when the search cannot run or cannot be read
-  (`RESULTS_UNREADABLE_CODE` selects the re-index remediation text).
+- The route reads the same container instance (`container.runbook_kb`) and
+  refuses with 503 when the search cannot run or cannot be read
+  (`RESULTS_UNREADABLE_CODE` selects the re-index remediation text). The
+  mounted-but-unwired reports-module recommendations route
+  (`GET /reports/recommendations/{case_id}`) also refuses with 503 rather
+  than fabricating a "generate" recommendation.
 - Dedup never routes through `KnowledgeService.search_documents`: that method
   swallows `KnowledgeBaseError` into `{"total_results": 0, "results": []}`,
   which a dedup caller would read as "checked, nothing similar" (#944's

@@ -53,6 +53,55 @@ def create_case_service(
         return minimal_factory()
 
 
+def create_runbook_dedup_kb(
+    knowledge_vector_store: Any | None,
+    vector_store: Any | None,
+    kb_chromadb_client: Any | None,
+) -> Any | None:
+    """Create the runbook-dedup reader, bound to the KB WRITER's collection.
+
+    ``KnowledgeService`` writes through ``knowledge_vector_store or
+    vector_store`` (see the knowledge-service wiring below). The dedup reader
+    must land on the SAME collection as whichever writer is in force, by
+    construction — a reader/writer collection split silently reinstates the
+    empty-result dedup fm#1030 removed:
+
+    - Writer is ``KnowledgeVectorStore`` (the production default): its
+      ``add_documents`` targets the hardcoded ``KB_COLLECTION``, so the
+      reader is built over the same KB client bound to that same constant
+      (``RunbookKnowledgeBase.over_kb_collection``). A bare
+      ``ChromaDBVectorStore`` would bind the settings-derived collection
+      name instead, which diverges the moment ``CHROMADB_COLLECTION`` is
+      overridden.
+    - Writer is the fallback ``vector_store``: the reader is that SAME
+      object, so reader and writer agree by identity.
+    - Writer store present but its client is not (cannot happen in a
+      correctly built container, but stated rather than assumed): return
+      None — an honest "dedup did not run" beats a reader searching a
+      collection the writer never touches.
+    """
+    if knowledge_vector_store is not None:
+        if kb_chromadb_client is None:
+            logger.warning(
+                "Runbook dedup disabled: KB writer present but its ChromaDB "
+                "client is not — refusing to bind the dedup reader to a "
+                "collection the writer may not write"
+            )
+            return None
+        from faultmaven.infrastructure.knowledge.runbook_kb import (
+            RunbookKnowledgeBase,
+        )
+
+        return RunbookKnowledgeBase.over_kb_collection(kb_chromadb_client)
+    if vector_store:
+        from faultmaven.infrastructure.knowledge.runbook_kb import (
+            RunbookKnowledgeBase,
+        )
+
+        return RunbookKnowledgeBase(vector_store=vector_store)
+    return None
+
+
 def create_milestone_engine(
     llm_provider: Any,
     case_repository: Any | None,
@@ -1146,15 +1195,17 @@ def register_services(container: BaseDIContainer) -> None:
     # Runbook dedup KB for the engine's terminal-turn suggestion (fm#1030).
     # Injected explicitly — the engine used to probe
     # ``hasattr(knowledge_service, "runbook_kb")``, which was permanently
-    # False, so dedup never ran. Reads the same KB collection the live
-    # writer (KnowledgeService.ingest_runbook) populates.
-    runbook_kb = None
-    if vector_store:
-        from faultmaven.infrastructure.knowledge.runbook_kb import (
-            RunbookKnowledgeBase,
-        )
-
-        runbook_kb = RunbookKnowledgeBase(vector_store=vector_store)
+    # False, so dedup never ran. Bound to the collection the KB WRITER
+    # writes (see create_runbook_dedup_kb); also the single instance the
+    # report-recommendation route reads via ``container.runbook_kb``.
+    runbook_kb = create_runbook_dedup_kb(
+        knowledge_vector_store=getattr(container, "knowledge_vector_store", None),
+        vector_store=vector_store,
+        kb_chromadb_client=getattr(container, "kb_chromadb_client", None),
+    )
+    container.runbook_kb = runbook_kb
+    if runbook_kb:
+        container._register_service("runbook_kb", runbook_kb)
 
     milestone_engine = create_milestone_engine(
         llm_provider,

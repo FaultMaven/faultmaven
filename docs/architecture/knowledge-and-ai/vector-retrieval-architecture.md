@@ -385,7 +385,7 @@ All paths (KB and evidence) use explicit BGE-M3 embeddings (1024 dims) via `mode
 - `KnowledgeVectorStore.search()` — `query_embeddings` for vector recall
 - `KnowledgeVectorStore._single_keyword_search()` — `query_embeddings` for keyword-constrained search
 - `ChromaDBVectorStore.search()` — `query_embeddings` for direct search
-- `RunbookKB.index_runbook()` — explicit embeddings passed to `add_documents()`
+- `RunbookKnowledgeBase.search_runbooks()` — pre-computed `query_embeddings` for dedup similarity (read-only; runbooks are written by `_index_document_in_vector_store`, the first path above)
 
 **Evidence paths:**
 

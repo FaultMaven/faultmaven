@@ -579,12 +579,20 @@ async def _di_get_session_service_dependency(request: Request) -> ISessionServic
     return await _getter(request)
 
 
-async def _di_get_vector_store_dependency(request: Request):
-    """Get the DI-provided ChromaDB vector store for report services."""
+async def _di_get_runbook_kb_dependency(request: Request):
+    """Get the DI-provided runbook-dedup KB (fm#1030).
+
+    The container binds this reader to the SAME ChromaDB collection the KB
+    writer writes (``create_runbook_dedup_kb``). The route must not build its
+    own over ``container.vector_store`` — that store binds the
+    settings-derived collection name, which diverges from the production
+    writer's hardcoded ``KB_COLLECTION`` the moment ``CHROMADB_COLLECTION``
+    is overridden, silently reinstating the empty-result dedup.
+    """
     try:
         container = request.app.extra.get("di_container")
         if container:
-            return getattr(container, "vector_store", None)
+            return getattr(container, "runbook_kb", None)
         return None
     except Exception:
         return None
@@ -2960,7 +2968,7 @@ async def get_report_recommendations(
     request: Request,
     case_service: Optional[ICaseService] = Depends(_di_get_case_service_dependency),
     current_user: UserDTO = Depends(require_authentication),
-    vector_store=Depends(_di_get_vector_store_dependency),
+    runbook_kb=Depends(_di_get_runbook_kb_dependency),
 ):
     """
     Get intelligent report recommendations for a resolved case.
@@ -2991,7 +2999,6 @@ async def get_report_recommendations(
         404: Case not found or access denied
         500: Internal server error
     """
-    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
     from faultmaven.modules.case.contracts import ReportRecommendation
     from faultmaven.modules.report.domain.services.report_recommendation_service import (
         ReportRecommendationService,
@@ -3020,12 +3027,11 @@ async def get_report_recommendations(
                 },
             )
 
-        if vector_store is None:
+        if runbook_kb is None:
             raise HTTPException(
                 status_code=503,
                 detail="Vector store not available. Check ChromaDB configuration.",
             )
-        runbook_kb = RunbookKnowledgeBase(vector_store=vector_store)
         # Requester-scope dependencies: None in standalone (no teams exist —
         # the team arm is empty by construction, not a narrowed search).
         recommendation_service = ReportRecommendationService(

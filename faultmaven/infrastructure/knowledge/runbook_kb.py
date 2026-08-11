@@ -75,6 +75,30 @@ class RunbookKnowledgeBase(BaseExternalClient):
 
         self.vector_store = vector_store
 
+    @classmethod
+    def over_kb_collection(cls, kb_chromadb_client: Any) -> "RunbookKnowledgeBase":
+        """A dedup reader bound BY CONSTRUCTION to the KB writer's collection.
+
+        The production KB writer is ``KnowledgeVectorStore.add_documents``,
+        which targets the hardcoded ``KB_COLLECTION`` — NOT the
+        settings-derived collection name a bare ``ChromaDBVectorStore``
+        binds. A reader bound to the settings name diverges from the writer
+        the moment ``CHROMADB_COLLECTION`` is overridden, and a
+        reader/writer split silently reinstates the empty-result dedup this
+        class was fixed for (fm#1030). Binding the reader to the same
+        constant the writer uses closes that by construction rather than by
+        coincidence of defaults.
+        """
+        from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+            KB_COLLECTION,
+        )
+
+        return cls(
+            vector_store=ChromaDBVectorStore(
+                client=kb_chromadb_client, collection_name=KB_COLLECTION
+            )
+        )
+
     async def search_by_text(
         self,
         query_text: str,

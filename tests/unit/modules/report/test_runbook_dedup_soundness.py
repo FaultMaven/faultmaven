@@ -284,23 +284,24 @@ async def test_an_existing_similar_runbook_is_still_detected(ready_case):
             ready_case, kb, scope_resolver=_scope_resolver
         )
 
-    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
+    assert suggestion.verdict == tt.RunbookSuggestion.SIMILAR_FOUND
     assert "OOMKilled recovery" in suggestion.message
     assert "91%" in suggestion.message
 
 
 # ---------------------------------------------------------------------------
-# The "reuse" verdict is withheld (owner decision, fm#1030)
+# The similar-match verdict: no coverage claim, and no rhetorical question
+# (owner decision + fm#1030 review CORE 2)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_even_a_near_perfect_match_never_auto_suppresses_generation(ready_case):
+async def test_even_a_near_perfect_match_never_claims_coverage(ready_case):
     """Best-chunk-max detects OVERLAP, not whole-runbook equivalence, and the
     old ≥0.85 auto-suppression threshold never fired against any real
-    distribution. However strong the match, the verdict surfaces it for the
-    USER to judge and generation stays available — there is no
-    EXISTING_COVERS verdict left to return."""
+    distribution. However strong the match, the verdict names the candidate
+    without ASSERTING it covers the case — there is no EXISTING_COVERS
+    verdict left to return, and the wording states overlap explicitly."""
     match = RunbookMatch(
         item_id="kb-1",
         title="OOMKilled recovery",
@@ -315,8 +316,111 @@ async def test_even_a_near_perfect_match_never_auto_suppresses_generation(ready_
         )
 
     assert not hasattr(tt.RunbookSuggestion, "EXISTING_COVERS")
-    assert suggestion.verdict == tt.RunbookSuggestion.SUGGEST_WITH_CAVEATS
-    assert "generate a new one" in suggestion.message
+    assert suggestion.verdict == tt.RunbookSuggestion.SIMILAR_FOUND
+    assert "not full coverage" in suggestion.message
+    assert "already covered" not in suggestion.message
+
+
+def _similar_match_kb() -> RunbookKnowledgeBase:
+    return _kb(
+        search_result=[
+            RunbookMatch(
+                item_id="kb-1",
+                title="OOMKilled recovery",
+                scope="global",
+                similarity_score=0.91,
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_similar_match_stops_creation_and_offers_generate_anyway(
+    ready_case, monkeypatch
+):
+    """The engine-level half of the stop: on SIMILAR_FOUND, NO draft is
+    created on this turn, the candidate is named, and the follow-up carries
+    the explicit "generate anyway" payload so the question is answerable on
+    the next turn. Without this, the ≥0.70 band asked "generate a new one, or
+    review first?" and then created the draft in the same breath — a
+    rhetorical question with the duplicate already made (fm#1030 review,
+    CORE 2)."""
+    from faultmaven.core.investigation.milestone_engine import (
+        GENERATE_RUNBOOK_ANYWAY_PAYLOAD,
+    )
+
+    engine = _engine_for_creation()
+    engine.runbook_kb = _similar_match_kb()
+
+    monkeypatch.setattr(
+        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
+        lambda case: None,
+    )
+
+    with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
+        result = await engine._handle_runbook_creation(ready_case, metadata={})
+
+    engine._run_runbook_conversion.assert_not_called()
+    assert "OOMKilled recovery" in result["agent_response"]
+    assert "Creating your runbook draft" not in result["agent_response"]
+    payloads = [s.get("payload") for s in result["suggested_follow_ups"]]
+    assert GENERATE_RUNBOOK_ANYWAY_PAYLOAD in payloads, (
+        "the stop turn must carry the affordance that makes the question "
+        "answerable on the next turn"
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_anyway_proceeds_past_the_similar_match(ready_case, monkeypatch):
+    """The user has seen the candidate and chosen: ``dedup_confirmed=True``
+    waives the similar-match stop (and only that stop) and the draft is
+    created. Without this the stop turn's question would be unanswerable —
+    clicking the affordance would just re-run dedup and stop again."""
+    engine = _engine_for_creation()
+    engine.runbook_kb = _similar_match_kb()
+
+    monkeypatch.setattr(
+        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
+        lambda case: None,
+    )
+    monkeypatch.setattr(
+        "faultmaven.modules.knowledge.domain.models.conversion."
+        "CaseConversionRequest.from_case",
+        classmethod(lambda cls, case, scope="personal": MagicMock()),
+    )
+
+    with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
+        result = await engine._handle_runbook_creation(
+            ready_case, metadata={}, dedup_confirmed=True
+        )
+
+    assert "Creating your runbook draft" in result["agent_response"]
+
+
+@pytest.mark.asyncio
+async def test_the_confirm_payload_dispatches_with_dedup_confirmed():
+    """The exact-match dispatch routes the "generate anyway" payload back
+    into creation with ``dedup_confirmed=True`` — same click-only side-effect
+    policy as every other terminal action."""
+    from faultmaven.core.investigation.milestone_engine import (
+        GENERATE_RUNBOOK_ANYWAY_PAYLOAD,
+        MilestoneEngine,
+    )
+    from faultmaven.modules.case.contracts import CaseState
+
+    engine = MilestoneEngine.__new__(MilestoneEngine)
+    engine._handle_runbook_creation = AsyncMock(return_value={"routed": True})
+    case = MagicMock()
+    case.state = CaseState.RESOLVED
+
+    result = await engine._process_terminal_turn(
+        case, GENERATE_RUNBOOK_ANYWAY_PAYLOAD, metadata={}
+    )
+
+    assert result == {"routed": True}
+    engine._handle_runbook_creation.assert_awaited_once_with(
+        case, {}, dedup_confirmed=True
+    )
 
 
 @pytest.mark.asyncio

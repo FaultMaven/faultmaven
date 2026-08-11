@@ -1977,10 +1977,12 @@ class TestRunbookSuggestion:
         assert "could not check" in result.message
 
     async def test_a_high_similarity_match_is_surfaced_for_the_user(self):
-        """KB returns a ≥70% match → surfaced by title and score, with
-        generation still offered. There is no auto-suppressing EXISTING_COVERS
-        verdict: best-chunk-max detects overlap, not whole-runbook
-        equivalence, so the user judges (owner decision, fm#1030)."""
+        """KB returns a ≥70% match → SIMILAR_FOUND: the caller stops, names
+        the candidate, and creates nothing until the user chooses. There is
+        no EXISTING_COVERS verdict — best-chunk-max detects overlap, not
+        whole-runbook equivalence, so coverage is never asserted (owner
+        decision, fm#1030); and the match is not a mere caveat on a
+        proceeding creation either (fm#1030 review, CORE 2)."""
         from faultmaven.core.investigation.terminal_transitions import (
             RunbookSuggestion,
             evaluate_runbook_suggestion,
@@ -2039,9 +2041,12 @@ class TestRunbookSuggestion:
         result = await evaluate_runbook_suggestion(
             case, runbook_kb=mock_kb, scope_resolver=_scope
         )
-        assert result.verdict == RunbookSuggestion.SUGGEST_WITH_CAVEATS
+        assert result.verdict == RunbookSuggestion.SIMILAR_FOUND
         assert "Connection Pool Timeout Runbook" in result.message
-        assert "generate a new one" in result.message
+        assert "generate a new one anyway" in result.message
+        assert (
+            "not full coverage" in result.message
+        ), "the message must state overlap, not assert coverage"
         assert not hasattr(RunbookSuggestion, "EXISTING_COVERS")
 
     async def test_not_ready_when_content_insufficient(self):

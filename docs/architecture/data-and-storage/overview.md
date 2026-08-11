@@ -103,7 +103,7 @@ For the data-type × backend × deployment breakdown, see:
 │     (filtered by metadata: scope, owner_id — team shares resolve to  │
 │     an id allowlist at query time) AND runbooks, which have no       │
 │     collection of their own and are told apart only by              │
-│     report_type="runbook"                                            │
+│     document_type="runbook"                                          │
 │   Lifecycle: permanent — backed up, never wiped.                     │
 │                                                                        │
 │ ChromaDB Evidence Instance (PersistentClient at data/chroma-evidence/):│

@@ -94,7 +94,11 @@ async def test_the_fetch_is_chunk_deep_not_result_shallow():
     await kb.search_runbooks(query_embedding=_vec(), scope_filter=_SCOPE, top_k=5)
 
     kwargs = kb.vector_store.query_by_embedding.await_args.kwargs
-    assert kwargs["top_k"] == 5 * RunbookKnowledgeBase.CHUNK_FETCH_MULTIPLIER
+    # The literal number, NOT `5 * CHUNK_FETCH_MULTIPLIER`: asserting against
+    # the constant that produces the value is self-referential — a mutation
+    # of the multiplier (or of the fetch expression to use it differently)
+    # changes both sides together and sails through (fm#1030 review).
+    assert kwargs["top_k"] == 15
 
 
 # ---------------------------------------------------------------------------
