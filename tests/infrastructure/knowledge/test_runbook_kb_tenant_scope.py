@@ -297,20 +297,26 @@ async def test_an_indexed_runbook_round_trips_every_field_it_was_written_with(
 
 
 @pytest.mark.asyncio
-async def test_a_runbook_row_missing_an_identity_key_is_skipped_not_invented(kb, store):
+@pytest.mark.parametrize("missing_key", ["case_id", "case_title", "runbook_source"])
+async def test_a_runbook_row_missing_an_identity_key_is_skipped_not_invented(
+    kb, store, missing_key
+):
     """A row this write path could not have produced is dropped, not guessed at.
 
     The collection is shared with KB documents and ``report_type`` is the only
-    discriminator, so the search predicate can match a row that is not a
-    runbook this path wrote. Reconstructing one anyway is how a confident,
-    wrong ``source``/``case_id`` reaches the caller. Absence must read as
-    absence.
+    discriminator, so the search predicate can match a row that is not a runbook
+    this path wrote. Reconstructing one anyway is how a confident, wrong
+    ``source``/``case_id``/``case_title`` reaches the caller. Absence must read
+    as absence.
 
-    The row seeded here is byte-identical to a good one except that
-    ``runbook_source`` is missing, so the exclusion can only be due to that key.
+    Parametrized over EVERY identity key rather than one representative: the
+    reconstruction reads each key at its own call site, so a test covering one
+    of them leaves the others free to go back to a ``.get(default)`` — which is
+    the whole defect. Each seeded row is identical to a good one but for the one
+    missing key, so the exclusion can only be due to that key.
     """
     good = _runbook_metadata(ORG_A, "rb-good")
-    incomplete = {k: v for k, v in good.items() if k != "runbook_source"}
+    incomplete = {k: v for k, v in good.items() if k != missing_key}
 
     await store.seed("rb-good", good, _vec(0.5))
     await store.seed("rb-incomplete", incomplete, _vec(0.5))
@@ -320,7 +326,7 @@ async def test_a_runbook_row_missing_an_identity_key_is_skipped_not_invented(kb,
     )
 
     assert [r.runbook.report_id for r in found] == ["rb-good"], (
-        "the row missing its provenance key must be skipped — and the complete "
+        f"the row missing {missing_key!r} must be skipped — and the complete "
         "row must still come back, or this passes because nothing was returned"
     )
 
