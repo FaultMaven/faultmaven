@@ -1202,13 +1202,17 @@ def setup_middleware():
         # Redis degrades to the in-process FakeRedis instead. Protection needs
         # no external service — the limiter and the deduplicator resolve their
         # client from ``app.state``, which is populated either way — so the
-        # flag's contract never covered them. Gating the install on it meant a
-        # deployment could boot with an empty protection stack and one INFO
-        # line to show for it: the same shape fm#1023 closed for ``staging``,
-        # through a fourth door. It also meant no CI job exercised the app this
-        # function builds, because both pytest jobs set the flag in their
-        # workflow ``env`` (as does ``scripts/tests.py``), so the stack under
-        # test was ``[CORS, Logging, GZip, TrailingSlash]`` and nothing more.
+        # flag's contract never covered them.
+        #
+        # The measured consequence was a CI blind spot: every pytest job sets
+        # the flag in its workflow ``env`` (as does ``scripts/tests.py``), so
+        # the app under test carried ``[CORS, Logging, GZip, TrailingSlash]``
+        # and nothing more, and no job would have noticed the limiter being
+        # deleted. No deployment sets the flag today — it appears in CI and test
+        # tooling only — so the "boots unprotected" reading of this gate was
+        # latent rather than live. It was still the shape fm#1023 closed for
+        # ``staging``, reachable through one more door, which is why the gate
+        # is removed rather than narrowed.
         protection_info = setup_protection_middleware(
             app,
             environment=settings.server.environment,
