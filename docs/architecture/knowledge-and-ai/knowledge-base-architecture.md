@@ -565,15 +565,13 @@ The agent does not decide which KB tier to search — the federated search layer
 
 ### Runbook Similarity — No Second Collection
 
-Runbook similarity and deduplication at report-generation time (not investigative Q&A) is served by `RunbookKnowledgeBase` in `infrastructure/knowledge/runbook_kb.py`, which exposes `index_runbook()`, `index_document_derived_runbook()`, and `search_runbooks()` (pure vector, no hybrid search).
+Runbook similarity and deduplication at report-generation time (not investigative Q&A) is served by `RunbookKnowledgeBase` in `infrastructure/knowledge/runbook_kb.py`, which exposes `search_by_text()` / `search_runbooks()` (pure vector, no hybrid search). It is **read-only**: runbooks are published through `KnowledgeService.ingest_runbook`, the same writer as every other KB item, and dedup reads the chunk rows that writer stamps (fm#1030).
 
-It is **not** an exception to the single-collection design. `RunbookKnowledgeBase` is constructed over an injected `ChromaDBVectorStore` and never selects a collection, so it reads and writes whatever collection that store is bound to — `faultmaven_kb`, the same one every KB tier shares. Its `COLLECTION_NAME = "faultmaven_runbooks"` constant is **decorative**: it is logged once at init and referenced nowhere in any read or write path.
+It is **not** an exception to the single-collection design. `RunbookKnowledgeBase` is constructed over an injected `ChromaDBVectorStore` and never selects a collection, so it reads whatever collection that store is bound to — `faultmaven_kb`, the same one every KB tier shares.
 
-The separation is therefore metadata, exactly like the tiers above it: `{"report_type": "runbook"}` distinguishes runbook rows from document chunks, and `{"organization_id": <org>}` supplies the tenant isolation that a similarity query — which names no id and no owner — cannot get from the scope-`where`. Both predicates are mandatory on `search_runbooks`, and both keys are declared on `VectorMetadata` so `add_documents` normalization does not drop them. See [vector-retrieval-architecture.md §4](./vector-retrieval-architecture.md) for the clause shape.
+The separation is therefore metadata, exactly like the tiers above it: `{"document_type": "runbook"}` distinguishes runbook rows from other document chunks, and the caller-supplied KB scope filter (`build_kb_scope_filter`: global ∪ owned ∪ team-shared) supplies the isolation that a similarity query — which names no id and no owner — cannot get any other way. Both are mandatory on `search_runbooks`: a falsy scope filter is refused with a typed error, never queried unscoped. See [runbook-dedup.md](./runbook-dedup.md) for the full invariants and [vector-retrieval-architecture.md §4](./vector-retrieval-architecture.md) for the clause shape.
 
-Sharing a collection also means `search_runbooks` cannot return stored rows — it **rebuilds** a `CaseReport` from their metadata. Every field it reconstructs (`case_id`, `case_title`, `runbook_source`, and the document-driven `document_title`/`original_document_id`) is therefore declared on `VectorMetadata` too. A key the schema does not declare is now refused by `add_documents` rather than dropped in silence, because a dropped key does not read as missing at search time — it reads as the reconstruction's fallback value. Before #912 that made a document-driven runbook come back labelled `incident_driven`; the defect was latent rather than observed, since `index_runbook` still has no production caller, but it sat directly in the path any writer would take.
-
-`report_id` is deliberately *not* among them: it is the ChromaDB row id, which is where the search reads it from.
+Results are honest KB-item references (`item_id` = `parent_document_id`, `title`, `scope`, best-chunk `similarity_score`) — the search does not rebuild report rows, and it collapses a runbook's N chunks to one match.
 
 ### `VerificationLevel` (trust/authority system)
 

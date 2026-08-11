@@ -404,17 +404,17 @@ The table below is the operational expected-state checklist. For collection desi
 
 | Instance | Collection | Purpose |
 | --- | --- | --- |
-| `chroma-kb/` | `faultmaven_kb` | All KB documents (global/personal/team, metadata-filtered) **and** runbooks (`report_type == "runbook"`) |
+| `chroma-kb/` | `faultmaven_kb` | All KB documents (global/personal/team, metadata-filtered) **and** runbooks (`document_type == "runbook"`) |
 | `chroma-evidence/` | `case_<case_id>` | Per-case evidence vectors (one per active investigation) |
 
 `chroma-kb/` holds exactly one collection. Earlier revisions of this table also
 listed `faultmaven_runbooks` and `knowledge_items`; neither has ever existed as
-a ChromaDB collection. `RunbookKnowledgeBase.COLLECTION_NAME =
-"faultmaven_runbooks"` is a decorative constant appearing in one log line — the
-class is injected the `faultmaven_kb` store and never selects a collection — and
+a ChromaDB collection. `faultmaven_runbooks` was only ever a decorative constant
+(`RunbookKnowledgeBase` is injected the `faultmaven_kb` store and never selects
+a collection; the constant is gone as of fm#1030) — and
 `knowledge_items` is a **SQL table**. Runbooks are therefore distinguished from
-KB documents only by their `report_type` metadata value, which is why runbook
-search ANDs that predicate into every query (#912). An operator finding no
+KB documents only by their `document_type` metadata value, which is why runbook
+search ANDs that predicate into every query (fm#1030). An operator finding no
 `faultmaven_runbooks` collection is looking at correct state.
 
 ### Mapping UUID folders to collections

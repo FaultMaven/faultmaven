@@ -739,13 +739,13 @@ RESOLVED case
 **Runbook generation is never automatic.** Design: suggest first, evaluate on acceptance.
 
 1. **Agent offers at terminal transition** — For RESOLVED cases: DECIDE suggestions "Regenerate resolution summary" and "Generate runbook from this case." For CLOSED cases with an auto-generated summary: "Regenerate closure summary" only. For CLOSED cases that failed the substance check (no summary generated): no suggestions are offered — there's nothing to regenerate. Report viewing is via Dashboard link. No evaluation happens at suggestion time.
-2. **Evaluation on acceptance** — When the user accepts, the system checks readiness + deduplication. Four outcomes: `SUCCESS` (draft created), `NOT_SUITABLE` (not enough data), `EXISTING_COVERS` (similar runbook exists), `GENERATION_FAILED`.
+2. **Evaluation on acceptance** — When the user accepts, the system checks readiness + deduplication. Outcomes: `SUCCESS` (draft created; a ≥70% similar runbook is surfaced as a caveat for the user to judge), `NOT_SUITABLE` (not enough data), `GENERATION_FAILED`. A case resolved by *applying* an existing runbook is short-circuited by provenance (no new runbook needed); similarity alone never auto-suppresses generation (fm#1030).
 3. **User requests** — Via copilot chat or Dashboard KB page, same evaluation applies.
 
 **Readiness + Deduplication** (`evaluate_runbook_suggestion()` in `terminal_transitions.py`):
 
 1. **Content readiness** (`assess_runbook_readiness`) — Maps case data to the 7 canonical runbook sections. Requires problem definition + root cause with actionable fix (commands/steps). Returns READY, NEEDS_ENRICHMENT, or NOT_SUITABLE.
-2. **No similar runbook exists** — Vector search in ChromaDB via `RunbookKnowledgeBase`. ≥85% match → existing covers. 70-84% → suggest with caveat. <70% → no conflict.
+2. **No similar runbook exists** — Vector search in ChromaDB via `RunbookKnowledgeBase`, scoped to the case owner's KB read scope. A ≥70% best-chunk match → suggest with a caveat naming the runbook and score; <70% → no conflict. See [runbook-dedup.md](../knowledge-and-ai/runbook-dedup.md).
 
 **Auto-summary generation**: Terminal cases with investigation substance (evidence / hypotheses / completed milestones) get an auto-generated summary (`RESOLUTION_SUMMARY` or `CLOSURE_SUMMARY`), synthesized synchronously on terminal transition and rendered inline in the closure-turn chat reply. See [Investigation Lifecycle Logic §4.5.0](./investigation-lifecycle-logic.md#450-auto-generated-terminal-summary) for the canonical spec (content-focus table, substance gate, regen rules).
 
