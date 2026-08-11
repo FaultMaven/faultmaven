@@ -372,7 +372,7 @@ async def get_report_recommendations(
     """Get report generation recommendations.
 
     Uses similarity search to recommend:
-    - Whether to generate new runbook or reuse existing
+    - Whether a similar runbook already exists (surfaced for the user to judge)
     - Which report types are available for generation
 
     Args:
