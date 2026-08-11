@@ -309,6 +309,15 @@ async def test_an_indexed_runbook_round_trips_every_field_it_was_written_with(
     assert match.runbook.metadata.document_title == "PostgreSQL Operations Guide"
     assert match.runbook.metadata.original_document_id == "doc-77"
 
+    # The NON-identity fields the writer stamps, which also have ``.get()``
+    # defaults waiting behind them: dropping these three from the write dict
+    # left the whole suite green while reconstruction confidently invented
+    # ``domain="general"``, ``tags=[]`` and a ``generated_at`` of "now" — the
+    # same wrong-value-as-fact class, one field over.
+    assert match.runbook.metadata.domain == "database"
+    assert match.runbook.metadata.tags == ["postgresql"]
+    assert match.runbook.generated_at == "2026-01-01T00:00:00Z"
+
     # And the fabricated stand-ins are gone, named explicitly so a regression
     # that reinstates them fails on the symptom the issue was filed for.
     assert match.runbook.case_id != "unknown"
@@ -416,6 +425,40 @@ async def test_a_dissimilar_unreadable_row_does_not_manufacture_a_refusal(kb, st
     )
 
     assert found == []
+
+
+@pytest.mark.asyncio
+async def test_the_similarity_scale_is_pinned_between_its_endpoints(kb, store):
+    """The distance→similarity conversion, at a point that is not 0.0 or 1.0.
+
+    Every other test here sits at an endpoint: identical vectors (similarity 1.0
+    under any divisor) or far apart (below threshold either way). That leaves
+    ``1 - distance/2`` free to become ``1 - distance/3`` with the suite green —
+    and that constant sets the meaning of every "N% match" shown to a user and
+    of the 0.65/0.70/0.85 decision thresholds the callers apply.
+
+    Pinned by bracketing: a row whose true similarity is just above 0.65 must be
+    returned at the caller's real threshold, and excluded once the threshold
+    rises past it. A wrong divisor moves the score out of that bracket.
+    """
+    # Squared-L2 distance 1.0 -> similarity 0.5 under the real formula.
+    stored_vec = [1.0] + [0.0] * (_DIM - 1)
+    query_vec = [0.0] * _DIM
+    await store.seed("rb-mid", _runbook_metadata(ORG_A, "rb-1"), stored_vec)
+
+    found = await kb.search_runbooks(
+        query_embedding=query_vec, organization_id=ORG_A, min_similarity=0.45
+    )
+    assert [r.runbook.report_id for r in found] == ["rb-mid"]
+    assert found[0].similarity_score == pytest.approx(0.5), (
+        "the distance→similarity scale changed; every displayed match "
+        "percentage and every caller threshold shifts with it"
+    )
+
+    excluded = await kb.search_runbooks(
+        query_embedding=query_vec, organization_id=ORG_A, min_similarity=0.55
+    )
+    assert excluded == []
 
 
 @pytest.mark.asyncio

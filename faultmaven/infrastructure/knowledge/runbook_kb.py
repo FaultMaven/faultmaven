@@ -33,6 +33,12 @@ from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
 
+#: Error code for "the closest candidates could not be read". Named once and
+#: imported by both consumers rather than spelled as a literal in three files:
+#: the whole point of the code is that callers branch on it, so a typo on one
+#: side silently restores the misleading generic message.
+RESULTS_UNREADABLE_CODE = "RUNBOOK_RESULTS_UNREADABLE"
+
 
 class RunbookKnowledgeBase(BaseExternalClient):
     """
@@ -275,8 +281,15 @@ class RunbookKnowledgeBase(BaseExternalClient):
             # duplicate, and reporting the runner-up's score as the best
             # available match is a false negative dressed as a measurement
             # (#944).
-            unreadable = 0
-            best_unreadable = 0.0
+            #
+            # ONE list, appended from both handlers, rather than a count and a
+            # running maximum maintained separately in each. The duplicated form
+            # meant four bookkeeping statements where two would do, and a test
+            # covering one handler left the other free to drift: both the
+            # maximum and the count independently degraded to last-write-wins
+            # with the whole suite green. Derived once, below, from the only
+            # state either handler updates.
+            unreadable_scores: List[float] = []
 
             if not results or "ids" not in results or not results["ids"]:
                 logger.debug("No runbooks found matching query")
@@ -324,7 +337,10 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 # below. Narrow it to ``except KeyError`` and the ValueError
                 # escapes ``search_runbooks`` raw — past the typed
                 # ``except (KnowledgeBaseError, ...)`` at the route, turning a
-                # 503 refusal into a 500 with exception text.
+                # 503 refusal into a generic 500. (The 500's body is static, so
+                # nothing leaks — what is lost is the refusal itself: the caller
+                # can no longer tell "could not read the candidates" from any
+                # other server error, and the caveat naming the remedy is gone.)
                 #
                 # No defaults anywhere here. The ones that used to stand in did
                 # not read as "missing", they read as facts: ``case_id="unknown"``
@@ -336,8 +352,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     identity_case_title = metadata["case_title"]
                     identity_source = RunbookSource(metadata["runbook_source"])
                 except (KeyError, ValueError) as e:
-                    unreadable += 1
-                    best_unreadable = max(best_unreadable, similarity)
+                    unreadable_scores.append(similarity)
                     logger.warning(
                         f"Runbook {report_id} carries no usable identity "
                         f"({e!r}), skipping it",
@@ -397,8 +412,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     # them quietly and answering with the runner-up is the same
                     # false negative either way, so the reason we could not read
                     # a candidate does not change what it costs.
-                    unreadable += 1
-                    best_unreadable = max(best_unreadable, similarity)
+                    unreadable_scores.append(similarity)
                     logger.warning(
                         f"Failed to reconstruct runbook {report_id}, skipping it: {e!r}",
                         extra={"report_id": report_id, "similarity": similarity},
@@ -434,6 +448,8 @@ class RunbookKnowledgeBase(BaseExternalClient):
             best_readable = (
                 similar_runbooks[0].similarity_score if similar_runbooks else -1.0
             )
+            unreadable = len(unreadable_scores)
+            best_unreadable = max(unreadable_scores, default=0.0)
             if unreadable and best_unreadable > best_readable:
                 # States only what is established. ``unreadable`` counts
                 # candidates that MET the threshold and could not be read — not
@@ -446,7 +462,7 @@ class RunbookKnowledgeBase(BaseExternalClient):
                     f"refusing to report a best match from a result set whose "
                     f"strongest candidate was unreadable. Re-index the affected "
                     f"rows — retrying the search cannot clear this.",
-                    error_code="RUNBOOK_RESULTS_UNREADABLE",
+                    error_code=RESULTS_UNREADABLE_CODE,
                 )
 
             logger.info(

@@ -13,6 +13,7 @@ remediation, passed the entire API suite.
 import pytest
 
 from faultmaven.infrastructure.base_client import CircuitBreakerError
+from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.case.api.routes import _recommendation_unavailable_detail
 
@@ -26,7 +27,7 @@ def _unreadable() -> KnowledgeBaseError:
 
 def test_the_unreadable_refusal_does_not_tell_the_operator_to_retry():
     """Retrying cannot clear it, so the text must not suggest waiting."""
-    detail = _recommendation_unavailable_detail(_unreadable())
+    detail = _recommendation_unavailable_detail(True)
 
     assert "Retrying will not clear this." in detail
     assert "Retry once the knowledge base is available" not in detail
@@ -35,7 +36,7 @@ def test_the_unreadable_refusal_does_not_tell_the_operator_to_retry():
 
 def test_the_unreadable_refusal_does_not_claim_the_knowledge_base_is_down():
     """The knowledge base answered; it is the rows that are unreadable."""
-    detail = _recommendation_unavailable_detail(_unreadable())
+    detail = _recommendation_unavailable_detail(True)
 
     assert "knowledge base is available" in detail
     assert "search is unavailable" not in detail
@@ -50,7 +51,7 @@ def test_the_unreadable_refusal_does_not_claim_every_row_was_unreadable():
     true of the first version of the rule and false of the shipped one, and no
     test noticed.
     """
-    detail = _recommendation_unavailable_detail(_unreadable())
+    detail = _recommendation_unavailable_detail(True)
 
     assert "only runbooks it could not read" not in detail
     assert "closest-matching" in detail
@@ -70,15 +71,34 @@ def test_the_unreadable_refusal_does_not_claim_every_row_was_unreadable():
         CircuitBreakerError("circuit open", error_code="RUNBOOK_SEARCH_FAILED"),
     ],
 )
-def test_every_transient_cause_keeps_the_retry_advice(exc):
-    """The other causes ARE transient, and must keep the advice that fits them.
+def test_no_transient_cause_classifies_as_unreadable(exc):
+    """None of the transient causes carry the deterministic code.
 
-    Covers every exception type this handler catches, including the two that
-    arrive unwrapped from ``call_external``. An open breaker is transient by
-    construction — it closes on its own — so it must never inherit the
-    "retrying will not clear this" wording.
+    The route classifies with ``getattr(e, "error_code", None) ==
+    RESULTS_UNREADABLE_CODE`` and passes the verdict, so this pins the half that
+    depends on the exceptions themselves. It matters most for
+    ``CircuitBreakerError``, which really does define ``error_code`` (it
+    forwards the code of whatever tripped the breaker) — an open breaker is
+    transient by construction, so it must never inherit "retrying will not
+    clear this".
     """
-    detail = _recommendation_unavailable_detail(exc)
+    assert getattr(exc, "error_code", None) != RESULTS_UNREADABLE_CODE
 
+    detail = _recommendation_unavailable_detail(False)
     assert "Retry once the knowledge base is available" in detail
     assert "re-indexing" not in detail
+
+
+def test_the_code_the_route_branches_on_is_the_one_the_knowledge_base_raises():
+    """Both sides name the same constant, so the branch cannot rot silently.
+
+    A literal on each side would let a typo in one file restore the misleading
+    generic message with every test still green — the branch would simply never
+    match.
+    """
+    kb_error = _unreadable()
+
+    assert kb_error.error_code == RESULTS_UNREADABLE_CODE
+    assert _recommendation_unavailable_detail(
+        kb_error.error_code == RESULTS_UNREADABLE_CODE
+    ) != _recommendation_unavailable_detail(False)

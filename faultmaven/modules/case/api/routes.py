@@ -70,6 +70,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.infrastructure.base_client import CircuitBreakerError
+from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.infrastructure.observability.tracing import trace
 
 # TD-001: IReportStore removed - reports now accessed via CaseRepository
@@ -2912,7 +2913,7 @@ async def delete_case_data(
 # =============================================================================
 
 
-def _recommendation_unavailable_detail(exc: Exception) -> str:
+def _recommendation_unavailable_detail(unreadable: bool) -> str:
     """The 503 body for a runbook-recommendation refusal, chosen by cause.
 
     The remediation differs, so the message must too. Almost everything that
@@ -2926,8 +2927,15 @@ def _recommendation_unavailable_detail(exc: Exception) -> str:
     A module-level function rather than an inline branch so the wording is
     reachable from a test: the branch it replaced was the only part of that
     fix nothing exercised.
+
+    Takes a **bool**, not the exception. The caller classifies and passes the
+    verdict, so no exception object ever reaches the response-building path —
+    which is the invariant ``test_no_500_site_interpolates_the_exception``
+    exists to keep. Handing the exception to a helper looks harmless and is not:
+    the guard cannot see inside the call, so it must assume the text travels,
+    and one edit to this function would make that assumption true.
     """
-    if getattr(exc, "error_code", None) == "RUNBOOK_RESULTS_UNREADABLE":
+    if unreadable:
         # "The closest", not "only". The refusal fires whenever an unreadable
         # runbook outranks every readable one, which includes mixed result sets
         # where other runbooks were read perfectly well — so "found only
@@ -3049,14 +3057,21 @@ async def get_report_recommendations(
         # TimeoutError and CircuitBreakerError are caught alongside the typed
         # error because call_external raises those two unwrapped — they are
         # the commonest unavailability modes, and routing them to the generic
-        # handler below would answer 500 with raw exception text instead.
+        # handler below would answer a generic 500 instead. (Its body is static
+        # — no text leaks — but the refusal is erased: the caller loses both the
+        # 503 and the remediation this handler chooses below.)
         logger.warning(
             f"Report recommendations unavailable for case {case_id}: {e}",
             extra={"case_id": case_id},
             exc_info=True,
         )
+        # The comparison, not the exception, is what crosses into the response.
+        # ``ast.Compare`` yields a bool, so no exception text can travel through
+        # it — the same shape the leak guard recognises elsewhere in the app.
+        results_unreadable = getattr(e, "error_code", None) == RESULTS_UNREADABLE_CODE
         raise HTTPException(
-            status_code=503, detail=_recommendation_unavailable_detail(e)
+            status_code=503,
+            detail=_recommendation_unavailable_detail(results_unreadable),
         )
     except Exception as e:
         logger.error(

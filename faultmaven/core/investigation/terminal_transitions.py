@@ -46,6 +46,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
 )
+from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.modules.case.contracts import (
     Case,
     CaseAction,
@@ -1458,13 +1459,17 @@ async def evaluate_runbook_suggestion(
     # never reach it, or a dedup result gets stated that was never obtained
     # (#944).
     dedup_ran = False
-    # Why dedup did not complete, when it did not. Three causes with three
-    # different remedies, and saying the wrong one sends the user after the
-    # wrong thing: `dedup_failed` marks an actual error (transient — retry),
-    # `dedup_unreadable` marks the deterministic one (re-index; retrying never
-    # clears it). Neither set means the search simply never ran — no KB wired,
-    # no usable tenant, or too little case content to query with — where
-    # claiming anything is "unavailable" would be false.
+    # Why dedup did not complete, when it did not. Three causes, three
+    # remedies, and naming the wrong one sends the user after the wrong thing.
+    #
+    # The flags NEST rather than partition: `dedup_failed` means an exception
+    # reached us at all, and `dedup_unreadable` narrows that to the one
+    # deterministic cause (re-index; retrying never clears it), so
+    # `dedup_unreadable` implies `dedup_failed`. The branch ORDER below is what
+    # makes them behave as three cases — do not read either flag on its own as
+    # "transient". Neither set means the search simply never ran: no KB wired,
+    # no usable tenant, or too little case content to query with, where calling
+    # anything "unavailable" would be false.
     dedup_failed = False
     dedup_unreadable = False
     if not runbook_kb:
@@ -1513,9 +1518,7 @@ async def evaluate_runbook_suggestion(
             # up, and the closest runbooks are unreadable until someone
             # re-indexes them. Telling the user to wait would be wrong (#912).
             dedup_failed = True
-            dedup_unreadable = (
-                getattr(e, "error_code", None) == "RUNBOOK_RESULTS_UNREADABLE"
-            )
+            dedup_unreadable = getattr(e, "error_code", None) == RESULTS_UNREADABLE_CODE
             logger.warning(
                 f"Runbook deduplication check failed for case {case.case_id}: {e}.",
                 extra={"case_id": case.case_id, "metric": "runbook.dedup_failed"},
