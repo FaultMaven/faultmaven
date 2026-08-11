@@ -200,9 +200,16 @@ class TestChromaDBVectorStore:
         coverage assertion below makes adding a schema field force a decision
         here rather than silently widening the gap.
         """
+        # Every value is UNIQUE, and that is load-bearing rather than tidy: a
+        # cross-wire mutation is only detectable if the two fields it confuses
+        # hold different values. An earlier version of this sample reused
+        # "runbook" for document_type and report_type, and "doc-77" for
+        # original_document_id and parent_document_id — so swapping either pair
+        # in to_chroma_metadata passed the whole suite. The uniqueness assertion
+        # below keeps that from creeping back.
         sample = {
             "title": "Runbook: Connection pool exhaustion",
-            "document_type": "runbook",
+            "document_type": "operational_runbook",
             "tags": "postgresql,database",
             "source_url": "https://example.invalid/runbook",
             "scope": "global",
@@ -213,7 +220,7 @@ class TestChromaDBVectorStore:
             "case_title": "Pool exhaustion in prod",
             "runbook_source": "document_driven",
             "document_title": "PostgreSQL Operations Guide",
-            "original_document_id": "doc-77",
+            "original_document_id": "srcdoc-77",
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-02T00:00:00Z",
             "domain": "database",
@@ -224,8 +231,14 @@ class TestChromaDBVectorStore:
             "symptom_class": "resource_exhaustion",
             "chunk_index": 0,
             "total_chunks": 3,
-            "parent_document_id": "doc-77",
+            "parent_document_id": "parentdoc-99",
         }
+
+        values = [str(v) for v in sample.values()]
+        assert len(set(values)) == len(values), (
+            "two fields share a value, so a mutation swapping them would be "
+            "invisible here — give every field a distinct one"
+        )
 
         assert set(sample) == set(VectorMetadata.model_fields), (
             "every declared field needs a sample value here — a new field "
@@ -254,8 +267,8 @@ class TestChromaDBVectorStore:
         # emitter from one that cross-wires fields (`data["severity"] =
         # self.status`), and a declared key carrying another field's value is
         # the same "wrong value stated as fact" defect this issue is about —
-        # arguably worse, since the row looks complete. Every sample value is
-        # distinct so no swap can satisfy this by coincidence.
+        # arguably worse, since the row looks complete. The uniqueness
+        # assertion above is what makes this able to see a swap at all.
         expected = dict(sample)
         expected["tags"] = "postgresql,database"  # list -> comma-joined
         expected["created_at"] = "2026-01-01T00:00:00Z"  # datetime -> ISO-8601
@@ -313,6 +326,8 @@ class TestChromaDBVectorStore:
                 "report_type": "runbook",
                 "organization_id": "org-a",
                 "case_id": "case-42",
+                "tags": ["postgresql", "database"],
+                "case_title": None,
                 "chunk_index": "not-an-int",
             }
         )
@@ -322,6 +337,17 @@ class TestChromaDBVectorStore:
         assert stored["organization_id"] == "org-a"
         assert stored["report_type"] == "runbook"
         assert stored["case_id"] == "case-42"
+
+        # It must SANITIZE, not just copy. ChromaDB rejects list and None
+        # values outright, so a fallback that passed the dict through unchanged
+        # would fail the entire write — the opposite of the degradation it
+        # exists to provide. Asserting only the keys above cannot tell those
+        # two implementations apart.
+        assert stored["tags"] == "['postgresql', 'database']"
+        assert "case_title" not in stored
+        assert all(
+            isinstance(v, (str, int, float, bool)) for v in stored.values()
+        ), f"non-primitive survived the fallback: {stored}"
 
     @pytest.mark.asyncio
     async def test_search_success(self, vector_store):

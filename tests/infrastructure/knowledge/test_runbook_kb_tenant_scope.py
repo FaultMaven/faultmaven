@@ -410,6 +410,72 @@ async def test_a_dissimilar_unreadable_row_does_not_manufacture_a_refusal(kb, st
 
 
 @pytest.mark.asyncio
+async def test_an_all_unreadable_set_at_zero_similarity_still_refuses(kb, store):
+    """The "nothing readable" sentinel must sit BELOW every real score.
+
+    ``best_readable`` falls back to a sentinel when nothing was reconstructed,
+    and the comparison is strict, so a sentinel of ``0.0`` would tie with a
+    genuine zero-similarity row and let an all-unreadable set return ``[]`` —
+    the affirmative negative, at the one score where the guard is easiest to
+    get wrong. Only a sentinel below the 0.0 floor holds here.
+
+    Both production callers use 0.65, so this pins the method's contract at the
+    boundary rather than a live path — which is exactly where an untested edge
+    would otherwise sit.
+    """
+    incomplete = {
+        k: v
+        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
+        if k != "runbook_source"
+    }
+    # Orthogonal to the query: cosine distance 1.0 -> similarity 0.0.
+    orthogonal = [1.0] + [0.0] * (_DIM - 1)
+    await store.seed("rb-zero-similarity", incomplete, orthogonal)
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=[0.0, 1.0] + [0.0] * (_DIM - 2),
+            organization_id=ORG_A,
+            min_similarity=0.0,
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+async def test_the_refusal_states_the_right_numbers(kb, store):
+    """The message's own facts are asserted, not just its error code.
+
+    This whole issue is about a wrong value stated as fact, so the error raised
+    to prevent that must not itself carry one. Asserting only ``error_code``
+    lets the count and the score drift to anything: swapping ``best_unreadable``
+    for ``best_readable`` in the f-string changes nothing observable.
+
+    Two unreadable candidates above one readable row — the message must say 2,
+    and must quote the unreadable high-water mark, not the readable score.
+    """
+    for name, seed in (("rb-bad-a", 0.5), ("rb-bad-b", 0.45)):
+        bad = {
+            k: v
+            for k, v in _runbook_metadata(ORG_A, name).items()
+            if k != "runbook_source"
+        }
+        await store.seed(name, bad, _vec(seed))
+    await store.seed("rb-readable", _runbook_metadata(ORG_A, "rb-ok"), _vec(-0.4))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    message = str(excinfo.value)
+    assert "2 runbook(s)" in message, f"wrong unreadable count: {message}"
+    # The perfect match is unreadable, so the high-water mark is 100%; the
+    # readable row sits far below and must not be the number reported.
+    assert "100%" in message, f"quoted the wrong similarity: {message}"
+
+
+@pytest.mark.asyncio
 async def test_an_unreadable_result_set_is_refused_without_retrying(kb, store):
     """The refusal must cost ONE query, not three, and no breaker credit.
 
@@ -496,6 +562,42 @@ async def test_the_reason_a_candidate_is_unreadable_does_not_change_the_verdict(
     break_it(strong)
     await store.seed("rb-strong-unreadable", strong, _vec(0.5))
     await store.seed("rb-weak-readable", _runbook_metadata(ORG_A, "rb-2"), _vec(-0.4))
+
+    with pytest.raises(KnowledgeBaseError) as excinfo:
+        await kb.search_runbooks(
+            query_embedding=_vec(0.5), organization_id=ORG_A, min_similarity=0.0
+        )
+
+    assert excinfo.value.error_code == "RUNBOOK_RESULTS_UNREADABLE"
+
+
+@pytest.mark.asyncio
+async def test_the_strongest_unreadable_row_decides_not_the_last_one_seen(kb, store):
+    """Several unreadable candidates: the STRONGEST is what matters.
+
+    ChromaDB returns matches in descending similarity, so the *weakest*
+    unreadable row is processed last. Tracking "the last unreadable score" —
+    rather than the maximum — therefore reads as correct on every single-bad-row
+    test while silently comparing the wrong number, and the guard degrades back
+    into returning a mediocre readable row as the best available match.
+
+    Seeded here: a perfect-match unreadable row, a mid readable row, and a
+    distant unreadable row processed after both. Only a running maximum
+    refuses.
+    """
+    strong_bad = {
+        k: v
+        for k, v in _runbook_metadata(ORG_A, "rb-1").items()
+        if k != "runbook_source"
+    }
+    weak_bad = {
+        k: v
+        for k, v in _runbook_metadata(ORG_A, "rb-3").items()
+        if k != "runbook_source"
+    }
+    await store.seed("rb-strong-unreadable", strong_bad, _vec(0.5))
+    await store.seed("rb-mid-readable", _runbook_metadata(ORG_A, "rb-2"), _vec(0.1))
+    await store.seed("rb-distant-unreadable", weak_bad, _vec(-0.5))
 
     with pytest.raises(KnowledgeBaseError) as excinfo:
         await kb.search_runbooks(

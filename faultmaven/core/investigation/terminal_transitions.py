@@ -1458,6 +1458,7 @@ async def evaluate_runbook_suggestion(
     # never reach it, or a dedup result gets stated that was never obtained
     # (#944).
     dedup_ran = False
+    dedup_unreadable = False
     if not runbook_kb:
         logger.warning(
             f"Runbook deduplication skipped for case {case.case_id}: "
@@ -1498,6 +1499,14 @@ async def evaluate_runbook_suggestion(
                     )
         except Exception as e:
             # `dedup_ran` stays False, so the caveat branch below owns this.
+            # `dedup_unreadable` separates the one cause whose remedy differs:
+            # everything else here is a transient failure that retrying clears,
+            # but RUNBOOK_RESULTS_UNREADABLE means the search ran, the KB is
+            # up, and the closest runbooks are unreadable until someone
+            # re-indexes them. Telling the user to wait would be wrong (#912).
+            dedup_unreadable = (
+                getattr(e, "error_code", None) == "RUNBOOK_RESULTS_UNREADABLE"
+            )
             logger.warning(
                 f"Runbook deduplication check failed for case {case.case_id}: {e}.",
                 extra={"case_id": case.case_id, "metric": "runbook.dedup_failed"},
@@ -1516,11 +1525,15 @@ async def evaluate_runbook_suggestion(
     # the final SUGGEST below honest: it means "checked, nothing similar
     # found", which an unchecked case is not entitled to.
     if not dedup_ran:
+        cause = (
+            "the closest-matching runbooks could not be read and need " "re-indexing"
+            if dedup_unreadable
+            else "the knowledge base search is unavailable"
+        )
         caveats.append(
-            "I could not check whether a similar runbook already exists — the "
-            "knowledge base search is unavailable. Creating one now risks "
-            "duplicating existing content; you may want to check the "
-            "Dashboard Knowledge Base first."
+            f"I could not check whether a similar runbook already exists — "
+            f"{cause}. Creating one now risks duplicating existing content; "
+            f"you may want to check the Dashboard Knowledge Base first."
         )
 
     if caveats:

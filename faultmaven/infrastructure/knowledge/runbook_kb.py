@@ -313,15 +313,18 @@ class RunbookKnowledgeBase(BaseExternalClient):
                 # values before ChromaDB ever saw them (#912). The handler below
                 # turns a missing key into a logged skip, which is the honest
                 # answer.
-                # Identity is resolved FIRST, and presence and validity are
-                # judged together. A key that is absent and a key holding a
-                # value this code cannot interpret (``runbook_source="manual"``)
-                # mean the same thing — the row was not written by this path —
-                # and they must be counted the same way. Judging them on
-                # different axes puts the invalid case in the generic handler
-                # below, which does not count it, so a result set of entirely
-                # foreign rows would collapse back to ``[]`` and be read as "no
-                # similar runbook exists" (#944).
+                # Identity is resolved FIRST, catching absence and
+                # uninterpretability together: a missing ``runbook_source`` and
+                # a ``runbook_source="manual"`` both mean "not written by this
+                # path", and both must count towards ``unreadable``.
+                #
+                # Since every unreadable candidate now counts regardless of
+                # cause, this split is about the LOG LINE, not the arithmetic —
+                # the identity case can name which stamps the row carries,
+                # which a bare ``CaseReport`` validation error cannot. Narrowing
+                # it back to ``except KeyError`` is an equivalent mutation
+                # today; it stops being one the moment the two branches diverge
+                # again, which is why they stay explicit.
                 #
                 # No defaults anywhere here. The ones that used to stand in did
                 # not read as "missing", they read as facts: ``case_id="unknown"``
