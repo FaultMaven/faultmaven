@@ -424,6 +424,44 @@ async def test_the_confirm_payload_dispatches_with_dedup_confirmed():
 
 
 @pytest.mark.asyncio
+async def test_the_plain_generate_payload_still_stops_on_a_similar_match(
+    ready_case, monkeypatch
+):
+    """The backstop's PRIMARY entry, pinned end-to-end through the dispatch.
+
+    The stop tests above call ``_handle_runbook_creation`` directly, so a
+    one-line regression at the dispatch site — the plain "Generate a runbook"
+    payload passing ``dedup_confirmed=True``, or the parameter's default
+    flipping — would silently restore same-turn duplicate creation with every
+    one of them green (fm#1030 review, survivor M-D). This dispatches the
+    ordinary payload through ``_process_terminal_turn`` and asserts the stop
+    actually happens: nothing created, the similar-match message returned.
+    """
+    from faultmaven.core.investigation.milestone_engine import (
+        GENERATE_RUNBOOK_PAYLOAD,
+    )
+    from faultmaven.modules.case.contracts import CaseState
+
+    engine = _engine_for_creation()
+    engine.runbook_kb = _similar_match_kb()
+    ready_case.state = CaseState.RESOLVED
+
+    monkeypatch.setattr(
+        "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin",
+        lambda case: None,
+    )
+
+    with patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024)):
+        result = await engine._process_terminal_turn(
+            ready_case, GENERATE_RUNBOOK_PAYLOAD, metadata={}
+        )
+
+    engine._run_runbook_conversion.assert_not_called()
+    assert "OOMKilled recovery" in result["agent_response"]
+    assert "Creating your runbook draft" not in result["agent_response"]
+
+
+@pytest.mark.asyncio
 async def test_the_recommendation_service_never_answers_reuse():
     """The route-side half of the same decision: a 0.99 best match yields
     ``review_or_generate`` with an honest KB-item ref, never ``reuse`` — and
