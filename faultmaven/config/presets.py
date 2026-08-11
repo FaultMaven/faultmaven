@@ -418,8 +418,25 @@ def detect_zero_config_preset() -> Optional[str]:
     if os.getenv("REDIS_HOST") or os.getenv("CHROMADB_URL"):
         return None
 
-    # If in production environment, don't auto-apply local preset
-    if os.getenv("ENVIRONMENT", "").lower() == "production":
+    # A deployed environment must not be silently reclassified as a dev box.
+    #
+    # The preset this would auto-apply is ``local``, and it carries
+    # ``DEBUG=true``, ``SANITIZE_PII=false``, ``PROTECTION_ENABLED=false`` and
+    # ``LOG_LEVEL=DEBUG`` — a posture that is acceptable on a genuine
+    # development machine and nowhere else. Naming only ``production`` here made
+    # the gate an enumeration of one: ``ENVIRONMENT=staging`` on an
+    # under-configured box (no LLM key yet, no Redis) fell straight through to
+    # the local preset, which is the same shape of hole fm#1023 fixed one layer
+    # up — a deployed environment nobody classified getting development's
+    # settings by omission.
+    #
+    # So the gate is now the inverse: any *explicitly named* environment other
+    # than ``development`` declines the auto-preset, including a value nobody
+    # recognises. An operator who names an environment has classified the box,
+    # and "merely under-configured" is not a request for local defaults. Unset
+    # still means zero-config, which is the whole point of this path.
+    environment = os.getenv("ENVIRONMENT", "").strip().lower()
+    if environment and environment != "development":
         return None
 
     # Default to local preset for zero-config experience

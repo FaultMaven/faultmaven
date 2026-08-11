@@ -281,9 +281,13 @@ class TestConfigurationDefaults:
         # Check class defaults directly (before environment override)
         assert ProtectionSettings.model_fields["protection_enabled"].default is False
         assert ProtectionSettings.model_fields["sanitize_pii"].default is False
-        assert (
-            ProtectionSettings.model_fields["basic_protection_enabled"].default is False
-        )
+        # `basic_protection_enabled` is deliberately absent: it gated the rate
+        # limiting and deduplication middleware, defaulted to False, and was
+        # only ever read on a load path that `ENVIRONMENT=staging` fell into —
+        # so staging shipped with no request protection at all (fm#1023). The
+        # middleware is now installed from the presets unconditionally, and this
+        # is not an enterprise toggle to leave off by default.
+        assert "basic_protection_enabled" not in ProtectionSettings.model_fields
 
     def test_community_performance_monitoring_defaults(self, monkeypatch):
         """Verify performance monitoring is disabled by default (code defaults)."""

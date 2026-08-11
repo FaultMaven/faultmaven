@@ -7,10 +7,10 @@ self-assembled URL bypassed the password lookup entirely: under cloud's discrete
 credential config the rate limiter authenticated anonymously and rate limiting
 silently stopped working.
 
-The property pinned here is not "one loader was fixed" but "no loader assembles
-a URL": every ``ProtectionSettings`` producer leaves ``redis_url`` as ``None``
-under discrete config, so resolution falls to the central factory — which does
-read ``REDIS_PASSWORD``.
+The property pinned here is not "one loader was fixed" but "no producer
+assembles a URL": every ``ProtectionSettings`` producer leaves ``redis_url`` as
+``None`` under discrete config, so resolution falls to the central factory —
+which does read ``REDIS_PASSWORD``.
 """
 
 import logging
@@ -23,7 +23,6 @@ from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
 from faultmaven.config.protection import (
     get_development_protection_settings,
     get_production_protection_settings,
-    load_protection_settings,
     validate_protection_settings,
 )
 from faultmaven.infrastructure.redis_client import RedisClientFactory
@@ -52,7 +51,6 @@ _REDIS_KEYS = ("REDIS_URL", "REDIS_HOST", "REDIS_PORT", "REDIS_DB", "REDIS_PASSW
 # Every producer of a ProtectionSettings — the property must hold for all of
 # them, not for whichever one a single test happened to pick.
 _LOADERS = (
-    load_protection_settings,
     get_development_protection_settings,
     get_production_protection_settings,
 )
@@ -72,8 +70,6 @@ def _apply_env(env: dict) -> None:
 def cloud_discrete_credentials():
     """Cloud-shaped config: discrete host/port/db/password, no REDIS_URL."""
     with patch.dict(os.environ, {}, clear=False):
-        # The middleware gate, not the PII gate — see the gate tests below.
-        os.environ["BASIC_PROTECTION_ENABLED"] = "true"
         os.environ.pop("PROTECTION_ENABLED", None)
         _apply_env(
             {
@@ -99,34 +95,84 @@ def test_no_loader_assembles_a_redis_url(cloud_discrete_credentials, loader):
     )
 
 
-@pytest.mark.parametrize("loader", _LOADERS, ids=lambda f: f.__name__)
-def test_a_blank_redis_url_reads_as_unset_on_every_loader(loader):
-    """A present-but-empty REDIS_URL means "not configured", on all three paths.
+def test_a_blank_redis_url_reads_as_unset_at_the_factory():
+    """A present-but-empty ``REDIS_URL`` means "not configured", not ``''``.
 
-    An unset ConfigMap key yields ``''``, not absence. The settings loader
-    lacked the ``or None`` the environment loader has, so the three producers
-    disagreed about the same deployment: two said ``None``, one said ``''``.
-    Every consumer happens to test truthiness today, so nothing broke — but the
-    invariant this branch exists to hold is "no loader carries a Redis URL it
-    was not given", and an empty string is not a URL.
+    An unset ConfigMap key yields ``''``, not absence. The behaviour is not the
+    presets' — both hardcode ``redis_url=None``, so asserting it of them checks
+    a constant. It lives in ``RedisClientFactory._build_config``, which decides
+    URL-vs-discrete on truthiness, and the near-miss is what matters: ``''`` must
+    fall through to the discrete credentials rather than reach
+    ``redis.from_url('')``, which would drop the password lookup entirely — the
+    fm#897 failure mode, with a blank string standing in for a self-assembled
+    URL.
     """
     with patch.dict(os.environ, {}, clear=False):
-        os.environ["BASIC_PROTECTION_ENABLED"] = "true"
-        _apply_env({"REDIS_URL": "", "REDIS_HOST": _HOST, "REDIS_PASSWORD": _PASSWORD})
+        _apply_env(
+            {
+                "REDIS_URL": "",
+                "REDIS_HOST": _HOST,
+                "REDIS_PORT": _PORT,
+                "REDIS_DB": _DB,
+                "REDIS_PASSWORD": _PASSWORD,
+            }
+        )
         try:
-            settings = loader()
+            # The blank really did survive as far as settings — otherwise this
+            # test passes against a value that was never empty to begin with.
+            from faultmaven.config.settings import get_settings
 
-            assert settings.redis_url is None, (
-                f"{loader.__name__} carried a blank REDIS_URL forward as "
-                f"{settings.redis_url!r} instead of treating it as unset"
-            )
+            assert get_settings().database.redis_url == ""
 
-            # And the password still resolves centrally, as it must.
-            config = RedisClientFactory._build_config(
-                settings.redis_url, None, None, None
+            config = RedisClientFactory._build_config(None, None, None, None)
+
+            assert not config["url"], (
+                f"a blank REDIS_URL was carried forward as {config['url']!r}; "
+                "an explicit URL short-circuits the password lookup"
             )
-            assert config["password"] == _PASSWORD
             assert config["host"] == _HOST
+            assert config["port"] == int(_PORT)
+            assert config["db"] == int(_DB)
+            assert config["password"] == _PASSWORD
+        finally:
+            reset_settings()
+
+
+def test_a_blank_redis_url_is_never_handed_to_from_url():
+    """And the consequence, at the construction surface that would break.
+
+    ``_build_config`` returning a falsy URL is only half the property: the
+    branch that acts on it must take the discrete path. Pinned by watching the
+    two constructors — ``redis.from_url('')`` raises on a real client, so a
+    regression here is an outage, not a silent weakening.
+    """
+    from unittest.mock import MagicMock
+
+    import faultmaven.infrastructure.redis_client as redis_client_module
+
+    with patch.dict(os.environ, {}, clear=False):
+        _apply_env(
+            {
+                "REDIS_URL": "",
+                "REDIS_HOST": _HOST,
+                "REDIS_PORT": _PORT,
+                "REDIS_DB": _DB,
+                "REDIS_PASSWORD": _PASSWORD,
+            }
+        )
+        try:
+            fake_redis_module = MagicMock()
+            with (
+                patch.object(redis_client_module, "redis", fake_redis_module),
+                patch.object(redis_client_module, "REDIS_AVAILABLE", True),
+            ):
+                RedisClientFactory.create_client()
+
+            fake_redis_module.from_url.assert_not_called()
+            fake_redis_module.Redis.assert_called_once()
+            kwargs = fake_redis_module.Redis.call_args.kwargs
+            assert kwargs["host"] == _HOST
+            assert kwargs["password"] == _PASSWORD
         finally:
             reset_settings()
 
@@ -158,89 +204,27 @@ def test_password_reaches_the_client_config_through_every_loader(
 def test_special_character_password_survives_intact(cloud_discrete_credentials):
     """No encoding, no escaping, no truncation at any URL-special character.
 
-    The discrete path never interpolates the password into a URL, so it must
-    arrive byte-identical (fm#898).
+    ``None`` is passed literally, which is what selects the branch under test:
+    with no explicit URL, ``_build_config`` takes the discrete-credentials path
+    and never interpolates the password into a URL, so it must arrive
+    byte-identical (fm#898). Routing that ``None`` through
+    ``get_production_protection_settings().redis_url`` used to dress it up as a
+    chain, but that field is hardcoded ``None`` — the call added no coverage and
+    read as though the preset were being exercised. That the presets really do
+    yield ``None`` is pinned by ``test_no_loader_assembles_a_redis_url``, and the
+    full preset→middleware→factory chain by
+    ``test_password_reaches_the_client_config_through_every_loader``.
     """
-    config = RedisClientFactory._build_config(
-        load_protection_settings().redis_url, None, None, None
-    )
+    config = RedisClientFactory._build_config(None, None, None, None)
 
     assert config["password"] == _PASSWORD
     for special in "@:/#?%":
         assert special in config["password"]
 
 
-def test_environment_fallback_loader_assembles_nothing(
-    cloud_discrete_credentials, monkeypatch
-):
-    """The emergency path is a parallel source too, and must stay empty.
-
-    ``_load_from_environment`` runs when ``get_settings()`` itself raises, so it
-    cannot consult settings — but "cannot consult settings" is not a licence to
-    hand-assemble a URL from REDIS_HOST/REDIS_PORT and drop the password.
-    """
-
-    def _broken_settings():
-        raise RuntimeError("settings construction failed")
-
-    monkeypatch.setattr("faultmaven.config.settings.get_settings", _broken_settings)
-
-    settings = load_protection_settings()
-    assert settings.redis_url is None
-
-    # Settings work again by the time the factory resolves the connection.
-    monkeypatch.undo()
-    config = RedisClientFactory._build_config(settings.redis_url, None, None, None)
-    assert config["password"] == _PASSWORD
-    assert config["host"] == _HOST
-
-
-def test_environment_fallback_treats_an_empty_redis_url_as_unset(monkeypatch):
-    """``or None``: an empty REDIS_URL must not read as "explicitly configured"."""
-
-    def _broken_settings():
-        raise RuntimeError("settings construction failed")
-
-    monkeypatch.setattr("faultmaven.config.settings.get_settings", _broken_settings)
-
-    with patch.dict(os.environ, {}, clear=False):
-        _apply_env({"REDIS_URL": "", "REDIS_HOST": _HOST})
-        try:
-            assert load_protection_settings().redis_url is None
-        finally:
-            reset_settings()
-
-
-@pytest.mark.parametrize(
-    "env_value,expected", [("false", False), ("true", True), (None, True)]
-)
-def test_fail_open_policy_comes_from_one_key_on_both_paths(
-    cloud_discrete_credentials, monkeypatch, env_value, expected
-):
-    """``PROTECTION_RATE_LIMIT_FAIL_OPEN`` governs both loaders.
-
-    The settings path used to hardcode ``True`` and ignore the operator.
-    """
-    if env_value is None:
-        monkeypatch.delenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", raising=False)
-    else:
-        monkeypatch.setenv("PROTECTION_RATE_LIMIT_FAIL_OPEN", env_value)
-    reset_settings()
-
-    # Settings path.
-    assert load_protection_settings().fail_open_on_redis_error is expected
-
-    # Environment path (settings construction failed).
-    monkeypatch.setattr(
-        "faultmaven.config.settings.get_settings",
-        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-    assert load_protection_settings().fail_open_on_redis_error is expected
-
-
 @pytest.mark.parametrize(
     "loader",
-    [load_protection_settings, get_development_protection_settings],
+    [get_development_protection_settings],
     ids=lambda f: f.__name__,
 )
 @pytest.mark.parametrize(
@@ -249,10 +233,10 @@ def test_fail_open_policy_comes_from_one_key_on_both_paths(
 def test_the_general_loaders_honour_the_fail_open_key_in_both_directions(
     cloud_discrete_credentials, monkeypatch, loader, env_value, expected
 ):
-    """The general load paths must not hardcode the degrade policy.
+    """The development preset must not hardcode the degrade policy.
 
-    Both directions, so a loader that pinned the *default* fails too. Production
-    is excluded on purpose and has its own test below — it is the one loader
+    Both directions, so a preset that pinned the *default* fails too. Production
+    is excluded on purpose and has its own test below — it is the one preset
     that pins the policy, and it pins it closed.
     """
     if env_value is None:
@@ -313,24 +297,19 @@ def test_hardening_pii_redaction_does_not_make_rate_limiting_fail_closed(
 
     assert get_settings().protection.fail_open is False
 
-    # ... and the rate-limiting policy is untouched, on both load paths.
-    assert load_protection_settings().fail_open_on_redis_error is True
-
-    monkeypatch.setattr(
-        "faultmaven.config.settings.get_settings",
-        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-    assert load_protection_settings().fail_open_on_redis_error is True
+    # ... and the rate-limiting policy is untouched.
+    assert get_development_protection_settings().fail_open_on_redis_error is True
 
 
 # --------------------------------------------------------------------------- #
-# Which field gates the protection MIDDLEWARE
+# What gates the protection MIDDLEWARE
 #
-# `_load_from_settings` read `settings.security.protection_enabled`, a field on
-# no settings section at all, so it raised AttributeError on every call and this
-# path was dead. The replacement must be the basic-protection gate, not the
-# PII/Presidio gate: `redaction.py` branches on `protection_enabled`, and the
-# admin API reports it as `pii_redaction_enabled`.
+# It is ``ProtectionSettings.enabled``, and never the PII/Presidio gate:
+# `redaction.py` branches on `settings.protection.protection_enabled`, and the
+# admin API reports that field as `pii_redaction_enabled`. Both presets pin
+# ``enabled=True``, so an operator turning PII redaction off cannot take rate
+# limiting and deduplication with it (fm#1023 removed the settings-driven loader
+# that used to make this configurable, and silently off by default).
 # --------------------------------------------------------------------------- #
 
 
@@ -342,110 +321,109 @@ def _install_middleware(loader_settings):
     return setup_protection_middleware(FastAPI(), settings=loader_settings)
 
 
-def test_middleware_gate_is_basic_protection_not_pii_redaction(monkeypatch):
+@pytest.mark.parametrize("loader", _LOADERS, ids=lambda f: f.__name__)
+def test_turning_pii_redaction_off_leaves_the_middleware_installed(monkeypatch, loader):
     """Turning PII redaction off must not remove rate limiting and dedup."""
-    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "true")
     monkeypatch.setenv("PROTECTION_ENABLED", "false")  # PII/Presidio off
     reset_settings()
 
-    settings = load_protection_settings()
-    assert settings.enabled is True
+    try:
+        # The key really is live on the redaction side — otherwise this asserts
+        # nothing about a coupling that could exist.
+        from faultmaven.config.settings import get_settings
+
+        assert get_settings().protection.protection_enabled is False
+
+        settings = loader()
+        assert settings.enabled is True
+
+        setup_info = _install_middleware(settings)
+        assert setup_info["protection_enabled"] is True
+        assert "rate_limiting" in setup_info["middleware_added"]
+        assert "deduplication" in setup_info["middleware_added"]
+    finally:
+        # ``monkeypatch`` restores the env var but not the settings singleton
+        # this test built from it: without this, every later test in the session
+        # reads a ``get_settings()`` frozen with PII redaction off. Same
+        # try/finally the ``REDIS_URL`` tests above use.
+        reset_settings()
+
+
+def test_an_explicitly_disabled_settings_object_installs_nothing():
+    """The ``enabled`` gate is still live for a caller that passes its own.
+
+    No preset produces this any more, but ``setup_protection_middleware``
+    branches on it, and a caller handing it a disabled settings object must get
+    a bare app rather than a half-installed stack.
+    """
+    settings = get_production_protection_settings()
+    settings.enabled = False
 
     setup_info = _install_middleware(settings)
-    assert setup_info["protection_enabled"] is True
-    assert "rate_limiting" in setup_info["middleware_added"]
-    assert "deduplication" in setup_info["middleware_added"]
 
-
-def test_middleware_gate_honours_basic_protection_disabled(monkeypatch):
-    """And the converse: PII on does not force the middleware on."""
-    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "false")
-    monkeypatch.setenv("PROTECTION_ENABLED", "true")  # PII/Presidio on
-    reset_settings()
-
-    settings = load_protection_settings()
-    assert settings.enabled is False
-
-    setup_info = _install_middleware(settings)
     assert setup_info["protection_enabled"] is False
     assert setup_info["middleware_added"] == []
 
 
-def test_disabled_protection_is_announced_not_silent(monkeypatch, caplog):
+def test_disabled_protection_is_announced_not_silent(caplog):
     """ "No protection middleware anywhere" must not be a silent state.
 
-    ``basic_protection_enabled`` defaults to False and nothing sets it, so the
-    settings path installs no rate limiting, no deduplication and no timeouts —
-    and said nothing about it. Whether the default should flip is the owner's
-    call; being legible in the logs is not.
+    fm#1023 was exactly this state — an empty middleware stack on every staging
+    box — and what made it survive was that nothing said so at a level anyone
+    reads. The loader that used to carry the announcement was removed with the
+    fix; the announcement belongs to the branch that installs nothing, which is
+    here. Whether a deployment may disable protection is the owner's call; being
+    legible about it is not.
     """
-    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "false")
-    reset_settings()
+    settings = get_production_protection_settings()
+    settings.enabled = False
 
-    with caplog.at_level(logging.WARNING, logger="faultmaven.config.protection"):
-        settings = load_protection_settings()
+    with caplog.at_level(logging.WARNING, logger="faultmaven.api.protection"):
+        setup_info = _install_middleware(settings)
 
-    assert settings.enabled is False
+    assert setup_info["middleware_added"] == []
 
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING and r.name == "faultmaven.api.protection"
+    ]
     assert any(
-        "basic_protection_enabled" in message and "BASIC_PROTECTION_ENABLED" in message
+        "rate limiting" in message.lower() and "deduplication" in message.lower()
         for message in warnings
-    ), f"no warning naming the field and the env var; got {warnings}"
+    ), f"nothing warned that both protections were skipped; got {warnings}"
 
 
-def test_enabled_protection_does_not_warn(monkeypatch, caplog):
+def test_installed_protection_does_not_warn(caplog):
     """The converse, so the warning stays a signal rather than constant noise."""
-    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "true")
-    reset_settings()
+    settings = get_production_protection_settings()
+    assert settings.enabled is True
 
-    with caplog.at_level(logging.WARNING, logger="faultmaven.config.protection"):
-        assert load_protection_settings().enabled is True
+    with caplog.at_level(logging.WARNING, logger="faultmaven.api.protection"):
+        setup_info = _install_middleware(settings)
 
+    assert setup_info["protection_enabled"] is True
     assert [
         r.getMessage()
         for r in caplog.records
-        if r.levelno == logging.WARNING and "basic_protection_enabled" in r.getMessage()
+        if r.levelno == logging.WARNING and r.name == "faultmaven.api.protection"
     ] == []
 
 
-def test_environment_fallback_uses_the_same_middleware_gate(monkeypatch):
-    """The emergency path must not gate middleware on the PII key either."""
-    monkeypatch.setattr(
-        "faultmaven.config.settings.get_settings",
-        lambda: (_ for _ in ()).throw(RuntimeError("boom")),
-    )
-
-    monkeypatch.setenv("PROTECTION_ENABLED", "false")
-    monkeypatch.delenv("BASIC_PROTECTION_ENABLED", raising=False)
-    assert load_protection_settings().enabled is True
-
-    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "false")
-    assert load_protection_settings().enabled is False
-
-
-def test_the_dead_settings_path_is_alive(monkeypatch):
-    """Regression: `_load_from_settings` raised AttributeError on every call.
-
-    Anything that reintroduces a nonexistent settings attribute here silently
-    demotes every caller to its error branch, which is how this went unnoticed.
-    """
-    monkeypatch.setenv("BASIC_PROTECTION_ENABLED", "true")
-    reset_settings()
-
-    settings = load_protection_settings()  # must not raise
-
-    assert settings.enabled is True
-    assert settings.redis_key_prefix == "faultmaven"  # the settings-path value
-
-
 def test_an_explicitly_configured_redis_url_is_still_honoured():
-    """``None`` is the default, not a ceiling: an operator's REDIS_URL wins."""
+    """``None`` is not a ceiling: an operator's REDIS_URL still wins.
+
+    The presets hand the factory ``None``, which means "resolve centrally" and
+    not "ignore what the operator configured" — the factory falls through to
+    ``settings.database.redis_url``.
+    """
     explicit = "redis://:urlpw@explicit-host:6390/4"
     with patch.dict(os.environ, {}, clear=False):
         _apply_env({"REDIS_URL": explicit, "REDIS_HOST": _HOST})
         try:
-            assert load_protection_settings().redis_url == explicit
+            assert get_production_protection_settings().redis_url is None
+            config = RedisClientFactory._build_config(None, None, None, None)
+            assert config["url"] == explicit
         finally:
             reset_settings()
 
@@ -456,9 +434,12 @@ def test_validation_accepts_a_none_redis_url_so_middleware_is_installed(
 ):
     """Guards the "no protection at all" hazard.
 
-    ``setup_protection_middleware`` returns early when validation fails, so a
-    validator that rejected the normal ``redis_url=None`` case would leave the
-    app with neither rate limiting nor deduplication installed.
+    ``setup_protection_middleware`` now *raises* ``ValueError`` when validation
+    fails and refuses the boot — except in development, where the composition
+    root catches it, warns, and continues unprotected. So a validator that
+    rejected the normal ``redis_url=None`` case would take out every deployed
+    environment outright, and leave development with neither rate limiting nor
+    deduplication installed.
     """
     from fastapi import FastAPI
 

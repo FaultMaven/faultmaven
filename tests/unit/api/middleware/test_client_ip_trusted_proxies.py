@@ -465,10 +465,13 @@ class TestTrustedProxyParsing:
     def test_unparseable_entry_is_dropped_loudly_and_the_rest_survive(self, caplog):
         """A typo must narrow trust, never widen it, and never boot-fail.
 
-        Raising here would surface inside ``setup_protection_middleware``'s
-        ``except``, which logs and continues — so one typo would silently
-        disable rate limiting, deduplication and timeouts deployment-wide.
-        Dropping the entry is the strictly safer failure.
+        Every caller is a middleware ``__init__``, which Starlette runs in
+        ``build_middleware_stack()`` at app start — not inside
+        ``setup_protection_middleware``, which only records
+        ``Middleware(cls, ...)`` entries. A raise here would therefore crash the
+        ASGI stack build outside every handler the composition root wraps around
+        protection setup: an uncatchable crash rather than a refusal anything can
+        report. Dropping the entry is the strictly safer failure.
         """
         with caplog.at_level(logging.ERROR):
             trusted = parse_trusted_proxies(["10.42.0.0/16", "not-a-cidr", "999.1.1.1"])

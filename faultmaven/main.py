@@ -1204,10 +1204,6 @@ def setup_middleware():
                 if protection_info.get("protection_enabled"):
                     middleware_names = protection_info.get("middleware_added", [])
                     logger.info(f"✅ Protection middleware enabled: {middleware_names}")
-                    if protection_info.get("warnings"):
-                        logger.warning(
-                            f"Protection warnings: {protection_info['warnings']}"
-                        )
                 else:
                     logger.info("ℹ️ Protection middleware disabled")
             app.extra["protection_info"] = protection_info
@@ -1215,9 +1211,18 @@ def setup_middleware():
             if logging_enabled:
                 logger.info("Skipping Protection middleware (SKIP_SERVICE_CHECKS=True)")
     except Exception as e:
-        if logging_enabled:
-            logger.warning(f"Failed to setup protection middleware: {e}")
-        if settings.server.environment != "development":
+        # Never gated on ``logging_enabled``: a swallowed setup failure must not
+        # be a zero-output event. Under the carve-out below this line is the only
+        # trace that the app is running unprotected.
+        logger.warning(f"Failed to setup protection middleware: {e}")
+        # The carve-out, named explicitly: **development only** — which is also
+        # what an unset ``ENVIRONMENT`` reads as — deliberately boots
+        # unprotected-with-a-warning when protection setup fails, so a broken
+        # local config does not block iteration. Every other environment
+        # (``staging``, ``production``, any unrecognised value) refuses to boot,
+        # re-muting the fail-closed raise ``api/protection.py`` makes for exactly
+        # one environment rather than for all of them.
+        if not settings.is_development():
             raise
 
     if logging_enabled:
@@ -1249,15 +1254,10 @@ def setup_middleware():
             logger.info("Adding PerformanceTrackingMiddleware to FastAPI app")
         # Same trusted-proxy list the limiter keys on, from the same single
         # reader, so the address a request is *labelled* with and the address
-        # it is *limited* by cannot disagree.
-        #
-        # Read directly rather than via ``load_protection_settings``: that
-        # builds a whole ProtectionSettings down the ``_load_from_settings``
-        # path, which warns "rate limiting, deduplication and request timeouts
-        # are all disabled deployment-wide" whenever BASIC_PROTECTION_ENABLED is
-        # unset. Production installs those via ``get_production_protection_settings``,
-        # so calling the general loader here just to fetch one field would emit
-        # a warning that is false on exactly the deployment that reads it.
+        # it is *limited* by cannot disagree. Building a whole
+        # ProtectionSettings here just to read one field would give the trust
+        # policy a second source; ``get_trusted_proxies`` is the one the presets
+        # call too.
         from .config.protection import get_trusted_proxies
 
         app.add_middleware(

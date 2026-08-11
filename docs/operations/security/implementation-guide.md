@@ -88,28 +88,67 @@ faultmaven/
 
 ### Settings Hierarchy
 
-1. **Environment Variables** (highest priority)
-2. **Configuration files** (.env, config.yaml)
-3. **Default values** (in code)
-4. **Dynamic configuration** (Redis-based, future)
+**Protection settings are not environment-configurable.** They come from one of
+two presets in `faultmaven/config/protection.py`, and the only thing the
+environment chooses is *which preset*: `ENVIRONMENT=development` (or an unset
+`ENVIRONMENT`, which defaults to `development`) selects the lenient one, and
+every other explicit value — `staging`, `production`, anything unrecognised —
+selects production's (fm#1023). The settings-driven loader that once read
+per-field environment variables was unreachable and has been removed, along with
+the keys it read. Setting any of these today does nothing — they are enumerated
+rather than globbed because a `RATE_LIMIT_*` glob would wrongly sweep in two
+spellings that are still live:
+
+- `RATE_LIMITING_ENABLED`, `DEDUPLICATION_ENABLED`, `TIMEOUTS_ENABLED`
+- `RATE_LIMIT_GLOBAL`, `RATE_LIMIT_PER_SESSION`, `RATE_LIMIT_PER_SESSION_HOURLY`,
+  `RATE_LIMIT_PER_SESSION_READ`, `RATE_LIMIT_PER_SESSION_READ_HOURLY`,
+  `RATE_LIMIT_TITLE_GENERATION` — each a `requests:window` pair
+- `DEDUP_DEFAULT_TTL`
+- `TIMEOUT_AGENT_TOTAL`, `TIMEOUT_AGENT_PHASE`, `TIMEOUT_LLM_CALL`,
+  `TIMEOUT_EMERGENCY_SHUTDOWN`
+- `BASIC_PROTECTION_ENABLED`, `PROTECTION_BYPASS_HEADERS`, `REDIS_KEY_PREFIX`
+
+`RATE_LIMIT_ENABLED` and `RATE_LIMIT_REQUESTS_PER_MINUTE` were **not** removed.
+They remain live `settings.security` fields documented in `.env.example`, and no
+enforcement path consults either — setting `RATE_LIMIT_ENABLED=false` does not
+turn rate limiting off. Their removal is tracked in fm#985. See
+[client-protection.md](client-protection.md) for the same list from the
+operator's side.
+
+Two keys do still reach the presets, and only these two:
+
+1. `PROTECTION_RATE_LIMIT_FAIL_OPEN` — the Redis degrade policy. Read by the
+   development preset; the production preset pins fail-*closed* and ignores it.
+2. `PROTECTION_TRUSTED_PROXIES` — which proxies' `X-Forwarded-For` may be
+   believed. Honoured by both presets; empty by default.
+
+Changing a limit, a TTL or a timeout means editing the preset.
 
 ### Feature Flags
 
+`ProtectionSettings` (`faultmaven/models/protection.py`) is the in-process shape
+the presets produce. Its fields are code, not configuration:
+
 ```python
-class ProtectionSettings:
-    # Global toggles
-    RATE_LIMITING_ENABLED: bool = True
-    DEDUPLICATION_ENABLED: bool = True
-    TIMEOUT_MANAGEMENT_ENABLED: bool = True
+class ProtectionSettings(BaseModel):
+    enabled: bool = True                       # both presets pin True
+    rate_limiting_enabled: bool = True
+    deduplication_enabled: bool = True
+    timeout_management_enabled: bool = True
 
-    # Graceful degradation
-    FAIL_OPEN_ON_REDIS_ERROR: bool = True
-    FAIL_OPEN_ON_TIMEOUT_ERROR: bool = False
+    fail_open_on_redis_error: bool = True      # development honours the key;
+                                               # production pins False
+    fail_open_on_timeout_error: bool = False
 
-    # Development/testing
-    DEBUG_PROTECTION: bool = False
-    PROTECTION_BYPASS_HEADERS: List[str] = []
+    debug_protection: bool = False
+    protection_bypass_headers: List[str] = []  # see below
 ```
+
+**Bypass headers exist only in the development preset.** It sets
+`["X-Dev-Bypass", "X-Test-Bypass"]`, and the mere *presence* of either header on
+a request skips rate limiting entirely — which is why an unset `ENVIRONMENT` on
+an internet-facing box is a hole rather than a default. The production preset
+pins the list **empty**, and no environment variable can add to it.
 
 ## Error Handling Strategy
 

@@ -209,7 +209,11 @@ jobs:
   test-cloud:
     needs: [code-quality]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Anchored to the measured healthy cost, not aspiration: the last green
+    # main runs took 19m20s and 18m39s, so 20 was within ~3% of the healthy
+    # path and a slow runner cancelled the job at 98% with 9,403 tests passed
+    # and none failed (PR #1025). 30 clears the measured cost by ~55%.
+    timeout-minutes: 30
     name: Test Cloud
 
     steps:

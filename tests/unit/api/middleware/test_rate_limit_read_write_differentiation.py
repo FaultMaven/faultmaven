@@ -447,11 +447,10 @@ async def test_a_half_configured_read_split_is_refused(caplog):
     [
         "get_development_protection_settings",
         "get_production_protection_settings",
-        "_load_from_environment",
     ],
 )
 def test_every_loader_configures_both_pairs(loader):
-    """A loader that omits the read keys silently reinstates fm#994."""
+    """A preset that omits the read keys silently reinstates fm#994."""
     import faultmaven.config.protection as protection_config
 
     settings = getattr(protection_config, loader)()
@@ -472,25 +471,6 @@ def test_every_loader_configures_both_pairs(loader):
         settings.rate_limits["per_session_read_hourly"].requests
         > settings.rate_limits["per_session_hourly"].requests
     ), f"{loader} gives reads no more hourly room than writes"
-
-
-def test_the_canonical_settings_loader_configures_both_pairs():
-    """``_load_from_settings`` is the path every healthy deployment takes."""
-    from faultmaven.config.protection import _load_from_settings
-
-    stub = SimpleNamespace(
-        protection=SimpleNamespace(basic_protection_enabled=True),
-        database=SimpleNamespace(redis_url=None),
-    )
-    limits = _load_from_settings(stub).rate_limits
-
-    assert "per_session_read" in limits
-    assert "per_session_read_hourly" in limits
-    assert limits["per_session_read"].requests > limits["per_session"].requests
-    assert (
-        limits["per_session_read_hourly"].requests
-        > limits["per_session_hourly"].requests
-    )
 
 
 def test_the_default_settings_model_carries_both_pairs():

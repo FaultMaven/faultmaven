@@ -1,13 +1,13 @@
-"""The trusted-proxy policy reaches the limiter, from every loader (fm#927).
+"""The trusted-proxy policy reaches the limiter, from every producer (fm#927).
 
 A correct resolver that no enforcement path calls fixes nothing, and a setting
-that only three of four loaders populate is a deployment-shaped hole. Two
-properties are pinned here:
+that only some producers populate is a deployment-shaped hole. Two properties
+are pinned here:
 
 1. ``RateLimitMiddleware`` keys the ``global`` limit on the resolver's answer —
    so a forged ``X-Forwarded-For`` cannot select the bucket.
-2. Every ``ProtectionSettings`` producer reads ``PROTECTION_TRUSTED_PROXIES``
-   from the one reader, so the four paths cannot disagree about what the
+2. Both presets read ``PROTECTION_TRUSTED_PROXIES`` from the one reader, so the
+   presets and ``PerformanceTrackingMiddleware`` cannot disagree about what the
    deployment asked for.
 """
 
@@ -23,9 +23,8 @@ from faultmaven.api.middleware.rate_limiting import RateLimitMiddleware
 from faultmaven.config.protection import (
     get_development_protection_settings,
     get_production_protection_settings,
-    load_protection_settings,
 )
-from faultmaven.models.protection import LimitType, RateLimitResult
+from faultmaven.models.protection import RateLimitResult
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
 
@@ -116,45 +115,30 @@ class TestTheLimiterKeysOnTheResolvedAddress:
         assert len(keys) == 49
 
 
-class TestEveryLoaderReadsTheKey:
-    """One reader, four loaders — the pattern ``_fail_open_default`` established."""
+class TestEveryPresetReadsTheKey:
+    """One reader, every preset — the pattern ``_fail_open_default`` established."""
 
-    LOADERS = {
-        "settings": lambda: load_protection_settings(),
+    PRESETS = {
         "development": get_development_protection_settings,
         "production": get_production_protection_settings,
     }
 
-    @pytest.mark.parametrize("name", sorted(LOADERS))
+    @pytest.mark.parametrize("name", sorted(PRESETS))
     def test_configured_value_reaches_the_settings(self, name):
         with patch.dict(
             os.environ, {"PROTECTION_TRUSTED_PROXIES": "10.42.0.0/16, 10.43.0.1"}
         ):
-            settings = self.LOADERS[name]()
+            settings = self.PRESETS[name]()
 
         assert settings.trusted_proxies == ["10.42.0.0/16", "10.43.0.1"]
 
-    @pytest.mark.parametrize("name", sorted(LOADERS))
+    @pytest.mark.parametrize("name", sorted(PRESETS))
     def test_unset_means_trust_nothing(self, name):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PROTECTION_TRUSTED_PROXIES", None)
-            settings = self.LOADERS[name]()
+            settings = self.PRESETS[name]()
 
         assert settings.trusted_proxies == []
-
-    def test_environment_fallback_loader_reads_it_too(self):
-        """The degraded path is a loader like any other.
-
-        ``_load_from_environment`` only runs when settings construction itself
-        raised. A process that has lost its settings must not thereby lose the
-        trust policy and start believing forwarded headers.
-        """
-        from faultmaven.config.protection import _load_from_environment
-
-        with patch.dict(os.environ, {"PROTECTION_TRUSTED_PROXIES": "10.42.0.0/16"}):
-            settings = _load_from_environment()
-
-        assert settings.trusted_proxies == ["10.42.0.0/16"]
 
 
 class TestPerformanceMiddlewareUsesTheSameRule:

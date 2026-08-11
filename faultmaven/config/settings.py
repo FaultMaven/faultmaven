@@ -1346,7 +1346,6 @@ class ProtectionSettings(BaseSettings):
     # rather than leak it. Operators who prefer availability over the privacy
     # guarantee can set PROTECTION_FAIL_OPEN=true.
     fail_open: bool = Field(default=False, validation_alias="PROTECTION_FAIL_OPEN")
-    basic_protection_enabled: bool = Field(default=False)
 
     # PII Sanitization Control
     # When True: Always sanitize PII before sending to LLM (safer, recommended for external LLMs)

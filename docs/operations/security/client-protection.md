@@ -24,7 +24,7 @@ This document describes FaultMaven's defense mechanisms against malicious or mal
 **Scope**:
 - Per-session limits: one pair of buckets for writes, one for cheap reads (below)
 - Per-endpoint limits: Specific limits for high-cost operations
-- Global limits: 1000 requests/minute across all clients, keyed on client address
+- Global limits: 500 requests/minute across all clients, keyed on client address
 
 **Implementation**: Redis-backed sliding window rate limiter. The window counts
 **requests**, not time buckets — one sorted-set entry per request inside it, so a
@@ -32,17 +32,17 @@ limit of L admits exactly L requests however they distribute across seconds. See
 [rate-limiting-sliding-window.md](../../architecture/security/rate-limiting-sliding-window.md)
 for the algorithm and its invariants.
 
-**Configuration** (the defaults on the canonical settings path; the production
-preset is tighter — see the table below):
+**Configuration** (the production preset, which is what every deployment other
+than `ENVIRONMENT=development` runs — see the table below):
+
 ```python
 RATE_LIMITS = {
-    "global": {"requests": 1000, "window": 60},
-    "per_session": {"requests": 20, "window": 60},
-    "per_session_hourly": {"requests": 100, "window": 3600},
-    "per_session_read": {"requests": 240, "window": 60},
-    "per_session_read_hourly": {"requests": 3000, "window": 3600},
-    "title_generation": {"requests": 1, "window": 300},  # 5 minutes
-    "agent_query": {"requests": 5, "window": 60}
+    "global": {"requests": 500, "window": 60},
+    "per_session": {"requests": 10, "window": 60},
+    "per_session_hourly": {"requests": 50, "window": 3600},
+    "per_session_read": {"requests": 120, "window": 60},
+    "per_session_read_hourly": {"requests": 1200, "window": 3600},
+    "title_generation": {"requests": 1, "window": 600},  # 10 minutes
 }
 ```
 
@@ -102,13 +102,32 @@ What that means in practice:
 
 **Shipped values**:
 
-| Bucket | settings path | development | production |
-|--------|--------------|-------------|------------|
-| `global` | 1000 / 60s | 5000 / 60s | 500 / 60s |
-| `per_session` | 20 / 60s | 50 / 60s | 10 / 60s |
-| `per_session_hourly` | 100 / 3600s | 500 / 3600s | 50 / 3600s |
-| `per_session_read` | 240 / 60s | 600 / 60s | 120 / 60s |
-| `per_session_read_hourly` | 3000 / 3600s | 6000 / 3600s | 1200 / 3600s |
+Two presets ship, and `ENVIRONMENT` picks between them: `development` selects
+the first column, **everything else** — `staging`, `production`, and any value
+that is not an `Environment` member — selects the second.
+
+| Bucket | development | production (the default) |
+|--------|-------------|--------------------------|
+| `global` | 5000 / 60s | 500 / 60s |
+| `per_session` | 50 / 60s | 10 / 60s |
+| `per_session_hourly` | 500 / 3600s | 50 / 3600s |
+| `per_session_read` | 600 / 60s | 120 / 60s |
+| `per_session_read_hourly` | 6000 / 3600s | 1200 / 3600s |
+
+**Sharing a Redis instance across environments is still not recommended, but the
+protection keys no longer collide.** The Redis key prefix is fixed by
+environment rather than configurable: `faultmaven_dev` for development,
+`faultmaven_prod` for production, and `faultmaven_staging` for staging. Staging
+runs production's *preset* — strict limits, no bypass headers, fail-closed on a
+Redis error — but is given its own *namespace*, because sharing production's
+would mean a staging load test consuming production's quota and an identical
+request submitted in both being answered `409` in the second. Staging installed
+no protection middleware at all before fm#1023, so it has never written keys
+under any prefix and the split orphans nothing.
+
+That closes the collision that mattered, not every reason to keep the instances
+apart: the prefix scopes only the protection stack's own keys, and nothing
+separates two deployments' memory budget, eviction policy or a stray `FLUSHDB`.
 
 **A missing read bucket narrows, it never widens.** The limiter allows anything
 it holds no configuration for, so routing reads at an unconfigured bucket would
@@ -311,9 +330,25 @@ class AgentTimeoutManager:
 These are read on every deployment:
 
 ```bash
-# Whether the protection middleware is installed at all. Default false —
-# with it unset, rate limiting, deduplication and timeouts are all absent.
-BASIC_PROTECTION_ENABLED=true
+# Which preset the protection middleware is installed from.
+#
+# UNSET IS NOT STRICT. An absent ENVIRONMENT falls to the settings default,
+# which is `development` — the permissive preset, with `X-Dev-Bypass` and
+# `X-Test-Bypass` LIVE: the mere presence of either header skips all rate
+# limiting. Never leave this unset on an internet-facing box.
+#
+# Absent, or `development`  -> lenient preset, bypass headers live
+# `staging` / `production`  -> production's preset
+# Anything else             -> refuses to start: settings validation rejects
+#                              unknown values before preset selection ever
+#                              runs. (Direct callers of the setup function,
+#                              which bypass that validation, fall to the
+#                              production preset — defense in depth, not the
+#                              operator-visible path.)
+#
+# No value installs an empty protection stack; the choice is which preset, not
+# whether.
+ENVIRONMENT=production
 
 # Degrade policy for rate limiting and deduplication when Redis is
 # unreachable. Governs nothing else — in particular not PII redaction.
@@ -327,39 +362,45 @@ PROTECTION_RATE_LIMIT_FAIL_OPEN=true
 PROTECTION_TRUSTED_PROXIES=
 ```
 
-**The `RATE_LIMIT_*`, `DEDUP_*` and `TIMEOUT_*` keys are not operator knobs.**
-`load_protection_settings` reads them only from `_load_from_environment`, which
-runs when `get_settings()` itself raises — a broken validator, or very early
-init. On a healthy deployment the settings path supplies the values above from
-code and never consults the environment, so setting these changes nothing. They
-exist so that a process which has already lost its settings still starts from
-the deployment's intended numbers:
+**No environment variable sets a limit, a TTL or a timeout.** A loader reading
+them once existed, but nothing on a healthy deployment reached it: it ran only
+when `get_settings()` itself raised, and on every other path the numbers came
+from code. Setting those variables therefore changed nothing, and they were
+removed along with the loader (fm#1023) rather than left looking configurable.
+The exact spellings that are now gone:
 
-```bash
-RATE_LIMITING_ENABLED=true
-RATE_LIMIT_GLOBAL=1000:60                 # requests:window_seconds
-RATE_LIMIT_PER_SESSION=20:60
-RATE_LIMIT_PER_SESSION_HOURLY=100:3600
-RATE_LIMIT_PER_SESSION_READ=240:60
-RATE_LIMIT_PER_SESSION_READ_HOURLY=3000:3600
-RATE_LIMIT_TITLE_GENERATION=1:300
-```
+- `RATE_LIMITING_ENABLED`, `DEDUPLICATION_ENABLED`, `TIMEOUTS_ENABLED`
+- `RATE_LIMIT_GLOBAL`, `RATE_LIMIT_PER_SESSION`, `RATE_LIMIT_PER_SESSION_HOURLY`,
+  `RATE_LIMIT_PER_SESSION_READ`, `RATE_LIMIT_PER_SESSION_READ_HOURLY`,
+  `RATE_LIMIT_TITLE_GENERATION` — each a `requests:window` pair
+- `DEDUP_DEFAULT_TTL`
+- `TIMEOUT_AGENT_TOTAL`, `TIMEOUT_AGENT_PHASE`, `TIMEOUT_LLM_CALL`,
+  `TIMEOUT_EMERGENCY_SHUTDOWN`
+- `BASIC_PROTECTION_ENABLED`, `PROTECTION_BYPASS_HEADERS`, `REDIS_KEY_PREFIX`
 
-A malformed value falls back to the default shown rather than to no limit.
+**Two legacy `RATE_LIMIT_*` spellings do still exist, and nothing in the
+protection stack reads them.** `RATE_LIMIT_ENABLED` and
+`RATE_LIMIT_REQUESTS_PER_MINUTE` are live `settings.security` fields and are
+documented in `.env.example`, but no enforcement path consults either.
+`RATE_LIMIT_ENABLED=false` does not turn rate limiting off, and
+`RATE_LIMIT_REQUESTS_PER_MINUTE` is not any bucket's limit. Of the two, only
+`rate_limit_enabled` surfaces on `GET /admin/config/status` —
+`EnvConfigStatusResponse` has no requests-per-minute field at all — where it
+feeds a frontend-compatibility report that warns when it is false. Their removal
+is tracked in fm#985.
 
 Changing the limits a deployment actually runs on means changing the preset in
-`faultmaven/config/protection.py`. Promoting these keys onto the settings path is
-tracked as a TODO in `_load_from_environment`.
+`faultmaven/config/protection.py`.
 
 ### Per-endpoint rate limits
 
 `RateLimitMiddleware.endpoint_configs` reserves a hook for limits attached to a
 single path. **No endpoint currently uses it** — the two entries present declare
 limit types that the dispatch path does not read, and neither carries a
-`special_handling` callable. The `title_generation` and `agent_query` entries in
-`RATE_LIMITS` are likewise configured but never checked — no code path calls
-`check_rate_limit` with either type. Per-session cost control is done by the
-read/write split above, not here.
+`special_handling` callable. The `title_generation` entry the presets configure,
+and the `agent_query` entry the `ProtectionSettings` model default carries, are
+likewise never checked — no code path calls `check_rate_limit` with either type.
+Per-session cost control is done by the read/write split above, not here.
 
 There is no progressive penalty ladder. A refused client is told how long its
 own window actually takes to free quota, and nothing longer: repeat offenders
