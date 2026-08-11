@@ -24,7 +24,7 @@ os.environ["OAUTH_ENABLED"] = "true"
 # reset_settings() clears a singleton nothing reads while the freshly imported
 # module keeps handing production code a stale cached settings object.
 from faultmaven.config.settings import reset_settings
-from tests.integration.modules.auth._rebuilt_app import rebuild_app
+from tests.integration._app_rebuild import rebuild_app
 
 reset_settings()
 

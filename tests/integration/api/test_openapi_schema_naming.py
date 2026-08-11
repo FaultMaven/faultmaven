@@ -19,12 +19,13 @@ keeps generated clients reproducible.
 The schema is built in a **subprocess under a pinned environment** rather than
 read from the shared ``faultmaven.main.app`` singleton. Several integration
 modules (``tests/integration/modules/auth/test_oauth_*.py``) set
-``OAUTH_ENABLED`` and drop ``faultmaven.main`` from ``sys.modules`` at *import*
-time, and pytest imports every test module during collection — so the singleton
-this file would otherwise inspect depends on which modules were collected. A
-gate whose whole purpose is reproducibility must not itself be order-dependent:
-CI would evaluate the OAuth-mounted app and a developer reproducing the failure
-locally would evaluate a different one.
+``OAUTH_ENABLED`` at *import* time and rebuild the app under it, and pytest
+imports every test module during collection — so while the published singleton
+is now restored rather than replaced (fm#990), the environment those rebuilds
+mutate is not, and an in-process read still depends on what ran first. A gate
+whose whole purpose is reproducibility must not itself be order-dependent: CI
+would evaluate one app and a developer reproducing the failure locally would
+evaluate another.
 """
 
 import json

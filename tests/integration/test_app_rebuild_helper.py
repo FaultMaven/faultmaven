@@ -17,12 +17,18 @@ import sys
 
 import pytest
 
-from tests.integration.modules.auth._rebuilt_app import rebuild_app
+from tests.integration._app_rebuild import rebuild_app
 
 pytestmark = [pytest.mark.integration]
 
 
 def test_rebuild_returns_a_new_app_without_publishing_it():
+    # Establish the baseline rather than assume one. ``rebuild_app`` restores
+    # "nothing was published" faithfully when that is what it found, so a test
+    # that read ``sys.modules`` directly would raise ``KeyError`` in any run
+    # where the OAuth modules were collected before this file.
+    import faultmaven.main  # noqa: F401
+
     published_module = sys.modules["faultmaven.main"]
     published_app = published_module.app
 

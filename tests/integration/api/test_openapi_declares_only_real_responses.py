@@ -20,8 +20,9 @@ sets are neither subset nor superset. The OAuth, SSO and ``/metrics``
 operations would never be checked (``/metrics`` is one of the routes this very
 invariant fixes), while five ``/debug/*`` routes that are never published would
 be. The in-process app is also collection-order dependent, because
-``tests/integration/modules/auth/test_oauth_*.py`` set ``OAUTH_ENABLED`` and
-drop ``faultmaven.main`` from ``sys.modules`` at import time.
+``tests/integration/modules/auth/test_oauth_*.py`` set ``OAUTH_ENABLED`` at
+import time and rebuild the app under it — the published singleton is restored
+again (fm#990), but the mutated environment those rebuilds leave behind is not.
 
 Reading the artifact is not a weaker check: the ``api-contract-drift`` CI job
 holds it byte-equal to the app built under the generator's pinned environment.

@@ -31,7 +31,7 @@ os.environ["OAUTH_ENABLED"] = "true"
 # *singleton*; never drop faultmaven.config.settings from sys.modules (that
 # leaves a second module object, each with its own cached instance).
 from faultmaven.config.settings import reset_settings
-from tests.integration.modules.auth._rebuilt_app import rebuild_app
+from tests.integration._app_rebuild import rebuild_app
 
 reset_settings()
 

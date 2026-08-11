@@ -129,6 +129,38 @@ def test_the_app_under_test_carries_the_protection_stack(real_app):
     )
 
 
+def test_protection_is_installed_even_under_skip_service_checks(monkeypatch):
+    """Builds the app in the failure state, rather than reporting the ambient one.
+
+    The assertion above can only fail where ``SKIP_SERVICE_CHECKS`` is set when
+    the app is imported. That is true of CI and of ``scripts/tests.py``, but not
+    of a bare ``pytest`` run — ``tests/conftest.py`` sets the flag inside a
+    function-scoped fixture, long after collection has imported the app. So on a
+    developer's machine the guard above would sit silent through exactly the
+    regression it exists to catch.
+
+    This one puts the process into that state deliberately and rebuilds the app
+    under it, so it discriminates everywhere.
+    """
+    from faultmaven.config.settings import reset_settings
+    from tests.integration._app_rebuild import rebuild_app
+
+    monkeypatch.setenv("SKIP_SERVICE_CHECKS", "true")
+    reset_settings()
+    try:
+        rebuilt = rebuild_app()
+        installed = [entry.cls.__name__ for entry in rebuilt.user_middleware]
+        assert "RateLimitMiddleware" in installed, (
+            "SKIP_SERVICE_CHECKS stripped the protection stack. That flag means "
+            "'do not require external services'; the limiter needs none, so it "
+            f"must not be gated on it: {installed}"
+        )
+    finally:
+        # ``monkeypatch`` restores the variable; the singleton built from it
+        # while it was set has to be dropped explicitly or it outlives the test.
+        reset_settings()
+
+
 def test_the_real_app_refuses_over_the_global_limit_with_429_and_headers(real_app):
     """Under the limit the app serves; over it, it refuses with a usable 429."""
     limit = 3

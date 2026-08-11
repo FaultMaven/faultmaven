@@ -1205,9 +1205,10 @@ def setup_middleware():
         # flag's contract never covered them. Gating the install on it meant a
         # deployment could boot with an empty protection stack and one INFO
         # line to show for it: the same shape fm#1023 closed for ``staging``,
-        # through a fourth door. It also meant no test anywhere exercised the
-        # app this function builds, because every test entrypoint sets the flag
-        # (``tests/conftest.py``, ``scripts/tests.py``, both CI pytest jobs).
+        # through a fourth door. It also meant no CI job exercised the app this
+        # function builds, because both pytest jobs set the flag in their
+        # workflow ``env`` (as does ``scripts/tests.py``), so the stack under
+        # test was ``[CORS, Logging, GZip, TrailingSlash]`` and nothing more.
         protection_info = setup_protection_middleware(
             app,
             environment=settings.server.environment,

@@ -30,7 +30,7 @@ os.environ["OAUTH_REQUIRE_CONSENT"] = "false"  # Auto-approve for E2E flow tests
 import sys
 
 from faultmaven.config.settings import reset_settings
-from tests.integration.modules.auth._rebuilt_app import rebuild_app
+from tests.integration._app_rebuild import rebuild_app
 
 # Force the app below to be built with OAuth enabled.
 #
