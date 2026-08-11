@@ -89,11 +89,12 @@ def parse_trusted_proxies(values: Optional[Iterable[str] | str]) -> TrustedProxi
     * Skipping fails closed on the axis that matters. A dropped entry means one
       fewer address is trusted, so the worst case is a limit keyed on the proxy
       rather than a limit a caller can evade.
-    * Raising here would surface inside ``setup_protection_middleware``'s
-      ``except``, which logs and continues — so a single typo would disable
-      rate limiting, deduplication and timeouts deployment-wide rather than
-      failing the boot. A loud skip is strictly safer than an exception that
-      gets swallowed into "no protection at all".
+    * Raising here would propagate a ``ValueError`` out of
+      ``setup_protection_middleware`` (which re-raises that type rather than
+      applying the Redis degrade policy to it) and refuse the boot. That is at
+      least fail-closed now — but a typo in one proxy entry does not warrant a
+      total outage when dropping the entry already leaves every limit intact
+      and merely coarser. The skip is the proportionate refusal.
 
     Parsing is **strict** about host bits, and that is the whole point rather
     than pedantry. ``ipaddress.ip_network`` defaults to ``strict=False``, which

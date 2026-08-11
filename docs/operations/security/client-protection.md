@@ -331,8 +331,13 @@ These are read on every deployment:
 # limiting. Never leave this unset on an internet-facing box.
 #
 # Absent, or `development`  -> lenient preset, bypass headers live
-# Any other EXPLICIT value  -> production's preset (`staging`, `production`,
-#                              and anything unrecognised alike)
+# `staging` / `production`  -> production's preset
+# Anything else             -> refuses to start: settings validation rejects
+#                              unknown values before preset selection ever
+#                              runs. (Direct callers of the setup function,
+#                              which bypass that validation, fall to the
+#                              production preset — defense in depth, not the
+#                              operator-visible path.)
 #
 # No value installs an empty protection stack; the choice is which preset, not
 # whether.
