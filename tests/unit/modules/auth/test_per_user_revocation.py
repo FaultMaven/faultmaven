@@ -507,14 +507,32 @@ class TestRevocationArmsAreIndependent:
         assert await generator.validate_access_token(second) is not None
 
     async def test_watermark_survives_independently_of_jti_entries(self):
+        """The watermark lands even though nothing was written to ``jti:``.
+
+        Probe the instant the call RETURNED, not a fresh clock read. A second
+        read is wrong twice over. It is racy — the watermark is truncated to
+        whole seconds (``int(revoked_at.timestamp())``) and the rule is
+        ``issued_at <= watermark``, so whenever the integer second ticks
+        between the revoke and the probe the probe is ``watermark + 1`` and the
+        assertion is False. That is the observed bare ``assert False``: the
+        identical head passed on rerun.
+
+        It is also asserting something untrue. A token issued *after* a
+        revocation is supposed to survive it — that is exactly what
+        ``TestReLoginStillWorks`` pins, and what
+        ``test_iat_at_the_watermark_is_revoked`` fixes the boundary of
+        (``watermark + 1`` is NOT revoked). A "now" probe only passed because
+        both clock reads usually truncated into the same second, so the two
+        tests contradicted each other whenever the race lost. The revocation
+        instant is the correct probe and states the real property: a token
+        issued at or before it is revoked.
+        """
         store = _store()
         auth_service = _auth_service(store)
 
-        await auth_service.revoke_user_tokens(USER_ID)
+        revoked_at = await auth_service.revoke_user_tokens(USER_ID)
 
-        assert await store.is_user_revoked(
-            USER_ID, int(datetime.now(timezone.utc).timestamp())
-        )
+        assert await store.is_user_revoked(USER_ID, int(revoked_at.timestamp()))
         assert await store.is_revoked("some-unrelated-jti") is False
 
 

@@ -2,10 +2,24 @@
 
 Provides database fixtures optimized for performance benchmarking with
 minimal overhead from logging and other instrumentation.
+
+Also provides ``measure_min_latency`` — the sampling helper every wall-clock
+assertion in this suite goes through. See its docstring for why the statistic
+is the minimum.
 """
 
 import asyncio
-from typing import AsyncGenerator
+import statistics
+import time
+from typing import (
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    NamedTuple,
+    Optional,
+    Tuple,
+)
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -37,6 +51,122 @@ from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repo
 # (conftest.py has F401 in per-file-ignores, and CI's rule selection excludes
 # F401 anyway).
 from tests.utils import generate_case_id, generate_org_id
+
+#: Timed samples taken per measured operation, after one untimed warm-up call.
+#:
+#: Five is a compromise, not a magic number. The minimum stops moving quickly
+#: (see the measurements recorded against each re-anchored threshold), and the
+#: cost is bounded because the expensive part of these benchmarks is the
+#: fixture setup — hundreds or thousands of rows — which is paid ONCE, outside
+#: the loop. Sites whose measured operation is itself a hundred writes pass a
+#: smaller ``samples`` explicitly.
+DEFAULT_SAMPLES = 5
+
+
+class Measurement(NamedTuple):
+    """Timings from ``measure_min_latency``, plus the last operation result.
+
+    ``samples`` are in seconds, warm-up excluded, in the order taken.
+    """
+
+    samples: Tuple[float, ...]
+    result: Any
+
+    @property
+    def best(self) -> float:
+        """The minimum sample — the statistic assertions compare against."""
+        return min(self.samples)
+
+    @property
+    def median(self) -> float:
+        return statistics.median(self.samples)
+
+    @property
+    def worst(self) -> float:
+        return max(self.samples)
+
+    def report(self) -> str:
+        """The distribution, for the CI log.
+
+        Printed by every converted benchmark so a future re-anchoring has the
+        runner's OWN numbers to work from rather than someone's laptop's. A
+        rising median against a flat minimum is contention; both rising
+        together is the operation genuinely getting slower.
+        """
+        return (
+            f"min {self.best * 1000:.1f}ms "
+            f"(median {self.median * 1000:.1f}ms, "
+            f"max {self.worst * 1000:.1f}ms, n={len(self.samples)})"
+        )
+
+
+async def measure_min_latency(
+    operation: Callable[..., Awaitable[Any]],
+    *,
+    samples: int = DEFAULT_SAMPLES,
+    setup: Optional[Callable[[], Awaitable[Any]]] = None,
+) -> Measurement:
+    """Warm up once, take ``samples`` timings, and report the MINIMUM.
+
+    Why the minimum. These benchmarks run on a shared GitHub-hosted runner
+    whose CPU is contended by other tenants. Every source of error there is
+    one-sided: scheduling delay, page-cache misses, GC pauses and co-tenant
+    bursts can only ADD time to an operation, never subtract it. So the fastest
+    observed run is the closest estimate available of what the operation itself
+    costs, and the spread above it measures the runner, not the code.
+
+    That keeps the gate's teeth. The regressions this suite exists to catch —
+    a dropped index, an O(n) query turning O(n**2), an accidental round-trip
+    per row — make the operation slower *every* time, so they raise the
+    minimum as much as they raise the mean. What no longer fails the build is
+    one hiccup during one sample, which is all a single-sample assertion could
+    ever have been measuring on a machine like this.
+
+    A p95 over a handful of samples would be the opposite choice: with n < 20
+    it is effectively the maximum, i.e. the noisiest value in the set.
+
+    The warm-up call is untimed and its result discarded. It absorbs the
+    one-time costs that belong to nobody's latency budget: lazily imported
+    modules, SQLAlchemy statement compilation and caching, aiosqlite's first
+    round-trip on a connection, and cold pages of whatever rows the fixture
+    just wrote.
+
+    ‼ ``operation`` is run ``samples + 1`` times, so it must measure the SAME
+    work each time. Read-only operations satisfy that for free. Anything that
+    mutates state needs ``setup`` to hand it fresh material per call (a new
+    entity to insert, a fresh row to delete); pass one, or leave the site
+    alone. A loop that appends to a growing table is not measuring the same
+    operation twice.
+
+    Args:
+        operation: The measured coroutine function. Called with no arguments,
+            or with ``setup``'s return value as its single argument when
+            ``setup`` is given.
+        samples: Number of timed calls. Must be >= 1.
+        setup: Optional coroutine function run before each call, INCLUDING the
+            warm-up, and outside the timed window. Its return value is passed
+            to ``operation``.
+
+    Returns:
+        A ``Measurement`` carrying every timing and the last result.
+    """
+    if samples < 1:
+        raise ValueError(f"samples must be >= 1, got {samples}")
+
+    timings = []
+    result: Any = None
+    # Iteration 0 is the warm-up: run identically, timed identically, and then
+    # dropped. Running it through the same path is deliberate — a warm-up that
+    # took a different code path would warm the wrong thing.
+    for iteration in range(samples + 1):
+        args = () if setup is None else (await setup(),)
+        start = time.perf_counter()
+        result = await operation(*args)
+        elapsed = time.perf_counter() - start
+        if iteration:
+            timings.append(elapsed)
+
+    return Measurement(tuple(timings), result)
 
 
 @pytest.fixture(scope="session")
