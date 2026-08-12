@@ -29,6 +29,41 @@ def _run_main(argv):
         sys.argv = original
 
 
+class _Ns:
+    """A settings namespace built from keywords."""
+
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _Settings(_Ns):
+    """Enough of FaultMavenSettings for the pure-decision helpers."""
+
+    def __init__(self, **overrides):
+        from faultmaven.config.settings import Environment
+
+        super().__init__(
+            security=_Ns(token_revocation_prefix="revoked:token:"),
+            server=_Ns(environment=Environment.PRODUCTION),
+            database=_Ns(
+                redis_url=None,
+                redis_host="redis.internal",
+                redis_port=6379,
+                redis_db=0,
+                chromadb_url="",
+                chromadb_kb_persist_dir="./data/chroma-kb",
+                chromadb_evidence_persist_dir="./data/chroma-evidence",
+            ),
+            evidence_storage=_Ns(
+                evidence_storage_root="./data/evidence",
+                s3_bucket_name=None,
+                s3_endpoint_url=None,
+                s3_key_prefix="",
+            ),
+        )
+        self.__dict__.update(overrides)
+
+
 # ---------------------------------------------------------------------------
 # argparse-level guards — these must fire before anything connects anywhere
 # ---------------------------------------------------------------------------
@@ -243,8 +278,9 @@ async def test_a_mismatched_confirm_target_wipes_nothing(monkeypatch, capsys):
 
 
 def test_known_prefixes_are_counted_per_namespace():
+    prefixes = ("session:", "revoked:token:", "sso:state:")
     counts, unmatched = wd.classify_redis_keys(
-        ["session:a", "session:b", "revoked:token:jti:x", "sso:state:s"]
+        ["session:a", "session:b", "revoked:token:jti:x", "sso:state:s"], prefixes
     )
     assert counts["session:"] == 2
     assert counts["revoked:token:"] == 1
@@ -258,6 +294,43 @@ def test_keys_outside_every_known_prefix_are_reported_not_dropped():
     counts, unmatched = wd.classify_redis_keys(["celery:task:1", "session:a"])
     assert unmatched == ["celery:task:1"]
     assert counts["session:"] == 1
+
+
+def test_the_prefix_set_covers_every_namespace_the_app_writes():
+    """These are the live keyspaces found in the code. A namespace missing here
+    is one the scoped wipe silently leaves behind."""
+    prefixes = wd.redis_prefixes(_Settings())
+    for prefix in (
+        "session:",
+        "client_index:",  # the session store's own index
+        "idempotency:",
+        "sso:state:",
+        "sso:login:",
+        "oauth:code:",
+        "password_reset:",
+        "case_seq:",
+        "redaction:",
+    ):
+        assert prefix in prefixes, f"{prefix} is written by the app but not swept"
+
+
+def test_the_revocation_prefix_comes_from_settings_not_a_literal():
+    """The app passes ``settings.security.token_revocation_prefix`` to the store,
+    so a deployment that overrides it would otherwise keep every revocation
+    watermark through a "successful" wipe."""
+    settings = _Settings()
+    settings.security.token_revocation_prefix = "custom:revoked:"
+    prefixes = wd.redis_prefixes(settings)
+    assert "custom:revoked:" in prefixes
+    assert "revoked:token:" not in prefixes
+
+
+def test_the_protection_namespaces_are_included():
+    """Rate-limit and dedup keys are built from the protection preset's
+    redis_key_prefix, chosen by ENVIRONMENT — not a literal."""
+    prefixes = wd.redis_prefixes(_Settings())
+    assert any(p.endswith(":rl") for p in prefixes), prefixes
+    assert any(p.endswith(":dedup") for p in prefixes), prefixes
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +355,7 @@ async def _verify_with(monkeypatch, surfaces):
     async def _objects(settings, *, verify):
         return objects
 
-    async def _redis(*, verify):
+    async def _redis(settings, *, verify):
         return redis
 
     monkeypatch.setattr(wd, "survey_database", _db)
@@ -369,17 +442,440 @@ async def test_an_unreachable_database_is_reported_not_raised(monkeypatch):
     ), "an unreadable database yields no clean-or-dirty claim"
 
 
-def test_a_missing_table_and_an_empty_seed_are_different_findings():
-    """``_count_rows`` returns None for a table that does not exist and 0 for one
-    that is present and empty. Those have different causes — schema older than
-    this build vs a DELETE-based wipe — so one table must not produce both
-    residue lines."""
-    counts = {"roles": None, "permissions": 0}
-    absent = [t for t, n in sorted(counts.items()) if n is None]
-    missing = [t for t in sorted(wd.MUST_BE_SEEDED) if counts.get(t) == 0]
-    assert absent == ["roles"]
-    assert missing == ["permissions"]
-    assert "roles" not in missing
+class _FakeConn:
+    """An async connection over a fixed {table: count-or-raise} map.
+
+    ``None`` for a table means ``COUNT(*)`` raises for it — the case that used to
+    poison every later count on PostgreSQL.
+    """
+
+    def __init__(self, counts: dict, present: set[str] | None = None, revision="rev1"):
+        self._counts = counts
+        self._present = present if present is not None else set(counts)
+        self._revision = revision
+        self.nested_entered = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def scalar(self, statement):
+        sql = str(statement)
+        if "alembic_version" in sql:
+            return self._revision
+        table = sql.rsplit(" ", 1)[-1]
+        value = self._counts.get(table)
+        if value is None:
+            raise RuntimeError(f"count failed for {table}")
+        return value
+
+    def begin_nested(self):
+        self.nested_entered += 1
+        return _FakeConn._Savepoint()
+
+    class _Savepoint:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def run_sync(self, fn):
+        return set(self._present)
+
+
+class _FakeEngine:
+    def __init__(self, conn, database="faultmaven", dialect="postgresql"):
+        self._conn = conn
+        self.url = _Ns(database=database, host="pg")
+        self.dialect = _Ns(name=dialect)
+
+    def connect(self):
+        return self._conn
+
+
+def _install_engine(monkeypatch, engine):
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.database.get_engine", lambda: engine
+    )
+    monkeypatch.setattr(wd, "_alembic_head", lambda: "rev1")
+
+
+async def test_one_failed_count_does_not_poison_the_others(monkeypatch):
+    """The PostgreSQL failure mode. All 38 counts share one connection, and a
+    single failed statement aborts the surrounding transaction — so every later
+    COUNT(*) raised InFailedSqlTransaction and was reported as uncountable,
+    which also *suppressed* the real "still holds N rows" residue for tables that
+    did hold rows. Each count now runs in its own SAVEPOINT.
+    """
+    counts = {t: 0 for t in wd.MUST_BE_EMPTY | wd.MUST_BE_SEEDED | wd.INFORMATIONAL}
+    counts["causal_edges"] = None  # raises — alphabetically early
+    counts["users"] = 7  # must still be seen as residue
+    for seeded in wd.MUST_BE_SEEDED:
+        counts[seeded] = 3
+    conn = _FakeConn(counts)
+    _install_engine(monkeypatch, _FakeEngine(conn))
+
+    surface = await wd.survey_database(verify=True)
+
+    assert conn.nested_entered > 1, "each count must be wrapped in its own SAVEPOINT"
+    residue = " ".join(surface.residue)
+    assert (
+        "users still holds 7 row(s)" in residue
+    ), "a later table's rows must still be reported after an earlier count failed"
+    assert "causal_edges exists but could not be counted" in residue
+
+
+async def test_inventory_never_claims_all_empty_about_tables_it_could_not_read(
+    monkeypatch,
+):
+    """The mode an operator uses to decide whether to wipe must not make a
+    positive emptiness claim about tables it never successfully read."""
+    counts = {t: 0 for t in wd.MUST_BE_EMPTY | wd.MUST_BE_SEEDED | wd.INFORMATIONAL}
+    counts["evidence"] = None  # exists, count raises
+    present = set(counts)
+    present.discard("cases")  # does not exist at all
+    conn = _FakeConn(counts, present=present)
+    _install_engine(monkeypatch, _FakeEngine(conn))
+
+    surface = await wd.survey_database(verify=False)
+    rendered = surface.render()
+
+    assert "all empty" not in rendered, rendered
+    assert "DO NOT EXIST" in rendered and "cases" in rendered
+    assert "COULD NOT BE COUNTED" in rendered and "evidence" in rendered
+
+
+async def test_a_missing_seed_and_an_absent_table_are_different_findings(monkeypatch):
+    """Present-but-empty (a DELETE-based wipe) and not-there-at-all (migrations
+    have not run) have different causes and different fixes, so one table must
+    not produce both residue lines. Drives survey_database rather than
+    re-implementing its classification."""
+    counts = {t: 0 for t in wd.MUST_BE_EMPTY | wd.MUST_BE_SEEDED | wd.INFORMATIONAL}
+    counts["permissions"] = 0  # present, empty  -> "seeded but EMPTY"
+    present = set(counts)
+    present.discard("roles")  # absent          -> "does not exist"
+    conn = _FakeConn(counts, present=present)
+    _install_engine(monkeypatch, _FakeEngine(conn))
+
+    surface = await wd.survey_database(verify=True)
+
+    empty_seed = [r for r in surface.residue if "EMPTY but the migrations seed it" in r]
+    absent = [r for r in surface.residue if "does not exist" in r]
+    assert any("permissions" in r for r in empty_seed)
+    assert any("roles" in r for r in absent)
+    assert not any(
+        "roles" in r for r in empty_seed
+    ), "an absent table must not also be reported as an emptied seed"
+
+
+async def test_an_out_of_date_schema_is_residue(monkeypatch):
+    counts = {t: 0 for t in wd.MUST_BE_EMPTY | wd.MUST_BE_SEEDED | wd.INFORMATIONAL}
+    for seeded in wd.MUST_BE_SEEDED:
+        counts[seeded] = 1
+    conn = _FakeConn(counts, revision="older")
+    _install_engine(monkeypatch, _FakeEngine(conn))
+
+    surface = await wd.survey_database(verify=True)
+    assert any("head is rev1" in r for r in surface.residue)
+
+
+# ---------------------------------------------------------------------------
+# The two false-clean bugs (#1, #2)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_configured_but_unreachable_redis_is_not_reported_as_clean(monkeypatch):
+    """The sharpest false-clean. ``get_async_redis_client`` substitutes the
+    in-process FakeRedis whenever a *configured* real Redis fails its ping on a
+    non-cloud deployment. Trusting ``is_fakeredis`` then printed "nothing durable
+    to wipe" and --verify reported Redis clear, while the configured server still
+    held every session and revocation watermark.
+    """
+    from faultmaven.infrastructure import redis_client as rc
+
+    class _Fake:
+        __module__ = "fakeredis.aioredis"
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(rc, "REDIS_AVAILABLE", True)
+    monkeypatch.setattr(rc, "get_async_redis_client", lambda *a, **k: _ready(_Fake()))
+
+    surface = await wd.survey_redis(_Settings(), verify=True)
+
+    assert surface.unreachable is not None, "a substituted client is NOT a clean Redis"
+    assert "redis.internal:6379/0" in surface.unreachable
+    assert "NOT be wiped" in surface.unreachable
+    assert surface.residue == [], "no verdict may be drawn from an uninspected surface"
+
+
+async def test_wiping_a_substituted_redis_reports_an_error_not_success(monkeypatch):
+    from faultmaven.infrastructure import redis_client as rc
+
+    class _Fake:
+        __module__ = "fakeredis.aioredis"
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(rc, "REDIS_AVAILABLE", True)
+    monkeypatch.setattr(rc, "get_async_redis_client", lambda *a, **k: _ready(_Fake()))
+
+    deleted, error = await wd.wipe_redis(_Settings(), all_keys=False)
+    assert deleted == 0
+    assert error and "NOTHING was wiped" in error
+
+
+async def test_genuine_standalone_fakeredis_is_benign(monkeypatch):
+    """The other half of the discrimination: with the redis package absent,
+    FakeRedis is the intended backend and there is nothing durable to wipe. That
+    must NOT be reported as a failure, or standalone could never verify."""
+    from faultmaven.infrastructure import redis_client as rc
+
+    class _Fake:
+        __module__ = "fakeredis.aioredis"
+
+    monkeypatch.setattr(rc, "REDIS_AVAILABLE", False)
+    monkeypatch.setattr(rc, "get_async_redis_client", lambda *a, **k: _ready(_Fake()))
+
+    surface = await wd.survey_redis(_Settings(), verify=True)
+    assert surface.unreachable is None
+    assert surface.residue == []
+    assert "nothing durable to wipe" in " ".join(surface.detail)
+
+
+def _ready(value):
+    """An awaitable already holding ``value`` — for patching an async factory."""
+
+    async def _await():
+        return value
+
+    return _await()
+
+
+def test_a_local_client_is_not_mistaken_for_the_external_server():
+    """``_is_server_backed`` must answer from the client that was created.
+    ``chromadb.HttpClient`` raises at construction when the server is down, so
+    the factory falls back to a local PersistentClient — and a caller that
+    inferred "external" from CHROMADB_URL would sweep the wrong store."""
+
+    class _Local:
+        def get_settings(self):
+            return _Ns(chroma_server_host=None)
+
+    class _Http:
+        def get_settings(self):
+            return _Ns(chroma_server_host="chroma.internal")
+
+    class _Opaque:
+        def get_settings(self):
+            raise RuntimeError("unknown chromadb shape")
+
+    assert wd._is_server_backed(_Local()) is False
+    assert wd._is_server_backed(_Http()) is True
+    # Unknown shapes answer False: the caller then keeps BOTH local clients
+    # rather than collapsing to one and missing a store.
+    assert wd._is_server_backed(_Opaque()) is False
+
+
+async def test_a_chroma_fallback_is_reported_as_not_inspected(monkeypatch):
+    """With CHROMADB_URL set but unreachable, the vectors that matter live on a
+    server this process never reached. Counting the local trees and reporting
+    them clean is the false-clean bug."""
+    settings = _Settings()
+    settings.database.chromadb_url = "http://chroma.internal:8000"
+
+    class _Local:
+        def get_settings(self):
+            return _Ns(chroma_server_host=None)
+
+        def list_collections(self):
+            return []
+
+    monkeypatch.setattr(wd, "_chroma_clients", lambda s: ([_Local()], "local"))
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.chroma_client.is_external_chroma_configured",
+        lambda s: True,
+    )
+
+    surface = await wd.survey_vectors(settings, verify=True)
+    assert surface.unreachable is not None
+    assert "NOT be wiped" in surface.unreachable
+
+
+def test_wiping_vectors_refuses_after_a_fallback(monkeypatch):
+    """Refuse rather than delete: sweeping the local trees would destroy a store
+    the deployment does not read from AND report success, leaving the server's
+    collections intact."""
+    settings = _Settings()
+    settings.database.chromadb_url = "http://chroma.internal:8000"
+    deleted_names = []
+
+    class _Local:
+        def get_settings(self):
+            return _Ns(chroma_server_host=None)
+
+        def list_collections(self):
+            return ["faultmaven_kb"]
+
+        def delete_collection(self, name):
+            deleted_names.append(name)
+
+    monkeypatch.setattr(wd, "_chroma_clients", lambda s: ([_Local()], "local"))
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.chroma_client.is_external_chroma_configured",
+        lambda s: True,
+    )
+
+    deleted, error = wd.wipe_vectors(settings)
+    assert deleted == 0
+    assert deleted_names == [], "nothing may be deleted from the wrong store"
+    assert error and "Refusing to wipe" in error
+
+
+# ---------------------------------------------------------------------------
+# Object storage
+# ---------------------------------------------------------------------------
+
+
+def test_sidecars_are_counted_apart_from_objects():
+    """The filesystem backend writes a ``<key>.meta`` beside every file, and
+    list_keys walks the tree — so one count roughly doubles the real figure."""
+    objects, sidecars = wd.split_sidecar_keys(
+        ["case/a.log", "case/a.log.meta", "case/b.txt", "case/b.txt.meta.json"]
+    )
+    assert objects == ["case/a.log", "case/b.txt"]
+    assert len(sidecars) == 2
+
+
+async def test_a_partial_object_sweep_reports_what_it_deleted(monkeypatch):
+    """Returning the literal 0 told the operator nothing was removed when most
+    of the store was already gone — a retry decision made on a false premise."""
+
+    class _Backend:
+        async def list_keys(self, prefix=""):
+            return ["a", "b", "c"]
+
+        async def delete_file(self, key):
+            if key == "c":
+                raise PermissionError("AccessDenied")
+            return True
+
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.storage.factory.get_storage_backend",
+        lambda *a, **k: _Backend(),
+    )
+
+    deleted, error = await wd.wipe_objects()
+    assert deleted == 2, "the running count, not 0"
+    assert error and "AccessDenied" in error
+
+
+# ---------------------------------------------------------------------------
+# Preflight failure modes (#6) and wipe-time target disclosure (#7)
+# ---------------------------------------------------------------------------
+
+
+def _engine_only(monkeypatch, database="faultmaven"):
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence.database.get_engine",
+        lambda: _Ns(
+            url=_Ns(database=database, host="pg"), dialect=_Ns(name="postgresql")
+        ),
+    )
+
+
+async def test_an_unreachable_database_does_not_masquerade_as_a_refusal(
+    monkeypatch, capsys
+):
+    """The preflight connects, so a down database or a bad password lands there.
+    Letting it propagate exited 1 with a traceback — and 1 is the code documented
+    as "refused, nothing written", which is a different statement. --verify must
+    say INCONCLUSIVE(5) instead of implying a verdict.
+    """
+    _engine_only(monkeypatch)
+
+    async def _boom():
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(wd, "preflight_database_role", _boom)
+
+    code = await wd.wipe_deployment(
+        mode="verify", confirm_target=None, redis_all_keys=False
+    )
+    out = capsys.readouterr().out
+    assert code == 5, "an uninspected database is inconclusive, not a refusal"
+    assert "INCONCLUSIVE" in out
+    assert "connection refused" in out
+
+
+async def test_an_unreachable_database_refuses_a_wipe(monkeypatch, capsys):
+    _engine_only(monkeypatch)
+
+    async def _boom():
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(wd, "preflight_database_role", _boom)
+
+    code = await wd.wipe_deployment(
+        mode="wipe", confirm_target="faultmaven", redis_all_keys=False
+    )
+    assert code == 1
+    assert "Nothing was written" in capsys.readouterr().out
+
+
+async def test_the_wipe_prints_the_targets_of_the_surfaces_it_deletes(
+    monkeypatch, capsys
+):
+    """--confirm-target names the *database* — the one surface never touched.
+    ChromaDB, object storage and Redis resolve from independent settings, and the
+    documented invocation overrides only DATABASE_URL, so a scratch database that
+    happens to be named `faultmaven` with ambient production S3/Redis would pass
+    the guard. The targets therefore go on screen before the first delete.
+    """
+    _engine_only(monkeypatch)
+
+    async def _surveys(settings, *, verify):
+        return [
+            wd.Surface(name="Vector store", target="external server https://chroma"),
+            wd.Surface(name="Object storage", target="s3: bucket=PROD-EVIDENCE"),
+            wd.Surface(name="Redis", target="real Redis: prod-redis:6379/0"),
+        ]
+
+    monkeypatch.setattr(wd, "_survey_all", _surveys)
+    monkeypatch.setattr(wd, "wipe_vectors", lambda s: (0, None))
+    monkeypatch.setattr(wd, "wipe_objects", lambda: _ready((0, None)))
+    monkeypatch.setattr(wd, "wipe_redis", lambda s, **k: _ready((0, None)))
+
+    code = await wd.run_wipe(
+        _Settings(), confirm_target="faultmaven", redis_all_keys=False
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "bucket=PROD-EVIDENCE" in out, "the bucket about to be emptied must be shown"
+    assert "prod-redis:6379/0" in out
+    assert "https://chroma" in out
+    assert out.index("bucket=PROD-EVIDENCE") < out.index(
+        "Object storage: deleted"
+    ), "targets must be printed BEFORE the deletions, not after"
+
+
+# ---------------------------------------------------------------------------
+# Printed guidance
+# ---------------------------------------------------------------------------
+
+
+def test_the_printed_next_steps_do_not_open_with_a_prerequisite():
+    """_NEXT_STEPS is printed *after* the wipe. It used to start with "Scale the
+    API down" — the step that must precede the wipe — so an operator following
+    the on-screen list in order had already wiped with the API up."""
+    first_step = wd._NEXT_STEPS.split("1.", 1)[1].splitlines()[0]
+    assert "DROP DATABASE" in first_step
+    assert "Scale the API down." not in wd._NEXT_STEPS.split("1.", 1)[1]
 
 
 # ---------------------------------------------------------------------------

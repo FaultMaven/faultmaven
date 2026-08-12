@@ -203,9 +203,16 @@ on a half-wiped database and only fail later, at the first SSO login.
 - object storage has no objects;
 - Redis has no keys.
 
-It also exits 5 when a surface could **not be inspected**. Silence from a
+It also exits 5 when a surface could **not be inspected** — including a database
+the preflight could not reach, a ChromaDB server that fell back to a local tree,
+and a real Redis that was substituted by the in-process stand-in. Silence from a
 surface nobody could read is not a clean bill of health, which is the entire
 failure mode this procedure was built around.
+
+Tables are reported in three states, not two: counted, **absent** (the migration
+Job has not run), and **present but uncountable** (a permissions problem, say).
+Those need different operator actions, so they are never collapsed — and the
+inventory refuses to say "all empty" about tables it did not read.
 
 `knowledge_items` is reported but never asserted: it is 0 immediately after the
 migrations and ~91 after `kb_seed`, and both are correct at their own point in
@@ -217,14 +224,31 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
 ## Notes
 
 - **Redis is scoped by default.** `--wipe` deletes keys under FaultMaven's known
-  prefixes (`session:`, `revoked:token:`, `idempotency:`, `sso:state:`,
-  `sso:login:`) and *reports* the count of keys under any other prefix rather
-  than silently skipping them. Use `--redis-all-keys` only if that logical Redis
-  database is FaultMaven's alone.
-- **FakeRedis has nothing to wipe.** In standalone the keyspace lives inside the
-  API process; a CLI process has its own empty copy. The command says so
-  instead of reporting "0 keys deleted", which would read as a clean sweep of
-  state that is actually in another process. Restart the API to clear it.
+  prefixes — `session:`, `client_index:`, `idempotency:`, `sso:state:`,
+  `sso:login:`, `oauth:code:`, `password_reset:`, `case_seq:`, `redaction:`, the
+  configured token-revocation prefix, and the protection preset's
+  `<prefix>:rl` / `<prefix>:dedup` — and *reports* the count of keys under any
+  other prefix rather than silently skipping them. `--verify` judges Redis
+  against **the same set the wipe deletes**, so the two cannot disagree and a
+  Redis shared with another application does not make verification unpassable.
+  Use `--redis-all-keys` only if that logical Redis database is FaultMaven's
+  alone.
+- **FakeRedis has nothing to wipe — but only when it is the intended backend.**
+  In a base/standalone install the `redis` package is absent, the keyspace lives
+  inside the API process, and a CLI process has its own empty copy; the command
+  says so rather than reporting "0 keys deleted". **If a real Redis is configured
+  and merely unreachable**, the client factory silently substitutes that same
+  stand-in — so the command reports the surface as **NOT INSPECTED** and
+  `--verify` returns 5. Reading that as an empty Redis is the trap: the
+  configured server still holds every session and revocation watermark.
+- **A ChromaDB fallback is refused, not swept.** `HttpClient` raises at
+  construction when the server is unreachable, and on standalone the factory then
+  falls back to a local `PersistentClient`. In that state `--wipe` **refuses**:
+  sweeping the local tree would destroy a store the deployment does not read from
+  and report success while the server's collections survive intact.
+- **Counts distinguish objects from metadata sidecars.** The filesystem backend
+  writes a `<key>.meta` beside every file, so a single count of `list_keys`
+  roughly doubles the real figure.
 - **The service-account org claim is not persisted.** It lives only in the token
   chain and is re-stamped on rotation. Lose the rotated refresh token and you
   must re-run `fm-provision-service-account -o` — see fm#819.

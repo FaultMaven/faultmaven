@@ -87,7 +87,10 @@ Exit codes
 | 2 | argparse usage error (a bad flag), reserved by argparse — nothing written |
 | 3 | the wipe ran but at least one surface failed; re-run and re-verify |
 | 5 | ``--verify`` found residue, or a seed the migrations should have restored is
-     missing |
+     missing, or a surface could not be inspected at all (INCONCLUSIVE — an
+     unreachable database, a ChromaDB that fell back to a local tree, a real
+     Redis substituted by the in-process stand-in). Inconclusive is a failure:
+     silence from a surface nobody could read is not a clean slate |
 """
 
 from __future__ import annotations
@@ -185,17 +188,66 @@ MUST_BE_SEEDED = frozenset(
 #: ``python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance``.
 INFORMATIONAL = frozenset({"knowledge_items"})
 
-#: Redis key namespaces this deployment writes. Used for the inventory
-#: breakdown and for the default (scoped) Redis wipe. Keys matching none of
-#: these are counted and reported rather than silently skipped — see
-#: ``--redis-all-keys``.
-REDIS_PREFIXES = (
-    "session:",
-    "revoked:token:",
-    "idempotency:",
-    "sso:state:",
-    "sso:login:",
+#: Redis key namespaces with a fixed spelling. Two more are configurable and are
+#: added by :func:`redis_prefixes` — the set must be COMPLETE, because
+#: ``--verify`` treats any surviving key as residue: a namespace missing here is
+#: one the scoped wipe leaves behind and the verification then refuses forever.
+_FIXED_REDIS_PREFIXES = (
+    "session:",  # RedisSessionStore
+    "client_index:",  # RedisSessionStore's own per-client index
+    "idempotency:",  # IdempotencyMiddleware
+    "sso:state:",  # SSOEphemeralStore (login CSRF)
+    "sso:login:",  # SSOEphemeralStore (completion code)
+    "oauth:code:",  # OAuthCodeRepository
+    "password_reset:",  # UserService reset tokens
+    "case_seq:",  # CaseService per-user daily sequence
+    "redaction:",  # pseudonym-key fingerprint agreement
 )
+
+
+def redis_prefixes(settings) -> tuple[str, ...]:
+    """Every Redis namespace this deployment writes, including configurable ones.
+
+    Two cannot be hardcoded without going stale against configuration:
+
+    * the token-revocation prefix is ``settings.security.token_revocation_prefix``
+      (the container passes it to the store), so a deployment that overrides it
+      would otherwise keep every revocation watermark through a "successful" wipe;
+    * the rate-limit and dedup namespaces are built from the protection preset's
+      ``redis_key_prefix`` (``faultmaven_dev`` / ``faultmaven_prod``), chosen by
+      ``ENVIRONMENT`` — so the literal ``faultmaven_prod:rl:`` would be wrong on
+      every non-production deployment.
+    """
+    prefixes = list(_FIXED_REDIS_PREFIXES)
+
+    revocation = getattr(
+        getattr(settings, "security", None), "token_revocation_prefix", None
+    )
+    prefixes.append(revocation or "revoked:token:")
+
+    # Same discriminator ``setup_protection_middleware`` uses: ``development``
+    # exactly gets the dev preset, everything else (including staging and any
+    # unrecognised value) gets production. Reproduced rather than hardcoded as
+    # "faultmaven_prod" because that literal is wrong on every non-production
+    # deployment.
+    try:
+        from faultmaven.config.protection import (
+            get_development_protection_settings,
+            get_production_protection_settings,
+        )
+        from faultmaven.config.settings import Environment
+
+        if settings.server.environment == Environment.DEVELOPMENT:
+            key_prefix = get_development_protection_settings().redis_key_prefix
+        else:
+            key_prefix = get_production_protection_settings().redis_key_prefix
+    except Exception:
+        key_prefix = None
+    if key_prefix:
+        prefixes.extend([f"{key_prefix}:rl", f"{key_prefix}:dedup"])
+
+    # Deduplicate while keeping a stable order for the inventory breakdown.
+    return tuple(dict.fromkeys(prefixes))
 
 
 def unclassified_tables() -> frozenset[str]:
@@ -276,9 +328,20 @@ def resolved_database_name(engine) -> str:
 
 
 async def _count_rows(conn, table: str) -> int | None:
-    """``COUNT(*)`` for one table, or ``None`` if the table does not exist."""
+    """``COUNT(*)`` for one table, or ``None`` if it could not be counted.
+
+    Each count runs inside its own SAVEPOINT. All 38 share one connection, and
+    on PostgreSQL a single failed statement aborts the surrounding transaction —
+    every later ``COUNT(*)`` would then raise ``InFailedSqlTransaction`` and this
+    function would report the whole rest of the schema as uncountable. Worse than
+    noise: tables that *do* hold rows would be classified as absent instead of as
+    residue, so ``--verify`` would stop reporting the very thing it exists to
+    find. SQLite tolerates the unscoped version, which is why only PostgreSQL
+    showed it. The SAVEPOINT confines the rollback to the one failed count.
+    """
     try:
-        return int((await conn.scalar(text(f"SELECT COUNT(*) FROM {table}"))) or 0)
+        async with conn.begin_nested():
+            return int((await conn.scalar(text(f"SELECT COUNT(*) FROM {table}"))) or 0)
     except Exception:
         return None
 
@@ -303,7 +366,11 @@ async def survey_database(*, verify: bool) -> Surface:
                 await conn.scalar(text("SELECT version_num FROM alembic_version"))
                 or "(unstamped)"
             )
-            counts = {table: await _count_rows(conn, table) for table in tables}
+            present = await _existing_tables(conn)
+            counts = {
+                table: (await _count_rows(conn, table) if table in present else None)
+                for table in tables
+            }
     except Exception as exc:
         # Reported like any other unreachable surface rather than raised. An
         # unhandled exception here would exit 1 — the code that means "refused,
@@ -317,27 +384,47 @@ async def survey_database(*, verify: bool) -> Surface:
     surface.detail.append(f"expected head: {_alembic_head() or '(not resolvable)'}")
 
     populated = {t: n for t, n in counts.items() if n and t in MUST_BE_EMPTY}
-    absent = [t for t, n in sorted(counts.items()) if n is None]
+    absent = sorted(t for t in tables if t not in present)
+    uncounted = sorted(t for t, n in counts.items() if n is None and t in present)
     # Present but empty. A table that does not exist at all is a different
     # finding (``absent``), so excluding it here keeps one table from producing
     # two residue lines that blame two different causes.
     missing = [t for t in sorted(MUST_BE_SEEDED) if counts.get(t) == 0]
 
-    surface.detail.append(
-        "data tables: "
-        + (
-            ", ".join(f"{t}={n}" for t, n in sorted(populated.items()))
-            if populated
-            else "all empty"
+    # "all empty" is a positive claim, so it may only be made about tables that
+    # were actually read. Anything unread is named in BOTH modes — inventory is
+    # the mode an operator uses to decide whether to wipe, and a silent "all
+    # empty" there about tables nobody could count is the same false-clean this
+    # command exists to prevent.
+    if populated:
+        detail = ", ".join(f"{t}={n}" for t, n in sorted(populated.items()))
+    elif absent or uncounted:
+        detail = f"no rows in the {len(present & set(tables))} table(s) read"
+    else:
+        detail = "all empty"
+    surface.detail.append(f"data tables: {detail}")
+    if absent:
+        surface.detail.append(
+            f"⚠ {len(absent)} table(s) DO NOT EXIST, so nothing is known about "
+            f"them: {', '.join(absent)}"
         )
-    )
+    if uncounted:
+        surface.detail.append(
+            f"⚠ {len(uncounted)} table(s) exist but COULD NOT BE COUNTED, so "
+            f"nothing is known about them: {', '.join(uncounted)}"
+        )
     surface.detail.append(
         "migration seeds: "
-        + ", ".join(f"{t}={counts.get(t)}" for t in sorted(MUST_BE_SEEDED))
+        + ", ".join(
+            f"{t}={counts.get(t) if counts.get(t) is not None else 'unknown'}"
+            for t in sorted(MUST_BE_SEEDED)
+        )
     )
     for table in sorted(INFORMATIONAL):
+        value = counts.get(table)
         surface.detail.append(
-            f"{table}={counts.get(table)} (KB pack — 0 until kb_seed runs; not asserted)"
+            f"{table}={value if value is not None else 'unknown'} "
+            "(KB pack — 0 until kb_seed runs; not asserted)"
         )
 
     if not verify:
@@ -363,7 +450,28 @@ async def survey_database(*, verify: bool) -> Surface:
             f"{table} does not exist — the schema is older than this build, or "
             "the migration Job has not run"
         )
+    for table in uncounted:
+        surface.residue.append(
+            f"{table} exists but could not be counted, so this verification "
+            "cannot say whether it is empty"
+        )
     return surface
+
+
+async def _existing_tables(conn) -> set[str]:
+    """The tables that actually exist, asked of the schema rather than inferred.
+
+    Determining absence positively — instead of from a failed ``COUNT(*)`` —
+    separates "the migration Job has not run" from "the table is there but the
+    count failed" (a permissions problem, say). Those want different operator
+    actions, and a bare ``except`` collapses them into one misleading message.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    def _names(sync_conn) -> set[str]:
+        return set(sa_inspect(sync_conn).get_table_names())
+
+    return await conn.run_sync(_names)
 
 
 def _alembic_head() -> str | None:
@@ -395,34 +503,92 @@ def _alembic_head() -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _is_server_backed(client) -> bool:
+    """Whether this client talks to a ChromaDB *server* rather than a local tree.
+
+    Asked of the client that was actually created, never of the configuration.
+    ``chromadb.HttpClient`` raises at construction when the server is
+    unreachable, so ``_create_chromadb_client`` catches that and — on standalone
+    — falls back to a local ``PersistentClient``. A caller that inferred "this is
+    the external server" from ``CHROMADB_URL`` being set would then mislabel a
+    local tree as the shared server and sweep the wrong store.
+
+    ``chroma_server_host`` is populated by ``HttpClient`` and left unset by
+    ``PersistentClient`` (verified against the pinned chromadb). Unknown shapes
+    answer ``False``, which is the safe direction: the caller then keeps BOTH
+    local clients instead of collapsing to one.
+    """
+    try:
+        return bool(getattr(client.get_settings(), "chroma_server_host", None))
+    except Exception:
+        return False
+
+
 def _chroma_clients(settings) -> tuple[list, str]:
     """The ChromaDB clients to sweep, and a description of what they resolved to.
 
-    Under cloud both the KB and evidence clients address the **same** server and
-    are isolated only by collection name, so one client covers the whole store —
-    two would double-report every collection. Standalone keeps them separate
-    because they are genuinely separate directories with separate lifecycles.
+    Both clients are always created, and what they *are* decides the rest. When
+    an external server is configured and reachable, the KB and evidence clients
+    address the **same** server and are isolated only by collection name — the
+    caller keys collections by name, so the duplicate view collapses on its own.
+    When they are local trees they are genuinely separate directories with
+    separate lifecycles, and both must be swept: a fallback that returned only
+    the KB client would leave every ``case_*`` collection behind while reporting
+    the vector store clean.
     """
     from faultmaven.container.providers.infrastructure import (
         create_evidence_chromadb_client,
         create_kb_chromadb_client,
     )
-    from faultmaven.infrastructure.chroma_client import is_external_chroma_configured
-
-    if is_external_chroma_configured(settings):
-        client = create_kb_chromadb_client(settings)
-        url = settings.database.chromadb_url.strip()
-        return ([client] if client else []), f"external server {url}"
 
     clients = [
-        create_kb_chromadb_client(settings),
-        create_evidence_chromadb_client(settings),
+        c
+        for c in (
+            create_kb_chromadb_client(settings),
+            create_evidence_chromadb_client(settings),
+        )
+        if c
     ]
+    if not clients:
+        return [], "(no client could be created)"
+
+    if any(_is_server_backed(c) for c in clients):
+        url = (getattr(settings.database, "chromadb_url", "") or "").strip()
+        return clients, f"external server {url}"
+
     kb_dir = getattr(settings.database, "chromadb_kb_persist_dir", "./data/chroma-kb")
     ev_dir = getattr(
         settings.database, "chromadb_evidence_persist_dir", "./data/chroma-evidence"
     )
-    return [c for c in clients if c], f"local PersistentClient: {kb_dir}, {ev_dir}"
+    target = f"local PersistentClient: {kb_dir}, {ev_dir}"
+    # Say so loudly: an external server was asked for and is not what we got, so
+    # the store being swept is NOT the one the deployment reads from.
+    from faultmaven.infrastructure.chroma_client import is_external_chroma_configured
+
+    if is_external_chroma_configured(settings):
+        url = (getattr(settings.database, "chromadb_url", "") or "").strip()
+        target = (
+            f"⚠ CHROMADB_URL={url} is configured but unreachable — fell back to "
+            f"{target}"
+        )
+    return clients, target
+
+
+def _fell_back_to_local(settings, clients: list) -> bool:
+    """An external server was configured, but every client we got is local.
+
+    The signature of ``_create_chromadb_client``'s standalone fallback. Under
+    cloud that path raises instead, so this only ever fires on standalone/on-prem
+    — where it still means the wipe would sweep a tree the deployment does not
+    read from.
+    """
+    from faultmaven.infrastructure.chroma_client import is_external_chroma_configured
+
+    return (
+        bool(clients)
+        and is_external_chroma_configured(settings)
+        and not any(_is_server_backed(c) for c in clients)
+    )
 
 
 def _collection_names(client) -> list[str]:
@@ -449,6 +615,18 @@ async def survey_vectors(settings, *, verify: bool) -> Surface:
         surface.unreachable = (
             "no ChromaDB client could be created (SKIP_SERVICE_CHECKS=true, or "
             "the server is unreachable) — vectors were NOT inspected"
+        )
+        return surface
+
+    if _fell_back_to_local(settings, clients):
+        # The deployment reads from a server this process could not reach, so
+        # whatever the local trees contain says nothing about the store that
+        # matters. Counting them and reporting "clean" is the false-clean bug.
+        url = (getattr(settings.database, "chromadb_url", "") or "").strip()
+        surface.unreachable = (
+            f"CHROMADB_URL={url} is configured but unreachable, so a local "
+            "PersistentClient was substituted. The server's collections were "
+            "NOT inspected and would NOT be wiped — fix connectivity and re-run"
         )
         return surface
 
@@ -498,6 +676,18 @@ def wipe_vectors(settings) -> tuple[int, str | None]:
     if not clients:
         return 0, "no ChromaDB client could be created — nothing was wiped"
 
+    if _fell_back_to_local(settings, clients):
+        # Refuse rather than delete. Sweeping the local trees here would destroy
+        # a store the deployment does not read from, report success, and leave
+        # the configured server's collections fully intact.
+        url = (getattr(settings.database, "chromadb_url", "") or "").strip()
+        return 0, (
+            f"CHROMADB_URL={url} is configured but unreachable, so a local "
+            "PersistentClient was substituted. Refusing to wipe: that would "
+            "delete a store the deployment does not read from while leaving the "
+            "server untouched. Fix connectivity and re-run"
+        )
+
     deleted = 0
     for client in clients:
         try:
@@ -538,11 +728,33 @@ async def survey_objects(settings, *, verify: bool) -> Surface:
         surface.unreachable = f"{type(exc).__name__}: {exc}"
         return surface
 
-    surface.detail.append(f"{len(keys)} object(s)")
+    objects, sidecars = split_sidecar_keys(keys)
+    # Stored objects and their metadata sidecars are counted apart. The
+    # filesystem backend writes a ``<key>.meta`` beside every file (and evidence
+    # adds ``.meta.json``), and ``list_keys`` walks the tree, so a single count
+    # roughly doubles the real figure — an operator sizing the wipe from it is
+    # reading a number that does not correspond to anything.
+    surface.detail.append(f"{len(objects)} object(s)")
+    if sidecars:
+        surface.detail.append(f"{len(sidecars)} metadata sidecar(s)")
     if verify and keys:
-        sample = ", ".join(sorted(keys)[:3])
-        surface.residue.append(f"{len(keys)} object(s) remain (e.g. {sample})")
+        sample = ", ".join(sorted(objects or sidecars)[:3])
+        surface.residue.append(
+            f"{len(objects)} object(s) and {len(sidecars)} sidecar(s) remain "
+            f"(e.g. {sample})"
+        )
     return surface
+
+
+#: Suffixes the storage backends use for metadata written beside an object.
+_SIDECAR_SUFFIXES = (".meta", ".meta.json")
+
+
+def split_sidecar_keys(keys: list[str]) -> tuple[list[str], list[str]]:
+    """Partition storage keys into real objects and metadata sidecars."""
+    sidecars = [k for k in keys if k.endswith(_SIDECAR_SUFFIXES)]
+    objects = [k for k in keys if not k.endswith(_SIDECAR_SUFFIXES)]
+    return objects, sidecars
 
 
 async def wipe_objects() -> tuple[int, str | None]:
@@ -552,18 +764,26 @@ async def wipe_objects() -> tuple[int, str | None]:
     all covered by one path and the keys deleted are exactly the keys the
     application can address. ``list_keys`` paginates and strips the backend
     prefix that ``delete_file`` re-applies, so the round-trip is exact.
+
+    Sidecar keys are passed to ``delete_file`` too, deliberately: the filesystem
+    backend removes a sidecar along with its base file, so the later sidecar key
+    simply reports ``False`` — but on a store where one was orphaned, deleting it
+    by key is how it gets cleaned up.
     """
+    deleted = 0
     try:
         from faultmaven.infrastructure.storage.factory import get_storage_backend
 
         backend = get_storage_backend()
-        deleted = 0
         for key in await backend.list_keys():
             if await backend.delete_file(key):
                 deleted += 1
         return deleted, None
     except Exception as exc:
-        return 0, f"{type(exc).__name__}: {exc}"
+        # The running count, not 0. A sweep that failed at object 900 of 1522 did
+        # delete 899, and reporting "0" tells the operator the store is intact
+        # when it is half gone.
+        return deleted, f"{type(exc).__name__}: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -586,23 +806,64 @@ async def _scan_keys(client, pattern: str = "*") -> list[str]:
             return keys
 
 
-def classify_redis_keys(keys: list[str]) -> tuple[dict[str, int], list[str]]:
+def classify_redis_keys(
+    keys: list[str], prefixes: tuple[str, ...] = _FIXED_REDIS_PREFIXES
+) -> tuple[dict[str, int], list[str]]:
     """Split keys into per-prefix counts and the ones matching no known prefix.
 
     The unmatched list is the point: a namespace this command has never heard of
     is *reported*, so an incomplete scoped wipe is visible to the operator
     instead of being mistaken for a clean sweep.
     """
-    counts = {prefix: 0 for prefix in REDIS_PREFIXES}
+    counts = {prefix: 0 for prefix in prefixes}
     unmatched = []
     for key in keys:
-        for prefix in REDIS_PREFIXES:
+        for prefix in prefixes:
             if key.startswith(prefix):
                 counts[prefix] += 1
                 break
         else:
             unmatched.append(key)
     return counts, unmatched
+
+
+def _real_redis_was_configured(settings) -> str | None:
+    """The Redis this deployment *intends*, or ``None`` if it intends FakeRedis.
+
+    The distinction the wipe turns on. ``get_async_redis_client`` returns the
+    in-process FakeRedis in two very different situations, and only one of them
+    means "there is nothing durable to wipe":
+
+    * the ``redis`` package is not installed — a base/standalone install, where
+      FakeRedis is the intended backend. Benign.
+    * the package IS installed and a server is configured, but the connection
+      failed, so ``fakeredis_or_fail`` substituted the stand-in (it only raises
+      under cloud). **A wipe that trusted ``is_fakeredis`` here would report
+      "nothing durable to wipe" while the real server kept every session and
+      revocation watermark** — a false clean bill of health on the one surface
+      whose staleness can shadow the newly provisioned tenant.
+
+    Returns a printable ``host:port/db`` (or the masked URL form) when a real
+    server is configured and reachable-in-principle, else ``None``.
+    """
+    from faultmaven.infrastructure.redis_client import REDIS_AVAILABLE
+
+    if not REDIS_AVAILABLE:
+        return None
+
+    database = getattr(settings, "database", None)
+    url = getattr(database, "redis_url", None)
+    if url:
+        # Never print the URL itself: it carries the password.
+        from faultmaven.infrastructure.redis_client import RedisClientFactory
+
+        return RedisClientFactory._mask_url(url)
+    host = getattr(database, "redis_host", None)
+    if host:
+        port = getattr(database, "redis_port", 6379)
+        db = getattr(database, "redis_db", 0)
+        return f"{host}:{port}/{db}"
+    return None
 
 
 def _redis_target(client) -> str:
@@ -619,11 +880,12 @@ def _redis_target(client) -> str:
     return f"{host}:{port}/{db}"
 
 
-async def survey_redis(*, verify: bool) -> Surface:
+async def survey_redis(settings, *, verify: bool) -> Surface:
     """Report the Redis keyspace, or say plainly that there is nothing durable."""
     surface = Surface(
         name="Redis (sessions, revocation, idempotency)", target="(unresolved)"
     )
+    configured = _real_redis_was_configured(settings)
     try:
         from faultmaven.infrastructure.redis_client import (
             get_async_redis_client,
@@ -636,10 +898,26 @@ async def survey_redis(*, verify: bool) -> Surface:
         return surface
 
     if is_fakeredis(client):
-        # Not a failure and not a wipe: FakeRedis lives inside one process, so
-        # this command's copy is empty by construction and the API's copy is
-        # unreachable from here. Saying "wiped 0 keys" would be a false clean
-        # bill of health for state that is actually in another process.
+        if configured:
+            # The dangerous branch. A real server is configured but unreachable,
+            # so the client factory silently handed back the in-process
+            # stand-in. Reporting "nothing durable to wipe" here would be a
+            # false clean: the configured server still holds every session and
+            # revocation watermark, and nothing this command did touched it.
+            surface.target = f"real Redis configured at {configured} — NOT REACHED"
+            surface.unreachable = (
+                f"a real Redis is configured ({configured}) but could not be "
+                "reached, so the client factory substituted the in-process "
+                "FakeRedis stand-in. Its keyspace was NOT inspected and would "
+                "NOT be wiped. Fix connectivity (or REDIS_URL/REDIS_HOST) and "
+                "re-run — do not read this as an empty Redis"
+            )
+            await _close_quietly(client)
+            return surface
+
+        # Benign: the redis package is not installed, so FakeRedis is the
+        # intended backend. It lives inside one process, so this command's copy
+        # is empty by construction and the API's copy is unreachable from here.
         surface.target = "in-process FakeRedis (standalone)"
         surface.detail.append(
             "nothing durable to wipe — the API's keyspace lives in the API "
@@ -647,6 +925,7 @@ async def survey_redis(*, verify: bool) -> Surface:
         )
         return surface
 
+    prefixes = redis_prefixes(settings)
     try:
         surface.target = f"real Redis: {_redis_target(client)}"
         keys = await _scan_keys(client)
@@ -656,7 +935,8 @@ async def survey_redis(*, verify: bool) -> Surface:
     finally:
         await _close_quietly(client)
 
-    counts, unmatched = classify_redis_keys(keys)
+    counts, unmatched = classify_redis_keys(keys, prefixes)
+    known = len(keys) - len(unmatched)
     surface.detail.append(f"{len(keys)} key(s) total")
     for prefix, count in counts.items():
         if count:
@@ -664,12 +944,17 @@ async def survey_redis(*, verify: bool) -> Surface:
     if unmatched:
         surface.detail.append(
             f"{len(unmatched)} key(s) under no known FaultMaven prefix "
-            f"(e.g. {', '.join(sorted(unmatched)[:3])}) — a scoped wipe leaves these"
+            f"(e.g. {', '.join(sorted(unmatched)[:3])}) — the scoped wipe leaves "
+            "these; --redis-all-keys removes them"
         )
-    if verify and keys:
+    if verify and known:
+        # Residue is judged against the SAME prefix set the wipe deletes, so the
+        # two cannot disagree. Judging every key would make --verify unpassable
+        # on a Redis shared with anything else — a permanent false failure — and
+        # unmatched keys are already reported above for the operator to judge.
         surface.residue.append(
-            f"{len(keys)} key(s) remain — a stale session or revocation watermark "
-            "can shadow the newly provisioned tenant"
+            f"{known} key(s) under FaultMaven prefixes remain — a stale session "
+            "or revocation watermark can shadow the newly provisioned tenant"
         )
     return surface
 
@@ -682,10 +967,10 @@ async def _close_quietly(client) -> None:
         pass
 
 
-async def wipe_redis(*, all_keys: bool) -> tuple[int, str | None]:
+async def wipe_redis(settings, *, all_keys: bool) -> tuple[int, str | None]:
     """Delete FaultMaven's Redis keys. Returns (deleted, error).
 
-    Scoped to :data:`REDIS_PREFIXES` by default, because this command cannot
+    Scoped to :func:`redis_prefixes` by default, because this command cannot
     prove the logical database is FaultMaven's alone and a blind FLUSHDB would
     take another tenant of that database with it. ``all_keys=True`` is the
     operator's explicit statement that it is exclusive.
@@ -701,25 +986,39 @@ async def wipe_redis(*, all_keys: bool) -> tuple[int, str | None]:
         return 0, f"{type(exc).__name__}: {exc}"
 
     if is_fakeredis(client):
-        return 0, None  # Reported by survey_redis; nothing durable exists.
+        await _close_quietly(client)
+        configured = _real_redis_was_configured(settings)
+        if configured:
+            # Same false-clean trap as in survey_redis: a configured server was
+            # substituted by the in-process stand-in, so "deleted 0 keys" would
+            # read as a clean sweep of a keyspace this process never touched.
+            return 0, (
+                f"a real Redis is configured ({configured}) but could not be "
+                "reached; the in-process FakeRedis stand-in was substituted and "
+                "NOTHING was wiped. Fix connectivity and re-run"
+            )
+        return 0, None  # Benign: FakeRedis is the intended backend.
 
+    deleted = 0
     try:
         if all_keys:
             targets = await _scan_keys(client)
         else:
             targets = [
                 key
-                for prefix in REDIS_PREFIXES
+                for prefix in redis_prefixes(settings)
                 for key in await _scan_keys(client, f"{prefix}*")
             ]
-        deleted = 0
         for batch_start in range(0, len(targets), 500):
             batch = targets[batch_start : batch_start + 500]
             if batch:
                 deleted += int(await client.delete(*batch) or 0)
         return deleted, None
     except Exception as exc:
-        return 0, f"{type(exc).__name__}: {exc}"
+        # The running count, not 0: a sweep that failed at key 900 of 1522 did
+        # delete 899, and telling the operator "0" invites a retry decision made
+        # on a false premise.
+        return deleted, f"{type(exc).__name__}: {exc}"
     finally:
         await _close_quietly(client)
 
@@ -729,36 +1028,45 @@ async def wipe_redis(*, all_keys: bool) -> tuple[int, str | None]:
 # ---------------------------------------------------------------------------
 
 _NEXT_STEPS = """\
-The database itself is the operator's step, in this order (getting it wrong
-breaks SSO login, not the wipe):
+Remaining steps, in this order (getting it wrong breaks SSO login, not the wipe).
+The API should already be scaled down — it is a PREREQUISITE of the wipe you just
+ran, not a next step; if it was up, re-run the wipe with it down.
 
-  1. Scale the API down.                       kubectl scale deploy/faultmaven-api --replicas=0
-  2. DROP DATABASE faultmaven; CREATE DATABASE faultmaven OWNER faultmaven;
+  1. DROP DATABASE faultmaven; CREATE DATABASE faultmaven OWNER faultmaven;
      Never DELETE/TRUNCATE — migration 029's RBAC seed will not re-run, and the
      operator-access tables reject both by trigger.
      ⚠ Never faultmaven_slack: it holds the Slack workspace installations.
-  3. Re-grant, BEFORE migrating, so ALTER DEFAULT PRIVILEGES covers the tables
+  2. Re-grant, BEFORE migrating, so ALTER DEFAULT PRIVILEGES covers the tables
      the migrations are about to create — DROP DATABASE destroyed the
      per-database grants even though the cluster roles survived:
        scripts/apps/provision-rls-app-role.sh
        scripts/apps/provision-maintenance-role.sh
-  4. Run the migration Job (RUN_STARTUP_MIGRATIONS is false on k8s).
+  3. Run the migration Job (RUN_STARTUP_MIGRATIONS is false on k8s).
+  4. Delete credentials.db from the Slack agent PVC.
   5. fm-wipe-deployment --verify   ← before provisioning anything
   6. Provision: fm-provision-sso-org -> SSO sign-in -> fm-promote-platform-admin
      -> fm-provision-service-account -> the kb_seed job.
+  7. Scale the API back up; redeploy the Slack agent.
 
 The full cutover runbook is docs/operations/cloud-mode-cutover.md in the infra
 repo; the core-repo half is docs/operations/deployment-wipe.md."""
 
 
+async def _survey_all(settings, *, verify: bool) -> list[Surface]:
+    """Every surface, in a fixed order. One definition, so inventory, the
+    pre-wipe target report and verification cannot drift into surveying
+    different things."""
+    return [
+        await survey_database(verify=verify),
+        await survey_vectors(settings, verify=verify),
+        await survey_objects(settings, verify=verify),
+        await survey_redis(settings, verify=verify),
+    ]
+
+
 async def run_inventory(settings) -> int:
     """Resolve and report every surface. Writes nothing."""
-    surfaces = [
-        await survey_database(verify=False),
-        await survey_vectors(settings, verify=False),
-        await survey_objects(settings, verify=False),
-        await survey_redis(verify=False),
-    ]
+    surfaces = await _survey_all(settings, verify=False)
     print("=" * 78)
     print("Deployment inventory — resolved targets, nothing written")
     print("=" * 78)
@@ -775,12 +1083,7 @@ async def run_inventory(settings) -> int:
 
 async def run_verify(settings) -> int:
     """Positively verify the clean slate. Exit 5 on any residue."""
-    surfaces = [
-        await survey_database(verify=True),
-        await survey_vectors(settings, verify=True),
-        await survey_objects(settings, verify=True),
-        await survey_redis(verify=True),
-    ]
+    surfaces = await _survey_all(settings, verify=True)
     print("=" * 78)
     print("Deployment wipe verification")
     print("=" * 78)
@@ -825,6 +1128,22 @@ async def run_wipe(settings, *, confirm_target: str, redis_all_keys: bool) -> in
     print("=" * 78)
     print(f"Wiping non-SQL surfaces for '{resolved}'")
     print("=" * 78)
+
+    # Print what is about to be deleted, resolved, BEFORE deleting it.
+    #
+    # --confirm-target names the *database* — the one surface this command never
+    # touches. ChromaDB, object storage and Redis resolve from independent
+    # settings, and the documented invocation overrides only DATABASE_URL. So an
+    # operator pointing at a scratch database that also happens to be called
+    # `faultmaven`, while the ambient S3_BUCKET_NAME and REDIS_URL still resolve
+    # to production, would pass the guard and have production evidence bytes
+    # deleted. The confirm token cannot cover surfaces it does not name, so the
+    # targets are put on screen where a wrong one is visible in the transcript.
+    for surface in await _survey_all(settings, verify=False):
+        print()
+        print(surface.render())
+    print()
+    print("↑ These are the surfaces about to be wiped. The database is NOT one.")
     print()
 
     failures = []
@@ -841,7 +1160,7 @@ async def run_wipe(settings, *, confirm_target: str, redis_all_keys: bool) -> in
         print(f"  ✗ {error}")
         failures.append(f"object storage: {error}")
 
-    deleted, error = await wipe_redis(all_keys=redis_all_keys)
+    deleted, error = await wipe_redis(settings, all_keys=redis_all_keys)
     scope = "all keys" if redis_all_keys else "FaultMaven prefixes only"
     print(f"Redis: deleted {deleted} key(s) ({scope})")
     if error:
@@ -873,7 +1192,16 @@ async def wipe_deployment(
 
     settings = get_settings()
 
-    resolved = resolved_database_name(get_engine())
+    # A malformed DSN raises here, before any surface has been touched.
+    try:
+        resolved = resolved_database_name(get_engine())
+    except Exception as exc:
+        print(
+            f"❌ Refusing: the database URL could not be resolved "
+            f"({type(exc).__name__}: {exc}). Nothing was written."
+        )
+        return 1
+
     if resolved in PROTECTED_DATABASES:
         print(
             f"❌ Refusing: '{resolved}' is a protected database. It holds the "
@@ -888,8 +1216,29 @@ async def wipe_deployment(
     try:
         role = await preflight_database_role()
     except DeploymentCoherenceError as exc:
+        # A posture refusal: the role is real but wrong. Exit 1 — refused,
+        # nothing written — is exactly right.
         print(f"❌ {exc}")
         return 1
+    except Exception as exc:
+        # NOT a refusal: the preflight connects, so an unreachable database or a
+        # bad password lands here. Letting it propagate exited 1 with a
+        # traceback, and 1 is the code this command documents as "refused,
+        # nothing written" — indistinguishable from a clean refusal. A wipe
+        # cannot proceed either way, but --verify must say INCONCLUSIVE rather
+        # than imply a verdict, so the modes diverge.
+        print(f"❌ The database could not be reached: {type(exc).__name__}: {exc}")
+        if mode == "wipe":
+            print("   Refusing to wipe. Nothing was written.")
+            return 1
+        if mode == "verify":
+            print(
+                "   ❌ INCONCLUSIVE — the database was not inspected, so this is "
+                "not a verification. Fix connectivity and re-run."
+            )
+            return 5
+        print("   Continuing: the remaining surfaces are reported below.\n")
+        return await run_inventory(settings)
     if role:
         print(f"Database role: {role} (RLS-exempt — full visibility)\n")
 
