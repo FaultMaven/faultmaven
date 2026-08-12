@@ -274,8 +274,12 @@ class TestCaseSearchPerformance:
                 )
                 await case_repository.save(case)
 
-        # Benchmark search — read-only. The hand-rolled warm-up call this test
-        # used to make is now the helper's first, discarded iteration.
+        # Benchmark search — read-only. This test already hand-rolled a
+        # warm-up, but on a DIFFERENT query ("network") from the one it timed
+        # ("database"), so it warmed the code path and not the statement or
+        # its pages. The helper's discarded first iteration runs the same
+        # "database" query as the samples, so the timed calls are warmer than
+        # they were. That is the intended change, not a relocation.
         measured = await measure_min_latency(
             lambda: case_repository.search(
                 query="database",

@@ -466,8 +466,9 @@ class TestItemUpdatePerformance:
         item.title = "Updated Title"
         item.helpful_count = 10
 
-        # Repeating writes the SAME field values to the SAME row: identical
-        # work each sample, and no row is added.
+        # Repeating rewrites the SAME row from the SAME inputs: the same
+        # statement each sample, and no row is added. (The repository stamps
+        # its own `updated_at`, so that one column differs per sample.)
         measured = await measure_min_latency(
             lambda: knowledge_item_repository.update(item)
         )
@@ -496,9 +497,11 @@ class TestItemUpdatePerformance:
         embedding = create_valid_embedding(0.5)
         item.set_embedding(embedding, model="bge-m3", version=1)
 
-        # The embedding is set ONCE, above: `set_embedding` bumps the item's
-        # embedding version, so calling it per sample would write a different
-        # row each time.
+        # The embedding is attached ONCE, above, so each timed sample is the
+        # repository write and nothing else. (`set_embedding` is idempotent
+        # here — it assigns the caller's `version=1` rather than incrementing
+        # — so calling it in the loop would not corrupt the measurement; it
+        # would just put domain-object work inside the timed window.)
         measured = await measure_min_latency(
             lambda: knowledge_item_repository.update(item)
         )

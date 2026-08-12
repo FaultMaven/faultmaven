@@ -147,8 +147,24 @@ async def measure_min_latency(
     work each time. Read-only operations satisfy that for free. Anything that
     mutates state needs ``setup`` to hand it fresh material per call (a new
     entity to insert, a fresh row to delete); pass one, or leave the site
-    alone. A loop that appends to a growing table is not measuring the same
-    operation twice.
+    alone.
+
+    What ``setup`` is for is keeping every sample the SAME OPERATION. The
+    failures it prevents are a sample that silently becomes a different call
+    from the first — an UPDATE where sample 1 was an INSERT, a delete that
+    misses because the row is already gone, a second insert on a primary key
+    that just raises.
+
+    Exact invariance is not achievable for an insert, and this is stated
+    rather than hidden: fresh material per sample necessarily leaves the table
+    one row (or one batch) larger, so the insert sites here grow their table
+    by up to a few hundred rows over a run. That is accepted. Each benchmark
+    gets its own fresh in-memory SQLite (``benchmark_engine`` is
+    function-scoped), insert cost is flat in table size at that scale, and
+    taking the MINIMUM biases towards the earliest and smallest sample anyway.
+    Idempotent-write sites are likewise near- rather than exactly invariant:
+    the repositories stamp their own ``updated_at`` on each write, so one
+    column differs per sample while the statement and the row do not.
 
     Args:
         operation: The measured coroutine function. Called with no arguments,

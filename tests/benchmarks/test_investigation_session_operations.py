@@ -407,8 +407,9 @@ class TestSessionUpdatePerformance:
 
         # Benchmark update. Repeating writes the SAME already-paused session
         # to the SAME row: `update` is a plain field-by-field write with no
-        # version check, so every sample does identical work and no row is
-        # added. The state transition itself happens once, above.
+        # version check, so every sample issues the same statement and no row
+        # is added (the repository stamps its own `updated_at`, so that one
+        # column differs). The state transition itself happens once, above.
         measured = await measure_min_latency(lambda: session_repository.update(session))
 
         assert measured.result is not None
