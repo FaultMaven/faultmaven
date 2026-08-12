@@ -816,6 +816,7 @@ class APIInvestigationSessionService(BaseService):
         Args:
             session_id: Session ID
             organization_id: Organization for authorization
+            case_id: Case the session must belong to
 
         Returns:
             Dictionary with:
