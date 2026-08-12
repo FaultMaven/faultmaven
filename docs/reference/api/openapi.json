@@ -7367,7 +7367,7 @@
     },
     "/api/v1/admin/users/{user_id}/roles": {
       "post": {
-        "description": "Assign role to user (admin only).\n\nReplaces existing roles with the new role. Revokes all JWT tokens.\nAdmin cannot modify their own roles.\n\nPath Parameters:\n    user_id: User ID to assign role to\n\nRequest Body:\n    role: Role to assign (admin, member, viewer)\n\nReturns:\n    RoleAssignmentResponse confirming role assignment\n\nRaises:\n    401 Unauthorized: No valid JWT token\n    403 Forbidden: User lacks admin role OR trying to modify own roles\n    404 Not Found: User does not exist\n    409 Conflict: User already has this role\n    422 Unprocessable Entity: Invalid role",
+        "description": "Assign an organization-scoped role to a user (operator only).\n\nReplaces the user's organization-scoped role (`admin`, `member`, `viewer`)\nand leaves roles on other axes untouched \u2014 notably `platform_admin`, which\nis granted and revoked only by `fm-promote-platform-admin` /\n`fm-demote-platform-admin`, and the base `user` marker. Revokes all JWT\ntokens. Callers cannot modify their own roles.\n\nPath Parameters:\n    user_id: User ID to assign role to\n\nRequest Body:\n    role: Organization-scoped role to assign (admin, member, viewer)\n\nReturns:\n    RoleAssignmentResponse confirming role assignment\n\nRaises:\n    401 Unauthorized: No valid JWT token\n    403 Forbidden: Caller is not a platform admin OR trying to modify own roles\n    404 Not Found: User does not exist\n    409 Conflict: User already has this organization-scoped role\n    422 Unprocessable Entity: Invalid role",
         "operationId": "assign_role_api_v1_admin_users__user_id__roles_post",
         "parameters": [
           {
@@ -7427,7 +7427,7 @@
     },
     "/api/v1/admin/users/{user_id}/roles/{role}": {
       "delete": {
-        "description": "Remove role from user (admin only).\n\nDowngrades user to viewer (minimum privilege). Revokes all JWT tokens.\nAdmin cannot remove their own admin role.\n\nPath Parameters:\n    user_id: User ID to remove role from\n    role: Role to remove (admin, member)\n\nReturns:\n    RoleAssignmentResponse confirming role removal\n\nRaises:\n    401 Unauthorized: No valid JWT token\n    403 Forbidden: User lacks admin role OR trying to remove own admin role\n    404 Not Found: User does not exist OR user doesn't have this role\n    422 Unprocessable Entity: Invalid role or attempting to remove viewer role",
+        "description": "Remove an organization-scoped role from a user (operator only).\n\nDrops the role from the user's organization-scoped axis; if that leaves no\norganization-scoped role, the user lands on `viewer` (minimum privilege).\nRoles on other axes are preserved \u2014 removing an org role never revokes\n`platform_admin` (use `fm-demote-platform-admin` for that). Revokes all\nJWT tokens. Callers cannot remove their own roles.\n\nPath Parameters:\n    user_id: User ID to remove role from\n    role: Organization-scoped role to remove (admin, member)\n\nReturns:\n    RoleAssignmentResponse confirming role removal\n\nRaises:\n    401 Unauthorized: No valid JWT token\n    403 Forbidden: Caller is not a platform admin OR trying to modify own roles\n    404 Not Found: User does not exist OR user doesn't have this role\n    422 Unprocessable Entity: Invalid role or attempting to remove viewer role",
         "operationId": "remove_role_api_v1_admin_users__user_id__roles__role__delete",
         "parameters": [
           {

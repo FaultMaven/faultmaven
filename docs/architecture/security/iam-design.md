@@ -1251,7 +1251,7 @@ Two role vocabularies coexist in the codebase:
   it. `platform_admin` is deliberately NOT a member of this enum, so holding it
   grants no org permissions by itself; the standalone deployment's single
   account legitimately holds both. Wiring the granular permissions to actual
-  endpoint checks is tracked as a separate RBAC reconciliation (#706).
+  endpoint checks is tracked as a separate RBAC reconciliation (#1040).
 - **Baseline (`user`).** Every other authenticated user; baseline access is
   gated by `require_authentication`, not by a specific role string. Token
   generators default the claim to `["user"]` when the user carries no roles.

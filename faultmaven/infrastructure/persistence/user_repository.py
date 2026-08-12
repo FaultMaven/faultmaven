@@ -328,12 +328,15 @@ class PostgreSQLUserRepository(UserRepository):
     def _model_to_domain(self, model) -> User:
         """Convert UserModel ORM instance to User domain object.
 
-        Roles come from the `dev_roles` TEXT column (JSON array) in BOTH auth
-        modes today — no login/token path currently derives them from the RBAC
-        tables (organization_members → roles). Deriving the cloud role claim
-        from RBAC is designed but not yet wired; when it lands, callers that
-        need effective cloud roles should use the org-repository query path
-        rather than this field. Tracked in #706.
+        Roles come from the `dev_roles` TEXT column (JSON array), which is the
+        canonical source of the JWT `roles` claim in BOTH auth modes and stays
+        so across the multi-tenant flip (#706). `organization_members.role_id`
+        records affiliation — written by the SSO login path, read to verify
+        membership — and is deliberately NOT the claim source, so this field is
+        the one to read for effective roles in either mode.
+
+        Wiring the org-scoped `Permission` mapping to endpoint checks is the
+        remaining RBAC work; see #1040.
         """
         import json
 
@@ -404,10 +407,11 @@ class PostgreSQLUserRepository(UserRepository):
             "last_password_change_at": user.last_password_change_at,
             "deleted_at": user.deleted_at,
             "account_kind": getattr(user, "account_kind", "individual"),
-            # dev_roles: JSON-serialised role list. This is the canonical role
-            # source in BOTH auth modes today — no login/token path derives the
-            # role claim from the RBAC tables yet (#706). Deriving cloud roles
-            # from organization_members → roles is designed but not yet wired.
+            # dev_roles: JSON-serialised role list, and the canonical source of
+            # the JWT role claim in BOTH auth modes (#706). Deriving the claim
+            # from organization_members → roles is left unwired rather than
+            # half-wired: a partial derivation is what makes role
+            # administration silently stop taking effect.
             "dev_roles": __import__("json").dumps(user.roles) if user.roles else None,
         }
 

@@ -76,6 +76,40 @@ def _get_authentication_error():
 logger = logging.getLogger(__name__)
 
 
+# The org-scoped role axis — the only roles this service's role-management
+# methods are permitted to add or remove.
+ORG_SCOPED_ROLES = frozenset(r.value for r in Role)
+
+
+def _split_role_axes(roles: Optional[List[str]]) -> Tuple[List[str], List[str]]:
+    """Split a role list into ``(org_scoped, everything_else)``, order preserved.
+
+    A FaultMaven account carries roles on more than one axis, and ADR-012 D9
+    exists because conflating them is a real bug:
+
+    - **org-scoped** (:class:`~faultmaven.models.rbac.Role`: ``admin``,
+      ``member``, ``viewer``) — tenant-bounded authority inside ONE
+      organization. This is the axis ``POST /admin/users/{id}/roles`` manages.
+    - **everything else** — ``platform_admin``, the deployment operator role
+      granted only by ``fm-promote-platform-admin`` and the only role the
+      enforcement path reads today (``is_platform_admin``); the base ``user``
+      marker granted at registration and JIT SSO provisioning; and any role a
+      future grant introduces.
+
+    Role management must therefore be a *targeted replacement* on the first
+    list, never a replacement of the whole thing. Before #706 it was the
+    latter: assigning an org role to an operator rewrote their roles to a
+    single element, silently revoking ``platform_admin`` while reporting a
+    successful assignment. Unknown roles go to ``other`` and are preserved for
+    the same reason — this function must not be the thing that decides a role
+    it does not recognise is disposable.
+    """
+    known = list(roles or [])
+    org = [r for r in known if r in ORG_SCOPED_ROLES]
+    other = [r for r in known if r not in ORG_SCOPED_ROLES]
+    return org, other
+
+
 # Email validation regex
 EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
@@ -869,11 +903,18 @@ class UserService(BaseService):
         organization_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
-        """Assign role to user (TASK-019).
+        """Assign an organization-scoped role to a user (TASK-019).
+
+        Replaces the user's org-scoped role — the ``Role`` axis
+        (``admin``/``member``/``viewer``) — and leaves every other role the
+        account holds untouched. See :func:`_split_role_axes` for why the two
+        axes must not be collapsed: replacing the whole list here silently
+        stripped ``platform_admin`` from any operator this was aimed at, and
+        reported it as a successful promotion (#706).
 
         Args:
             user_id: Target user ID
-            role: Role to assign (admin, member, viewer)
+            role: Org-scoped role to assign (admin, member, viewer)
             organization_id: Organization context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
@@ -884,13 +925,15 @@ class UserService(BaseService):
             NotFoundError: User not found
             AuthorizationError: admin_user_id == user_id (self-modification)
             ValidationException: Invalid role
-            ConflictError: User already has this role
+            ConflictError: User already holds exactly this org-scoped role
         """
         # Prevent self-modification
         if admin_user_id == user_id:
             raise AuthorizationError("Cannot modify your own roles")
 
-        # Validate role
+        # Validate role. `role` is only ever used below after passing this
+        # check, so nothing outside the org-scoped enum can be written — in
+        # particular `platform_admin`, which is deliberately not a member.
         valid_roles = [r.value for r in Role]
         if role not in valid_roles:
             raise ValidationException(
@@ -901,9 +944,13 @@ class UserService(BaseService):
         if not user:
             raise NotFoundError("User", user_id)
 
-        # Check if user already has this role
-        current_roles = user.roles if user.roles else ["member"]
-        if current_roles == [role]:
+        org_roles, other_roles = _split_role_axes(user.roles)
+
+        # "Already has this role" means the org-scoped axis is already exactly
+        # this role, i.e. the assignment would change nothing. It deliberately
+        # does not compare the whole role list, which would miss the no-op for
+        # any account that also holds a role on another axis.
+        if org_roles == [role]:
             raise ConflictError(
                 f"User already has role '{role}'",
                 resource_type="User",
@@ -911,8 +958,8 @@ class UserService(BaseService):
                 conflict_reason="role_already_assigned",
             )
 
-        # Assign new role (replaces existing)
-        user.roles = [role]
+        # Replace the org-scoped axis only; preserve the rest.
+        user.roles = other_roles + [role]
         user.updated_at = datetime.now(timezone.utc)
         updated_user = await self.user_repo.save(user)
 
@@ -934,18 +981,23 @@ class UserService(BaseService):
         organization_id: str,
         admin_user_id: str,
     ) -> RepositoryUser:
-        """Remove role from user (TASK-019).
+        """Remove an organization-scoped role from a user (TASK-019).
 
-        Downgrades user to viewer role (minimum privilege).
+        Drops ``role`` from the org-scoped axis; if that leaves the user with
+        no org-scoped role at all, they land on ``viewer`` (minimum privilege)
+        rather than on nothing. Roles on other axes — ``platform_admin``, the
+        base ``user`` marker — are preserved, so removing an org role can no
+        longer strip an operator's cross-tenant reach (#706). Revoking that is
+        `fm-demote-platform-admin`'s job, and only its job.
 
         Args:
             user_id: Target user ID
-            role: Role to remove (admin, member)
+            role: Org-scoped role to remove (admin, member)
             organization_id: Organization context for authorization (required)
             admin_user_id: Admin performing the action (cannot be same as user_id)
 
         Returns:
-            Updated User (with viewer role)
+            Updated User
 
         Raises:
             NotFoundError: User not found OR user doesn't have this role
@@ -973,13 +1025,19 @@ class UserService(BaseService):
         if not user:
             raise NotFoundError("User", user_id)
 
+        org_roles, other_roles = _split_role_axes(user.roles)
+
         # Check if user has this role
-        current_roles = user.roles if user.roles else ["member"]
-        if role not in current_roles:
+        if role not in org_roles:
             raise NotFoundError("Role", f"{user_id}/{role}")
 
-        # Downgrade to viewer (minimum privilege)
-        user.roles = [Role.VIEWER.value]
+        remaining = [r for r in org_roles if r != role]
+        if not remaining:
+            # No org-scoped role left — downgrade to viewer (minimum privilege)
+            # rather than leaving the org axis empty.
+            remaining = [Role.VIEWER.value]
+
+        user.roles = other_roles + remaining
         user.updated_at = datetime.now(timezone.utc)
         updated_user = await self.user_repo.save(user)
 
@@ -989,7 +1047,7 @@ class UserService(BaseService):
         revoked_before = await self.auth_service.revoke_user_tokens(user_id)
 
         self.logger.info(
-            f"Role removed: {user_id}, role={role}, downgraded to viewer, "
+            f"Role removed: {user_id}, role={role}, roles now={user.roles}, "
             f"tokens revoked before: {revoked_before.isoformat()}"
         )
         return updated_user

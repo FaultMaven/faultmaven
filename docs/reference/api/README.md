@@ -613,25 +613,28 @@ Raises:
 
 **Assign Role**
 
-Assign role to user (admin only).
+Assign an organization-scoped role to a user (operator only).
 
-Replaces existing roles with the new role. Revokes all JWT tokens.
-Admin cannot modify their own roles.
+Replaces the user's organization-scoped role (`admin`, `member`, `viewer`)
+and leaves roles on other axes untouched — notably `platform_admin`, which
+is granted and revoked only by `fm-promote-platform-admin` /
+`fm-demote-platform-admin`, and the base `user` marker. Revokes all JWT
+tokens. Callers cannot modify their own roles.
 
 Path Parameters:
     user_id: User ID to assign role to
 
 Request Body:
-    role: Role to assign (admin, member, viewer)
+    role: Organization-scoped role to assign (admin, member, viewer)
 
 Returns:
     RoleAssignmentResponse confirming role assignment
 
 Raises:
     401 Unauthorized: No valid JWT token
-    403 Forbidden: User lacks admin role OR trying to modify own roles
+    403 Forbidden: Caller is not a platform admin OR trying to modify own roles
     404 Not Found: User does not exist
-    409 Conflict: User already has this role
+    409 Conflict: User already has this organization-scoped role
     422 Unprocessable Entity: Invalid role
 
 **Tags:** `Admin - User Management`
@@ -659,21 +662,24 @@ Raises:
 
 **Remove Role**
 
-Remove role from user (admin only).
+Remove an organization-scoped role from a user (operator only).
 
-Downgrades user to viewer (minimum privilege). Revokes all JWT tokens.
-Admin cannot remove their own admin role.
+Drops the role from the user's organization-scoped axis; if that leaves no
+organization-scoped role, the user lands on `viewer` (minimum privilege).
+Roles on other axes are preserved — removing an org role never revokes
+`platform_admin` (use `fm-demote-platform-admin` for that). Revokes all
+JWT tokens. Callers cannot remove their own roles.
 
 Path Parameters:
     user_id: User ID to remove role from
-    role: Role to remove (admin, member)
+    role: Organization-scoped role to remove (admin, member)
 
 Returns:
     RoleAssignmentResponse confirming role removal
 
 Raises:
     401 Unauthorized: No valid JWT token
-    403 Forbidden: User lacks admin role OR trying to remove own admin role
+    403 Forbidden: Caller is not a platform admin OR trying to modify own roles
     404 Not Found: User does not exist OR user doesn't have this role
     422 Unprocessable Entity: Invalid role or attempting to remove viewer role
 

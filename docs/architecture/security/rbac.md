@@ -89,8 +89,51 @@ const isPlatformAdmin = user.roles.includes('platform_admin');
 > tenants. `platform_admin` is intentionally **not** a member of that enum —
 > which is what stops `POST /admin/users/{id}/roles` from minting operators —
 > so it maps to no granular permissions on its own. Wiring those permissions to
-> endpoint checks is tracked as a separate RBAC reconciliation (#706). See
+> endpoint checks is tracked as a separate RBAC reconciliation (#1040). See
 > [iam-design.md § Role Implementation](iam-design.md#role-implementation).
+
+### Where roles are stored, and what reads them
+
+`users.dev_roles` (a JSON array) is the **single canonical source of the JWT
+`roles` claim, in both `AUTH_MODE=local` and `AUTH_MODE=oauth`**, and remains so
+across the multi-tenant flip. `organization_members.role_id` records
+*affiliation* — which organization a user belongs to and with what standing,
+written by the SSO login path and read for membership verification. It is **not**
+the claim source, and deriving the claim from it is deliberately left unwired
+rather than half-wired: a partially-wired derivation is what makes role
+administration silently stop working. Consequently `assign_role` / `remove_role`
+writing `dev_roles` is correct in both modes and needs no deployment gate.
+
+Roles live on **two independent axes**, and role administration must respect the
+boundary:
+
+| Axis | Values | Granted by | Read by |
+|------|--------|-----------|---------|
+| Org-scoped | `admin`, `member`, `viewer` | `POST/DELETE /admin/users/{id}/roles`; also `fm-promote-platform-admin` / the bootstrap operator seed, which re-grants on **every** startup (see below) | `Permission` mapping (not yet wired to endpoint checks) |
+| Deployment | `platform_admin` | `fm-promote-platform-admin` / bootstrap operator seed, and nothing else | `require_platform_admin` / `is_platform_admin()` |
+| Base | `user` | registration, SSO JIT provisioning; also the operator grant | nothing today (grants no permissions) |
+
+The role-management API replaces a user's **org-scoped** role and preserves
+every other role the account holds. It previously replaced the whole list, so
+aiming it at an operator revoked `platform_admin` while reporting a successful
+assignment — a silent operator lockout recoverable only from a shell (#706).
+`platform_admin` is revoked by `fm-demote-platform-admin` and nothing else.
+
+> **Promotion grants all three roles; demotion removes one.** An operator needs
+> authority inside its own organization too — `platform_admin` confers none —
+> so every provisioning path grants the whole `PLATFORM_ADMIN_ROLE_SET`
+> (`["user", "admin", "platform_admin"]`), org `admin` included.
+> `fm-demote-platform-admin` removes only `platform_admin`, so an account
+> promoted and later demoted keeps an org `admin` role it did not hold
+> beforehand. Harmless while org roles enforce nothing; it becomes a real
+> over-grant the moment the `Permission` wiring above lands, and is called out
+> in #1040 as part of that work.
+>
+> **Note on today's enforcement surface.** `require_role` / `require_any_role`
+> exist but have no production call sites, and JWT `scopes` are a fixed list
+> rather than role-derived. So `platform_admin` is currently the only role the
+> enforcement path actually consults; the org-scoped axis is recorded and
+> surfaced (user listing, filtering) ahead of the permission wiring above.
 
 ### 1. Regular User (`user` role)
 
