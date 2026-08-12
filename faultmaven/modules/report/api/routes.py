@@ -273,6 +273,17 @@ async def authorize_case_access(
     the case gate above holds on its own there. ``case_service`` absent is a 503 — the
     gate cannot be evaluated, so nothing is served.
 
+    A report whose ``case_id`` does not resolve is therefore unreachable by
+    anyone, including its owner. That is correct for every report that exists:
+    all of them are built from a ``Case`` (``report_generation_service``), so
+    the id is always a real one. It also means the ``'doc-derived'`` sentinel
+    that ``CaseReport.case_id``'s field description still advertises is not
+    supported — it has no writer, and a report with no owning case has no
+    authorization story. Wiring a document-driven path means giving those
+    reports an owner, not loosening this. (The field description is left alone
+    here because it is published in ``docs/reference/api/openapi.json``, which
+    must be regenerated against the pinned toolchain.)
+
     Args:
         case_id: Case the report belongs to (falsy is treated as unauthorized)
         current_user: Authenticated caller
@@ -350,9 +361,11 @@ async def generate_report(
     """
     case_service = check_case_service_available(case_service)
 
-    # Validate tenant context if provider available (multi-tenant mode)
-    if tenant_provider:
-        await validate_organization_access(tenant_provider, current_user)
+    # No bare organization pre-check here: ``authorize_case_access`` below runs
+    # the same resolution with the case's organization to compare against. Doing
+    # it twice cost a second provider round-trip per request and put the org
+    # answer first, so a caller who cannot see the case at all got 403 where 404
+    # is the honest reply.
 
     logger.info(
         f"Generating reports for case",

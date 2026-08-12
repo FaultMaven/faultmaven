@@ -184,13 +184,17 @@ class TestSessionLifecycle:
 
         # Step 3: Pause session
         paused = await session_service.pause_session(
-            session.session_id, organization_id
+            session.session_id,
+            organization_id,
+            case_id=session.case_id,
         )
         assert paused.state == SessionState.PAUSED
 
         # Step 4: Resume session
         resumed = await session_service.resume_session(
-            session.session_id, organization_id
+            session.session_id,
+            organization_id,
+            case_id=session.case_id,
         )
         assert resumed.state == SessionState.ACTIVE
 
@@ -199,6 +203,7 @@ class TestSessionLifecycle:
             session.session_id,
             organization_id,
             "Root cause identified: JWT token expiry issue",
+            case_id=session.case_id,
         )
 
         assert completed.state == SessionState.COMPLETED
@@ -217,7 +222,9 @@ class TestSessionLifecycle:
 
         # Abandon without findings
         abandoned = await session_service.abandon_session(
-            session.session_id, sample_case.organization_id
+            session.session_id,
+            sample_case.organization_id,
+            case_id=session.case_id,
         )
 
         assert abandoned.state == SessionState.ABANDONED
@@ -237,12 +244,16 @@ class TestSessionLifecycle:
 
         # Pause first
         await session_service.pause_session(
-            session.session_id, sample_case.organization_id
+            session.session_id,
+            sample_case.organization_id,
+            case_id=session.case_id,
         )
 
         # Then abandon
         abandoned = await session_service.abandon_session(
-            session.session_id, sample_case.organization_id
+            session.session_id,
+            sample_case.organization_id,
+            case_id=session.case_id,
         )
 
         assert abandoned.state == SessionState.ABANDONED
@@ -265,6 +276,7 @@ class TestSessionLifecycle:
             session1.session_id,
             sample_case.organization_id,
             "First investigation complete",
+            case_id=session1.case_id,
         )
 
         # Create second session (should succeed since first is completed)
@@ -326,6 +338,7 @@ class TestAuthorizationEnforcement:
                 session.session_id,
                 "different_org",
                 {"session_goal": "Hacked goal"},
+                case_id=session.case_id,
             )
 
     @pytest.mark.asyncio
@@ -340,7 +353,9 @@ class TestAuthorizationEnforcement:
         )
 
         with pytest.raises(AuthorizationError):
-            await session_service.pause_session(session.session_id, "different_org")
+            await session_service.pause_session(
+                session.session_id, "different_org", case_id=session.case_id
+            )
 
     @pytest.mark.asyncio
     async def test_authorization_via_parent_case_resume(
@@ -354,11 +369,15 @@ class TestAuthorizationEnforcement:
         )
 
         await session_service.pause_session(
-            session.session_id, sample_case.organization_id
+            session.session_id,
+            sample_case.organization_id,
+            case_id=session.case_id,
         )
 
         with pytest.raises(AuthorizationError):
-            await session_service.resume_session(session.session_id, "different_org")
+            await session_service.resume_session(
+                session.session_id, "different_org", case_id=session.case_id
+            )
 
     @pytest.mark.asyncio
     async def test_authorization_via_parent_case_complete(
@@ -373,7 +392,10 @@ class TestAuthorizationEnforcement:
 
         with pytest.raises(AuthorizationError):
             await session_service.complete_session(
-                session.session_id, "different_org", "Findings"
+                session.session_id,
+                "different_org",
+                "Findings",
+                case_id=session.case_id,
             )
 
     @pytest.mark.asyncio
@@ -388,7 +410,9 @@ class TestAuthorizationEnforcement:
         )
 
         with pytest.raises(AuthorizationError):
-            await session_service.abandon_session(session.session_id, "different_org")
+            await session_service.abandon_session(
+                session.session_id, "different_org", case_id=session.case_id
+            )
 
     @pytest.mark.asyncio
     async def test_authorization_via_parent_case_list(
@@ -455,6 +479,7 @@ class TestActiveSessionEnforcement:
             session1.session_id,
             sample_case.organization_id,
             "Findings",
+            case_id=session1.case_id,
         )
 
         # Create new session - should succeed
@@ -480,7 +505,9 @@ class TestActiveSessionEnforcement:
         )
 
         await session_service.abandon_session(
-            session1.session_id, sample_case.organization_id
+            session1.session_id,
+            sample_case.organization_id,
+            case_id=session1.case_id,
         )
 
         # Create new session - should succeed
@@ -505,7 +532,9 @@ class TestActiveSessionEnforcement:
         )
 
         await session_service.pause_session(
-            session1.session_id, sample_case.organization_id
+            session1.session_id,
+            sample_case.organization_id,
+            case_id=session1.case_id,
         )
 
         # Paused session should NOT block new creation (paused != active)
@@ -551,7 +580,10 @@ class TestListAndQuery:
             user_id=sample_case.user_id,
         )
         await session_service.complete_session(
-            s1.session_id, sample_case.organization_id, "Done"
+            s1.session_id,
+            sample_case.organization_id,
+            "Done",
+            case_id=s1.case_id,
         )
 
         s2 = await session_service.create_session(
@@ -591,7 +623,10 @@ class TestListAndQuery:
                 user_id=sample_case.user_id,
             )
             await session_service.complete_session(
-                s.session_id, sample_case.organization_id, f"Finding {i}"
+                s.session_id,
+                sample_case.organization_id,
+                f"Finding {i}",
+                case_id=s.case_id,
             )
 
         # Create final active session
@@ -688,7 +723,9 @@ class TestOrganizationIsolation:
                 organization_id=org_a,
                 user_id=case_a.user_id,
             )
-            await session_service.complete_session(s.session_id, org_a, f"Finding {i}")
+            await session_service.complete_session(
+                s.session_id, org_a, f"Finding {i}", case_id=s.case_id
+            )
 
         for i in range(2):
             s = await session_service.create_session(
@@ -696,7 +733,9 @@ class TestOrganizationIsolation:
                 organization_id=org_b,
                 user_id=case_b.user_id,
             )
-            await session_service.complete_session(s.session_id, org_b, f"Finding {i}")
+            await session_service.complete_session(
+                s.session_id, org_b, f"Finding {i}", case_id=s.case_id
+            )
 
         # Stats should be isolated
         stats_a = await session_service.get_session_statistics(case_a.case_id, org_a)
@@ -742,6 +781,7 @@ class TestEdgeCases:
             session.session_id,
             sample_case.organization_id,
             {"session_goal": ""},
+            case_id=session.case_id,
         )
 
         assert updated.session_goal == ""
@@ -778,6 +818,7 @@ class TestConcurrentOperations:
                 session.session_id,
                 sample_case.organization_id,
                 {"session_goal": f"Goal {i}"},
+                case_id=session.case_id,
             )
 
         # Concurrent updates (last write wins)

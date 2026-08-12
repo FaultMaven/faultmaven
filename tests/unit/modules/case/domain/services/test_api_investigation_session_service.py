@@ -456,6 +456,7 @@ class TestUpdateSession:
             sample_session.session_id,
             sample_case.organization_id,
             {"session_goal": "Updated goal"},
+            case_id=sample_session.case_id,
         )
 
         assert result.session_goal == "Updated goal"
@@ -480,6 +481,7 @@ class TestUpdateSession:
             sample_session.session_id,
             sample_case.organization_id,
             {"token_budget_limit": 20000},
+            case_id=sample_session.case_id,
         )
 
         assert result.token_budget_limit == 20000
@@ -504,6 +506,7 @@ class TestUpdateSession:
             sample_session.session_id,
             sample_case.organization_id,
             {"metadata": new_metadata},
+            case_id=sample_session.case_id,
         )
 
         assert result.metadata == new_metadata
@@ -517,7 +520,10 @@ class TestUpdateSession:
 
         with pytest.raises(NotFoundError):
             await session_service.update_session(
-                "nonexistent", "org_1", {"session_goal": "New"}
+                "nonexistent",
+                "org_1",
+                {"session_goal": "New"},
+                case_id="case_1",
             )
 
     @pytest.mark.asyncio
@@ -539,6 +545,7 @@ class TestUpdateSession:
                 sample_session.session_id,
                 "different_org",
                 {"session_goal": "New"},
+                case_id=sample_session.case_id,
             )
 
     @pytest.mark.asyncio
@@ -547,7 +554,9 @@ class TestUpdateSession:
     ):
         """Test that empty updates raises ValidationException."""
         with pytest.raises(ValidationException):
-            await session_service.update_session("session_1", "org_1", {})
+            await session_service.update_session(
+                "session_1", "org_1", {}, case_id="case_1"
+            )
 
     @pytest.mark.asyncio
     async def test_update_session_negative_budget_raises_validation_error(
@@ -568,6 +577,7 @@ class TestUpdateSession:
                 sample_session.session_id,
                 sample_case.organization_id,
                 {"token_budget_limit": -100},
+                case_id=sample_session.case_id,
             )
 
         assert "token_budget_limit" in str(exc_info.value).lower()
@@ -598,7 +608,9 @@ class TestPauseSession:
         mock_session_repo.update.side_effect = lambda s: s
 
         result = await session_service.pause_session(
-            sample_session.session_id, sample_case.organization_id
+            sample_session.session_id,
+            sample_case.organization_id,
+            case_id=sample_session.case_id,
         )
 
         assert result.state == SessionState.PAUSED
@@ -621,7 +633,9 @@ class TestPauseSession:
 
         with pytest.raises(ValidationException) as exc_info:
             await session_service.pause_session(
-                sample_session.session_id, sample_case.organization_id
+                sample_session.session_id,
+                sample_case.organization_id,
+                case_id=sample_session.case_id,
             )
 
         assert "cannot pause" in str(exc_info.value).lower()
@@ -642,7 +656,9 @@ class TestPauseSession:
 
         with pytest.raises(AuthorizationError):
             await session_service.pause_session(
-                sample_session.session_id, "different_org"
+                sample_session.session_id,
+                "different_org",
+                case_id=sample_session.case_id,
             )
 
 
@@ -671,7 +687,9 @@ class TestResumeSession:
         mock_session_repo.update.side_effect = lambda s: s
 
         result = await session_service.resume_session(
-            sample_session.session_id, sample_case.organization_id
+            sample_session.session_id,
+            sample_case.organization_id,
+            case_id=sample_session.case_id,
         )
 
         assert result.state == SessionState.ACTIVE
@@ -694,7 +712,9 @@ class TestResumeSession:
 
         with pytest.raises(ValidationException) as exc_info:
             await session_service.resume_session(
-                sample_session.session_id, sample_case.organization_id
+                sample_session.session_id,
+                sample_case.organization_id,
+                case_id=sample_session.case_id,
             )
 
         assert "cannot resume" in str(exc_info.value).lower()
@@ -716,7 +736,9 @@ class TestResumeSession:
 
         with pytest.raises(AuthorizationError):
             await session_service.resume_session(
-                sample_session.session_id, "different_org"
+                sample_session.session_id,
+                "different_org",
+                case_id=sample_session.case_id,
             )
 
 
@@ -748,6 +770,7 @@ class TestCompleteSession:
             sample_session.session_id,
             sample_case.organization_id,
             "Found root cause: memory leak in auth module",
+            case_id=sample_session.case_id,
         )
 
         assert result.state == SessionState.COMPLETED
@@ -773,6 +796,7 @@ class TestCompleteSession:
             sample_session.session_id,
             sample_case.organization_id,
             "Root cause identified",
+            case_id=sample_session.case_id,
         )
 
         assert result.findings_summary == "Root cause identified"
@@ -798,6 +822,7 @@ class TestCompleteSession:
             sample_session.session_id,
             sample_case.organization_id,
             "Findings",
+            case_id=sample_session.case_id,
         )
         after = datetime.now(timezone.utc)
 
@@ -825,6 +850,7 @@ class TestCompleteSession:
             sample_session.session_id,
             sample_case.organization_id,
             "Findings",
+            case_id=sample_session.case_id,
         )
 
         assert result.total_duration_ms is not None
@@ -850,6 +876,7 @@ class TestCompleteSession:
                 sample_session.session_id,
                 sample_case.organization_id,
                 "Findings",
+                case_id=sample_session.case_id,
             )
 
         assert "terminal state" in str(exc_info.value).lower()
@@ -874,6 +901,7 @@ class TestCompleteSession:
                 sample_session.session_id,
                 sample_case.organization_id,
                 "Findings",
+                case_id=sample_session.case_id,
             )
 
     @pytest.mark.asyncio
@@ -882,7 +910,9 @@ class TestCompleteSession:
     ):
         """Test that empty findings raises ValidationException."""
         with pytest.raises(ValidationException) as exc_info:
-            await session_service.complete_session("session_1", "org_1", "")
+            await session_service.complete_session(
+                "session_1", "org_1", "", case_id="case_1"
+            )
 
         assert "findings_summary" in str(exc_info.value).lower()
 
@@ -903,7 +933,10 @@ class TestCompleteSession:
 
         with pytest.raises(AuthorizationError):
             await session_service.complete_session(
-                sample_session.session_id, "different_org", "Findings"
+                sample_session.session_id,
+                "different_org",
+                "Findings",
+                case_id=sample_session.case_id,
             )
 
 
@@ -932,7 +965,9 @@ class TestAbandonSession:
         mock_session_repo.update.side_effect = lambda s: s
 
         result = await session_service.abandon_session(
-            sample_session.session_id, sample_case.organization_id
+            sample_session.session_id,
+            sample_case.organization_id,
+            case_id=sample_session.case_id,
         )
 
         assert result.state == SessionState.ABANDONED
@@ -955,7 +990,9 @@ class TestAbandonSession:
 
         with pytest.raises(ValidationException):
             await session_service.abandon_session(
-                sample_session.session_id, sample_case.organization_id
+                sample_session.session_id,
+                sample_case.organization_id,
+                case_id=sample_session.case_id,
             )
 
     @pytest.mark.asyncio
@@ -975,7 +1012,9 @@ class TestAbandonSession:
 
         with pytest.raises(AuthorizationError):
             await session_service.abandon_session(
-                sample_session.session_id, "different_org"
+                sample_session.session_id,
+                "different_org",
+                case_id=sample_session.case_id,
             )
 
 
@@ -1185,7 +1224,9 @@ class TestCheckBudgetExceeded:
         mock_case_repo.get.return_value = sample_case
 
         result = await session_service.check_budget_exceeded(
-            sample_session.session_id, sample_case.organization_id
+            sample_session.session_id,
+            sample_case.organization_id,
+            case_id=sample_session.case_id,
         )
 
         assert result["is_over_budget"] is False
@@ -1210,7 +1251,9 @@ class TestCheckBudgetExceeded:
         mock_case_repo.get.return_value = sample_case
 
         result = await session_service.check_budget_exceeded(
-            sample_session.session_id, sample_case.organization_id
+            sample_session.session_id,
+            sample_case.organization_id,
+            case_id=sample_session.case_id,
         )
 
         assert result["is_over_budget"] is True
@@ -1233,7 +1276,9 @@ class TestCheckBudgetExceeded:
         mock_case_repo.get.return_value = sample_case
 
         result = await session_service.check_budget_exceeded(
-            sample_session.session_id, sample_case.organization_id
+            sample_session.session_id,
+            sample_case.organization_id,
+            case_id=sample_session.case_id,
         )
 
         assert result["is_over_budget"] is False
@@ -1256,7 +1301,9 @@ class TestCheckBudgetExceeded:
 
         with pytest.raises(AuthorizationError):
             await session_service.check_budget_exceeded(
-                sample_session.session_id, "different_org"
+                sample_session.session_id,
+                "different_org",
+                case_id=sample_session.case_id,
             )
 
 
@@ -1412,3 +1459,134 @@ class TestGetSessionStatistics:
         assert result["by_status"] == {}
         assert result["total_token_usage_all_sessions"] == 0
         assert result["avg_session_duration_ms"] == 0.0
+
+
+# ============================================================
+# Cross-case session binding (#1044)
+# ============================================================
+
+
+@pytest.mark.security
+class TestSessionMustBelongToNamedCase:
+    """A session id from another case must be refused before the write lands.
+
+    Every mutating route names a case in its path, and the router gates on the
+    caller's access to *that* case. Nothing bound the session to it: the service
+    resolved by session id plus organization, mutated, and the route compared
+    ``session.case_id != case_id`` only after the call returned — so a caller
+    with a case of their own could pause, resume, complete or retitle any
+    session in the organization and receive a 404 over a change that had
+    already been persisted.
+
+    ``_get_session_with_authorization`` now takes the named case and refuses
+    first. These tests assert the refusal *and* that the repository was never
+    asked to write, which is the half a status-code assertion would miss.
+    """
+
+    @pytest.fixture
+    def foreign_session(self, mock_session_repo, mock_case_repo, sample_case):
+        """A session in a different case, reachable in the caller's org."""
+        session = InvestigationSession(
+            session_id=f"session_{uuid4().hex[:12]}",
+            case_id=f"case_{uuid4().hex[:12]}",  # NOT the case the caller names
+            user_id="user_victim",
+            organization_id=sample_case.organization_id,
+            state=SessionState.ACTIVE,
+            session_goal="Victim's investigation",
+        )
+        mock_session_repo.get_by_id.return_value = session
+        mock_case_repo.get.return_value = sample_case
+        return session
+
+    @pytest.mark.asyncio
+    async def test_pause_refuses_and_does_not_write(
+        self, session_service, mock_session_repo, foreign_session, sample_case
+    ):
+        with pytest.raises(NotFoundError):
+            await session_service.pause_session(
+                foreign_session.session_id,
+                sample_case.organization_id,
+                case_id=sample_case.case_id,
+            )
+
+        mock_session_repo.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resume_refuses_and_does_not_write(
+        self, session_service, mock_session_repo, foreign_session, sample_case
+    ):
+        foreign_session.state = SessionState.PAUSED
+
+        with pytest.raises(NotFoundError):
+            await session_service.resume_session(
+                foreign_session.session_id,
+                sample_case.organization_id,
+                case_id=sample_case.case_id,
+            )
+
+        mock_session_repo.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_complete_refuses_and_does_not_write(
+        self, session_service, mock_session_repo, foreign_session, sample_case
+    ):
+        with pytest.raises(NotFoundError):
+            await session_service.complete_session(
+                foreign_session.session_id,
+                sample_case.organization_id,
+                "Findings supplied by someone else",
+                case_id=sample_case.case_id,
+            )
+
+        mock_session_repo.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_refuses_and_does_not_write(
+        self, session_service, mock_session_repo, foreign_session, sample_case
+    ):
+        with pytest.raises(NotFoundError):
+            await session_service.update_session(
+                foreign_session.session_id,
+                sample_case.organization_id,
+                {"session_goal": "Hijacked"},
+                case_id=sample_case.case_id,
+            )
+
+        mock_session_repo.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_abandon_refuses_and_does_not_write(
+        self, session_service, mock_session_repo, foreign_session, sample_case
+    ):
+        with pytest.raises(NotFoundError):
+            await session_service.abandon_session(
+                foreign_session.session_id,
+                sample_case.organization_id,
+                case_id=sample_case.case_id,
+            )
+
+        mock_session_repo.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_session_in_the_named_case_still_works(
+        self, session_service, mock_session_repo, mock_case_repo, sample_case
+    ):
+        """The binding is a predicate, not a blanket refusal."""
+        session = InvestigationSession(
+            session_id=f"session_{uuid4().hex[:12]}",
+            case_id=sample_case.case_id,
+            user_id=sample_case.user_id,
+            organization_id=sample_case.organization_id,
+            state=SessionState.ACTIVE,
+        )
+        mock_session_repo.get_by_id.return_value = session
+        mock_case_repo.get.return_value = sample_case
+        mock_session_repo.update.side_effect = lambda s: s
+
+        result = await session_service.pause_session(
+            session.session_id,
+            sample_case.organization_id,
+            case_id=sample_case.case_id,
+        )
+
+        assert result.state == SessionState.PAUSED
