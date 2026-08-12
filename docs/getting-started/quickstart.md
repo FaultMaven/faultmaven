@@ -148,14 +148,19 @@ curl -X POST http://localhost:8090/api/v1/query \
 }
 ```
 
-### Upload Evidence (Logs, Metrics, Config)
+### Upload Data (Logs, Metrics, Config)
+
+Raw data enters a case as a turn attachment. FaultMaven extracts the evidence
+from what you upload:
 
 ```bash
-curl -X POST http://localhost:8090/api/v1/data \
-  -F "case_id=case_abc123" \
-  -F "file=@/path/to/application.log" \
-  -F "data_type=logs"
+curl -X POST http://localhost:8090/api/v1/cases/case_abc123/turns \
+  -F "query=Here are the application logs from the incident window" \
+  -F "files=@/path/to/application.log"
 ```
+
+You can also paste text directly with `-F "pasted_content=..."` instead of
+attaching a file.
 
 ---
 

@@ -7,7 +7,7 @@ When the engine cannot reach a grounded root cause, it must do two things at onc
 - [Progress Transparency](./progress-transparency.md) — the hypothesis-layer stall detector and repair patterns this document builds on
 - [Two-Dimensional Hypothesis Methodology](./two-dimensional-hypothesis-methodology.md) — the hypothesis/causal-graph distinction, the two grades of root-cause validation, and the causal-graph-layer assurance grade (§9.5: `grade_cause_assurance` → `CONFIRMED`)
 - [Investigation Invariant Enforcement Matrix](./investigation-invariants.md) — the enforcement-tier framework (Structural > Code-guarded > Schema > Prompt-only) and *composition seam* / *dynamic drift* concepts this document uses
-- [Evidence Needs Design](./evidence-needs-design.md) — the demand-side pool of outstanding evidence asks
+- [Evidence Needs Design](./evidence-needs-design.md) — the demand-side pool of outstanding data asks
 
 ---
 

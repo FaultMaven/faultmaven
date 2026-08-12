@@ -15,10 +15,10 @@ FaultMaven's investigation engine consumes three types of data, all delivered to
 | # | Data Type | Lifecycle | Scope | Role in Investigation | Preprocessing |
 |---|-----------|-----------|-------|----------------------|---------------|
 | 1 | **User queries** | Ephemeral (per-turn) | Case-specific | Drives investigation direction | None (direct input) |
-| 2 | **Submitted evidence** | Short-term (per-case) | Case-specific | Diagnose the problem — logs, metrics, configs from the user's environment | Data preprocessing pipeline (classification, extraction, structural indexing — see [data-preprocessing-design-specification.md](../data-processing/data-preprocessing-design-specification.md)) |
+| 2 | **Submitted data** | Short-term (per-case) | Case-specific | Diagnose the problem — logs, metrics, configs from the user's environment | Data preprocessing pipeline (classification, extraction, structural indexing — see [data-preprocessing-design-specification.md](../data-processing/data-preprocessing-design-specification.md)) |
 | 3 | **Knowledge base** | Long-term (permanent) | Cross-case | Remediate the problem — runbooks, procedures, known solutions | **This document** — content architecture, quality gates, lifecycle |
 
-Type 2 (submitted evidence) and Type 3 (knowledge base) are both fed to the LLM through RAG, but they serve different purposes in the investigation:
+Type 2 (submitted data) and Type 3 (knowledge base) are both fed to the LLM through RAG, but they serve different purposes in the investigation:
 
 - **Evidence** tells the AI *what is happening* — it is raw, case-specific, and diagnostic. It answers "what broke?"
 - **Knowledge base** tells the AI *what to do about it* — it is curated, cross-case, and remedial. It answers "how do we fix it?"

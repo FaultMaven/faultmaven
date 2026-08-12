@@ -44,7 +44,7 @@ When N turns pass without a milestone completing in the current stage, transpare
 | Silent → Transparent | N data-bearing turns without a milestone completing in current stage |
 | Transparent → Silent | Any milestone is completed                                           |
 
-**What counts toward the counter:** Turns where the user submitted data (evidence attached) OR the agent executed diagnostic tools (search_file, deep_analysis, etc.) against existing evidence. These are **investigative turns** — turns where diagnostic work was attempted. Conversational turns (questions, off-topic chat, acknowledgments without data or tool calls) do not increment the counter.
+**What counts toward the counter:** Turns where the user submitted data (files or pasted content attached) OR the agent executed diagnostic tools (search_file, deep_analysis, etc.) against existing evidence. These are **investigative turns** — turns where diagnostic work was attempted. Conversational turns (questions, off-topic chat, acknowledgments without data or tool calls) do not increment the counter.
 
 This means the counter tracks "N turns of investigative work without a milestone advancing." Whether the user provided new data or the agent dug deeper into existing data, diagnostic effort was spent without result.
 
@@ -169,7 +169,7 @@ Transparent Mode (progress stalled)
 
 **Turn 1-4 (Silent mode):** User submits logs, agent analyzes them, verifies symptoms, assesses scope. Milestones advancing normally. Investigative turn counter: 4.
 
-**Turn 5-7 (Silent mode):** Agent forms hypotheses, requests additional evidence. User provides some data. Agent tests hypotheses but can't validate any. Investigative turn counter: 7 (3 more investigative turns, still below threshold of 5 since last milestone at turn 4).
+**Turn 5-7 (Silent mode):** Agent forms hypotheses, requests additional data. User provides some. Agent tests hypotheses but can't validate any. Investigative turn counter: 7 (3 more investigative turns, still below threshold of 5 since last milestone at turn 4).
 
 **Turn 8 (Silent mode, user chats):** User asks "what does connection pooling mean?" Agent answers. This is a conversational turn — counter stays at 7, not incremented.
 

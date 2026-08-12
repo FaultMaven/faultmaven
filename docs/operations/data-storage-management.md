@@ -280,7 +280,7 @@ find data/evidence/ -type f -mtime -7
 
 ### Evidence dual storage
 
-Each uploaded evidence file is stored in two places:
+Each uploaded file is stored in two places:
 
 1. `data/evidence/<organization_id>/<case_id>/<YYYY-MM-DD>/<uuid>_<filename>` — the raw file (90-day retention)
 2. `data/faultmaven.db` — structured metadata in the `evidence` table (evidence ID, category, summary, preprocessing result) and the `uploaded_files` table (file path reference, upload metadata)
@@ -535,6 +535,6 @@ cp /backup/faultmaven/20260328/faultmaven.db data/faultmaven.db
 cp -r /backup/faultmaven/20260328/chroma-kb/ data/chroma-kb/
 cp -r /backup/faultmaven/20260328/knowledge/ data/knowledge/
 cp -r /backup/faultmaven/20260328/evidence/ data/evidence/
-# chroma-evidence/ is not restored — it will be recreated as cases upload evidence
+# chroma-evidence/ is not restored — it will be recreated as case files are vectorized
 # Start application
 ```
