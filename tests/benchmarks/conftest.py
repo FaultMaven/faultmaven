@@ -54,12 +54,14 @@ from tests.utils import generate_case_id, generate_org_id
 
 #: Timed samples taken per measured operation, after one untimed warm-up call.
 #:
-#: Five is a compromise, not a magic number. The minimum stops moving quickly
-#: (see the measurements recorded against each re-anchored threshold), and the
-#: cost is bounded because the expensive part of these benchmarks is the
-#: fixture setup — hundreds or thousands of rows — which is paid ONCE, outside
-#: the loop. Sites whose measured operation is itself a hundred writes pass a
-#: smaller ``samples`` explicitly.
+#: Five is a compromise, not a magic number: enough that a single contended
+#: sample cannot be the only one, few enough that the cost stays small. It is
+#: affordable because the expensive part of these benchmarks is the fixture
+#: setup — hundreds or thousands of rows — which is paid ONCE, outside the
+#: loop. Measured over the whole suite locally, going from one sample to
+#: warm-up + 5 moved the runtime from ~160s to ~170s. Sites whose measured
+#: operation is itself a batch of dozens of writes pass a smaller ``samples``
+#: explicitly.
 DEFAULT_SAMPLES = 5
 
 
@@ -86,12 +88,22 @@ class Measurement(NamedTuple):
         return max(self.samples)
 
     def report(self) -> str:
-        """The distribution, for the CI log.
+        """The distribution, recorded so a threshold can be re-anchored later.
 
-        Printed by every converted benchmark so a future re-anchoring has the
-        runner's OWN numbers to work from rather than someone's laptop's. A
-        rising median against a flat minimum is contention; both rising
-        together is the operation genuinely getting slower.
+        Printed by every converted benchmark, so re-anchoring works from the
+        RUNNER's own numbers rather than someone's laptop's — the two differ
+        by several fold in both directions. A rising median against a flat
+        minimum is contention; both rising together is the operation genuinely
+        getting slower.
+
+        Where it lands: pytest captures stdout on PASSING tests, so this does
+        not appear in the job log. It is in the ``benchmark_results.json`` the
+        benchmarks workflow uploads (``.call.stdout`` per test, 90-day
+        retention)::
+
+            gh run download <run-id> -R FaultMaven/faultmaven \\
+                -n benchmark-results
+            jq -r '.tests[].call.stdout' benchmark_results.json
         """
         return (
             f"min {self.best * 1000:.1f}ms "
