@@ -32,11 +32,18 @@ and ``hiredis`` is pinned in ``requirements/cloud.txt`` and in neither
 ``test.txt`` nor ``dev.txt``. That is the whole of why this module passed under
 the standalone lockfile and failed under the cloud one (fm#990).
 
+``Test Cloud`` no longer *resolves* Redis to the stand-in: fm#1031 gave the job
+a real server, so the client the composition root hands the app there is a real
+one, as in the deployment the lockfile describes. This module still installs a
+FakeRedis of its own, and should keep doing so — it wants a store it can bind to
+the loop it is about to run in, and it is reachable outside that job (the cloud
+lockfile on a developer's machine, with no Redis running, is the same collision).
+
 What the per-test client gives up is worth naming: these tests no longer say
 anything about the process-wide singleton surviving a change of event loop. They
-never meant to — no deployment has more than one loop, and the cloud lockfile's
-hiredis never meets FakeRedis outside CI — so the property was accidental
-coverage of a configuration that exists nowhere.
+never meant to — no deployment has more than one loop, and no deployment pairs
+hiredis with FakeRedis — so the property was accidental coverage of a
+configuration that exists nowhere.
 
 **Why the assertions are shaped the way they are.** A test that only asserted
 "the 4th request was a 429" would also pass against a limiter that refuses

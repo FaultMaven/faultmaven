@@ -52,6 +52,13 @@ To get started with local development for the `faultmaven` monolith:
 
         Security Scanning installs no lockfile — it audits the files themselves with `pip-audit --no-deps`.
 
+        A lockfile is not the whole environment: **Test Cloud also runs a real Redis**, because `cloud.txt` pins `hiredis` and the cloud deployment runs a server. The two halves belong together — reproducing that job locally means starting one, or the app falls back to the in-process FakeRedis and you get failures no deployment can have (fm#1031):
+
+        ```bash
+        docker run --rm -d -p 6379:6379 redis:7.2-alpine
+        REDIS_HOST=localhost python scripts/check_redis_pairing.py   # what CI asserts before the suite
+        ```
+
 3.  **Install Dependencies**
     * `sync-venv.sh` already did this — it runs `uv pip sync <lockfile>` then `uv pip install -e . --no-deps`. CI does the equivalent with `pip install -r <lockfile>` on an empty runner; `sync` is used locally because, unlike `pip install -r`, it also **removes** packages the lockfile omits, which is the half that matters on an environment you reuse.
     * The `--no-deps` matters: the version ranges in `pyproject.toml` are inputs to `./scripts/lock-deps.sh`, never resolved at install time. The lockfiles are the only source of versions, which is what makes an environment reproducible.
