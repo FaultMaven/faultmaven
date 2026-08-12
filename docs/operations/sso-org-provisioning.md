@@ -254,8 +254,9 @@ Decide deliberately:
 - **The account is in the right place and the mapping is wrong** — fix the
   mapping (below).
 - **The account should move** — this is an account migration, not a login fix.
-  Move `users.enterprise_id`, remove the stale `organization_members` row, and
-  bump the user's revocation watermark so their existing tokens stop working.
+  Move `users.enterprise_id`, then drop the stale membership with
+  `fm-remove-org-member` (see [Revoking access for one
+  user](#revoking-access-for-one-user)), which also ends their existing sessions.
   Their case data does **not** follow them; cases belong to the organization.
 - **They are a genuinely separate person at a second customer** — they need a
   separate account with a separate IdP identity.
@@ -282,12 +283,12 @@ UPDATE sso_org_mappings
  WHERE provider = 'workos' AND provider_org_id = 'org_01H…';
 ```
 
-Then, for every affected user:
-
-1. add them to the new organization (they will be added automatically on next
-   login, but existing sessions will not);
-2. bump their revocation watermark so outstanding tokens stop working —
-   otherwise they keep operating in the old tenant until their tokens expire.
+Then, for every affected user, remove them from the **old** organization with
+`fm-remove-org-member` (see [Revoking access for one
+user](#revoking-access-for-one-user)). That drops the stale membership and bumps
+their revocation watermark in one step — without the watermark they keep
+operating in the old tenant until their tokens expire. They are added to the new
+organization automatically on their next login.
 
 ### Retiring a tenant
 
@@ -297,7 +298,25 @@ Deleting the organization cascades the mapping away.
 
 ### Revoking access for one user
 
-Removing their `organization_members` row stops *future* logins from being
-member-scoped, but it does not invalidate an outstanding token by itself.
-Membership is verified at login only. Bump the user's per-user revocation
-watermark to end the session immediately.
+Membership is verified at **login** only, so deleting the
+`organization_members` row stops *future* logins from being member-scoped while
+every outstanding token keeps working until it expires. The two writes have to
+happen together, so run the command that does both:
+
+```bash
+kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
+  fm-remove-org-member --organization-id <organization_id> --user <username> --dry-run
+kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
+  fm-remove-org-member --organization-id <organization_id> --user <username> --yes
+```
+
+`--user` takes a username, an email address, or a user id. The command removes
+the membership and bumps the user's revocation watermark in one operation, then
+prints the instant before which their tokens are now invalid.
+
+It is safe to re-run: if it exits **2** the membership was removed but the
+revocation did not land — the user is out of the organization with live tokens —
+and running it again finishes the job rather than reporting "not a member".
+
+Do **not** do this with two SQL statements. The second one is the one that
+actually ends the session, and it is the one that gets forgotten.
