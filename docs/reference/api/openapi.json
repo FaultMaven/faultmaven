@@ -4266,33 +4266,6 @@
         "title": "ReportListResponse",
         "type": "object"
       },
-      "ReportRecommendationResponse": {
-        "description": "API response for report recommendations.",
-        "properties": {
-          "available_for_generation": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Available For Generation",
-            "type": "array"
-          },
-          "case_id": {
-            "title": "Case Id",
-            "type": "string"
-          },
-          "runbook_recommendation": {
-            "title": "Runbook Recommendation",
-            "type": "object"
-          }
-        },
-        "required": [
-          "case_id",
-          "available_for_generation",
-          "runbook_recommendation"
-        ],
-        "title": "ReportRecommendationResponse",
-        "type": "object"
-      },
       "ReportResponse": {
         "description": "API response model for a report.",
         "properties": {
@@ -12519,56 +12492,6 @@
           }
         ],
         "summary": "Generate reports for a case",
-        "tags": [
-          "reports"
-        ]
-      }
-    },
-    "/api/v1/reports/recommendations/{case_id}": {
-      "get": {
-        "description": "Get intelligent recommendations for which reports to generate",
-        "operationId": "get_report_recommendations_api_v1_reports_recommendations__case_id__get",
-        "parameters": [
-          {
-            "description": "Case ID",
-            "in": "path",
-            "name": "case_id",
-            "required": true,
-            "schema": {
-              "description": "Case ID",
-              "title": "Case Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReportRecommendationResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Get report recommendations for a case",
         "tags": [
           "reports"
         ]
