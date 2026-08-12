@@ -16,8 +16,8 @@ handler body, which is how ``report-recommendations`` gets at
 ``RunbookKnowledgeBase``. Routes that cannot are cheap by construction and need
 no verdict; only the ones that can are listed below.
 
-That is what makes it small. Six of the fifty-eight read routes can reach the
-embedder. The other fifty-two are not enumerated here — they are *proved* cheap
+That is what makes it small. Six of the fifty-six read routes can reach the
+embedder. The other fifty are not enumerated here — they are *proved* cheap
 each run, so adding one costs nothing, and adding one that touches the vector
 store fails this test until someone decides what it costs.
 
@@ -207,7 +207,7 @@ def test_the_middleware_agrees_with_each_verdict(path, expected_cheap):
 
 
 def test_reads_that_cannot_reach_the_embedder_are_cheap():
-    """The fifty-two are proved, not listed — so adding one costs nothing.
+    """The fifty are proved, not listed — so adding one costs nothing.
 
     An expensive pattern that matched one of these would quietly move ordinary
     navigation onto the quota that protects LLM compute, which is the fm#994

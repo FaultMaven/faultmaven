@@ -83,8 +83,8 @@ exceptions rots in the permissive direction — an endpoint added later inherits
 by **reachability rather than by inventory**. For every read route on every
 mounted router it asks whether the handler can reach an embedder or vector store,
 through a declared dependency or an import inside the handler body. Six of the
-sixty can, and only those carry a recorded verdict; the rest are proved cheap on
-each run rather than listed.
+fifty-six can, and only those carry a recorded verdict; the rest are proved
+cheap on each run rather than listed.
 
 What that means in practice:
 

@@ -522,6 +522,70 @@ class TestAddDocumentsAllowlistRefusal:
             metadatas=[{"title": "Test Doc", "chunk_index": 0}],
         )
 
+    # "No metadata" has four spellings — absent key, empty dict, explicit
+    # None, and (invalidly) a non-dict. The first review of fm#1035 covered
+    # only the first two; the guard screened `set(md or {})` while the write
+    # re-derived `doc.get("metadata", {})`, so a present-but-null key passed
+    # the guard and then raised AttributeError INSIDE call_external — the
+    # breaker-poisoning path the guard exists to close. All four shapes are
+    # pinned here so no two expressions can disagree about them again.
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            {"id": "doc1", "content": "c"},  # metadata key absent
+            {"id": "doc1", "content": "c", "metadata": {}},  # empty dict
+            {"id": "doc1", "content": "c", "metadata": None},  # present-but-null
+        ],
+        ids=["absent", "empty", "null"],
+    )
+    async def test_no_metadata_in_any_spelling_writes_an_empty_dict(self, doc):
+        store, collection = self._store()
+
+        await store.add_documents([doc])
+
+        collection.add.assert_called_once_with(
+            ids=["doc1"], documents=["c"], metadatas=[{}]
+        )
+
+    @pytest.mark.asyncio
+    async def test_null_metadata_is_one_clean_call_with_nothing_charged(self):
+        """The blocker's breaker leg: `metadata: None` must not touch the breaker.
+
+        Before the fix this shape passed the guard (`set(None or {})` is
+        empty) and blew up on `.items()` inside the wrapper — retried with
+        backoff, each attempt recorded as a service failure on the breaker
+        shared with the KB read path. With one normalization it is an
+        ordinary empty-metadata write: exactly one attempt, success recorded,
+        zero failures.
+        """
+        store, collection = self._store()
+
+        await store.add_documents([{"id": "doc1", "content": "c", "metadata": None}])
+
+        assert store.circuit_breaker.failure_count == 0
+        assert store.circuit_breaker.state == "closed"
+        assert store.connection_metrics["failed_calls"] == 0
+        assert store.connection_metrics["successful_calls"] == 1
+        assert store.connection_metrics["total_calls"] == 1  # no retry
+        collection.add.assert_called_once()  # one attempt, not three
+
+    @pytest.mark.asyncio
+    async def test_non_dict_metadata_is_refused_outside_the_machinery(self):
+        """A list/string metadata is refused by the guard, never `.items()`ed."""
+        store, collection = self._store()
+
+        with pytest.raises(ValueError, match="must be a dict"):
+            await store.add_documents(
+                [{"id": "doc1", "content": "c", "metadata": ["not", "a", "dict"]}]
+            )
+
+        assert store.circuit_breaker.failure_count == 0
+        assert store.circuit_breaker.state == "closed"
+        assert store.connection_metrics["total_calls"] == 0
+        collection.add.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_refuses_a_key_the_schema_would_drop(self):
         """An undeclared metadata key fails the write instead of vanishing.

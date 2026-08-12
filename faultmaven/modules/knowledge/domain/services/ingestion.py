@@ -495,7 +495,15 @@ class KnowledgeIngester:
             ids.append(chunk_id)
             metadatas.append(metadata)
 
-        # Store in ChromaDB
+        # Store in ChromaDB. NOTE (fm#1035): this write goes to the collection
+        # directly and does NOT consult the ``VectorMetadata`` allowlist — the
+        # ``document_id`` key above is undeclared there, and only this class's
+        # own read/delete methods filter on it. Tolerable solely because this
+        # subsystem has no production caller (nothing reaches
+        # ``KnowledgeService.ingest_document``/``update_document``). Reviving
+        # it means routing this write through a guarded writer
+        # (``KnowledgeVectorStore.add_documents``) or deciding the key's fate
+        # in the schema first.
         self.collection.add(
             embeddings=embeddings, documents=chunks, metadatas=metadatas, ids=ids
         )

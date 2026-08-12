@@ -785,13 +785,6 @@ class KnowledgeService:
                     operation="index_document",
                 )
 
-            # Replacement is in hand — only now remove the old chunks. The
-            # vector store implements delete_documents_by_parent_id (IVectorStore
-            # contract) — calling it directly, with no hasattr guard, so a store
-            # that silently lacks it raises here instead of leaving stale vectors
-            # behind on every re-ingest (the KB drift this campaign fixed).
-            await self._vector_store.delete_documents_by_parent_id(document.document_id)
-
             # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)
 
@@ -831,6 +824,25 @@ class KnowledgeService:
                         "metadata": meta.to_chroma_metadata(),
                     }
                 )
+
+            # Validate the replacement BEFORE the destructive delete below.
+            # add_documents re-runs this same refusal, but there it fires
+            # after the old chunks are gone — a refusal at that point leaves
+            # the document with ZERO vectors, where the pre-#1035 behaviour
+            # at least kept it searchable. Unreachable for dicts built by
+            # to_chroma_metadata() (it emits only declared keys), so this is
+            # ordering insurance, not a second authority (fm#1035 review).
+            for d in doc_dicts:
+                VectorMetadata.reject_undeclared_keys(d["metadata"])
+
+            # Replacement is fully in hand (embeddings + validated chunk
+            # dicts) — only now remove the old chunks. The vector store
+            # implements delete_documents_by_parent_id (IVectorStore
+            # contract) — calling it directly, with no hasattr guard, so a
+            # store that silently lacks it raises here instead of leaving
+            # stale vectors behind on every re-ingest (the KB drift this
+            # campaign fixed).
+            await self._vector_store.delete_documents_by_parent_id(document.document_id)
 
             await self._vector_store.add_documents(doc_dicts, embeddings=embeddings)
 
