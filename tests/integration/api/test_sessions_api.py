@@ -71,7 +71,30 @@ def mock_session_service():
 
 
 @pytest.fixture
-def app(mock_session_service, mock_user):
+def mock_case_service(mock_user):
+    """A case service that grants the authenticated user access to their case.
+
+    Session routes are gated on the parent case (#1044): the caller must own the
+    case or have it shared to one of their teams, not merely share an
+    organization with its owner. Every test below acts as the case's owner, so
+    this returns a case for them and ``None`` for anyone else — the same two
+    meanings ``CaseService.get_case`` collapses in production.
+    """
+    case = MagicMock()
+    case.case_id = "case_456def"
+    case.user_id = mock_user.user_id
+    case.organization_id = mock_user.organization_id
+
+    async def get_case(case_id, user_id=None):
+        return case if user_id == mock_user.user_id else None
+
+    service = AsyncMock()
+    service.get_case = AsyncMock(side_effect=get_case)
+    return service
+
+
+@pytest.fixture
+def app(mock_session_service, mock_user, mock_case_service):
     """Create test application with mocked dependencies."""
     app = main_app
 
@@ -81,15 +104,25 @@ def app(mock_session_service, mock_user):
     async def get_mock_current_user():
         return mock_user
 
+    async def get_mock_case_service():
+        return mock_case_service
+
     from faultmaven.api.dependencies import get_investigation_session_service
     from faultmaven.api.middleware.auth import get_current_user
+    from faultmaven.api.v1.dependencies import get_case_service
 
     app.dependency_overrides[get_investigation_session_service] = (
         get_mock_session_service
     )
     app.dependency_overrides[get_current_user] = get_mock_current_user
+    app.dependency_overrides[get_case_service] = get_mock_case_service
 
-    return app
+    try:
+        yield app
+    finally:
+        # Only this one is cleaned up: the case-service override would otherwise
+        # leak a permissive gate into every other test sharing ``main_app``.
+        app.dependency_overrides.pop(get_case_service, None)
 
 
 @pytest.fixture
@@ -675,3 +708,74 @@ class TestSessionAuthorization:
         )
 
         assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+@pytest.mark.security
+class TestSameOrganizationStrangerIsDenied:
+    """A second user in the same organization gets 404 on every route (#1044).
+
+    The session service authorizes on ``case.organization_id`` alone, so before
+    the case gate a colleague could read another member's ``session_goal``,
+    ``findings_summary`` and token spend, and pause, resume, update or complete
+    their sessions. The mocked session service below is deliberately permissive —
+    it returns the victim's session to anyone who asks — so these assertions can
+    only pass because the request is stopped before it.
+    """
+
+    @pytest.fixture
+    def stranger_client(self, app, mock_session_service, mock_session, mock_user):
+        # Every operation happily returns the victim's session — only the gate
+        # can produce a 404, so none of these assertions can pass vacuously.
+        for operation in (
+            "create_session",
+            "get_session",
+            "get_active_session",
+            "update_session",
+            "pause_session",
+            "resume_session",
+            "complete_session",
+        ):
+            getattr(mock_session_service, operation).return_value = mock_session
+        mock_session_service.list_sessions.return_value = [mock_session]
+
+        stranger = AuthenticatedUser(
+            user_id="user_stranger",
+            organization_id=mock_user.organization_id,  # same org as the owner
+            email="stranger@example.com",
+            roles=["user"],
+            permissions=["sessions:read", "sessions:write", "sessions:execute"],
+        )
+
+        from faultmaven.api.middleware.auth import get_current_user
+
+        previous = app.dependency_overrides[get_current_user]
+
+        async def get_stranger():
+            return stranger
+
+        app.dependency_overrides[get_current_user] = get_stranger
+        try:
+            yield TestClient(app)
+        finally:
+            app.dependency_overrides[get_current_user] = previous
+
+    @pytest.mark.parametrize(
+        "method,path,body",
+        [
+            ("post", "", {}),
+            ("get", "", None),
+            ("get", "/active", None),
+            ("get", "/session_123abc", None),
+            ("patch", "/session_123abc", {"session_goal": "hijacked"}),
+            ("post", "/session_123abc/pause", None),
+            ("post", "/session_123abc/resume", None),
+            ("post", "/session_123abc/complete", {"findings_summary": "mine now"}),
+        ],
+    )
+    def test_route_denies_stranger(self, stranger_client, method, path, body):
+        response = getattr(stranger_client, method)(
+            f"/api/v1/cases/case_456def/sessions{path}",
+            **({"json": body} if body is not None else {}),
+        )
+
+        assert response.status_code == status.HTTP_404_NOT_FOUND

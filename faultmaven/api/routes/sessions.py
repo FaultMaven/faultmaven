@@ -15,12 +15,17 @@ Endpoints:
 Authentication:
 - JWT Bearer token: Authorization: Bearer <token>
 
+Authorization:
+- Every route is gated on the parent case by ``require_case_access`` (router-level):
+  the caller must own the case or have it shared to one of their teams. Sharing an
+  organization with the owner is not enough.
+
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 from faultmaven.api.dependencies import get_investigation_session_service
 from faultmaven.api.middleware.auth import get_current_user
@@ -30,14 +35,52 @@ from faultmaven.api.models import (
     SessionListResponse,
     SessionUpdateRequest,
 )
+from faultmaven.api.v1.dependencies import get_case_service
 from faultmaven.exceptions import NotFoundError
+from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.models.investigation_session import SessionState
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
 
-router = APIRouter(prefix="/api/v1/cases/{case_id}/sessions", tags=["Sessions"])
+
+async def require_case_access(
+    case_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    case_service: Optional[ICaseService] = Depends(get_case_service),
+) -> None:
+    """Gate every session route on the caller's access to the parent case (#1044).
+
+    The session service authorizes on ``case.organization_id`` alone, while the rest
+    of the case surface is owner ∪ shared-to-my-teams. That asymmetry let anyone in
+    an organization read another member's ``session_goal``, ``findings_summary`` and
+    token usage, and pause/resume/complete their sessions. Since every route here is
+    nested under ``/cases/{case_id}``, the canonical single-case gate applies whole:
+    resolve the case as the caller, deny when it does not resolve. The service's
+    organization check stays where it is — this is an additional predicate, not a
+    replacement.
+
+    Declared as a router-level dependency so a route added later cannot omit it.
+
+    Raises:
+        HTTPException: 503 if the case service is unavailable (the gate cannot be
+            evaluated, so nothing is served)
+        NotFoundError: 404 if the case does not exist or is not the caller's
+    """
+    if case_service is None:
+        raise HTTPException(status_code=503, detail="Case service unavailable")
+
+    case = await case_service.get_case(case_id, user_id=current_user.user_id)
+    if case is None:
+        raise NotFoundError("Case", case_id)
+
+
+router = APIRouter(
+    prefix="/api/v1/cases/{case_id}/sessions",
+    tags=["Sessions"],
+    dependencies=[Depends(require_case_access)],
+)
 
 
 # ============================================================
