@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from faultmaven.config.tenant_context import set_current_org_id
+from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
 from faultmaven.modules.auth.domain.services.organization_membership_service import (
     MembershipRemovalIncomplete,
     MembershipRemovalMisscoped,
@@ -34,13 +34,22 @@ REVOKED_AT = datetime(2026, 8, 12, 9, 30, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def bound_to_the_target_org():
-    """Bind the tenant context, as every real caller must.
+    """Bind the tenant context, as every real caller must, then put it back.
 
     The DELETE is RLS-filtered by it, so the service refuses when it names a
     different organization — see ``test_refuses_when_the_tenant_context_names_a
     _different_org``.
+
+    The restore is the point of the ``yield``: this fixture is synchronous, so
+    the set lands in pytest's own context and outlives the test. Leaving it set
+    would make every later test in the session read this module's org id where
+    it expects the documented ``STANDALONE_ORG_ID`` default — a failure that
+    points at the wrong file.
     """
+    previous = get_current_org_id()
     set_current_org_id(ORG_ID)
+    yield
+    set_current_org_id(previous)
 
 
 @pytest.fixture

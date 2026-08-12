@@ -247,10 +247,13 @@ async def remove_org_member(
                 "   Refusing rather than revoking: this is what a mistyped "
                 "--organization-id looks like, and revoking anyway would end every "
                 "session of a user in some other tenant.\n"
-                "   If a previous run removed the membership but failed to revoke "
-                "(exit "
-                f"{EXIT_REVOCATION_INCOMPLETE}), re-run with --finish-interrupted "
-                "to write the outstanding revocation."
+                "   Check the organization id and the user before doing anything "
+                "else.\n"
+                "   ONLY if you saw this exact command exit "
+                f"{EXIT_REVOCATION_INCOMPLETE} for this exact organization — "
+                "membership removed, revocation not written — re-run with "
+                "--finish-interrupted to write that outstanding revocation. Do not "
+                "reach for that flag to get past this message."
             )
             return 1
         print(

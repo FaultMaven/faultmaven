@@ -298,13 +298,21 @@ Deleting the organization cascades the mapping away.
 
 ### Revoking access for one user
 
-> **Deprovision them at the IdP first.** Under SSO this procedure ends
-> *sessions*; it does not on its own end *access*. The login path adds
-> membership just-in-time, so a user who can still authenticate at WorkOS is
-> silently re-added to the organization on their next login and issued fresh
-> tokens. Remove them from the IdP organization (or disable the account)
-> **before** running the command below, or you have logged them out rather than
-> offboarded them.
+> **If you are offboarding someone, deprovision them at the IdP first.** Under
+> SSO this procedure ends *sessions*; it does not on its own end *access*. The
+> login path adds membership just-in-time, so a user who can still authenticate
+> at WorkOS is silently re-added to the organization on their next login and
+> issued fresh tokens. Remove them from the IdP organization (or disable the
+> account) **before** running the command below, or you have logged them out
+> rather than offboarded them.
+>
+> **Do not do this when you are moving someone** — that is, when you arrived
+> here from the `reason=enterprise_mismatch` account-migration case or from
+> [repointing a mapping](#repointing-a-mapping-to-a-different-organization).
+> Those procedures *depend* on the next IdP login re-adding the user, to the new
+> organization. Disabling their IdP account would block the very migration you
+> are performing. There, run the command alone: it drops the stale membership
+> and ends the sessions that still carry the old tenant.
 
 Membership is verified at **login** only, so deleting the
 `organization_members` row stops *future* logins from being member-scoped while

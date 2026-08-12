@@ -27,9 +27,22 @@ every writer goes through — makes "removed ⇒ revoked" a property of the
 operation rather than a step each caller must remember.
 
 ``tests/unit/modules/auth/test_membership_removal_is_paired.py`` is the tripwire
-that keeps it that way inside this repository; it cannot see the Cloud repo, so
-the composed module has its own obligation to call this service rather than the
-repository.
+that keeps it that way inside this repository.
+
+Not yet every writer (#874)
+---------------------------
+The tripwire cannot see ``faultmaven-cloud``, and **that repo has not been wired
+to this service yet**: ``OrganizationManagementService.remove_member``, behind
+``DELETE /api/v1/admin/organization/members/{user_id}``, still calls
+``IOrganizationRepository.remove_member`` directly and never revokes. Cloud is
+the only deployment that has organizations, so until that one-file change lands,
+removing a member *through the admin console* still leaves their outstanding
+tokens valid until expiry — the bug this service exists to close. The operator
+path (``fm-remove-org-member``) is paired; the API path is not.
+
+Say so plainly rather than describing the intended end state: a docstring that
+claims to be the chokepoint would let the next reader assume the API path is
+covered when it is not.
 """
 
 from __future__ import annotations
