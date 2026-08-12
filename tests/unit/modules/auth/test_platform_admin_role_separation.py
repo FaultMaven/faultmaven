@@ -261,6 +261,11 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
                 admin_user_id="operator",
             )
         repo.save.assert_not_called()
+        # Pin the premise of the second half rather than inferring it: the
+        # rejected removal must not have mutated the in-memory account either,
+        # or the assignment below would be starting from a state this test
+        # never established.
+        assert user.roles == []
 
         service, repo = _service_for(user)
         await service.assign_role(

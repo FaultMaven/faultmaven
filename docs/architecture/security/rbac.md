@@ -109,7 +109,7 @@ boundary:
 
 | Axis | Values | Granted by | Read by |
 |------|--------|-----------|---------|
-| Org-scoped | `admin`, `member`, `viewer` | `POST/DELETE /admin/users/{id}/roles`; also `fm-promote-platform-admin` (see below) | `Permission` mapping (not yet wired to endpoint checks) |
+| Org-scoped | `admin`, `member`, `viewer` | `POST/DELETE /admin/users/{id}/roles`; also `fm-promote-platform-admin` / the bootstrap operator seed, which re-grants on **every** startup (see below) | `Permission` mapping (not yet wired to endpoint checks) |
 | Deployment | `platform_admin` | `fm-promote-platform-admin` / bootstrap operator seed, and nothing else | `require_platform_admin` / `is_platform_admin()` |
 | Base | `user` | registration, SSO JIT provisioning; also the operator grant | nothing today (grants no permissions) |
 
