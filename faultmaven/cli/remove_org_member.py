@@ -33,6 +33,17 @@ rather than needing the RLS-exempt owner DSN. A slug lookup would have to read
 ``organizations`` across tenants, which that role cannot do — and should not.
 ``fm-provision-sso-org`` prints the organization id when it provisions a tenant.
 
+**A non-member is refused.** ``users`` is not tenant-scoped, so the lookup finds
+any account in the deployment — including one in a different organization. A
+mistyped ``--organization-id`` would otherwise remove nothing and revoke an
+unrelated tenant's user, ending every session they have. Finishing a genuinely
+interrupted run is the explicit ``--finish-interrupted`` case.
+
+**This ends sessions; under SSO it does not by itself end access.** The IdP
+login path re-adds membership just-in-time, so a user who can still authenticate
+at the identity provider is silently re-added on their next login. Deprovision
+them at the IdP first — see the runbook section this command is documented in.
+
 Why it refuses under in-process FakeRedis
 -----------------------------------------
 The revocation watermark lives in the deployment-wide Redis store (#767). In a
@@ -45,9 +56,13 @@ Redis (``fakeredis_or_fail``), so the guard never fires there.
 
 Exit codes
 ----------
-0 success (or dry-run), 1 refused / not found / nothing written, 2 the
-membership was removed but the revocation did NOT land (re-run to finish it —
-the operation is idempotent).
+| 0 | success, or a dry run |
+| 1 | refused: not found, not a member, nothing that can revoke — nothing written |
+| 2 | argparse usage error (a bad flag), reserved by argparse — nothing written |
+| 3 | the membership was removed but the revocation did NOT land; re-run with
+     ``--finish-interrupted`` |
+| 4 | the revocation landed but the membership row was not deleted; the row may
+     survive and with it access on the next login |
 """
 
 from __future__ import annotations
@@ -63,23 +78,54 @@ _SUMMARY = (
     "as one operation."
 )
 
-#: Exit code for the half-state: membership gone, tokens still live. Distinct
-#: from a plain refusal (1) because it is the one outcome that leaves the
-#: deployment in a state an operator MUST come back to.
-EXIT_REVOCATION_INCOMPLETE = 2
+#: Exit code for the half-state: membership gone, tokens still live. The one
+#: outcome that leaves the deployment in a state an operator MUST come back to,
+#: so it gets its own code. Deliberately **not** 2 — argparse exits 2 on any
+#: usage error, and a mistyped flag must not be readable as "the membership was
+#: removed but the revocation did not land".
+EXIT_REVOCATION_INCOMPLETE = 3
+
+#: Exit code for the other anomaly: the revocation landed but the membership row
+#: was not deleted, though this command had just read it as present. Tokens are
+#: dead, the row survives, and the user is back in on their next login.
+EXIT_MEMBERSHIP_NOT_REMOVED = 4
 
 
-def _revocation_store_is_process_local(store) -> bool:
-    """True if this revocation store is backed by in-process FakeRedis.
+def _revocation_store_unusable(store) -> str | None:
+    """Why this revocation store cannot end a session, or None if it can.
 
-    A positive identification of the known-broken case, not a proof of health:
-    an unrecognised store shape is left alone rather than refused, so a future
-    store implementation does not become an outage in this command.
+    Two known-broken shapes, both of which would let the command delete the
+    membership and only then fail to revoke — the half-state the preflight
+    exists to prevent, detectable before the write:
+
+    * **in-process FakeRedis** — a watermark written here lives and dies inside
+      the CLI process, invisible to the running API;
+    * **no client at all** — the store was built without one, so writing the
+      watermark raises on a ``None``.
+
+    An otherwise unrecognised store shape is left alone rather than refused, so a
+    future store implementation does not become an outage in this command.
     """
     from faultmaven.infrastructure.redis_client import is_fakeredis
 
-    client = getattr(store, "redis", None)
-    return client is not None and is_fakeredis(client)
+    if not hasattr(store, "redis"):
+        return None
+    client = store.redis
+    if client is None:
+        return (
+            "the token revocation store has no client, so writing the watermark "
+            "would fail after the membership had already been deleted"
+        )
+    if is_fakeredis(client):
+        return (
+            "the token revocation store is in-process FakeRedis. A watermark "
+            "written here would be invisible to the running API, so this command "
+            "would report success while every token stayed valid.\n"
+            "   This procedure applies to multi-tenant (Cloud) deployments, which "
+            "run a real Redis. Point REDIS_URL / REDIS_HOST at the deployment's "
+            "Redis and re-run"
+        )
+    return None
 
 
 async def _resolve_user(user_store, identifier: str):
@@ -101,7 +147,11 @@ async def _resolve_user(user_store, identifier: str):
 
 
 async def remove_org_member(
-    *, organization_id: str, user_identifier: str, dry_run: bool
+    *,
+    organization_id: str,
+    user_identifier: str,
+    dry_run: bool,
+    finish_interrupted: bool = False,
 ) -> int:
     """Run the paired removal. Returns the process exit code."""
     from faultmaven.config.tenant_context import set_current_org_id
@@ -111,6 +161,7 @@ async def remove_org_member(
     )
     from faultmaven.modules.auth.domain.services.organization_membership_service import (
         MembershipRemovalIncomplete,
+        MembershipRemovalMisscoped,
         OrganizationMembershipService,
     )
 
@@ -137,15 +188,9 @@ async def remove_org_member(
             "written. Refusing to remove the membership."
         )
         return 1
-    if _revocation_store_is_process_local(revocation_store):
-        print(
-            "\n❌ The token revocation store is in-process FakeRedis. A watermark "
-            "written here would be invisible to the running API, so this command "
-            "would report success while every token stayed valid.\n"
-            "   This procedure applies to multi-tenant (Cloud) deployments, which "
-            "run a real Redis. Point REDIS_URL / REDIS_HOST at the deployment's "
-            "Redis and re-run."
-        )
+    unusable = _revocation_store_unusable(revocation_store)
+    if unusable is not None:
+        print(f"\n❌ Refusing to remove the membership: {unusable}.")
         return 1
 
     # RLS (migration 018) scopes organizations and organization_members by
@@ -170,9 +215,16 @@ async def remove_org_member(
 
     user = await _resolve_user(user_store, user_identifier)
     if user is None:
+        # The user store swallows lookup errors and returns None, so "absent" and
+        # "the lookup failed" arrive here identically. Say so rather than assert
+        # the account does not exist — during an incident the difference is the
+        # difference between a typo and an unavailable database.
         print(
             f"\n❌ No user matches '{user_identifier}' "
-            "(tried username, then email, then user id)."
+            "(tried username, then email, then user id).\n"
+            "   A failed lookup reads the same as an absent account here; if the "
+            "account should exist, check the API logs for a database error before "
+            "assuming the identifier is wrong."
         )
         return 1
 
@@ -180,12 +232,30 @@ async def remove_org_member(
 
     print(f"\nOrganization: {organization.name} ({organization_id})")
     print(f"User:         {user.username} <{user.email}> ({user.user_id})")
+
     if current_role_id is None:
-        # Not an error: this is exactly the state a half-completed previous run
-        # leaves behind, and finishing it is what the revocation below does.
+        # `users` is NOT tenant-scoped (migration 018), so the lookup above finds
+        # any account in the deployment — including one belonging to a different
+        # organization. Revoking unconditionally here would sign that unrelated
+        # user out everywhere on a mistyped --organization-id, having removed
+        # nothing. So a non-member is refused by default; finishing a genuinely
+        # interrupted run is the explicit --finish-interrupted case.
+        if not finish_interrupted:
+            print(
+                f"\n❌ {user.username} is not a member of this organization, so "
+                "there is nothing to remove.\n"
+                "   Refusing rather than revoking: this is what a mistyped "
+                "--organization-id looks like, and revoking anyway would end every "
+                "session of a user in some other tenant.\n"
+                "   If a previous run removed the membership but failed to revoke "
+                "(exit "
+                f"{EXIT_REVOCATION_INCOMPLETE}), re-run with --finish-interrupted "
+                "to write the outstanding revocation."
+            )
+            return 1
         print(
-            "Membership:   none (already removed) — the revocation will still be "
-            "written, which is how an interrupted removal is completed."
+            "Membership:   none — finishing an interrupted removal, so only the "
+            "revocation will be written."
         )
     else:
         print(f"Membership:   present (role_id {current_role_id})")
@@ -202,9 +272,27 @@ async def remove_org_member(
     )
     try:
         result = await service.remove_member(organization_id, user.user_id)
+    except MembershipRemovalMisscoped as exc:
+        print(f"\n❌ {exc}")
+        return 1
     except MembershipRemovalIncomplete as exc:
         print(f"\n❌ {exc}")
         return EXIT_REVOCATION_INCOMPLETE
+
+    if not result.membership_removed and current_role_id is not None:
+        # This command read the membership as present moments ago and the delete
+        # still matched nothing — a concurrent change, or a condition that hides
+        # the row from the delete. Reporting success here would tell an operator
+        # that access is cut while the row survives and only the tokens died.
+        print(
+            f"\n⚠️  The membership was present when this run started (role_id "
+            f"{current_role_id}) but the delete matched no row.\n"
+            f"   Tokens WERE revoked (before {result.revoked_before.isoformat()}), "
+            "so current sessions are dead — but the membership may survive, and "
+            "with it access on the next login. Verify the row is gone before "
+            "treating this user as removed."
+        )
+        return EXIT_MEMBERSHIP_NOT_REMOVED
 
     if result.membership_removed:
         print("\n✅ Membership removed.")
@@ -250,7 +338,26 @@ def main() -> None:
         action="store_true",
         help="Confirm the write (required; the user is signed out of every session)",
     )
+    parser.add_argument(
+        "--finish-interrupted",
+        action="store_true",
+        help=(
+            "Write the revocation for a user who is already not a member — the "
+            "recovery path after a run that removed the membership but failed to "
+            f"revoke (exit {EXIT_REVOCATION_INCOMPLETE})"
+        ),
+    )
     args = parser.parse_args()
+
+    # --dry-run with --yes is a usage error, not a preference. The two
+    # invocations differ by one flag, so an operator editing the previous command
+    # can end up with both — and silently taking the dry-run branch would exit 0
+    # and read as "access cut" when nothing was written.
+    if args.dry_run and args.yes:
+        parser.error(
+            "--dry-run and --yes are mutually exclusive: pass --dry-run to preview, "
+            "--yes to write."
+        )
 
     # Refuse before touching anything: a run with neither flag is an operator
     # who has not yet decided, and this write signs a user out everywhere. The
@@ -270,6 +377,7 @@ def main() -> None:
                 organization_id=args.organization_id,
                 user_identifier=args.user,
                 dry_run=args.dry_run,
+                finish_interrupted=args.finish_interrupted,
             )
         )
     )

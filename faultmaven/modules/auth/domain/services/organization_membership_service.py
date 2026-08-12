@@ -38,9 +38,25 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 
+from faultmaven.config.tenant_context import get_current_org_id
 from faultmaven.models.interfaces_user import IOrganizationRepository
 
 logger = logging.getLogger(__name__)
+
+
+class MembershipRemovalMisscoped(Exception):
+    """The bound tenant context does not name the organization being written to.
+
+    ``organization_members`` is RLS-tenanted (migration 018) and the DELETE is
+    filtered by ``app.current_org_id``, so a call whose context names a
+    *different* organization deletes nothing — and ``remove_member`` reports that
+    as ``rowcount == 0``, indistinguishable from "was not a member". The caller
+    would then read a silent no-op as "already removed" while the membership
+    survives and only the tokens were revoked, putting the user back in on their
+    next login.
+
+    Raised **before** either write, so nothing has happened when it surfaces.
+    """
 
 
 class MembershipRemovalIncomplete(Exception):
@@ -129,10 +145,27 @@ class OrganizationMembershipService:
             instant before which this user's tokens are now invalid.
 
         Raises:
+            MembershipRemovalMisscoped: The bound tenant context names a
+                different organization, so the delete would silently match
+                nothing. Raised before any write.
             MembershipRemovalIncomplete: The delete landed but the watermark was
                 not written. The caller must NOT report the removal as complete;
                 re-running finishes it.
         """
+        # The DELETE is RLS-filtered by the bound context, so a mismatch makes it
+        # a no-op that reports as "was not a member". Checking here rather than
+        # trusting each caller is the point of being the chokepoint: a caller
+        # that forgot to bind gets an error, not a silent success.
+        bound_org_id = get_current_org_id()
+        if bound_org_id != organization_id:
+            raise MembershipRemovalMisscoped(
+                f"Refusing to remove a membership in organization {organization_id} "
+                f"while the tenant context is bound to {bound_org_id}: the delete is "
+                "RLS-filtered by the bound context and would match nothing, which is "
+                "indistinguishable from 'was not a member'. Bind the context to the "
+                "target organization (set_current_org_id) before calling."
+            )
+
         membership_removed = await self._orgs.remove_member(organization_id, user_id)
 
         try:

@@ -298,6 +298,14 @@ Deleting the organization cascades the mapping away.
 
 ### Revoking access for one user
 
+> **Deprovision them at the IdP first.** Under SSO this procedure ends
+> *sessions*; it does not on its own end *access*. The login path adds
+> membership just-in-time, so a user who can still authenticate at WorkOS is
+> silently re-added to the organization on their next login and issued fresh
+> tokens. Remove them from the IdP organization (or disable the account)
+> **before** running the command below, or you have logged them out rather than
+> offboarded them.
+
 Membership is verified at **login** only, so deleting the
 `organization_members` row stops *future* logins from being member-scoped while
 every outstanding token keeps working until it expires. The two writes have to
@@ -314,9 +322,20 @@ kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
 the membership and bumps the user's revocation watermark in one operation, then
 prints the instant before which their tokens are now invalid.
 
-It is safe to re-run: if it exits **2** the membership was removed but the
-revocation did not land — the user is out of the organization with live tokens —
-and running it again finishes the job rather than reporting "not a member".
+A user who is not a member of that organization is **refused**, because that is
+what a mistyped `--organization-id` looks like — `users` is not tenant-scoped, so
+revoking anyway would end every session of an unrelated tenant's user while
+removing nothing.
+
+Read the exit code:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Done: membership removed, tokens revoked |
+| 1 | Refused — nothing was written |
+| 2 | A bad flag (argparse usage error) — nothing was written |
+| 3 | Membership removed, revocation did **not** land: they are out of the org with live tokens. Re-run with `--finish-interrupted` |
+| 4 | Revocation landed, membership row **not** deleted: sessions are dead but the row may survive, and with it access on the next login. Verify the row before treating them as removed |
 
 Do **not** do this with two SQL statements. The second one is the one that
 actually ends the session, and it is the one that gets forgotten.

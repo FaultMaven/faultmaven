@@ -18,8 +18,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from faultmaven.config.tenant_context import set_current_org_id
 from faultmaven.modules.auth.domain.services.organization_membership_service import (
     MembershipRemovalIncomplete,
+    MembershipRemovalMisscoped,
     OrganizationMembershipService,
 )
 
@@ -28,6 +30,17 @@ pytestmark = pytest.mark.unit
 ORG_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 USER_ID = "225bae2f-f459-4a54-9c08-2da5c2b3a961"
 REVOKED_AT = datetime(2026, 8, 12, 9, 30, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def bound_to_the_target_org():
+    """Bind the tenant context, as every real caller must.
+
+    The DELETE is RLS-filtered by it, so the service refuses when it names a
+    different organization — see ``test_refuses_when_the_tenant_context_names_a
+    _different_org``.
+    """
+    set_current_org_id(ORG_ID)
 
 
 @pytest.fixture
@@ -116,6 +129,27 @@ async def test_failed_revocation_raises_and_names_the_half_state(
     assert "Re-run" in message
     assert "redis is gone" in message
     assert exc.value.__cause__ is auth_service.revoke_user_tokens.side_effect
+
+
+async def test_refuses_when_the_tenant_context_names_a_different_org(
+    service, orgs, auth_service
+):
+    """A misscoped call would delete nothing and report it as "was not a member".
+
+    ``organization_members`` is RLS-tenanted, so the DELETE is filtered by the
+    bound context. A caller that forgot to bind (or bound its own org) would see
+    ``membership_removed=False``, read it as "already not a member", and move on
+    — while the membership survives and only the tokens were revoked. Refusing
+    before either write is what makes this service a chokepoint rather than a
+    convention.
+    """
+    set_current_org_id("11111111-2222-3333-4444-555555555555")
+
+    with pytest.raises(MembershipRemovalMisscoped, match="RLS-filtered"):
+        await service.remove_member(ORG_ID, USER_ID)
+
+    orgs.remove_member.assert_not_awaited()
+    auth_service.revoke_user_tokens.assert_not_awaited()
 
 
 async def test_cannot_be_constructed_without_an_auth_service(orgs):

@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from faultmaven.cli import remove_org_member
+from faultmaven.config import tenant_context
 from faultmaven.modules.auth.domain.services.organization_membership_service import (
     MembershipRemovalIncomplete,
 )
@@ -135,8 +136,38 @@ def test_organization_id_and_user_are_required():
     assert exc.value.code == 2
 
 
+def test_argparse_usage_error_does_not_collide_with_the_half_state_code():
+    """argparse owns 2, so the half-state must not be 2.
+
+    The runbook tells operators that the half-state code means "removed but not
+    revoked". If a mistyped flag produced the same code, an operator would read
+    a command that never ran as one that half-ran.
+    """
+    assert remove_org_member.EXIT_REVOCATION_INCOMPLETE != 2
+    assert remove_org_member.EXIT_MEMBERSHIP_NOT_REMOVED != 2
+
+
+def test_dry_run_with_yes_is_a_usage_error(capsys):
+    """The two documented invocations differ by one flag; both is not a preference."""
+    with pytest.raises(SystemExit) as exc:
+        _run_main(
+            [
+                "fm-remove-org-member",
+                "--organization-id",
+                ORG_ID,
+                "--user",
+                "alice",
+                "--dry-run",
+                "--yes",
+            ]
+        )
+
+    assert exc.value.code == 2
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
 # =============================================================================
-# The FakeRedis guard
+# The revocation-store preflight
 # =============================================================================
 
 
@@ -155,8 +186,23 @@ async def test_refuses_when_the_revocation_store_is_process_local(wiring, capsys
     wiring.orgs.remove_member.assert_not_awaited()
 
 
+async def test_refuses_when_the_revocation_store_has_no_client(wiring, capsys):
+    """A store built without a client fails on the watermark write — after the
+    delete has landed. That half-state is detectable here, before the write."""
+    wiring.container.get_service = lambda name: SimpleNamespace(redis=None)
+
+    code = await remove_org_member.remove_org_member(
+        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+    )
+
+    assert code == 1
+    assert "no client" in capsys.readouterr().out
+    wiring.orgs.remove_member.assert_not_awaited()
+
+
 async def test_unrecognised_store_shape_is_not_refused(wiring):
-    """The guard identifies the known-broken case; it does not demand proof of health."""
+    """The guard identifies the known-broken shapes; it does not demand proof of
+    health, so a future store implementation is not an outage here."""
     wiring.container.get_service = lambda name: SimpleNamespace()  # no `.redis`
 
     code = await remove_org_member.remove_org_member(
@@ -206,15 +252,22 @@ async def test_tenant_context_is_bound_to_the_target_org(wiring, monkeypatch):
     defaulted to — the Standalone sentinel — and silently affect nothing.
     """
     bound: list[str] = []
-    monkeypatch.setattr(
-        "faultmaven.config.tenant_context.set_current_org_id", bound.append
-    )
+    real_set = tenant_context.set_current_org_id
 
-    await remove_org_member.remove_org_member(
+    def _record(org_id):
+        bound.append(org_id)
+        real_set(org_id)
+
+    monkeypatch.setattr("faultmaven.config.tenant_context.set_current_org_id", _record)
+
+    code = await remove_org_member.remove_org_member(
         organization_id=ORG_ID, user_identifier="alice", dry_run=False
     )
 
     assert bound == [ORG_ID]
+    # It must also be bound *before* the write, or the service refuses.
+    assert code == 0
+    wiring.orgs.remove_member.assert_awaited_once_with(ORG_ID, USER_ID)
 
 
 async def test_dry_run_writes_nothing(wiring, capsys):
@@ -228,13 +281,40 @@ async def test_dry_run_writes_nothing(wiring, capsys):
     wiring.auth_service.revoke_user_tokens.assert_not_awaited()
 
 
-async def test_absent_membership_still_revokes(wiring, capsys):
-    """The state a half-completed previous run leaves behind: finish it."""
+async def test_a_non_member_is_refused_not_revoked(wiring, capsys):
+    """The cross-tenant footgun: `users` is not tenant-scoped.
+
+    A mistyped --organization-id resolves a real account that belongs to some
+    *other* organization. Revoking it would end every session that user has while
+    removing nothing — an unrelated tenant's user signed out during someone
+    else's offboarding.
+    """
+    wiring.orgs.get_member_role.return_value = None
+
+    code = await remove_org_member.remove_org_member(
+        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+    )
+
+    assert code == 1
+    assert "not a member" in capsys.readouterr().out
+    wiring.orgs.remove_member.assert_not_awaited()
+    wiring.auth_service.revoke_user_tokens.assert_not_awaited()
+
+
+async def test_finish_interrupted_revokes_a_non_member(wiring, capsys):
+    """The recovery path the refusal above must not block.
+
+    After a run that deleted the row and failed to revoke, the user is no longer
+    a member and the outstanding revocation still has to be written.
+    """
     wiring.orgs.get_member_role.return_value = None
     wiring.orgs.remove_member.return_value = False
 
     code = await remove_org_member.remove_org_member(
-        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        organization_id=ORG_ID,
+        user_identifier="alice",
+        dry_run=False,
+        finish_interrupted=True,
     )
 
     assert code == 0
@@ -242,7 +322,7 @@ async def test_absent_membership_still_revokes(wiring, capsys):
     assert "already gone" in capsys.readouterr().out
 
 
-async def test_failed_revocation_exits_2_and_says_it_is_unfinished(wiring, capsys):
+async def test_failed_revocation_reports_the_half_state(wiring, capsys):
     """Distinct from a refusal: the membership is gone and tokens are still live."""
     wiring.auth_service.revoke_user_tokens.side_effect = RuntimeError("redis is gone")
 
@@ -250,10 +330,29 @@ async def test_failed_revocation_exits_2_and_says_it_is_unfinished(wiring, capsy
         organization_id=ORG_ID, user_identifier="alice", dry_run=False
     )
 
-    assert code == remove_org_member.EXIT_REVOCATION_INCOMPLETE == 2
+    assert code == remove_org_member.EXIT_REVOCATION_INCOMPLETE == 3
     out = capsys.readouterr().out
     assert "STILL VALID" in out
     assert "Re-run" in out
+
+
+async def test_a_delete_that_matches_nothing_is_not_reported_as_success(wiring, capsys):
+    """The command read the row as present, then deleted nothing.
+
+    Saying "already gone" here would tell an operator access is cut while the row
+    survives and only the tokens died — the user is back in on their next login.
+    """
+    wiring.orgs.get_member_role.return_value = "role-uuid"
+    wiring.orgs.remove_member.return_value = False
+
+    code = await remove_org_member.remove_org_member(
+        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+    )
+
+    assert code == remove_org_member.EXIT_MEMBERSHIP_NOT_REMOVED == 4
+    out = capsys.readouterr().out
+    assert "matched no row" in out
+    assert "may survive" in out
 
 
 # =============================================================================
@@ -305,6 +404,6 @@ async def test_unknown_user_is_refused(wiring, capsys):
 
 
 def test_membership_removal_incomplete_is_the_documented_failure():
-    """The CLI's exit code 2 is tied to the service's half-state exception."""
+    """The CLI's half-state exit code is tied to the service's half-state exception."""
     assert issubclass(MembershipRemovalIncomplete, Exception)
-    assert remove_org_member.EXIT_REVOCATION_INCOMPLETE == 2
+    assert remove_org_member.EXIT_REVOCATION_INCOMPLETE == 3
