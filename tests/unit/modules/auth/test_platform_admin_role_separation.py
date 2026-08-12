@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.exceptions import ConflictError
+from faultmaven.exceptions import ConflictError, NotFoundError
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.models import rbac as models_rbac
 from faultmaven.modules.auth.contracts import (
@@ -227,6 +227,49 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
                 admin_user_id="other-operator",
             )
         assert "Invalid role" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_account_with_no_roles_is_reported_honestly(self):
+        """An account with no org role is treated as having none.
+
+        ``dev_roles`` is nullable and stored NULL whenever the list is empty,
+        so ``roles == []`` is reachable. The pre-#706 code substituted a
+        phantom ``["member"]`` default here, which made *assigning* member a
+        spurious 409 and *removing* it a silent success. Both now answer from
+        the real state: the role genuinely is not held.
+        """
+        now = datetime(2026, 8, 12, tzinfo=timezone.utc)
+        user = RepositoryUser(
+            user_id="u-empty",
+            username="empty@example.com",
+            email="empty@example.com",
+            display_name="No Roles",
+            hashed_password=None,
+            created_at=now,
+            updated_at=now,
+            is_active=True,
+            is_email_verified=True,
+            roles=[],
+        )
+
+        service, repo = _service_for(user)
+        with pytest.raises(NotFoundError):
+            await service.remove_role(
+                user_id=user.user_id,
+                role=models_rbac.Role.MEMBER.value,
+                organization_id="org-1",
+                admin_user_id="operator",
+            )
+        repo.save.assert_not_called()
+
+        service, repo = _service_for(user)
+        await service.assign_role(
+            user_id=user.user_id,
+            role=models_rbac.Role.MEMBER.value,
+            organization_id="org-1",
+            admin_user_id="operator",
+        )
+        assert _saved_roles(repo) == [models_rbac.Role.MEMBER.value]
 
     @pytest.mark.asyncio
     async def test_unrecognised_roles_are_preserved_not_dropped(self):
