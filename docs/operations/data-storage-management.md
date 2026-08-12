@@ -153,6 +153,8 @@ Defaults are conservative — `conversion_drafts` (case-generated work in progre
 
 `fm-reset-kb` is a console entrypoint shipped with the installed package (`faultmaven/cli/reset_kb.py`), so it is available both in a local checkout (after `pip install -e .`) and inside the API pod.
 
+> **This resets the KB, not the deployment.** It refuses under `TENANT_PROVIDER=multi`, and its ChromaDB wipe `rmtree`s a *local* directory — with an external `CHROMADB_URL` the vectors survive it. To return a whole deployment to a clean slate (cases, evidence, users, tenants, object storage, Redis), use `fm-wipe-deployment`: see [Deployment Wipe](./deployment-wipe.md).
+
 #### ⚠️ Stop the API before wiping
 
 The wipe **`rmtree`s a ChromaDB directory that a running server holds open**. A live API keeps file handles and in-memory collection state on the tree being deleted, so with the server up it can keep serving reads from deleted files, recreate a partial directory underneath the one just removed, or fail on its next write. `--dry-run` is always safe; anything with `--yes` is not.

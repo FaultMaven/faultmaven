@@ -7,6 +7,8 @@ Production operations documentation.
 | Section | Description |
 |---------|-------------|
 | [Data & Storage Management](./data-storage-management.md) | Data directory layout, KB runbook management, backup/restore |
+| [Deployment Wipe](./deployment-wipe.md) | Returning a deployment to a clean slate, and verifying it (`fm-wipe-deployment`) |
+| [SSO Org Provisioning](./sso-org-provisioning.md) | Mapping an IdP organization to a FaultMaven tenant |
 | [Monitoring](./monitoring/) | Logging, metrics, and observability |
 | [Security](./security/) | Security implementation and policies |
 | [Runbooks](./runbooks/) | Troubleshooting guides |

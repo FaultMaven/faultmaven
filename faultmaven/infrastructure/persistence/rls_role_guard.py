@@ -207,11 +207,31 @@ async def assert_maintenance_db_role_posture(*, engine=None) -> str:
     return row.role_name
 
 
+#: Why tenant provisioning needs an RLS-exempt role, and what a scoped one costs.
+#: Default ``rationale``/``remedy`` for :func:`_raise_if_rls_scoped`, kept as
+#: module constants so the provisioning wording is not buried in a default
+#: argument that a second caller would have to read to know it is overriding it.
+_PROVISIONING_RATIONALE = (
+    "Provisioning writes the first rows of a tenant that does not exist yet, so "
+    "RLS filters or refuses them, and under FORCE ROW LEVEL SECURITY the "
+    "failure can be a silent zero-row result rather than an error. Nothing was "
+    "written."
+)
+_PROVISIONING_REMEDY = (
+    "    kubectl exec -it deploy/faultmaven-api -- \\\n"
+    "      env DATABASE_URL='postgresql+asyncpg://faultmaven:...@host/faultmaven' \\\n"
+    "      fm-provision-sso-org --name ... --slug ... --workos-org-id org_..."
+)
+
+
 def _raise_if_rls_scoped(
     role_name: str,
     is_superuser: bool,
     has_bypassrls: bool,
     owns_rls_table: bool,
+    operation: str = "Tenant provisioning",
+    rationale: str = _PROVISIONING_RATIONALE,
+    remedy: str = _PROVISIONING_REMEDY,
 ) -> None:
     """Fail closed if the role is SUBJECT to RLS (pure decision logic, no I/O).
 
@@ -227,24 +247,65 @@ def _raise_if_rls_scoped(
     Being exempt is the qualification here, which is why the app-role posture —
     non-superuser, no BYPASSRLS, owns no RLS-enabled table — is precisely the
     refusal condition.
+
+    ``operation``/``rationale``/``remedy`` only shape the refusal *message*. The
+    posture decision is one expression and stays that way: a second procedure
+    needing an RLS-exempt role (the deployment wipe's inventory and verification,
+    which a tenant-scoped role would silently under-report) reuses this decision
+    with its own wording rather than restating what "RLS-exempt" means — the
+    same single-authority argument :mod:`faultmaven.infrastructure.chroma_client`
+    makes for "external ChromaDB is configured".
     """
     if not (is_superuser or has_bypassrls or owns_rls_table):
         raise DeploymentCoherenceError(
-            "Tenant provisioning must run with the RLS-owning database role "
+            f"{operation} must run with the RLS-owning database role "
             "(the role that owns and migrates the schema), but this connection "
             f"is using '{role_name}', which row-level security applies to "
             "(superuser=False, bypassrls=False, owns_rls_table=False) — the "
-            "posture of the limited *application* role. Provisioning writes the "
-            "first rows of a tenant that does not exist yet, so RLS filters or "
-            "refuses them, and under FORCE ROW LEVEL SECURITY the failure can "
-            "be a silent zero-row result rather than an error. Nothing was "
-            "written. Note that `kubectl exec` into the API pod inherits the "
+            f"posture of the limited *application* role. {rationale} "
+            "Note that `kubectl exec` into the API pod inherits the "
             "pod's DATABASE_URL, which is the application role by design "
-            "(main.py asserts it) — pass the owner DSN explicitly:\n"
-            "    kubectl exec -it deploy/faultmaven-api -- \\\n"
-            "      env DATABASE_URL='postgresql+asyncpg://faultmaven:...@host/faultmaven' \\\n"
-            "      fm-provision-sso-org --name ... --slug ... --workos-org-id org_..."
+            f"(main.py asserts it) — pass the owner DSN explicitly:\n{remedy}"
         )
+
+
+async def assert_rls_exempt_db_role(
+    *,
+    operation: str,
+    rationale: str,
+    remedy: str,
+    engine=None,
+) -> str | None:
+    """Probe the connected role and refuse it if row-level security scopes it.
+
+    The shared body behind :func:`assert_provisioning_db_role_bypasses_rls` and
+    the deployment wipe's own preflight: one privilege query, one posture
+    decision, per-caller wording. Returns the verified role name, or ``None``
+    off PostgreSQL where there is no RLS to be scoped by.
+    """
+    if engine is None:
+        from faultmaven.infrastructure.persistence.database import get_engine
+
+        engine = get_engine()
+
+    if engine.dialect.name != "postgresql":
+        # SQLite (Standalone) has no row-level security, so no role can be
+        # scoped by it. Nothing to verify rather than nothing to enforce.
+        return None
+
+    async with engine.connect() as conn:
+        row = (await conn.execute(_ROLE_PRIVILEGE_QUERY)).first()
+
+    _raise_if_rls_scoped(
+        row.role_name,
+        bool(row.is_superuser),
+        bool(row.has_bypassrls),
+        bool(row.owns_rls_table),
+        operation=operation,
+        rationale=rationale,
+        remedy=remedy,
+    )
+    return row.role_name
 
 
 async def assert_provisioning_db_role_bypasses_rls(*, engine=None) -> str | None:
@@ -267,28 +328,17 @@ async def assert_provisioning_db_role_bypasses_rls(*, engine=None) -> str | None
     Raises:
         DeploymentCoherenceError: If the connected role is subject to RLS.
     """
-    if engine is None:
-        from faultmaven.infrastructure.persistence.database import get_engine
-
-        engine = get_engine()
-
-    if engine.dialect.name != "postgresql":
-        # SQLite (Standalone) has no row-level security, so no role can be
-        # scoped by it. Nothing to verify rather than nothing to enforce.
-        return None
-
-    async with engine.connect() as conn:
-        row = (await conn.execute(_ROLE_PRIVILEGE_QUERY)).first()
-
-    _raise_if_rls_scoped(
-        row.role_name,
-        bool(row.is_superuser),
-        bool(row.has_bypassrls),
-        bool(row.owns_rls_table),
+    role_name = await assert_rls_exempt_db_role(
+        operation="Tenant provisioning",
+        rationale=_PROVISIONING_RATIONALE,
+        remedy=_PROVISIONING_REMEDY,
+        engine=engine,
     )
+    if role_name is None:
+        return None
     logger.info(
         "Provisioning role guard passed: DB role '%s' is not scoped by RLS; "
         "tenant rows can be written outside any existing tenant policy.",
-        row.role_name,
+        role_name,
     )
-    return row.role_name
+    return role_name

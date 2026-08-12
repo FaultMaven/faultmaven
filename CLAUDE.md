@@ -474,6 +474,9 @@ fm-provision-service-account -u slack-agent  # Mint a service-account OAuth refr
 fm-provision-sso-org --name ... --slug ... --workos-org-id org_...  # Provision a Cloud tenant + WorkOS org mapping (TENANT_PROVIDER=multi)
 fm-remove-org-member --organization-id ... --user alice --yes  # Remove an org membership AND revoke that user's tokens, as one operation (#874)
 fm-reset-kb --dry-run                      # Wipe/re-bootstrap the KB (refuses under TENANT_PROVIDER=multi)
+fm-wipe-deployment                         # Inventory every wipe surface (resolved targets, writes nothing)
+fm-wipe-deployment --verify                # Positively verify a clean slate; exit 5 on residue (#819)
+fm-wipe-deployment --wipe --confirm-target faultmaven --yes  # Wipe vectors + object storage + Redis
 
 # In a pod:
 kubectl exec -it deploy/faultmaven-api -- fm-provision-sso-org --name ...
