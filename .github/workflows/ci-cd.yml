@@ -203,8 +203,26 @@ jobs:
 
   # ============================================================================
   # CLOUD TESTING
-  # Full deps + optional features on, external services mocked — the cloud config.
+  # Full deps + optional features on — the cloud config. Redis is a real server;
+  # the remaining external services are mocked or in-process.
   # (Installs the [cloud] extras-set via requirements/cloud.txt.)
+  #
+  # Redis is real here, and that is not a nicety. cloud.txt pins hiredis, so
+  # redis-py selects `_AsyncHiredisParser`, whose `can_read_destructive()` does a
+  # real stream read when a pooled connection is handed out. Against the
+  # in-process FakeRedis that read touches an `asyncio.Queue` bound to the first
+  # loop that ever used the process-wide singleton, and `TestClient` opens a NEW
+  # loop per context — so from the second one on it raised `RuntimeError: ... is
+  # bound to a different event loop`. No deployment has that pairing (cloud runs
+  # real Redis; standalone has no hiredis and the pure-Python parser never
+  # touches the queue), and it manufactured failures that existed nowhere else:
+  # the rate limiter caught the error, failed open, and the wire tests saw 401s
+  # where a 429 was due — a plausible-looking product failure that was a harness
+  # artifact, and a debugging session (fm#990, fm#1031).
+  #
+  # Test PostgreSQL Integration also installs cloud.txt but selects `-m postgres`,
+  # whose tests talk to PostgreSQL directly and never construct a Redis client or
+  # boot the app, so it needs no Redis of its own.
   # ============================================================================
   test-cloud:
     needs: [code-quality]
@@ -215,6 +233,30 @@ jobs:
     # and none failed (PR #1025). 30 clears the measured cost by ~55%.
     timeout-minutes: 30
     name: Test Cloud
+
+    services:
+      redis:
+        # 7.2 is what the cloud data tier runs (bitnami/redis, see
+        # faultmaven-enterprise-infra kubernetes/data/redis).
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The discrete host/port/db path, which is the one the cloud ConfigMap
+      # uses (REDIS_HOST/REDIS_PORT/REDIS_DB — no REDIS_URL). Job-scoped rather
+      # than step-scoped so the pairing check below and the suite cannot drift
+      # into pointing at different servers. The settings default host is the
+      # in-cluster service name, so leaving this unset means "unreachable", and
+      # unreachable means a silent FakeRedis fallback.
+      REDIS_HOST: "localhost"
+      REDIS_PORT: "6379"
+      REDIS_DB: "0"
 
     steps:
       - name: Checkout Repository
@@ -242,6 +284,14 @@ jobs:
           pip show redis || (echo "ERROR: redis should be installed in cloud mode (for infrastructure testing)" && exit 1)
           echo "✓ Cloud dependencies verified"
 
+      - name: Verify the cloud Redis pairing
+        # Before the suite, not after: everything below this line is only
+        # meaningful if the app reached the real server. The fallback to
+        # FakeRedis is silent by design (standalone wants it), so a broken
+        # service container would otherwise put the job straight back into the
+        # pairing fm#1031 removed — green, and testing the stand-in.
+        run: python scripts/check_redis_pairing.py
+
       - name: Run Tests (Cloud)
         run: |
           pytest tests/ \
@@ -260,7 +310,8 @@ jobs:
           METRICS_ENABLED: "true"
           PROTECTION_ENABLED: "true"
           SANITIZE_PII: "true"
-          # CI: no external services (FakeRedis for sessions)
+          # Sessions, rate limits and revocation go to the job's real Redis
+          # (REDIS_HOST/PORT/DB at job level); the rest stay in-process.
           USER_STORAGE_TYPE: "inmemory"
           CASE_STORAGE_TYPE: "inmemory"
           VECTOR_STORAGE_TYPE: "inmemory"
