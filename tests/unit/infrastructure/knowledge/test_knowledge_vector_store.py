@@ -1,5 +1,7 @@
 """Tests for KnowledgeVectorStore — reranker, keyword extraction, chunking."""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
@@ -480,6 +482,218 @@ class _FakeClient:
 
     def get_collection(self, name):
         return self._collection
+
+
+class TestAddDocumentsAllowlistRefusal:
+    """fm#1035: the production KB writer refuses undeclared metadata keys.
+
+    ``VectorMetadata`` is an allowlist; the sibling ``ChromaDBVectorStore``
+    already refuses undeclared keys, but this class — the writer the container
+    wires into ``KnowledgeService`` whenever the KB Chroma client exists —
+    sanitized inline with no allowlist check, so a key the schema does not
+    declare vanished silently and read back later as the reader's fallback
+    (the #912 defect, on the LIVE write path).
+    """
+
+    def _store(self):
+        store = KnowledgeVectorStore(client=MagicMock())
+        collection = MagicMock()
+        store._get_or_create_collection = MagicMock(return_value=collection)
+        return store, collection
+
+    @pytest.mark.asyncio
+    async def test_declared_keys_still_write(self):
+        """Positive control: the guard does not fail closed on good metadata."""
+        store, collection = self._store()
+
+        await store.add_documents(
+            [
+                {
+                    "id": "doc1",
+                    "content": "Test content",
+                    "metadata": {"title": "Test Doc", "chunk_index": 0},
+                }
+            ]
+        )
+
+        collection.add.assert_called_once_with(
+            ids=["doc1"],
+            documents=["Test content"],
+            metadatas=[{"title": "Test Doc", "chunk_index": 0}],
+        )
+
+    # "No metadata" has four spellings — absent key, empty dict, explicit
+    # None, and (invalidly) a non-dict. The first review of fm#1035 covered
+    # only the first two; the guard screened `set(md or {})` while the write
+    # re-derived `doc.get("metadata", {})`, so a present-but-null key passed
+    # the guard and then raised AttributeError INSIDE call_external — the
+    # breaker-poisoning path the guard exists to close. All four shapes are
+    # pinned here so no two expressions can disagree about them again.
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            {"id": "doc1", "content": "c"},  # metadata key absent
+            {"id": "doc1", "content": "c", "metadata": {}},  # empty dict
+            {"id": "doc1", "content": "c", "metadata": None},  # present-but-null
+        ],
+        ids=["absent", "empty", "null"],
+    )
+    async def test_no_metadata_in_any_spelling_writes_an_empty_dict(self, doc):
+        store, collection = self._store()
+
+        await store.add_documents([doc])
+
+        collection.add.assert_called_once_with(
+            ids=["doc1"], documents=["c"], metadatas=[{}]
+        )
+
+    @pytest.mark.asyncio
+    async def test_null_metadata_is_one_clean_call_with_nothing_charged(self):
+        """The blocker's breaker leg: `metadata: None` must not touch the breaker.
+
+        Before the fix this shape passed the guard (`set(None or {})` is
+        empty) and blew up on `.items()` inside the wrapper — retried with
+        backoff, each attempt recorded as a service failure on the breaker
+        shared with the KB read path. With one normalization it is an
+        ordinary empty-metadata write: exactly one attempt, success recorded,
+        zero failures.
+        """
+        store, collection = self._store()
+
+        await store.add_documents([{"id": "doc1", "content": "c", "metadata": None}])
+
+        assert store.circuit_breaker.failure_count == 0
+        assert store.circuit_breaker.state == "closed"
+        assert store.connection_metrics["failed_calls"] == 0
+        assert store.connection_metrics["successful_calls"] == 1
+        assert store.connection_metrics["total_calls"] == 1  # no retry
+        collection.add.assert_called_once()  # one attempt, not three
+
+    @pytest.mark.parametrize("missing", ["id", "content"])
+    @pytest.mark.asyncio
+    async def test_a_document_missing_a_required_field_never_reaches_the_breaker(
+        self, missing
+    ):
+        """`id`/`content` are read outside the wrapper for the metadata reason.
+
+        A document missing either is a deterministic programming error, but
+        both fields used to be read INSIDE `_add_wrapper` — so the KeyError
+        was retried with backoff and each attempt charged to the breaker this
+        store shares with the KB read path. Closing the metadata hole while
+        leaving these two inside would have fixed one third of the class.
+        """
+        store, collection = self._store()
+        doc = {"id": "doc1", "content": "c", "metadata": {}}
+        del doc[missing]
+
+        with pytest.raises(ValueError, match="missing required field"):
+            await store.add_documents([doc])
+
+        assert store.circuit_breaker.failure_count == 0
+        assert store.circuit_breaker.state == "closed"
+        assert store.connection_metrics["total_calls"] == 0
+        assert store.connection_metrics["failed_calls"] == 0
+        collection.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_non_dict_metadata_is_refused_outside_the_machinery(self):
+        """A list/string metadata is refused by the guard, never `.items()`ed."""
+        store, collection = self._store()
+
+        with pytest.raises(ValueError, match="must be a dict"):
+            await store.add_documents(
+                [{"id": "doc1", "content": "c", "metadata": ["not", "a", "dict"]}]
+            )
+
+        assert store.circuit_breaker.failure_count == 0
+        assert store.circuit_breaker.state == "closed"
+        assert store.connection_metrics["total_calls"] == 0
+        collection.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_key_the_schema_would_drop(self):
+        """An undeclared metadata key fails the write instead of vanishing.
+
+        Nothing may be written when a key is refused — a partial row is the
+        silent-drop failure with extra steps. One bad document in the batch
+        refuses the whole batch.
+        """
+        store, collection = self._store()
+
+        documents = [
+            {"id": "doc1", "content": "ok", "metadata": {"title": "Fine"}},
+            {
+                "id": "doc2",
+                "content": "bad",
+                "metadata": {"title": "Doc", "not_a_schema_field": "value"},
+            },
+        ]
+
+        with pytest.raises(ValueError, match="not_a_schema_field"):
+            await store.add_documents(documents)
+
+        collection.add.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refusal_never_enters_the_external_call_machinery(self):
+        """The refusal is raised before ``call_external``, deliberately.
+
+        A malformed metadata dict is a programming error, not a ChromaDB
+        failure. Raised inside the wrapper it would consume the retry budget
+        on a deterministic failure and count towards the circuit breaker —
+        five of them would open it and start failing the *healthy* KB reads
+        and writes sharing this store. Pinned by asserting the external-call
+        machinery is never entered at all.
+        """
+        store, _collection = self._store()
+
+        with patch.object(
+            KnowledgeVectorStore, "call_external", new=AsyncMock()
+        ) as mock_call:
+            with pytest.raises(ValueError, match="not_a_schema_field"):
+                await store.add_documents(
+                    [
+                        {
+                            "id": "doc1",
+                            "content": "c",
+                            "metadata": {"not_a_schema_field": "v"},
+                        }
+                    ]
+                )
+
+        mock_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refusal_leaves_the_breaker_and_call_metrics_untouched(self):
+        """The breaker-not-poisoned leg, on the REAL call path (nothing patched).
+
+        The patched test above proves ``call_external`` is not entered; this
+        one proves the observable consequences on the shared breaker: no
+        failure recorded, breaker still closed, no call attempt (so no retry)
+        ever counted. A guard that raised inside the wrapper would pass a
+        naive "it raised" test while failing every assertion here.
+        """
+        store, collection = self._store()
+        assert store.circuit_breaker is not None  # the property under test
+
+        with pytest.raises(ValueError, match="not_a_schema_field"):
+            await store.add_documents(
+                [
+                    {
+                        "id": "doc1",
+                        "content": "c",
+                        "metadata": {"not_a_schema_field": "v"},
+                    }
+                ]
+            )
+
+        assert store.circuit_breaker.failure_count == 0
+        assert store.circuit_breaker.state == "closed"
+        assert store.connection_metrics["total_calls"] == 0
+        assert store.connection_metrics["failed_calls"] == 0
+        collection.add.assert_not_called()  # zero attempts — no retry occurred
 
 
 class TestDeleteDocumentsByParentId:

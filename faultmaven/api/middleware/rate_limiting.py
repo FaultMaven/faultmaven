@@ -54,7 +54,7 @@ READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # Read endpoints that are *not* cheap: each runs a query embedding (BGE-M3,
 # behind a process-wide lock) and a vector similarity search per call, which is
 # exactly the compute the tight per-session bucket exists to protect. The verb
-# is only a proxy for cost, and for these three it is the wrong one — so they
+# is only a proxy for cost, and for these it is the wrong one — so they
 # are metered as writes despite being GETs.
 #
 # Anchored full-path patterns rather than prefixes: a read endpoint must not be
@@ -72,7 +72,6 @@ READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 EXPENSIVE_READ_PATTERNS = (
     # Runbook similarity search over the knowledge base.
     re.compile(r"^/api/v1/cases/[^/]+/report-recommendations/?$"),
-    re.compile(r"^/api/v1/reports/recommendations/[^/]+/?$"),
     # Semantic snippet lookup — embeds the query to locate the chunk.
     re.compile(r"^/api/v1/knowledge/documents/[^/]+/snippet/?$"),
 )

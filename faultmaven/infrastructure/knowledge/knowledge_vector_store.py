@@ -34,6 +34,7 @@ from chromadb.errors import NotFoundError
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.vector_metadata import VectorMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -802,16 +803,64 @@ class KnowledgeVectorStore(BaseExternalClient):
             documents: List of dicts with 'id', 'content', and optional 'metadata'.
             embeddings: Pre-computed embedding vectors, one per document.
             collection_name: Exact ChromaDB collection name.
-            documents: List of dicts with 'id', 'content', and optional 'metadata'.
-            embeddings: Pre-computed embedding vectors, one per document.
+
+        Raises:
+            ValueError: If any document's metadata is not a dict (or None), or
+                carries a key ``VectorMetadata`` does not declare. The schema
+                is an allowlist, so an undeclared key would otherwise be
+                dropped in silence and read back later as the reader's
+                fallback (#912).
         """
+        # Refused OUTSIDE call_external, deliberately (fm#1035). A malformed
+        # metadata dict is a deterministic programming error, not a ChromaDB
+        # failure: raised inside the wrapper it would burn the retry budget
+        # and count towards the circuit breaker this store shares with the KB
+        # read path — enough bad writes would open it and fail healthy KB
+        # searches too.
+        #
+        # ONE normalization, used by the guard AND the write below. "No
+        # metadata" means {} whether the key is absent or present-but-None —
+        # two expressions differing by a `.get` default would let the shape
+        # the guard waves through (metadata: None) become an AttributeError
+        # inside the wrapper, which is the breaker-poisoning failure this
+        # placement exists to prevent. A non-dict is refused here for the
+        # same reason: it must never reach `.items()`.
+        #
+        # Refusal only: the inline sanitization below stays this writer's
+        # storage semantics — the guard fixes which KEYS a row may carry, not
+        # how values are encoded.
+        metadatas: List[Dict[str, Any]] = []
+        for doc in documents:
+            md = doc.get("metadata")
+            if md is None:
+                md = {}
+            if not isinstance(md, dict):
+                raise ValueError(
+                    f"Vector metadata for document {doc.get('id')!r} must be "
+                    f"a dict or None, got {type(md).__name__} — refusing "
+                    f"before the external-call machinery sees it."
+                )
+            VectorMetadata.reject_undeclared_keys(md)
+            metadatas.append(md)
+
+        # `id` and `content` are read out here for the same reason the metadata
+        # is: a document missing either raises a deterministic KeyError, and
+        # every raise inside the wrapper below is retried and charged to the
+        # breaker this store shares with the KB read path. Reading all three
+        # fields in one place is also what keeps them from drifting apart —
+        # the null-metadata hole this guard closed existed because the check
+        # and the write derived the same field through two expressions.
+        try:
+            ids = [doc["id"] for doc in documents]
+            contents = [doc["content"] for doc in documents]
+        except KeyError as e:
+            raise ValueError(
+                f"Vector document is missing required field {e} — refusing "
+                f"before the external-call machinery sees it."
+            ) from e
 
         async def _add_wrapper():
             collection = self._get_or_create_collection(collection_name)
-
-            ids = [doc["id"] for doc in documents]
-            contents = [doc["content"] for doc in documents]
-            metadatas = [doc.get("metadata", {}) for doc in documents]
 
             sanitized_metadatas = []
             for md in metadatas:

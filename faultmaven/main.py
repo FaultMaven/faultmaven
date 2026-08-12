@@ -530,9 +530,6 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
     # the agent retrieval path resolves the shared-id allowlist through it.
     app.state.share_repository = getattr(container, "share_repository", None)
     app.state.report_generation_service = container.get_report_generation_service()
-    app.state.report_recommendation_service = (
-        container.get_report_recommendation_service()
-    )
     app.state.job_service = container.get_job_service()
     # Query classification engine (optional - may not be available)
     try:

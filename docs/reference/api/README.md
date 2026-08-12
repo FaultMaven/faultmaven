@@ -3651,29 +3651,6 @@ Generate post-mortem, executive summary, or technical analysis reports using LLM
 
 ---
 
-### `/api/v1/reports/recommendations/{case_id}`
-
-#### GET
-
-**Get report recommendations for a case**
-
-Get intelligent recommendations for which reports to generate
-
-**Tags:** `reports`
-
-**Auth:** `HTTPBearer`
-
-**Parameters:**
-
-- `case_id` (path, required) — Case ID
-
-**Responses:**
-
-- `200` — Successful Response ([`ReportRecommendationResponse`](#reportrecommendationresponse))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
-
----
-
 ### `/api/v1/reports/{report_id}`
 
 #### GET
@@ -5770,18 +5747,6 @@ API response for list of reports.
 - `case_id` (string, required)
 - `reports` (array, required)
 - `total` (integer, required)
-
----
-
-### ReportRecommendationResponse
-
-API response for report recommendations.
-
-**Properties:**
-
-- `available_for_generation` (array, required)
-- `case_id` (string, required)
-- `runbook_recommendation` (object, required)
 
 ---
 

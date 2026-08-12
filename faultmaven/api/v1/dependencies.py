@@ -106,11 +106,6 @@ async def get_report_generation_service(request: Request):
     return getattr(request.app.state, "report_generation_service", None)
 
 
-async def get_report_recommendation_service(request: Request):
-    """Get ReportRecommendationService instance from app.state (TASK-024)"""
-    return getattr(request.app.state, "report_recommendation_service", None)
-
-
 async def get_oauth_service(request: Request):
     """Get OAuth service instance from app.state (Composition Root).
 

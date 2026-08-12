@@ -40,10 +40,19 @@ class VectorMetadata(BaseModel):
     # path filtered on. fm#1030 deleted that write half: runbooks reach
     # ChromaDB only through ``KnowledgeService._index_document_in_vector_store``,
     # and dedup reads what it writes (``document_type``, ``scope``,
-    # ``owner_id``, ``title``, ``parent_document_id``). This schema is shared
-    # by every vector writer; it earns a key only when a live reader needs it,
-    # and ``reject_undeclared_keys`` makes any future attempt to write these
-    # fail loudly rather than silently.
+    # ``owner_id``, ``title``, ``parent_document_id``). The schema earns a key
+    # only when a live reader needs it, and ``reject_undeclared_keys`` makes a
+    # write of an undeclared key fail loudly rather than silently — on the
+    # writers that consult it: ``ChromaDBVectorStore`` and
+    # ``KnowledgeVectorStore.add_documents``, which is every vector write with
+    # a live production caller. It is NOT every writer in the codebase:
+    # ``KnowledgeIngester._process_and_store`` writes the same collection
+    # directly (stamping ``document_id``, which only its own read/delete
+    # methods filter on) and bypasses this guard — that whole subsystem has no
+    # production caller today (fm#1035 review; verified route→service→ingester:
+    # nothing reaches ``KnowledgeService.ingest_document``/``update_document``,
+    # its only entry points). Reviving it without routing it through a guarded
+    # writer reopens the silent-key gap this schema exists to close.
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # RAG-enrichment fields: extracted from runbook frontmatter at ingestion

@@ -54,7 +54,6 @@ WRITE_PATH = "/api/v1/cases/case-123/turns"
 # ``test_rate_limit_read_cost_classification.py``.
 EXPENSIVE_READ_PATHS = (
     "/api/v1/cases/case-123/report-recommendations",
-    "/api/v1/reports/recommendations/case-123",
     "/api/v1/knowledge/documents/doc-9/snippet",
 )
 
@@ -374,7 +373,6 @@ async def test_sibling_paths_of_an_expensive_read_stay_cheap():
         "/api/v1/cases/case-123/report-recommendations/history",
         "/api/v1/cases/case-123/reports",
         "/api/v1/knowledge/documents/doc-9",
-        "/api/v1/reports/recommendations",
     )
     for path in neighbours:
         for _ in range(3):

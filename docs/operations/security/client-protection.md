@@ -73,7 +73,6 @@ behind a process-wide lock) and a vector similarity search per call, so they are
 metered as writes:
 
 - `GET /api/v1/cases/{case_id}/report-recommendations`
-- `GET /api/v1/reports/recommendations/{case_id}`
 - `GET /api/v1/knowledge/documents/{document_id}/snippet`
 
 The list lives in `EXPENSIVE_READ_PATTERNS` in
@@ -83,9 +82,9 @@ exceptions rots in the permissive direction — an endpoint added later inherits
 `tests/unit/api/middleware/test_rate_limit_read_cost_classification.py` guards it
 by **reachability rather than by inventory**. For every read route on every
 mounted router it asks whether the handler can reach an embedder or vector store,
-through a declared dependency or an import inside the handler body. Seven of the
-sixty-one can, and only those carry a recorded verdict; the other fifty-four are
-proved cheap on each run rather than listed.
+through a declared dependency or an import inside the handler body. Six of the
+fifty-six can, and only those carry a recorded verdict; the rest are proved
+cheap on each run rather than listed.
 
 What that means in practice:
 

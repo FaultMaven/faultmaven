@@ -8,7 +8,8 @@ and the case-conversion flywheel) — is found by runbook dedup afterwards.
 ``KnowledgeService`` a ``KnowledgeVectorStore`` (``knowledge_vector_store or
 vector_store``, and ``knowledge_vector_store`` IS registered), whose
 ``add_documents`` targets the hardcoded ``KB_COLLECTION`` and sanitizes inline
-— it does NOT normalize through the ``VectorMetadata`` allowlist the way
+— since fm#1035 it refuses undeclared keys via the ``VectorMetadata``
+allowlist, but it still does NOT normalize values through the schema the way
 ``ChromaDBVectorStore`` does. The dedup reader is built by the same factory
 the container uses (``RunbookKnowledgeBase.over_kb_collection``), which binds
 the reader to that same constant. An earlier revision of this test injected
@@ -171,9 +172,9 @@ async def test_a_published_runbook_is_found_by_dedup_and_only_within_its_scope(
     assert chunks_created > 0, "the live writer indexed nothing — nothing to find"
 
     # The PRODUCTION-written chunk metadata carries every key the dedup
-    # where-clause and parse depend on. Asserted on the raw rows, because the
-    # KnowledgeVectorStore writer sanitizes inline with no allowlist — nothing
-    # upstream of this assertion has proven what actually landed.
+    # where-clause and parse depend on. Asserted on the raw rows: the fm#1035
+    # allowlist refusal only proves no UNDECLARED key was written — nothing
+    # upstream of this assertion has proven the declared keys actually landed.
     raw = client.get_collection(KB_COLLECTION).get(include=["metadatas"])
     assert raw["ids"], "no chunk rows landed in KB_COLLECTION"
     for chunk_id, md in zip(raw["ids"], raw["metadatas"]):
