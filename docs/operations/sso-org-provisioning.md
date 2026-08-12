@@ -254,8 +254,9 @@ Decide deliberately:
 - **The account is in the right place and the mapping is wrong** — fix the
   mapping (below).
 - **The account should move** — this is an account migration, not a login fix.
-  Move `users.enterprise_id`, remove the stale `organization_members` row, and
-  bump the user's revocation watermark so their existing tokens stop working.
+  Move `users.enterprise_id`, then drop the stale membership with
+  `fm-remove-org-member` (see [Revoking access for one
+  user](#revoking-access-for-one-user)), which also ends their existing sessions.
   Their case data does **not** follow them; cases belong to the organization.
 - **They are a genuinely separate person at a second customer** — they need a
   separate account with a separate IdP identity.
@@ -282,12 +283,12 @@ UPDATE sso_org_mappings
  WHERE provider = 'workos' AND provider_org_id = 'org_01H…';
 ```
 
-Then, for every affected user:
-
-1. add them to the new organization (they will be added automatically on next
-   login, but existing sessions will not);
-2. bump their revocation watermark so outstanding tokens stop working —
-   otherwise they keep operating in the old tenant until their tokens expire.
+Then, for every affected user, remove them from the **old** organization with
+`fm-remove-org-member` (see [Revoking access for one
+user](#revoking-access-for-one-user)). That drops the stale membership and bumps
+their revocation watermark in one step — without the watermark they keep
+operating in the old tenant until their tokens expire. They are added to the new
+organization automatically on their next login.
 
 ### Retiring a tenant
 
@@ -297,7 +298,52 @@ Deleting the organization cascades the mapping away.
 
 ### Revoking access for one user
 
-Removing their `organization_members` row stops *future* logins from being
-member-scoped, but it does not invalidate an outstanding token by itself.
-Membership is verified at login only. Bump the user's per-user revocation
-watermark to end the session immediately.
+> **If you are offboarding someone, deprovision them at the IdP first.** Under
+> SSO this procedure ends *sessions*; it does not on its own end *access*. The
+> login path adds membership just-in-time, so a user who can still authenticate
+> at WorkOS is silently re-added to the organization on their next login and
+> issued fresh tokens. Remove them from the IdP organization (or disable the
+> account) **before** running the command below, or you have logged them out
+> rather than offboarded them.
+>
+> **Do not do this when you are moving someone** — that is, when you arrived
+> here from the `reason=enterprise_mismatch` account-migration case or from
+> [repointing a mapping](#repointing-a-mapping-to-a-different-organization).
+> Those procedures *depend* on the next IdP login re-adding the user, to the new
+> organization. Disabling their IdP account would block the very migration you
+> are performing. There, run the command alone: it drops the stale membership
+> and ends the sessions that still carry the old tenant.
+
+Membership is verified at **login** only, so deleting the
+`organization_members` row stops *future* logins from being member-scoped while
+every outstanding token keeps working until it expires. The two writes have to
+happen together, so run the command that does both:
+
+```bash
+kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
+  fm-remove-org-member --organization-id <organization_id> --user <username> --dry-run
+kubectl exec -it deploy/faultmaven-api -n faultmaven -- \
+  fm-remove-org-member --organization-id <organization_id> --user <username> --yes
+```
+
+`--user` takes a username, an email address, or a user id. The command removes
+the membership and bumps the user's revocation watermark in one operation, then
+prints the instant before which their tokens are now invalid.
+
+A user who is not a member of that organization is **refused**, because that is
+what a mistyped `--organization-id` looks like — `users` is not tenant-scoped, so
+revoking anyway would end every session of an unrelated tenant's user while
+removing nothing.
+
+Read the exit code:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Done: membership removed, tokens revoked |
+| 1 | Refused — nothing was written |
+| 2 | A bad flag (argparse usage error) — nothing was written |
+| 3 | Membership removed, revocation did **not** land: they are out of the org with live tokens. Re-run with `--finish-interrupted` |
+| 4 | Revocation landed, membership row **not** deleted: sessions are dead but the row may survive, and with it access on the next login. Verify the row before treating them as removed |
+
+Do **not** do this with two SQL statements. The second one is the one that
+actually ends the session, and it is the one that gets forgotten.
