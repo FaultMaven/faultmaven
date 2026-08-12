@@ -843,11 +843,24 @@ class KnowledgeVectorStore(BaseExternalClient):
             VectorMetadata.reject_undeclared_keys(md)
             metadatas.append(md)
 
-        async def _add_wrapper():
-            collection = self._get_or_create_collection(collection_name)
-
+        # `id` and `content` are read out here for the same reason the metadata
+        # is: a document missing either raises a deterministic KeyError, and
+        # every raise inside the wrapper below is retried and charged to the
+        # breaker this store shares with the KB read path. Reading all three
+        # fields in one place is also what keeps them from drifting apart —
+        # the null-metadata hole this guard closed existed because the check
+        # and the write derived the same field through two expressions.
+        try:
             ids = [doc["id"] for doc in documents]
             contents = [doc["content"] for doc in documents]
+        except KeyError as e:
+            raise ValueError(
+                f"Vector document is missing required field {e} — refusing "
+                f"before the external-call machinery sees it."
+            ) from e
+
+        async def _add_wrapper():
+            collection = self._get_or_create_collection(collection_name)
 
             sanitized_metadatas = []
             for md in metadatas:

@@ -571,6 +571,32 @@ class TestAddDocumentsAllowlistRefusal:
         assert store.connection_metrics["total_calls"] == 1  # no retry
         collection.add.assert_called_once()  # one attempt, not three
 
+    @pytest.mark.parametrize("missing", ["id", "content"])
+    @pytest.mark.asyncio
+    async def test_a_document_missing_a_required_field_never_reaches_the_breaker(
+        self, missing
+    ):
+        """`id`/`content` are read outside the wrapper for the metadata reason.
+
+        A document missing either is a deterministic programming error, but
+        both fields used to be read INSIDE `_add_wrapper` — so the KeyError
+        was retried with backoff and each attempt charged to the breaker this
+        store shares with the KB read path. Closing the metadata hole while
+        leaving these two inside would have fixed one third of the class.
+        """
+        store, collection = self._store()
+        doc = {"id": "doc1", "content": "c", "metadata": {}}
+        del doc[missing]
+
+        with pytest.raises(ValueError, match="missing required field"):
+            await store.add_documents([doc])
+
+        assert store.circuit_breaker.failure_count == 0
+        assert store.circuit_breaker.state == "closed"
+        assert store.connection_metrics["total_calls"] == 0
+        assert store.connection_metrics["failed_calls"] == 0
+        collection.add.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_non_dict_metadata_is_refused_outside_the_machinery(self):
         """A list/string metadata is refused by the guard, never `.items()`ed."""
