@@ -103,22 +103,38 @@ class APIInvestigationSessionService(BaseService):
         self,
         session_id: str,
         organization_id: str,
+        case_id: str,
     ) -> InvestigationSession:
         """Get session and verify authorization via parent case.
+
+        ``case_id`` is the case the caller named, and it is required rather than
+        optional (#1044). Every mutating operation resolves its session through
+        here, so a session that does not belong to that case must be rejected
+        *before* the mutation — the callers used to compare afterwards, which
+        turned the write into a 404 that had already landed. The caller's right
+        to the named case is established upstream by the router's
+        ``require_case_access`` gate; this is what binds the session to it.
 
         Args:
             session_id: Session ID
             organization_id: Organization ID for authorization
+            case_id: Case the session must belong to
 
         Returns:
             InvestigationSession if authorized
 
         Raises:
-            NotFoundError: If session not found
+            NotFoundError: If the session is not found or is not in ``case_id``
             AuthorizationError: If organization doesn't own parent case
         """
         session = await self.session_repo.get_by_id(session_id)
         if not session:
+            raise NotFoundError("Session", session_id)
+
+        # The session must be the one the caller's case actually holds. Same
+        # answer as "no such session" — naming someone else's session id must
+        # not be distinguishable from naming one that does not exist.
+        if session.case_id != case_id:
             raise NotFoundError("Session", session_id)
 
         # Authorization check via parent case
@@ -307,6 +323,8 @@ class APIInvestigationSessionService(BaseService):
         session_id: str,
         organization_id: str,
         updates: Dict[str, Any],
+        *,
+        case_id: str,
     ) -> InvestigationSession:
         """Update session with authorization check.
 
@@ -319,6 +337,7 @@ class APIInvestigationSessionService(BaseService):
             session_id: Session ID to update
             organization_id: Organization for authorization
             updates: Fields to update
+            case_id: Case the session must belong to
 
         Returns:
             Updated InvestigationSession
@@ -344,7 +363,7 @@ class APIInvestigationSessionService(BaseService):
         try:
             # Get session with authorization
             session = await self._get_session_with_authorization(
-                session_id, organization_id
+                session_id, organization_id, case_id
             )
 
             # Validate and apply updates
@@ -404,12 +423,15 @@ class APIInvestigationSessionService(BaseService):
         self,
         session_id: str,
         organization_id: str,
+        *,
+        case_id: str,
     ) -> InvestigationSession:
         """Pause an active session.
 
         Args:
             session_id: Session ID to pause
             organization_id: Organization for authorization
+            case_id: Case the session must belong to
 
         Returns:
             Updated session with state=PAUSED
@@ -427,7 +449,7 @@ class APIInvestigationSessionService(BaseService):
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id
+                session_id, organization_id, case_id
             )
 
             # Check if session is active
@@ -466,12 +488,15 @@ class APIInvestigationSessionService(BaseService):
         self,
         session_id: str,
         organization_id: str,
+        *,
+        case_id: str,
     ) -> InvestigationSession:
         """Resume a paused session.
 
         Args:
             session_id: Session ID to resume
             organization_id: Organization for authorization
+            case_id: Case the session must belong to
 
         Returns:
             Updated session with state=ACTIVE
@@ -489,7 +514,7 @@ class APIInvestigationSessionService(BaseService):
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id
+                session_id, organization_id, case_id
             )
 
             # Check if session is paused
@@ -529,6 +554,8 @@ class APIInvestigationSessionService(BaseService):
         session_id: str,
         organization_id: str,
         findings_summary: str,
+        *,
+        case_id: str,
     ) -> InvestigationSession:
         """Complete a session with findings.
 
@@ -544,6 +571,7 @@ class APIInvestigationSessionService(BaseService):
             session_id: Session ID to complete
             organization_id: Organization for authorization
             findings_summary: Summary of investigation findings
+            case_id: Case the session must belong to
 
         Returns:
             Updated session with state=COMPLETED
@@ -567,7 +595,7 @@ class APIInvestigationSessionService(BaseService):
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id
+                session_id, organization_id, case_id
             )
 
             # Check if session is already in terminal state
@@ -607,12 +635,15 @@ class APIInvestigationSessionService(BaseService):
         self,
         session_id: str,
         organization_id: str,
+        *,
+        case_id: str,
     ) -> InvestigationSession:
         """Abandon a session without findings.
 
         Args:
             session_id: Session ID to abandon
             organization_id: Organization for authorization
+            case_id: Case the session must belong to
 
         Returns:
             Updated session with state=ABANDONED
@@ -630,7 +661,7 @@ class APIInvestigationSessionService(BaseService):
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id
+                session_id, organization_id, case_id
             )
 
             # Check if session is already in terminal state
@@ -777,12 +808,15 @@ class APIInvestigationSessionService(BaseService):
         self,
         session_id: str,
         organization_id: str,
+        *,
+        case_id: str,
     ) -> Dict[str, Any]:
         """Check if session has exceeded token budget.
 
         Args:
             session_id: Session ID
             organization_id: Organization for authorization
+            case_id: Case the session must belong to
 
         Returns:
             Dictionary with:
@@ -803,7 +837,7 @@ class APIInvestigationSessionService(BaseService):
 
         try:
             session = await self._get_session_with_authorization(
-                session_id, organization_id
+                session_id, organization_id, case_id
             )
 
             is_over_budget = session.is_over_budget()

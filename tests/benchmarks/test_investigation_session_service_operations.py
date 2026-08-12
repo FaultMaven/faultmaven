@@ -269,6 +269,7 @@ class TestUpdateSessionBenchmarks:
                     session.session_id,
                     sample_case.organization_id,
                     {"session_goal": f"Updated goal {i}"},
+                    case_id=session.case_id,
                 )
             )
             timings.append(duration)
@@ -315,6 +316,7 @@ class TestPauseResumeSessionBenchmarks:
                 session_service.pause_session(
                     session.session_id,
                     case.organization_id,
+                    case_id=session.case_id,
                 )
             )
             timings.append(duration)
@@ -348,13 +350,16 @@ class TestPauseResumeSessionBenchmarks:
                 user_id=case.user_id,
             )
             await session_service.pause_session(
-                session.session_id, case.organization_id
+                session.session_id,
+                case.organization_id,
+                case_id=session.case_id,
             )
 
             duration = await time_async_operation(
                 session_service.resume_session(
                     session.session_id,
                     case.organization_id,
+                    case_id=session.case_id,
                 )
             )
             timings.append(duration)
@@ -402,6 +407,7 @@ class TestCompleteSessionBenchmarks:
                     session.session_id,
                     case.organization_id,
                     f"Findings summary {i}",
+                    case_id=session.case_id,
                 )
             )
             timings.append(duration)
@@ -432,6 +438,7 @@ class TestListSessionsBenchmarks:
                 session.session_id,
                 sample_case.organization_id,
                 f"Finding {i}",
+                case_id=session.case_id,
             )
 
         iterations = 50
@@ -477,6 +484,7 @@ class TestCheckBudgetBenchmarks:
                 session_service.check_budget_exceeded(
                     session.session_id,
                     sample_case.organization_id,
+                    case_id=session.case_id,
                 )
             )
             timings.append(duration)
@@ -509,6 +517,7 @@ class TestGetStatisticsBenchmarks:
                 session.session_id,
                 sample_case.organization_id,
                 f"Finding {i}",
+                case_id=session.case_id,
             )
 
         iterations = 30

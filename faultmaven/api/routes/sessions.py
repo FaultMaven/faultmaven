@@ -15,12 +15,19 @@ Endpoints:
 Authentication:
 - JWT Bearer token: Authorization: Bearer <token>
 
+Authorization: two predicates, both required.
+- ``require_case_access`` (router-level) gates on the case named in the path: the
+  caller must own it or have it shared to one of their teams. Sharing an
+  organization with the owner is not enough.
+- The service binds the session to that same case before mutating it, so a session
+  id belonging to another case cannot be reached by naming a case you do own.
+
 Design Reference: docs/architecture/EVIDENCE_CENTRIC_TROUBLESHOOTING_DESIGN.md
 """
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 
 from faultmaven.api.dependencies import get_investigation_session_service
 from faultmaven.api.middleware.auth import get_current_user
@@ -30,14 +37,58 @@ from faultmaven.api.models import (
     SessionListResponse,
     SessionUpdateRequest,
 )
+from faultmaven.api.v1.dependencies import get_case_service
 from faultmaven.exceptions import NotFoundError
+from faultmaven.models.interfaces_case import ICaseService
 from faultmaven.models.investigation_session import SessionState
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
 from faultmaven.modules.case.domain.services.investigation_session_service import (
     APIInvestigationSessionService,
 )
 
-router = APIRouter(prefix="/api/v1/cases/{case_id}/sessions", tags=["Sessions"])
+
+async def require_case_access(
+    case_id: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    case_service: Optional[ICaseService] = Depends(get_case_service),
+) -> None:
+    """Gate every session route on the caller's access to the parent case (#1044).
+
+    The session service authorizes on ``case.organization_id`` alone, while the rest
+    of the case surface is owner ∪ shared-to-my-teams. That asymmetry let anyone in
+    an organization read another member's ``session_goal``, ``findings_summary`` and
+    token usage, and pause/resume/complete their sessions. Since every route here is
+    nested under ``/cases/{case_id}``, the canonical single-case gate applies whole:
+    resolve the case as the caller, deny when it does not resolve. The service's
+    organization check stays where it is — this is an additional predicate, not a
+    replacement.
+
+    Declared as a router-level dependency so a route added later cannot omit it.
+
+    This gate covers the case named in the *path* and nothing else. The session id
+    is bound to that case separately, inside
+    ``_get_session_with_authorization`` — without which a caller holding any case
+    of their own would pass here and then mutate a session belonging to someone
+    else's. Both halves are needed; neither is sufficient.
+
+    Raises:
+        HTTPException: 503 if the case service is unavailable (the gate cannot be
+            evaluated, so nothing is served)
+        NotFoundError: 404 if the case does not exist or is not the caller's
+    """
+    if case_service is None:
+        raise HTTPException(status_code=503, detail="Case service unavailable")
+
+    case = await case_service.get_case(case_id, user_id=current_user.user_id)
+    if case is None:
+        raise NotFoundError("Case", case_id)
+
+
+router = APIRouter(
+    prefix="/api/v1/cases/{case_id}/sessions",
+    tags=["Sessions"],
+    dependencies=[Depends(require_case_access)],
+)
 
 
 # ============================================================
@@ -280,11 +331,8 @@ async def update_session(
         session_id=session_id,
         organization_id=current_user.organization_id,
         updates=updates,
+        case_id=case_id,
     )
-
-    # Verify session belongs to the specified case
-    if session.case_id != case_id:
-        raise NotFoundError("Session", session_id)
 
     return InvestigationSessionResponse.from_domain(session)
 
@@ -323,11 +371,8 @@ async def pause_session(
     session = await session_service.pause_session(
         session_id=session_id,
         organization_id=current_user.organization_id,
+        case_id=case_id,
     )
-
-    # Verify session belongs to the specified case
-    if session.case_id != case_id:
-        raise NotFoundError("Session", session_id)
 
     return InvestigationSessionResponse.from_domain(session)
 
@@ -366,11 +411,8 @@ async def resume_session(
     session = await session_service.resume_session(
         session_id=session_id,
         organization_id=current_user.organization_id,
+        case_id=case_id,
     )
-
-    # Verify session belongs to the specified case
-    if session.case_id != case_id:
-        raise NotFoundError("Session", session_id)
 
     return InvestigationSessionResponse.from_domain(session)
 
@@ -416,10 +458,7 @@ async def complete_session(
         session_id=session_id,
         organization_id=current_user.organization_id,
         findings_summary=findings_summary,
+        case_id=case_id,
     )
-
-    # Verify session belongs to the specified case
-    if session.case_id != case_id:
-        raise NotFoundError("Session", session_id)
 
     return InvestigationSessionResponse.from_domain(session)

@@ -14,6 +14,11 @@ This module provides 7 CRITICAL endpoints for the Report Module:
 Authentication:
 - JWT Bearer token: Authorization: Bearer <token>
 
+Authorization:
+- Every endpoint resolves the report's parent case through ``authorize_case_access``
+  and 404s when it does not resolve: the caller must own the case or have it shared
+  to one of their teams. Sharing an organization with the owner is not enough.
+
 Design Reference: docs/architecture/document-generation-and-closure-design.md
 """
 
@@ -47,6 +52,7 @@ from faultmaven.models.interfaces_case import ICaseService
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
 from faultmaven.modules.auth.contracts import UserDTO
 from faultmaven.modules.case.contracts import (
+    Case,
     CaseClosureRequest,
     CaseClosureResponse,
     CaseReport,
@@ -244,6 +250,73 @@ async def validate_organization_access(
         )
 
 
+async def authorize_case_access(
+    case_id: Optional[str],
+    current_user: UserDTO,
+    tenant_provider: Optional[TenantProvider],
+    case_service: Optional[ICaseService],
+    not_found_detail: str,
+) -> Case:
+    """Authorize the caller against the case a report hangs off.
+
+    Deny, don't skip (#1044). ``CaseService.get_case`` returns ``None`` for BOTH
+    "no such case" and "you may not see this case" — the owner ∪ shared-to-my-teams
+    gate that transitively guards reports, exports, analytics and messages. The
+    report routes used to read that ``None`` as "nothing to compare organizations
+    against" and fall through to a ``case_id``/``report_id``-only repository read,
+    leaving the organization as the only boundary: two users in one org could read,
+    edit and delete each other's reports. Both meanings must deny.
+
+    The organization check stays second and stays conditional on ``tenant_provider``:
+    it can only be absent in a single-tenant deployment wired without an organization
+    repository (``TENANT_PROVIDER=multi`` fails closed at container build instead), and
+    the case gate above holds on its own there. ``case_service`` absent is a 503 — the
+    gate cannot be evaluated, so nothing is served.
+
+    A report whose ``case_id`` does not resolve is therefore unreachable by
+    anyone, including its owner. That is correct for every report that exists:
+    all of them are built from a ``Case`` (``report_generation_service``), so
+    the id is always a real one. It also means the ``'doc-derived'`` sentinel
+    that ``CaseReport.case_id``'s field description still advertises is not
+    supported — it has no writer, and a report with no owning case has no
+    authorization story. Wiring a document-driven path means giving those
+    reports an owner, not loosening this. (The field description is left alone
+    here because it is published in ``docs/reference/api/openapi.json``, which
+    must be regenerated against the pinned toolchain.)
+
+    Args:
+        case_id: Case the report belongs to (falsy is treated as unauthorized)
+        current_user: Authenticated caller
+        tenant_provider: Tenant provider for the organization check, when wired
+        case_service: Case service carrying the access gate
+        not_found_detail: 404 body — phrase it after the resource the caller named
+            (the report, not the case) so the response does not confirm existence
+
+    Returns:
+        The authorized case
+
+    Raises:
+        HTTPException: 404 if the case is missing or not the caller's, 403 if it
+            belongs to another organization, 503 if the case service is unavailable
+    """
+    case_service = check_case_service_available(case_service)
+
+    case = (
+        await case_service.get_case(case_id, user_id=current_user.user_id)
+        if case_id
+        else None
+    )
+    if not case:
+        raise HTTPException(status_code=404, detail=not_found_detail)
+
+    if tenant_provider:
+        await validate_organization_access(
+            tenant_provider, current_user, case.organization_id
+        )
+
+    return case
+
+
 # ============================================================
 # Report Endpoints
 # ============================================================
@@ -288,9 +361,11 @@ async def generate_report(
     """
     case_service = check_case_service_available(case_service)
 
-    # Validate tenant context if provider available (multi-tenant mode)
-    if tenant_provider:
-        await validate_organization_access(tenant_provider, current_user)
+    # No bare organization pre-check here: ``authorize_case_access`` below runs
+    # the same resolution with the case's organization to compare against. Doing
+    # it twice cost a second provider round-trip per request and put the org
+    # answer first, so a caller who cannot see the case at all got 403 where 404
+    # is the honest reply.
 
     logger.info(
         f"Generating reports for case",
@@ -302,16 +377,14 @@ async def generate_report(
     )
 
     try:
-        # Get case to validate it exists and user has access
-        case = await case_service.get_case(case_id, user_id=current_user.user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
-
-        # Validate organization ownership of case (multi-tenant isolation)
-        if tenant_provider and hasattr(case, "organization_id"):
-            await validate_organization_access(
-                tenant_provider, current_user, case.organization_id
-            )
+        # Authorize against the case (owner ∪ shared), then its organization
+        case = await authorize_case_access(
+            case_id,
+            current_user,
+            tenant_provider,
+            case_service,
+            f"Case {case_id} not found",
+        )
 
         # Validate generation service is available
         if not generation_service:
@@ -390,15 +463,14 @@ async def get_report(
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-        # Validate organization ownership via case (multi-tenant isolation)
-        if tenant_provider and case_service and report.case_id:
-            case = await case_service.get_case(
-                report.case_id, user_id=current_user.user_id
-            )
-            if case and hasattr(case, "organization_id"):
-                await validate_organization_access(
-                    tenant_provider, current_user, case.organization_id
-                )
+        # Authorize against the parent case (owner ∪ shared), then its organization
+        await authorize_case_access(
+            report.case_id,
+            current_user,
+            tenant_provider,
+            case_service,
+            f"Report {report_id} not found",
+        )
 
         return ReportResponse.from_domain(report)
 
@@ -462,15 +534,14 @@ async def update_report(
         if not existing_report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-        # Validate organization ownership via case (multi-tenant isolation)
-        if tenant_provider and case_service and existing_report.case_id:
-            case = await case_service.get_case(
-                existing_report.case_id, user_id=current_user.user_id
-            )
-            if case and hasattr(case, "organization_id"):
-                await validate_organization_access(
-                    tenant_provider, current_user, case.organization_id
-                )
+        # Authorize against the parent case (owner ∪ shared), then its organization
+        await authorize_case_access(
+            existing_report.case_id,
+            current_user,
+            tenant_provider,
+            case_service,
+            f"Report {report_id} not found",
+        )
 
         # Update fields
         updated_title = request.title if request.title else existing_report.title
@@ -565,22 +636,23 @@ async def delete_report(
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
+        # Authorize against the parent case (owner ∪ shared), then its organization.
+        # Ordered ahead of the runbook rule so the 403 below cannot tell an
+        # unauthorized caller what type someone else's report is.
+        await authorize_case_access(
+            report.case_id,
+            current_user,
+            tenant_provider,
+            case_service,
+            f"Report {report_id} not found",
+        )
+
         # Check if runbook - runbooks cannot be deleted
         if report.report_type == ReportType.RUNBOOK:
             raise HTTPException(
                 status_code=403,
                 detail="Runbooks cannot be deleted - they persist independently in the knowledge base",
             )
-
-        # Validate organization ownership via case (multi-tenant isolation)
-        if tenant_provider and case_service and report.case_id:
-            case = await case_service.get_case(
-                report.case_id, user_id=current_user.user_id
-            )
-            if case and hasattr(case, "organization_id"):
-                await validate_organization_access(
-                    tenant_provider, current_user, case.organization_id
-                )
 
         # Actually delete the report
         deleted = await case_repository.delete_report(report_id)
@@ -640,13 +712,14 @@ async def list_reports_for_case(
     """
     case_repository = check_case_repository_available(case_repository)
 
-    # Validate organization ownership via case (multi-tenant isolation)
-    if tenant_provider and case_service:
-        case = await case_service.get_case(case_id, user_id=current_user.user_id)
-        if case and hasattr(case, "organization_id"):
-            await validate_organization_access(
-                tenant_provider, current_user, case.organization_id
-            )
+    # Authorize against the case (owner ∪ shared), then its organization
+    await authorize_case_access(
+        case_id,
+        current_user,
+        tenant_provider,
+        case_service,
+        f"Case {case_id} not found",
+    )
 
     logger.info(
         f"Listing reports for case",
@@ -733,15 +806,14 @@ async def get_report_versions(
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-        # Validate organization ownership via case (multi-tenant isolation)
-        if tenant_provider and case_service and report.case_id:
-            case = await case_service.get_case(
-                report.case_id, user_id=current_user.user_id
-            )
-            if case and hasattr(case, "organization_id"):
-                await validate_organization_access(
-                    tenant_provider, current_user, case.organization_id
-                )
+        # Authorize against the parent case (owner ∪ shared), then its organization
+        await authorize_case_access(
+            report.case_id,
+            current_user,
+            tenant_provider,
+            case_service,
+            f"Report {report_id} not found",
+        )
 
         # Get all versions for this report type in this case
         all_reports = await case_repository.get_reports(
@@ -828,15 +900,14 @@ async def link_report_to_case_closure(
         if not report:
             raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-        # Validate organization ownership via case (multi-tenant isolation)
-        if tenant_provider and report.case_id:
-            case = await case_service.get_case(
-                report.case_id, user_id=current_user.user_id
-            )
-            if case and hasattr(case, "organization_id"):
-                await validate_organization_access(
-                    tenant_provider, current_user, case.organization_id
-                )
+        # Authorize against the parent case (owner ∪ shared), then its organization
+        await authorize_case_access(
+            report.case_id,
+            current_user,
+            tenant_provider,
+            case_service,
+            f"Report {report_id} not found",
+        )
 
         # Check if already linked
         if report.linked_to_closure:
