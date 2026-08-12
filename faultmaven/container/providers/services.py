@@ -1328,9 +1328,4 @@ def register_services(container: BaseDIContainer) -> None:
         milestone_engine.team_service = team_service
         milestone_engine.share_repository = share_repository
 
-    # Report Recommendation Service (optional - may not be implemented yet)
-    # TODO: Implement create_report_recommendation_service if needed
-    container.report_recommendation_service = None
-    container._register_service("report_recommendation_service", None)
-
     logger.info("✅ Service layer registered")

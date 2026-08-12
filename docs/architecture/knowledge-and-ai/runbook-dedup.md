@@ -136,10 +136,11 @@ distributions later. The one auto-suppression that remains is provenance-based
   silently disabled dedup.
 - The route reads the same container instance (`container.runbook_kb`) and
   refuses with 503 when the search cannot run or cannot be read
-  (`RESULTS_UNREADABLE_CODE` selects the re-index remediation text). The
-  mounted-but-unwired reports-module recommendations route
-  (`GET /reports/recommendations/{case_id}`) also refuses with 503 rather
-  than fabricating a "generate" recommendation.
+  (`RESULTS_UNREADABLE_CODE` selects the re-index remediation text).
+  `GET /cases/{case_id}/report-recommendations` is the only recommendation
+  surface: the reports-module twin (`GET /reports/recommendations/{case_id}`),
+  which was mounted with its service unconditionally `None`, was removed
+  (fm#1036).
 - Dedup never routes through `KnowledgeService.search_documents`: that method
   swallows `KnowledgeBaseError` into `{"total_results": 0, "results": []}`,
   which a dedup caller would read as "checked, nothing similar" (#944's

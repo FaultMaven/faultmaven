@@ -34,6 +34,7 @@ from chromadb.errors import NotFoundError
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.models.exceptions import KnowledgeBaseError
+from faultmaven.models.vector_metadata import VectorMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -802,9 +803,23 @@ class KnowledgeVectorStore(BaseExternalClient):
             documents: List of dicts with 'id', 'content', and optional 'metadata'.
             embeddings: Pre-computed embedding vectors, one per document.
             collection_name: Exact ChromaDB collection name.
-            documents: List of dicts with 'id', 'content', and optional 'metadata'.
-            embeddings: Pre-computed embedding vectors, one per document.
+
+        Raises:
+            ValueError: If any document's metadata carries a key
+                ``VectorMetadata`` does not declare. The schema is an
+                allowlist, so an undeclared key would otherwise be dropped in
+                silence and read back later as the reader's fallback (#912).
         """
+        # Refused OUTSIDE call_external, deliberately (fm#1035). An undeclared
+        # key is a deterministic programming error, not a ChromaDB failure:
+        # raised inside the wrapper it would burn the retry budget and count
+        # towards the circuit breaker this store shares with the KB read path
+        # — enough bad writes would open it and fail healthy KB searches too.
+        # Refusal only: the inline sanitization below stays this writer's
+        # storage semantics. The guard makes the two vector writers agree on
+        # which KEYS a row may carry, not on how values are encoded.
+        for doc in documents:
+            VectorMetadata.reject_undeclared_keys(doc.get("metadata"))
 
         async def _add_wrapper():
             collection = self._get_or_create_collection(collection_name)

@@ -56,6 +56,16 @@ class ReportRecommendationService:
     """
 
     # A match at or above this best-chunk similarity is surfaced for review.
+    #
+    # Calibration (fm#1037): 0.70 predates dedup ever running (#1030 made the
+    # search live), so it has never been anchored to a real score
+    # distribution. The measurement is best-chunk-max — it detects OVERLAP,
+    # not whole-runbook equivalence — which is why no reuse-grade verdict
+    # exists at ANY value of this number. Move the band only against the
+    # observed distribution of the `runbook.dedup_top_similarity` metric;
+    # reinstating a "reuse" verdict needs a measurement that can assert
+    # equivalence (whole-document similarity, or agreement across several
+    # chunks), not a higher threshold.
     REVIEW_SIMILARITY_THRESHOLD = 0.70
 
     def __init__(

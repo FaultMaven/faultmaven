@@ -640,13 +640,6 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "report_generation_service", None)
 
-    def get_report_recommendation_service(self):
-        """Get the report recommendation service (TASK-024)"""
-        if not self._initialized:
-            if not getattr(self, "_initializing", False):
-                pass  # Container must be initialized via await container.initialize() at startup
-        return getattr(self, "report_recommendation_service", None)
-
     def get_config(self):
         """Get the configuration manager instance"""
         if not self._initialized:

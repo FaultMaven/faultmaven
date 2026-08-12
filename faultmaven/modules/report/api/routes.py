@@ -33,7 +33,6 @@ from faultmaven.api.v1.dependencies import (
     get_case_repository,
     get_case_service,
     get_report_generation_service,
-    get_report_recommendation_service,
     get_tenant_provider,
 )
 from faultmaven.config.tenant_context import get_current_org_id
@@ -54,7 +53,6 @@ from faultmaven.modules.case.contracts import (
     ICaseRepository,
     ReportGenerationRequest,
     ReportGenerationResponse,
-    ReportRecommendation,
     ReportStatus,
     ReportType,
 )
@@ -159,14 +157,6 @@ class LinkCaseResponse(BaseModel):
     report_id: str
     case_id: str
     linked_at: str
-
-
-class ReportRecommendationResponse(BaseModel):
-    """API response for report recommendations."""
-
-    case_id: str
-    available_for_generation: List[str]
-    runbook_recommendation: dict
 
 
 # ============================================================
@@ -353,103 +343,6 @@ async def generate_report(
         if is_quota_exhausted_service_error(e):
             raise quota_exhausted_http_exception()
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get(
-    "/recommendations/{case_id}",
-    response_model=ReportRecommendationResponse,
-    summary="Get report recommendations for a case",
-    description="Get intelligent recommendations for which reports to generate",
-)
-@trace("api_get_report_recommendations")
-async def get_report_recommendations(
-    case_id: str = Path(..., description="Case ID"),
-    current_user: UserDTO = Depends(require_authentication),
-    tenant_provider: Optional[TenantProvider] = Depends(get_tenant_provider),
-    case_service: Optional[ICaseService] = Depends(get_case_service),
-    rec_service=Depends(get_report_recommendation_service),
-) -> ReportRecommendationResponse:
-    """Get report generation recommendations.
-
-    Uses similarity search to recommend:
-    - Whether a similar runbook already exists (surfaced for the user to judge)
-    - Which report types are available for generation
-
-    Args:
-        case_id: Case identifier
-        current_user: Authenticated user
-        tenant_provider: Tenant provider for multi-tenant isolation
-        case_service: Case service
-        rec_service: Report recommendation service
-
-    Returns:
-        ReportRecommendationResponse with recommendations
-    """
-    case_service = check_case_service_available(case_service)
-
-    # Validate tenant context if provider available
-    if tenant_provider:
-        await validate_organization_access(tenant_provider, current_user)
-
-    try:
-        # Get case
-        case = await case_service.get_case(case_id, user_id=current_user.user_id)
-        if not case:
-            raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
-
-        # Validate organization ownership (multi-tenant isolation)
-        if tenant_provider and hasattr(case, "organization_id"):
-            await validate_organization_access(
-                tenant_provider, current_user, case.organization_id
-            )
-
-        if not rec_service:
-            # Refuse rather than recommend (fm#1030 review). This branch used
-            # to answer action="generate" from a search that never ran — the
-            # #944 fail-open shape: the runbook recommendation IS a claim
-            # about what the knowledge base holds, and this service is not
-            # wired (the container registers None), so the claim was never
-            # established. 503 matches the case-module route's refusal
-            # contract; the working recommendation surface is named so the
-            # caller has somewhere to go. Static detail — no exception text
-            # crosses into the response.
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Report recommendations are not available on this "
-                    "endpoint — the recommendation service is not wired, so "
-                    "the runbook similarity search cannot run and duplicate "
-                    "runbooks cannot be ruled out. Use "
-                    "GET /api/v1/cases/{case_id}/report-recommendations."
-                ),
-            )
-
-        # Get recommendations, scoped to the requester (fm#1030)
-        recommendation = await rec_service.get_available_report_types(
-            case,
-            requester_user_id=current_user.user_id,
-            requester_organization_id=getattr(current_user, "organization_id", None),
-        )
-
-        return ReportRecommendationResponse(
-            case_id=recommendation.case_id,
-            available_for_generation=[
-                t.value for t in recommendation.available_for_generation
-            ],
-            runbook_recommendation={
-                "action": recommendation.runbook_recommendation.action,
-                "similarity_score": recommendation.runbook_recommendation.similarity_score,
-                "reason": recommendation.runbook_recommendation.reason,
-                "existing_runbook_id": (
-                    recommendation.runbook_recommendation.existing_runbook.item_id
-                    if recommendation.runbook_recommendation.existing_runbook
-                    else None
-                ),
-            },
-        )
-
-    except NotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get(
