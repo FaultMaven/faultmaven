@@ -6,16 +6,29 @@ ADR-012 D9 splits one ambiguous ``admin`` role string into two axes:
 ``platform_admin`` is simply not a member of the ``Role`` enum — which is
 exactly the kind of invariant that a well-meaning future edit erases without
 anything failing. These tests make that edit fail loudly.
+
+Absence alone only stops the role API from *minting* an operator. It said
+nothing about *destroying* one, and for a long time the API did exactly that:
+``assign_role`` replaced the whole role list, so pointing it at an operator
+silently dropped ``platform_admin`` and reported a successful promotion. The
+``TestOperatorRoleSurvivesOrgRoleManagement`` cases below pin the other half of
+the invariant (#706).
 """
+
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.exceptions import ConflictError
+from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
 from faultmaven.models import rbac as models_rbac
 from faultmaven.modules.auth.contracts import (
     PLATFORM_ADMIN_ROLE,
     PLATFORM_ADMIN_ROLE_SET,
 )
 from faultmaven.modules.auth.domain.models import rbac as auth_rbac
+from faultmaven.modules.auth.domain.services.user_service import UserService
 
 # Both live copies of the role vocabulary. `models.rbac` is the one
 # `UserService.assign_role` validates against and that migration 029 seeds;
@@ -72,3 +85,165 @@ def test_operator_role_set_carries_both_axes():
     assert models_rbac.get_permissions_for_roles(PLATFORM_ADMIN_ROLE_SET) == set(
         models_rbac.ROLE_PERMISSIONS[models_rbac.Role.ADMIN]
     )
+
+
+# ============================================================
+# Role management must not cross the axis boundary (#706)
+# ============================================================
+
+
+def _operator_user(user_id: str = "op-target") -> RepositoryUser:
+    """An account holding the full operator set, as every provisioning path grants it."""
+    now = datetime.now(timezone.utc)
+    return RepositoryUser(
+        user_id=user_id,
+        username="operator@example.com",
+        email="operator@example.com",
+        display_name="Operator",
+        hashed_password=None,
+        created_at=now,
+        updated_at=now,
+        is_active=True,
+        is_email_verified=True,
+        roles=list(PLATFORM_ADMIN_ROLE_SET),
+    )
+
+
+def _service_for(user: RepositoryUser) -> tuple[UserService, MagicMock]:
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=user)
+    repo.get_user = repo.get
+    repo.save = AsyncMock(return_value=user)
+    repo.update_user = repo.save
+
+    auth_service = MagicMock()
+    auth_service.revoke_user_tokens = AsyncMock(
+        return_value=datetime(2026, 8, 12, tzinfo=timezone.utc)
+    )
+    service = UserService(
+        user_repo=repo,
+        auth_service=auth_service,
+        token_generator=MagicMock(),
+    )
+    return service, repo
+
+
+def _saved_roles(repo: MagicMock) -> list[str]:
+    return list(repo.save.call_args[0][0].roles)
+
+
+@pytest.mark.unit
+@pytest.mark.security
+class TestOperatorRoleSurvivesOrgRoleManagement:
+    """`POST/DELETE /admin/users/{id}/roles` must not touch the operator axis.
+
+    The org-scoped role API is reachable by any platform admin and takes another
+    user as its target, so a clobbering implementation lets one operator revoke
+    another's cross-tenant reach through an endpoint whose response says
+    "assigned successfully". Revoking `platform_admin` is
+    `fm-demote-platform-admin`'s job, and only its job.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "role",
+        # An operator already holds org `admin` (PLATFORM_ADMIN_ROLE_SET), so
+        # re-assigning it is the no-op conflict covered separately below. These
+        # are the assignments that actually rewrite the org axis.
+        [models_rbac.Role.MEMBER.value, models_rbac.Role.VIEWER.value],
+    )
+    async def test_assign_role_preserves_platform_admin(self, role):
+        """Reassigning an operator's org role leaves the operator role intact."""
+        user = _operator_user()
+        service, repo = _service_for(user)
+
+        await service.assign_role(
+            user_id=user.user_id,
+            role=role,
+            organization_id="org-1",
+            admin_user_id="other-operator",
+        )
+
+        saved = _saved_roles(repo)
+        assert PLATFORM_ADMIN_ROLE in saved
+        # The org axis is replaced by exactly the assigned role...
+        assert [r for r in saved if r in {x.value for x in models_rbac.Role}] == [role]
+        # ...and the base marker is not collateral damage either.
+        assert "user" in saved
+
+    @pytest.mark.asyncio
+    async def test_conflicting_assignment_persists_nothing(self):
+        """A no-op assignment must 409 without touching the account.
+
+        The conflict check is what decides "this would change nothing", so it
+        has to run before any write — otherwise the cheapest way to strip an
+        operator would be the request that claims to do nothing at all.
+        """
+        user = _operator_user()
+        service, repo = _service_for(user)
+
+        with pytest.raises(ConflictError):
+            await service.assign_role(
+                user_id=user.user_id,
+                role=models_rbac.Role.ADMIN.value,
+                organization_id="org-1",
+                admin_user_id="other-operator",
+            )
+
+        repo.save.assert_not_called()
+        assert list(user.roles) == list(PLATFORM_ADMIN_ROLE_SET)
+
+    @pytest.mark.asyncio
+    async def test_remove_role_preserves_platform_admin(self):
+        """Removing an operator's org admin role does not revoke cross-tenant reach."""
+        user = _operator_user()
+        service, repo = _service_for(user)
+
+        await service.remove_role(
+            user_id=user.user_id,
+            role=models_rbac.Role.ADMIN.value,
+            organization_id="org-1",
+            admin_user_id="other-operator",
+        )
+
+        saved = _saved_roles(repo)
+        assert PLATFORM_ADMIN_ROLE in saved
+        assert "user" in saved
+        # Org axis emptied by the removal, so minimum privilege applies there.
+        assert models_rbac.Role.ADMIN.value not in saved
+        assert models_rbac.Role.VIEWER.value in saved
+
+    @pytest.mark.asyncio
+    async def test_assign_role_cannot_introduce_the_operator_role(self):
+        """A validated org role is the only thing written — no echo of caller input."""
+        user = _operator_user()
+        service, _ = _service_for(user)
+
+        with pytest.raises(Exception) as exc_info:
+            await service.assign_role(
+                user_id=user.user_id,
+                role=PLATFORM_ADMIN_ROLE,
+                organization_id="org-1",
+                admin_user_id="other-operator",
+            )
+        assert "Invalid role" in str(exc_info.value)
+
+    @pytest.mark.asyncio
+    async def test_unrecognised_roles_are_preserved_not_dropped(self):
+        """Role management must not decide that a role it cannot name is disposable."""
+        user = _operator_user()
+        user.roles = ["user", "member", "some_future_grant"]
+        service, repo = _service_for(user)
+
+        await service.assign_role(
+            user_id=user.user_id,
+            role=models_rbac.Role.ADMIN.value,
+            organization_id="org-1",
+            admin_user_id="other-operator",
+        )
+
+        saved = _saved_roles(repo)
+        assert "some_future_grant" in saved
+        assert "user" in saved
+        assert "member" not in saved  # org axis replaced
+        assert "admin" in saved

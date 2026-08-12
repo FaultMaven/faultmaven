@@ -778,10 +778,14 @@ class TestAssignRole:
         assert result.roles == ["viewer"]
 
     @pytest.mark.asyncio
-    async def test_replaces_existing_roles(
+    async def test_replaces_existing_org_scoped_role(
         self, user_service, mock_user_repo, mock_auth_service, member_user
     ):
-        """Replaces existing roles (single role per user)."""
+        """Replaces the org-scoped role (one org role per user).
+
+        Roles on other axes are preserved — see
+        `test_platform_admin_role_separation.py` for that half (#706).
+        """
         mock_user_repo.get_user.return_value = member_user
         updated_user = DevUser(
             user_id=member_user.user_id,

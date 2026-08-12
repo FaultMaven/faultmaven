@@ -25,17 +25,19 @@ class DatabaseUserStore:
     Manages user accounts using UserRepository (SQLite/PostgreSQL).
     Adapts between DevUser (auth model) and User (repository model).
 
-    Role persistence strategy:
-    - Roles are stored in the ``dev_roles`` TEXT column (JSON array) on the
-      users table and flow straight into the JWT ``roles`` claim, in BOTH
-      ``AUTH_MODE=local`` and ``AUTH_MODE=oauth``. There is currently no
-      login/token-issuance path that derives roles from the RBAC join tables
-      (``organization_members → roles``); the only ``get_member_role`` reader
-      is the inert ``TENANT_PROVIDER=multi`` seam (membership checks, not the
-      role claim). So ``dev_roles`` is canonical today regardless of auth mode.
-    - Deriving the cloud role claim from RBAC tables is designed but NOT wired.
-      When that lands, ``assign_role``/``remove_role`` (which write ``dev_roles``)
-      must move to the RBAC path or be gated. Tracked in #706.
+    Role persistence strategy (settled in #706):
+    - ``dev_roles`` (TEXT, JSON array) is the **canonical** source of the JWT
+      ``roles`` claim in BOTH ``AUTH_MODE=local`` and ``AUTH_MODE=oauth``, and
+      stays so across the multi-tenant flip. ``organization_members.role_id``
+      records affiliation — written by the SSO login path, read for membership
+      verification — and is deliberately NOT the claim source.
+    - Deriving the claim from the RBAC join tables is left unwired rather than
+      half-wired: a partial derivation is exactly what makes role
+      administration silently stop taking effect. So ``assign_role`` /
+      ``remove_role`` writing here is correct in both modes, ungated.
+    - Those methods manage only the **org-scoped** role axis and preserve
+      ``platform_admin`` and the base ``user`` marker. See
+      ``user_service._split_role_axes``.
 
     Storage backends:
     - SQLite (local deployment via DATABASE_URL)

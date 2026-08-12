@@ -92,6 +92,39 @@ const isPlatformAdmin = user.roles.includes('platform_admin');
 > endpoint checks is tracked as a separate RBAC reconciliation (#706). See
 > [iam-design.md § Role Implementation](iam-design.md#role-implementation).
 
+### Where roles are stored, and what reads them
+
+`users.dev_roles` (a JSON array) is the **single canonical source of the JWT
+`roles` claim, in both `AUTH_MODE=local` and `AUTH_MODE=oauth`**, and remains so
+across the multi-tenant flip. `organization_members.role_id` records
+*affiliation* — which organization a user belongs to and with what standing,
+written by the SSO login path and read for membership verification. It is **not**
+the claim source, and deriving the claim from it is deliberately left unwired
+rather than half-wired: a partially-wired derivation is what makes role
+administration silently stop working. Consequently `assign_role` / `remove_role`
+writing `dev_roles` is correct in both modes and needs no deployment gate.
+
+Roles live on **two independent axes**, and role administration must respect the
+boundary:
+
+| Axis | Values | Granted by | Read by |
+|------|--------|-----------|---------|
+| Org-scoped | `admin`, `member`, `viewer` | `POST/DELETE /admin/users/{id}/roles` | `Permission` mapping (not yet wired to endpoint checks) |
+| Deployment | `platform_admin` | `fm-promote-platform-admin` only | `require_platform_admin` / `is_platform_admin()` |
+| Base | `user` | registration, SSO JIT provisioning | nothing today (grants no permissions) |
+
+The role-management API replaces a user's **org-scoped** role and preserves
+every other role the account holds. It previously replaced the whole list, so
+aiming it at an operator revoked `platform_admin` while reporting a successful
+assignment — a silent operator lockout recoverable only from a shell (#706).
+`platform_admin` is revoked by `fm-demote-platform-admin` and nothing else.
+
+> **Note on today's enforcement surface.** `require_role` / `require_any_role`
+> exist but have no production call sites, and JWT `scopes` are a fixed list
+> rather than role-derived. So `platform_admin` is currently the only role the
+> enforcement path actually consults; the org-scoped axis is recorded and
+> surfaced (user listing, filtering) ahead of the permission wiring above.
+
 ### 1. Regular User (`user` role)
 
 **Default role for all users**
