@@ -115,36 +115,38 @@ curl -X POST http://localhost:8090/api/v1/cases \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Website performance degradation",
-    "description": "Users reporting slow page load times since 2PM",
-    "priority": "high"
+    "description": "Users reporting slow page load times since 2PM"
   }'
 ```
 
-**Response**:
+**Response** (abridged):
 ```json
 {
   "case_id": "case_abc123",
-  "status": "open",
+  "title": "Website performance degradation",
+  "state": "inquiry",
+  "current_turn": 0,
   "created_at": "2026-01-01T12:00:00Z"
 }
 ```
 
 ### Query the AI Agent
 
+Every exchange with a case — a question, an upload, or both — is a turn:
+
 ```bash
-curl -X POST http://localhost:8090/api/v1/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "case_id": "case_abc123",
-    "query": "What are the most common causes of website performance degradation?"
-  }'
+curl -X POST http://localhost:8090/api/v1/cases/case_abc123/turns \
+  -F "query=What should I check first for this slowdown?"
 ```
 
-**Response** (example):
+**Response** (example, abridged):
 ```json
 {
-  "response_type": "ANSWER",
-  "content": "Common causes of website performance degradation include:\n\n1. **Database bottlenecks** - Slow queries, missing indexes\n2. **Memory leaks** - Gradual resource exhaustion\n3. **Network issues** - CDN problems, DNS resolution\n4. **Cache invalidation** - Redis/Memcached failures\n5. **Third-party APIs** - External service slowdowns\n\nRecommendation: Start by checking database query times and memory usage."
+  "agent_response": "Start with the database query times and memory usage on the app tier. To narrow it down, share the slow-query log and the pod memory metrics for the 2PM window.",
+  "turn_number": 1,
+  "case_state": "inquiry",
+  "milestones_completed": [],
+  "progress_made": true
 }
 ```
 
