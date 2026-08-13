@@ -326,11 +326,66 @@ def test_the_revocation_prefix_comes_from_settings_not_a_literal():
 
 
 def test_the_protection_namespaces_are_included():
-    """Rate-limit and dedup keys are built from the protection preset's
-    redis_key_prefix, chosen by ENVIRONMENT — not a literal."""
+    """Rate-limit and dedup keys are built from the protection presets'
+    redis_key_prefix, not a literal."""
     prefixes = wd.redis_prefixes(_Settings())
     assert any(p.endswith(":rl") for p in prefixes), prefixes
     assert any(p.endswith(":dedup") for p in prefixes), prefixes
+
+
+def test_every_preset_protection_namespace_is_included_not_just_the_resolved_one():
+    """Both presets' namespaces are swept regardless of this process's
+    ENVIRONMENT.
+
+    Asserting the *specific* spellings, because ``any(endswith(":rl"))`` is
+    satisfied by a single preset and so cannot fail on the bug this covers.
+    """
+    from faultmaven.config.protection import ALL_REDIS_KEY_PREFIXES
+
+    prefixes = wd.redis_prefixes(_Settings())
+    for key_prefix in ALL_REDIS_KEY_PREFIXES:
+        assert f"{key_prefix}:rl" in prefixes, prefixes
+        assert f"{key_prefix}:dedup" in prefixes, prefixes
+
+
+@pytest.mark.parametrize("environment", ["development", "production", "staging"])
+def test_production_rate_limit_keys_classify_under_any_resolved_environment(
+    environment,
+):
+    """fm#1052 regression, reproducing the live #819 cutover failure.
+
+    The wipe runs with the API scaled down, so it does NOT run in the API pod
+    and ``ENVIRONMENT`` is typically unset — resolving to ``development`` while
+    the keys on the server were written by the production preset. Classifying
+    against only the resolved preset reported live rate-limit state as "under no
+    known FaultMaven prefix", and because ``--verify`` judges residue against
+    the same set the wipe deletes, both were wrong together.
+    """
+    from faultmaven.config.settings import Environment
+
+    settings = _Settings()
+    settings.server.environment = Environment(environment)
+
+    observed = [
+        "faultmaven_prod:rl:global:10.244.226.131",
+        "faultmaven_prod:rl:global:10.244.236.202",
+        "faultmaven_dev:dedup:abc123",
+    ]
+    _counts, unmatched = wd.classify_redis_keys(observed, wd.redis_prefixes(settings))
+
+    assert unmatched == [], (
+        "protection keys written under a different ENVIRONMENT must still be "
+        f"swept and verified; resolved={environment}"
+    )
+
+
+def test_unrelated_third_party_keys_are_still_reported_as_unknown():
+    """The widened prefix set must not swallow keys FaultMaven never wrote —
+    otherwise 'no residue' stops meaning anything."""
+    _counts, unmatched = wd.classify_redis_keys(
+        ["celery:task:1", "faultmaven_prod:rl:global:1"], wd.redis_prefixes(_Settings())
+    )
+    assert unmatched == ["celery:task:1"]
 
 
 # ---------------------------------------------------------------------------

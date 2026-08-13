@@ -188,8 +188,9 @@ MUST_BE_SEEDED = frozenset(
 #: ``python -m faultmaven.jobs.run kb_seed --cross-tenant-maintenance``.
 INFORMATIONAL = frozenset({"knowledge_items"})
 
-#: Redis key namespaces with a fixed spelling. Two more are configurable and are
-#: added by :func:`redis_prefixes` — the set must be COMPLETE, because
+#: Redis key namespaces with a fixed spelling. The configurable ones (the
+#: token-revocation prefix and every protection preset's ``rl``/``dedup`` pair)
+#: are added by :func:`redis_prefixes` — the set must be COMPLETE, because
 #: ``--verify`` treats any surviving key as residue: a namespace missing here is
 #: one the scoped wipe leaves behind and the verification then refuses forever.
 _FIXED_REDIS_PREFIXES = (
@@ -213,10 +214,9 @@ def redis_prefixes(settings) -> tuple[str, ...]:
     * the token-revocation prefix is ``settings.security.token_revocation_prefix``
       (the container passes it to the store), so a deployment that overrides it
       would otherwise keep every revocation watermark through a "successful" wipe;
-    * the rate-limit and dedup namespaces are built from the protection preset's
-      ``redis_key_prefix`` (``faultmaven_dev`` / ``faultmaven_prod``), chosen by
-      ``ENVIRONMENT`` — so the literal ``faultmaven_prod:rl:`` would be wrong on
-      every non-production deployment.
+    * the rate-limit and dedup namespaces come from the protection presets'
+      ``redis_key_prefix``. **Every** preset's namespaces are included, not the
+      one the current ``ENVIRONMENT`` selects — see below.
     """
     prefixes = list(_FIXED_REDIS_PREFIXES)
 
@@ -225,25 +225,28 @@ def redis_prefixes(settings) -> tuple[str, ...]:
     )
     prefixes.append(revocation or "revoked:token:")
 
-    # Same discriminator ``setup_protection_middleware`` uses: ``development``
-    # exactly gets the dev preset, everything else (including staging and any
-    # unrecognised value) gets production. Reproduced rather than hardcoded as
-    # "faultmaven_prod" because that literal is wrong on every non-production
-    # deployment.
-    try:
-        from faultmaven.config.protection import (
-            get_development_protection_settings,
-            get_production_protection_settings,
-        )
-        from faultmaven.config.settings import Environment
+    # Deliberately NOT discriminated by ``ENVIRONMENT``, even though
+    # ``setup_protection_middleware`` picks exactly one preset. The keys on the
+    # server were written by whatever preset was live *when they were written*,
+    # which need not be the one this process resolves:
+    #
+    #   * this command runs with the API scaled down, so it runs in a one-off pod
+    #     or a shell — not the API pod whose env sets ENVIRONMENT. ENVIRONMENT
+    #     defaults to ``development``, so the prod keys of the very deployment
+    #     being wiped went unmatched (fm#1052, seen live on the #819 cutover);
+    #   * an overlay roll or preset change re-points the prefix while the old
+    #     keys are still there, TTL-bearing.
+    #
+    # Matching only the resolved preset made those keys "under no known
+    # FaultMaven prefix", and since ``--verify`` judges residue against the same
+    # set the wipe deletes, the two stayed consistent while both were wrong.
+    # Enumerating both is safe: these are TTL-bearing rate-limit counters and
+    # dedup markers, and the scoped wipe already deletes un-namespaced fixed
+    # prefixes (``session:``, ``oauth:code:``, ...) that would collide first if a
+    # Redis database were ever shared between deployments.
+    from faultmaven.config.protection import ALL_REDIS_KEY_PREFIXES
 
-        if settings.server.environment == Environment.DEVELOPMENT:
-            key_prefix = get_development_protection_settings().redis_key_prefix
-        else:
-            key_prefix = get_production_protection_settings().redis_key_prefix
-    except Exception:
-        key_prefix = None
-    if key_prefix:
+    for key_prefix in ALL_REDIS_KEY_PREFIXES:
         prefixes.extend([f"{key_prefix}:rl", f"{key_prefix}:dedup"])
 
     # Deduplicate while keeping a stable order for the inventory breakdown.

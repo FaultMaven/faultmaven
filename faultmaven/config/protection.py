@@ -33,6 +33,28 @@ from ..models.protection import (
 
 logger = logging.getLogger(__name__)
 
+#: Redis key namespace per preset. Named constants rather than literals inside
+#: the preset constructors because they have a second consumer: the deployment
+#: wipe (``fm-wipe-deployment``) must know EVERY namespace this deployment could
+#: have written, and it cannot obtain them by constructing the presets — those
+#: call ``get_trusted_proxies()`` / ``_fail_open_default()``, which read settings
+#: and emit production warnings as a side effect.
+#:
+#: ``ALL_REDIS_KEY_PREFIXES`` is the enumeration the wipe consumes. It is the
+#: whole set, not the one the *current* ``ENVIRONMENT`` selects, because keys
+#: outlive the environment that wrote them: a preset change, an overlay roll, or
+#: an execution context that simply does not carry ``ENVIRONMENT`` (the wipe runs
+#: with the API scaled down, so it is not the API pod) leaves the other preset's
+#: keys on the server. Matching only the current preset made those keys
+#: unclassifiable, and ``--verify`` reports what the scoped wipe leaves — so the
+#: two agreed with each other while both missed live rate-limit state (fm#1052).
+DEVELOPMENT_REDIS_KEY_PREFIX = "faultmaven_dev"
+PRODUCTION_REDIS_KEY_PREFIX = "faultmaven_prod"
+ALL_REDIS_KEY_PREFIXES = (
+    DEVELOPMENT_REDIS_KEY_PREFIX,
+    PRODUCTION_REDIS_KEY_PREFIX,
+)
+
 
 def _fail_open_default() -> bool:
     """Whether the request-path protections fail open when Redis is unreachable.
@@ -124,7 +146,7 @@ def get_development_protection_settings() -> ProtectionSettings:
         trusted_proxies=get_trusted_proxies(),
         # Redis: resolve centrally via RedisClientFactory.
         redis_url=None,
-        redis_key_prefix="faultmaven_dev",
+        redis_key_prefix=DEVELOPMENT_REDIS_KEY_PREFIX,
         # Rate limiting (more lenient for development)
         rate_limiting_enabled=True,
         rate_limits={
@@ -243,7 +265,7 @@ def get_production_protection_settings() -> ProtectionSettings:
         trusted_proxies=trusted_proxies,
         # Redis: resolve centrally via RedisClientFactory.
         redis_url=None,
-        redis_key_prefix="faultmaven_prod",
+        redis_key_prefix=PRODUCTION_REDIS_KEY_PREFIX,
         # Rate limiting (strict for production)
         rate_limiting_enabled=True,
         rate_limits={
