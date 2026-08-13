@@ -548,8 +548,9 @@ DECIDE / RUN / EVIDENCE / FREE_SPEECH. Evidence needs map to
 
 - The LLM owns suggestion emission. When a pending need is worth
   surfacing this turn it may raise it as an EVIDENCE suggestion — but it
-  may equally make a contextual EVIDENCE ask that no pool need backs
-  (the pre-evidence-needs behavior, still valid).
+  may equally make a contextual EVIDENCE ask (a request for specific
+  data) that no pool need backs (the pre-evidence-needs behavior, still
+  valid).
 - Each `SuggestedFollowUp` with `action_type=EVIDENCE` carries an
   **optional** field: `evidence_need_id: Optional[str]` — set *only when*
   the suggestion corresponds to a pending pool need. A purely contextual

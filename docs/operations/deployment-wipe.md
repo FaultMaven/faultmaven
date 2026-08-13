@@ -29,7 +29,7 @@ and they fail differently when missed:
 |---------|-------|-----------|
 | PostgreSQL `faultmaven` | cases, evidence rows, users, orgs, enterprises, `sso_org_mappings` | the obvious one |
 | ChromaDB | KB + per-case embeddings | searches return chunks whose SQL rows are gone |
-| Object storage (S3/MinIO or `data/evidence/`) | uploaded evidence bytes | orphaned files, and the storage bill |
+| Object storage (S3/MinIO or `data/evidence/`) | uploaded file bytes | orphaned files, and the storage bill |
 | Redis | sessions, revocation watermarks, idempotency, SSO state | a stale session or watermark shadows the new tenant |
 | Slack agent PVC `credentials.db` | the agent's OAuth refresh credential | a leftover shadows the new credential seed; the agent authenticates as a user that no longer exists |
 

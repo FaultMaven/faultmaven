@@ -255,7 +255,7 @@ Mitigation is **not assumed to be one-shot**. It is dynamic, interactive, and po
 
 **Primary path** (most common):
 
-1. Verify whether the applied fix worked (analyze submitted evidence)
+1. Verify whether the applied fix worked (analyze submitted data)
 2. Fix worked → confirm resolution → **RESOLVED**
 
 **Failure path** (extended diagnosis):
@@ -273,12 +273,12 @@ Extended diagnosis proceeds:
 
 1. **Failure analysis** — What does the failure tell us? Implementation error or wrong root cause?
 2. **Gap identification** — What don't we know that we need to know?
-3. **Targeted evidence request** — Ask for specific new data that would distinguish remaining hypotheses
+3. **Targeted data request** — Ask for specific new data that would distinguish remaining hypotheses
 4. **Additive hypothesis formation** — New hypotheses must account for ALL evidence (original + failure). Form via `hypotheses_to_add`, same mechanism as DIAGNOSIS.
 5. **New solution proposal** — Derived from the new hypothesis, with specific commands/steps
 6. **User complies → verify again** (loop back to primary path)
 
-Extended diagnosis may take multiple turns (e.g., requesting evidence, analyzing, requesting more) before converging on a new solution. Escalation triggers when the agent has no more viable options (cannot formulate a new hypothesis or identify new evidence to request). The agent communicates limitations naturally in its responses — explaining what has been tried, what is blocked, and suggesting alternatives or escalation. For simple lack of progress, the system injects a gentle reminder to nudge the next diagnostic step without lowering confidence — FaultMaven is a copilot; the user decides the pace.
+Extended diagnosis may take multiple turns (e.g., requesting data, analyzing, requesting more) before converging on a new solution. Escalation triggers when the agent has no more viable options (cannot formulate a new hypothesis or identify new data to request). The agent communicates limitations naturally in its responses — explaining what has been tried, what is blocked, and suggesting alternatives or escalation. For simple lack of progress, the system injects a gentle reminder to nudge the next diagnostic step without lowering confidence — FaultMaven is a copilot; the user decides the pace.
 
 **Evidence types accepted**:
 
@@ -697,7 +697,7 @@ See **[Investigation Lifecycle Logic §2](./investigation-lifecycle-logic.md#2-m
 
 **Solution fails in TREATMENT**: Agent stays in TREATMENT and enters extended diagnosis. Analyzes the failure evidence, identifies knowledge gaps, requests targeted new data. The original evidence produced the failed solution — it cannot be reprocessed for a different result. New evidence is required. Once obtained, the agent forms new hypotheses, proposes a revised solution, and the cycle repeats. Escalation when the agent has no more viable options (communicated naturally in the agent's response).
 
-**New symptoms emerge in TREATMENT**: User discovers the fix caused a new problem. Agent stays in TREATMENT, treats this as failure evidence requiring extended diagnosis, and follows the same process: failure analysis → gap identification → targeted evidence request → new hypothesis → corrective action.
+**New symptoms emerge in TREATMENT**: User discovers the fix caused a new problem. Agent stays in TREATMENT, treats this as failure evidence requiring extended diagnosis, and follows the same process: failure analysis → gap identification → targeted data request → new hypothesis → corrective action.
 
 **Mitigation-only resolution**: After a mitigation is verified, the case can close without RCA in two ways: (1) When `rca_infeasible=True`, the agent proactively proposes closure once the mitigation is verified — *"The mitigation is verified. Since [rationale], shall we close this case?"* (2) The user can always close via UI regardless of `rca_infeasible`. Both lead to CLOSED with `closure_reason="closed_rca_infeasible"` when the cause is declared structurally unreachable (with a rationale), and `mitigation_sufficient` otherwise. The documented mitigation is preserved on the closed case. The auto-generated Closure Summary captures what was learned; no runbook is generated for CLOSED cases.
 
@@ -887,13 +887,13 @@ The proposal should be a specific action ("Run `kubectl rollout restart...`"), n
 
 TREATMENT has two modes:
 
-**Primary** (most cases): Verify submitted evidence → fix worked → RESOLVED.
+**Primary** (most cases): Verify from submitted data → fix worked → RESOLVED.
 
 **Extended diagnosis** (fix failed): When verification shows the fix failed, TREATMENT enters an extended diagnosis process that is structurally distinct from initial DIAGNOSIS:
 
 1. **Failure analysis** — What does the failure tell us? What's eliminated?
 2. **Gap identification** — What new evidence is needed? (The original evidence produced a failed solution — reprocessing it cannot yield a valid different result.)
-3. **Targeted evidence request** — Ask for specific new data
+3. **Targeted data request** — Ask for specific new data
 4. **Additive hypothesis formation** — New hypotheses must account for ALL evidence (original + failure + new)
 5. **New solution proposal** — Derived from new hypothesis
 6. **Escalation** — When no viable options remain, suggest handoff with structured summary

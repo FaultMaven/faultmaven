@@ -2468,7 +2468,7 @@ async def submit_turn(
             if files or pasted_content:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="Cannot submit evidence to a closed case. Only questions about the case are allowed.",
+                    detail="Cannot submit new data to a closed case. Only questions about the case are allowed.",
                     headers={"x-correlation-id": correlation_id},
                 )
             if intent_type == "status_transition":

@@ -108,54 +108,75 @@ INFO:     Uvicorn running on http://0.0.0.0:8090 (Press CTRL+C to quit)
 
 ## Step 4: Try It Out (1 minute)
 
+### Sign In
+
+Standalone runs with `AUTH_MODE=local`, so signing in takes a username and no
+password. Every call below needs the returned token:
+
+```bash
+TOKEN=$(curl -sX POST http://localhost:8090/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "you"}' | jq -r .access_token)
+```
+
 ### Create a Troubleshooting Case
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/cases \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Website performance degradation",
-    "description": "Users reporting slow page load times since 2PM",
-    "priority": "high"
+    "description": "Users reporting slow page load times since 2PM"
   }'
 ```
 
-**Response**:
+**Response** (abridged):
 ```json
 {
   "case_id": "case_abc123",
-  "status": "open",
+  "title": "Website performance degradation",
+  "state": "inquiry",
+  "current_turn": 0,
   "created_at": "2026-01-01T12:00:00Z"
 }
 ```
 
 ### Query the AI Agent
 
+Every exchange with a case — a question, an upload, or both — is a turn:
+
 ```bash
-curl -X POST http://localhost:8090/api/v1/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "case_id": "case_abc123",
-    "query": "What are the most common causes of website performance degradation?"
-  }'
+curl -X POST http://localhost:8090/api/v1/cases/case_abc123/turns \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "query=What should I check first for this slowdown?"
 ```
 
-**Response** (example):
+**Response** (example, abridged):
 ```json
 {
-  "response_type": "ANSWER",
-  "content": "Common causes of website performance degradation include:\n\n1. **Database bottlenecks** - Slow queries, missing indexes\n2. **Memory leaks** - Gradual resource exhaustion\n3. **Network issues** - CDN problems, DNS resolution\n4. **Cache invalidation** - Redis/Memcached failures\n5. **Third-party APIs** - External service slowdowns\n\nRecommendation: Start by checking database query times and memory usage."
+  "agent_response": "Start with the database query times and memory usage on the app tier. To narrow it down, share the slow-query log and the pod memory metrics for the 2PM window.",
+  "turn_number": 1,
+  "case_state": "inquiry",
+  "milestones_completed": [],
+  "progress_made": true
 }
 ```
 
-### Upload Evidence (Logs, Metrics, Config)
+### Upload Data (Logs, Metrics, Config)
+
+Raw data enters a case as a turn attachment. FaultMaven extracts the evidence
+from what you upload:
 
 ```bash
-curl -X POST http://localhost:8090/api/v1/data \
-  -F "case_id=case_abc123" \
-  -F "file=@/path/to/application.log" \
-  -F "data_type=logs"
+curl -X POST http://localhost:8090/api/v1/cases/case_abc123/turns \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "query=Here are the application logs from the incident window" \
+  -F "files=@/path/to/application.log"
 ```
+
+You can also paste text directly with `-F "pasted_content=..."` instead of
+attaching a file.
 
 ---
 

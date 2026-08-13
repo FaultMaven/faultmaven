@@ -61,7 +61,7 @@ Tools for retrieving information from internal and external sources.
 - **User KB QA** ✅ - User's personal runbooks and procedures (DA Tool Loop)
 
 ### 2. Data Analysis Tools
-Tools for processing and analyzing uploaded evidence.
+Tools for processing and analyzing uploaded data.
 
 - **[Log Analyzer](./implemented/log-analyzer-tool.md)** ✅ - Parse and analyze log files
 - **[Data Classifier](./implemented/data-classifier-tool.md)** ✅ - Identify data types

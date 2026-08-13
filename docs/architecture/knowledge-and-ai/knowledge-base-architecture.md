@@ -644,7 +644,7 @@ links it), `POST /knowledge/suggestions/{id}/reject`, and
 ### Evidence Architecture (Separate Concern)
 
 - **[Case Evidence Store](../case-and-session/case-evidence-store.md)** — Storage and lifecycle for case-specific diagnostic evidence
-- **[Data Preprocessing Design](../data-processing/data-preprocessing-design-specification.md)** — How submitted evidence is classified, extracted, and indexed
+- **[Data Preprocessing Design](../data-processing/data-preprocessing-design-specification.md)** — How submitted data is classified, extracted, and indexed
 
 ### Investigation Context
 

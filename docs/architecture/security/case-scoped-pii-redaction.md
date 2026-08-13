@@ -2,7 +2,7 @@
 
 ## Context
 
-FaultMaven is a SaaS product where user log data crosses a trust boundary: user uploads evidence (logs, configs, traces) which FaultMaven sends to external LLM providers for analysis. PII in this evidence (IPs, emails, hostnames, API keys) must not reach external APIs.
+FaultMaven is a SaaS product where user log data crosses a trust boundary: user uploads data (logs, configs, traces) which FaultMaven sends to external LLM providers for analysis. PII in this data (IPs, emails, hostnames, API keys) must not reach external APIs.
 
 However, FaultMaven is a troubleshooting tool. The user needs to see real values in responses. Naive redaction that strips IPs also strips the data users are investigating.
 

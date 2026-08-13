@@ -354,7 +354,7 @@ FaultMaven is a monolithic application with clean **Vertical Slice Architecture*
 | `agent` | Investigation orchestration, AI tools |
 | `auth` | Users, sessions, organizations, teams, RBAC |
 | `case` | Investigation cases and lifecycle management |
-| `evidence` | File uploads, metadata, storage adapters |
+| `evidence` | Evidence storage, linking, and retrieval; file storage adapters (raw uploads land in `uploaded_files` via case turns) |
 | `knowledge` | Embeddings, vector search, RAG, knowledge items |
 | `report` | Report generation and recommendations |
 
