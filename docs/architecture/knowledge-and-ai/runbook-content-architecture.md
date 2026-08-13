@@ -20,7 +20,7 @@ FaultMaven's investigation engine consumes three types of data, all delivered to
 
 Type 2 (submitted data) and Type 3 (knowledge base) are both fed to the LLM through RAG, but they serve different purposes in the investigation:
 
-- **Evidence** tells the AI *what is happening* — it is raw, case-specific, and diagnostic. It answers "what broke?"
+- **Submitted data** tells the AI *what is happening* — it is raw, case-specific, and diagnostic, and the evidence FaultMaven extracts from it answers "what broke?"
 - **Knowledge base** tells the AI *what to do about it* — it is curated, cross-case, and remedial. It answers "how do we fix it?"
 
 This document defines the framework for Type 3 only. It specifies how to structure the knowledge container so that curated remediation knowledge is reliably retrievable when the investigation engine needs it.

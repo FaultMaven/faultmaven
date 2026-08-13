@@ -108,10 +108,22 @@ INFO:     Uvicorn running on http://0.0.0.0:8090 (Press CTRL+C to quit)
 
 ## Step 4: Try It Out (1 minute)
 
+### Sign In
+
+Standalone runs with `AUTH_MODE=local`, so signing in takes a username and no
+password. Every call below needs the returned token:
+
+```bash
+TOKEN=$(curl -sX POST http://localhost:8090/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "you"}' | jq -r .access_token)
+```
+
 ### Create a Troubleshooting Case
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/cases \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Website performance degradation",
@@ -136,6 +148,7 @@ Every exchange with a case — a question, an upload, or both — is a turn:
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/cases/case_abc123/turns \
+  -H "Authorization: Bearer $TOKEN" \
   -F "query=What should I check first for this slowdown?"
 ```
 
@@ -157,6 +170,7 @@ from what you upload:
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/cases/case_abc123/turns \
+  -H "Authorization: Bearer $TOKEN" \
   -F "query=Here are the application logs from the incident window" \
   -F "files=@/path/to/application.log"
 ```
