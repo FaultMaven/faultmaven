@@ -31,18 +31,23 @@ and they fail differently when missed:
 | ChromaDB | KB + per-case embeddings | searches return chunks whose SQL rows are gone |
 | Object storage (S3/MinIO or `data/evidence/`) | uploaded file bytes | orphaned files, and the storage bill |
 | Redis | sessions, revocation watermarks, idempotency, SSO state | a stale session or watermark shadows the new tenant |
-| Slack agent PVC `credentials.db` | the agent's OAuth refresh credential | a leftover shadows the new credential seed; the agent authenticates as a user that no longer exists |
+| Slack agent PVC — **two** SQLite stores | `credentials.db`: the agent's OAuth refresh credential. `cases.db` (`CASE_STORE_PATH`): the Slack thread → case-id map | a leftover `credentials.db` shadows the new credential seed and the agent authenticates as a user that no longer exists; a leftover `cases.db` resolves every pre-wipe thread to a case id that is gone |
 
 `fm-wipe-deployment` covers ChromaDB, object storage and Redis, and **verifies
 all four of the server-side surfaces**. The database itself is an operator step
-(below), and `credentials.db` is an infra step in the cutover runbook.
+(below), and the agent's PVC is an infra step in the cutover runbook.
+
+⚠️ **`cases.db` is easy to miss and nothing here can catch it.** It holds
+cross-database references — case ids living in `faultmaven`, mapped from a store
+in a different database on a volume this command never sees — so no surface it
+inventories reports on it, and the wipe leaves it behind intact. Delete both
+files, not just the credential store.
 
 ### ⛔ `faultmaven_slack` is a different database — never drop it
 
 ```
 faultmaven            ← wipe this one
 faultmaven_slack      ← slack_bots, slack_installations, slack_oauth_states
-faultmaven_rehearsal  ← disposable; drop at cutover close-out
 ```
 
 `faultmaven_slack` holds the Slack **workspace installations**. Dropping it
@@ -166,7 +171,8 @@ alembic upgrade head
  5. DROP DATABASE + CREATE DATABASE        (operator, owner DSN)
  6. provision-rls-app-role.sh + provision-maintenance-role.sh   ← BEFORE migrating
  7. Run the migration Job.
- 8. Delete credentials.db from the Slack agent PVC.
+ 8. Delete BOTH credentials.db and cases.db from the Slack agent PVC.
+    The cleanup pod must run as the agent's uid/gid, not the wipe Job's.
  9. fm-wipe-deployment --verify            # ← must pass before provisioning
 10. Provision, in this order:
       fm-provision-sso-org --name … --slug … --workos-org-id org_…   (owner DSN)

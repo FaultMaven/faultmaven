@@ -1045,7 +1045,10 @@ ran, not a next step; if it was up, re-run the wipe with it down.
        scripts/apps/provision-rls-app-role.sh
        scripts/apps/provision-maintenance-role.sh
   3. Run the migration Job (RUN_STARTUP_MIGRATIONS is false on k8s).
-  4. Delete credentials.db from the Slack agent PVC.
+  4. Delete BOTH credentials.db and cases.db from the Slack agent PVC. cases.db
+     is the thread->case map: it holds case ids from the database you just
+     dropped, on a volume no surface below can see. The cleanup pod must run as
+     the agent's own uid/gid, or the delete is refused.
   5. fm-wipe-deployment --verify   ← before provisioning anything
   6. Provision: fm-provision-sso-org -> SSO sign-in -> fm-promote-platform-admin
      -> fm-provision-service-account -> the kb_seed job.
