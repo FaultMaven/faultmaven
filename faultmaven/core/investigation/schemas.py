@@ -36,7 +36,16 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, ClassVar, Dict, List, Literal, Optional
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    get_args,
+)
 
 from pydantic import (
     BaseModel,
@@ -198,6 +207,51 @@ class TurnPayload:
 # =============================================================================
 
 
+class NullTolerantModel(BaseModel):
+    """A model that reads an explicit ``null`` as "field omitted".
+
+    Required by strict structured output (fm#1051). OpenAI's strict subset has
+    no optional keys: every property must appear in ``required``, so a field the
+    model has nothing to say about comes back as ``null`` rather than being left
+    out. For a field that is not ``Optional`` but *does* carry a default —
+    ``action_type = "FREE_SPEECH"``, ``is_incident_report = False`` — Pydantic
+    rejects that ``null``, which would turn schema enforcement into a fresh
+    source of the very validation failure it was added to prevent.
+
+    Dropping the key restores the default, which is exactly the meaning the
+    model intended. Fields that are genuinely ``Optional`` are untouched: their
+    ``None`` is a value, not an absence, and it validates on its own.
+
+    Inherit this anywhere a non-``Optional`` field has a default and the model
+    is reachable from a strict-enabled schema. ``test_schema_strict_mode.py``
+    fails if such a field exists without it, so the requirement is enforced
+    rather than remembered.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_nulls_for_defaulted_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        dropped = {
+            name
+            for name, field in cls.model_fields.items()
+            if not field.is_required()
+            and data.get(name, "sentinel") is None
+            and not _accepts_none(field.annotation)
+        }
+        if not dropped:
+            return data
+        return {k: v for k, v in data.items() if k not in dropped}
+
+
+def _accepts_none(annotation: Any) -> bool:
+    """Whether ``None`` is a valid value for this annotation."""
+    if annotation is None or annotation is type(None):
+        return True
+    return type(None) in get_args(annotation)
+
+
 class ReasoningConclusion(BaseModel):
     """Single reasoning step in the internal analysis."""
 
@@ -247,7 +301,7 @@ class ProblemConfirmation(BaseModel):
     preliminary_guidance: Optional[str] = None
 
 
-class PreliminaryUrgency(BaseModel):
+class PreliminaryUrgency(NullTolerantModel):
     """Early urgency signal based on BUSINESS IMPACT."""
 
     level: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"]
@@ -281,7 +335,7 @@ class KnowledgeResolution(BaseModel):
     user_confirmation: str
 
 
-class MilestoneUpdates(BaseModel):
+class MilestoneUpdates(NullTolerantModel):
     """Milestones the LLM can set to True (never False).
 
     Two categories:
@@ -1070,7 +1124,7 @@ class SolutionToAdd(BaseModel):
 # =============================================================================
 
 
-class SuggestedFollowUp(BaseModel):
+class SuggestedFollowUp(NullTolerantModel):
     """A follow-up suggestion for the user, classified by intended user action."""
 
     label: str = Field(
@@ -1354,7 +1408,7 @@ class BaseInteractionResponse(BaseModel):
 class InquiryResponse(BaseInteractionResponse):
     """Response schema for INQUIRY state."""
 
-    class InquiryStateUpdate(BaseModel):
+    class InquiryStateUpdate(NullTolerantModel):
         # Pydantic policy: extra='ignore' (the v2 default) is deliberate.
         # The INV-07 invariant ("no Evidence creation during INQUIRY") is
         # enforced by field absence + the absence of an evidence-creation
