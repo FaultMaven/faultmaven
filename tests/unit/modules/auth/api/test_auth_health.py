@@ -22,6 +22,7 @@ load-bearing assertion is the positive one: a correctly wired app must report
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -114,6 +115,35 @@ async def test_health_reports_degraded_when_a_store_is_missing(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_health_answers_503_when_the_check_itself_fails():
+    """The except arm is the one state a probe must be able to see.
+
+    Returning 200 there made a failed *probe* indistinguishable from a healthy
+    *service* to anything gating on the status code, which is why the TypeError
+    above survived seven months. The body deliberately keeps its shape, so a
+    caller reading ``status``/``error`` rather than the code is unaffected.
+    """
+    with patch(
+        "faultmaven.modules.auth.api.auth.check_auth_services_health",
+        side_effect=RuntimeError("store exploded"),
+    ):
+        response = await _get(_build_app(), "/api/v1/auth/health")
+
+    assert response.status_code == 503, response.text
+
+    body = response.json()
+    assert body["status"] == "unhealthy"
+    assert body["error"] == "Auth health check failed"
+    assert "timestamp" in body
+    # Static message only — the caught exception's text never reaches the body
+    # (the guarantee tests/unit/modules/auth/api/test_auth_error_text_not_echoed
+    # enforces as a class; asserted here too because this arm now has a second
+    # reason to be edited).
+    assert "store exploded" not in response.text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_health_passes_the_request_through_to_the_helper():
     """Pin the defect directly: the helper is called with the live ``Request``.
 
@@ -142,5 +172,7 @@ async def test_health_passes_the_request_through_to_the_helper():
     assert request is not None, "helper was never called"
     # A real Starlette Request bound to this app — the attribute the helper
     # reads. A positional/keyword mix-up would surface here as the wrong object.
-    assert request.app.state.user_store is None
+    # Order matters: the `app` guard has to run BEFORE anything dereferences it,
+    # or the dereference raises AttributeError first and the guard never fires.
     assert hasattr(request, "app"), type(request)
+    assert request.app.state.user_store is None

@@ -7608,6 +7608,9 @@
               }
             },
             "description": "Successful Response"
+          },
+          "503": {
+            "description": "The health check itself failed. The body keeps the same shape as a successful report \u2014 `status` plus a static `error` \u2014 so a caller reading the body is unaffected by the status code."
           }
         },
         "summary": "Auth Health Check",

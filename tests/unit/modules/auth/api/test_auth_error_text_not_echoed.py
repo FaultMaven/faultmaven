@@ -182,15 +182,20 @@ async def test_list_users_500_does_not_echo_the_exception():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_auth_health_200_does_not_echo_the_exception():
-    """The unauthenticated degraded-200 arm keeps its shape without the text."""
+async def test_auth_health_failure_does_not_echo_the_exception():
+    """The unauthenticated failure arm keeps its shape without the text.
+
+    The status code moved 200 → 503 (#1061): a probe that cannot run is not a
+    healthy service. This test is about the *body* — the leak is what it exists
+    to catch — so the shape assertions below are unchanged and carry over.
+    """
     with patch(
         "faultmaven.modules.auth.api.auth.check_auth_services_health",
         side_effect=ServiceException(_INTERNAL_ERROR),
     ):
         response = await _get(_build_app(), "/api/v1/auth/health")
 
-    assert response.status_code == 200, response.text
+    assert response.status_code == 503, response.text
     _assert_no_leak(response.text)
 
     body = response.json()

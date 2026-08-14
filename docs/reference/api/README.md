@@ -816,6 +816,7 @@ and user storage systems.
 **Responses:**
 
 - `200` — Successful Response
+- `503` — The health check itself failed. The body keeps the same shape as a successful report — `status` plus a static `error` — so a caller reading the body is unaffected by the status code.
 
 ---
 

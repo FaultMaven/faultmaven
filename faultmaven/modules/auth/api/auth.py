@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 
 import jwt as jwt_lib
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
 from pydantic import BaseModel, ValidationError
 
@@ -994,7 +995,18 @@ async def get_available_scopes(
     return AvailableScopesResponse(scopes=scopes)
 
 
-@router.get("/health")
+@router.get(
+    "/health",
+    responses={
+        503: {
+            "description": (
+                "The health check itself failed. The body keeps the same shape "
+                "as a successful report — `status` plus a static `error` — so a "
+                "caller reading the body is unaffected by the status code."
+            )
+        }
+    },
+)
 @trace("auth_health_check")
 async def auth_health_check(request: Request):
     """Authentication system health check
@@ -1020,11 +1032,19 @@ async def auth_health_check(request: Request):
 
     except Exception as e:
         logger.error(f"Auth health check failed: {e}", exc_info=True)
-        return {
-            "status": "unhealthy",
-            "timestamp": to_json_compatible(datetime.now(timezone.utc)),
-            "error": "Auth health check failed",
-        }
+        # 503, not 200. This arm reports that the probe itself failed, and a
+        # 200 makes that indistinguishable from a healthy service to anything
+        # gating on the status code — which is how a TypeError here went
+        # unnoticed for seven months. The body is unchanged, so a caller that
+        # reads `status`/`error` rather than the code is unaffected.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "timestamp": to_json_compatible(datetime.now(timezone.utc)),
+                "error": "Auth health check failed",
+            },
+        )
 
 
 @router.post("/users/{user_id}/revoke-tokens", response_model=RevokeUserTokensResponse)
