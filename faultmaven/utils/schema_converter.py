@@ -195,10 +195,18 @@ def _nullable(schema: Dict[str, Any]) -> Dict[str, Any]:
     if schema.get("type") == "null":
         return schema
 
-    # Keep siblings (title, description) beside the union rather than inside a
-    # branch, so the annotation still describes the property as a whole.
-    inner = {k: v for k, v in schema.items() if k in ("type", "enum", "const", "items")}
-    outer = {k: v for k, v in schema.items() if k not in inner}
+    # Everything structural moves INTO the branch; only the annotations stay
+    # outside, so they still describe the property as a whole.
+    #
+    # The split must be "annotations out" rather than "known structural keys
+    # in": an allowlist of `type`/`enum`/`const`/`items` silently left
+    # `properties`, `required` and `additionalProperties` as siblings of the
+    # union, producing a branch of bare `{"type": "object"}` — an object with no
+    # declared properties, which is the one shape strict mode rejects. Any
+    # nested-model field with a default hit it.
+    _ANNOTATIONS = ("title", "description")
+    inner = {k: v for k, v in schema.items() if k not in _ANNOTATIONS}
+    outer = {k: v for k, v in schema.items() if k in _ANNOTATIONS}
     if not inner:
         return schema
     return {**outer, "anyOf": [inner, {"type": "null"}]}

@@ -102,6 +102,74 @@ def test_a_formerly_optional_field_becomes_nullable_not_dropped():
     assert {"type": "null"} in follow_ups["anyOf"]
 
 
+@pytest.mark.parametrize("model", STRICT_CAPABLE, ids=lambda m: m.__name__)
+def test_the_live_response_format_path_is_also_compliant(model):
+    """The `response_format` half, exercised through the branch the engine
+    actually reaches.
+
+    `create_response_format_json_schema` has no production callers; the live
+    single-shot path is `BaseLLMProvider.get_structured_output_strategy` ->
+    `create_strategy_for_capability`. Fixing only the former would have left the
+    false `strict: true` claim exactly where it runs.
+    """
+    from faultmaven.infrastructure.llm.structured_output_capability import (
+        create_strategy_for_capability,
+    )
+    from faultmaven.utils.schema_converter import _inline_refs
+
+    strategy = create_strategy_for_capability(
+        StructuredOutputCapability.STRICT, _inline_refs(model.model_json_schema())
+    )
+    json_schema = strategy.response_format["json_schema"]
+
+    assert json_schema["strict"] is True
+    for path, obj in _walk_objects(json_schema["schema"]):
+        assert obj.get("additionalProperties") is False, path
+        assert set(obj.get("required", [])) == set(obj.get("properties", {})), path
+
+
+def test_the_live_path_drops_the_strict_claim_it_cannot_honour():
+    """A schema outside the subset must not be sent WITH `strict: true` — that
+    is a 400, not a degraded response."""
+    from faultmaven.infrastructure.llm.structured_output_capability import (
+        create_strategy_for_capability,
+    )
+    from faultmaven.utils.schema_converter import _inline_refs
+
+    strategy = create_strategy_for_capability(
+        StructuredOutputCapability.STRICT,
+        _inline_refs(InvestigationResponse_Diagnosis.model_json_schema()),
+    )
+
+    assert strategy.response_format["json_schema"]["strict"] is False
+
+
+def test_a_nullable_nested_object_keeps_its_properties_inside_the_union():
+    """`_nullable` must move everything structural INTO the branch.
+
+    Splitting on an allowlist of scalar keys left `properties`/`required`/
+    `additionalProperties` as siblings of the union, so the object branch was a
+    bare `{"type": "object"}` — an object with no declared properties, the one
+    shape strict mode rejects. Any nested-model field with a default hit it.
+    """
+
+    class Inner(BaseModel):
+        a: str
+
+    class Outer(BaseModel):
+        nested: Inner = Inner(a="x")
+
+    from faultmaven.utils.schema_converter import _inline_refs
+
+    schema = to_strict_schema(_inline_refs(Outer.model_json_schema()))
+    branches = schema["properties"]["nested"]["anyOf"]
+    obj = next(b for b in branches if b.get("type") == "object")
+
+    assert "properties" in obj, "the object branch lost its properties"
+    assert obj["additionalProperties"] is False
+    assert set(obj["required"]) == set(obj["properties"])
+
+
 def test_unsupported_keywords_are_stripped():
     """OpenAI's subset rejects them. They are descriptive, so removing them
     cannot let a wrong response validate."""
