@@ -226,11 +226,20 @@ so the pack comes from the audited `kb_seed` job — not from a restart.
 - **Redis is scoped by default.** `--wipe` deletes keys under FaultMaven's known
   prefixes — `session:`, `client_index:`, `idempotency:`, `sso:state:`,
   `sso:login:`, `oauth:code:`, `password_reset:`, `case_seq:`, `redaction:`, the
-  configured token-revocation prefix, and the protection preset's
-  `<prefix>:rl` / `<prefix>:dedup` — and *reports* the count of keys under any
-  other prefix rather than silently skipping them. `--verify` judges Redis
-  against **the same set the wipe deletes**, so the two cannot disagree and a
-  Redis shared with another application does not make verification unpassable.
+  configured token-revocation prefix, and **every** protection preset's
+  `<prefix>:rl` / `<prefix>:dedup` (`faultmaven_dev` *and* `faultmaven_prod`) —
+  and *reports* the count of keys under any other prefix rather than silently
+  skipping them. `--verify` judges Redis against **the same set the wipe
+  deletes**, so the two cannot disagree and a Redis shared with another
+  application does not make verification unpassable.
+
+  Both presets are swept regardless of this process's `ENVIRONMENT`, because the
+  keys were written by whichever preset was live when they were written. That
+  need not be the one the command resolves: the wipe runs with the API scaled
+  down, so it runs in a one-off pod or a shell rather than the API pod, and
+  `ENVIRONMENT` defaults to `development`. Matching only the resolved preset
+  reported live `faultmaven_prod:rl:*` keys as being under no known FaultMaven
+  prefix during the #819 cutover (fm#1052).
   Use `--redis-all-keys` only if that logical Redis database is FaultMaven's
   alone.
 - **FakeRedis has nothing to wipe — but only when it is the intended backend.**

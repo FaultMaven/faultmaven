@@ -326,11 +326,107 @@ def test_the_revocation_prefix_comes_from_settings_not_a_literal():
 
 
 def test_the_protection_namespaces_are_included():
-    """Rate-limit and dedup keys are built from the protection preset's
-    redis_key_prefix, chosen by ENVIRONMENT — not a literal."""
+    """Rate-limit and dedup keys are built from the protection presets'
+    redis_key_prefix, not a literal."""
     prefixes = wd.redis_prefixes(_Settings())
     assert any(p.endswith(":rl") for p in prefixes), prefixes
     assert any(p.endswith(":dedup") for p in prefixes), prefixes
+
+
+def test_every_preset_protection_namespace_is_included_not_just_the_resolved_one():
+    """Both presets' namespaces are swept regardless of this process's
+    ENVIRONMENT.
+
+    Asserting the *specific* spellings, because ``any(endswith(":rl"))`` is
+    satisfied by a single preset and so cannot fail on the bug this covers.
+    """
+    from faultmaven.config.protection import ALL_REDIS_KEY_PREFIXES
+
+    prefixes = wd.redis_prefixes(_Settings())
+    for key_prefix in ALL_REDIS_KEY_PREFIXES:
+        assert f"{key_prefix}:rl" in prefixes, prefixes
+        assert f"{key_prefix}:dedup" in prefixes, prefixes
+
+
+@pytest.mark.parametrize("environment", ["development", "production", "staging"])
+def test_production_rate_limit_keys_classify_under_any_resolved_environment(
+    environment,
+):
+    """fm#1052 regression, reproducing the live #819 cutover failure.
+
+    The wipe runs with the API scaled down, so it does NOT run in the API pod
+    and ``ENVIRONMENT`` is typically unset — resolving to ``development`` while
+    the keys on the server were written by the production preset. Classifying
+    against only the resolved preset reported live rate-limit state as "under no
+    known FaultMaven prefix", and because ``--verify`` judges residue against
+    the same set the wipe deletes, both were wrong together.
+    """
+    from faultmaven.config.settings import Environment
+
+    settings = _Settings()
+    settings.server.environment = Environment(environment)
+
+    observed = [
+        "faultmaven_prod:rl:global:10.244.226.131",
+        "faultmaven_prod:rl:global:10.244.236.202",
+        "faultmaven_dev:dedup:abc123",
+        # Staging is the third namespace and has no preset of its own: it runs
+        # the production preset re-pointed by setup_protection_middleware. So it
+        # is invisible to anything enumerating preset constructors, and was the
+        # remaining half of this bug after the first fix.
+        "faultmaven_staging:rl:global:10.244.1.7",
+        "faultmaven_staging:dedup:xyz789",
+    ]
+    _counts, unmatched = wd.classify_redis_keys(observed, wd.redis_prefixes(settings))
+
+    assert unmatched == [], (
+        "protection keys written under a different ENVIRONMENT must still be "
+        f"swept and verified; resolved={environment}"
+    )
+
+
+@pytest.mark.parametrize(
+    "environment", ["development", "production", "staging", "an-unrecognised-value"]
+)
+def test_the_namespace_the_middleware_actually_installs_is_one_the_wipe_knows(
+    environment,
+):
+    """Bind the wipe's known set to what protection ACTUALLY writes.
+
+    The set cannot be discovered by calling the preset constructors: staging
+    runs the production preset and is re-pointed afterwards by
+    ``setup_protection_middleware``, so enumerating presets finds two
+    namespaces while three exist. This asserts the real resolution path for
+    every environment, so a fourth namespace introduced the same way fails
+    here instead of surviving a "successful" wipe.
+    """
+    from faultmaven.api.protection import setup_protection_middleware
+    from faultmaven.config.protection import ALL_REDIS_KEY_PREFIXES
+
+    installed: list = []
+
+    class _App:
+        def add_middleware(self, _cls, **kwargs):
+            installed.append(kwargs["settings"])
+
+    setup_protection_middleware(_App(), environment=environment)
+
+    assert installed, "no middleware was installed, so nothing was asserted"
+    prefix = installed[0].redis_key_prefix
+    assert prefix in ALL_REDIS_KEY_PREFIXES, (
+        f"ENVIRONMENT={environment} writes keys under {prefix!r}, which "
+        "fm-wipe-deployment does not know about — the scoped wipe would leave "
+        "them and --verify would still pass"
+    )
+
+
+def test_unrelated_third_party_keys_are_still_reported_as_unknown():
+    """The widened prefix set must not swallow keys FaultMaven never wrote —
+    otherwise 'no residue' stops meaning anything."""
+    _counts, unmatched = wd.classify_redis_keys(
+        ["celery:task:1", "faultmaven_prod:rl:global:1"], wd.redis_prefixes(_Settings())
+    )
+    assert unmatched == ["celery:task:1"]
 
 
 # ---------------------------------------------------------------------------
