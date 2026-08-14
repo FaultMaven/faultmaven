@@ -55,29 +55,13 @@ router = APIRouter(prefix="/auth/oauth", tags=["oauth"])
 # ============================================================
 
 
-class AuthorizationRequest(BaseModel):
-    """OAuth authorization request parameters.
-
-    Follows OAuth 2.0 Authorization Code Flow with PKCE (RFC 7636).
-    """
-
-    response_type: Literal["code"] = Field(
-        description="Must be 'code' (authorization code flow)"
-    )
-    client_id: str = Field(description="OAuth client ID (e.g., 'faultmaven-copilot')")
-    redirect_uri: str = Field(
-        description="Extension callback URI (must match allowed patterns)"
-    )
-    state: str = Field(description="Client state for CSRF protection")
-    code_challenge: str = Field(
-        description="PKCE code challenge (SHA256 hash of verifier)"
-    )
-    code_challenge_method: Optional[Literal["S256"]] = Field(
-        default="S256", description="PKCE challenge method (only S256 supported)"
-    )
-    scope: Optional[str] = Field(
-        default="openid profile email", description="OAuth scopes requested"
-    )
+# NOTE: there is deliberately no `AuthorizationRequest` model here. One existed,
+# declaring `response_type: Literal["code"]` and describing `redirect_uri` as
+# "must match allowed patterns" — but `GET /authorize` takes loose `str = Query()`
+# parameters and never bound it, so nothing in the process read it and none of
+# the constraints it named were enforced (#1053). It documented a validation that
+# did not happen. The constraints now live in
+# `IOAuthService.validate_authorization_request`, which the route calls.
 
 
 class AuthorizationConsentRequest(BaseModel):
@@ -278,6 +262,29 @@ async def get_authorization_request(
                 detail=f"Unsupported response_type: {response_type}. Only 'code' supported.",
             )
 
+        auth_request = OAuthAuthorizationDTO(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            scope=scope,
+        )
+
+        # Refuse an unknown client or an unlisted redirect target HERE, before a
+        # consent screen exists for it (#1053).
+        #
+        # These checks also run at mint time, so this cannot reject anything that
+        # would otherwise have completed — every flow that works today passes
+        # them already. What changes is *when*: the consent leg used to return
+        # 200 for a request the POST would refuse, which handed the dashboard an
+        # attacker-chosen `redirect_uri` to navigate to on Cancel (the deny leg
+        # leaves this origin; Approve does not). Refusing early also keeps
+        # `client_name` below off the consent screen for clients we do not know.
+        await oauth_service.validate_authorization_request(
+            auth_request, user_id=user.user_id
+        )
+
         # Get settings to check if consent is required
         from faultmaven.config.settings import FaultMavenSettings
 
@@ -289,7 +296,10 @@ async def get_authorization_request(
                 f"Authorization consent required for user {user.user_id}, client {client_id}"
             )
 
-            # Map client_id to human-readable name
+            # Map client_id to human-readable name. The fallback is reached only
+            # by a client the validation above admitted, so it can name nothing
+            # but an operator-configured `oauth_allowed_clients` entry — it is no
+            # longer a caller-chosen string.
             client_names = {
                 "faultmaven-copilot": "FaultMaven Copilot Browser Extension",
                 "faultmaven-cli": "FaultMaven CLI Tool",
@@ -309,16 +319,6 @@ async def get_authorization_request(
         # Auto-approve mode (dev/test only)
         logger.warning(
             f"AUTO-APPROVE enabled for user {user.user_id}, client {client_id} (dev/test only)"
-        )
-
-        # Create authorization request DTO
-        auth_request = OAuthAuthorizationDTO(
-            client_id=client_id,
-            redirect_uri=redirect_uri,
-            state=state,
-            code_challenge=code_challenge,
-            code_challenge_method=code_challenge_method,
-            scope=scope,
         )
 
         # Generate authorization code using authenticated user's ID.
