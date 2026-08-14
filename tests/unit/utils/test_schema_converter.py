@@ -421,14 +421,26 @@ class TestCreateResponseFormatJsonSchema:
         assert "name" in schema["required"]
         assert "age" in schema["required"]
 
-    def test_optional_fields_not_in_required(self):
-        """Test that optional fields are excluded from required array"""
+    def test_every_field_is_required_because_strict_mode_has_no_optional_keys(self):
+        """Strict mode admits no optional key: every property must appear in
+        ``required``, and a field with nothing to say comes back as ``null``.
+
+        This asserted the opposite until fm#1051 — which is why the request was
+        non-compliant while still claiming ``strict: true``. OpenAI rejects such
+        a schema outright, so the enforcement the engine believed it had was
+        never applied to any turn.
+        """
         result = create_response_format_json_schema(OptionalFieldModel)
         schema = result["json_schema"]["schema"]
 
-        assert "required_field" in schema["required"]
-        assert "optional_field" not in schema["required"]
-        assert "default_field" not in schema["required"]
+        assert result["json_schema"]["strict"] is True
+        assert set(schema["required"]) == set(schema["properties"])
+        assert schema["additionalProperties"] is False
+
+        # The formerly-optional fields are now required-but-nullable.
+        for name in ("optional_field", "default_field"):
+            branches = schema["properties"][name]["anyOf"]
+            assert {"type": "null"} in branches, name
 
     def test_optional_fields_use_anyof_pattern(self):
         """Test that optional fields use anyOf: [type, null] for strict mode"""
@@ -536,16 +548,18 @@ class TestCreateResponseFormatJsonSchema:
         result = create_response_format_json_schema(ComplexResponse)
         schema = result["json_schema"]["schema"]
 
-        # All required fields should be in required array
+        # Under strict mode every property is required — the optional ones by
+        # becoming nullable rather than by being omitted (fm#1051).
         required = schema["required"]
         assert "required_str" in required
         assert "required_int" in required
         assert "status" in required
-
-        # Optional fields should NOT be in required array
-        assert "optional_str" not in required
-        assert "optional_int" not in required
-        assert "list_field" not in required
+        assert "optional_str" in required
+        assert "optional_int" in required
+        assert set(required) == set(schema["properties"])
+        # Including a defaulted list: it too becomes required-but-nullable, and
+        # the Python side reads that null back as the default (NullTolerantModel).
+        assert "list_field" in required
 
 
 if __name__ == "__main__":
