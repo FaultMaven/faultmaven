@@ -954,3 +954,91 @@ async def test_exchange_fails_when_user_soft_deleted_after_callback(store):
     )
     code = await _login_and_get_code(service, store)
     assert await service.exchange(code) is None
+
+
+# --------------------------------------------------------------------------- #
+# Single-logout: the IdP session id must survive the two-leg login
+# --------------------------------------------------------------------------- #
+#
+# The session id is known only on the CALLBACK leg, but is needed by the
+# EXCHANGE leg that answers the client. It rides the completion code, exactly as
+# the resolved organization does. If that hand-off breaks, logout silently stops
+# ending the IdP session and the regression is invisible until someone tries to
+# switch accounts.
+
+IDENTITY_WITH_SESSION = SSOIdentity(
+    provider="workos",
+    provider_user_id="user_wos_123",
+    email="alex@example.com",
+    email_verified=True,
+    display_name="Alex Example",
+    provider_session_id="session_01HSID",
+)
+
+
+class LogoutCapableProvider(FakeProvider):
+    """A provider that offers single-logout, and records what it was asked."""
+
+    def __init__(self, identity=IDENTITY_WITH_SESSION, raises=None):
+        super().__init__(identity=identity)
+        self.raises = raises
+        self.logout_calls: list[str] = []
+
+    def build_logout_url(self, *, provider_session_id: str) -> str | None:
+        self.logout_calls.append(provider_session_id)
+        if self.raises is not None:
+            raise self.raises
+        return f"https://authkit.test/logout?session={provider_session_id}"
+
+
+async def _exchange_with(store, provider):
+    user = make_user()
+    service = build_service(
+        store,
+        provider=provider,
+        users_by_subject={("workos", "user_wos_123"): user},
+        users_by_id={"u-1": user},
+    )
+    code = await _login_and_get_code(service, store)
+    return await service.exchange(code)
+
+
+async def test_exchange_returns_the_idp_logout_url(store):
+    """The whole point: the client is told where to end the IdP session."""
+    provider = LogoutCapableProvider()
+
+    result = await _exchange_with(store, provider)
+
+    assert result is not None
+    assert result.idp_logout_url == "https://authkit.test/logout?session=session_01HSID"
+    # Built from the id captured on the CALLBACK leg — proving the hand-off.
+    assert provider.logout_calls == ["session_01HSID"]
+
+
+async def test_exchange_returns_no_logout_url_without_a_provider_session(store):
+    """A provider that exposes no session id yields no logout URL, and the login
+    is otherwise untouched — this is the pre-existing behaviour, not a failure."""
+    provider = LogoutCapableProvider(identity=IDENTITY)  # no provider_session_id
+
+    result = await _exchange_with(store, provider)
+
+    assert result is not None
+    assert result.access_token  # the login still works
+    assert result.idp_logout_url is None
+    # Never asked: there is no session to end.
+    assert provider.logout_calls == []
+
+
+async def test_exchange_survives_a_provider_that_raises_building_the_url(store):
+    """A broken logout link must not cost a working sign-in.
+
+    ``exchange`` runs after the user is already authenticated; raising here
+    would turn a successful login into a 401 for the sake of a cosmetic field.
+    """
+    provider = LogoutCapableProvider(raises=RuntimeError("idp unreachable"))
+
+    result = await _exchange_with(store, provider)
+
+    assert result is not None
+    assert result.access_token
+    assert result.idp_logout_url is None

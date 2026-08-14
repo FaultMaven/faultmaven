@@ -4691,6 +4691,7 @@ Includes token, expiration, user information, and session ID.
 
 - `access_token` (string, required) — Bearer access token
 - `expires_in` (integer, required) — Token expiration time in seconds
+- `idp_logout_url` (object, optional) — Where to send the browser to end the identity provider's own session. Populated only for SSO logins; null for password and dev logins, which have no IdP session. A client signing a user out must navigate here after clearing local state: revoking FaultMaven's token does not end the IdP session, so omitting it leaves the next sign-in answered silently, the account unswitchable, and a shared browser one click from being signed back in.
 - `refresh_token` (object, optional) — Long-lived refresh token used to mint a new access token via POST /auth/refresh without re-authenticating. Issued in local mode; clients should persist it and refresh before the access token expires.
 - `session_id` (string, required) — Session identifier for multi-turn conversations
 - `token_type` (string, optional) — Token type (always 'bearer')

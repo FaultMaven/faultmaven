@@ -602,6 +602,18 @@
             "title": "Expires In",
             "type": "integer"
           },
+          "idp_logout_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where to send the browser to end the identity provider's own session. Populated only for SSO logins; null for password and dev logins, which have no IdP session. A client signing a user out must navigate here after clearing local state: revoking FaultMaven's token does not end the IdP session, so omitting it leaves the next sign-in answered silently, the account unswitchable, and a shared browser one click from being signed back in.",
+            "title": "Idp Logout Url"
+          },
           "refresh_token": {
             "anyOf": [
               {

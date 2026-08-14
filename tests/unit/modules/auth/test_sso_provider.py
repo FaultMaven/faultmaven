@@ -271,3 +271,138 @@ def test_factory_builds_provider_from_config_when_configured(monkeypatch):
         "client_id": "client_123",
         "redirect_uri": "https://api.example/cb",
     }
+
+
+# --------------------------------------------------------------------------- #
+# Adapter: single-logout (ending the IdP's own session)
+# --------------------------------------------------------------------------- #
+#
+# Clearing FaultMaven's session does not end the IdP's. Without these, "log out"
+# leaves the AuthKit session alive: the next authorization request is answered
+# without a prompt, so the account cannot be switched and the next person at a
+# shared browser is one click from being signed in.
+
+
+def _access_token(claims: dict) -> str:
+    """A WorkOS-shaped access token. The signature is irrelevant by design —
+    the adapter reads ``sid`` without verifying (see ``_session_id_of``)."""
+    import jwt as jwt_lib
+
+    return jwt_lib.encode(
+        claims, "irrelevant-secret-padded-to-32-bytes-min", algorithm="HS256"
+    )
+
+
+def test_exchange_extracts_the_session_id_from_the_access_token():
+    """The positive case: WorkOS returns no session_id field, only the claim."""
+    response = _workos_response()
+    response.access_token = _access_token(
+        {"sid": "session_01HSID", "sub": "user_01ABC"}
+    )
+    provider = WorkOSIdentityProvider(
+        client=_FakeClient(_FakeUserManagement(response=response)),
+        redirect_uri="https://cb",
+    )
+
+    identity = provider.exchange_code("code-1")
+
+    assert identity.provider_session_id == "session_01HSID"
+
+
+@pytest.mark.parametrize(
+    ("access_token", "why"),
+    [
+        (None, "provider returned no token at all"),
+        ("", "empty token"),
+        ("not-a-jwt", "undecodable"),
+        (_access_token({"sub": "user_01ABC"}), "token carries no sid claim"),
+        (_access_token({"sid": ""}), "sid present but empty"),
+        (_access_token({"sid": 12345}), "sid present but not a string"),
+    ],
+)
+def test_exchange_degrades_to_no_session_id_rather_than_failing(access_token, why):
+    """A missing session id costs single-logout. It must never cost the login.
+
+    Every one of these would otherwise raise inside ``_to_identity`` and be
+    caught by ``exchange_code``'s blanket handler as ``SSOAuthenticationError``
+    — turning an unreadable *logout* handle into a failed *sign-in*.
+    """
+    response = _workos_response()
+    response.access_token = access_token
+    provider = WorkOSIdentityProvider(
+        client=_FakeClient(_FakeUserManagement(response=response)),
+        redirect_uri="https://cb",
+    )
+
+    identity = provider.exchange_code("code-1")
+
+    assert identity.provider_session_id is None, why
+    # The login itself is unharmed — the rest of the identity still maps.
+    assert identity.provider_user_id == "user_01ABC"
+    assert identity.email == "dev@example.com"
+
+
+def test_build_logout_url_asks_the_sdk_for_the_session_it_was_given():
+    um = _FakeUserManagement()
+    um.get_logout_url = lambda **kw: (  # type: ignore[method-assign]
+        um.logout_calls.append(kw) or "https://idp.example/logout?session=abc"
+    )
+    um.logout_calls = []  # type: ignore[attr-defined]
+    provider = WorkOSIdentityProvider(client=_FakeClient(um), redirect_uri="https://cb")
+
+    url = provider.build_logout_url(provider_session_id="session_01HSID")
+
+    assert url == "https://idp.example/logout?session=abc"
+    assert um.logout_calls == [{"session_id": "session_01HSID"}]
+
+
+def test_build_logout_url_returns_none_when_the_sdk_raises():
+    """Logout runs after local teardown. Raising here would report a failed
+    logout for a sign-out that already did the part that matters."""
+
+    def _boom(**_kwargs):
+        raise RuntimeError("workos is down")
+
+    um = _FakeUserManagement()
+    um.get_logout_url = _boom  # type: ignore[method-assign]
+    provider = WorkOSIdentityProvider(client=_FakeClient(um), redirect_uri="https://cb")
+
+    assert provider.build_logout_url(provider_session_id="session_01HSID") is None
+
+
+def test_build_logout_url_returns_none_for_an_empty_session_id():
+    """Never call the SDK with an empty handle — an empty ``session_id`` is a
+    request to log out *something*, and what it would end is unspecified."""
+
+    def _must_not_be_called(**_kwargs):  # pragma: no cover - asserted by failure
+        raise AssertionError("SDK called with an empty session id")
+
+    um = _FakeUserManagement()
+    um.get_logout_url = _must_not_be_called  # type: ignore[method-assign]
+    provider = WorkOSIdentityProvider(client=_FakeClient(um), redirect_uri="https://cb")
+
+    assert provider.build_logout_url(provider_session_id="") is None
+
+
+def test_default_port_implementation_offers_no_single_logout():
+    """The port's default answers None so a provider without single-logout is a
+    supported implementation, not a broken one."""
+    from faultmaven.modules.auth.contracts import ISSOIdentityProvider
+
+    class _Minimal(ISSOIdentityProvider):
+        @property
+        def provider_name(self):
+            return "minimal"
+
+        def build_authorization_url(self, *, state):
+            return "https://idp/authorize"
+
+        def exchange_code(self, code):
+            return SSOIdentity(
+                provider="minimal",
+                provider_user_id="u",
+                email="u@example.com",
+                email_verified=True,
+            )
+
+    assert _Minimal().build_logout_url(provider_session_id="whatever") is None

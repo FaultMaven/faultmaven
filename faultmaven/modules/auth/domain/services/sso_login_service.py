@@ -157,13 +157,21 @@ class SSOLoginStart:
 
 @dataclass(frozen=True)
 class SSOExchangeResult:
-    """A freshly minted FaultMaven session, returned from ``exchange``."""
+    """A freshly minted FaultMaven session, returned from ``exchange``.
+
+    ``idp_logout_url``, when present, is where the client must send the browser
+    to end the IdP's own session. Clearing the FaultMaven session does not touch
+    it, so without this the next sign-in is answered silently and the account
+    cannot be switched. ``None`` where the provider offers no single-logout, or
+    in local mode where there is no IdP at all.
+    """
 
     user: Any
     access_token: str
     refresh_token: str
     expires_in: int
     session_id: str
+    idp_logout_url: str | None = None
 
 
 def sanitize_return_to(value: str | None) -> str | None:
@@ -398,6 +406,13 @@ class SSOLoginService:
             # organization column, so this is how ``exchange`` knows which org
             # to claim in the tokens it mints.
             login_payload["organization_id"] = organization.organization_id
+        if identity.provider_session_id:
+            # The IdP session id is known only here, on the callback leg, but is
+            # needed by the leg that answers the client. It rides the completion
+            # code for the same reason the organization does. Absent for a
+            # provider that exposes none — single-logout is then unavailable,
+            # which is the pre-existing behaviour, not a failure.
+            login_payload["provider_session_id"] = identity.provider_session_id
         await self._store.put_login(
             completion_code, login_payload, LOGIN_CODE_TTL_SECONDS
         )
@@ -613,7 +628,25 @@ class SSOLoginService:
             refresh_token=refresh_token,
             expires_in=self._access_token_expires_in,
             session_id=session_id,
+            idp_logout_url=self._idp_logout_url(payload.get("provider_session_id")),
         )
+
+    def _idp_logout_url(self, provider_session_id: Any) -> str | None:
+        """Build the IdP logout URL for this login, or None if unavailable.
+
+        Never raises. This runs on the success path of a login that has already
+        happened — refusing to hand back a session because its *logout* link
+        could not be built would trade a working sign-in for a cosmetic field.
+        """
+        if not isinstance(provider_session_id, str) or not provider_session_id:
+            return None
+        try:
+            return self._provider.build_logout_url(
+                provider_session_id=provider_session_id
+            )
+        except Exception as exc:  # pragma: no cover - defence in depth
+            logger.warning("sso_logout_url_failed", error=type(exc).__name__)
+            return None
 
     # -- provisioning (ADR-015 D4/D5) ----------------------------------------- #
 

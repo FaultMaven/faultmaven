@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import jwt as jwt_lib
 import structlog
 
 from faultmaven.modules.auth.contracts import ISSOIdentityProvider, SSOIdentity
@@ -70,6 +71,21 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             logger.warning("workos_code_exchange_failed", error=type(exc).__name__)
             raise SSOAuthenticationError("SSO code exchange failed") from exc
 
+    def build_logout_url(self, *, provider_session_id: str) -> str | None:
+        if not provider_session_id:
+            return None
+        try:
+            return self._client.user_management.get_logout_url(
+                session_id=provider_session_id
+            )
+        except Exception as exc:
+            # Never raise from logout: the caller has already torn down the
+            # FaultMaven session, and an exception here would surface as a
+            # failed logout on a request that already succeeded in the part
+            # that matters. Degrades to "AuthKit session outlives ours".
+            logger.warning("workos_logout_url_failed", error=type(exc).__name__)
+            return None
+
     def _to_identity(self, response: Any) -> SSOIdentity:
         user = response.user
         return SSOIdentity(
@@ -79,7 +95,38 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             email_verified=bool(user.email_verified),
             display_name=_display_name(user),
             organization_id=getattr(response, "organization_id", None),
+            provider_session_id=_session_id_of(getattr(response, "access_token", None)),
         )
+
+
+def _session_id_of(access_token: Any) -> str | None:
+    """Read the WorkOS session id (``sid``) out of the AuthKit access token.
+
+    WorkOS does not return the session id as its own field; it is a claim inside
+    the access token the code exchange returns, and it is what ``get_logout_url``
+    requires.
+
+    Decoded **without signature verification, deliberately**. This token arrived
+    over TLS as the direct response to our own server-side exchange, and nothing
+    here is an authorization decision — the claim is an opaque handle we hand
+    straight back to WorkOS. FaultMaven's own session is minted separately from
+    the identity, never from this token.
+
+    Returns ``None`` for anything unreadable. A missing session id costs
+    single-logout, which is strictly better than costing the login.
+    """
+    if not isinstance(access_token, str) or not access_token:
+        return None
+    try:
+        claims = jwt_lib.decode(
+            access_token,
+            options={"verify_signature": False, "verify_exp": False},
+        )
+    except Exception as exc:
+        logger.warning("workos_access_token_undecodable", error=type(exc).__name__)
+        return None
+    sid = claims.get("sid")
+    return sid if isinstance(sid, str) and sid else None
 
 
 def _display_name(user: Any) -> str | None:

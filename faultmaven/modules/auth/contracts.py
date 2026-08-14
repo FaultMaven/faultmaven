@@ -542,6 +542,13 @@ class SSOIdentity:
     multi-tenant it is resolved through ``ISSOOrgMappingRepository`` to the
     FaultMaven organization the login lands in (ADR-010 P2). Single-tenant
     ignores it — there is one organization.
+
+    ``provider_session_id`` is the IdP's own session identifier, needed to end
+    that session at logout. It is the IdP's session, not FaultMaven's: clearing
+    a FaultMaven session leaves the IdP's alive, so the next sign-in is answered
+    silently and "log out" does not mean logged out. Optional because not every
+    provider exposes one, and a provider that does not simply cannot offer
+    single-logout.
     """
 
     provider: str
@@ -550,6 +557,7 @@ class SSOIdentity:
     email_verified: bool
     display_name: str | None = None
     organization_id: str | None = None
+    provider_session_id: str | None = None
 
 
 class ISSOIdentityProvider(ABC):
@@ -582,6 +590,21 @@ class ISSOIdentityProvider(ABC):
             SSOAuthenticationError: if the IdP rejects the code, or the exchange
                 fails for any reason.
         """
+
+    def build_logout_url(self, *, provider_session_id: str) -> str | None:
+        """Return the IdP URL that ends ``provider_session_id``, or None.
+
+        Ending the FaultMaven session is not a logout on its own: the IdP holds
+        its own session in the browser, so the next authorization request is
+        answered without a prompt and the account cannot be switched. Visiting
+        this URL is what actually ends it.
+
+        Returning ``None`` is a supported answer, not a failure — a provider may
+        offer no single-logout, and callers degrade to today's behaviour rather
+        than failing the logout. Implementations must not raise: a logout that
+        blows up leaves the caller more signed-in than before.
+        """
+        return None
 
 
 class ISSOOrgMappingRepository(ABC):
