@@ -1018,8 +1018,10 @@ def _apply_symptom_retraction(
         return False  # nothing to retract
 
     reasoning = getattr(response_obj, "internal_reasoning", None)
-    justifications = getattr(reasoning, "milestone_justifications", None) or {}
-    rationale = justifications.get("symptom_verified")
+    justifications = getattr(reasoning, "milestone_justifications", None)
+    rationale = (
+        justifications.as_dict().get("symptom_verified") if justifications else None
+    )
     if not rationale or not str(rationale).strip():
         logger.warning(
             "Case %s: ignoring unjustified symptom_verified=False. Retraction "
@@ -1311,15 +1313,21 @@ def validate_reasoning_first(
 
     # Check 1: All completed milestones must have justifications.
     # Per-milestone failure: only the unjustified milestone is offending.
+    #
+    # ``as_dict()`` and not the model itself: under strict mode every milestone
+    # key arrives populated, ``null`` where the model had nothing to say, so a
+    # membership test against the raw model would report every milestone as
+    # justified and this gate would never fire again (fm#1057).
+    justifications = internal_reasoning.milestone_justifications.as_dict()
     for milestone in completed_milestones:
-        if milestone not in internal_reasoning.milestone_justifications:
+        if milestone not in justifications:
             offending.add(milestone)
             errors.append(
                 f"Milestone '{milestone}' completed without justification. "
-                f"You MUST add an entry to internal_reasoning.milestone_justifications. "
-                f"Required format: milestone_justifications: {{{milestone}: 'justification citing specific evidence IDs'}}. "
+                f"You MUST set internal_reasoning.milestone_justifications.{milestone} "
+                f"to a justification citing specific evidence IDs. "
                 f"Example: {{{milestone}: 'Confirmed via ev_abc123 (logs) showing X and ev_def456 (metrics) showing Y'}}. "
-                "DO NOT leave milestone_justifications as empty {{}}."
+                f"Leaving {milestone} null or blank is what caused this rejection."
             )
 
     # Check 1.5: Warn if trying to complete milestones with no actionable evidence.
@@ -1332,7 +1340,10 @@ def validate_reasoning_first(
     # Every evidence row is claim-anchored — any existing or to-add row counts.
     has_actionable_evidence = bool(case.evidence) or bool(evidence_being_added)
 
-    if internal_reasoning.milestone_justifications and not has_actionable_evidence:
+    # ``justifications`` (the dict), not the model: a Pydantic model is ALWAYS
+    # truthy, so testing the field directly would make this branch fire on every
+    # turn that reaches it, including one that justified nothing (fm#1057).
+    if justifications and not has_actionable_evidence:
         # Global failure: with no actionable evidence, no milestone is justifiable.
         offending.update(completed_milestones)
         errors.append(
@@ -7791,10 +7802,16 @@ class MilestoneEngine:
                         setattr(milestones, field_name, None)
                         stripped.append(field_name)
                 # Drop only the stripped milestones' justifications; keep the rest.
+                # ``milestone_justifications`` is a model now, so clearing a
+                # justification is setting its field to None rather than popping
+                # a key — ``as_dict()`` then omits it, which is what "dropped"
+                # meant when this was a dict (fm#1057).
                 ir = getattr(response_obj, "internal_reasoning", None)
-                if ir and getattr(ir, "milestone_justifications", None):
+                justifications = getattr(ir, "milestone_justifications", None)
+                if justifications is not None:
                     for field_name in stripped:
-                        ir.milestone_justifications.pop(field_name, None)
+                        if field_name in type(justifications).model_fields:
+                            setattr(justifications, field_name, None)
             logger.info(
                 f"Surgically stripped {stripped or 'no'} milestone(s) for case "
                 f"{case.case_id}; preserved the rest. Continuing with response."
@@ -8148,7 +8165,7 @@ class MilestoneEngine:
     def _apply_hypothesis_updates(
         self,
         case: "Case",
-        updates_dict: dict,
+        entries: list,
         metadata: dict[str, Any],
         current_turn: int,
     ) -> None:
@@ -8186,17 +8203,42 @@ class MilestoneEngine:
         through ``update_hypothesis_likelihood`` (clamps, maintains the
         progress/decay counters).
         """
-        if not updates_dict:
+        if not entries:
             return
         metadata.setdefault("hypotheses_updated", [])
         feedback: list[str] = []
-        for raw_id, upd in updates_dict.items():
-            h_id = self._resolve_id_ref(
-                raw_id,
-                metadata.get("hyp_emit_order")
-                or metadata.get("hypotheses_generated", []),
-                "hyp",
+
+        # ONE entry per hypothesis. The ``Dict[str, HypothesisUpdate]`` this
+        # replaced enforced that for free; a list does not, and everything below
+        # assumes it (fm#1057). Two entries naming the same hypothesis would BOTH
+        # be applied: the second likelihood update reads the value the first just
+        # wrote, sees |delta| < 0.05 and charges ``iterations_without_progress``
+        # on a turn that made progress, feeding the stagnation/deadlock repair
+        # path; a repeated REFUTED tells the model its own accepted refutation
+        # was rejected as "terminal". Last entry wins, which is what a duplicated
+        # JSON object key did. Resolve FIRST, so an id and the ``new_index_N``
+        # that points at the same hypothesis collapse together.
+        resolved: dict[str, Any] = {}
+        for upd in entries:
+            resolved[
+                self._resolve_id_ref(
+                    upd.hypothesis_id,
+                    metadata.get("hyp_emit_order")
+                    or metadata.get("hypotheses_generated", []),
+                    "hyp",
+                )
+            ] = upd
+        if len(resolved) < len(entries):
+            logger.warning(
+                "Case %s: hypotheses_to_update carried %d entries for %d "
+                "hypotheses; kept the last per hypothesis.",
+                case.case_id,
+                len(entries),
+                len(resolved),
             )
+
+        for h_id, upd in resolved.items():
+            raw_id = upd.hypothesis_id
             hypothesis = case.hypotheses.get(h_id)
             if hypothesis is None:
                 logger.warning(

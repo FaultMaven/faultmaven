@@ -339,16 +339,25 @@ class TestSchemaJournalEntries:
         assert len(state.journal_entries) == 1
         assert state.journal_entries[0].entry_type == "finding"
 
-    def test_journal_entries_null_becomes_none(self):
-        """LLM returning null for journal_entries is accepted (Optional allows None)."""
+    def test_journal_entries_null_restores_the_empty_default(self):
+        """An explicit null means "nothing to add", so it lands as ``[]``.
+
+        This asserted ``is None`` before fm#1057, which was Pydantic's behaviour
+        rather than a decision: a formerly-absent key restored ``[]`` via the
+        default_factory, and only the explicit-null spelling produced ``None``.
+        Strict mode makes the explicit null the NORMAL case — the model must send
+        every key — so the two spellings had to converge, or every list field in
+        the state update would arrive as ``None`` on a strict provider.
+        """
         from faultmaven.core.investigation.schemas import TurnOutcome
 
-        state = InvestigationResponse_Diagnosis.DiagnosisStateUpdate(
-            outcome=TurnOutcome.MILESTONE_COMPLETED,
-            journal_entries=None,
+        state = InvestigationResponse_Diagnosis.DiagnosisStateUpdate.model_validate(
+            {
+                "outcome": TurnOutcome.MILESTONE_COMPLETED,
+                "journal_entries": None,
+            }
         )
-        # Optional[List[T]] accepts None explicitly
-        assert state.journal_entries is None
+        assert state.journal_entries == []
 
 
 # Persistence-resilience tests previously verified

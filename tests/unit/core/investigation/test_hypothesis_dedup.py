@@ -359,12 +359,13 @@ async def test_positional_integrity_new_index_resolves_past_skipped_dup():
             # Reference the SECOND emitted hypothesis by position. REFUTED is
             # applied synchronously (unlike deferred RETIRED/likelihood), so it
             # is a clean observable for which hypothesis the ref resolved to.
-            hypotheses_to_update={
-                "new_index_1": HypothesisUpdate(
+            hypotheses_to_update=[
+                HypothesisUpdate(
+                    hypothesis_id="new_index_1",
                     state=HypothesisState.REFUTED,
                     refutation_reason="ruled out by DNS trace",
                 )
-            },
+            ],
         ),
         meta,
     )

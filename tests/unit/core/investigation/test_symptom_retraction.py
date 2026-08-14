@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import _apply_symptom_retraction
+from faultmaven.core.investigation.schemas import MilestoneJustifications
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -54,10 +55,11 @@ def _case(verified=True) -> Case:
 # what the prompt forbids retracting on (a problem is investigable while it
 # EXISTS), and a canonical example should not model the banned case.
 def _response(justification=None):
+    # The REAL MilestoneJustifications, not a dict in a SimpleNamespace: the
+    # null-to-absent conversion this guard depends on lives on that type, so a
+    # stand-in dict would exercise a channel production does not have (fm#1057).
     reasoning = SimpleNamespace(
-        milestone_justifications=(
-            {"symptom_verified": justification} if justification is not None else {}
-        )
+        milestone_justifications=MilestoneJustifications(symptom_verified=justification)
     )
     return SimpleNamespace(internal_reasoning=reasoning)
 

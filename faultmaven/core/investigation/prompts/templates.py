@@ -1123,15 +1123,21 @@ internal_reasoning:
 
   conclusions: [step-by-step reasoning from evidence to conclusions]
 
-  milestone_justifications: MANDATORY dictionary — EVERY milestone you CHANGE
-    must have an entry, whether you set it True or False. A retraction
+  milestone_justifications: MANDATORY — EVERY milestone you CHANGE must carry a
+    justification here, whether you set it True or False. A retraction
     (symptom_verified=False) without one is REFUSED and the claim stands.
-    * Format: {{milestone_name: "justification describing the evidence"}}
-    * ⚠️ Empty {{}} when completing milestones = validation error
+    * One field per milestone: symptom_verified, mitigation_accepted,
+      mitigation_verified, solution_accepted.
+    * Set null for any milestone you did NOT change this turn. Null and empty
+      string both mean "no justification" — a milestone you changed without a
+      real one is rejected.
 
     Example (completing a milestone):
     ✅ {{
-         symptom_verified: "Connection errors at rate 12% confirmed in application logs"
+         symptom_verified: "Connection errors at rate 12% confirmed in application logs",
+         mitigation_accepted: null,
+         mitigation_verified: null,
+         solution_accepted: null
        }}
 
   uncertainties: [what remains unclear]
@@ -1178,11 +1184,12 @@ You MUST respond with valid JSON matching these fields:
     * Historical evidence (from a prior turn): use turn references ["turn_2", "turn_5"]
     * Do NOT use ev_ IDs here — turn references only for historical evidence.
   - conclusions: Step-by-step reasoning from observations to inferences.
-  - milestone_justifications: MANDATORY dictionary — EVERY milestone you CHANGE
-    must have an entry, whether you set it True or False. A retraction
+  - milestone_justifications: MANDATORY — EVERY milestone you CHANGE must carry a
+    justification here, whether you set it True or False. A retraction
     (symptom_verified=False) without one is REFUSED and the claim stands.
-    * Format: {{milestone_name: "plain-text justification describing the supporting evidence"}}
-    * ⚠️ Empty {{}} when completing milestones = validation error
+    * One field per milestone: symptom_verified, mitigation_accepted,
+      mitigation_verified, solution_accepted. Set null for milestones you did
+      not change; null or empty string means "no justification".
     * Example: {{symptom_verified: "47 connection errors in nginx log between 14:02–16:45 UTC"}}
   - uncertainties: What remains unclear.
 - **state_updates**:
