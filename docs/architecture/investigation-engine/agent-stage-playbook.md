@@ -106,9 +106,9 @@ The GPS map. At any turn the agent reads this table to know where the investigat
 | ----- | ------ | - | -------- | ---- | ------------- | ---------- | - |
 | INQUIRY | `INQUIRY_TEMPLATE` | — | — | — | Starting phase — no gate to enter | — | [INQUIRY](#inquiry-phase) |
 | | | G | `problem_statement_confirmed` | Gate | User confirms problem statement | DECIDE → INVESTIGATING | [INQUIRY](#inquiry-phase) |
-| DIAGNOSIS | unified investigation guidance (selected by `cause_state` / `solution_state` / `mitigation`) | 1 | `symptom_verified` | Diagnostic | User submits symptom evidence | EVIDENCE | [Zone 1](#zone-1-symptom-verification) |
+| DIAGNOSIS | unified investigation guidance (selected by `cause_state` / `solution_state` / `mitigation`) | 1 | `symptom_verified` | Diagnostic | User submits data from which symptom evidence is derived | EVIDENCE | [Zone 1](#zone-1-symptom-verification) |
 | | | 8 | Hypothesis state | Analytical | Row 1 true ∧ cause uncertain — agent reasons from context + KB | — | [Zone 2](#zone-2-root-cause-analysis) |
-| | | 2 | grounded cause signal (→ `cause_state=IDENTIFIED`) | Diagnostic | User submits causal evidence (or the error is self-naming) | EVIDENCE | [Zone 2](#zone-2-root-cause-analysis) |
+| | | 2 | grounded cause signal (→ `cause_state=IDENTIFIED`) | Diagnostic | User submits data from which causal evidence is derived (or the error is self-naming) | EVIDENCE | [Zone 2](#zone-2-root-cause-analysis) |
 | | | 3 | `solution_proposed` | Action | Row 2 true — agent reasons to fix | — | [Zone 3](#zone-3-solution-proposal) |
 | | | 4 | `mitigation_accepted` (→ `mitigation.accepted`) | Trigger | User acknowledges executing the mitigation | DECIDE → Mitigating | [Zone 3](#zone-3-solution-proposal) |
 | | | 6 | `solution_accepted` | Trigger | User acknowledges executing fix | DECIDE → TREATMENT | [Zone 3](#zone-3-solution-proposal) |
@@ -120,7 +120,7 @@ The GPS map. At any turn the agent reads this table to know where the investigat
 
 Rows 8 and 3 are agent-internal — no user input required. The agent resolves them from available context and immediately advances to the next row. The Suggestion column shows the primary type when that variable is the frontier; FREE_SPEECH may supplement any EVIDENCE row when user judgment is also needed.
 
-Multiple variables can advance in the same turn when evidence supports it. The agent processes all submitted evidence first, sets every variable the evidence justifies, then composes a response from the resulting new state — not from the state at turn start.
+Multiple variables can advance in the same turn when evidence supports it. The agent processes all submitted data first, sets every variable the evidence justifies, then composes a response from the resulting new state — not from the state at turn start.
 
 Scope, timeline, and change correlation are not tracked as separate variables. They are facts extracted from symptom evidence during diagnosis — scope and timeline emerge from the same evidence that confirms `symptom_verified`, and change events are background signals sourced from the structural index of uploaded files that inform hypothesis formation (post-migration-010, change events are not their own evidence row; only the specific change slice linked to a hypothesis becomes `causal_evidence`). Their absence never blocks progress.
 
@@ -183,7 +183,7 @@ Establish a shared understanding of the problem before investigation begins. The
 3. **Search KB first** (`kb_qa`) — before proposing investigation, check whether a past case or runbook resolves the issue. If a match exists, surface it and await the user's attempt.
 4. **Propose a problem statement** — one sentence: symptom + scope + temporal state. Set `proposed_problem_statement`.
 5. **Surface mitigation path hint for CRITICAL/HIGH + ONGOING** — "This is actively affecting [scope]. Should I focus on a quick mitigation first while we find the root cause?"
-6. **Await confirmation** — do not transition, request evidence, or propose next steps on the same turn as the problem statement.
+6. **Await confirmation** — do not transition, request data, or propose next steps on the same turn as the problem statement.
 
 #### Gate Conditions
 
@@ -196,7 +196,7 @@ Establish a shared understanding of the problem before investigation begins. The
 
 #### Anti-Patterns
 
-- Requesting diagnostic evidence before the problem statement is confirmed
+- Requesting diagnostic data before the problem statement is confirmed
 - Treating data uploads or continued engagement as confirmation ("yes" must be explicit)
 - Proposing a problem statement when the user asks a general knowledge question
 
@@ -223,7 +223,7 @@ DIAGNOSIS has three internal zones. Zone membership is determined by the diagnos
 3. Do not form hypotheses until `symptom_verified = True`.
 4. **Extract scope and timeline from the symptom evidence.** When evidence confirms the symptom, actively note and state:
    - **Scope** — how many systems, services, pods, or users are affected. Wide scope (multiple regions, many pods) signals a systemic cause; narrow scope (single pod, single user) signals an isolated cause. This directly shapes which hypothesis categories Zone 2 prioritises first.
-   - **Timeline** — the first occurrence timestamp. This becomes the anchor for all Zone 2 searches — every evidence request in Zone 2 should reference this window. Without a timeline, change searches are unbounded and noisy.
+   - **Timeline** — the first occurrence timestamp. This becomes the anchor for all Zone 2 searches — every data request in Zone 2 should reference this window. Without a timeline, change searches are unbounded and noisy.
    - These are extracted facts, not tracked variables. State them explicitly in the response when found. Do not delay `symptom_verified` waiting for them, but actively look for them in the same evidence.
 
 **Search for:**
@@ -289,10 +289,10 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 
 1. **Search KB first (once, at Zone 2 entry)** — call `kb_qa` for the confirmed symptom before generating hypotheses. If a runbook matches, follow its diagnostic steps as the default approach. Do not call `kb_qa` in Zone 1 — KB contains procedures, not incident facts.
 2. **Use scope to prioritise hypothesis categories.** Wide scope (multiple services, regions, pods) → systemic hypotheses first: shared dependency failure, network issue, config push affecting all instances. Narrow scope (single pod, user, endpoint) → isolated hypotheses first: pod-specific config, user-specific data, targeted code path.
-3. **Use timeline as the search anchor.** Every evidence request in Zone 2 must reference the timeline window established in Zone 1. Before generating hypotheses, run a targeted search for change events just before the timeline: deployments, updates, config pushes, scaling events. A change event near the timeline raises confidence in a deployment/change hypothesis. It is a trigger signal sourced from the structural index of uploaded files — not its own evidence row. Drill into the specific changes made to find the candidate root cause; when a specific change links to the symptom mechanism, classify that slice as `causal_evidence` (evidence-category set is the verification quartet: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence`).
+3. **Use timeline as the search anchor.** Every data request in Zone 2 must reference the timeline window established in Zone 1. Before generating hypotheses, run a targeted search for change events just before the timeline: deployments, updates, config pushes, scaling events. A change event near the timeline raises confidence in a deployment/change hypothesis. It is a trigger signal sourced from the structural index of uploaded files — not its own evidence row. Drill into the specific changes made to find the candidate root cause; when a specific change links to the symptom mechanism, classify that slice as `causal_evidence` (evidence-category set is the verification quartet: `symptom_evidence`, `causal_evidence`, `symptom_absence_evidence`, `causal_absence_evidence`).
 4. Apply the hypothesis-evidence ordering: form hypothesis → apply three-step pattern for the grounded cause signal (`cause_state = IDENTIFIED`) → validate or refute.
 5. **Single-shot vs multi-hypothesis:** if the root cause is obvious from existing evidence (clear error chain, strong timing correlation, specific change found), form one hypothesis and validate in the same turn. If ambiguous, form 2–4 hypotheses across different categories and request targeted evidence per hypothesis.
-6. Each evidence request must be tied to a specific hypothesis and follow the specificity standard.
+6. Each data request must be tied to a specific hypothesis and follow the specificity standard.
 7. Refute with reason; retire without. Never use `REFUTED` without evidence of disproof.
 
 **Search for (per hypothesis category):**
@@ -328,7 +328,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 - Classifying `causal_evidence` without a corresponding hypothesis
 - Using `REFUTED` without `refutation_reason`
 - Using `REFUTED` when there is no evidence of disproof (use `RETIRED`)
-- Requesting evidence not tied to a specific hypothesis
+- Requesting data not tied to a specific hypothesis
 - Treating a change event (deployment, update) as a root cause — it is a trigger; the root cause is the specific change within it
 - Emitting the grounded cause signal (`cause_state = IDENTIFIED`) with only a trigger observation and no mechanism
 
@@ -378,7 +378,7 @@ Use `REFUTED` only when disproof exists. When there is no evidence of disproof, 
 
 - Proposing a fix as a question
 - Proposing multiple competing fixes simultaneously
-- Requesting more evidence after `cause_state = IDENTIFIED`
+- Requesting more data after `cause_state = IDENTIFIED`
 
 ---
 
@@ -406,7 +406,7 @@ The **mitigation insert**: apply a temporary fix to stop active impact when an A
 1. **Search KB first** — call `kb_qa` for the symptom to find known mitigation procedures or workarounds before suggesting steps. If a match is found, follow those steps. If not, proceed with general knowledge for the technology stack.
 2. Provide numbered steps framed as user instructions, not agent actions.
 3. State rollback: what to do if the fix makes things worse. State the fix is temporary.
-4. Request post-fix evidence — metrics, error rates, user observation — that the symptom has stopped.
+4. Request post-fix data — metrics, error rates, user observation — confirming the symptom has stopped.
 5. Accept subjective confirmation for `mitigation.verified`. When confirmed: (1) record a `symptom_absence_evidence` row in `evidence_to_add` (the symptom is no longer present, while the cause may persist), (2) emit `mitigation_verified=True` (materializes `mitigation.verified` + `completed_at_turn`).
 6. Iterate if ineffective — propose a modified approach, stay in the mitigation insert.
 7. Whether to form hypotheses here follows the single rule: do so iff `cause_state ∈ {UNKNOWN, CANDIDATES}`. There is no separate ban tied to being mid-mitigation.
@@ -447,7 +447,7 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 
 1. Do not record an evidence row for the failed fix. A failed fix has no absence to record — the cause persists — so there is no "the fix worked" signal to capture. The failed attempt is recorded by refuting the hypothesis (duty 4), not by an evidence row.
 2. Determine failure type: implementation error (wrong command, missing step) → correct and re-propose without new evidence. Theory wrong → the original hypothesis was incorrect; new evidence is required before a new proposal.
-3. State what the failure eliminates and what is now unclear. Request NEW evidence with full specificity before revising a theory.
+3. State what the failure eliminates and what is now unclear. Request NEW data with full specificity before revising a theory.
 4. Refute the disproven hypothesis with `refutation_reason` citing the failed fix. Any new diagnostic data gathered here must be classified as `causal_evidence` (linkable to hypotheses), never `causal_absence_evidence` — the cause was not eliminated.
 
 #### Agent Duties — Primary path (fix verified successfully)
@@ -473,7 +473,7 @@ Verify that the applied fix resolves the problem. If it does not, diagnose the f
 
 **Anti-Patterns:**
 
-- Proposing a different solution after failure without collecting new evidence
+- Proposing a different solution after failure without collecting new data
 - Returning to DIAGNOSIS after a failed fix (stay in TREATMENT)
 - Setting `solution_verified` without the handshake
 
@@ -514,7 +514,7 @@ One primary ask per turn. Stack only when items are genuinely parallel (e.g., tw
 | DIAGNOSIS Zone 1 | 1–2 EVIDENCE + 1 FREE_SPEECH |
 | DIAGNOSIS Zone 2 | 1 EVIDENCE (targeted to hypothesis) + optionally 1 RUN (command) |
 | DIAGNOSIS Zone 3 (proposing fix) | 1 RUN (the fix) |
-| DIAGNOSIS Zone 3 (pending — fix already proposed) | 1 EVIDENCE (share fix outcome) + 1 FREE_SPEECH (ask about the fix) by default; a reopening signal — new evidence, a dispute, a competing cause — restores diagnostic asks (INV-33) |
+| DIAGNOSIS Zone 3 (pending — fix already proposed) | 1 EVIDENCE (share fix outcome) + 1 FREE_SPEECH (ask about the fix) by default; a reopening signal — new data, a dispute, a competing cause — restores diagnostic asks (INV-33) |
 | MITIGATION (guiding) | 1 RUN + 1 EVIDENCE (post-fix verification) |
 | MITIGATION (stalled) | 2 DECIDE (accept partial state / escalate) |
 | TREATMENT (verifying) | 1 EVIDENCE (post-fix) or 0 if user already confirmed |

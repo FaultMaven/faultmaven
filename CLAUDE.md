@@ -802,7 +802,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Auth | `POST /auth/refresh` | Token refresh |
 | OAuth | `GET /auth/oauth/authorize` | OAuth authorization |
 | OAuth | `POST /auth/oauth/token` | OAuth token exchange |
-| Evidence | `POST /evidence/upload` | File upload |
+| Cases | `POST /cases/{case_id}/turns` | Submit a turn (multipart: query, files, pasted content) — how raw data enters a case |
 | Reports | `GET/POST /reports` | Terminal summaries (auto-generated) |
 | Teams | `GET /teams` | List the caller's teams (read-only; names for share badges + share-to-team picker). Team *management* is the Cloud-composed admin module. |
 | Sessions | `GET /sessions` | Session management |

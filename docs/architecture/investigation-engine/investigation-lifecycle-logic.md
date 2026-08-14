@@ -1199,7 +1199,7 @@ def is_terminal(self) -> bool:
 
 - `_process_turn_impl()` short-circuits before intent detection and milestone processing
 - Routes to **TERMINAL_TEMPLATE** prompt with `TerminalResponse` schema
-- The template instructs the LLM: answer questions using existing case data, do not propose new actions or evidence requests
+- The template instructs the LLM: answer questions using existing case data, do not propose new actions or data requests
 - Agent has read access to: messages, evidence, hypotheses, solutions, action_history, auto-generated summary
 - Agent can NOT: accept new evidence, update milestones, propose transitions
 - Agent CAN: explain what happened, clarify evidence, interpret timeline, extract lessons learned
@@ -1680,7 +1680,7 @@ The agent must demonstrate context-specific diagnostic reasoning — grounded in
 
 See **[Agent Behavioral Rules — Rule 2: Evidence-Grounded](./agent-behavioral-rules.md#rule-2-evidence-grounded)**.
 
-**Scope note**: The requirement applies to all agent suggestions during INVESTIGATING state (mitigation proposals, hypothesis generation, diagnostic/solution suggestions, evidence requests). INQUIRY state (problem statement refinement) is exempt because investigation hasn't started yet.
+**Scope note**: The requirement applies to all agent suggestions during INVESTIGATING state (mitigation proposals, hypothesis generation, diagnostic/solution suggestions, data requests). INQUIRY state (problem statement refinement) is exempt because investigation hasn't started yet.
 
 ---
 
@@ -1756,9 +1756,9 @@ This is the common case: cause known or discoverable, solution implementable now
   - User complies with the proposed solution → gate milestone `solution_accepted`
   - If user questions or refuses → continues investigating, agent refines approach
 - **Resolution verification** (iterative)
-  - Agent verifies whether the fix worked from submitted evidence
+  - Agent verifies whether the fix worked from submitted data
   - If fix worked → agent proposes resolution via User-Agent Handshake
-  - If fix failed → extended investigation: failure analysis → gap identification → targeted evidence request → new hypothesis → revised fix; escalation when no viable options remain
+  - If fix failed → extended investigation: failure analysis → gap identification → targeted data request → new hypothesis → revised fix; escalation when no viable options remain
 
 **Phase 3: Resolution**
 

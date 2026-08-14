@@ -2,7 +2,7 @@
 
 ## Overview
 
-FaultMaven provides case-scoped PII redaction that protects sensitive data when sending evidence to external LLM providers. When enabled, PII is redacted before LLM calls and restored in user-facing responses — the LLM never sees raw PII, but the user always does.
+FaultMaven provides case-scoped PII redaction that protects sensitive data when sending case data to external LLM providers. When enabled, PII is redacted before LLM calls and restored in user-facing responses — the LLM never sees raw PII, but the user always does.
 
 ## Configuration
 
@@ -48,7 +48,7 @@ Case-scoped redaction solves both problems:
 ### Data Flow
 
 ```text
-User uploads evidence
+User uploads data
     → stored raw (never redacted at rest)
     → preprocessing extracts structural index
     ↓

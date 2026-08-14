@@ -67,8 +67,13 @@ async def promote_to_platform_admin(username: str) -> bool:
     # — including the org-scoped 'admin' an operator needs inside its own
     # organization — and repairs a partially-granted account rather than
     # reporting "already an admin" and leaving the hole.
+    # It also writes the audit row (it is the single writer of the grant, so it
+    # is the single auditor of it — see fm#1050), and hands back the audit
+    # failure rather than raising, because by then the grant is already durable.
     try:
-        user, granted = await assign_operator_roles(user_store, user)
+        user, granted, audit_error = await assign_operator_roles(
+            user_store, user, invoked_via="fm-promote-platform-admin"
+        )
     except Exception as e:
         print(f"❌ Failed to promote user: {e}")
         return False
@@ -78,6 +83,20 @@ async def promote_to_platform_admin(username: str) -> bool:
         return True
 
     print(f"\nGranted operator roles {granted} to user '{username}'.")
+
+    if audit_error is not None:
+        print()
+        print(f"❌ The roles WERE granted, but the audit record failed: {audit_error}")
+        print(
+            "   The privilege change is live and unrecorded. Re-running will "
+            "NOT repair it —\n"
+            "   the grant is idempotent, so a second run adds nothing and "
+            "audits nothing.\n"
+            "   Record it by hand and investigate why "
+            "operator_access_audit is unwritable."
+        )
+        return False
+
     print("✅ User promoted to platform admin successfully!")
     print()
     print(f"Updated roles: {user.roles}")

@@ -214,7 +214,7 @@ FaultMaven uses 7 intelligent response types based on investigation context:
 3. **CLARIFICATION_REQUEST** - Needs more information
 4. **CONFIRMATION_REQUEST** - Requests approval for actions
 5. **SOLUTION_READY** - Proposed solution ready
-6. **NEEDS_MORE_DATA** - Requires additional evidence
+6. **NEEDS_MORE_DATA** - Requires additional data from you
 7. **ESCALATION_REQUIRED** - Issue requires human escalation
 
 ## 8. Advanced Features
