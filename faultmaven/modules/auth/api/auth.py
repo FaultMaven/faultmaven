@@ -996,15 +996,20 @@ async def get_available_scopes(
 
 @router.get("/health")
 @trace("auth_health_check")
-async def auth_health_check():
+async def auth_health_check(request: Request):
     """Authentication system health check
 
     Returns the status of authentication services including token management
     and user storage systems.
     """
+    # `request` is what the probe reads: check_auth_services_health resolves the
+    # revocation store and user store off `request.app.state` (39807ebe moved
+    # them there when the Service Locator went away) and cannot be called
+    # without it. Kept out of the docstring deliberately — FastAPI publishes
+    # that verbatim as this operation's public OpenAPI description.
     try:
         # Use clean health check dependency
-        health_status = await check_auth_services_health()
+        health_status = await check_auth_services_health(request)
 
         # Add timestamp
         health_status["authentication"]["timestamp"] = to_json_compatible(
