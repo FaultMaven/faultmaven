@@ -23,6 +23,7 @@ Architecture:
 
 import asyncio
 import difflib
+import inspect
 import json
 import logging
 import re
@@ -5458,6 +5459,49 @@ class MilestoneEngine:
             out.extend(g)
         return out
 
+    @staticmethod
+    def _build_schema_tool(schema_model: Any, provider: Any) -> list[dict]:
+        """The structured-output tool, strict-enforced where that is available.
+
+        Returns the plain (unenforced) tool when the provider does not report
+        STRICT, or when the schema has no strict representation — the four
+        ``InvestigationResponse_*`` schemas carry ``Dict[str, Any]`` fields that
+        OpenAI's subset cannot express, and forcing them would guarantee empty
+        milestone justifications rather than merely unenforced ones. Capability
+        detection failing is treated as "not strict": the unenforced tool is the
+        behaviour this path has always had, so it cannot regress a turn.
+        """
+        from faultmaven.infrastructure.llm.structured_output_capability import (
+            StructuredOutputCapability,
+        )
+        from faultmaven.utils.schema_converter import (
+            pydantic_to_openai_tools,
+            pydantic_to_strict_openai_tools,
+        )
+
+        try:
+            capability = provider.get_structured_output_capability()
+        except Exception as exc:
+            logger.debug(
+                "Structured-output capability unavailable (%s); schema tool "
+                "stays unenforced",
+                exc,
+            )
+            return pydantic_to_openai_tools(schema_model)
+
+        # The provider API is synchronous. A coroutine here means the provider
+        # is a stand-in that answers everything asynchronously, which is not an
+        # answer — close it so it does not surface as an un-awaited-coroutine
+        # warning, and treat the capability as unknown.
+        if inspect.iscoroutine(capability):
+            capability.close()
+            return pydantic_to_openai_tools(schema_model)
+
+        if capability != StructuredOutputCapability.STRICT:
+            return pydantic_to_openai_tools(schema_model)
+
+        return pydantic_to_strict_openai_tools(schema_model)
+
     async def _tool_augmented_generate(
         self,
         prompt: str,
@@ -5500,8 +5544,6 @@ class MilestoneEngine:
         Returns:
             Instantiated Pydantic model (BaseInteractionResponse)
         """
-        from faultmaven.utils.schema_converter import pydantic_to_openai_tools
-
         # Use dedicated DA provider (DA_PROVIDER from .env) if available,
         # otherwise fall back to the default router
         provider = self.da_provider or self.llm_provider
@@ -5519,8 +5561,30 @@ class MilestoneEngine:
         # _bound_tool_loop_messages.
         _msg_token_cache: dict = {}
 
-        # Build schema tool (same pattern used by single-shot path)
-        schema_tools = pydantic_to_openai_tools(schema_model)
+        # Build the schema tool, asking for NATIVE ENFORCEMENT when the provider
+        # can give it (fm#1051).
+        #
+        # This path used to deliver the response schema as a plain function with
+        # no `strict` key, and never consulted the provider's capability at all —
+        # only the single-shot branch below did. So on a provider documented as
+        # STRICT, every turn that had tools available (which is every turn with a
+        # tool registry, not just Directed Analysis) got unenforced function
+        # calling: BEST_EFFORT semantics. The model could omit a required field,
+        # the engine dropped the whole `state_updates` payload, and the turn
+        # advanced nothing — observed on the first live cloud turn after #819 as
+        # a missing `state_updates.knowledge_match.match_type`.
+        #
+        # Scoped to the SCHEMA tool. The investigation tools keep their existing
+        # non-strict definitions: several take optional parameters, and strict
+        # mode has no optional keys, so enforcing them would force the model to
+        # emit explicit nulls and change directed-analysis behaviour — a
+        # regression risk with no bearing on the bug being fixed.
+        #
+        # Marked from the primary provider's capability. On a mid-chain fallback
+        # the request can still land elsewhere carrying `strict: true`; that is
+        # valid OpenAI-spec (Anthropic and Gemini rebuild tool definitions and
+        # drop it), and the alternative — marking nothing — is the bug itself.
+        schema_tools = self._build_schema_tool(schema_model, provider)
         schema_tool_name = schema_tools[0]["function"]["name"]
 
         # Combine investigation tools + schema tool

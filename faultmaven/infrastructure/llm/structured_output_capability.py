@@ -18,9 +18,12 @@ Architecture:
 4. milestone_engine uses capability info to adjust prompts
 """
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class StructuredOutputCapability(Enum):
@@ -111,7 +114,36 @@ def create_strategy_for_capability(
         StructuredOutputStrategy with appropriate configuration
     """
     if capability == StructuredOutputCapability.STRICT:
-        # Model supports strict json_schema - use it!
+        # ``strict: true`` is a claim ABOUT THE SCHEMA, not a switch: the API
+        # rejects the request outright when the schema is outside the strict
+        # subset. This asserted it over the raw Pydantic schema, which is not —
+        # properties absent from ``required``, no ``additionalProperties``
+        # anywhere. So the single-shot path was claiming enforcement it could
+        # not have, on the branch the engine actually reaches through
+        # ``BaseLLMProvider.get_structured_output_strategy`` (fm#1051).
+        #
+        # Transform where possible; where not, ask for the schema WITHOUT the
+        # claim rather than sending one the API refuses. A schema that cannot be
+        # strictly expressed (a free-form ``Dict[str, Any]``) is exactly the
+        # case where an unenforced-but-served turn beats a 400.
+        from faultmaven.utils.schema_converter import (
+            StrictSchemaUnsupported,
+            to_strict_schema,
+        )
+
+        try:
+            strict_schema = to_strict_schema(schema)
+            strict = True
+        except StrictSchemaUnsupported as exc:
+            logger.info(
+                "strict_schema_unavailable: %s falls back to unenforced "
+                "json_schema (%s)",
+                schema.get("title", "Response"),
+                exc,
+            )
+            strict_schema = schema
+            strict = False
+
         return StructuredOutputStrategy(
             capability=capability,
             mode=StructuredOutputMode.JSON_SCHEMA_STRICT,
@@ -120,8 +152,8 @@ def create_strategy_for_capability(
                 "type": "json_schema",
                 "json_schema": {
                     "name": schema.get("title", "Response"),
-                    "strict": True,
-                    "schema": schema,
+                    "strict": strict,
+                    "schema": strict_schema,
                 },
             },
         )

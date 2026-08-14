@@ -311,6 +311,22 @@ empty/degraded investigations. **Use a STRICT provider as `CHAT_PROVIDER`**
 `deepseek-v3`/minimax, Groq, HuggingFace, Local) are fine for cheap
 `CLASSIFIER_PROVIDER`/`SYNTHESIS_PROVIDER` overrides but degrade primary CHAT.
 Capability is reported per-provider via `get_structured_output_capability()`.
+
+**A STRICT provider only enforces schemas that can be expressed strictly.**
+OpenAI's strict subset admits no optional keys and no free-form objects, so
+`utils/schema_converter.to_strict_schema` rewrites a schema to fit — every
+property required, formerly-optional ones rendered as null unions,
+`additionalProperties: false` throughout — and **refuses** when it cannot. Today
+`InquiryResponse` and `TerminalResponse` are enforced; the four
+`InvestigationResponse_*` schemas are not, because their `Dict[str, Any]` fields
+(`milestone_justifications`, `hypotheses_to_update`) have no strict
+representation — forcing them would yield an object that can never hold a key,
+so those turns keep the unenforced path until the fields are restructured.
+Enforcement is scoped to the schema tool; investigation tools keep optional
+parameters. Because a strict response carries every key with `null` where the
+model had nothing, schema classes with non-`Optional` defaulted fields inherit
+`NullTolerantModel` (fm#1051).
+
 STRICT enforcement is necessary but not sufficient: a STRICT **thinking** model
 bills hidden reasoning against `maxOutputTokens`, which can starve the JSON
 output on deep-context turns (truncation to `MAX_TOKENS` → 500). The Gemini
