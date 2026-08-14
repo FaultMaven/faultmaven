@@ -246,11 +246,16 @@ never need inbox access to sign in.
 **Convention: one controlled inbox, plus-addressed per purpose.**
 
 ```text
-faultmaven.test@gmail.com          ← the single inbox you control
-  faultmaven.test+cws@gmail.com    → Chrome Web Store reviewers
-  faultmaven.test+apple@gmail.com  → Apple submission
-  faultmaven.test+demo1@gmail.com  → a specific client demo
+faultmavenuser@gmail.com           ← the single inbox you control
+  faultmavenuser+cws@gmail.com     → Chrome Web Store reviewers
+  faultmavenuser+apple@gmail.com   → Apple submission
+  faultmavenuser+demo1@gmail.com   → a specific client demo
 ```
+
+The base address deliberately carries **no dot** and does not say "test". The
+alias is visible to whoever receives it, and the same inbox serves prospect
+demos as well as store submissions — `+demo1` on a "test" address reads as
+throwaway to someone you are selling to.
 
 Why an outside address rather than a company one: **a verified domain grants
 automatic membership**. An address on a domain already attached to an existing
@@ -269,12 +274,12 @@ This works because both sides key on the **exact** address:
 
   | Email | Derived username |
   |---|---|
-  | `faultmaven.test+cws@gmail.com` | `faultmaven.testcws` |
-  | `faultmaven.test+apple@gmail.com` | `faultmaven.testapple` |
-  | `faultmaven.test+demo1@gmail.com` | `faultmaven.testdemo1` |
+  | `faultmavenuser+cws@gmail.com` | `faultmavenusercws` |
+  | `faultmavenuser+apple@gmail.com` | `faultmavenuserapple` |
+  | `faultmavenuser+demo1@gmail.com` | `faultmavenuserdemo1` |
 
   Had derivation truncated at the `+`, all three would collapse to
-  `faultmaven.test` and be separated only by `-2`/`-3` suffixes. It does not —
+  `faultmavenuser` and be separated only by `-2`/`-3` suffixes. It does not —
   but this is exactly why step 5 says to verify the derived username.
 
 ### ‼️ Separate users are not separate tenants
@@ -296,9 +301,11 @@ provisioning per alias; the addresses are free, the tenants are not.
   reviewer is both — they stall behind a code only you can see, at a time you
   cannot predict. A store review that fails on a login wall is an expensive way
   to discover this. Test the flow from a different network first.
-- **Gmail also ignores dots.** `faultmaven.test@` and `faultmaventest@` are one
-  inbox but would be *two* FaultMaven accounts: a typo silently creates a
-  duplicate instead of erroring. Write the address down once and reuse it.
+- **Gmail also ignores dots.** `faultmaven.user@gmail.com` reaches the same
+  inbox as `faultmavenuser@gmail.com`, but FaultMaven derives a *different*
+  username from it (`faultmaven.user`), so it becomes a second account rather
+  than an error. Keeping the base address dot-free removes the ambiguity;
+  write it down once and reuse it verbatim.
 - **The inbox becomes the root of all vendor access.** Its own 2FA and recovery
   matter more than a throwaway account's usually would.
 
