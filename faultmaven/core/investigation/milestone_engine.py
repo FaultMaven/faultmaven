@@ -8207,14 +8207,38 @@ class MilestoneEngine:
             return
         metadata.setdefault("hypotheses_updated", [])
         feedback: list[str] = []
+
+        # ONE entry per hypothesis. The ``Dict[str, HypothesisUpdate]`` this
+        # replaced enforced that for free; a list does not, and everything below
+        # assumes it (fm#1057). Two entries naming the same hypothesis would BOTH
+        # be applied: the second likelihood update reads the value the first just
+        # wrote, sees |delta| < 0.05 and charges ``iterations_without_progress``
+        # on a turn that made progress, feeding the stagnation/deadlock repair
+        # path; a repeated REFUTED tells the model its own accepted refutation
+        # was rejected as "terminal". Last entry wins, which is what a duplicated
+        # JSON object key did. Resolve FIRST, so an id and the ``new_index_N``
+        # that points at the same hypothesis collapse together.
+        resolved: dict[str, Any] = {}
         for upd in entries:
-            raw_id = upd.hypothesis_id
-            h_id = self._resolve_id_ref(
-                raw_id,
-                metadata.get("hyp_emit_order")
-                or metadata.get("hypotheses_generated", []),
-                "hyp",
+            resolved[
+                self._resolve_id_ref(
+                    upd.hypothesis_id,
+                    metadata.get("hyp_emit_order")
+                    or metadata.get("hypotheses_generated", []),
+                    "hyp",
+                )
+            ] = upd
+        if len(resolved) < len(entries):
+            logger.warning(
+                "Case %s: hypotheses_to_update carried %d entries for %d "
+                "hypotheses; kept the last per hypothesis.",
+                case.case_id,
+                len(entries),
+                len(resolved),
             )
+
+        for h_id, upd in resolved.items():
+            raw_id = upd.hypothesis_id
             hypothesis = case.hypotheses.get(h_id)
             if hypothesis is None:
                 logger.warning(

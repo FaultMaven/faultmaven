@@ -127,15 +127,21 @@ def to_strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
 
     Raises:
         StrictSchemaUnsupported: when the schema contains a construct the subset
-            cannot express. The only one the project's schemas hit is a
-            **free-form object** — a ``Dict[str, Any]`` field such as
-            ``InternalReasoning.milestone_justifications``, which arrives as an
-            object with no ``properties``. Strict mode would require
+            cannot express. The only one the project ever hit is a **free-form
+            object** — a ``Dict[str, Any]`` field, which arrives as an object
+            with no ``properties``. Strict mode would require
             ``additionalProperties: false`` on it, producing an object that can
-            never hold a key — so the milestone justifications the engine gates
-            on would be structurally guaranteed empty. Refusing keeps such a
-            schema on the existing unenforced path, which is worse than strict
-            but far better than silently emptied.
+            never hold a key, so every value it was supposed to carry would be
+            structurally guaranteed absent. Refusing keeps such a schema on the
+            unenforced path, which is worse than strict but far better than
+            silently emptied.
+
+            **No production schema reaches this today** (fm#1057): all six
+            response schemas were given declared shapes and are strictly
+            enforced. The valve is what keeps a schema that later grows a
+            free-form field from being sent WITH a ``strict: true`` the API
+            rejects outright; ``test_schema_strict_mode.py`` exercises it
+            against a synthetic model.
     """
 
     def convert(node: Any, path: str) -> Any:
@@ -168,7 +174,7 @@ def to_strict_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
                 if prop_name not in required:
                     # Optional becomes required-but-nullable. `null` is the wire
                     # spelling of "the model had nothing for this"; the Python
-                    # side must tolerate it (see schemas._coerce_null_to_default).
+                    # side must tolerate it (see schemas.NullTolerantModel).
                     child = _nullable(child)
                 converted[prop_name] = child
             out["properties"] = converted

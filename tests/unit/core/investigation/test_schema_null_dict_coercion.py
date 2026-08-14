@@ -84,3 +84,71 @@ def test_state_update_tolerates_null_hypotheses_to_update(response_model_name):
     )
     m = state_update_model.model_validate({"hypotheses_to_update": None})
     assert m.hypotheses_to_update == []
+
+
+@pytest.mark.parametrize(
+    "emitted,expected",
+    [
+        (
+            ["47 errors in ev_abc", "ev_def confirms"],
+            "47 errors in ev_abc; ev_def confirms",
+        ),
+        (True, "True"),
+        (3, "3"),
+    ],
+)
+def test_a_non_string_justification_does_not_500_the_turn(emitted, expected):
+    """The narrowing that made the schema strict-representable must not become a
+    new unrecoverable shape failure.
+
+    ``milestone_justifications`` used to be ``Dict[str, Any]``, under which any
+    value validated. Declaring four ``Optional[str]`` fields narrowed that, and
+    the resulting error is the one shape the never-500 backstop cannot repair:
+    the loc (``internal_reasoning.milestone_justifications.<name>``) carries no
+    list index, so nothing is prunable; blanking ``state_updates`` leaves
+    ``internal_reasoning`` just as invalid; and the ``agent_response`` rung does
+    not fire when the model DID answer. The turn 500s.
+    """
+    ir = s.InternalReasoning.model_validate(
+        {"milestone_justifications": {"symptom_verified": emitted}}
+    )
+    assert ir.milestone_justifications.as_dict() == {"symptom_verified": expected}
+
+
+def test_a_non_string_justification_survives_the_real_backstop():
+    """The property at the layer that actually 500s — the guard above is a unit
+    check on the coercion; this one proves the turn is preserved end to end."""
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    engine = MilestoneEngine.__new__(MilestoneEngine)
+    parsed = engine._validate_with_degradation(
+        {
+            "agent_response": "Symptom confirmed.",
+            "internal_reasoning": {
+                "milestone_justifications": {
+                    "symptom_verified": ["47 errors in ev_abc"]
+                }
+            },
+            "state_updates": {
+                "milestones": {"symptom_verified": True},
+                "evidence_to_add": [
+                    {
+                        "summary": "47 connection errors",
+                        "category": "symptom_evidence",
+                        "source_type": "user_description",
+                        "extract": "connection refused x47",
+                        "likelihood": 0.9,
+                    }
+                ],
+            },
+        },
+        s.InvestigationResponse_Diagnosis,
+    )
+
+    # Not merely "no exception": the turn's state must still be THERE. The
+    # backstop's own fallback rung would have answered without raising while
+    # discarding every state update.
+    assert len(parsed.state_updates.evidence_to_add) == 1
+    assert parsed.internal_reasoning.milestone_justifications.as_dict() == {
+        "symptom_verified": "47 errors in ev_abc"
+    }

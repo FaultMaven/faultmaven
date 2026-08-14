@@ -500,3 +500,66 @@ def test_deferred_apply_respects_same_turn_refutation():
     eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
     assert h.likelihood == 0.0  # not resurrected
     assert "immutable" in meta.get("system_feedback", "")
+
+
+def test_duplicate_entries_for_one_hypothesis_are_applied_once():
+    """A list, unlike the ``Dict[str, HypothesisUpdate]`` it replaced, can name
+    the same hypothesis twice (fm#1057).
+
+    Both entries applied means the SECOND ``update_hypothesis_likelihood`` reads
+    the value the first just wrote, measures no change, and charges
+    ``iterations_without_progress`` — stagnation recorded on a turn that made
+    progress, which is what feeds the deadlock/exhaustion repair path. The
+    counter is the observable: the likelihood alone looks correct either way.
+    """
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()  # likelihood 0.7
+    h.iterations_without_progress = 0
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+
+    # A DOWNWARD move: the B1 evidence-free cap is a ceiling on raises only, so
+    # this lands unclamped and is unambiguously progress (|delta| = 0.3).
+    eng._apply_hypothesis_updates(
+        case,
+        [
+            HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.4),
+            HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.4),
+        ],
+        meta,
+        case.current_turn,
+    )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+
+    assert h.iterations_without_progress == 0, (
+        "the duplicate entry was applied a second time and recorded stagnation "
+        "on a turn that made progress"
+    )
+    assert h.last_progress_at_turn == case.current_turn
+
+
+def test_an_id_and_its_new_index_alias_collapse_to_one_entry():
+    """Dedup resolves BEFORE comparing: ``new_index_0`` and the id it resolves
+    to are the same hypothesis, so two entries spelled differently must not
+    both be applied."""
+    eng = _make_engine()
+    case = _make_case()
+    h = _active_hyp()  # likelihood 0.7
+    h.iterations_without_progress = 0
+    case.hypotheses = {h.hypothesis_id: h}
+    meta = _empty_metadata()
+    meta["hypotheses_generated"] = [h.hypothesis_id]
+
+    eng._apply_hypothesis_updates(
+        case,
+        [
+            HypothesisUpdate(hypothesis_id="new_index_0", likelihood=0.4),
+            HypothesisUpdate(hypothesis_id=h.hypothesis_id, likelihood=0.4),
+        ],
+        meta,
+        case.current_turn,
+    )
+    eng._apply_deferred_likelihood_updates(case, meta, case.current_turn)
+
+    assert h.iterations_without_progress == 0

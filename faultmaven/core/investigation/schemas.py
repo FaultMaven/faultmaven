@@ -252,6 +252,38 @@ class ReasoningConclusion(BaseModel):
     )
 
 
+def _coerce_justification_to_text(v: Any) -> Any:
+    """Accept the shapes a provider reaches for when writing prose into a field.
+
+    Declaring the justifications as four ``Optional[str]`` fields is what makes
+    the enclosing schema strict-representable, but it also narrowed a type that
+    used to be ``Dict[str, Any]`` — under which ANY value validated. That
+    narrowing has no recovery path: the error location
+    (``internal_reasoning.milestone_justifications.<milestone>``) carries no
+    list index, so ``_prune_invalid_list_entries`` cannot prune it; the rung
+    below only blanks ``state_updates``, which leaves ``internal_reasoning``
+    just as invalid; and the ``agent_response`` rung does not fire when the
+    model DID answer. ``_validate_with_degradation`` re-raises and the turn
+    500s — the exact class of failure strict mode was adopted to remove.
+
+    A justification is prose that is only ever read as "is this milestone
+    justified" plus a truncated log line, so a model that answers with a list
+    of reasons has said something, not nothing. Rendering it as text keeps the
+    pre-fm#1057 tolerance without widening the declared type. Blank results
+    still count as absent — ``as_dict`` drops them.
+    """
+    if v is None or isinstance(v, str):
+        return v
+    if isinstance(v, (list, tuple)):
+        return "; ".join(str(item) for item in v)
+    return str(v)
+
+
+#: A justification field that tolerates a non-string value from a provider that
+#: is not schema-enforced, rather than 500ing an otherwise-usable turn.
+_JustificationText = BeforeValidator(_coerce_justification_to_text)
+
+
 class MilestoneJustifications(NullTolerantModel):
     """Why each milestone the LLM CHANGED this turn was changed.
 
@@ -273,10 +305,10 @@ class MilestoneJustifications(NullTolerantModel):
     justification here would make that milestone permanently unjustifiable.
     """
 
-    symptom_verified: Optional[str] = None
-    mitigation_accepted: Optional[str] = None
-    mitigation_verified: Optional[str] = None
-    solution_accepted: Optional[str] = None
+    symptom_verified: Annotated[Optional[str], _JustificationText] = None
+    mitigation_accepted: Annotated[Optional[str], _JustificationText] = None
+    mitigation_verified: Annotated[Optional[str], _JustificationText] = None
+    solution_accepted: Annotated[Optional[str], _JustificationText] = None
 
     def as_dict(self) -> Dict[str, str]:
         """The justifications that actually say something, keyed by milestone.
