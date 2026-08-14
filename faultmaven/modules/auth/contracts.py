@@ -223,6 +223,14 @@ class IOAuthService(ABC):
     Dashboard-centric authentication (Dashboard acts as IdP for Extension).
     """
 
+    # @abstractmethod where its neighbours have none, deliberately. The other
+    # members of this ABC fail LOUDLY when an implementation omits them — an
+    # inherited `...` returns None and `code = None` breaks the flow at once.
+    # This one fails SILENTLY: the route's gate would pass, `create_authorization
+    # _code` would keep working, and #1053 would be back with no error and no
+    # failing test. Absence must be refused at construction, not at request time.
+    # Do not "harmonise" this decorator away.
+    @abstractmethod
     async def validate_authorization_request(
         self,
         request: OAuthAuthorizationDTO,

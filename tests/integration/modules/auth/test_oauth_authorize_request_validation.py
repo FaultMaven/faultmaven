@@ -252,6 +252,29 @@ async def test_unsupported_response_type_is_still_refused(client):
 
 @pytest.mark.integration
 @pytest.mark.security
+def test_an_implementation_omitting_the_check_cannot_be_constructed():
+    """Omitting ``validate_authorization_request`` must fail closed.
+
+    The other ``IOAuthService`` members fail loudly when unimplemented — an
+    inherited ``...`` returns None and the flow breaks immediately. This one
+    would fail *silently*: the route's gate would pass, minting would still
+    work, and #1053 would be back with nothing raised and nothing red. So it is
+    the one member marked ``@abstractmethod``, and this pins that.
+
+    Asserting the ABC refuses construction, not merely that the decorator is
+    present — a decorator can be imported, spelled right, and still not bite.
+    """
+    from faultmaven.modules.auth.contracts import IOAuthService
+
+    class ForgotToImplementIt(IOAuthService):
+        pass
+
+    with pytest.raises(TypeError, match="validate_authorization_request"):
+        ForgotToImplementIt()
+
+
+@pytest.mark.integration
+@pytest.mark.security
 @pytest.mark.asyncio
 async def test_the_mint_path_keeps_enforcing_the_same_policy(oauth_service):
     """The route check is additive, not a relocation.
