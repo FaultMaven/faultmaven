@@ -20,7 +20,9 @@ import asyncio
 import sys
 
 from faultmaven.bootstrap.data_init import DEFAULT_ADMIN_USERNAME
+from faultmaven.cli._operator_role_audit import record_operator_role_change
 from faultmaven.container import container
+from faultmaven.models.interfaces_operator_audit import OperatorAction
 from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
 
 #: How to enumerate accounts. ``list_users.py`` is a checkout-only dev script
@@ -96,6 +98,63 @@ async def demote_from_platform_admin(username: str) -> bool:
         print()
         print(f"Updated roles: {user.roles}")
         print()
+
+        # Outstanding access tokens still carry `platform_admin` in their claims
+        # until they expire, so the demotion is not in force until the user's
+        # revocation watermark moves. The HTTP role paths already do this
+        # (`user_service.remove_role`); this one did not, leaving a demoted
+        # operator with working cross-tenant reach for the remainder of the
+        # token's life (fm#1050).
+        #
+        # Unlike `fm-remove-org-member`, a failure here does NOT refuse the
+        # operation. That command refuses because removing a membership without
+        # revoking leaves a user with access they should no longer have, and not
+        # removing it is the safer half. Here the directions reverse: the role is
+        # already gone from the account, so failing closed would mean restoring
+        # `platform_admin` permanently to avoid a bounded window of at most one
+        # access-token lifetime. Report it and let the operator decide.
+        auth_service = container.get_auth_service()
+        if auth_service is None:
+            print(
+                "⚠️  No auth service is available, so outstanding tokens were "
+                "NOT revoked.\n"
+                f"   '{username}' keeps platform-admin reach until every token "
+                "issued before now expires."
+            )
+        else:
+            try:
+                revoked_before = await auth_service.revoke_user_tokens(user.user_id)
+                print(
+                    f"✅ Tokens revoked: every token for {username} issued at or "
+                    f"before {revoked_before.isoformat()} is now invalid."
+                )
+            except Exception as revoke_error:
+                print(
+                    f"⚠️  The role WAS removed, but token revocation failed: "
+                    f"{revoke_error}\n"
+                    f"   '{username}' keeps platform-admin reach until every "
+                    "token issued before now expires."
+                )
+            print()
+
+        try:
+            await record_operator_role_change(
+                action=OperatorAction.ROLE_REVOKED,
+                user=user,
+                roles_changed=[PLATFORM_ADMIN_ROLE],
+                invoked_via="fm-demote-platform-admin",
+            )
+        except Exception as audit_error:
+            print(
+                f"❌ The role WAS removed, but the audit record failed: "
+                f"{audit_error}\n"
+                "   The privilege change is live and unrecorded. Re-running "
+                "will NOT repair it —\n"
+                "   the account no longer holds the role, so a second run "
+                "removes nothing and audits nothing."
+            )
+            return False
+
         print(f"User '{username}' can no longer:")
         print("  ❌ List cases across all users and organizations")
         print("  ❌ Administer user accounts")

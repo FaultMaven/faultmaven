@@ -23,6 +23,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.infrastructure.persistence.user_repository import User as RepositoryUser
+from faultmaven.models.interfaces_user import AuditEventType
 from faultmaven.models.rbac import Role
 from faultmaven.modules.auth.domain.services.user_service import UserService
 
@@ -87,7 +88,15 @@ def mock_auth_service():
 
 
 @pytest.fixture
-def user_service(mock_user_repo, mock_auth_service):
+def mock_audit_log():
+    """Create mock audit repository for the role-change trail (fm#1050)."""
+    audit = MagicMock()
+    audit.log_event = AsyncMock(return_value=True)
+    return audit
+
+
+@pytest.fixture
+def user_service(mock_user_repo, mock_auth_service, mock_audit_log):
     """Create UserService with mocked dependencies.
 
     The token generator is required at construction (#959) but unused by the
@@ -98,6 +107,7 @@ def user_service(mock_user_repo, mock_auth_service):
         user_repo=mock_user_repo,
         auth_service=mock_auth_service,
         token_generator=MagicMock(),
+        audit_log=mock_audit_log,
     )
 
 
@@ -1140,3 +1150,103 @@ class TestEdgeCases:
 
         assert len(users) == 1
         assert total == 1
+
+
+class TestRoleChangeAuditTrail:
+    """The org-scoped role paths must leave a durable record (fm#1050).
+
+    ``AuditEventType.ROLE_ASSIGNED`` existed in the enum and was referenced
+    nowhere: no role change anywhere in the codebase wrote an audit row. This is
+    the network-reachable half of that gap — it needs no pod access, only a
+    platform-admin token.
+    """
+
+    @pytest.mark.asyncio
+    async def test_assigning_a_role_is_recorded(
+        self, user_service, mock_user_repo, mock_audit_log, member_user
+    ):
+        mock_user_repo.get_user.return_value = member_user
+        mock_user_repo.update_user.return_value = member_user
+
+        await user_service.assign_role(
+            user_id="user-2",
+            role="admin",
+            organization_id="org-123",
+            admin_user_id="user-1",
+        )
+
+        mock_audit_log.log_event.assert_awaited_once()
+        kwargs = mock_audit_log.log_event.await_args.kwargs
+        assert kwargs["event_type"] == AuditEventType.ROLE_ASSIGNED
+        assert kwargs["user_id"] == "user-2"
+        assert kwargs["details"]["changed_by"] == "user-1"
+        assert kwargs["details"]["role"] == "admin"
+        # The row must be stamped with the caller's org: user_audit_log is
+        # RLS-tenanted and migration 018 declares only USING, which PostgreSQL
+        # applies to INSERT as well — an unstamped row is rejected outright.
+        assert kwargs["organization_id"] == "org-123"
+
+    @pytest.mark.asyncio
+    async def test_removing_a_role_is_recorded_as_a_removal(
+        self, user_service, mock_user_repo, mock_audit_log, admin_user
+    ):
+        """A distinct event type, not one event with a direction buried in
+        ``details`` — ``event_type`` is the queried column."""
+        mock_user_repo.get_user.return_value = admin_user
+        mock_user_repo.update_user.return_value = admin_user
+
+        await user_service.remove_role(
+            user_id="user-2",
+            role="admin",
+            organization_id="org-123",
+            admin_user_id="user-1",
+        )
+
+        kwargs = mock_audit_log.log_event.await_args.kwargs
+        assert kwargs["event_type"] == AuditEventType.ROLE_REMOVED
+
+    @pytest.mark.asyncio
+    async def test_the_role_change_survives_an_audit_failure(
+        self, user_service, mock_user_repo, mock_audit_log, member_user
+    ):
+        """Fails open, deliberately. The change and its token revocation are
+        already durable, so raising could not undo them — it would only turn a
+        completed privilege change into a 500 whose retry raises ConflictError
+        because the role is by then already assigned.
+        """
+        mock_user_repo.get_user.return_value = member_user
+        mock_user_repo.update_user.return_value = member_user
+        mock_audit_log.log_event.side_effect = RuntimeError("audit sink is down")
+
+        result = await user_service.assign_role(
+            user_id="user-2",
+            role="admin",
+            organization_id="org-123",
+            admin_user_id="user-1",
+        )
+
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_an_unwired_audit_sink_does_not_break_role_assignment(
+        self, mock_user_repo, mock_auth_service, member_user
+    ):
+        """``audit_log`` is optional, so a construction that predates it must
+        still work — that state is what produced the original gap, so it warns
+        rather than failing."""
+        service = UserService(
+            user_repo=mock_user_repo,
+            auth_service=mock_auth_service,
+            token_generator=MagicMock(),
+        )
+        mock_user_repo.get_user.return_value = member_user
+        mock_user_repo.update_user.return_value = member_user
+
+        result = await service.assign_role(
+            user_id="user-2",
+            role="admin",
+            organization_id="org-123",
+            admin_user_id="user-1",
+        )
+
+        assert result is not None

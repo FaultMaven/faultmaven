@@ -598,11 +598,20 @@ def create_user_service(
             user_repo = InMemoryUserRepository()
             logger.debug("UserService using InMemoryUserRepository (development)")
 
+        from faultmaven.infrastructure.persistence.sessionless_audit_repository import (
+            SessionlessAuditRepository,
+        )
+
         service = UserService(
             user_repo=user_repo,
             auth_service=auth_service,  # Composition Root: injected, not fetched
             token_generator=token_generator,
             redis_client=redis_client,
+            # The role-change trail (fm#1050). Sessionless for the same reason
+            # the user repo is: one session per operation, never a
+            # process-lifetime handle. Paired with the in-memory repo too — an
+            # unwired sink is the state that produced the original gap.
+            audit_log=SessionlessAuditRepository(),
         )
         logger.info("✅ UserService initialized with proper DI")
         return service

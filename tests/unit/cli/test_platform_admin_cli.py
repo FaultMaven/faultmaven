@@ -21,6 +21,7 @@ import pytest
 
 from faultmaven.bootstrap.data_init import DEFAULT_ADMIN_USERNAME
 from faultmaven.cli import demote_platform_admin, promote_platform_admin
+from faultmaven.models.interfaces_operator_audit import OperatorAction
 from faultmaven.modules.auth.contracts import (
     PLATFORM_ADMIN_ROLE,
     PLATFORM_ADMIN_ROLE_SET,
@@ -50,12 +51,36 @@ def store():
 
 
 @pytest.fixture
-def wire(monkeypatch, store):
+def audit(monkeypatch):
+    """Capture the operator-role audit calls both CLIs make (fm#1050).
+
+    Substituted rather than allowed through: ``record_operator_role_change``
+    opens a real database session, and these are unit tests. The recorder keeps
+    the kwargs so tests can assert *what* was recorded, not merely that
+    something was.
+    """
+    recorder = AsyncMock()
+    for module in (promote_platform_admin, demote_platform_admin):
+        monkeypatch.setattr(module, "record_operator_role_change", recorder)
+    return recorder
+
+
+@pytest.fixture
+def auth_service():
+    """An auth service whose revocation succeeds and records the watermark."""
+    service = AsyncMock()
+    service.revoke_user_tokens.return_value = datetime.now(timezone.utc)
+    return service
+
+
+@pytest.fixture
+def wire(monkeypatch, store, audit, auth_service):
     """Point both CLI modules' container at ``store``."""
 
     def _wire(module, user):
         container = AsyncMock()
         container.get_user_store = lambda: store
+        container.get_auth_service = lambda: auth_service
         store.get_user_by_username.return_value = user
         monkeypatch.setattr(module, "container", container)
         return store
@@ -231,3 +256,98 @@ def _run_main(module, argv):
         module.main()
     finally:
         sys.argv = original
+
+
+# =============================================================================
+# Audit trail (fm#1050)
+#
+# Granting platform_admin is the highest-privilege operation the deployment
+# offers, and it recorded nothing: after the fm#819 cutover the audit table held
+# one row (SSO JIT provisioning) and none for the promotion.
+# =============================================================================
+
+
+async def test_promote_records_the_grant(wire, store, audit):
+    wire(promote_platform_admin, _user(roles=["user"]))
+
+    assert await promote_platform_admin.promote_to_platform_admin("alice") is True
+
+    audit.assert_awaited_once()
+    kwargs = audit.await_args.kwargs
+    assert kwargs["action"] is OperatorAction.ROLE_GRANTED
+    assert kwargs["user"].username == "alice"
+    assert PLATFORM_ADMIN_ROLE in kwargs["roles_changed"]
+    assert kwargs["invoked_via"] == "fm-promote-platform-admin"
+
+
+async def test_demote_records_the_revocation(wire, store, audit):
+    wire(demote_platform_admin, _user(roles=list(PLATFORM_ADMIN_ROLE_SET)))
+
+    assert await demote_platform_admin.demote_from_platform_admin("alice") is True
+
+    audit.assert_awaited_once()
+    kwargs = audit.await_args.kwargs
+    assert kwargs["action"] is OperatorAction.ROLE_REVOKED
+    assert kwargs["roles_changed"] == [PLATFORM_ADMIN_ROLE]
+    assert kwargs["invoked_via"] == "fm-demote-platform-admin"
+
+
+async def test_a_no_op_promotion_records_nothing(wire, store, audit):
+    """No privilege changed, so there is no privilege change to record.
+    Recording one would put an event in the trail that never happened."""
+    wire(promote_platform_admin, _user(roles=list(PLATFORM_ADMIN_ROLE_SET)))
+
+    assert await promote_platform_admin.promote_to_platform_admin("alice") is True
+    audit.assert_not_awaited()
+
+
+async def test_a_no_op_demotion_records_nothing(wire, store, audit):
+    wire(demote_platform_admin, _user(roles=["user"]))
+
+    assert await demote_platform_admin.demote_from_platform_admin("alice") is True
+    audit.assert_not_awaited()
+
+
+async def test_promote_reports_failure_when_the_grant_cannot_be_recorded(
+    wire, store, audit, capsys
+):
+    """The roles are already persisted, so this cannot un-grant them — but it
+    must not report success either. An unrecorded privilege escalation that
+    exits 0 is the exact failure fm#1050 is about."""
+    wire(promote_platform_admin, _user(roles=["user"]))
+    audit.side_effect = RuntimeError("operator_access_audit is unreachable")
+
+    assert await promote_platform_admin.promote_to_platform_admin("alice") is False
+
+    out = capsys.readouterr().out
+    assert "audit record failed" in out
+    assert "WERE granted" in out, "must not imply the grant was rolled back"
+    assert "NOT repair" in out, "a retry is idempotent and would audit nothing"
+
+
+async def test_demote_revokes_outstanding_tokens(wire, store, auth_service):
+    """Access tokens carry `roles` in their claims, so until the user's
+    revocation watermark moves the demoted operator keeps cross-tenant reach.
+    The HTTP role paths already revoke; this one did not (fm#1050)."""
+    user = _user(roles=list(PLATFORM_ADMIN_ROLE_SET))
+    wire(demote_platform_admin, user)
+
+    assert await demote_platform_admin.demote_from_platform_admin("alice") is True
+
+    auth_service.revoke_user_tokens.assert_awaited_once_with(user.user_id)
+
+
+async def test_demote_still_demotes_when_revocation_fails(
+    wire, store, auth_service, capsys
+):
+    """Deliberately the opposite posture to fm-remove-org-member, which refuses.
+    The role is already off the account; failing closed here would mean handing
+    platform_admin back permanently to avoid a window of one token lifetime."""
+    wire(demote_platform_admin, _user(roles=list(PLATFORM_ADMIN_ROLE_SET)))
+    auth_service.revoke_user_tokens.side_effect = RuntimeError("redis is down")
+
+    assert await demote_platform_admin.demote_from_platform_admin("alice") is True
+
+    out = capsys.readouterr().out
+    assert "revocation failed" in out
+    assert "keeps platform-admin reach" in out, "the window must be stated"

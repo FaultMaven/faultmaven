@@ -19,15 +19,31 @@ from typing import Any, Dict, List, Optional
 
 
 class OperatorAction(str, Enum):
-    """The metadata/content boundary D8/D9 governs.
+    """What an operator did that this table has to remember.
 
-    ``LIST`` is ambient metadata (ids, org, state, timestamps, counts — never
-    titles). ``CONTENT_OPEN`` is tenant content: title, transcript, evidence.
-    Title counts as content because it is user free-text and leaks.
+    Two of these are the metadata/content boundary D8/D9 governs. ``LIST`` is
+    ambient metadata (ids, org, state, timestamps, counts — never titles).
+    ``CONTENT_OPEN`` is tenant content: title, transcript, evidence. Title
+    counts as content because it is user free-text and leaks.
+
+    ``ROLE_GRANTED`` / ``ROLE_REVOKED`` are not data access at all — they are
+    changes to *who is an operator*, recorded here rather than in
+    ``user_audit_log`` because that table is RLS-tenanted and ``platform_admin``
+    is deployment-scoped (ADR-012 D9). There is no organization to stamp such a
+    row with: under ``TENANT_PROVIDER=multi`` the standalone default does not
+    exist, so the write would fail its FK, and any real tenant chosen instead
+    would hide a deployment-wide privilege change inside one customer's trail.
+    The properties that make this table the right home are the same ones D8/D9
+    wanted — append-only by trigger, no tenant policy, evidence that outlives
+    the account (fm#1050).
+
+    So read this enum as "operator events", of which data access is two.
     """
 
     LIST = "list"
     CONTENT_OPEN = "content_open"
+    ROLE_GRANTED = "role_granted"
+    ROLE_REVOKED = "role_revoked"
 
 
 @dataclass

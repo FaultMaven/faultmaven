@@ -282,8 +282,19 @@ class UserModel(Base):
         onupdate=func.now(),
     )
     deleted_at = Column(DateTime(timezone=True), nullable=True)
-    # Local/dev-mode role storage. Cloud mode derives roles from RBAC tables
-    # (organization_members → roles). Stores a JSON array, e.g. '["user","admin"]'.
+    # ⚠️ THE GENERAL ROLE STORE — read past the `dev_` prefix. This is the
+    # **canonical** source of the JWT `roles` claim in BOTH `AUTH_MODE=local`
+    # and `AUTH_MODE=oauth`, and it stays so across the multi-tenant flip
+    # (#706). Cloud does NOT derive roles from the RBAC join tables:
+    # `organization_members.role_id` records affiliation and is deliberately not
+    # the claim source. Stores a JSON array, e.g. '["user","admin"]'.
+    #
+    # The name is a historical artifact of migration 012, which added it "for
+    # local-mode role persistence" before it became the store for every mode.
+    # It is kept rather than renamed because the column is on the live auth path
+    # of a deployed cloud install, where a rolling deploy would have old pods
+    # reading `dev_roles` against a renamed schema. Reason about cloud role
+    # state FROM THIS COLUMN; the prefix is wrong, not the data (fm#1050).
     dev_roles = Column(Text, nullable=True)
     # Account kind (ADR-012): 'individual' (Copilot + dashboard login) or 'slack'
     # (a service account, one per workspace). Drives the derived case `source`.

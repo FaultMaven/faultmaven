@@ -21,7 +21,9 @@ import asyncio
 import sys
 
 from faultmaven.bootstrap.data_init import assign_operator_roles
+from faultmaven.cli._operator_role_audit import record_operator_role_change
 from faultmaven.container import container
+from faultmaven.models.interfaces_operator_audit import OperatorAction
 
 #: How to enumerate accounts. ``list_users.py`` is a checkout-only dev script
 #: (it is deliberately not a console entrypoint), so a pod needs the API.
@@ -78,6 +80,31 @@ async def promote_to_platform_admin(username: str) -> bool:
         return True
 
     print(f"\nGranted operator roles {granted} to user '{username}'.")
+
+    # Record the grant. Deliberately AFTER the write: the audit row states what
+    # happened, so writing it first would risk claiming a promotion that then
+    # failed. The grant is already durable here, so a failure below cannot undo
+    # it — it is reported and the exit code carries it, rather than being
+    # swallowed into a promotion nobody can see (fm#1050).
+    try:
+        await record_operator_role_change(
+            action=OperatorAction.ROLE_GRANTED,
+            user=user,
+            roles_changed=granted,
+            invoked_via="fm-promote-platform-admin",
+        )
+    except Exception as e:
+        print()
+        print(f"❌ The roles WERE granted, but the audit record failed: {e}")
+        print(
+            "   The privilege change is live and unrecorded. Re-running will "
+            "NOT repair it —\n"
+            "   the grant is idempotent, so a second run adds nothing and "
+            "audits nothing.\n"
+            "   Record it by hand and investigate why "
+            "operator_access_audit is unwritable."
+        )
+        return False
     print("✅ User promoted to platform admin successfully!")
     print()
     print(f"Updated roles: {user.roles}")
