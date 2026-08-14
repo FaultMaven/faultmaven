@@ -88,6 +88,10 @@ class AuditEventType(str, Enum):
     PASSWORD_CHANGED = "password_changed"
     ACCOUNT_CREATED = "account_created"
     ROLE_ASSIGNED = "role_assigned"
+    # Distinct from ROLE_ASSIGNED rather than one event with a direction flag in
+    # `details`: `event_type` is the indexed, queried column, and "show me every
+    # revocation" must not depend on parsing a JSON blob (fm#1050).
+    ROLE_REMOVED = "role_removed"
     CASE_SHARED = "case_shared"
     KB_DOCUMENT_SHARED = "kb_document_shared"
     TEAM_CREATED = "team_created"

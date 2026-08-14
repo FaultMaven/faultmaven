@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.config.settings import get_settings
+from faultmaven.models.interfaces_user import AuditEventType
 
 # Interface imports for clean architecture compliance
 # Redis type is for DI signatures only — the actual client is injected at runtime
@@ -159,6 +160,7 @@ class UserService(BaseService):
         auth_service: Any,
         token_generator: Any = None,
         redis_client: Optional[Redis] = None,
+        audit_log: Any = None,
     ):
         """Initialize user service.
 
@@ -172,6 +174,12 @@ class UserService(BaseService):
                 admin routes down over a capability they never touch. The
                 reset flow — and only it — refuses while this is ``None``.
             redis_client: Redis client for token tracking (optional)
+            audit_log: ``IAuditRepository`` for the role-change trail (fm#1050).
+                Optional, and deliberately so: a role change must not fail
+                because the audit sink is absent, and every existing
+                construction of this service predates it. When it is ``None``
+                the change is still logged, just not durably — see
+                ``_audit_role_change``.
 
         Raises:
             ValueError: If required dependencies are not provided
@@ -187,7 +195,66 @@ class UserService(BaseService):
         self.token_generator = token_generator
 
         self.redis_client = redis_client
+        self.audit_log = audit_log
         self._settings = get_settings()
+
+    async def _audit_role_change(
+        self,
+        *,
+        user_id: str,
+        organization_id: str,
+        admin_user_id: str,
+        event_type: Any,
+        role: str,
+        resulting_roles: Any,
+    ) -> None:
+        """Record an org-scoped role change in ``user_audit_log`` (fm#1050).
+
+        Org-scoped role changes belong here rather than in
+        ``operator_access_audit``: they are tenant-bounded, and
+        ``organization_id`` is the caller's own org, which the tenant middleware
+        has already bound for this request — so the row satisfies the RLS
+        policy's implicit WITH CHECK (migration 018 declares only ``USING``,
+        which PostgreSQL then applies to INSERT as well). Deployment-scoped
+        ``platform_admin`` grants cannot use this table for exactly that reason
+        and are recorded by the operator-role CLIs instead.
+
+        **Fails open, loudly.** The role change and its token revocation are
+        already durable by the time this runs, so raising here could not undo
+        them — it would only turn a completed privilege change into a 500 that
+        invites a retry, and the retry would raise ``ConflictError`` because the
+        role is already assigned. The same posture, and for the same reason, as
+        the SSO JIT provisioning audit.
+        """
+        if self.audit_log is None:
+            self.logger.warning(
+                f"role_change_unaudited: no audit sink is wired, so the "
+                f"{role!r} change to user {user_id} by {admin_user_id} was not "
+                f"durably recorded"
+            )
+            return
+        try:
+            from faultmaven.models.interfaces_user import AuditCategory
+
+            await self.audit_log.log_event(
+                user_id=user_id,
+                event_type=event_type,
+                event_category=AuditCategory.AUTHORIZATION,
+                resource_type="user",
+                resource_id=user_id,
+                organization_id=organization_id,
+                details={
+                    "role": role,
+                    "changed_by": admin_user_id,
+                    "resulting_roles": list(resulting_roles or []),
+                },
+            )
+        except Exception as exc:
+            self.logger.error(
+                f"role_change_audit_failed: the {role!r} change to user "
+                f"{user_id} by {admin_user_id} IS in force but was not "
+                f"recorded: {exc}"
+            )
 
     def _signer(self) -> Any:
         """Return the token generator, or refuse the whole reset flow.
@@ -972,6 +1039,15 @@ class UserService(BaseService):
             f"Role assigned: {user_id} -> {role}, "
             f"tokens revoked before: {revoked_before.isoformat()}"
         )
+
+        await self._audit_role_change(
+            user_id=user_id,
+            organization_id=organization_id,
+            admin_user_id=admin_user_id,
+            event_type=AuditEventType.ROLE_ASSIGNED,
+            role=role,
+            resulting_roles=updated_user.roles,
+        )
         return updated_user
 
     async def remove_role(
@@ -1049,6 +1125,15 @@ class UserService(BaseService):
         self.logger.info(
             f"Role removed: {user_id}, role={role}, roles now={user.roles}, "
             f"tokens revoked before: {revoked_before.isoformat()}"
+        )
+
+        await self._audit_role_change(
+            user_id=user_id,
+            organization_id=organization_id,
+            admin_user_id=admin_user_id,
+            event_type=AuditEventType.ROLE_REMOVED,
+            role=role,
+            resulting_roles=updated_user.roles,
         )
         return updated_user
 

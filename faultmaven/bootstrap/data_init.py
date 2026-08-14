@@ -212,7 +212,11 @@ async def _create_admin_user(user_store: Any) -> Any:
     return user
 
 
-async def assign_operator_roles(user_store: Any, user: Any) -> tuple[Any, list[str]]:
+async def assign_operator_roles(
+    user_store: Any,
+    user: Any,
+    invoked_via: str = "startup-regrant",
+) -> tuple[Any, list[str], Optional[Exception]]:
     """Ensure the given user holds the operator roles; grants any that are missing.
 
     The standalone deployment's single account is legitimately both its
@@ -232,24 +236,64 @@ async def assign_operator_roles(user_store: Any, user: Any) -> tuple[Any, list[s
     hand and one re-granted at startup must end up with identical roles, and two
     copies of "which roles make an operator" is exactly how they drift.
 
+    Being the single writer, it is also the single **auditor**: every grant is
+    recorded to ``operator_access_audit``, whether it came from the CLI or from
+    the startup re-grant. Recording it in the CLI instead left the re-grant
+    silent, so a demotion followed by a restart showed a revocation and no
+    re-grant while the account held ``platform_admin`` again (fm#1050).
+
     Args:
         user_store: Initialised user store instance
         user: DevUser to check and update
+        invoked_via: What performed the grant, recorded in the audit row so the
+            trail distinguishes a hand-run promotion from the startup re-grant.
 
     Returns:
-        ``(user, granted)`` — the user (updated if roles were granted, unchanged
-        otherwise) and the list of roles this call added, empty when it was a
-        no-op. Callers that report to a human use ``granted``; startup ignores it.
+        ``(user, granted, audit_error)`` — the user (updated if roles were
+        granted, unchanged otherwise), the list of roles this call added (empty
+        when it was a no-op), and the exception from the audit write if it
+        failed. Callers that report to a human surface ``audit_error``; startup
+        ignores it, having already logged it.
     """
     missing = [r for r in PLATFORM_ADMIN_ROLE_SET if r not in (user.roles or [])]
     if not missing:
-        return user, []
+        return user, [], None
 
     logger.info(f"User '{user.username}' missing operator roles {missing} — granting")
     user.roles = list(user.roles or []) + missing
     user = await user_store.update_user(user)
     logger.info(f"Operator roles granted to '{user.username}': {user.roles}")
-    return user, missing
+
+    # Audited HERE, not in the CLI, for the same reason the grant itself lives
+    # here: this is the single writer. Recording it in the promote command left
+    # the startup re-grant silent, so a demotion followed by a restart produced
+    # a trail showing a revocation and no re-grant while the account held
+    # `platform_admin` again (fm#1050).
+    #
+    # The exception is returned rather than raised: the grant is already durable,
+    # so raising could not undo it, and startup must not fail over an audit sink
+    # — a standalone deployment with no operator is unusable. Callers that report
+    # to a human surface it; startup logs and continues.
+    audit_error: Optional[Exception] = None
+    try:
+        from faultmaven.cli._operator_role_audit import record_operator_role_change
+        from faultmaven.models.interfaces_operator_audit import OperatorAction
+
+        await record_operator_role_change(
+            action=OperatorAction.ROLE_GRANTED,
+            user=user,
+            roles_changed=missing,
+            invoked_via=invoked_via,
+        )
+    except Exception as exc:
+        audit_error = exc
+        logger.error(
+            f"operator_role_grant_unaudited: granted {missing} to "
+            f"'{user.username}' via {invoked_via}, but the audit record failed: "
+            f"{exc}"
+        )
+
+    return user, missing, audit_error
 
 
 async def ensure_default_admin_exists(container: Any) -> Optional[Any]:

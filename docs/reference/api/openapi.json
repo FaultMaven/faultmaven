@@ -3975,10 +3975,12 @@
         "type": "object"
       },
       "OperatorAction": {
-        "description": "The metadata/content boundary D8/D9 governs.\n\n``LIST`` is ambient metadata (ids, org, state, timestamps, counts \u2014 never\ntitles). ``CONTENT_OPEN`` is tenant content: title, transcript, evidence.\nTitle counts as content because it is user free-text and leaks.",
+        "description": "What an operator did that this table has to remember.\n\nTwo are the metadata/content boundary D8/D9 governs. ``LIST`` is ambient\nmetadata (ids, org, state, timestamps, counts \u2014 never titles).\n``CONTENT_OPEN`` is tenant content: title, transcript, evidence. Title\ncounts as content because it is user free-text and leaks.\n\n``ROLE_GRANTED`` / ``ROLE_REVOKED`` are not data access \u2014 they record\nchanges to *who is an operator*. They live here because ``platform_admin``\nis deployment-scoped (ADR-012 D9) and so has no organization to stamp it\nwith; see migration 042 and ``cli._operator_role_audit`` for why the\nRLS-tenanted ``user_audit_log`` cannot hold them.\n\nSo read this enum as \"operator events\", of which data access is two.",
         "enum": [
           "list",
-          "content_open"
+          "content_open",
+          "role_granted",
+          "role_revoked"
         ],
         "title": "OperatorAction",
         "type": "string"
