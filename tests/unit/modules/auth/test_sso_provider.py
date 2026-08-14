@@ -406,3 +406,36 @@ def test_default_port_implementation_offers_no_single_logout():
             )
 
     assert _Minimal().build_logout_url(provider_session_id="whatever") is None
+
+
+def test_build_logout_url_forwards_return_to_when_given():
+    """The destination must be named, not left to WorkOS's default Logout URI."""
+    um = _FakeUserManagement()
+    um.logout_calls = []  # type: ignore[attr-defined]
+    um.get_logout_url = lambda **kw: (  # type: ignore[method-assign]
+        um.logout_calls.append(kw) or "https://idp.example/logout"
+    )
+    provider = WorkOSIdentityProvider(client=_FakeClient(um), redirect_uri="https://cb")
+
+    provider.build_logout_url(
+        provider_session_id="session_01HSID", return_to="https://app.test"
+    )
+
+    assert um.logout_calls == [
+        {"session_id": "session_01HSID", "return_to": "https://app.test"}
+    ]
+
+
+def test_build_logout_url_omits_return_to_when_absent():
+    """Absent, not empty. WorkOS refuses an unregistered ``return_to``, so a
+    blank one would turn a working logout into a failed one."""
+    um = _FakeUserManagement()
+    um.logout_calls = []  # type: ignore[attr-defined]
+    um.get_logout_url = lambda **kw: (  # type: ignore[method-assign]
+        um.logout_calls.append(kw) or "https://idp.example/logout"
+    )
+    provider = WorkOSIdentityProvider(client=_FakeClient(um), redirect_uri="https://cb")
+
+    provider.build_logout_url(provider_session_id="session_01HSID", return_to="")
+
+    assert um.logout_calls == [{"session_id": "session_01HSID"}]

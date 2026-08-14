@@ -71,13 +71,21 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             logger.warning("workos_code_exchange_failed", error=type(exc).__name__)
             raise SSOAuthenticationError("SSO code exchange failed") from exc
 
-    def build_logout_url(self, *, provider_session_id: str) -> str | None:
+    def build_logout_url(
+        self, *, provider_session_id: str, return_to: str | None = None
+    ) -> str | None:
         if not provider_session_id:
             return None
         try:
-            return self._client.user_management.get_logout_url(
-                session_id=provider_session_id
-            )
+            # ``return_to`` must be registered under Logout redirects in the
+            # WorkOS dashboard; an unregistered value is refused rather than
+            # honoured. Omitting it falls back to WorkOS's configured default
+            # Logout URI, which is why the caller passes one explicitly — the
+            # default is a dashboard setting nothing in this repo can assert.
+            kwargs: dict[str, Any] = {"session_id": provider_session_id}
+            if return_to:
+                kwargs["return_to"] = return_to
+            return self._client.user_management.get_logout_url(**kwargs)
         except Exception as exc:
             # Never raise from logout: the caller has already torn down the
             # FaultMaven session, and an exception here would surface as a

@@ -171,6 +171,28 @@ organization, and the mapping is 1:1 per provider. Nothing was written. This is
 almost always the slug collision above, caught one step later. Re-provision the
 new customer under a distinct slug.
 
+## Register the logout redirect (once per environment)
+
+Signing out of FaultMaven does not end the IdP's session on its own — WorkOS
+holds its own cookie on its own domain, and until it is ended the next sign-in
+is answered without a prompt: the account cannot be switched, and the next
+person at a shared browser is one click from being signed back in.
+
+FaultMaven therefore hands the client a logout URL and asks WorkOS to return the
+browser to the dashboard afterwards. **WorkOS refuses a `return_to` it does not
+recognise**, so the dashboard origin has to be registered first:
+
+1. WorkOS dashboard → **Redirects** → **Logout redirects**.
+2. Add the dashboard origin — `https://app.faultmaven.ai` in production. It must
+   match what the API has as `dashboard_url`; that is the value FaultMaven
+   sends.
+3. Set it as the default Logout URI too, so a logout that arrives without a
+   `return_to` still lands somewhere sensible.
+
+This is environment configuration, not per-customer: do it once, not per
+organization. Skipping it does not break sign-in — only sign-out, and only at
+the last hop, which is an easy failure to misread as "logout is broken".
+
 ## Step 3 — verify
 
 1. Have the first user click **Sign in with SSO** on the dashboard.

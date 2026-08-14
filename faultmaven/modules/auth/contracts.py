@@ -591,13 +591,20 @@ class ISSOIdentityProvider(ABC):
                 fails for any reason.
         """
 
-    def build_logout_url(self, *, provider_session_id: str) -> str | None:
+    def build_logout_url(
+        self, *, provider_session_id: str, return_to: str | None = None
+    ) -> str | None:
         """Return the IdP URL that ends ``provider_session_id``, or None.
 
         Ending the FaultMaven session is not a logout on its own: the IdP holds
         its own session in the browser, so the next authorization request is
         answered without a prompt and the account cannot be switched. Visiting
         this URL is what actually ends it.
+
+        ``return_to`` names where the IdP should send the browser afterwards.
+        Providers generally require it to be **pre-registered** with them, so an
+        unregistered value is a failed logout rather than a redirect elsewhere —
+        it is a deployment setting, not a per-request choice.
 
         Returning ``None`` is a supported answer, not a failure — a provider may
         offer no single-logout, and callers degrade to today's behaviour rather

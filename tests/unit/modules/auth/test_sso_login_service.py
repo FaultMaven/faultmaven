@@ -983,9 +983,13 @@ class LogoutCapableProvider(FakeProvider):
         super().__init__(identity=identity)
         self.raises = raises
         self.logout_calls: list[str] = []
+        self.return_tos: list[str | None] = []
 
-    def build_logout_url(self, *, provider_session_id: str) -> str | None:
+    def build_logout_url(
+        self, *, provider_session_id: str, return_to: str | None = None
+    ) -> str | None:
         self.logout_calls.append(provider_session_id)
+        self.return_tos.append(return_to)
         if self.raises is not None:
             raise self.raises
         return f"https://authkit.test/logout?session={provider_session_id}"
@@ -1013,6 +1017,10 @@ async def test_exchange_returns_the_idp_logout_url(store):
     assert result.idp_logout_url == "https://authkit.test/logout?session=session_01HSID"
     # Built from the id captured on the CALLBACK leg — proving the hand-off.
     assert provider.logout_calls == ["session_01HSID"]
+    # The destination is named, not inherited from the IdP's default Logout URI
+    # — a dashboard setting this deployment cannot see, so an unset or stale one
+    # would land the user somewhere arbitrary right after signing out.
+    assert provider.return_tos == [DASHBOARD_URL]
 
 
 async def test_exchange_returns_no_logout_url_without_a_provider_session(store):

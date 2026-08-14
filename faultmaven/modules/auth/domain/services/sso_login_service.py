@@ -641,10 +641,17 @@ class SSOLoginService:
         if not isinstance(provider_session_id, str) or not provider_session_id:
             return None
         try:
+            # Name the destination rather than inheriting the IdP's default
+            # Logout URI, which is a dashboard setting this deployment cannot
+            # see: an unset or stale default lands the user somewhere arbitrary
+            # immediately after a successful sign-out. The dashboard origin must
+            # be registered under the provider's logout redirects — see
+            # docs/operations/sso-org-provisioning.md.
             return self._provider.build_logout_url(
-                provider_session_id=provider_session_id
+                provider_session_id=provider_session_id,
+                return_to=self._dashboard_url or None,
             )
-        except Exception as exc:  # pragma: no cover - defence in depth
+        except Exception as exc:
             logger.warning("sso_logout_url_failed", error=type(exc).__name__)
             return None
 
