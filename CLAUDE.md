@@ -316,16 +316,32 @@ Capability is reported per-provider via `get_structured_output_capability()`.
 OpenAI's strict subset admits no optional keys and no free-form objects, so
 `utils/schema_converter.to_strict_schema` rewrites a schema to fit — every
 property required, formerly-optional ones rendered as null unions,
-`additionalProperties: false` throughout — and **refuses** when it cannot. Today
-`InquiryResponse` and `TerminalResponse` are enforced; the four
-`InvestigationResponse_*` schemas are not, because their `Dict[str, Any]` fields
-(`milestone_justifications`, `hypotheses_to_update`) have no strict
-representation — forcing them would yield an object that can never hold a key,
-so those turns keep the unenforced path until the fields are restructured.
-Enforcement is scoped to the schema tool; investigation tools keep optional
-parameters. Because a strict response carries every key with `null` where the
-model had nothing, schema classes with non-`Optional` defaulted fields inherit
-`NullTolerantModel` (fm#1051).
+`additionalProperties: false` throughout — and **refuses** when it cannot. All
+six response schemas are enforced: `InquiryResponse`, `TerminalResponse` and the
+four `InvestigationResponse_*`. The refusal valve remains for any schema that
+later grows a construct outside the subset — a free-form `Dict[str, Any]` is the
+one the project hit, and it is refused rather than sent with a `strict: true`
+the API rejects. Enforcement is scoped to the schema tool; investigation tools
+keep optional parameters.
+
+The investigation schemas reached the subset by giving their two `Dict[str, Any]`
+fields declared shapes (fm#1057). `milestone_justifications` became
+`MilestoneJustifications`, one field per settable milestone — its key domain was
+always closed, so the wire shape (an object keyed by milestone name) is
+unchanged. `hypotheses_to_update` became a list whose entries carry
+`hypothesis_id`, because there the key domain is genuinely open.
+
+Because a strict response carries every key with `null` where the model had
+nothing, schema classes with **defaulted** fields inherit `NullTolerantModel`,
+which restores the default. The rule keys on "has a non-`None` default" rather
+than "is not `Optional`": the `Optional[List[X]] = default_factory=list` case
+accepts the null silently and would otherwise land as `None` in code expecting a
+list — 47 such fields in the investigation schemas alone. A field whose default
+*is* `None` keeps its `None`. Two consequences worth knowing: reading
+`milestone_justifications` must go through `as_dict()` (a plain `model_dump()`
+reports every milestone as justified and the reasoning gate stops firing), and a
+new gate milestone needs a matching justification field or it becomes
+unjustifiable — both pinned by `tests/unit/core/investigation/test_schema_strict_mode.py`.
 
 STRICT enforcement is necessary but not sufficient: a STRICT **thinking** model
 bills hidden reasoning against `maxOutputTokens`, which can starve the JSON

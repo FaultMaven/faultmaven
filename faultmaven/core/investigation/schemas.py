@@ -44,7 +44,6 @@ from typing import (
     List,
     Literal,
     Optional,
-    get_args,
 )
 
 from pydantic import (
@@ -71,26 +70,6 @@ from faultmaven.modules.case.contracts import (
     SolutionType,
     TurnOutcome,
 )
-
-
-def _coerce_none_to_empty_dict(v: Any) -> Any:
-    """Treat an explicit ``null`` for a required dict field as the empty default.
-
-    Some models (observed: gemini-3.5-flash) emit ``"field": null`` instead of
-    omitting the field or sending ``{}``. ``default_factory=dict`` only covers
-    the *absent* case, so a non-``Optional`` ``Dict`` field 500s on the explicit
-    ``null``. Coercing ``None`` → ``{}`` here tolerates that shape variant
-    provider-agnostically (the never-500 backstop's prune path can't repair a
-    top-level non-list field). See [[project_pydantic_shape_failures_backlog]].
-    """
-    return {} if v is None else v
-
-
-# A required ``Dict`` field that tolerates an explicit ``null`` from the LLM by
-# coercing it to ``{}`` before validation (mirrors ``default_factory=dict`` for
-# the explicit-null case). Apply to every non-Optional dict in the LLM response
-# schema, since any of them can be nulled by a less-disciplined model.
-_NoneTolerantDict = BeforeValidator(_coerce_none_to_empty_dict)
 
 
 def _coerce_bare_int_to_new_index(v: Any) -> Any:
@@ -207,6 +186,11 @@ class TurnPayload:
 # =============================================================================
 
 
+#: Distinguishes "the key is absent" from "the key is present and null". Only
+#: the latter is a strict-mode null that needs restoring to its default.
+_ABSENT = object()
+
+
 class NullTolerantModel(BaseModel):
     """A model that reads an explicit ``null`` as "field omitted".
 
@@ -219,13 +203,25 @@ class NullTolerantModel(BaseModel):
     source of the very validation failure it was added to prevent.
 
     Dropping the key restores the default, which is exactly the meaning the
-    model intended. Fields that are genuinely ``Optional`` are untouched: their
-    ``None`` is a value, not an absence, and it validates on its own.
+    model intended.
 
-    Inherit this anywhere a non-``Optional`` field has a default and the model
-    is reachable from a strict-enabled schema. ``test_schema_strict_mode.py``
-    fails if such a field exists without it, so the requirement is enforced
-    rather than remembered.
+    **The rule is "has a non-``None`` default", not "is not ``Optional``"**
+    (fm#1057). The narrower spelling only caught the fields that would *raise*,
+    and those are the harmless half — a validation error is loud. The dangerous
+    half is silent: ``Optional[List[X]] = Field(default_factory=list)`` accepts
+    the ``null``, so the field lands as ``None`` where every previous turn gave
+    it ``[]``. Extending the four ``InvestigationResponse_*`` schemas to strict
+    exposed 47 such fields at once — ``evidence_to_add``, ``hypotheses_to_add``,
+    ``causal_nodes_to_add`` and the rest of the state-update payload. Keying on
+    the default covers both halves with one rule: where a default exists, it is
+    the meaning of "absent", and strict mode spells absent as ``null``.
+
+    A field whose default *is* ``None`` keeps its ``None`` — there the value and
+    the absence coincide, so there is nothing to restore.
+
+    Inherit this anywhere a defaulted field is reachable from a strict-enabled
+    schema. ``test_schema_strict_mode.py`` fails if such a field exists without
+    it, so the requirement is enforced rather than remembered.
     """
 
     @model_validator(mode="before")
@@ -236,20 +232,14 @@ class NullTolerantModel(BaseModel):
         dropped = {
             name
             for name, field in cls.model_fields.items()
-            if not field.is_required()
-            and data.get(name, "sentinel") is None
-            and not _accepts_none(field.annotation)
+            if not field.is_required() and data.get(name, _ABSENT) is None
+            # Evaluated last: it runs the default_factory, and only for a field
+            # the model actually nulled.
+            and field.get_default(call_default_factory=True) is not None
         }
         if not dropped:
             return data
         return {k: v for k, v in data.items() if k not in dropped}
-
-
-def _accepts_none(annotation: Any) -> bool:
-    """Whether ``None`` is a valid value for this annotation."""
-    if annotation is None or annotation is type(None):
-        return True
-    return type(None) in get_args(annotation)
 
 
 class ReasoningConclusion(BaseModel):
@@ -262,7 +252,56 @@ class ReasoningConclusion(BaseModel):
     )
 
 
-class InternalReasoning(BaseModel):
+class MilestoneJustifications(NullTolerantModel):
+    """Why each milestone the LLM CHANGED this turn was changed.
+
+    Declared per milestone rather than as a free-form map (fm#1057). The wire
+    shape is unchanged — still an object keyed by milestone name — but the keys
+    are now *declared*, which is what makes the enclosing schema expressible in
+    OpenAI's strict subset. A ``Dict[str, Any]`` emits an object with no
+    ``properties``, and strict mode demands ``additionalProperties: false`` on
+    every object, so the map would have been rendered as an object that can
+    never hold a key: every milestone structurally guaranteed unjustified.
+
+    The map was never genuinely free-form. Its key domain is exactly the
+    boolean fields of :class:`MilestoneUpdates` — the milestones the engine can
+    observe being completed — so declaring them loses nothing and gains the
+    model an explicit list of what it is allowed to justify.
+
+    ``test_schema_strict_mode.py`` pins this field set against
+    ``MilestoneUpdates``; adding a gate milestone without adding its
+    justification here would make that milestone permanently unjustifiable.
+    """
+
+    symptom_verified: Optional[str] = None
+    mitigation_accepted: Optional[str] = None
+    mitigation_verified: Optional[str] = None
+    solution_accepted: Optional[str] = None
+
+    def as_dict(self) -> Dict[str, str]:
+        """The justifications that actually say something, keyed by milestone.
+
+        **The single null-to-absent conversion point, and it is load-bearing.**
+        Every consumer asks "is this milestone justified?" as a membership test.
+        Under strict mode the model must emit all four keys, ``null`` where it
+        had nothing — so a plain ``model_dump()`` would report every milestone
+        as justified and the reasoning gate would stop rejecting anything. That
+        is a silent fail-OPEN: the gate still runs, still logs, and never fires.
+
+        Blank and whitespace-only strings are dropped for the same reason. A
+        model forced to produce a key for a milestone it did not change has to
+        put *something* there, and ``""`` is the cheapest something; before
+        strict it simply omitted the key. Treating blank as absent keeps
+        "justified" meaning what it meant.
+        """
+        return {
+            name: value
+            for name, value in self.model_dump(exclude_none=True).items()
+            if str(value).strip()
+        }
+
+
+class InternalReasoning(NullTolerantModel):
     """
     Internal reasoning that must be completed BEFORE state_updates.
     Forces LLM to justify decisions with evidence trail.
@@ -278,13 +317,14 @@ class InternalReasoning(BaseModel):
         default_factory=list,
         description="Step-by-step reasoning from evidence to conclusions",
     )
-    milestone_justifications: Annotated[Dict[str, Any], _NoneTolerantDict] = Field(
-        default_factory=dict,
+    milestone_justifications: MilestoneJustifications = Field(
+        default_factory=MilestoneJustifications,
         description=(
-            "MANDATORY: For EVERY milestone set to True in milestones, provide a justification here. "
-            "Format: {milestone_name: 'justification citing specific evidence IDs'}. "
+            "MANDATORY: For EVERY milestone you CHANGE in milestones, fill in the "
+            "matching field here with a justification citing specific evidence IDs. "
             "Example: {'symptom_verified': 'Connection errors confirmed per ev_abc123'}. "
-            "DO NOT leave empty {} when completing milestones - validation will reject."
+            "Leave a milestone's field null when you did not change that milestone. "
+            "A milestone you change WITHOUT a justification is rejected."
         ),
     )
     uncertainties: Optional[List[str]] = Field(
@@ -397,7 +437,7 @@ class MilestoneUpdates(NullTolerantModel):
     solution_accepted: Optional[bool] = None
 
 
-class ProblemVerificationUpdate(BaseModel):
+class ProblemVerificationUpdate(NullTolerantModel):
     """Updates to problem verification data."""
 
     symptom_correction: Optional[str] = None
@@ -409,7 +449,7 @@ class ProblemVerificationUpdate(BaseModel):
     rca_infeasible_rationale: Optional[str] = None
 
 
-class EvidenceToAdd(BaseModel):
+class EvidenceToAdd(NullTolerantModel):
     """A claim-anchored evidence record the LLM is creating this turn.
 
     Post-010 strict evidence model: every evidence row is the LLM's
@@ -575,8 +615,23 @@ class HypothesisUpdate(BaseModel):
     MUST also be provided (max 200 chars). The orchestration layer rejects
     updates that carry one without the other. If there is no disproof
     evidence, use ``state=RETIRED`` instead (no reason required).
+
+    The hypothesis being updated is named by ``hypothesis_id`` on the entry
+    itself. It used to be the KEY of a ``Dict[str, HypothesisUpdate]``, which
+    made the enclosing schema inexpressible under strict mode: a map keyed by a
+    hypothesis id is an object with no declared properties, and strict mode
+    cannot represent one (fm#1057). Unlike ``milestone_justifications``, the key
+    domain here is genuinely open — ids are minted per case — so the id moves
+    onto the entry and the field becomes a list, matching ``hypotheses_to_add``.
     """
 
+    hypothesis_id: IdRef = Field(
+        description=(
+            "Which hypothesis this entry updates: an existing id (hyp_...) or "
+            "'new_index_N' referring to the Nth entry in hypotheses_to_add this "
+            "same turn."
+        ),
+    )
     likelihood: Optional[float] = Field(None, ge=0.0, le=1.0)
     state: Optional[HypothesisState] = None
     refutation_reason: Optional[str] = Field(
@@ -637,7 +692,7 @@ class HypothesisUpdate(BaseModel):
         return v
 
 
-class HypothesisEvidenceLinkToAdd(BaseModel):
+class HypothesisEvidenceLinkToAdd(NullTolerantModel):
     """Link evidence to a hypothesis."""
 
     hypothesis_id_ref: IdRef = Field(
@@ -772,7 +827,7 @@ class NodeEvidenceLinkToAdd(BaseModel):
     )
 
 
-class EvidenceNeedUpdate(BaseModel):
+class EvidenceNeedUpdate(NullTolerantModel):
     """LLM-emitted: create a new evidence need OR update an existing one.
 
     Evidence needs are the demand-side counterpart to evidence rows —
@@ -974,7 +1029,7 @@ class JournalEntryOutput(BaseModel):
     )
 
 
-class WorkingConclusionUpdate(BaseModel):
+class WorkingConclusionUpdate(NullTolerantModel):
     """Current working theory of the case.
 
     All fields are optional to allow empty working_conclusion during early INQUIRY phase
@@ -1018,7 +1073,7 @@ class EvidenceQualityIssue(BaseModel):
     )
 
 
-class MissingCriticalData(BaseModel):
+class MissingCriticalData(NullTolerantModel):
     """
     Proactive detection of critical data blockers.
     Flags data quality issues to the agent via system feedback so it can
@@ -1038,7 +1093,7 @@ class MissingCriticalData(BaseModel):
     )
 
 
-class ProposedTransition(BaseModel):
+class ProposedTransition(NullTolerantModel):
     """
     Agent signals a state transition. Engine handles everything else.
 
@@ -1064,7 +1119,7 @@ class ProposedTransition(BaseModel):
         return v.strip().lower() if isinstance(v, str) else v
 
 
-class RootCauseConclusionUpdate(BaseModel):
+class RootCauseConclusionUpdate(NullTolerantModel):
     """Final root cause conclusion."""
 
     root_cause: str
@@ -1084,7 +1139,7 @@ class RootCauseConclusionUpdate(BaseModel):
     )
 
 
-class SolutionToAdd(BaseModel):
+class SolutionToAdd(NullTolerantModel):
     """Proposed solution."""
 
     description: str
@@ -1465,7 +1520,7 @@ class InquiryResponse(BaseInteractionResponse):
 class TerminalResponse(BaseInteractionResponse):
     """Response schema for RESOLVED/CLOSED state."""
 
-    class TerminalStateUpdate(BaseModel):
+    class TerminalStateUpdate(NullTolerantModel):
         final_summary_update: Optional[str] = None
         documentation_links: Optional[List[str]] = Field(default_factory=list)
 
@@ -1480,14 +1535,18 @@ class TerminalResponse(BaseInteractionResponse):
 class InvestigationResponse_Diagnosis(BaseInteractionResponse):
     """Schema for DIAGNOSIS stage — covers symptom verification, hypothesis work, and solution proposal."""
 
-    class DiagnosisStateUpdate(BaseModel):
+    class DiagnosisStateUpdate(NullTolerantModel):
         milestones: Optional[MilestoneUpdates] = None
         verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        hypotheses_to_update: Annotated[
-            Dict[str, HypothesisUpdate], _NoneTolerantDict
-        ] = Field(default_factory=dict)
+        hypotheses_to_update: Optional[List[HypothesisUpdate]] = Field(
+            default_factory=list,
+            description=(
+                "Updates to EXISTING hypotheses. Each entry names its target in "
+                "hypothesis_id."
+            ),
+        )
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
@@ -1555,7 +1614,7 @@ class InvestigationResponse_Diagnosis(BaseInteractionResponse):
 class InvestigationResponse_Mitigation(BaseInteractionResponse):
     """Schema for MITIGATION stage — applying and verifying temporary fix."""
 
-    class MitigationStateUpdate(BaseModel):
+    class MitigationStateUpdate(NullTolerantModel):
         milestones: Optional[MilestoneUpdates] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         evidence_need_updates: Optional[List[EvidenceNeedUpdate]] = Field(
@@ -1604,13 +1663,17 @@ class InvestigationResponse_Mitigation(BaseInteractionResponse):
 class InvestigationResponse_Treatment(BaseInteractionResponse):
     """Schema for TREATMENT stage — verifying fix, extended diagnosis if fix fails."""
 
-    class TreatmentStateUpdate(BaseModel):
+    class TreatmentStateUpdate(NullTolerantModel):
         milestones: Optional[MilestoneUpdates] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        hypotheses_to_update: Annotated[
-            Dict[str, HypothesisUpdate], _NoneTolerantDict
-        ] = Field(default_factory=dict)
+        hypotheses_to_update: Optional[List[HypothesisUpdate]] = Field(
+            default_factory=list,
+            description=(
+                "Updates to EXISTING hypotheses. Each entry names its target in "
+                "hypothesis_id."
+            ),
+        )
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )
@@ -1662,14 +1725,18 @@ class InvestigationResponse_Treatment(BaseInteractionResponse):
 class InvestigationResponse_General(BaseInteractionResponse):
     """Fallback 'Full' schema if stage is ambiguous or degraded."""
 
-    class GeneralStateUpdate(BaseModel):
+    class GeneralStateUpdate(NullTolerantModel):
         milestones: Optional[MilestoneUpdates] = None
         verification_updates: Optional[ProblemVerificationUpdate] = None
         evidence_to_add: Optional[List[EvidenceToAdd]] = Field(default_factory=list)
         hypotheses_to_add: Optional[List[HypothesisToAdd]] = Field(default_factory=list)
-        hypotheses_to_update: Annotated[
-            Dict[str, HypothesisUpdate], _NoneTolerantDict
-        ] = Field(default_factory=dict)
+        hypotheses_to_update: Optional[List[HypothesisUpdate]] = Field(
+            default_factory=list,
+            description=(
+                "Updates to EXISTING hypotheses. Each entry names its target in "
+                "hypothesis_id."
+            ),
+        )
         hypothesis_evidence_links: Optional[List[HypothesisEvidenceLinkToAdd]] = Field(
             default_factory=list
         )

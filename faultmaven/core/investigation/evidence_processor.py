@@ -183,8 +183,11 @@ def validate_milestone_claims(
             )
 
         # Check milestone justification in reasoning (optional but recommended)
-        if reasoning and hasattr(reasoning, "milestone_justifications"):
-            justifications = reasoning.milestone_justifications or {}
+        if reasoning and getattr(reasoning, "milestone_justifications", None):
+            # ``as_dict()`` drops the nulls a strict provider sends for the
+            # milestones it did not touch; without it every milestone would look
+            # justified here (fm#1057).
+            justifications = reasoning.milestone_justifications.as_dict()
             if milestone not in justifications:
                 # Don't fail validation, just log a warning
                 logger.debug(
