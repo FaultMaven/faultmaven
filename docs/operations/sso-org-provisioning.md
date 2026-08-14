@@ -4,6 +4,10 @@
 **Design:** [`docs/architecture/security/sso-org-mapping.md`](../architecture/security/sso-org-mapping.md)
 **Refs:** #869, ADR-013, ADR-015
 
+> Provisioning the **tenant** is one step of onboarding an account. For the
+> end-to-end procedure — WorkOS organization, invitation, first sign-in, role
+> grant — see [`account-provisioning.md`](account-provisioning.md).
+
 ## When to run this
 
 Run it **before** the first user of a new customer signs in.

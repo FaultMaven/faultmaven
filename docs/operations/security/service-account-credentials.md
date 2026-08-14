@@ -3,6 +3,10 @@
 How a non-human actor — today the Slack agent — authenticates to the FaultMaven
 API. Implements ADR-012 D10.
 
+> For the surrounding procedure — choosing between a human and a service
+> account, and provisioning the tenant this credential names — see
+> [`../account-provisioning.md`](../account-provisioning.md).
+
 ## Why this exists
 
 At `AUTH_MODE=local`, the Slack agent authenticates with passwordless dev-login
