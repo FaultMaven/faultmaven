@@ -3,6 +3,11 @@
 This directory contains **development conveniences** for managing user accounts
 from a repository checkout.
 
+> **Creating an account on a Cloud deployment? This is the wrong page.** The
+> scripts here work only at `AUTH_MODE=local`. In cloud mode human accounts are
+> created in WorkOS and provisioned just-in-time on first sign-in — see
+> [`docs/operations/account-provisioning.md`](../../docs/operations/account-provisioning.md).
+
 ## Operator procedures are console commands, not scripts here
 
 The procedures an operator runs against a real deployment ship *with the
