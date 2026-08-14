@@ -3,8 +3,15 @@
 ``fm-promote-platform-admin`` granted the highest privilege the deployment
 offers and recorded nothing: after the fm#819 cutover ``user_audit_log`` held
 exactly one row — SSO JIT provisioning — and none for the promotion. Demotion
-had the same gap. This module is the one writer that closes it, shared by both
-CLIs so a grant and its matching revocation cannot drift apart.
+had the same gap. This module is the one writer that closes it.
+
+**Called from the grant's own single writer, not from the CLI.**
+``bootstrap.data_init.assign_operator_roles`` performs every grant — the
+hand-run promotion *and* the re-grant that runs on every startup — so it is
+where the record is written. Auditing in the promote command instead left the
+startup path silent: a demotion followed by a restart produced a trail showing
+a revocation and no re-grant, while the account held ``platform_admin`` again.
+Demotion has no such shared writer and calls this directly.
 
 **Which table, and why not the obvious one.** ``user_audit_log`` is RLS-tenanted
 (migration 018) and ``platform_admin`` is deployment-scoped (ADR-012 D9), so

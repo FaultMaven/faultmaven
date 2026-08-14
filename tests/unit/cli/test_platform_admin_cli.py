@@ -60,8 +60,13 @@ def audit(monkeypatch):
     something was.
     """
     recorder = AsyncMock()
-    for module in (promote_platform_admin, demote_platform_admin):
-        monkeypatch.setattr(module, "record_operator_role_change", recorder)
+    # The grant is audited by its single writer in ``bootstrap.data_init``, not
+    # by the promote CLI, so that the startup re-grant is covered too — patch it
+    # where it is looked up. The demote path calls it directly.
+    monkeypatch.setattr(
+        "faultmaven.cli._operator_role_audit.record_operator_role_change", recorder
+    )
+    monkeypatch.setattr(demote_platform_admin, "record_operator_role_change", recorder)
     return recorder
 
 
@@ -351,3 +356,118 @@ async def test_demote_still_demotes_when_revocation_fails(
     out = capsys.readouterr().out
     assert "revocation failed" in out
     assert "keeps platform-admin reach" in out, "the window must be stated"
+
+
+async def test_the_startup_regrant_is_audited_too(store, audit):
+    """The gap that made the trail lie.
+
+    ``assign_operator_roles`` runs on EVERY startup. Auditing in the promote
+    CLI left this path silent, so demote + restart produced a trail showing a
+    revocation and no re-grant while the account held ``platform_admin`` again.
+    """
+    from faultmaven.bootstrap.data_init import assign_operator_roles
+
+    user = _user(roles=["user"])
+
+    _user_out, granted, audit_error = await assign_operator_roles(store, user)
+
+    assert granted, "nothing was granted, so the test asserts nothing"
+    assert audit_error is None
+    audit.assert_awaited_once()
+    kwargs = audit.await_args.kwargs
+    assert kwargs["action"] is OperatorAction.ROLE_GRANTED
+    assert (
+        kwargs["invoked_via"] == "startup-regrant"
+    ), "the trail must distinguish an automatic re-grant from a hand-run one"
+
+
+async def test_a_startup_audit_failure_does_not_break_the_grant(store, audit):
+    """Startup must not fail over an audit sink: a standalone deployment with no
+    operator is unusable. The error is returned, not raised."""
+    from faultmaven.bootstrap.data_init import assign_operator_roles
+
+    audit.side_effect = RuntimeError("operator_access_audit is unreachable")
+
+    user, granted, audit_error = await assign_operator_roles(
+        store, _user(roles=["user"])
+    )
+
+    assert PLATFORM_ADMIN_ROLE in user.roles, "the grant must still have landed"
+    assert granted
+    assert isinstance(audit_error, RuntimeError)
+
+
+# =============================================================================
+# The audit writer itself
+#
+# Everything above substitutes ``record_operator_role_change``, so nothing above
+# would notice if its kwargs, its action values, or its deployment-mode
+# resolution were wrong. These exercise the real function against a stand-in
+# repository.
+# =============================================================================
+
+
+async def test_the_audit_writer_records_the_subject_and_the_roles(monkeypatch):
+    from faultmaven.cli import _operator_role_audit as mod
+
+    recorded = {}
+
+    class _Repo:
+        async def record_access(self, **kwargs):
+            recorded.update(kwargs)
+
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.persistence."
+        "sessionless_operator_audit_repository.SessionlessOperatorAuditRepository",
+        _Repo,
+    )
+
+    user = _user(roles=list(PLATFORM_ADMIN_ROLE_SET))
+    await mod.record_operator_role_change(
+        action=OperatorAction.ROLE_GRANTED,
+        user=user,
+        roles_changed=[PLATFORM_ADMIN_ROLE],
+        invoked_via="fm-promote-platform-admin",
+    )
+
+    # The row is keyed on the account whose operator status changed, so
+    # list_access(operator_user_id=...) returns their promotion alongside their
+    # accesses and their demotion.
+    assert recorded["operator_user_id"] == user.user_id
+    assert recorded["operator_username"] == user.username
+    assert recorded["action"] is OperatorAction.ROLE_GRANTED
+    # Deployment-scoped: no organization to name.
+    assert recorded["target_organization_id"] is None
+    assert recorded["details"]["roles_changed"] == [PLATFORM_ADMIN_ROLE]
+    assert recorded["details"]["invoked_via"] == "fm-promote-platform-admin"
+    # The human who ran kubectl exec is not authenticated; say so rather than
+    # leave it to be inferred from a null.
+    assert recorded["details"]["actor"] == "unauthenticated_cli"
+
+
+@pytest.mark.parametrize(
+    "action", [OperatorAction.ROLE_GRANTED, OperatorAction.ROLE_REVOKED]
+)
+def test_the_role_actions_are_values_migration_042_admits(action):
+    """The enum and the CHECK constraint must not drift.
+
+    Migration 035 pinned ``action`` to two values and 042 widens it; a value
+    spelled differently in Python would be rejected at INSERT time — on the
+    append-only table, during a privilege change, which is the worst place to
+    discover it.
+    """
+    import re
+    from pathlib import Path
+
+    migration = next(
+        Path("alembic/versions").glob("*042_operator_audit_role_actions.py")
+    )
+    admitted = set(
+        re.findall(
+            r"'([a-z_]+)'",
+            re.search(r"_NEW = \"(.+?)\"", migration.read_text()).group(1),
+        )
+    )
+    assert (
+        action.value in admitted
+    ), f"{action.value!r} is not in the CHECK constraint {sorted(admitted)}"
