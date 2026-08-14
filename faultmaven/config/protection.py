@@ -48,11 +48,20 @@ logger = logging.getLogger(__name__)
 #: keys on the server. Matching only the current preset made those keys
 #: unclassifiable, and ``--verify`` reports what the scoped wipe leaves — so the
 #: two agreed with each other while both missed live rate-limit state (fm#1052).
+#:
+#: ⚠️ There are THREE namespaces and only TWO presets. Staging runs production's
+#: preset but is re-pointed to its own namespace by
+#: ``api.protection.setup_protection_middleware``, so it cannot be discovered by
+#: enumerating the preset constructors. That is exactly why the value lives here
+#: and the middleware reads it from here: a fourth namespace introduced the same
+#: way must be added to this tuple, or the wipe will not know it either.
 DEVELOPMENT_REDIS_KEY_PREFIX = "faultmaven_dev"
 PRODUCTION_REDIS_KEY_PREFIX = "faultmaven_prod"
+STAGING_REDIS_KEY_PREFIX = "faultmaven_staging"
 ALL_REDIS_KEY_PREFIXES = (
     DEVELOPMENT_REDIS_KEY_PREFIX,
     PRODUCTION_REDIS_KEY_PREFIX,
+    STAGING_REDIS_KEY_PREFIX,
 )
 
 

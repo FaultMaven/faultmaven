@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Union
 from fastapi import FastAPI
 
 from ..config.protection import (
+    STAGING_REDIS_KEY_PREFIX,
     get_development_protection_settings,
     get_production_protection_settings,
     validate_protection_settings,
@@ -102,7 +103,13 @@ def setup_protection_middleware(
                     # Mutated in place rather than copied because the preset
                     # returns a freshly constructed ProtectionSettings on every
                     # call — no other holder can observe this.
-                    settings.redis_key_prefix = "faultmaven_staging"
+                    #
+                    # Read from the constant, not spelled here: this namespace
+                    # is invisible to anything that discovers prefixes by
+                    # calling the preset constructors, so the deployment wipe
+                    # can only know about it via `ALL_REDIS_KEY_PREFIXES`
+                    # (fm#1052). A literal here would drift out of that set.
+                    settings.redis_key_prefix = STAGING_REDIS_KEY_PREFIX
         else:
             setup_info["settings_source"] = "provided"
 

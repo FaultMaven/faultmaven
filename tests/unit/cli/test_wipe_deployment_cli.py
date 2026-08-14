@@ -370,12 +370,53 @@ def test_production_rate_limit_keys_classify_under_any_resolved_environment(
         "faultmaven_prod:rl:global:10.244.226.131",
         "faultmaven_prod:rl:global:10.244.236.202",
         "faultmaven_dev:dedup:abc123",
+        # Staging is the third namespace and has no preset of its own: it runs
+        # the production preset re-pointed by setup_protection_middleware. So it
+        # is invisible to anything enumerating preset constructors, and was the
+        # remaining half of this bug after the first fix.
+        "faultmaven_staging:rl:global:10.244.1.7",
+        "faultmaven_staging:dedup:xyz789",
     ]
     _counts, unmatched = wd.classify_redis_keys(observed, wd.redis_prefixes(settings))
 
     assert unmatched == [], (
         "protection keys written under a different ENVIRONMENT must still be "
         f"swept and verified; resolved={environment}"
+    )
+
+
+@pytest.mark.parametrize(
+    "environment", ["development", "production", "staging", "an-unrecognised-value"]
+)
+def test_the_namespace_the_middleware_actually_installs_is_one_the_wipe_knows(
+    environment,
+):
+    """Bind the wipe's known set to what protection ACTUALLY writes.
+
+    The set cannot be discovered by calling the preset constructors: staging
+    runs the production preset and is re-pointed afterwards by
+    ``setup_protection_middleware``, so enumerating presets finds two
+    namespaces while three exist. This asserts the real resolution path for
+    every environment, so a fourth namespace introduced the same way fails
+    here instead of surviving a "successful" wipe.
+    """
+    from faultmaven.api.protection import setup_protection_middleware
+    from faultmaven.config.protection import ALL_REDIS_KEY_PREFIXES
+
+    installed: list = []
+
+    class _App:
+        def add_middleware(self, _cls, **kwargs):
+            installed.append(kwargs["settings"])
+
+    setup_protection_middleware(_App(), environment=environment)
+
+    assert installed, "no middleware was installed, so nothing was asserted"
+    prefix = installed[0].redis_key_prefix
+    assert prefix in ALL_REDIS_KEY_PREFIXES, (
+        f"ENVIRONMENT={environment} writes keys under {prefix!r}, which "
+        "fm-wipe-deployment does not know about — the scoped wipe would leave "
+        "them and --verify would still pass"
     )
 
 
