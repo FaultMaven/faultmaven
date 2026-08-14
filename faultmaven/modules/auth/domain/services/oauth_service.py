@@ -59,43 +59,35 @@ class OAuthServiceImpl(IOAuthService):
         self.token_generator = token_generator
         self.settings = settings
 
-    async def create_authorization_code(
+    async def validate_authorization_request(
         self,
-        user_id: str,
         request: OAuthAuthorizationDTO,
-        organization_id: Optional[str] = None,
-    ) -> str:
-        """Generate authorization code for OAuth flow.
+        user_id: Optional[str] = None,
+    ) -> None:
+        """Check an authorization request against OAuth policy. Raises, or returns.
+
+        Split out of ``create_authorization_code`` so the *consent* leg can apply
+        the same policy (#1053). ``GET /auth/oauth/authorize`` used to check only
+        ``response_type`` and echo ``client_id``/``redirect_uri`` back to the
+        dashboard, leaving these three checks to run at mint time — after a
+        consent screen had already been rendered for a request that could never
+        succeed, and after the dashboard had already been handed an unvalidated
+        redirect target to send the browser to on Cancel.
+
+        Keep this the only place the policy is expressed. Re-stating it in the
+        route would put the allowlist in two files that can disagree, which is
+        the failure this consolidates away.
 
         Args:
-            user_id: Authenticated user's ID from Dashboard session
             request: OAuth authorization request (includes PKCE challenge)
-            organization_id: Organization the authorizing session is bound to
-                (#872). The caller passes the org the request was scoped to by
-                ``bind_request_org_context``; see the note on the stored DTO.
-
-        Returns:
-            Authorization code (short-lived, single-use, 10 minutes)
+            user_id: Authenticated user, for the audit log only — this method
+                makes no user-dependent decision. The consent leg has one; a
+                caller that does not is not refused.
 
         Raises:
-            InvalidRequestError: If request parameters invalid
+            InvalidRequestError: If client_id, redirect_uri, or
+                code_challenge_method is not permitted.
         """
-        # #831: the basis stored on the code. Captured at this method's entry;
-        # the request's org/user state was bound by middleware milliseconds
-        # earlier, which is the residue of capturing here rather than at
-        # request start.
-        state_read_at = capture_state_read_at()
-
-        logger.info(
-            "OAuth authorization code requested",
-            extra={
-                "user_id": user_id,
-                "client_id": request.client_id,
-                "redirect_uri": request.redirect_uri,
-                "scope": request.scope,
-            },
-        )
-
         # Validate client_id
         if request.client_id not in self.settings.oauth_allowed_clients:
             logger.warning(
@@ -161,6 +153,45 @@ class OAuthServiceImpl(IOAuthService):
                 "Only S256 is supported.",
                 error_code="INVALID_CODE_CHALLENGE_METHOD",
             )
+
+    async def create_authorization_code(
+        self,
+        user_id: str,
+        request: OAuthAuthorizationDTO,
+        organization_id: Optional[str] = None,
+    ) -> str:
+        """Generate authorization code for OAuth flow.
+
+        Args:
+            user_id: Authenticated user's ID from Dashboard session
+            request: OAuth authorization request (includes PKCE challenge)
+            organization_id: Organization the authorizing session is bound to
+                (#872). The caller passes the org the request was scoped to by
+                ``bind_request_org_context``; see the note on the stored DTO.
+
+        Returns:
+            Authorization code (short-lived, single-use, 10 minutes)
+
+        Raises:
+            InvalidRequestError: If request parameters invalid
+        """
+        # #831: the basis stored on the code. Captured at this method's entry;
+        # the request's org/user state was bound by middleware milliseconds
+        # earlier, which is the residue of capturing here rather than at
+        # request start.
+        state_read_at = capture_state_read_at()
+
+        logger.info(
+            "OAuth authorization code requested",
+            extra={
+                "user_id": user_id,
+                "client_id": request.client_id,
+                "redirect_uri": request.redirect_uri,
+                "scope": request.scope,
+            },
+        )
+
+        await self.validate_authorization_request(request, user_id=user_id)
 
         # Generate cryptographically secure authorization code
         code = self._generate_code()

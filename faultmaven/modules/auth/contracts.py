@@ -223,6 +223,36 @@ class IOAuthService(ABC):
     Dashboard-centric authentication (Dashboard acts as IdP for Extension).
     """
 
+    # @abstractmethod where its neighbours have none, deliberately. The other
+    # members of this ABC fail LOUDLY when an implementation omits them — an
+    # inherited `...` returns None and `code = None` breaks the flow at once.
+    # This one fails SILENTLY: the route's gate would pass, `create_authorization
+    # _code` would keep working, and #1053 would be back with no error and no
+    # failing test. Absence must be refused at construction, not at request time.
+    # Do not "harmonise" this decorator away.
+    @abstractmethod
+    async def validate_authorization_request(
+        self,
+        request: OAuthAuthorizationDTO,
+        user_id: Optional[str] = None,
+    ) -> None:
+        """Check an authorization request against OAuth policy.
+
+        Exposed so the consent leg of the flow can refuse a request *before*
+        rendering a consent screen for it (#1053), rather than leaving both
+        checks to ``create_authorization_code``. That method still calls this,
+        so minting a code cannot bypass the policy no matter which route runs.
+
+        Args:
+            request: OAuth authorization request parameters
+            user_id: Authenticated user, for the audit log only
+
+        Raises:
+            InvalidRequestError: If client_id, redirect_uri, or
+                code_challenge_method is not permitted.
+        """
+        ...
+
     async def create_authorization_code(
         self,
         user_id: str,
