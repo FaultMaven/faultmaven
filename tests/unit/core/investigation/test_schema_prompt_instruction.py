@@ -1,20 +1,14 @@
-"""SCHEMA_INSTRUCTIONS must not reach terminal turns.
-
-``SCHEMA_INSTRUCTIONS`` documents the investigation-turn output shape
-(state_updates milestones/evidence, internal_reasoning, "2-4"
-suggested_follow_ups). ``TerminalResponse`` carries none of that shape, and
-TERMINAL_TEMPLATE explicitly instructs the LLM to leave suggested_follow_ups
-empty — so the in-prompt schema block built for providers that need the
-schema in prompt text (json_object / prompt_only strategies) must include
-SCHEMA_INSTRUCTIONS on inquiry/investigation turns and omit it on terminal
-turns, where the bare schema-compliance directive plus the exact JSON schema
-is the whole instruction.
+"""Pins for ``_schema_prompt_instruction`` — see its docstring for the
+rationale. The gate keys on the schema's shape (``internal_reasoning``
+present), so these tests drive the helper with the REAL model schemas.
 
 Run:
     pytest tests/unit/core/investigation/test_schema_prompt_instruction.py -v
 """
 
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -26,30 +20,34 @@ from faultmaven.core.investigation.schemas import (
     TerminalResponse,
 )
 
-SCHEMA_JSON = '{"properties": {"marker_key": {}}}'
-
 
 @pytest.mark.unit
 class TestSchemaPromptInstruction:
-    def test_investigation_turns_include_field_documentation(self):
-        text = _schema_prompt_instruction(InvestigationResponse_Diagnosis, SCHEMA_JSON)
+    def test_investigation_schema_gets_field_documentation(self):
+        schema = InvestigationResponse_Diagnosis.model_json_schema()
+        text = _schema_prompt_instruction(schema)
         assert SCHEMA_INSTRUCTIONS in text
         assert "You MUST respond with valid JSON" in text
-        assert SCHEMA_JSON in text
+        assert json.dumps(schema, indent=2) in text
 
-    def test_inquiry_turns_include_field_documentation(self):
-        text = _schema_prompt_instruction(InquiryResponse, SCHEMA_JSON)
-        assert SCHEMA_INSTRUCTIONS in text
-
-    def test_terminal_turns_omit_field_documentation(self):
-        """TerminalResponse has no milestones/internal_reasoning, and the
-        TERMINAL template says to leave suggested_follow_ups empty — the
-        block would contradict both."""
-        text = _schema_prompt_instruction(TerminalResponse, SCHEMA_JSON)
+    def test_inquiry_schema_omits_field_documentation(self):
+        """InquiryResponse has no internal_reasoning / milestones / outcome —
+        "outcome: REQUIRED" against that schema is a contradiction."""
+        text = _schema_prompt_instruction(InquiryResponse.model_json_schema())
         assert SCHEMA_INSTRUCTIONS not in text
-        # The schema-compliance directive and the exact schema are still there.
         assert "You MUST respond with valid JSON" in text
-        assert SCHEMA_JSON in text
-        # The specific contradiction: a "2-4 suggestions" directive on a turn
-        # whose template says to leave suggestions empty.
-        assert "2-4 suggestions" not in text
+
+    def test_terminal_schema_omits_field_documentation(self):
+        text = _schema_prompt_instruction(TerminalResponse.model_json_schema())
+        assert SCHEMA_INSTRUCTIONS not in text
+        assert "You MUST respond with valid JSON" in text
+
+    def test_terminal_schema_carries_no_follow_up_quota(self):
+        """The inherited field description used to say "2-4 contextual
+        follow-up actions" — reaching terminal prompts through the dumped
+        schema JSON even with SCHEMA_INSTRUCTIONS gated off."""
+        description = TerminalResponse.model_json_schema()["properties"][
+            "suggested_follow_ups"
+        ]["description"]
+        assert "2-4" not in description
+        assert "Leave empty" in description

@@ -27,6 +27,7 @@ from faultmaven.core.investigation.prompts.templates import (
     _FOLLOW_UP_SUGGESTIONS_BLOCK,
     INQUIRY_TEMPLATE,
     INVESTIGATION_BASE,
+    _page_capture_hint,
 )
 
 
@@ -46,10 +47,25 @@ class TestEvidenceFileRequestGuardrail:
         instruction — that would bias the agent toward file requests."""
         assert "IF the data you need is a FILE" in _FOLLOW_UP_SUGGESTIONS_BLOCK
 
-    def test_points_to_analyze_current_page_capture_for_page_content(self):
-        """For data visible on a page the user is viewing, the agent may point
-        them at the page-content capture instead of a screenshot."""
-        assert "Analyze current page" in _FOLLOW_UP_SUGGESTIONS_BLOCK
+    def test_page_capture_guidance_is_engine_resolved(self):
+        """The block carries a placeholder, not a client roster: which
+        page-capture guidance renders is resolved by the engine from
+        Case.source (the LLM cannot decide client identity)."""
+        assert "{page_capture_hint}" in _FOLLOW_UP_SUGGESTIONS_BLOCK
+
+    def test_copilot_cases_get_the_capture_pointer(self):
+        """The capture affordance exists only in the browser extension."""
+        hint = _page_capture_hint("copilot")
+        assert "Analyze current page" in hint
+
+    @pytest.mark.parametrize("source", ["slack", "api", None, "unknown-client"])
+    def test_non_copilot_cases_never_mention_the_capture(self, source):
+        """A Slack/API user pointed at 'Analyze current page' is directed to
+        a feature their client doesn't have. Unknown sources fail safe to
+        copy/paste."""
+        hint = _page_capture_hint(source)
+        assert "Analyze current page" not in hint
+        assert "copy/paste" in hint
 
     @pytest.mark.parametrize(
         "template,name",
@@ -65,4 +81,4 @@ class TestEvidenceFileRequestGuardrail:
         assert (
             "Do NOT ask for a screenshot" in template
         ), f"{name} lost the non-text-file evidence-request guardrail."
-        assert "Analyze current page" in template
+        assert "{page_capture_hint}" in template

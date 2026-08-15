@@ -96,7 +96,10 @@ from faultmaven.core.investigation.progress_monitor import (
 from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
 )
-from faultmaven.core.investigation.prompts.templates import get_prompt_for_case
+from faultmaven.core.investigation.prompts.templates import (
+    SCHEMA_INSTRUCTIONS,
+    get_prompt_for_case,
+)
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
@@ -2304,33 +2307,36 @@ def _hypothesis_vacuum_pending(case: "Case") -> bool:
     return assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
 
 
-def _schema_prompt_instruction(schema_model: type, schema_json: str) -> str:
+def _schema_prompt_instruction(schema: dict) -> str:
     """In-prompt schema block for providers that need the schema in prompt
     text (json_object / prompt_only strategies).
 
-    ``SCHEMA_INSTRUCTIONS`` documents the investigation-turn output shape
-    (state_updates milestones/evidence, internal_reasoning, 2-4
-    suggested_follow_ups). A TERMINAL turn's response model carries none of
-    that shape, and TERMINAL_TEMPLATE instructs the LLM to leave
-    suggested_follow_ups empty — appending the block there would contradict
-    both, so terminal turns get only the bare schema-compliance directive
-    (the exact JSON schema remains the authority in both cases).
+    ``SCHEMA_INSTRUCTIONS`` documents the investigation-turn output shape —
+    ``internal_reasoning``, milestone/outcome ``state_updates``, 2-4
+    ``suggested_follow_ups``. Response models that don't carry that shape
+    (TerminalResponse, InquiryResponse) must not receive it: instructing
+    "outcome: REQUIRED" against a schema with no such field, or "2-4
+    suggestions" on a turn whose template says to leave them empty, misleads
+    exactly the weak providers this path serves. The gate keys on the schema
+    itself — does it declare ``internal_reasoning``? — so any future model
+    gets the block iff it actually has the documented shape, rather than by
+    class pedigree. The exact JSON schema remains the authority either way.
     """
-    from faultmaven.core.investigation.prompts.templates import SCHEMA_INSTRUCTIONS
-
-    if issubclass(schema_model, TerminalResponse):
-        header = "\n\n"
-    else:
-        header = f"\n\n{SCHEMA_INSTRUCTIONS}\n"
+    instructions = (
+        f"{SCHEMA_INSTRUCTIONS}\n"
+        if "internal_reasoning" in schema.get("properties", {})
+        else ""
+    )
+    schema_json = json.dumps(schema, indent=2)
     return (
-        header
-        + "You MUST respond with valid JSON matching this exact schema:\n\n"
-        + f"```json\n{schema_json}\n```\n\n"
-        + "IMPORTANT:\n"
-        + "- Use the exact field names shown in the schema\n"
-        + "- Do not add extra fields not in the schema\n"
-        + "- Do not include any text before or after the JSON\n"
-        + "- Ensure all required fields are present\n"
+        f"\n\n{instructions}"
+        "You MUST respond with valid JSON matching this exact schema:\n\n"
+        f"```json\n{schema_json}\n```\n\n"
+        "IMPORTANT:\n"
+        "- Use the exact field names shown in the schema\n"
+        "- Do not add extra fields not in the schema\n"
+        "- Do not include any text before or after the JSON\n"
+        "- Ensure all required fields are present\n"
     )
 
 
@@ -7477,11 +7483,9 @@ class MilestoneEngine:
         # Conditionally include schema in prompt based on provider capability
         if strategy.include_schema_in_prompt:
             # Provider requires schema in prompt text (json_object or prompt_only
-            # modes). SCHEMA_INSTRUCTIONS is gated off terminal turns inside the
-            # helper — see _schema_prompt_instruction.
-            schema_json = json.dumps(schema, indent=2)
-            json_instruction = _schema_prompt_instruction(schema_model, schema_json)
-            final_prompt = f"{prompt}{json_instruction}"
+            # modes). SCHEMA_INSTRUCTIONS is gated on the schema's shape inside
+            # the helper — see _schema_prompt_instruction.
+            final_prompt = f"{prompt}{_schema_prompt_instruction(schema)}"
         else:
             # Provider supports strict json_schema - no need for schema in prompt
             final_prompt = prompt
