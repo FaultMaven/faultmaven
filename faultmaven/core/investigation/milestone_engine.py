@@ -2304,6 +2304,36 @@ def _hypothesis_vacuum_pending(case: "Case") -> bool:
     return assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
 
 
+def _schema_prompt_instruction(schema_model: type, schema_json: str) -> str:
+    """In-prompt schema block for providers that need the schema in prompt
+    text (json_object / prompt_only strategies).
+
+    ``SCHEMA_INSTRUCTIONS`` documents the investigation-turn output shape
+    (state_updates milestones/evidence, internal_reasoning, 2-4
+    suggested_follow_ups). A TERMINAL turn's response model carries none of
+    that shape, and TERMINAL_TEMPLATE instructs the LLM to leave
+    suggested_follow_ups empty — appending the block there would contradict
+    both, so terminal turns get only the bare schema-compliance directive
+    (the exact JSON schema remains the authority in both cases).
+    """
+    from faultmaven.core.investigation.prompts.templates import SCHEMA_INSTRUCTIONS
+
+    if issubclass(schema_model, TerminalResponse):
+        header = "\n\n"
+    else:
+        header = f"\n\n{SCHEMA_INSTRUCTIONS}\n"
+    return (
+        header
+        + "You MUST respond with valid JSON matching this exact schema:\n\n"
+        + f"```json\n{schema_json}\n```\n\n"
+        + "IMPORTANT:\n"
+        + "- Use the exact field names shown in the schema\n"
+        + "- Do not add extra fields not in the schema\n"
+        + "- Do not include any text before or after the JSON\n"
+        + "- Ensure all required fields are present\n"
+    )
+
+
 def engine_owned_affordances(
     case: "Case", metadata: dict[str, Any] | None = None
 ) -> tuple[str, list] | None:
@@ -7446,22 +7476,11 @@ class MilestoneEngine:
 
         # Conditionally include schema in prompt based on provider capability
         if strategy.include_schema_in_prompt:
-            # Provider requires schema in prompt text (json_object or prompt_only modes)
-            from faultmaven.core.investigation.prompts.templates import (
-                SCHEMA_INSTRUCTIONS,
-            )
-
+            # Provider requires schema in prompt text (json_object or prompt_only
+            # modes). SCHEMA_INSTRUCTIONS is gated off terminal turns inside the
+            # helper — see _schema_prompt_instruction.
             schema_json = json.dumps(schema, indent=2)
-            json_instruction = (
-                f"\n\n{SCHEMA_INSTRUCTIONS}\n"
-                "You MUST respond with valid JSON matching this exact schema:\n\n"
-                f"```json\n{schema_json}\n```\n\n"
-                "IMPORTANT:\n"
-                "- Use the exact field names shown in the schema\n"
-                "- Do not add extra fields not in the schema\n"
-                "- Do not include any text before or after the JSON\n"
-                "- Ensure all required fields are present\n"
-            )
+            json_instruction = _schema_prompt_instruction(schema_model, schema_json)
             final_prompt = f"{prompt}{json_instruction}"
         else:
             # Provider supports strict json_schema - no need for schema in prompt
