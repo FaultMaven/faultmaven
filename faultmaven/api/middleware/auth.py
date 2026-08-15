@@ -127,8 +127,10 @@ async def get_current_user(
         AuthenticatedUser with user_id, organization_id, email, roles, permissions
 
     Raises:
-        HTTPException 401: Missing or invalid token
-        HTTPException 403: Token expired or revoked
+        HTTPException 401: Missing, malformed, expired or revoked token. Every
+            authentication failure is a 401 — a credential this endpoint will
+            not accept is not a 403, which is reserved for a valid credential
+            lacking permission (see the revocation handler below).
     """
     # Extract token from header
     token = _extract_token(request.headers.get("authorization"), credentials)
@@ -162,10 +164,29 @@ async def get_current_user(
         )
 
     except TokenRevocationError:
+        # 401, NOT 403. A revoked token is an invalid credential, which is what
+        # 401 means (RFC 6750 §3.1 `invalid_token`); 403 means the credential is
+        # good but the caller may not do this. Answering 403 tells a client "you
+        # are signed in, you just can't do that" about a token that is dead, so
+        # the client keeps it and keeps failing.
+        #
+        # This is a cross-route consistency fix, not only a spelling one. The
+        # other authenticated path — `api/v1/auth_dependencies.py`
+        # `get_current_user_optional` → `require_authentication` — already
+        # answers 401 here, so the SAME revoked token produced 401 on case
+        # routes and 403 on the routes reaching this dependency (sessions,
+        # admin). One client can only reasonably implement one rule.
+        #
+        # Made urgent by account-scoped logout (this PR): revocation used to be
+        # a rare admin action and is now what every deliberate sign-out does to
+        # the user's OTHER client, so the copilot — which tears down on 401 and
+        # treats 403 as a permission problem — rendered "Access Denied. Contact
+        # your administrator." and kept its dead tokens instead of signing out.
         logger.debug("Token has been revoked")
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked. Please re-authenticate.",
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
         )
 
     except Exception as e:

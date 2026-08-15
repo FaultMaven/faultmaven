@@ -220,8 +220,16 @@ class TestGetCurrentUser:
         assert "expired" in exc_info.value.detail.lower()
 
     @pytest.mark.asyncio
-    async def test_raises_403_on_revoked_token(self, mock_auth_service):
-        """Raises 403 for revoked token."""
+    async def test_raises_401_on_revoked_token(self, mock_auth_service):
+        """Raises 401 — not 403 — for a revoked token.
+
+        A revoked token is an invalid credential (RFC 6750 `invalid_token`),
+        not a valid one lacking permission. This asserted 403 until #1065 made
+        revocation the routine consequence of signing out, at which point a
+        client that (correctly) tears down on 401 and treats 403 as a
+        permission problem kept its dead tokens and showed an access-denied
+        message instead of signing out.
+        """
         mock_auth_service.extract_user_from_token_with_revocation_check.side_effect = (
             TokenRevocationError()
         )
@@ -233,8 +241,45 @@ class TestGetCurrentUser:
                 auth_service=mock_auth_service,
             )
 
-        assert exc_info.value.status_code == 403
+        assert exc_info.value.status_code == 401
         assert "revoked" in exc_info.value.detail.lower()
+        # The challenge header is what makes it actionable rather than merely
+        # correctly-numbered.
+        assert "Bearer" in exc_info.value.headers.get("WWW-Authenticate", "")
+
+    @pytest.mark.asyncio
+    async def test_every_authentication_failure_is_401(self, mock_auth_service):
+        """No auth failure on this dependency may answer 403.
+
+        The property, not the three instances: 403 on an authentication path
+        tells a client its dead credential is live, and the client's only
+        sensible response to that is to keep using it. Pins the whole failure
+        domain so a future exception type cannot reintroduce the split that
+        made a revoked token 401 on case routes and 403 here.
+        """
+        failures = [
+            TokenRevocationError(),
+            AuthenticationError("Token has expired", error_code="TOKEN_EXPIRED"),
+            AuthenticationError("Token decode error", error_code="DECODE_ERROR"),
+            RuntimeError("store unreachable"),
+        ]
+
+        for failure in failures:
+            mock_auth_service.extract_user_from_token_with_revocation_check.side_effect = (
+                failure
+            )
+
+            with pytest.raises(HTTPException) as exc_info:
+                await get_current_user(
+                    request_with_authorization("Bearer some-token"),
+                    credentials=None,
+                    auth_service=mock_auth_service,
+                )
+
+            assert exc_info.value.status_code == 401, (
+                f"{type(failure).__name__} answered "
+                f"{exc_info.value.status_code}, not 401"
+            )
 
     @pytest.mark.asyncio
     async def test_raises_401_on_malformed_token(self, mock_auth_service):
