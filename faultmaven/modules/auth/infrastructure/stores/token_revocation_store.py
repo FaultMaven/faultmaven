@@ -62,9 +62,14 @@ class RedisTokenRevocationStore(ITokenRevocationStore):
         return await self.redis.exists(key) > 0
 
     async def revoke_user_tokens_before(
-        self, user_id: str, revoked_at: int, ttl: int
+        self, user_id: str, revoked_at: float, ttl: int
     ) -> None:
         key = self._make_user_key(user_id)
+        # Stored at full precision, compared at whole seconds. `is_user_revoked`
+        # floors it back, so the revocation rule is bit-for-bit what it was when
+        # this held an int — the fraction exists only for
+        # `clear_user_revocation_if_before`, which has to order this instant
+        # against a caller's capture and cannot do that at second granularity.
         await self.redis.setex(key, ttl, str(revoked_at))
 
     async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
@@ -77,7 +82,33 @@ class RedisTokenRevocationStore(ITokenRevocationStore):
         # A malformed watermark raises, and the caller's error posture decides:
         # the request path fails open, generator validation fails closed. Both
         # are preferable to silently guessing at a corrupt value here.
-        return issued_at <= int(raw)
+        #
+        # `float` then `int`, so a watermark written by a pre-fraction build
+        # ("1700000000") reads identically to one written by this one.
+        return issued_at <= int(float(raw))
+
+    #: Delete the watermark only if it is strictly older than ARGV[1].
+    #:
+    #: Server-side so the read and the delete are one operation. Read-then-
+    #: delete in Python would let a revocation landing between the two be
+    #: deleted on the strength of having inspected the *previous* watermark —
+    #: which is the straddle (#831) this comparison exists to respect, arrived
+    #: at by a different route.
+    _CLEAR_IF_BEFORE = """
+    local raw = redis.call('GET', KEYS[1])
+    if raw and tonumber(raw) and tonumber(raw) < tonumber(ARGV[1]) then
+        redis.call('DEL', KEYS[1])
+        return 1
+    end
+    return 0
+    """
+
+    async def clear_user_revocation_if_before(
+        self, user_id: str, instant: float
+    ) -> bool:
+        key = self._make_user_key(user_id)
+        cleared = await self.redis.eval(self._CLEAR_IF_BEFORE, 1, key, repr(instant))
+        return bool(cleared)
 
     async def cleanup_expired(self) -> int:
         return 0  # Redis handles expiration automatically

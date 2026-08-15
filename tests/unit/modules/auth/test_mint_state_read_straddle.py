@@ -180,9 +180,16 @@ async def _revoke_then_stall(store, user_id: str) -> None:
     second AFTER the watermark, a post-read or mint-time stamp would land in
     the same second and be rejected anyway — the test would pass against the
     very defect it exists to catch. One computed sleep, not a poll.
+
+    Written at FULL precision, as ``AuthService.revoke_user_tokens`` does.
+    Truncating here would make a watermark that landed mid-read look older than
+    the login's pre-read capture, and ``clear_user_revocation_if_before`` reads
+    exactly that ordering to tell a concurrent revocation (leave it; the pair
+    must die) from one that preceded the login (clear it; the user is signing
+    back in). A truncated write would fake the second case.
     """
     now = datetime.now(timezone.utc)
-    await store.revoke_user_tokens_before(user_id, int(now.timestamp()), TTL)
+    await store.revoke_user_tokens_before(user_id, now.timestamp(), TTL)
     await asyncio.sleep(1.0 - (now.timestamp() % 1.0) + 0.01)
 
 

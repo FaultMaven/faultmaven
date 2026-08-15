@@ -198,16 +198,40 @@ class TokenRefreshResponse(BaseModel):
 
 
 class LogoutResponse(BaseModel):
-    """Logout response model"""
+    """Logout response model
+
+    ``revoked_tokens`` counts tokens revoked by identifier — the presented one.
+    It is not the reach of the sign-out: ``all_sessions_ended`` is, and the two
+    answer different questions on purpose. A watermark revokes an unbounded set,
+    so there is no count to report for it.
+    """
 
     message: str = Field(
         default="Logged out successfully", description="Logout confirmation message"
     )
-    revoked_tokens: int = Field(..., description="Number of tokens that were revoked")
+    revoked_tokens: int = Field(
+        ..., description="Number of tokens revoked by identifier (the presented one)"
+    )
+    all_sessions_ended: bool = Field(
+        default=False,
+        description=(
+            "Whether every session for this account was ended, not just this "
+            "one. A deliberate sign-out is account-scoped: the dashboard and "
+            "the browser extension hold independent token chains, so ending "
+            "only the presented one leaves the other signed in as the previous "
+            "user. False means the account-wide revocation did not take and "
+            "other clients may still be active — the caller should say so "
+            "rather than report a clean sign-out."
+        ),
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
-            "example": {"message": "Logged out successfully", "revoked_tokens": 1}
+            "example": {
+                "message": "Logged out successfully",
+                "revoked_tokens": 1,
+                "all_sessions_ended": True,
+            }
         }
     )
 

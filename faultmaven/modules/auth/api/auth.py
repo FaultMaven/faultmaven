@@ -334,6 +334,44 @@ async def local_login(
             },
         )
 
+        # A fresh authentication supersedes a watermark that predates it.
+        #
+        # The watermark means "everything issued before instant T is stale"; an
+        # authentication whose state reads all began after T is not. Without
+        # this, a sign-in landing in the same wall-clock second as a sign-out is
+        # dead on arrival: `iat` has whole-second granularity and
+        # `is_user_revoked` compares `<=`, so the access AND refresh tokens
+        # minted below both fall under the watermark the logout just wrote. The
+        # login reports success and every subsequent request 401s, with no way
+        # forward because the refresh token is dead too. Now that ordinary
+        # logout is account-scoped, that is a routine sequence rather than an
+        # admin-path curiosity (scripted logout→login; and across replicas the
+        # window widens from one second to the inter-pod clock skew).
+        #
+        # Cleared here rather than by relaxing the comparison: `<=` is
+        # deliberate (`revocation_reason` — of the two rounding errors,
+        # honouring a token minted in the same second as a revocation is the
+        # more dangerous one), and it has to keep holding for the admin paths
+        # that have no login after them.
+        #
+        # `state_read_at`, NOT `now`, and the store compares strictly. That is
+        # what separates this from the #831 straddle: a watermark written while
+        # this request was reading the pre-change user row does not predate the
+        # capture, is left in place, and the pair this mints stays dead — which
+        # is the whole point of stamping `iat` from the capture. Passing `now`
+        # here would clear that watermark too and undo #831 silently.
+        #
+        # Gated on the account still being usable: this decides whether the
+        # user's OTHER outstanding tokens revive, so a deactivated or deleted
+        # account must not reach it.
+        if (
+            getattr(user, "is_active", True)
+            and getattr(user, "deleted_at", None) is None
+        ):
+            await revocation_store.clear_user_revocation_if_before(
+                user.user_id, state_read_at.timestamp()
+            )
+
         # Generate JWT tokens (HS256 for local mode)
         # Per iam-design.md: "Unified JWT Format: Both Local and Cloud modes use JWT tokens"
         settings = get_settings()
@@ -887,16 +925,47 @@ async def logout(
         )
         jti = claims.get("jti")
         exp = claims.get("exp")
+
+        # Deliberate sign-out is ACCOUNT-scoped, not session-scoped.
+        #
+        # Revoking the presented jti ends one client. The dashboard and the
+        # copilot hold independent token chains — the copilot's is minted by
+        # FaultMaven's own OAuth server with its own refresh token — so a
+        # jti-only logout left the copilot signed in as the previous user while
+        # the dashboard signed in as the next one. Two identities, one browser,
+        # and the copilot goes on authoring cases as the wrong one.
+        #
+        # The rule: deliberate sign-out means everywhere; expiry means here.
+        # Involuntary teardown (expired or rejected token) is untouched by this
+        # and stays session-scoped.
+        #
+        # FIRST, and outside the jti arm below, because it needs no jti — the
+        # watermark keys on `sub`. A token with no revocation handle still
+        # belongs to an account, and the sign-out that reached this handler is
+        # no less deliberate for it; returning early on a missing jti would
+        # decline to use the one mechanism that still applies.
+        all_sessions_ended = await _revoke_account_wide(
+            auth_service, current_user.user_id
+        )
+
         if not jti:
-            # Cannot revoke a token that carries no revocation handle. Our
-            # generators always mint a jti, so this indicates a foreign token.
+            # Our generators always mint a jti, so this indicates a foreign
+            # token. Nothing to revoke *by identifier* — but the account-wide
+            # watermark above covers it anyway, provided it took.
             logger.warning(
                 f"Logout without jti claim: {current_user.user_id} "
                 f"(correlation: {correlation_id})"
             )
+            await _end_idp_session_best_effort(request, x_session_id)
             return LogoutResponse(
-                message="Logged out (token carries no jti; nothing to revoke)",
+                message=(
+                    "Logged out successfully"
+                    if all_sessions_ended
+                    else "Logged out, but this token carries no jti and the "
+                    "account-wide revocation did not take; it may remain usable"
+                ),
                 revoked_tokens=0,
+                all_sessions_ended=all_sessions_ended,
             )
 
         # Raises ServiceError on store failure — logout must not claim
@@ -918,7 +987,11 @@ async def logout(
         logger.info(
             f"User logout: {current_user.user_id} (correlation: {correlation_id})"
         )
-        return LogoutResponse(message="Logged out successfully", revoked_tokens=1)
+        return LogoutResponse(
+            message="Logged out successfully",
+            revoked_tokens=1,
+            all_sessions_ended=all_sessions_ended,
+        )
 
     except HTTPException:
         raise
@@ -1065,6 +1138,27 @@ async def auth_health_check(request: Request):
                 "error": "Auth health check failed",
             },
         )
+
+
+async def _revoke_account_wide(auth_service: Any, user_id: str) -> bool:
+    """Revoke every outstanding token for ``user_id``. True if it took.
+
+    Reported rather than raised. The presented token is already revoked by the
+    time this runs, so the caller IS signed out here — failing the request would
+    claim otherwise. But a silent failure would be worse than either: the user
+    asked to sign out and would be told they had, while their other clients kept
+    running. The boolean is what lets the client say which actually happened.
+    """
+    try:
+        await auth_service.revoke_user_tokens(user_id)
+        return True
+    except Exception as e:
+        # Deliberately not re-raised: see above.
+        logger.error(
+            f"Account-wide revocation failed for {user_id}; only this session "
+            f"was ended: {type(e).__name__}"
+        )
+        return False
 
 
 async def _end_idp_session_best_effort(

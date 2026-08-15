@@ -26,7 +26,8 @@ Security:
 """
 
 import logging
-from typing import Literal, Optional
+import re
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -197,6 +198,43 @@ async def get_oauth_service(request: Request) -> IOAuthService:
     return oauth_service
 
 
+def _is_first_party(client_id: str, redirect_uri: str, settings: Any) -> bool:
+    """Whether this client is one FaultMaven ships, and so skips consent.
+
+    Takes the caller's settings rather than sourcing its own: the authorize
+    endpoint already builds one, and a second instance from a different accessor
+    is how two reads of "the same" configuration start disagreeing.
+
+    BOTH halves are required, and only the second one proves anything.
+    ``client_id`` is a caller-supplied string — an impostor extension presents
+    ``faultmaven-copilot`` as easily as the real one does, so membership in
+    ``oauth_first_party_clients`` narrows the field but identifies nobody.
+    (Membership is still exact rather than prefix-matched: "starts with
+    faultmaven-" would let an attacker widen even that by naming itself
+    convincingly.) What an impostor cannot do is receive the code at OUR
+    extension's redirect, because the browser derives that host from the
+    extension's own id. So the skip turns on ``redirect_uri``, and on the
+    deployment having pinned which redirect is ours.
+
+    ``oauth_first_party_redirect_patterns`` is empty by default, so by default
+    this returns False for every client and the consent screen renders as it
+    always did. Skipping a prompt is not a thing to do on a guess: the failure
+    is silent by construction, since what goes wrong is that nothing appears.
+
+    ``re.match`` against ``^…$``-anchored patterns, matching how
+    ``OAuthService._is_valid_redirect_uri`` reads its own list — two different
+    match semantics over redirect patterns is how the consent decision and the
+    access decision would start disagreeing about the same URI.
+    """
+    if client_id not in set(settings.auth.oauth_first_party_clients):
+        return False
+
+    return any(
+        re.match(pattern, redirect_uri)
+        for pattern in settings.auth.oauth_first_party_redirect_patterns
+    )
+
+
 # ============================================================
 # OAuth 2.0 Endpoints
 # ============================================================
@@ -290,8 +328,12 @@ async def get_authorization_request(
 
         settings = FaultMavenSettings()
 
+        # Decided once and reused below, so the branch that skips the screen and
+        # the branch that logs why can never disagree about which one happened.
+        first_party = _is_first_party(client_id, redirect_uri, settings)
+
         # If consent required, return consent request for Dashboard UI
-        if settings.auth.oauth_require_consent:
+        if settings.auth.oauth_require_consent and not first_party:
             logger.info(
                 f"Authorization consent required for user {user.user_id}, client {client_id}"
             )
@@ -316,10 +358,16 @@ async def get_authorization_request(
                 username=user.username,
             )
 
-        # Auto-approve mode (dev/test only)
-        logger.warning(
-            f"AUTO-APPROVE enabled for user {user.user_id}, client {client_id} (dev/test only)"
-        )
+        if first_party:
+            logger.info(
+                f"First-party client {client_id} auto-approved for user "
+                f"{user.user_id} (redirect {redirect_uri})"
+            )
+        else:
+            # Consent globally disabled — dev/test only.
+            logger.warning(
+                f"AUTO-APPROVE enabled for user {user.user_id}, client {client_id} (dev/test only)"
+            )
 
         # Generate authorization code using authenticated user's ID.
         #

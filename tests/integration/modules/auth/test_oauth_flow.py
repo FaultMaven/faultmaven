@@ -169,7 +169,7 @@ class TestAuthorizationCodeGeneration:
             params={
                 "response_type": "code",
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "state": "random_state_123",
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
@@ -195,7 +195,7 @@ class TestAuthorizationCodeGeneration:
             params={
                 "response_type": "code",
                 "client_id": "invalid-client",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "state": "random_state_123",
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
@@ -217,7 +217,7 @@ class TestAuthorizationCodeGeneration:
                 params={
                     "response_type": "code",
                     "client_id": "faultmaven-copilot",
-                    "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                    "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                     "state": "random_state_123",
                     "code_challenge": code_challenge,
                     "code_challenge_method": "S256",
@@ -243,7 +243,7 @@ class TestCompleteOAuthFlow:
             params={
                 "response_type": "code",
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "state": "random_state_123",
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
@@ -260,7 +260,7 @@ class TestCompleteOAuthFlow:
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "code_verifier": code_verifier,
             },
         )
@@ -281,7 +281,7 @@ class TestCompleteOAuthFlow:
             params={
                 "response_type": "code",
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "state": "random_state_123",
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
@@ -297,7 +297,7 @@ class TestCompleteOAuthFlow:
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "code_verifier": code_verifier,
             },
         )
@@ -311,7 +311,7 @@ class TestCompleteOAuthFlow:
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "code_verifier": code_verifier,
             },
         )
@@ -330,7 +330,7 @@ class TestCompleteOAuthFlow:
             params={
                 "response_type": "code",
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "state": "random_state_123",
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
@@ -352,7 +352,7 @@ class TestCompleteOAuthFlow:
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "code_verifier": wrong_verifier,
             },
         )
@@ -373,7 +373,7 @@ class TestTokenRevocation:
             params={
                 "response_type": "code",
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "state": "random_state_123",
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
@@ -388,7 +388,7 @@ class TestTokenRevocation:
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "code_verifier": code_verifier,
             },
         )
@@ -416,7 +416,7 @@ class TestTokenRevocation:
             params={
                 "response_type": "code",
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "state": "random_state_123",
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
@@ -431,7 +431,7 @@ class TestTokenRevocation:
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "code_verifier": code_verifier,
             },
         )
@@ -464,7 +464,7 @@ class TestOAuthErrorHandling:
                 "grant_type": "authorization_code",
                 "code": "invalid_code_123",
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "code_verifier": code_verifier,
             },
         )
@@ -481,7 +481,7 @@ class TestOAuthErrorHandling:
             params={
                 "response_type": "code",
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/callback.html",
+                "redirect_uri": "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/",
                 "state": "random_state_123",
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256",
@@ -496,7 +496,7 @@ class TestOAuthErrorHandling:
                 "grant_type": "authorization_code",
                 "code": code,
                 "client_id": "faultmaven-copilot",
-                "redirect_uri": "chrome-extension://different1abcdefghijklmnopqrstuv/callback.html",
+                "redirect_uri": "https://ponmlkjihgfedcbaponmlkjihgfedcba.chromiumapp.org/",
                 "code_verifier": code_verifier,
             },
         )

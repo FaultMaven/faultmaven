@@ -488,7 +488,7 @@ class InMemoryRevocationStore(ITokenRevocationStore):
 
     def __init__(self) -> None:
         self.revoked: dict[str, int] = {}
-        self.user_watermarks: dict[str, tuple[int, int]] = {}
+        self.user_watermarks: dict[str, tuple[float, int]] = {}
 
     async def add_revoked_token(self, jti: str, ttl: int) -> None:
         self.revoked[jti] = ttl
@@ -497,13 +497,22 @@ class InMemoryRevocationStore(ITokenRevocationStore):
         return jti in self.revoked
 
     async def revoke_user_tokens_before(
-        self, user_id: str, revoked_at: int, ttl: int
+        self, user_id: str, revoked_at: float, ttl: int
     ) -> None:
         self.user_watermarks[user_id] = (revoked_at, ttl)
 
     async def is_user_revoked(self, user_id: str, issued_at: int) -> bool:
         entry = self.user_watermarks.get(user_id)
-        return entry is not None and issued_at <= entry[0]
+        return entry is not None and issued_at <= int(entry[0])
+
+    async def clear_user_revocation_if_before(
+        self, user_id: str, instant: float
+    ) -> bool:
+        entry = self.user_watermarks.get(user_id)
+        if entry is None or not entry[0] < instant:
+            return False
+        del self.user_watermarks[user_id]
+        return True
 
     async def cleanup_expired(self) -> int:
         return 0

@@ -5565,10 +5565,16 @@ Response after linking report to case closure.
 
 Logout response model
 
+``revoked_tokens`` counts tokens revoked by identifier — the presented one.
+It is not the reach of the sign-out: ``all_sessions_ended`` is, and the two
+answer different questions on purpose. A watermark revokes an unbounded set,
+so there is no count to report for it.
+
 **Properties:**
 
+- `all_sessions_ended` (boolean, optional) — Whether every session for this account was ended, not just this one. A deliberate sign-out is account-scoped: the dashboard and the browser extension hold independent token chains, so ending only the presented one leaves the other signed in as the previous user. False means the account-wide revocation did not take and other clients may still be active — the caller should say so rather than report a clean sign-out.
 - `message` (string, optional) — Logout confirmation message
-- `revoked_tokens` (integer, required) — Number of tokens that were revoked
+- `revoked_tokens` (integer, required) — Number of tokens revoked by identifier (the presented one)
 
 ---
 

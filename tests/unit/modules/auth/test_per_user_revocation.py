@@ -453,8 +453,13 @@ class TestReLoginStillWorks:
     mocking the decode path, so these exercise the real generator, the real
     production store, and the real validation rule. ``iat`` has whole-second
     granularity, and the rule is ``iat <= watermark`` (fail-secure), so a
-    token minted in the same second as the revocation is rejected on
-    purpose — the user retries and succeeds a second later.
+    token minted in the same second as the revocation is rejected on purpose.
+
+    That rounding is why the login path clears the watermark outright
+    (``clear_user_revocation``, covered below) rather than relying on the next
+    second arriving: once ordinary logout became account-scoped, "retry a
+    second later" stopped being an admin-path curiosity and became a routine
+    logout→login sequence. The rule itself is unchanged — these still pin it.
     """
 
     async def test_token_minted_after_the_watermark_is_accepted(self):
@@ -534,6 +539,168 @@ class TestRevocationArmsAreIndependent:
 
         assert await store.is_user_revoked(USER_ID, int(revoked_at.timestamp()))
         assert await store.is_revoked("some-unrelated-jti") is False
+
+
+class TestFreshLoginSupersedesTheWatermark:
+    """A login completed after instant T is not "issued before T".
+
+    The same-second case is the one that bites: the watermark is
+    ``int(now.timestamp())`` and ``iat`` is floored the same way, so a sign-in
+    landing in the same wall-clock second as a sign-out mints an access AND a
+    refresh token that both fail ``iat <= watermark``. The login reports
+    success and every subsequent request 401s, with no way back — the refresh
+    token is dead too. On multi-replica deployments the window is not one
+    second but the clock skew between the pod that wrote the watermark and the
+    pod that mints.
+
+    Fixed by clearing at the mint site rather than by weakening the comparison,
+    which has to keep holding for the admin paths that have no login after
+    them — and clearing ONLY a watermark that predates the login's own
+    ``state_read_at``, so the #831 straddle (a revocation landing *during* the
+    login's reads) still kills the pair it mints. Second granularity cannot
+    tell those two apart, which is why the stored watermark keeps its fraction.
+    """
+
+    async def test_same_second_relogin_is_locked_out_without_the_clear(self):
+        """The failure being fixed, pinned so the fix cannot be quietly undone."""
+        store = _store()
+        generator = _generator(store)
+
+        now = datetime.now(timezone.utc)
+        await store.revoke_user_tokens_before(USER_ID, now.timestamp(), ttl=3600)
+
+        # Same second as the revocation — the sign-in immediately after a
+        # sign-out, or any replica whose clock has not yet ticked past it.
+        fresh = await generator.generate_access_token(_user(), state_read_at=now)
+
+        assert await generator.validate_access_token(fresh) is None
+
+    @staticmethod
+    def _within_one_second(*offsets: float):
+        """Instants sharing one integer second, all safely in the past.
+
+        Anchored to the START of the previous whole second rather than to
+        ``now``, so the sub-second offsets cannot straddle a second boundary
+        (which would make these tests pass or fail on when they happened to
+        run) and every instant stays ``<= now``, as ``_mint_instant`` requires.
+        """
+        anchor = float(int(datetime.now(timezone.utc).timestamp()) - 1)
+        return tuple(
+            datetime.fromtimestamp(anchor + offset, timezone.utc) for offset in offsets
+        )
+
+    async def test_clearing_first_lets_the_same_second_relogin_through(self):
+        store = _store()
+        generator = _generator(store)
+
+        # The sign-out, then a sign-in whose reads begin after it completed —
+        # inside the same integer second, the case second granularity cannot
+        # express.
+        revoked_at, state_read_at = self._within_one_second(0.1, 0.5)
+        await store.revoke_user_tokens_before(USER_ID, revoked_at.timestamp(), ttl=3600)
+
+        cleared = await store.clear_user_revocation_if_before(
+            USER_ID, state_read_at.timestamp()
+        )
+        fresh = await generator.generate_access_token(
+            _user(), state_read_at=state_read_at
+        )
+
+        assert cleared is True
+        assert await generator.validate_access_token(fresh) is not None
+
+    async def test_a_watermark_written_during_the_login_is_not_cleared(self):
+        """The #831 straddle, which this must not undo.
+
+        An admin persists a role change and revokes while the login is still
+        reading the pre-change user row. The watermark postdates the login's
+        capture, so it stays, and the pair the login mints stays dead — exactly
+        what stamping ``iat`` from the capture is for. Same integer second as
+        the case above, and the opposite outcome.
+        """
+        store = _store()
+        generator = _generator(store)
+
+        state_read_at, revoked_at = self._within_one_second(0.5, 0.9)
+        await store.revoke_user_tokens_before(USER_ID, revoked_at.timestamp(), ttl=3600)
+
+        cleared = await store.clear_user_revocation_if_before(
+            USER_ID, state_read_at.timestamp()
+        )
+        straddling = await generator.generate_access_token(
+            _user(), state_read_at=state_read_at
+        )
+
+        assert cleared is False
+        assert await generator.validate_access_token(straddling) is None
+
+    async def test_clear_is_scoped_to_the_one_user(self):
+        """One user's login must not resurrect another's revoked tokens."""
+        store = _store()
+        past = datetime.now(timezone.utc).timestamp() - 60
+        await store.revoke_user_tokens_before(USER_ID, past, ttl=3600)
+        await store.revoke_user_tokens_before("other-user", past, ttl=3600)
+
+        await store.clear_user_revocation_if_before(
+            USER_ID, datetime.now(timezone.utc).timestamp()
+        )
+
+        assert await store.is_user_revoked(USER_ID, int(past)) is False
+        assert await store.is_user_revoked("other-user", int(past)) is True
+
+    async def test_clear_leaves_per_jti_revocations_alone(self):
+        """The two arms stay independent: a login does not un-revoke a token
+        that was revoked by identifier."""
+        store = _store()
+        past = datetime.now(timezone.utc).timestamp() - 60
+        await store.revoke_user_tokens_before(USER_ID, past, ttl=3600)
+        await store.add_revoked_token("jti-1", ttl=3600)
+
+        await store.clear_user_revocation_if_before(
+            USER_ID, datetime.now(timezone.utc).timestamp()
+        )
+
+        assert await store.is_revoked("jti-1") is True
+
+    async def test_clear_is_a_no_op_on_an_unrevoked_user(self):
+        store = _store()
+
+        cleared = await store.clear_user_revocation_if_before(
+            "never-revoked", datetime.now(timezone.utc).timestamp()
+        )
+
+        assert cleared is False
+        assert await store.is_user_revoked("never-revoked", 0) is False
+
+    async def test_a_malformed_watermark_is_left_alone_rather_than_deleted(self):
+        """Deleting an unparseable watermark would turn a corrupt entry into no
+        revocation at all. It is left for ``is_user_revoked`` to raise on, where
+        each caller's error posture already decides what to do about it."""
+        redis = _fake_redis()
+        store = _store(redis)
+        await redis.set(f"revoked:token:user:{USER_ID}", "not-a-number")
+
+        cleared = await store.clear_user_revocation_if_before(
+            USER_ID, datetime.now(timezone.utc).timestamp()
+        )
+
+        assert cleared is False
+        assert await redis.get(f"revoked:token:user:{USER_ID}") == "not-a-number"
+
+    async def test_a_pre_fraction_watermark_still_reads_and_clears(self):
+        """Values written by an earlier build are plain integers."""
+        redis = _fake_redis()
+        store = _store(redis)
+        past = int(datetime.now(timezone.utc).timestamp()) - 60
+        await redis.set(f"revoked:token:user:{USER_ID}", str(past))
+
+        assert await store.is_user_revoked(USER_ID, past) is True
+        assert (
+            await store.clear_user_revocation_if_before(
+                USER_ID, datetime.now(timezone.utc).timestamp()
+            )
+            is True
+        )
 
 
 class TestStoreContract:

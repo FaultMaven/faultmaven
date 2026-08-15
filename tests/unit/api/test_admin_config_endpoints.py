@@ -123,6 +123,11 @@ def mock_settings():
     settings.llm.cohere_api_key = None
     settings.llm.openrouter_api_key = None
     settings.auth.auth_mode = "local"
+    # Set explicitly: on a MagicMock this attribute would auto-create as a
+    # truthy object, so the consent-skip feature would report *enabled* on a
+    # deployment that had pinned nothing — the one answer this endpoint exists
+    # to give correctly.
+    settings.auth.oauth_first_party_redirect_patterns = []
     settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
     settings.server.environment = MagicMock(value="development")
     settings.database.case_storage_type = "sqlite"
@@ -676,6 +681,42 @@ class TestGetEnvConfigStatus:
         assert result.session_storage == "redis"
         assert result.vector_storage == "chromadb"
         assert result.pii_redaction_enabled is True
+
+    @pytest.mark.asyncio
+    async def test_consent_skip_reports_inactive_when_no_redirect_is_pinned(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """The state an operator cannot otherwise observe.
+
+        An unpinned deployment renders the consent screen exactly as it always
+        did, so "the skip never activated" looks identical to "the skip is
+        working" from outside. This endpoint is where that is answerable — not
+        a startup log line, which has rolled out of ``kubectl logs`` by the time
+        anyone asks.
+        """
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        feature = result.features["first_party_consent_skip"]
+        assert feature.enabled is False
+        assert "OAUTH_FIRST_PARTY_REDIRECT_PATTERNS" in feature.config_hint
+
+    @pytest.mark.asyncio
+    async def test_consent_skip_reports_active_once_a_redirect_is_pinned(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        mock_settings.auth.oauth_first_party_redirect_patterns = [
+            r"^https://abcdefghijklmnopabcdefghijklmnop\.chromiumapp\.org/?$"
+        ]
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features["first_party_consent_skip"].enabled is True
 
     @pytest.mark.asyncio
     async def test_rate_limit_enabled_is_false_when_middleware_absent(
