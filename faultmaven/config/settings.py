@@ -1221,8 +1221,23 @@ class AuthSettings(BaseSettings):
     )
 
     # OAuth redirect URI patterns (regex)
+    #: Redirect URIs the authorize endpoint will mint a code for.
+    #:
+    #: The ``https://<id>.chromiumapp.org/`` form is what
+    #: ``identity.launchWebAuthFlow`` redirects to, and it is the shape to
+    #: prefer: the browser derives that host from the extension's own id, so an
+    #: extension cannot claim another's. The direct ``chrome-extension://``
+    #: forms cannot make that guarantee — the pattern admits ANY 32-character
+    #: id, so a different extension could present ``client_id=faultmaven-copilot``
+    #: with its own callback and be accepted. Pin the published id in deployment
+    #: config (``OAUTH_REDIRECT_URI_PATTERNS``) rather than relying on the
+    #: default, which must stay id-agnostic to work for unpacked dev builds.
+    #:
+    #: The consent screen never closed that gap: it renders the *client name*,
+    #: so an impostor's prompt reads "FaultMaven Copilot" too.
     oauth_redirect_uri_patterns: List[str] = Field(
         default=[
+            r"^https://[a-p]{32}\.chromiumapp\.org/?$",
             r"^chrome-extension://[a-z]{32}/callback\.html$",
             r"^moz-extension://[a-f0-9-]{36}/callback\.html$",
         ],
@@ -1233,6 +1248,28 @@ class AuthSettings(BaseSettings):
     oauth_require_consent: bool = Field(
         default=True,
         description="Require user consent screen (production). Set false for auto-approval (dev/test only)",
+    )
+
+    #: Clients FaultMaven ships itself, which skip the consent screen.
+    #:
+    #: Consent is a trust-boundary question: it exists so a user can refuse a
+    #: THIRD PARTY access to their data. The browser extension is not a third
+    #: party — it is FaultMaven's own client, and the cases it would be asking
+    #: to read are the ones the user wrote *through it*. Asking permission to
+    #: read what it authored informs nobody, and a consent screen that never
+    #: means anything trains users to click past the one that eventually does.
+    #:
+    #: This narrows the screen rather than removing it: ``oauth_require_consent``
+    #: still governs every client not named here, so a genuine third-party
+    #: integration gets the full prompt.
+    #:
+    #: Entries must also appear in ``oauth_allowed_clients`` — this list grants
+    #: no access on its own, it only decides whether the prompt renders. What
+    #: actually protects the flow is the client allowlist, PKCE, the required
+    #: live dashboard session, and the redirect-URI allowlist.
+    oauth_first_party_clients: List[str] = Field(
+        default=["faultmaven-copilot"],
+        description="Client IDs shipped by FaultMaven; these skip the consent screen",
     )
 
     # OAuth security settings

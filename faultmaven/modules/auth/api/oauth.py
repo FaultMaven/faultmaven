@@ -26,7 +26,7 @@ Security:
 """
 
 import logging
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -197,6 +197,20 @@ async def get_oauth_service(request: Request) -> IOAuthService:
     return oauth_service
 
 
+def _is_first_party(client_id: str, settings: Any) -> bool:
+    """Whether this client is one FaultMaven ships, and so skips consent.
+
+    Takes the caller's settings rather than sourcing its own: the authorize
+    endpoint already builds one, and a second instance from a different accessor
+    is how two reads of "the same" configuration start disagreeing.
+
+    Membership is exact — no prefix or pattern matching. A caller-supplied
+    ``client_id`` reaches this function, and "starts with faultmaven-" would let
+    an attacker-chosen id skip the prompt by naming itself convincingly.
+    """
+    return client_id in set(settings.auth.oauth_first_party_clients)
+
+
 # ============================================================
 # OAuth 2.0 Endpoints
 # ============================================================
@@ -291,7 +305,9 @@ async def get_authorization_request(
         settings = FaultMavenSettings()
 
         # If consent required, return consent request for Dashboard UI
-        if settings.auth.oauth_require_consent:
+        if settings.auth.oauth_require_consent and not _is_first_party(
+            client_id, settings
+        ):
             logger.info(
                 f"Authorization consent required for user {user.user_id}, client {client_id}"
             )
@@ -316,10 +332,15 @@ async def get_authorization_request(
                 username=user.username,
             )
 
-        # Auto-approve mode (dev/test only)
-        logger.warning(
-            f"AUTO-APPROVE enabled for user {user.user_id}, client {client_id} (dev/test only)"
-        )
+        if _is_first_party(client_id, settings):
+            logger.info(
+                f"First-party client {client_id} auto-approved for user {user.user_id}"
+            )
+        else:
+            # Consent globally disabled — dev/test only.
+            logger.warning(
+                f"AUTO-APPROVE enabled for user {user.user_id}, client {client_id} (dev/test only)"
+            )
 
         # Generate authorization code using authenticated user's ID.
         #

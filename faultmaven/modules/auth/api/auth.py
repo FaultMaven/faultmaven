@@ -904,6 +904,22 @@ async def logout(
         # same deployment-wide store the request-path check reads (#767).
         await auth_service.revoke_token(jti, int(exp) if exp else 0)
 
+        # Deliberate sign-out is ACCOUNT-scoped, not session-scoped.
+        #
+        # Revoking the presented jti ends one client. The dashboard and the
+        # copilot hold independent token chains — the copilot's is minted by
+        # FaultMaven's own OAuth server with its own refresh token — so a
+        # jti-only logout left the copilot signed in as the previous user while
+        # the dashboard signed in as the next one. Two identities, one browser,
+        # and the copilot goes on authoring cases as the wrong one.
+        #
+        # The rule: deliberate sign-out means everywhere; expiry means here.
+        # Involuntary teardown (expired or rejected token) is untouched by this
+        # and stays session-scoped.
+        all_sessions_ended = await _revoke_account_wide(
+            auth_service, current_user.user_id
+        )
+
         # End the IdP's session too, server-side. The logout URL handed to the
         # client only works if the browser completes a third-party navigation
         # after teardown; a closed tab leaves the IdP session alive with nothing
@@ -918,7 +934,11 @@ async def logout(
         logger.info(
             f"User logout: {current_user.user_id} (correlation: {correlation_id})"
         )
-        return LogoutResponse(message="Logged out successfully", revoked_tokens=1)
+        return LogoutResponse(
+            message="Logged out successfully",
+            revoked_tokens=1,
+            all_sessions_ended=all_sessions_ended,
+        )
 
     except HTTPException:
         raise
@@ -1065,6 +1085,27 @@ async def auth_health_check(request: Request):
                 "error": "Auth health check failed",
             },
         )
+
+
+async def _revoke_account_wide(auth_service: Any, user_id: str) -> bool:
+    """Revoke every outstanding token for ``user_id``. True if it took.
+
+    Reported rather than raised. The presented token is already revoked by the
+    time this runs, so the caller IS signed out here — failing the request would
+    claim otherwise. But a silent failure would be worse than either: the user
+    asked to sign out and would be told they had, while their other clients kept
+    running. The boolean is what lets the client say which actually happened.
+    """
+    try:
+        await auth_service.revoke_user_tokens(user_id)
+        return True
+    except Exception as e:
+        # Deliberately not re-raised: see above.
+        logger.error(
+            f"Account-wide revocation failed for {user_id}; only this session "
+            f"was ended: {type(e).__name__}"
+        )
+        return False
 
 
 async def _end_idp_session_best_effort(
