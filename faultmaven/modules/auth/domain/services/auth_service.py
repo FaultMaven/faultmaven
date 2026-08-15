@@ -570,8 +570,13 @@ class AuthService:
         # constructed from it, so covering that source covers every mint path.
         ttl = self._longest_token_lifetime_seconds()
         try:
+            # Full precision, not `int(...)`: the revocation rule still floors
+            # it, but `clear_user_revocation_if_before` has to order this
+            # instant against a login's pre-read capture, and truncating here
+            # would make a revocation that landed mid-request indistinguishable
+            # from one that preceded it (#831).
             await self._revocation_store.revoke_user_tokens_before(
-                user_id, int(revoked_at.timestamp()), ttl
+                user_id, revoked_at.timestamp(), ttl
             )
         except Exception as e:
             logger.error(f"Failed to revoke user tokens: {e}")

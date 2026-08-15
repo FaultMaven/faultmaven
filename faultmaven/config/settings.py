@@ -1223,18 +1223,21 @@ class AuthSettings(BaseSettings):
     # OAuth redirect URI patterns (regex)
     #: Redirect URIs the authorize endpoint will mint a code for.
     #:
-    #: The ``https://<id>.chromiumapp.org/`` form is what
-    #: ``identity.launchWebAuthFlow`` redirects to, and it is the shape to
-    #: prefer: the browser derives that host from the extension's own id, so an
-    #: extension cannot claim another's. The direct ``chrome-extension://``
-    #: forms cannot make that guarantee — the pattern admits ANY 32-character
-    #: id, so a different extension could present ``client_id=faultmaven-copilot``
-    #: with its own callback and be accepted. Pin the published id in deployment
-    #: config (``OAUTH_REDIRECT_URI_PATTERNS``) rather than relying on the
-    #: default, which must stay id-agnostic to work for unpacked dev builds.
+    #: Only the ``identity.launchWebAuthFlow`` forms. The browser derives those
+    #: hosts from the extension's own id, so an extension cannot receive a code
+    #: at another's callback. The in-extension ``chrome-extension://`` /
+    #: ``moz-extension://`` callback pages that used to be here could not make
+    #: that guarantee and are gone: the copilot stopped using them (it calls
+    #: ``identity.getRedirectURL()``), and leaving them in the default kept
+    #: every unconfigured deployment accepting a form an extension serves for
+    #: itself.
     #:
-    #: The consent screen never closed that gap: it renders the *client name*,
-    #: so an impostor's prompt reads "FaultMaven Copilot" too.
+    #: This list still admits ANY extension id — it is id-agnostic so unpacked
+    #: dev builds work. It is therefore an authenticity check on the *channel*,
+    #: not on the *client*: it says a code can only be delivered to whoever owns
+    #: the id in the URL, not that that id is ours. Deployments that want the
+    #: latter pin the published id here. Nothing about consent may be inferred
+    #: from a match — see ``oauth_first_party_redirect_patterns``.
     oauth_redirect_uri_patterns: List[str] = Field(
         default=[
             # identity.launchWebAuthFlow redirect targets. The host is derived
@@ -1242,10 +1245,6 @@ class AuthSettings(BaseSettings):
             # Chrome uses the 32-char a-p id, Firefox a 40-hex digest.
             r"^https://[a-p]{32}\.chromiumapp\.org/?$",
             r"^https://[a-f0-9]{40}\.extensions\.allizom\.org/?$",
-            # Legacy in-extension callback pages. Reachable by ANY extension id
-            # the pattern admits, which is why the forms above are preferred.
-            r"^chrome-extension://[a-z]{32}/callback\.html$",
-            r"^moz-extension://[a-f0-9-]{36}/callback\.html$",
         ],
         description="Allowed redirect URI patterns (regex) for OAuth",
     )
@@ -1273,9 +1272,46 @@ class AuthSettings(BaseSettings):
     #: no access on its own, it only decides whether the prompt renders. What
     #: actually protects the flow is the client allowlist, PKCE, the required
     #: live dashboard session, and the redirect-URI allowlist.
+    #:
+    #: Necessary but NOT sufficient: ``client_id`` is caller-supplied, so this
+    #: list alone identifies nobody. The skip additionally requires a redirect
+    #: match against ``oauth_first_party_redirect_patterns``.
     oauth_first_party_clients: List[str] = Field(
         default=["faultmaven-copilot"],
-        description="Client IDs shipped by FaultMaven; these skip the consent screen",
+        description="Client IDs shipped by FaultMaven; candidates for the consent skip",
+    )
+
+    #: Redirects that identify a client as genuinely ours — the second half of
+    #: the consent skip, and the half that carries the proof.
+    #:
+    #: ``client_id`` is a caller-supplied string: an impostor extension can
+    #: present ``faultmaven-copilot`` and be as first-party as the real one, and
+    #: the consent screen never caught that either (it renders the client
+    #: *name*, so the impostor's prompt read "FaultMaven Copilot" too). What an
+    #: impostor cannot do is receive a code at OUR extension's redirect — the
+    #: browser derives that host from the extension's own id. So skipping the
+    #: prompt is safe exactly when the code can only be delivered to us, and
+    #: that is a statement about the redirect, never about the client_id.
+    #:
+    #: Empty by default, which means NO client skips consent until a deployment
+    #: pins its published extension id here. That is deliberate: a shipped
+    #: default cannot know the id, and an id-agnostic pattern would hand the
+    #: skip to any extension that asked — silently, since the whole point of
+    #: the skip is that nothing is rendered. Consent-as-shipped is the
+    #: pre-existing behaviour, so an unconfigured deployment loses nothing.
+    #:
+    #: Example (Chrome, published id ``abcdefghijklmnopabcdefghijklmnop``)::
+    #:
+    #:     OAUTH_FIRST_PARTY_REDIRECT_PATTERNS=["^https://abcdefghijklmnopabcdefghijklmnop\\.chromiumapp\\.org/?$"]
+    #:
+    #: Patterns must also be admitted by ``oauth_redirect_uri_patterns``; this
+    #: list decides consent, not access.
+    oauth_first_party_redirect_patterns: List[str] = Field(
+        default=[],
+        description=(
+            "Redirect URI patterns (regex) that identify a first-party client. "
+            "Empty means every client gets the consent screen"
+        ),
     )
 
     # OAuth security settings

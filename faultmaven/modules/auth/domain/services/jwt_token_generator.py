@@ -1790,7 +1790,7 @@ class ITokenRevocationStore(ABC):
 
     @abstractmethod
     async def revoke_user_tokens_before(
-        self, user_id: str, revoked_at: int, ttl: int
+        self, user_id: str, revoked_at: float, ttl: int
     ) -> None:
         """Set the user's revocation watermark.
 
@@ -1801,7 +1801,9 @@ class ITokenRevocationStore(ABC):
 
         Args:
             user_id: User whose tokens are being revoked
-            revoked_at: Revocation instant as a Unix timestamp (seconds)
+            revoked_at: Revocation instant as a Unix timestamp (seconds, and
+                the fraction is significant — ``is_user_revoked`` floors it,
+                but ``clear_user_revocation_if_before`` orders against it)
             ttl: Time to live in seconds; must outlive the longest-lived token
                 the deployment issues MEASURED FROM ITS BASIS — the configured
                 lifetime plus ``MAX_MINT_BASIS_CARRY_SECONDS``, since ``iat``
@@ -1821,6 +1823,63 @@ class ITokenRevocationStore(ABC):
 
         Returns:
             True if the user has a watermark at or after ``issued_at``
+        """
+        ...
+
+    @abstractmethod
+    async def clear_user_revocation_if_before(
+        self, user_id: str, instant: float
+    ) -> bool:
+        """Drop the user's watermark, but only if it predates ``instant``.
+
+        For the one event that legitimately supersedes a watermark: the user
+        authenticating afresh. The watermark says "everything issued before
+        instant T is stale", and an authentication whose state reads all began
+        after T is not — so a login must not be governed by it.
+
+        Needed because ``iat`` has whole-second granularity and
+        ``is_user_revoked`` compares ``<=`` (see ``revocation_reason``: of the
+        two rounding errors, honouring a token minted in the same second as a
+        revocation is the more dangerous one). Together those mean a sign-in
+        landing in the same second as a sign-out mints an access *and* a
+        refresh token that are rejected on sight — the login appears to succeed
+        and every request 401s, with no way forward because the refresh token
+        is dead too. Ordinary logout is account-scoped, so that sequence is
+        routine rather than an admin-path curiosity.
+
+        **``instant`` must be the caller's ``state_read_at``**, not ``now``,
+        and the comparison is the whole point. A watermark that predates the
+        first state read was written before this authentication began, and
+        clearing it is what the paragraph above describes. A watermark that
+        does NOT predate it was written *during* the request — the #831
+        straddle: an admin persisting a role or password change and revoking
+        while this login was reading the pre-change user row. That mint is
+        supposed to die, so this leaves it alone. Second granularity cannot
+        tell those two apart, which is why the stored watermark keeps its
+        fraction and this takes a float.
+
+        Callers must have established identity first, and must not call it for
+        an account that is deactivated or deleted. It grants nothing directly —
+        the tokens minted next carry an ``iat`` the watermark would not have
+        covered anyway — so what it decides is whether that user's OTHER
+        outstanding tokens come back.
+
+        Known residual: a watermark from an admin revocation that the user's
+        own later sign-out has already overwritten is indistinguishable from
+        the sign-out's own, so the sequence revoke → user signs out → user
+        signs in revives tokens minted before the admin revocation, for the
+        remainder of their TTL. Deactivation and deletion are unaffected (both
+        block the sign-in); what can revive is stale roles or scopes.
+
+        No-op when no watermark is set, or when it is malformed. Idempotent.
+
+        Args:
+            user_id: User whose watermark is being cleared
+            instant: Unix timestamp, with fraction, that the watermark must
+                strictly predate — the caller's pre-read capture
+
+        Returns:
+            True if a watermark was found and cleared.
         """
         ...
 

@@ -385,6 +385,39 @@ shapes the response.
   watermark and revoked jti, restoring revoked-but-unexpired tokens for the
   rest of their lifetime. Account deactivation is in the database and does
   survive; revocation alone does not.
+- A sign-in clears a watermark that predates it (below), so the reach of a
+  revocation over a *reachable* account ends at that account's next login.
+
+**A fresh authentication supersedes a watermark that predates it.** The
+watermark means "everything issued before instant T is stale", and an
+authentication whose state reads all began after T is not. `POST /auth/login`
+therefore calls `clear_user_revocation_if_before(user_id, state_read_at)` before
+minting, gated on the account still being active and undeleted.
+
+Without it, deliberate sign-out — which is account-scoped, so it writes a
+watermark on an ordinary user action rather than an admin one — locks the user
+out of signing back in for the remainder of that second: `iat` has whole-second
+granularity and the rule is `iat <= watermark`, so a login landing in the same
+second mints an access *and* a refresh token that are rejected on sight. The
+login reports success and every request 401s, with no way forward because the
+refresh token is dead too. Across replicas the window is not one second but the
+clock skew between the pod that wrote the watermark and the pod that mints.
+
+The comparison is against the caller's **pre-read capture, not `now`**, and this
+is what keeps it from undoing the straddle protection above: a watermark written
+*during* the login's reads does not predate the capture, is left in place, and
+the pair that login mints still dies. Second granularity cannot separate those
+two cases, so the stored watermark keeps a sub-second fraction (floored again by
+`is_user_revoked`, so the revocation rule itself is unchanged), and the
+compare-and-delete runs server-side in Redis so a revocation landing between the
+read and the delete cannot be deleted on the strength of the previous value.
+
+Residual: a watermark from an admin revocation that the user's own later
+sign-out has already overwritten is indistinguishable from the sign-out's own.
+The sequence revoke → user signs out → user signs in therefore revives tokens
+minted before the admin revocation, for the remainder of their TTL.
+Deactivation and deletion are unaffected — both block the sign-in — so what can
+revive is stale roles or scopes, bounded by the access-token lifetime.
 
 The admin endpoint resolves `user_id` against the user store and returns 404 if
 it does not exist. A watermark write succeeds for any string, so an admin who
@@ -2013,9 +2046,38 @@ describe('OAuth Flow Integration', () => {
 | `JWT_ACCESS_TOKEN_EXPIRY_MINUTES` | Both | Access token lifetime in **minutes** (1–1440) | `15` |
 | `JWT_REFRESH_TOKEN_EXPIRY_DAYS` | Both | Refresh token lifetime in **days**, not minutes (1–90) | `7` |
 | `OAUTH_CODE_EXPIRY` | Cloud | Authorization code lifetime (minutes) | `10` |
-| `OAUTH_REQUIRE_CONSENT` | Cloud | Require user consent screen | `false` |
-| `OAUTH_REQUIRE_HTTPS_REDIRECT` | Cloud | Require HTTPS redirect URIs | `false` |
+| `OAUTH_REQUIRE_CONSENT` | Cloud | Require user consent screen | `true` |
+| `OAUTH_REQUIRE_HTTPS_REDIRECT` | Cloud | Require HTTPS redirect URIs | `true` |
+| `OAUTH_REDIRECT_URI_PATTERNS` | Cloud | JSON list of regexes a redirect must match | the two `launchWebAuthFlow` hosts |
+| `OAUTH_FIRST_PARTY_CLIENTS` | Cloud | JSON list of client IDs eligible to skip consent | `["faultmaven-copilot"]` |
+| `OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` | Cloud | JSON list of regexes that identify a first-party client | `[]` (nothing skips consent) |
 | `DASHBOARD_URL` | Both | Dashboard URL for OAuth redirects | `http://localhost:3333` |
+
+The three list-valued OAuth variables are parsed as JSON, not as comma-separated
+text; a bare value fails at startup rather than being split.
+
+**Skipping consent takes both first-party variables, and only the redirect one
+proves anything.** `client_id` is caller-supplied, so an extension that is not
+ours presents `faultmaven-copilot` as easily as the real one — and the consent
+screen never caught that, because it renders the client *name*, so the
+impostor's prompt read "FaultMaven Copilot" too. What an impostor cannot do is
+receive the code at our extension's redirect: `identity.launchWebAuthFlow` sends
+it to `https://<id>.chromiumapp.org/` (Chrome) or
+`https://<digest>.extensions.allizom.org/` (Firefox), and the browser derives
+that host from the extension's own id.
+
+`OAUTH_REDIRECT_URI_PATTERNS` therefore admits *any* extension id by default, so
+unpacked development builds work — it constrains the channel, not the client.
+`OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` is what names our build, and it is empty by
+default: until a deployment pins its published extension id there, every client
+gets the consent screen. A shipped default cannot know that id, and an
+id-agnostic one would hand the skip to any extension that asked, silently —
+what goes wrong when a consent skip is wrong is that nothing appears.
+
+The in-extension `chrome-extension://…/callback.html` and
+`moz-extension://…/callback.html` forms are no longer accepted. The extension
+serves those pages itself, so they carry no evidence of who is receiving the
+code.
 
 The two JWT expiry variables name their unit because they do not share one, and
 both are bounded (1–1440 minutes, 1–90 days) so an implausible value fails at

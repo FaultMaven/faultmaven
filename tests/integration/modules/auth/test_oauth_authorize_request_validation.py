@@ -48,7 +48,12 @@ from faultmaven.modules.auth.infrastructure.repositories.oauth_code_repository i
 )
 
 ALLOWED_CLIENT = "faultmaven-copilot"
-# Matches the production default pattern: chrome-extension://<32 lowercase>/callback.html
+# Matches the pattern this file's ``auth_settings`` fixture supplies, NOT the
+# shipped default (which now carries only the launchWebAuthFlow forms). What is
+# under test here is the validation mechanism — that a request is refused when
+# it falls outside whatever list the deployment configured — so the specific
+# form is deliberately arbitrary, and pinning the shipped list is the job of
+# tests/unit/modules/auth/api/test_first_party_consent.py.
 ALLOWED_REDIRECT = "chrome-extension://" + ("a" * 32) + "/callback.html"
 
 
@@ -68,7 +73,11 @@ def consent_required(monkeypatch):
 
 @pytest.fixture
 def auth_settings():
-    """Real ``AuthSettings`` carrying the shipped default allowlists.
+    """Real ``AuthSettings`` carrying allowlists this file supplies itself.
+
+    Explicit rather than defaulted, so these assertions describe the mechanism
+    and cannot be flipped by a change to the shipped lists — or by whatever the
+    runner happens to have exported (``AuthSettings`` reads ``os.environ``).
 
     Bound to the real type, not a ``Mock``: a Mock auto-creates whatever
     attribute the service reads, so a policy field that stopped being consulted
