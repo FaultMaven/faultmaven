@@ -1237,7 +1237,13 @@ class AuthSettings(BaseSettings):
     #: so an impostor's prompt reads "FaultMaven Copilot" too.
     oauth_redirect_uri_patterns: List[str] = Field(
         default=[
+            # identity.launchWebAuthFlow redirect targets. The host is derived
+            # by the browser from the extension's own id and differs per engine:
+            # Chrome uses the 32-char a-p id, Firefox a 40-hex digest.
             r"^https://[a-p]{32}\.chromiumapp\.org/?$",
+            r"^https://[a-f0-9]{40}\.extensions\.allizom\.org/?$",
+            # Legacy in-extension callback pages. Reachable by ANY extension id
+            # the pattern admits, which is why the forms above are preferred.
             r"^chrome-extension://[a-z]{32}/callback\.html$",
             r"^moz-extension://[a-f0-9-]{36}/callback\.html$",
         ],

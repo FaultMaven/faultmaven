@@ -68,6 +68,9 @@ def test_empty_allowlist_prompts_for_everything():
         # Extension ids are a-p only; anything else is not one.
         ("https://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.chromiumapp.org/", False),
         ("https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/steal", False),
+        # Firefox's identity redirect: a 40-hex digest, different host.
+        ("https://" + "a1b2c3d4" * 5 + ".extensions.allizom.org/", True),
+        ("https://short.extensions.allizom.org/", False),
     ],
 )
 def test_chromiumapp_redirect_pattern(uri, allowed):
