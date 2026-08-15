@@ -94,6 +94,19 @@ class WorkOSIdentityProvider(ISSOIdentityProvider):
             logger.warning("workos_logout_url_failed", error=type(exc).__name__)
             return None
 
+    def revoke_session(self, *, provider_session_id: str) -> bool:
+        if not provider_session_id:
+            return False
+        try:
+            self._client.user_management.revoke_session(session_id=provider_session_id)
+            return True
+        except Exception as exc:
+            # Same contract as build_logout_url: the local token is already
+            # revoked by the time this runs, so a provider failure must degrade
+            # to "the IdP session outlived ours", never to a failed logout.
+            logger.warning("workos_revoke_session_failed", error=type(exc).__name__)
+            return False
+
     def _to_identity(self, response: Any) -> SSOIdentity:
         user = response.user
         return SSOIdentity(

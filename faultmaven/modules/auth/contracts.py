@@ -613,6 +613,23 @@ class ISSOIdentityProvider(ABC):
         """
         return None
 
+    def revoke_session(self, *, provider_session_id: str) -> bool:
+        """End ``provider_session_id`` at the IdP directly. True if it ended.
+
+        The server-side counterpart to :meth:`build_logout_url`, and the reason
+        both exist: the URL only works if the browser completes a third-party
+        navigation *after* local state is gone. A closed tab, a dropped network
+        or a blocked request leaves the IdP session alive with nothing able to
+        end it. This path does not depend on the browser at all.
+
+        ``False`` means "not ended" for any reason — no single-logout support, a
+        provider error, an already-dead session. Like the URL builder, it must
+        not raise: this runs inside a logout that has already revoked the local
+        token, and failing here would report a failed sign-out for one that
+        largely succeeded.
+        """
+        return False
+
 
 class ISSOOrgMappingRepository(ABC):
     """IdP organization → FaultMaven organization lookup port.

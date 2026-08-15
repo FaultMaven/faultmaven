@@ -7677,6 +7677,26 @@
       "post": {
         "description": "Logout current user\n\nRevokes the current access token in the deployment-wide revocation store\n(#767), so the request-path revocation check rejects it on every endpoint\nfor the remainder of its lifetime. Works in both auth modes \u2014 the store\nis keyed by jti, independent of the signing algorithm.\n\n**Flow:**\n1. Validate current authentication\n2. Revoke the current token\n3. Return confirmation",
         "operationId": "logout_api_v1_auth_logout_post",
+        "parameters": [
+          {
+            "description": "The session being ended. Optional: supplied, the IdP's own session is ended server-side as well, which does not depend on the browser completing the logout redirect.",
+            "in": "header",
+            "name": "X-Session-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The session being ended. Optional: supplied, the IdP's own session is ended server-side as well, which does not depend on the browser completing the logout redirect.",
+              "title": "X-Session-Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -7687,6 +7707,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [

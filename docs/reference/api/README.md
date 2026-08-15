@@ -883,9 +883,14 @@ is keyed by jti, independent of the signing algorithm.
 
 **Auth:** `HTTPBearer`
 
+**Parameters:**
+
+- `X-Session-Id` (header, optional) — The session being ended. Optional: supplied, the IdP's own session is ended server-side as well, which does not depend on the browser completing the logout redirect.
+
 **Responses:**
 
 - `200` — Successful Response ([`LogoutResponse`](#logoutresponse))
+- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
 
 ---
 
