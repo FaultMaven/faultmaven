@@ -198,4 +198,5 @@ async def sso_exchange(
         refresh_token=result.refresh_token,
         session_id=result.session_id,
         user=user_profile,
+        idp_logout_url=result.idp_logout_url,
     )

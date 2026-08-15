@@ -848,6 +848,15 @@ async def logout(
     request: Request,
     current_user: DevUser = Depends(require_authentication),
     token: str = Depends(extract_bearer_token),
+    x_session_id: Optional[str] = Header(
+        default=None,
+        alias="X-Session-Id",
+        description=(
+            "The session being ended. Optional: supplied, the IdP's own session "
+            "is ended server-side as well, which does not depend on the browser "
+            "completing the logout redirect."
+        ),
+    ),
 ) -> LogoutResponse:
     """Logout current user
 
@@ -894,6 +903,17 @@ async def logout(
         # success while the token remains usable. AuthService writes the
         # same deployment-wide store the request-path check reads (#767).
         await auth_service.revoke_token(jti, int(exp) if exp else 0)
+
+        # End the IdP's session too, server-side. The logout URL handed to the
+        # client only works if the browser completes a third-party navigation
+        # after teardown; a closed tab leaves the IdP session alive with nothing
+        # able to reach it. This path does not depend on the browser.
+        #
+        # Best-effort by construction: the local token is already revoked, and a
+        # sign-out is not less successful because the IdP was unreachable. Needs
+        # the session id, which the client sends as X-Session-Id; absent (older
+        # clients, non-SSO logins) it is simply skipped.
+        await _end_idp_session_best_effort(request, x_session_id)
 
         logger.info(
             f"User logout: {current_user.user_id} (correlation: {correlation_id})"
@@ -1045,6 +1065,34 @@ async def auth_health_check(request: Request):
                 "error": "Auth health check failed",
             },
         )
+
+
+async def _end_idp_session_best_effort(
+    request: Request, session_id: Optional[str]
+) -> None:
+    """End the IdP session behind ``session_id``, swallowing every failure.
+
+    Separated from the endpoint so the swallowing is explicit and narrow. This
+    runs *after* the local token is revoked, so there is nothing a caller could
+    usefully do with a failure here: the sign-out already happened, and the only
+    consequence is that the IdP session outlives it — the pre-existing
+    behaviour. Raising would turn a successful logout into a 500.
+
+    Silent when SSO is not configured (local mode mounts no service) or the
+    client sent no session id.
+    """
+    if not session_id:
+        return
+    service = getattr(request.app.state, "sso_login_service", None)
+    if service is None:
+        return
+    try:
+        ended = await service.end_idp_session(session_id)
+    except Exception as e:  # pragma: no cover - service is already fail-soft
+        logger.warning(f"IdP session teardown raised, ignoring: {type(e).__name__}")
+        return
+    if ended:
+        logger.info("IdP session ended server-side on logout")
 
 
 @router.post("/users/{user_id}/revoke-tokens", response_model=RevokeUserTokensResponse)

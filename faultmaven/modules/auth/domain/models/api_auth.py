@@ -135,6 +135,19 @@ class AuthTokenResponse(BaseModel):
         ..., description="Session identifier for multi-turn conversations"
     )
     user: UserProfile = Field(..., description="Authenticated user profile")
+    idp_logout_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "Where to send the browser to end the identity provider's own "
+            "session. Populated only for SSO logins; null for password and "
+            "dev logins, which have no IdP session. A client signing a user "
+            "out must navigate here after clearing local state: revoking "
+            "FaultMaven's token does not end the IdP session, so omitting it "
+            "leaves the next sign-in answered silently, the account "
+            "unswitchable, and a shared browser one click from being signed "
+            "back in."
+        ),
+    )
 
     model_config = ConfigDict(
         json_schema_extra={

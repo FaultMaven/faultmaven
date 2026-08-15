@@ -177,10 +177,16 @@ class FakeTokenGenerator:
 class FakeSessionService:
     def __init__(self):
         self.created = []
+        self.reads: list[dict] = []
+        self.sessions: dict = {}
 
     async def create_session(self, user_id, client_id=None, metadata=None):
         self.created.append({"user_id": user_id, "metadata": metadata or {}})
         return SimpleNamespace(session_id=f"sess-{user_id}"), False
+
+    async def get_session(self, session_id, validate=True):
+        self.reads.append({"session_id": session_id, "validate": validate})
+        return self.sessions.get(session_id)
 
 
 @pytest.fixture
@@ -954,3 +960,213 @@ async def test_exchange_fails_when_user_soft_deleted_after_callback(store):
     )
     code = await _login_and_get_code(service, store)
     assert await service.exchange(code) is None
+
+
+# --------------------------------------------------------------------------- #
+# Single-logout: the IdP session id must survive the two-leg login
+# --------------------------------------------------------------------------- #
+#
+# The session id is known only on the CALLBACK leg, but is needed by the
+# EXCHANGE leg that answers the client. It rides the completion code, exactly as
+# the resolved organization does. If that hand-off breaks, logout silently stops
+# ending the IdP session and the regression is invisible until someone tries to
+# switch accounts.
+
+IDENTITY_WITH_SESSION = SSOIdentity(
+    provider="workos",
+    provider_user_id="user_wos_123",
+    email="alex@example.com",
+    email_verified=True,
+    display_name="Alex Example",
+    provider_session_id="session_01HSID",
+)
+
+
+class LogoutCapableProvider(FakeProvider):
+    """A provider that offers single-logout, and records what it was asked."""
+
+    def __init__(self, identity=IDENTITY_WITH_SESSION, raises=None):
+        super().__init__(identity=identity)
+        self.raises = raises
+        self.logout_calls: list[str] = []
+        self.return_tos: list[str | None] = []
+
+    def build_logout_url(
+        self, *, provider_session_id: str, return_to: str | None = None
+    ) -> str | None:
+        self.logout_calls.append(provider_session_id)
+        self.return_tos.append(return_to)
+        if self.raises is not None:
+            raise self.raises
+        return f"https://authkit.test/logout?session={provider_session_id}"
+
+
+async def _exchange_with(store, provider):
+    user = make_user()
+    service = build_service(
+        store,
+        provider=provider,
+        users_by_subject={("workos", "user_wos_123"): user},
+        users_by_id={"u-1": user},
+    )
+    code = await _login_and_get_code(service, store)
+    return await service.exchange(code)
+
+
+async def test_exchange_returns_the_idp_logout_url(store):
+    """The whole point: the client is told where to end the IdP session."""
+    provider = LogoutCapableProvider()
+
+    result = await _exchange_with(store, provider)
+
+    assert result is not None
+    assert result.idp_logout_url == "https://authkit.test/logout?session=session_01HSID"
+    # Built from the id captured on the CALLBACK leg — proving the hand-off.
+    assert provider.logout_calls == ["session_01HSID"]
+    # The destination is named, not inherited from the IdP's default Logout URI
+    # — a dashboard setting this deployment cannot see, so an unset or stale one
+    # would land the user somewhere arbitrary right after signing out.
+    assert provider.return_tos == [DASHBOARD_URL]
+
+
+async def test_exchange_returns_no_logout_url_without_a_provider_session(store):
+    """A provider that exposes no session id yields no logout URL, and the login
+    is otherwise untouched — this is the pre-existing behaviour, not a failure."""
+    provider = LogoutCapableProvider(identity=IDENTITY)  # no provider_session_id
+
+    result = await _exchange_with(store, provider)
+
+    assert result is not None
+    assert result.access_token  # the login still works
+    assert result.idp_logout_url is None
+    # Never asked: there is no session to end.
+    assert provider.logout_calls == []
+
+
+async def test_exchange_survives_a_provider_that_raises_building_the_url(store):
+    """A broken logout link must not cost a working sign-in.
+
+    ``exchange`` runs after the user is already authenticated; raising here
+    would turn a successful login into a 401 for the sake of a cosmetic field.
+    """
+    provider = LogoutCapableProvider(raises=RuntimeError("idp unreachable"))
+
+    result = await _exchange_with(store, provider)
+
+    assert result is not None
+    assert result.access_token
+    assert result.idp_logout_url is None
+
+
+# --------------------------------------------------------------------------- #
+# Server-side teardown: ending the IdP session WITHOUT the browser
+# --------------------------------------------------------------------------- #
+#
+# The logout URL only works if the browser completes a third-party navigation
+# after local state is gone. A closed tab, a dropped network or a blocked
+# request leaves the IdP session alive with nothing able to reach it — which is
+# the shared-browser hazard, not an edge case.
+
+
+class RevokingProvider(FakeProvider):
+    def __init__(self, raises=None, result=True):
+        super().__init__(identity=IDENTITY_WITH_SESSION)
+        self.raises = raises
+        self.result = result
+        self.revoked: list[str] = []
+
+    def revoke_session(self, *, provider_session_id: str) -> bool:
+        self.revoked.append(provider_session_id)
+        if self.raises is not None:
+            raise self.raises
+        return self.result
+
+
+def _service_with_session(store, provider, metadata):
+    sessions = FakeSessionService()
+    sessions.sessions["sess-1"] = SimpleNamespace(
+        session_id="sess-1", metadata=metadata
+    )
+    service = build_service(store, provider=provider, session_service=sessions)
+    return service, sessions
+
+
+async def test_exchange_persists_the_provider_session_on_the_session(store):
+    """Without this the handle is unrecoverable the moment the response is sent."""
+    user = make_user()
+    sessions = FakeSessionService()
+    service = build_service(
+        store,
+        provider=LogoutCapableProvider(),
+        users_by_subject={("workos", "user_wos_123"): user},
+        users_by_id={"u-1": user},
+        session_service=sessions,
+    )
+    code = await _login_and_get_code(service, store)
+
+    await service.exchange(code)
+
+    assert sessions.created[0]["metadata"]["provider_session_id"] == "session_01HSID"
+
+
+async def test_end_idp_session_revokes_the_stored_handle(store):
+    provider = RevokingProvider()
+    service, _ = _service_with_session(
+        store, provider, {"provider_session_id": "session_01HSID"}
+    )
+
+    assert await service.end_idp_session("sess-1") is True
+    assert provider.revoked == ["session_01HSID"]
+
+
+async def test_end_idp_session_reads_the_session_without_validating(store):
+    """An EXPIRED session must still surrender its handle.
+
+    Expiry is exactly when the IdP session most needs ending, and the validating
+    read deletes the row before it can be looked at — so validate=False is the
+    behaviour, not an optimisation.
+    """
+    provider = RevokingProvider()
+    service, sessions = _service_with_session(
+        store, provider, {"provider_session_id": "session_01HSID"}
+    )
+
+    await service.end_idp_session("sess-1")
+
+    assert sessions.reads == [{"session_id": "sess-1", "validate": False}]
+
+
+@pytest.mark.parametrize(
+    ("metadata", "why"),
+    [
+        ({}, "session carries no provider handle (dev/password login)"),
+        ({"provider_session_id": ""}, "handle present but empty"),
+        ({"provider_session_id": 123}, "handle present but not a string"),
+    ],
+)
+async def test_end_idp_session_without_a_usable_handle(store, metadata, why):
+    provider = RevokingProvider()
+    service, _ = _service_with_session(store, provider, metadata)
+
+    assert await service.end_idp_session("sess-1") is False, why
+    # Never call the IdP with a handle we do not have.
+    assert provider.revoked == []
+
+
+async def test_end_idp_session_unknown_session(store):
+    provider = RevokingProvider()
+    service, _ = _service_with_session(store, provider, {})
+
+    assert await service.end_idp_session("no-such-session") is False
+    assert provider.revoked == []
+
+
+async def test_end_idp_session_never_raises(store):
+    """Runs after the local token is already revoked: raising would report a
+    failed sign-out for one that already succeeded in the part that matters."""
+    provider = RevokingProvider(raises=RuntimeError("idp unreachable"))
+    service, _ = _service_with_session(
+        store, provider, {"provider_session_id": "session_01HSID"}
+    )
+
+    assert await service.end_idp_session("sess-1") is False

@@ -542,6 +542,13 @@ class SSOIdentity:
     multi-tenant it is resolved through ``ISSOOrgMappingRepository`` to the
     FaultMaven organization the login lands in (ADR-010 P2). Single-tenant
     ignores it — there is one organization.
+
+    ``provider_session_id`` is the IdP's own session identifier, needed to end
+    that session at logout. It is the IdP's session, not FaultMaven's: clearing
+    a FaultMaven session leaves the IdP's alive, so the next sign-in is answered
+    silently and "log out" does not mean logged out. Optional because not every
+    provider exposes one, and a provider that does not simply cannot offer
+    single-logout.
     """
 
     provider: str
@@ -550,6 +557,7 @@ class SSOIdentity:
     email_verified: bool
     display_name: str | None = None
     organization_id: str | None = None
+    provider_session_id: str | None = None
 
 
 class ISSOIdentityProvider(ABC):
@@ -582,6 +590,45 @@ class ISSOIdentityProvider(ABC):
             SSOAuthenticationError: if the IdP rejects the code, or the exchange
                 fails for any reason.
         """
+
+    def build_logout_url(
+        self, *, provider_session_id: str, return_to: str | None = None
+    ) -> str | None:
+        """Return the IdP URL that ends ``provider_session_id``, or None.
+
+        Ending the FaultMaven session is not a logout on its own: the IdP holds
+        its own session in the browser, so the next authorization request is
+        answered without a prompt and the account cannot be switched. Visiting
+        this URL is what actually ends it.
+
+        ``return_to`` names where the IdP should send the browser afterwards.
+        Providers generally require it to be **pre-registered** with them, so an
+        unregistered value is a failed logout rather than a redirect elsewhere —
+        it is a deployment setting, not a per-request choice.
+
+        Returning ``None`` is a supported answer, not a failure — a provider may
+        offer no single-logout, and callers degrade to today's behaviour rather
+        than failing the logout. Implementations must not raise: a logout that
+        blows up leaves the caller more signed-in than before.
+        """
+        return None
+
+    def revoke_session(self, *, provider_session_id: str) -> bool:
+        """End ``provider_session_id`` at the IdP directly. True if it ended.
+
+        The server-side counterpart to :meth:`build_logout_url`, and the reason
+        both exist: the URL only works if the browser completes a third-party
+        navigation *after* local state is gone. A closed tab, a dropped network
+        or a blocked request leaves the IdP session alive with nothing able to
+        end it. This path does not depend on the browser at all.
+
+        ``False`` means "not ended" for any reason — no single-logout support, a
+        provider error, an already-dead session. Like the URL builder, it must
+        not raise: this runs inside a logout that has already revoked the local
+        token, and failing here would report a failed sign-out for one that
+        largely succeeded.
+        """
+        return False
 
 
 class ISSOOrgMappingRepository(ABC):

@@ -157,13 +157,21 @@ class SSOLoginStart:
 
 @dataclass(frozen=True)
 class SSOExchangeResult:
-    """A freshly minted FaultMaven session, returned from ``exchange``."""
+    """A freshly minted FaultMaven session, returned from ``exchange``.
+
+    ``idp_logout_url``, when present, is where the client must send the browser
+    to end the IdP's own session. Clearing the FaultMaven session does not touch
+    it, so without this the next sign-in is answered silently and the account
+    cannot be switched. ``None`` where the provider offers no single-logout, or
+    in local mode where there is no IdP at all.
+    """
 
     user: Any
     access_token: str
     refresh_token: str
     expires_in: int
     session_id: str
+    idp_logout_url: str | None = None
 
 
 def sanitize_return_to(value: str | None) -> str | None:
@@ -398,6 +406,13 @@ class SSOLoginService:
             # organization column, so this is how ``exchange`` knows which org
             # to claim in the tokens it mints.
             login_payload["organization_id"] = organization.organization_id
+        if identity.provider_session_id:
+            # The IdP session id is known only here, on the callback leg, but is
+            # needed by the leg that answers the client. It rides the completion
+            # code for the same reason the organization does. Absent for a
+            # provider that exposes none — single-logout is then unavailable,
+            # which is the pre-existing behaviour, not a failure.
+            login_payload["provider_session_id"] = identity.provider_session_id
         await self._store.put_login(
             completion_code, login_payload, LOGIN_CODE_TTL_SECONDS
         )
@@ -597,13 +612,23 @@ class SSOLoginService:
             user, state_read_at=state_read_at
         )
 
+        provider_session_id = payload.get("provider_session_id")
+        session_metadata: dict[str, Any] = {
+            "login_method": "sso",
+            "sso_provider": self._provider.provider_name,
+            "username": user.username,
+        }
+        if isinstance(provider_session_id, str) and provider_session_id:
+            # Persisted so the IdP session can be ended WITHOUT the browser.
+            # The logout URL only works if the browser completes a third-party
+            # navigation after local teardown; a closed tab leaves the IdP
+            # session alive with nothing able to reach it. This is what
+            # ``end_idp_session`` reads.
+            session_metadata["provider_session_id"] = provider_session_id
+
         session, _resumed = await self._sessions.create_session(
             user_id=user.user_id,
-            metadata={
-                "login_method": "sso",
-                "sso_provider": self._provider.provider_name,
-                "username": user.username,
-            },
+            metadata=session_metadata,
         )
         session_id = getattr(session, "session_id", str(session))
 
@@ -613,7 +638,71 @@ class SSOLoginService:
             refresh_token=refresh_token,
             expires_in=self._access_token_expires_in,
             session_id=session_id,
+            idp_logout_url=self._idp_logout_url(provider_session_id),
         )
+
+    async def end_idp_session(self, session_id: str) -> bool:
+        """End the IdP session behind a FaultMaven session. True if it ended.
+
+        The only path that does not need the browser: logout can end the IdP
+        session even if the user closes the tab before the redirect runs.
+
+        Never raises, and never reports a problem the caller can act on — it is
+        invoked from a logout that has already revoked the local token, and the
+        sign-out is not less successful because the IdP could not be reached.
+        """
+        if not session_id:
+            return False
+        try:
+            # validate=False: an expired session must still surrender its IdP
+            # handle. Expiry is exactly when the IdP session most needs ending,
+            # and the validating read deletes the row before we can look.
+            session = await self._sessions.get_session(session_id, validate=False)
+        except Exception as exc:
+            logger.warning("sso_session_read_failed", error=type(exc).__name__)
+            return False
+        if session is None:
+            return False
+
+        provider_session_id = (getattr(session, "metadata", None) or {}).get(
+            "provider_session_id"
+        )
+        if not isinstance(provider_session_id, str) or not provider_session_id:
+            return False
+
+        try:
+            # The SDK is synchronous; off the event loop, same as exchange.
+            return await asyncio.to_thread(
+                self._provider.revoke_session,
+                provider_session_id=provider_session_id,
+            )
+        except Exception as exc:
+            logger.warning("sso_revoke_session_failed", error=type(exc).__name__)
+            return False
+
+    def _idp_logout_url(self, provider_session_id: Any) -> str | None:
+        """Build the IdP logout URL for this login, or None if unavailable.
+
+        Never raises. This runs on the success path of a login that has already
+        happened — refusing to hand back a session because its *logout* link
+        could not be built would trade a working sign-in for a cosmetic field.
+        """
+        if not isinstance(provider_session_id, str) or not provider_session_id:
+            return None
+        try:
+            # Name the destination rather than inheriting the IdP's default
+            # Logout URI, which is a dashboard setting this deployment cannot
+            # see: an unset or stale default lands the user somewhere arbitrary
+            # immediately after a successful sign-out. The dashboard origin must
+            # be registered under the provider's logout redirects — see
+            # docs/operations/sso-org-provisioning.md.
+            return self._provider.build_logout_url(
+                provider_session_id=provider_session_id,
+                return_to=self._dashboard_url or None,
+            )
+        except Exception as exc:
+            logger.warning("sso_logout_url_failed", error=type(exc).__name__)
+            return None
 
     # -- provisioning (ADR-015 D4/D5) ----------------------------------------- #
 
