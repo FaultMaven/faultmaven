@@ -1558,6 +1558,19 @@ class TerminalResponse(BaseInteractionResponse):
 
     state_updates: TerminalStateUpdate
 
+    # Override the inherited "2-4 contextual follow-up actions" description:
+    # on providers that receive the schema in prompt text, that description
+    # would instruct the LLM to emit follow-ups on a turn whose template says
+    # to leave them empty (the engine attaches the terminal affordances and
+    # APPENDS to whatever the LLM emitted — duplicates, not replacement).
+    suggested_follow_ups: Optional[List[SuggestedFollowUp]] = Field(
+        default=None,
+        description=(
+            "Leave empty. Terminal affordances (regenerate summary, generate "
+            "runbook) are attached by the engine deterministically."
+        ),
+    )
+
 
 # =============================================================================
 # Investigation Schemas (Dynamic Views)

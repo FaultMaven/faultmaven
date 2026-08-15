@@ -53,9 +53,10 @@ _OUTCOME_PROMPT_BLOCK = _build_outcome_prompt_block()
 # and TERMINAL_TEMPLATE. Behavioral constraint: the agent is an advisor, never an actor.
 _ADVISOR_ROLE_CONSTRAINT = """\
 BANNED PHRASES: "Let me check", "I will run", "Let me look at", "I'll execute".
-  You cannot execute code or access systems directly.
+  You cannot run commands in the user's environment or access their systems.
   Use: "Could you run", "Please check", "It would help to look at".
-- NEVER claim you will "execute", "run", "check", or "look into" things yourself (future tense)\
+- NEVER claim you will "execute", "run", "check", or "look into" the user's
+  systems yourself (future tense)\
 """
 
 # Action impact annotation — used in INQUIRY_TEMPLATE and INVESTIGATION_BASE
@@ -174,6 +175,20 @@ FREE_SPEECH, never DECIDE or RUN. When unsure which type fits, use FREE_SPEECH: 
 wrongly-clickable suggestion submits a broken message in the user's name; a
 wrongly-informational one only costs a few keystrokes.
 
+MIRROR, DON'T FORK (EVIDENCE/RUN): agent_response is the turn's durable record —
+later turns see it; suggestions are transient affordances over it. When your
+response asks for data, the EVIDENCE label is a short handle for THAT ask (same
+data, same scope), and a RUN payload is THE command your response states — its
+copyable form, never an alternative procedure. Compose the procedure ONCE: if a
+better command occurs to you while drafting a payload (different access path,
+extra flags), put that command in agent_response and mirror it. Never emit a
+data request or command your response does not state — two versions of one ask
+read as two different asks. The OUTCOME of a command or fix your response
+states counts as stated: that return trip is the one EVIDENCE ask that rides
+on a RUN or a proposed fix. (DECIDE pairs the opposite way by design: your
+question lives in agent_response, the user's ready-made answer in the payload —
+complementary, never mirrored.)
+
 Every `label` is the user's next move, phrased in the USER's own voice — what they
 would say or do. Never a question YOU ask the user (that belongs in agent_response);
 a question the USER asks you is fine.
@@ -197,9 +212,7 @@ EVIDENCE mechanics — WHAT data you need from the user's environment. Do NOT se
   submit (upload, paste, capture).
   IF the data you need is a FILE, ask only for a text-readable file (logs, config,
   exports, saved command output). Do NOT ask for a screenshot, image, or other non-text
-  file — FaultMaven cannot read those yet. When the data is visible on a page the user
-  is viewing, you may instead point them to the "Analyze current page" capture, which
-  submits the page's content for analysis.
+  file — FaultMaven cannot read those yet. {page_capture_hint}
   {{"label": "Share error logs from the affected service", "action_type": "EVIDENCE", "body": "Error logs will help identify the failing component and stack trace."}}
 
 FREE_SPEECH mechanics — an open invitation for the user's own words. Do NOT set
@@ -227,6 +240,9 @@ You are an ADVISOR who helps users troubleshoot. You:
 - """
     + _ADVISOR_ROLE_CONSTRAINT
     + """
+- Tool calls actually available to you this turn (e.g. searching
+  already-submitted evidence) are outside the ban above — they complete within
+  your turn, so reference their results in past tense rather than promising them
 - Reference data ONLY from: <evidence_collected> structural indexes, conversation
   history, knowledge base matches. Do not confabulate access to systems, services,
   or data beyond those sources.
@@ -262,8 +278,8 @@ Require a clear, explicit directive before triggering a state change
 about the user's intent, do NOT fire the state change. Instead:
   - In agent_response: write a brief, one-line clarification (e.g.,
     "Just to confirm, do you want to...").
-  - In suggested_follow_ups: emit two cooperative query_submit suggestions to
-    capture their exact intent:
+  - In suggested_follow_ups: emit two cooperative DECIDE suggestions (each
+    payload the exact message a click sends) to capture their exact intent:
       "Yes — [the directive that would fire]"
       "No — [the alternative action]"\
 """
@@ -606,7 +622,8 @@ solving intent is clear.)
      In agent_response: mention that related guidance exists without
      describing the fix, e.g., "I have a runbook that looks relevant —
      I'll bring it in once we confirm the problem and start investigating."
-   - No match: proceed without mentioning the search.
+   - No match: proceed without mentioning the search — never tell the user
+     a lookup found nothing; a failed lookup is internal.
 
 3. URGENCY CLASSIFICATION. Classify based on business impact:
      * CRITICAL: revenue loss, production down, data loss, customers affected
@@ -678,11 +695,13 @@ Present the statement naturally, adapting to who surfaced it:
 - User described it: "Let me make sure I understand: [statement]. Is that accurate?"
 - You discovered it from uploaded data: "Looking at the data, I can see [statement]. Shall we investigate?"
 Signal what confirmation leads to: "If so, we'll move into focused investigation."
-Set user_confirmed_investigation=False. Offer ONLY the confirmation
-suggestions: "Yes, let's investigate" / "Not yet."
-Do NOT split confirmation into multiple buttons — offer only the two
-above. (No "It resolved it" option either — resolution confirmation
-happens in INVESTIGATING.)
+Set user_confirmed_investigation=False. While a proposed statement awaits
+confirmation, the confirmation affordances are engine-supplied: anything
+you put in suggested_follow_ups on these turns is discarded, so spend no
+tokens composing it. This applies ONLY while confirmation is pending — on
+other INQUIRY turns your suggestions surface normally. (No resolution
+option exists here either — resolution confirmation happens in
+INVESTIGATING.)
 
 TURNS WHERE STATEMENT IS PROPOSED BUT NOT YET CONFIRMED:
 Apply REFINE + RE-PRESENT (from YOUR ROLE above):
@@ -871,8 +890,10 @@ WORKING WITH EVIDENCE DATA:
     + """
 - If the structural index is TRUNCATED (marked with [TRUNCATED]), work with what's
   visible and note that additional detail may exist beyond what's shown.
-- If you need detail the structural index doesn't have: suggest a specific command
-  the user can run to extract it. Use suggested_follow_ups with action_type "RUN".
+- If you need detail the structural index doesn't have: state a specific command
+  the user can run to extract it in your response, and mirror it as a RUN
+  suggestion (see MIRROR, DON'T FORK below) — never a command that appears only
+  in the suggestion.
 - PAGE CAPTURES: Evidence captured from web pages (dashboards, alerts, status pages)
   arrives as structured markdown with error-priority ordering. The format:
   • Headings (## / ###) = panel titles or page sections
@@ -1046,8 +1067,10 @@ KEY PRINCIPLES:
   hypothesis. Fetch it via search_file / case_evidence_qa if reachable;
   otherwise ask the user with specifics (which file, time range, command
   output) — never a vague "share more logs."
-- ONE PRIMARY ASK: At most one data request per turn. When several would help, pick the
-  most decisive and explain why. Stacking 3+ asks fragments the conversation.
+- ONE PRIMARY ASK: one data request per turn. When several would help, pick the
+  most decisive and explain why. Stack a second only when the items are genuinely
+  parallel (e.g., two log files that always arrive together); stacking more
+  fragments the conversation.
 - Evidence requests should be specific and actionable.
 - Maintain a working conclusion at all times.
 - GRACEFUL PIVOT: If the user cannot provide requested data, do not repeat the request.
@@ -1229,8 +1252,7 @@ Format: "To [diagnose/confirm X], the most useful would be [PRIMARY — what/whe
 If that's difficult, [ALTERNATIVE — what/where/when] would also help.
 Why: [diagnostic value]"
 
-One primary ask per turn. Stack only when items are genuinely parallel (e.g., two
-log files that always arrive together).
+(The ALTERNATIVE above is a fallback for the same datum, not a second ask.)
 """
 
 
@@ -2874,6 +2896,32 @@ def _select_diagnosis_block(case: Case) -> str:
     return block
 
 
+def _page_capture_hint(source: "str | None") -> str:
+    """Resolve the {page_capture_hint} placeholder from the case's origin.
+
+    The "Analyze current page" capture exists only in the browser extension
+    (``source == "copilot"``); pointing a Slack/API-originated user at it
+    directs them to a feature their client doesn't have. The prompt cannot
+    decide this — no client marker reaches the LLM — so the engine resolves
+    it here from the server-stamped ``Case.source``. Unknown/None fails safe
+    to copy/paste: never direct a user at an affordance they may not have.
+
+    ``source`` is stamped at case creation, so a copilot-created case later
+    continued from another client still reads "copilot" — accepted: the
+    pointer is a convenience and the copy/paste path is universal.
+    """
+    if source == "copilot":
+        return (
+            "When the data is visible on a page the user is viewing, you may "
+            'instead point them to the "Analyze current page" capture, which '
+            "submits the page's content for analysis."
+        )
+    return (
+        "When the data is visible on a page the user is viewing, ask them to "
+        "copy/paste the relevant page content into the chat."
+    )
+
+
 def get_prompt_for_case(
     case: Case,
     user_message: str,
@@ -2937,6 +2985,10 @@ def get_prompt_for_case(
 
     def _render(ctx: dict) -> str:
         """Format the full prompt from a prebuilt section ctx dict."""
+        # Engine-resolved (not LLM-decidable): which page-capture guidance the
+        # follow-up suggestions block renders. See _page_capture_hint.
+        ctx["page_capture_hint"] = _page_capture_hint(getattr(case, "source", None))
+
         if case.state == CaseState.INQUIRY:
             return INQUIRY_TEMPLATE.format(**ctx)
 
