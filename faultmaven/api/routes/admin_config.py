@@ -516,6 +516,31 @@ async def get_env_config_status(
                 description="Trace LLM calls for observability and debugging",
                 config_hint="Set OPIK_ENABLED=true with Opik cloud key or OPIK_USE_LOCAL=true",
             ),
+            # Reported HERE, and this is the answer — deliberately not a
+            # startup log line. What goes wrong on an unpinned deployment is
+            # that nothing appears: the consent screen renders exactly as it
+            # always did, so "inactive" is indistinguishable from "working"
+            # from the outside. A startup-only line does not close that, since
+            # it has rolled out of `kubectl logs` on any pod that has been up a
+            # while — a runbook saying "grep for it" then returns empty on a
+            # perfectly healthy deployment and teaches the wrong conclusion.
+            #
+            # Inactive is a CORRECT state for standalone and self-hosted, which
+            # have no published extension id, so this reports rather than
+            # degrading /health.
+            "first_party_consent_skip": FeatureStatus(
+                enabled=bool(settings.auth.oauth_first_party_redirect_patterns),
+                description=(
+                    "Shipped browser extension signs in without a consent "
+                    "prompt (requires its published redirect to be pinned)"
+                ),
+                config_hint=(
+                    "Set OAUTH_FIRST_PARTY_REDIRECT_PATTERNS to a JSON list of "
+                    "regexes matching your published extension's "
+                    "launchWebAuthFlow redirect, e.g. "
+                    r'["^https://<id>\.chromiumapp\.org/?$"]'
+                ),
+            ),
         }
 
         # Report actual runtime state, not raw setting defaults.

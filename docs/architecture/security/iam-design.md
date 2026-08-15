@@ -2079,6 +2079,25 @@ The in-extension `chrome-extension://…/callback.html` and
 serves those pages itself, so they carry no evidence of who is receiving the
 code.
 
+**Until the id is pinned, the impersonation hole is open, not mitigated.** With
+the skip inactive, a hostile extension can still present
+`client_id=faultmaven-copilot` with its own `launchWebAuthFlow` redirect and
+obtain tokens — the id-agnostic allowlist admits it. The only difference is that
+a consent screen appears first, and that screen renders the client *name*, so it
+reads "FaultMaven Copilot" for the impostor exactly as for the real extension. A
+user cannot tell them apart from it.
+
+So the empty default is the safe *default* — it cannot silently skip a prompt —
+but it is not a control against impersonation, and the prompt standing in front
+of the wildcard is misleading rather than protective. Pinning
+`OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` is what closes this, and nothing before
+the rollout does. This predates the first-party work and is not a regression
+from it; it is recorded here so the gap is not read as handled by the presence
+of a consent screen.
+
+The pin is also the only lever: consent cannot be made to distinguish clients,
+because everything it could display about the caller is caller-supplied.
+
 The two JWT expiry variables name their unit because they do not share one, and
 both are bounded (1–1440 minutes, 1–90 days) so an implausible value fails at
 boot rather than silently removing the short-credential assumption the revocation
