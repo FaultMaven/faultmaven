@@ -6,8 +6,8 @@ service: aws-iam
 symptom_class: [auth_failure]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.1.0"
+last_updated: "2026-08-16"
 verified_by: "kb-researcher"
 status: draft
 tags: [sts, assume-role, trust-policy, external-id, cross-account, role-chaining, irsa, scp]
@@ -50,7 +50,7 @@ Applications receive `ExpiredTokenException` or `InvalidClientTokenId` when STS 
 
 ## Applicability
 
-AWS CLI v2+, all AWS SDKs, EKS IRSA (Pod Identity), EC2 instance profiles using chained roles, GitHub Actions OIDC federation, and any AWS service (Lambda, ECS task role, CodeBuild) that calls `sts:AssumeRole` or `sts:AssumeRoleWithWebIdentity`. Requires IAM read permissions (`iam:GetRole`, `iam:SimulatePrincipalPolicy`) in the caller's account, and CloudTrail Management Events enabled in both source and target accounts. AWS Organizations SCP analysis requires `organizations:ListPoliciesForTarget` access.
+AWS CLI v2+, all AWS SDKs, EKS IRSA (Pod Identity), EC2 instance profiles using chained roles, GitHub Actions OIDC federation, and any AWS service (Lambda, ECS task role, CodeBuild) that calls `sts:AssumeRole` or `sts:AssumeRoleWithWebIdentity`. Requires IAM read permissions (`iam:GetRole`, `iam:SimulatePrincipalPolicy`) in the caller's account, `iam:ListOpenIDConnectProviders` and `iam:GetOpenIDConnectProvider` in whichever account hosts the OIDC provider (see Step 8 — under role chaining that is the caller's own account), and CloudTrail Management Events enabled in both source and target accounts. AWS Organizations SCP analysis requires `organizations:ListPoliciesForTarget` access.
 
 ## Diagnostic Steps
 
@@ -135,17 +135,34 @@ Expected output: policy names. Retrieve each policy with `aws organizations desc
 
 ### Step 8: Validate OIDC provider for federated assumption
 
-```bash
-# List providers
-aws iam list-open-id-connect-providers
+The provider must exist in the account that owns the role the
+`AssumeRoleWithWebIdentity` call **itself** targets — which is not always the
+account the failing `AssumeRole` names. Re-run the Step 5 lookup with
+`AttributeValue=AssumeRoleWithWebIdentity` to find that call, read its
+`requestParameters.roleArn`, and run the commands below with credentials for
+that role's account:
 
-# Inspect the provider
+- **Role chaining** — the pod assumes a role in its own account via IRSA, and
+  that role then calls `sts:AssumeRole` cross-account: the web-identity call
+  targets the *caller's* account, so the provider is in `111111111111`.
+- **Direct cross-account web identity** — the pod presents its token to the
+  far-side role directly: the provider is in `222222222222`.
+
+```bash
+# Derive the cluster's issuer, then list the providers registered in that account
+aws eks describe-cluster --name my-cluster \
+  --query 'cluster.identity.oidc.issuer' --output text
+
+aws iam list-open-id-connect-providers \
+  --query 'OpenIDConnectProviderList[*].Arn' --output text
+
+# Inspect the provider whose ARN path matches the issuer
 aws iam get-open-id-connect-provider \
-  --open-id-connect-provider-arn arn:aws:iam::222222222222:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \
+  --open-id-connect-provider-arn arn:aws:iam::<provider-account>:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \
   --query '{URL:Url,Audiences:ClientIDList,Thumbprints:ThumbprintList}'
 ```
 
-Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-cluster --name <name> --query 'cluster.identity.oidc.issuer'`). `Audiences` contains `sts.amazonaws.com`. Thumbprint must match the certificate currently served at the issuer endpoint.
+Expected output: the issuer URL returned by `describe-cluster` corresponds to one of the listed provider ARNs. For that provider, `URL` matches the issuer, `Audiences` contains `sts.amazonaws.com`, and the thumbprint matches the certificate currently served at the issuer endpoint. An empty list — or a list with no matching issuer — is only a finding once the account is confirmed correct, because querying the wrong account returns exactly the same empty result.
 
 ## Causes
 
@@ -365,29 +382,31 @@ Expected output: `URL` matches the EKS cluster's OIDC issuer (`aws eks describe-
 
 ### Cause G: OIDC provider mismatch for federated assumption
 
-**Statement:** The OIDC identity provider ARN, issuer URL, or audience registered in IAM does not match the token presented by the federated caller, rejecting `AssumeRoleWithWebIdentity`.
+**Statement:** No OIDC provider is registered in the account owning the web-identity target role, or its issuer URL or audience does not match the token the federated caller presents, rejecting `AssumeRoleWithWebIdentity`.
 
 **Chain:**
-- root: the registered OIDC provider URL, thumbprint, `ClientIDList` (audience), or the trust policy `sub`/`aud` condition does not match the token the federated caller (EKS IRSA / GitHub Actions) presents.
-- s1: AWS validates the web-identity token against the registered provider and trust-policy condition; the mismatch fails validation.
-- D: `AssumeRoleWithWebIdentity` is denied with `AccessDenied` (points at Symptom Recognition).
+- root: no provider is registered in the account owning the role the web-identity call targets, or its URL, thumbprint, `ClientIDList`, or the trust policy `sub`/`aud` condition does not match the token the federated caller presents.
+- s1: AWS validates the token against that account's provider *before* the target role's trust policy is consulted, so a correct-looking far-side trust policy does not exonerate the provider.
+- D: `AssumeRoleWithWebIdentity` is denied with `AccessDenied` or `InvalidIdentityToken` (points at Symptom Recognition).
 
 **Indicators:**
-- root: [Step 8] `URL` in the OIDC provider does not match the token issuer, or `ClientIDList` does not include `sts.amazonaws.com`
+- root: [Step 8] no provider in that account has a `URL` matching the token issuer, or its `ClientIDList` omits `sts.amazonaws.com`
 - s1: [Step 2] Trust policy `Condition` `StringEquals` subject/audience values differ from what the provider token contains
 
 **Interventions:**
 - **remediation** (root): correct the OIDC provider thumbprint, or re-register the provider with the right URL/audience.
 
   ```bash
+  # Run all three in the account identified in Step 8.
+
   # Update OIDC provider thumbprint if the certificate has rotated
   aws iam update-open-id-connect-provider-thumbprint \
-    --open-id-connect-provider-arn arn:aws:iam::222222222222:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \
+    --open-id-connect-provider-arn arn:aws:iam::<provider-account>:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \
     --thumbprint-list NEWTHUMBPRINT1234567890
 
   # Re-register the provider if the URL is wrong
   aws iam delete-open-id-connect-provider \
-    --open-id-connect-provider-arn arn:aws:iam::222222222222:oidc-provider/wrong.issuer.url
+    --open-id-connect-provider-arn arn:aws:iam::<provider-account>:oidc-provider/wrong.issuer.url
 
   aws iam create-open-id-connect-provider \
     --url https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \
