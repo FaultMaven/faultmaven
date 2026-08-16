@@ -43,15 +43,20 @@ from faultmaven.api.v1.auth_dependencies import (
 )
 from faultmaven.api.v1.dependencies import get_session_service
 from faultmaven.config.settings import AuthMode, get_settings
+from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.container import container
 from faultmaven.exceptions import FaultMavenException
 from faultmaven.infrastructure.observability.tracing import trace
+from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
+    SessionlessOrganizationRepository,
+)
 from faultmaven.modules.auth.domain.models.api_auth import (
     AuthenticationRequiredError,
     AuthError,
     AuthTokenResponse,
     DevLoginRequest,
     LogoutResponse,
+    OrganizationSummary,
     RevokeUserTokensResponse,
     TokenRefreshRequest,
     TokenRefreshResponse,
@@ -1002,6 +1007,49 @@ async def logout(
         raise HTTPException(status_code=500, detail="Logout failed")
 
 
+async def _resolve_organization_summary(
+    current_user: DevUser,
+) -> Optional[OrganizationSummary]:
+    """Name the tenant this session is bound to, or None if there isn't one.
+
+    ``usable_tenant_id`` decides whether the bound organization is a real
+    tenant — deliberately not re-tested here. It already knows the one case
+    that matters: under multi-tenant the Standalone sentinel is *not* a tenant
+    but the identity of the single-tenant deployment, and an execution context
+    that never bound an org resolves to exactly that sentinel. Carrying a
+    private copy of that test is how two call sites start disagreeing about
+    what counts as a tenant.
+
+    Never raises. This is a display field on a profile endpoint: a user whose
+    organization row cannot be read still has a name, an email and roles worth
+    returning, and failing the whole request would sign them out of a UI that
+    only wanted a label. The absent field says "nothing to show" — the response
+    model says so too, so a client cannot read it as a permission signal.
+    """
+    tenant_id = usable_tenant_id(current_user.organization_id)
+    if not tenant_id:
+        return None
+
+    try:
+        organization = await SessionlessOrganizationRepository().get_organization(
+            tenant_id
+        )
+    except Exception as e:  # noqa: BLE001 — see docstring: display field only
+        logger.warning(
+            "Could not read organization for profile",
+            extra={"organization_id": tenant_id, "error": str(e)},
+        )
+        return None
+
+    if organization is None:
+        return None
+
+    return OrganizationSummary(
+        organization_id=tenant_id,
+        name=getattr(organization, "name", None) or "",
+    )
+
+
 @router.get("/me", response_model=UserInfoResponse)
 @trace("auth_get_current_user")
 async def get_current_user_profile(
@@ -1026,6 +1074,7 @@ async def get_current_user_profile(
                 current_user.roles if current_user.roles else ["user"]
             ),  # Ensure roles are included; least privilege when absent
             last_login=None,  # TODO: Implement last login tracking
+            organization=await _resolve_organization_summary(current_user),
         )
 
         logger.debug(

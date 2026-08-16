@@ -5684,6 +5684,22 @@ So read this enum as "operator events", of which data access is two.
 
 ---
 
+### OrganizationSummary
+
+The tenant a session is bound to, named for display.
+
+Deliberately the id and the name only. This exists so a client can tell the
+user *which tenant they are writing into*, not so it can make authorization
+decisions — those are made server-side from the token's organization claim,
+never from anything echoed back here.
+
+**Properties:**
+
+- `name` (string, required) — Human-readable organization name
+- `organization_id` (string, required) — Organization identifier
+
+---
+
 ### ProblemVerificationData
 
 Problem verification details for INVESTIGATING phase.
@@ -6330,6 +6346,7 @@ Includes additional metadata for the current user.
 - `email` (string, required) — Email address
 - `is_dev_user` (boolean, optional) — Development user flag
 - `last_login` (object, optional) — Last login timestamp (ISO format)
+- `organization` (object, optional) — The organization this session is bound to, or null when there is no usable tenant for this request or its row could not be read. Under multi-tenant this is the tenant a case is written into; under single-tenant it is the deployment's one organization. Absence means 'nothing to show', never 'no access' — the request itself already succeeded, so a client must not read null as a permission signal.
 - `roles` (array, optional) — User roles for access control (e.g., ['user'], ['user', 'admin'])
 - `user_id` (string, required) — Unique user identifier
 - `username` (string, required) — Username
