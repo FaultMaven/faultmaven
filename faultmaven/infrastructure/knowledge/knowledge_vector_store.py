@@ -33,6 +33,9 @@ from chromadb.errors import NotFoundError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
+from faultmaven.infrastructure.vector_similarity import (
+    cosine_from_chroma_distance,
+)
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.vector_metadata import VectorMetadata
 
@@ -311,7 +314,9 @@ class KnowledgeVectorStore(BaseExternalClient):
                                 if results["metadatas"][0]
                                 else {}
                             ),
-                            "score": 1.0 - results["distances"][0][i],
+                            "score": cosine_from_chroma_distance(
+                                results["distances"][0][i]
+                            ),
                         }
                     )
 
@@ -555,7 +560,9 @@ class KnowledgeVectorStore(BaseExternalClient):
                                 if results["metadatas"][0]
                                 else {}
                             ),
-                            "score": 1.0 - results["distances"][0][i],
+                            "score": cosine_from_chroma_distance(
+                                results["distances"][0][i]
+                            ),
                         }
                     )
             return formatted
@@ -663,7 +670,15 @@ class KnowledgeVectorStore(BaseExternalClient):
             content = candidate.get("content", "")
             metadata = candidate.get("metadata", {})
 
-            # Signal 1: Vector similarity (already 0-1 from ChromaDB)
+            # Signal 1: Vector similarity — TRUE cosine, because `search` and
+            # `_single_keyword_search` convert through
+            # cosine_from_chroma_distance. The weights above are only
+            # meaningful against that scale: they blend this with three
+            # genuine 0-1 signals, so feeding it the raw `1 - distance`
+            # (= 2*cos - 1) silently doubled this signal's slope and made
+            # RERANK_WEIGHT_VECTOR describe a blend it did not configure
+            # (#1072). Any future change to what `score` carries must come
+            # back here.
             vector_score = candidate.get("score", 0.0)
 
             # Signal 2: Term overlap — what fraction of query terms are in this chunk

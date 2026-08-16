@@ -126,15 +126,28 @@ class KBConfig(ABC):
     def relevance_threshold(self) -> Optional[float]:
         """Minimum top-chunk score required to invoke synthesis.
 
-        Score scale is cosine similarity (1.0 - chroma_distance), range
-        [-1, 1]. Off-topic queries land near 0 (orthogonal); on-topic
-        queries score positively.
+        Score scale is cosine similarity, produced by
+        :func:`~faultmaven.infrastructure.vector_similarity.cosine_from_chroma_distance`,
+        range [-1, 1]. It is NOT ``1 - chroma_distance``: collections here use
+        ChromaDB's default ``l2`` space, whose distance is squared-euclidean,
+        so that expression yields ``2*cos - 1`` and any absolute floor compared
+        against it means roughly double what it appears to (#1072).
+
+        BGE-M3 does not spread over the full range — on this corpus, genuinely
+        off-topic queries floor around 0.36-0.48 rather than near 0, so a
+        threshold must be derived from a measured distribution of on- and
+        off-topic queries, not reasoned from orthogonality. See
+        ``UnifiedKBConfig.relevance_threshold`` for a worked example.
 
         Returns:
             Float in [0, 1] — if no chunk's score reaches this, the tool
-                returns "no relevant content" without calling the synthesis
-                LLM. Prevents grounding answers in off-topic chunks when the
-                KB doesn't cover the queried topic.
+                reports that the search returned nothing close enough to
+                answer from, without calling the synthesis LLM. It does NOT
+                report that the KB lacks coverage: a similarity score is not
+                evidence about what the KB contains, and saying otherwise
+                hands the model a false claim about its own knowledge base
+                (#1072). Prevents grounding answers in chunks that merely
+                share vocabulary with the query.
             None — disable the check (always synthesize). Use for stores
                 where returning the closest available content is always
                 desirable (e.g. case evidence for forensic analysis).

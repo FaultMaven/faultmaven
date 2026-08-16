@@ -225,6 +225,20 @@ _PENDING_GATE_SUBSTANTIVE_LEN = 40
 KB_PREFETCH_FETCH_LIMIT = 10
 KB_CONTEXT_MAX_ENTRIES = 3
 
+# Cosine floor a pre-fetched runbook must clear to enter `case.kb_context` (and
+# to reach the KB cause seeder). Same scale, corpus and calibration as
+# ``UnifiedKBConfig.relevance_threshold`` — this path reads the identical
+# ``KnowledgeVectorStore.search`` score, so the two must move together; see that
+# docstring for the measured distribution the number comes from.
+#
+# This was 0.3 and shared the #1072 defect: the score it filters was not cosine
+# but ``2*cos - 1``, making it a cosine floor of 0.65 that silently dropped
+# on-topic runbooks. Quieter than the QA-tool symptom the issue was opened on —
+# nothing is logged and no message reaches the model, the prefetched context is
+# simply thinner than it should be — and on this path that starves both
+# symptom-verification context and the cause seeder.
+KB_PREFETCH_RELEVANCE_THRESHOLD = 0.5
+
 # Generation cap for schema-bound calls, and the ceiling the truncation ladder
 # may raise it to. Investigation schemas (``_Verification`` especially) are
 # large and turn 2+ carries substantial context, so the starting cap is
@@ -9845,7 +9859,9 @@ class MilestoneEngine:
             results = await self.knowledge_service.search_knowledge(
                 query=query, limit=KB_PREFETCH_FETCH_LIMIT, filters=scope_filter
             )
-            relevant = [r for r in results or [] if r.score >= 0.3]
+            relevant = [
+                r for r in results or [] if r.score >= KB_PREFETCH_RELEVANCE_THRESHOLD
+            ]
             if relevant:
                 # Score-ranked, so this top slice is byte-identical to the old
                 # limit-3 fetch — the rendered prompt surface is unchanged.

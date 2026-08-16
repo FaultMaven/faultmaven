@@ -32,6 +32,7 @@ from faultmaven.core.investigation.kb_cause_seeder import (
 from faultmaven.core.investigation.milestone_engine import (
     KB_CONTEXT_MAX_ENTRIES,
     KB_PREFETCH_FETCH_LIMIT,
+    KB_PREFETCH_RELEVANCE_THRESHOLD,
     MilestoneEngine,
 )
 from faultmaven.modules.case.contracts import (
@@ -447,6 +448,47 @@ def _search_hit(score=0.9, parent_id="rb1"):
         document_type="runbook",
         parent_document_id=parent_id,
     )
+
+
+def test_prefetch_threshold_tracks_the_qa_tool_threshold():
+    """Both floors read the same score, so they must carry the same number.
+
+    ``_prefetch_kb_context`` filters ``SearchResult.score``, which
+    ``KnowledgeService.search_knowledge`` passes through verbatim from
+    ``KnowledgeVectorStore.search`` — the identical scale the QA tool's
+    ``relevance_threshold`` is calibrated against. They drifted apart in the
+    fix for #1072 exactly because nothing tied them together: the QA-tool floor
+    was the visible symptom and got the attention, while this one filters
+    silently and would have kept dropping on-topic runbooks.
+    """
+    from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import (
+        UnifiedKBConfig,
+    )
+
+    assert KB_PREFETCH_RELEVANCE_THRESHOLD == UnifiedKBConfig().relevance_threshold
+
+
+async def test_prefetch_keeps_weakest_on_topic_and_drops_adjacent_off_topic():
+    """The measured calibration, applied on this path (#1072).
+
+    0.591 is the weakest on-topic retrieval measured against the shipped KB
+    (a query whose correct runbook names its distinguishing keyword verbatim);
+    0.477 is the strongest off-topic one (ZooKeeper -> Kafka via shared
+    vocabulary). The floor must sit between them here, as it does for the QA
+    tool.
+    """
+    ks = _SearchRecordingStub(
+        [
+            _search_hit(score=0.591, parent_id="on-topic"),
+            _search_hit(score=0.477, parent_id="off-topic"),
+        ]
+    )
+    engine = _engine(ks)
+    case = _case()
+
+    relevant = await engine._prefetch_kb_context(case, "X fails", "symptom")
+
+    assert [r.parent_document_id for r in relevant] == ["on-topic"]
 
 
 async def test_prefetch_scope_is_global_union_owner():

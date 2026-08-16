@@ -26,6 +26,7 @@ from typing import Any, Dict, List
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
 from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
+from faultmaven.infrastructure.vector_similarity import cosine_from_chroma_distance
 from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.models.report import RunbookMatch
 
@@ -308,10 +309,12 @@ class RunbookKnowledgeBase(BaseExternalClient):
         metadatas_list = results["metadatas"][0] if results.get("metadatas") else []
 
         for i, chunk_id in enumerate(ids_list):
-            # Convert distance to similarity score. Embeddings are normalized,
-            # so cosine distance ≈ 2(1 - similarity).
+            # This store had the conversion right while its four siblings had
+            # it wrong (#1072); it routes through the shared helper now so the
+            # copies cannot disagree again. The floor is this store's own, and
+            # stays visible here: the helper returns true cosine, unclamped.
             distance = distances_list[i] if i < len(distances_list) else 1.0
-            similarity = max(0.0, 1.0 - (distance / 2.0))
+            similarity = max(0.0, cosine_from_chroma_distance(distance))
 
             # Rows read successfully and then correctly discarded as
             # dissimilar are neither matches nor unreadable.

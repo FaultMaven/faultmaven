@@ -127,13 +127,37 @@ class UnifiedKBConfig(KBConfig):
     def relevance_threshold(self) -> Optional[float]:
         """Refuse synthesis when no chunk clears this cosine-similarity floor.
 
-        Score field is cosine similarity (1.0 - chroma_distance), range [-1, 1].
-        Off-topic queries against an uncovered system land near 0 (orthogonal);
-        on-topic queries with shared vocabulary score >= ~0.4. 0.3 is a
-        conservative cutoff that keeps loose-but-relevant matches and rejects
-        the noise floor. Tune via observed score distributions if needed.
+        Derived from a measured distribution rather than assumed, because the
+        assumed one was wrong twice over (#1072). The old value, 0.3, was read
+        as a cosine floor but compared against ``1 - chroma_distance``, which
+        on ChromaDB's default ``l2`` space is ``2*cos - 1`` — so it was really
+        a cosine floor of 0.65, sitting *inside* the on-topic population. It
+        refused correctly-retrieved, on-topic queries and told the model the KB
+        did not cover topics it holds dedicated runbooks for.
+        ``cosine_from_chroma_distance`` fixed the scale; this value re-derives
+        the number on it.
+
+        Measured against the shipped 91-runbook KB with BGE-M3, in true cosine:
+
+        - on-topic, correct runbook at rank 1 ... 0.591 - 0.750
+        - off-topic, unrelated domain .......... 0.358 - 0.413
+        - off-topic, adjacent vocabulary ....... 0.477
+          (ZooKeeper query -> Kafka chunks via "leader election" — the exact
+          failure this guard exists for, and the tightest real constraint)
+
+        0.5 is the lowest value that still rejects the adjacent-vocabulary case
+        it must reject, and it clears the worst on-topic observation by 0.09.
+        Biased toward the low end deliberately: a false refusal is a positive
+        false claim about KB coverage, while a false accept only puts loosely
+        related runbooks in front of a synthesizer already instructed to say
+        when information is missing.
+
+        Re-derive this — do not nudge it — if the embedding model or the corpus
+        changes. A relative test (top-1 vs top-k spread) was considered and does
+        not work here: off-topic spread measured *wider* than on-topic (0.061 vs
+        0.023), so it inverts the signal.
         """
-        return 0.3
+        return 0.5
 
     @property
     def empty_result_message(self) -> str:
