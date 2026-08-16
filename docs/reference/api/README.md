@@ -1510,7 +1510,7 @@ If force_new is true, always creates a new case.
 
 **Title Auto-Generation**: If title is not provided or empty, the backend
 automatically generates a unique title in the format: Case-YYMMDD-N
-(e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.
+(e.g., Case-261028-1, Case-261028-2). The sequence counter resets daily.
 
 **Tags:** `cases`
 
@@ -2597,12 +2597,14 @@ A turn consists of an optional query and/or optional attachments.
 Attachments are preprocessed through Tier 0+1 before the LLM sees them.
 If no query is provided with attachments, an implicit query is generated.
 
-**Auto-titling:** once the turn has been answered, a case still carrying its
-auto-generated `Case-YYMMDD-N` placeholder is named from its own content in
-the background, if it now has enough substance to name. Clients do not need
-to call `POST /cases/{case_id}/title` for this; that endpoint remains for
-user-initiated (re)naming. A case is auto-titled at most once — the moment a
-real title lands, later turns leave it alone.
+**Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`
+placeholder is named from its own content as part of processing the turn, if
+it now has enough substance to name — so the name is already in place when
+this responds. Clients do not need to call `POST /cases/{case_id}/title` for
+this; that endpoint remains for user-initiated (re)naming. A case is
+auto-titled at most once — the moment a real title lands, later turns leave
+it alone. Naming is best-effort and time-bounded: it can never fail or
+delay the turn itself.
 
 **Tags:** `cases`
 
