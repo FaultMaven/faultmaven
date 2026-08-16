@@ -13,6 +13,7 @@ from .api_auth import (
     AuthTokenResponse,
     DevLoginRequest,
     LogoutResponse,
+    OrganizationSummary,
     TokenValidationError,
     UserInfoResponse,
     UserProfile,
@@ -54,5 +55,6 @@ __all__ = [
     "AuthError",
     "TokenValidationError",
     "AuthenticationRequiredError",
+    "OrganizationSummary",
     "UserInfoResponse",
 ]

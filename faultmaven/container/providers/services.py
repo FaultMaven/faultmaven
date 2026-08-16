@@ -1130,6 +1130,9 @@ def register_services(container: BaseDIContainer) -> None:
     # *management* is the hosted admin composed module (ADR-010 D4); the core
     # keeps only the repository substrate.
     organization_repository = create_organization_repository()
+    container.organization_repository = organization_repository
+    if organization_repository:
+        container._register_service("organization_repository", organization_repository)
 
     # Enterprise Repository (create before TenantProvider; SingleTenantProvider
     # uses it for default-enterprise bootstrap).

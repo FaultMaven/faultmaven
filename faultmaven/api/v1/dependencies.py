@@ -29,6 +29,7 @@ from ...models import SessionContext
 # TD-001: IReportStore removed - reports now stored via CaseRepository
 from ...models.interfaces import IJobService
 from ...models.interfaces_case import ICaseService
+from ...models.interfaces_user import IOrganizationRepository
 
 # Lazy import to avoid circular dependency - DataService, SessionService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
@@ -46,6 +47,18 @@ if TYPE_CHECKING:
 async def get_session_service(request: Request):
     """Get SessionService instance from app.state (Composition Root)"""
     return request.app.state.session_service
+
+
+async def get_organization_repository(
+    request: Request,
+) -> Optional[IOrganizationRepository]:
+    """Get the organization repository from app.state (Composition Root).
+
+    Optional rather than 503 on absence: the one core read path is the tenant
+    label on ``/auth/me``, which degrades to an absent field rather than
+    failing a profile request over a display string.
+    """
+    return getattr(request.app.state, "organization_repository", None)
 
 
 async def get_preprocessing_service(request: Request) -> PreprocessingService:
