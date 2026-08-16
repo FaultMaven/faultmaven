@@ -2597,6 +2597,13 @@ A turn consists of an optional query and/or optional attachments.
 Attachments are preprocessed through Tier 0+1 before the LLM sees them.
 If no query is provided with attachments, an implicit query is generated.
 
+**Auto-titling:** once the turn has been answered, a case still carrying its
+auto-generated `Case-YYMMDD-N` placeholder is named from its own content in
+the background, if it now has enough substance to name. Clients do not need
+to call `POST /cases/{case_id}/title` for this; that endpoint remains for
+user-initiated (re)naming. A case is auto-titled at most once — the moment a
+real title lands, later turns leave it alone.
+
 **Tags:** `cases`
 
 **Auth:** `HTTPBearer`

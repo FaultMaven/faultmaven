@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from fastapi import BackgroundTasks
 
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api_models import AttachmentResult, IntentType, TurnResponse
@@ -45,6 +46,13 @@ def _make_mock_case(**overrides) -> Case:
     }
     defaults.update(overrides)
     return Case(**defaults)
+
+
+def _mock_request() -> MagicMock:
+    """Minimal Request stand-in — the handler reads only app.state.llm_provider."""
+    request = MagicMock()
+    request.app.state.llm_provider = None
+    return request
 
 
 def _make_turn_response(**overrides) -> TurnResponse:
@@ -455,6 +463,8 @@ class TestSubmitTurnRejectsMalformedIntent:
         current_user.user_id = "test-user-123"
         return await submit_turn(
             case_id="case_abc123def456",
+            request=_mock_request(),
+            background_tasks=BackgroundTasks(),
             query="close it",
             files=[],
             pasted_content=None,
@@ -504,6 +514,8 @@ class TestSubmitTurnBillingExhaustion:
 
         return await submit_turn(
             case_id="case_abc123def456",
+            request=_mock_request(),
+            background_tasks=BackgroundTasks(),
             query="why is the pod crashing?",
             files=[],
             pasted_content=None,
