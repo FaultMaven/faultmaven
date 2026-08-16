@@ -5415,17 +5415,14 @@ Response model for investigation session.
 
 Investigation stage within the Investigating Phase.
 
-These three stages are pure DERIVED DISPLAY labels in the unified
-opportunistic flow. They are re-derived from the action-compliance
-gates (see ``InvestigationProgress.current_stage``); they do NOT drive
-prompt dispatch and there is NO path fork or prospective routing.
+These three stages are pure DERIVED labels in the unified opportunistic
+flow. They are re-derived from the action-compliance gates (see
+``InvestigationProgress.current_stage``); they do NOT drive prompt
+dispatch and there is NO path fork or prospective routing.
 
-- DIAGNOSIS → "Investigating" (default view)
-- MITIGATION → "Mitigating" (an optional inserted sub-activity)
-- TREATMENT → "Resolving"
-
-MITIGATION is not a separate path — it is an optional "stop the
-bleeding" insert that surfaces while the investigation continues.
+DIAGNOSIS is the default. MITIGATION is not a separate path — it is an
+optional "stop the bleeding" insert that surfaces while the
+investigation continues. TREATMENT follows solution acceptance.
 
 **Values:** `diagnosis`, `mitigation`, `treatment`
 

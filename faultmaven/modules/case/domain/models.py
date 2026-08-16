@@ -795,23 +795,6 @@ class InvestigationProgress(BaseModel):
         return InvestigationStage.DIAGNOSIS
 
     @property
-    def stage_display_name(self) -> str:
-        """
-        User-facing stage name for UI display (redesign R4).
-
-        - DIAGNOSIS → "Investigating"
-        - MITIGATION → "Mitigating"
-        - TREATMENT → "Resolving"
-        """
-        stage = self.current_stage
-        if stage == InvestigationStage.DIAGNOSIS:
-            return "Investigating"
-        elif stage == InvestigationStage.MITIGATION:
-            return "Mitigating"
-        else:  # TREATMENT
-            return "Resolving"
-
-    @property
     def verification_complete(self) -> bool:
         """Check if symptom verification is complete."""
         return self.symptom_verified
@@ -909,21 +892,29 @@ class InvestigationProgress(BaseModel):
         return self
 
 
+# This docstring is published: Pydantic emits it as the schema `description`
+# for every field typed with this enum, so it reaches docs/reference/api/.
+# Keep it consumer-facing — implementation history belongs in comments.
+#
+# The backend carries ONE vocabulary for the stage: the raw enum value.
+# Prompts emit it (``CURRENT_STAGE: {enum}``) and the API serves it; display
+# naming is owned by consumers, the way the Dashboard already labels
+# ``CaseState``. A backend-side display mapping used to exist here and
+# rendered DIAGNOSIS as "Investigating" — colliding with
+# ``CaseState.investigating``, a different axis entirely. It reached only
+# prompts, never the wire, and was deleted in #1075.
 class InvestigationStage(str, Enum):
     """
     Investigation stage within the Investigating Phase.
 
-    These three stages are pure DERIVED DISPLAY labels in the unified
-    opportunistic flow. They are re-derived from the action-compliance
-    gates (see ``InvestigationProgress.current_stage``); they do NOT drive
-    prompt dispatch and there is NO path fork or prospective routing.
+    These three stages are pure DERIVED labels in the unified opportunistic
+    flow. They are re-derived from the action-compliance gates (see
+    ``InvestigationProgress.current_stage``); they do NOT drive prompt
+    dispatch and there is NO path fork or prospective routing.
 
-    - DIAGNOSIS → "Investigating" (default view)
-    - MITIGATION → "Mitigating" (an optional inserted sub-activity)
-    - TREATMENT → "Resolving"
-
-    MITIGATION is not a separate path — it is an optional "stop the
-    bleeding" insert that surfaces while the investigation continues.
+    DIAGNOSIS is the default. MITIGATION is not a separate path — it is an
+    optional "stop the bleeding" insert that surfaces while the
+    investigation continues. TREATMENT follows solution acceptance.
     """
 
     DIAGNOSIS = "diagnosis"
