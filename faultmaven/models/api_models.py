@@ -99,10 +99,18 @@ class CaseSummary(BaseModel):
     source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
     closure_reason: Optional[str]
 
-    # Progress indicators
+    # Progress indicators.
+    #
+    # Deliberately NOT a completed/total milestone fraction. Milestones complete
+    # opportunistically and a case resolves without traversing most of them, so
+    # there is no fixed quantum of remaining work for a denominator to divide by
+    # — any state-derived total makes the ratio fall when a case enters the
+    # mitigation path. ``stage`` (None outside INVESTIGATING) plus
+    # ``turns_without_progress`` carry the two facts a case list actually needs:
+    # where in the arc the case is, and whether it is moving.
     current_turn: int
-    milestones_completed: int
-    total_milestones: int = 8
+    stage: Optional[InvestigationStage]
+    turns_without_progress: int
 
     # Computed fields
     is_terminal: bool
@@ -136,8 +144,8 @@ class CaseSummary(BaseModel):
             source=getattr(case, "source", "copilot"),
             closure_reason=case.closure_reason,
             current_turn=case.current_turn,
-            milestones_completed=len(case.progress.completed_milestones),
-            total_milestones=8,
+            stage=case.current_stage,
+            turns_without_progress=case.turns_without_progress,
             is_terminal=case.is_terminal,
             valid_next_states=[
                 status.value
@@ -379,10 +387,13 @@ class AdminCaseMetadata(BaseModel):
     source: str = "copilot"  # Case origin (ADR-012): copilot | slack | api
     closure_reason: Optional[str]
 
-    # Progress indicators
+    # Progress indicators. Both are metadata under the rule above: ``stage`` is a
+    # 3-value enum derived from action-compliance gates, and
+    # ``turns_without_progress`` is a system-maintained counter. Neither can
+    # carry text a user typed.
     current_turn: int
-    milestones_completed: int
-    total_milestones: int = 8
+    stage: Optional[InvestigationStage]
+    turns_without_progress: int
 
     # Computed fields
     is_terminal: bool
@@ -408,8 +419,8 @@ class AdminCaseMetadata(BaseModel):
             source=summary.source,
             closure_reason=summary.closure_reason,
             current_turn=summary.current_turn,
-            milestones_completed=summary.milestones_completed,
-            total_milestones=summary.total_milestones,
+            stage=summary.stage,
+            turns_without_progress=summary.turns_without_progress,
             is_terminal=summary.is_terminal,
         )
 

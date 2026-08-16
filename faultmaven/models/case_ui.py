@@ -250,7 +250,13 @@ class ResolutionSummary(BaseModel):
     )
 
     milestones_completed: int = Field(
-        ge=0, description="Total milestones completed (should be 8)"
+        ge=0,
+        description=(
+            "Count of milestones completed over the case's life. A raw count, "
+            "not a fraction: milestones complete opportunistically and a case "
+            "can resolve without traversing the mitigation path, so there is no "
+            "fixed total to compare against."
+        ),
     )
 
     hypotheses_tested: int = Field(ge=0, description="Number of hypotheses tested")

@@ -159,10 +159,6 @@
             "title": "Last Activity At",
             "type": "string"
           },
-          "milestones_completed": {
-            "title": "Milestones Completed",
-            "type": "integer"
-          },
           "organization_id": {
             "title": "Organization Id",
             "type": "string"
@@ -184,12 +180,21 @@
             "title": "Source",
             "type": "string"
           },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InvestigationStage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "state": {
             "$ref": "#/components/schemas/CaseState"
           },
-          "total_milestones": {
-            "default": 8,
-            "title": "Total Milestones",
+          "turns_without_progress": {
+            "title": "Turns Without Progress",
             "type": "integer"
           },
           "updated_at": {
@@ -214,7 +219,8 @@
           "organization_id",
           "closure_reason",
           "current_turn",
-          "milestones_completed",
+          "stage",
+          "turns_without_progress",
           "is_terminal"
         ],
         "title": "AdminCaseMetadata",
@@ -1791,10 +1797,6 @@
             "title": "Last Activity At",
             "type": "string"
           },
-          "milestones_completed": {
-            "title": "Milestones Completed",
-            "type": "integer"
-          },
           "organization_id": {
             "title": "Organization Id",
             "type": "string"
@@ -1823,6 +1825,16 @@
             "title": "Source",
             "type": "string"
           },
+          "stage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InvestigationStage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "state": {
             "$ref": "#/components/schemas/CaseState"
           },
@@ -1830,9 +1842,8 @@
             "title": "Title",
             "type": "string"
           },
-          "total_milestones": {
-            "default": 8,
-            "title": "Total Milestones",
+          "turns_without_progress": {
+            "title": "Turns Without Progress",
             "type": "integer"
           },
           "updated_at": {
@@ -1867,7 +1878,8 @@
           "organization_id",
           "closure_reason",
           "current_turn",
-          "milestones_completed",
+          "stage",
+          "turns_without_progress",
           "is_terminal"
         ],
         "title": "CaseSummary",
@@ -4529,7 +4541,7 @@
             "type": "array"
           },
           "milestones_completed": {
-            "description": "Total milestones completed (should be 8)",
+            "description": "Count of milestones completed over the case's life. A raw count, not a fraction: milestones complete opportunistically and a case can resolve without traversing the mitigation path, so there is no fixed total to compare against.",
             "minimum": 0.0,
             "title": "Milestones Completed",
             "type": "integer"

@@ -4842,7 +4842,7 @@ class Case(BaseModel):
     def current_stage(self) -> Optional[InvestigationStage]:
         """
         Computed investigation stage (only when INVESTIGATING).
-        Returns: UNDERSTANDING | DIAGNOSING | RESOLVING | None
+        Returns: DIAGNOSIS | MITIGATION | TREATMENT | None
         """
         if self.state != CaseState.INVESTIGATING:
             return None

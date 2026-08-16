@@ -98,8 +98,8 @@ def mock_case_summary():
         user_id="user_789",
         organization_id="org_456",
         current_turn=1,
-        milestones_completed=2,
-        total_milestones=8,
+        stage=None,  # INQUIRY: no investigation stage yet
+        turns_without_progress=0,
         is_terminal=False,
         description="Test Case Description",
         resolved_at=None,

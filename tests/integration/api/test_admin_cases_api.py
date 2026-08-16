@@ -21,7 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from faultmaven.main import app as main_app
 from faultmaven.models.api_models import CASE_SUMMARY_CONTENT_FIELDS, CaseSummary
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
-from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.modules.case.domain.models import CaseState, InvestigationStage
 
 pytestmark = pytest.mark.integration
 
@@ -40,8 +40,8 @@ def _summary(
         user_id=user_id,
         organization_id=org_id,
         current_turn=1,
-        milestones_completed=1,
-        total_milestones=8,
+        stage=InvestigationStage.DIAGNOSIS,
+        turns_without_progress=0,
         is_terminal=False,
         description="desc",
         resolved_at=None,

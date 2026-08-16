@@ -4567,12 +4567,12 @@ with "this case has no title".
 - `current_turn` (integer, required)
 - `is_terminal` (boolean, required)
 - `last_activity_at` (string, required)
-- `milestones_completed` (integer, required)
 - `organization_id` (string, required)
 - `resolved_at` (object, required)
 - `source` (string, optional)
+- `stage` (object, required)
 - `state` (object, required)
-- `total_milestones` (integer, optional)
+- `turns_without_progress` (integer, required)
 - `updated_at` (string, required)
 - `user_id` (string, required)
 
@@ -5057,14 +5057,14 @@ Minimal case information for list views.
 - `description` (string, required)
 - `is_terminal` (boolean, required)
 - `last_activity_at` (string, required)
-- `milestones_completed` (integer, required)
 - `organization_id` (string, required)
 - `resolved_at` (object, required)
 - `shared_team_ids` (array, optional)
 - `source` (string, optional)
+- `stage` (object, required)
 - `state` (object, required)
 - `title` (string, required)
-- `total_milestones` (integer, optional)
+- `turns_without_progress` (integer, required)
 - `updated_at` (string, required)
 - `user_id` (string, required)
 - `valid_next_states` (array, optional) — Allowed state transitions from current state for user-initiated changes
@@ -5887,7 +5887,7 @@ Overall resolution metrics for RESOLVED phase.
 - `evidence_collected` (integer, required) — Total evidence items collected
 - `hypotheses_tested` (integer, required) — Number of hypotheses tested
 - `key_insights` (array, optional) — Key learnings from this investigation
-- `milestones_completed` (integer, required) — Total milestones completed (should be 8)
+- `milestones_completed` (integer, required) — Count of milestones completed over the case's life. A raw count, not a fraction: milestones complete opportunistically and a case can resolve without traversing the mitigation path, so there is no fixed total to compare against.
 - `total_duration_minutes` (integer, required) — Total time from case creation to resolution
 
 ---

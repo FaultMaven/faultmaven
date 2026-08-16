@@ -934,8 +934,8 @@ def sample_case_summary():
         updated_at=datetime.now(timezone.utc),
         last_activity_at=datetime.now(timezone.utc),
         current_turn=0,
-        milestones_completed=0,
-        total_milestones=8,
+        stage=None,  # INQUIRY: no investigation stage yet
+        turns_without_progress=0,
         is_terminal=False,
     )
 
