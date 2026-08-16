@@ -515,7 +515,7 @@ class CaseService(ICaseService):
 
             # Create new case - pass title as-is to trigger auto-generation when None
             case = await self.create_case(
-                title=title,  # None triggers Case-MMDD-N auto-generation
+                title=title,  # None triggers Case-YYMMDD-N auto-generation
                 description="Auto-created case for troubleshooting session",
                 owner_id=user_id,
                 session_id=session_id,

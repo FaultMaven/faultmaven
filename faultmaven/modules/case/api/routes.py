@@ -26,7 +26,6 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Body,
     Depends,
     File,
@@ -387,8 +386,19 @@ TITLE_CASE_LOWERCASE_WORDS = {
 # Title Generation Thresholds and Settings
 # =============================================================================
 
-# Turn threshold - minimum user conversation turns required for title generation
-MIN_TURNS_FOR_TITLE_GENERATION = 5  # Require meaningful conversation depth
+# Titleability is decided by ONE gate — substance (see _titleable_substance and
+# the content gate in generate_case_title). A second, turn-count gate used to sit
+# in front of it and is deliberately gone. The history: the original gate was this
+# 200-char content check; fa04f440 *replaced* it with a 5-turn threshold; #477 then
+# re-introduced a (richer) substance gate to unblock upload-driven cases without
+# removing the threshold that had replaced its ancestor. The two ANDed gates were
+# residue of that incomplete replacement, not a policy — and the AND made #477
+# unreachable for precisely the cases it was written for: an investigation driven
+# by a log dump or a page capture carries kilobytes of evidence and a confirmed
+# problem statement after ONE user turn. Turn count is not a proxy for substance;
+# the substance measure rejects everything the turn count rejected (a 0-turn case
+# contributes no problem statement, no evidence, no files and no chat, so it lands
+# at 0 chars) without rejecting the content-rich ones.
 
 # Content length thresholds
 MIN_CONTENT_LENGTH_FOR_TITLE = 200  # Minimum chars of user content after extraction
@@ -1398,236 +1408,45 @@ async def generate_case_title(
             extra={"existing_title": case.title},
         )
 
-        # Terminal cases already have a final title — skip regeneration
-        if case.is_terminal:
+        # A terminal case's title is final and is not regenerated — unless it was
+        # never set at all. "Terminal" said nothing about whether the case was ever
+        # named: a case that reaches RESOLVED still carrying the placeholder
+        # ``Case-YYMMDD-N`` has no final title to protect, and it is the case a user
+        # most needs named in their history. Naming it is the one write still owed.
+        if case.is_terminal and not _is_default_case_title(case.title):
             return TitleResponse(title=case.title)
 
         # Idempotency check removed - allow free regeneration
         # Rationale:
         # 1. Hybrid approach makes regeneration nearly free (90% extractive, 1ms, $0)
-        # 2. Turn threshold (5+ turns) already prevents abuse
+        # 2. The substance gate below refuses before any LLM call, so a client that
+        #    re-asks on a thin case costs reads, not tokens
         # 3. Duplicate request middleware provides rate limiting
         # 4. Better UX - users can regenerate as conversation evolves
         # 5. Titles improve as more context is revealed
         #
         # Previous: Blocked regeneration if title was "meaningful"
-        # Now: Always regenerate (respects turn threshold + duplicate protection)
+        # Now: Always regenerate (respects the substance gate + duplicate protection)
 
-        # Get messages to check turn count
-        # Use repository directly (same as get_case_conversation_context does)
-        try:
-            messages = await case_service.repository.get_messages(case_id, limit=50)
-        except Exception as e:
-            logger.warning(
-                f"Failed to get messages for case {case_id}: {str(e)}",
-                extra={
-                    "case_id": case_id,
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "correlation_id": correlation_id,
-                },
+        generated_title, title_source, substance_length = (
+            await _generate_and_persist_title(
+                case=case,
+                case_id=case_id,
+                user_id=current_user.user_id,
+                case_service=case_service,
+                llm_provider=getattr(request.app.state, "llm_provider", None),
+                max_words=max_words,
+                hint=hint,
+                correlation_id=correlation_id,
             )
-            messages = []
-
-        # Count user turns (user role messages only)
-        # Messages from repository.get_messages() are dicts with "role" field
-        # role can be "user" or "agent"
-        user_turn_count = len([m for m in messages if m.get("role") == "user"])
-
-        logger.info(
-            f"Title generation: checking turn threshold (case_id={case_id}, turns={user_turn_count}, threshold={MIN_TURNS_FOR_TITLE_GENERATION})",
-            extra={
-                "case_id": case_id,
-                "user_turn_count": user_turn_count,
-                "threshold": MIN_TURNS_FOR_TITLE_GENERATION,
-            },
         )
-
-        # Check if we have enough turns for title generation
-        if user_turn_count < MIN_TURNS_FOR_TITLE_GENERATION:
-            # Insufficient turns - return user-friendly error
-            logger.info(
-                f"Skipping title generation: insufficient turns (case_id={case_id}, turns={user_turn_count})",
-                extra={
-                    "case_id": case_id,
-                    "user_turn_count": user_turn_count,
-                    "threshold": MIN_TURNS_FOR_TITLE_GENERATION,
-                },
-            )
-            raise ValidationException(
-                f"Need at least {MIN_TURNS_FOR_TITLE_GENERATION} conversation "
-                f"turns to generate a meaningful title. Continue discussing "
-                f"your issue (currently {user_turn_count} turns), then try "
-                f"again."
-            )
-
-        # Get conversation context for LLM prompt
-        context_text = ""
-        try:
-            context_text = await case_service.get_case_conversation_context(
-                case_id, limit=CONTEXT_MESSAGE_LIMIT
-            )
-        except Exception as e:
-            logger.warning(
-                f"Failed to get conversation context for case {case_id}, using fallback: {str(e)}",
-                extra={
-                    "case_id": case_id,
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "correlation_id": correlation_id,
-                },
-            )
-            context_text = f"Case: {case.title}\nDescription: {case.description or 'No description'}"
-
-        # Extract meaningful content for the title prompt + gate. The gate's
-        # purpose is a quality guard — don't ask the LLM to title a case with
-        # too little substance. Substance is NOT just user chat: an upload- or
-        # capture-driven investigation can have a confirmed problem statement,
-        # evidence, and file summaries while the user typed almost nothing. We
-        # measure the richest available signal (problem statement → evidence/
-        # file summaries → user chat) so the guard fires on genuinely empty
-        # cases without blocking content-rich ones. See _titleable_substance.
-        user_signals = _extract_user_signals_from_context(context_text)
-        user_message_content = _titleable_substance(case, user_signals)
-
-        # Debug logging to diagnose empty extraction
-        logger.info(
-            f"Title generation: Extracted user signals",
-            extra={
-                "case_id": case_id,
-                "context_length": len(context_text) if context_text else 0,
-                "user_signals_length": (
-                    len(user_message_content) if user_message_content else 0
-                ),
-                "context_preview": context_text[:300] if context_text else None,
-                "user_signals_preview": (
-                    user_message_content[:200] if user_message_content else None
-                ),
-            },
-        )
-
-        # Content gate. A confirmed/proposed problem statement is, by itself,
-        # a title-grade summary of the case — when one exists the case is
-        # titleable regardless of how little the user typed. Otherwise require
-        # MIN_CONTENT_LENGTH_FOR_TITLE chars of substance (evidence/file
-        # summaries + chat) so we don't ask the LLM to title an empty case.
-        has_problem_statement = _has_problem_statement(case)
-        if (
-            not has_problem_statement
-            and len(user_message_content) < MIN_CONTENT_LENGTH_FOR_TITLE
-        ):
-            logger.info(
-                f"Skipping title generation: insufficient content (case_id={case_id}, length={len(user_message_content)})",
-                extra={
-                    "case_id": case_id,
-                    "content_length": len(user_message_content),
-                    "threshold": MIN_CONTENT_LENGTH_FOR_TITLE,
-                    "has_problem_statement": has_problem_statement,
-                },
-            )
-            raise ValidationException(
-                f"Need at least {MIN_CONTENT_LENGTH_FOR_TITLE} characters of "
-                f"conversation content to generate a meaningful title "
-                f"(currently {len(user_message_content)} characters). "
-                f"Continue discussing your issue, then try again."
-            )
-
-        # Generate title using LLM with fallback logic
-        title_source = "unknown"
-        llm_provider = getattr(request.app.state, "llm_provider", None)
-        try:
-            generated_title, title_source = await _generate_title_with_llm(
-                context_text,
-                case,
-                max_words,
-                hint,
-                user_message_content,
-                llm_provider,
-                # Cost routing keys off the user's CHAT length (the original
-                # "simple single-issue conversation" signal), not the larger
-                # substance blob — otherwise every substance-rich case would
-                # always take the LLM path. Content/extractive still use the
-                # richer substance (user_message_content).
-                routing_signal=user_signals,
-            )
-        except ValueError:
-            raise ValidationException(
-                "Cannot generate meaningful title from available context"
-            )
-
-        # Persist the generated title to database (Approach 1: Generate AND persist)
-        try:
-            success = await case_service.update_case(
-                case_id, {"title": generated_title}, current_user.user_id
-            )
-            if not success:
-                logger.error(
-                    f"Failed to persist generated title for case {case_id}",
-                    extra={"case_id": case_id, "generated_title": generated_title},
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to persist generated title",
-                    headers={"x-correlation-id": correlation_id},
-                )
-
-            # Verify persistence by re-fetching the case from database
-            verification_case = await case_service.get_case(
-                case_id, current_user.user_id
-            )
-            if verification_case and verification_case.title != generated_title:
-                logger.error(
-                    f"Title persistence verification failed for case {case_id}: expected '{generated_title}', got '{verification_case.title}'",
-                    extra={
-                        "case_id": case_id,
-                        "expected_title": generated_title,
-                        "actual_title": verification_case.title,
-                    },
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Title saved but verification failed - possible database issue",
-                    headers={"x-correlation-id": correlation_id},
-                )
-
-            logger.info(
-                f"Title persistence verified for case {case_id}",
-                extra={"case_id": case_id, "title": generated_title},
-            )
-        except HTTPException:
-            # Re-raise HTTPException without modification to preserve original error
-            raise
-        except ServiceException as e:
-            # Handle service-level exceptions with proper error detail
-            logger.error(
-                f"Service error persisting generated title: {e}",
-                extra={"case_id": case_id, "correlation_id": correlation_id},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to persist generated title",
-                headers={"x-correlation-id": correlation_id},
-            )
-        except Exception as e:
-            # Handle unexpected exceptions
-            logger.error(
-                f"Unexpected error persisting generated title: {e}",
-                extra={"case_id": case_id, "correlation_id": correlation_id},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to persist generated title",
-                headers={"x-correlation-id": correlation_id},
-            )
 
         # Persist success atomically and return X-Correlation-ID on all responses
         response.headers["x-correlation-id"] = correlation_id
         response.headers["x-title-source"] = (
             title_source  # Log source=llm vs fallback for telemetry
         )
-        response.headers["x-content-length"] = str(
-            len(user_message_content) if user_message_content else 0
-        )
+        response.headers["x-content-length"] = str(substance_length)
 
         # Optional telemetry logging
         logger.info(
@@ -1841,6 +1660,337 @@ def _titleable_substance(case, user_signals: str) -> str:
             unique.append(part)
 
     return _sanitize_title_content(" ".join(unique))
+
+
+# The placeholder every case is born with when the caller supplies no title:
+# ``Case-{YYMMDD}-{sequence}`` (see CaseService.create_case). Anchored on both
+# ends so a user-chosen title that merely *starts* "Case-..." is never mistaken
+# for a placeholder and silently overwritten.
+#
+# BOTH date widths are accepted. The generator emitted ``Case-{MMDD}-{seq}`` until
+# 1519b1ec (2026-01-28) made it year-safe; every case created before that day still
+# carries the 4-digit form. Matching only the current width would leave exactly
+# those rows unnameable forever — the oldest cases in any long-lived deployment,
+# and the ones whose titles a user is least likely to remember.
+_DEFAULT_CASE_TITLE_RE = re.compile(r"^Case-(?:\d{4}|\d{6})-\d+$")
+
+
+def _is_default_case_title(title: Optional[str]) -> bool:
+    """True when ``title`` is still the auto-generated ``Case-YYMMDD-N`` placeholder.
+
+    This is the whole cost bound on server-side auto-titling: a case is titled at
+    most once, because the moment it succeeds this stops answering True. It does
+    not depend on a rate limiter — the ``title_generation`` preset in
+    ``config/protection.py`` is configured but never checked (fm#985 item 12), so
+    a design that leaned on it would have no guard at all.
+    """
+    return bool(title and _DEFAULT_CASE_TITLE_RE.match(title.strip()))
+
+
+class _TitleSubstanceTooThin(ValidationException):
+    """The case does not carry enough substance to name yet.
+
+    A distinct type, not a distinct message. Both this and "the LLM and its
+    fallback both failed" are refusals to produce a title, and to a client both
+    are the same 422 — but to an operator they are opposite conditions: the first
+    is the gate working, the second is the titler broken. Auto-titling runs
+    unattended on every turn, so telling them apart by exception type is what
+    keeps a systematically failing titler from being indistinguishable from a
+    stream of ordinary thin cases. Matching on the message text would have tied
+    that distinction to user-facing copy.
+    """
+
+
+async def _generate_and_persist_title(
+    *,
+    case,
+    case_id: str,
+    user_id: str,
+    case_service: ICaseService,
+    llm_provider,
+    max_words: int,
+    hint: Optional[str],
+    correlation_id: str,
+) -> tuple[str, str, int]:
+    """Gate on substance, generate a title, persist it, and verify the write.
+
+    Shared by the ``POST /cases/{case_id}/title`` endpoint and the post-turn
+    background auto-titling task, so both apply the *same* policy. Splitting the
+    policy across a route and a task is how the two drift; there is one copy.
+
+    Returns:
+        ``(title, source, substance_length)`` — ``source`` is ``llm`` /
+        ``extractive`` / ``fallback`` (telemetry), ``substance_length`` the number
+        of characters the gate measured.
+
+    Raises:
+        ValidationException: the case carries too little substance to name, or
+            neither the LLM nor the extractive fallback produced a title.
+        HTTPException 500: the title was generated but could not be persisted, or
+            did not read back as written.
+    """
+    # Get conversation context for LLM prompt
+    context_text = ""
+    try:
+        context_text = await case_service.get_case_conversation_context(
+            case_id, limit=CONTEXT_MESSAGE_LIMIT
+        )
+    except Exception as e:
+        logger.warning(
+            f"Failed to get conversation context for case {case_id}, using fallback: {str(e)}",
+            extra={
+                "case_id": case_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "correlation_id": correlation_id,
+            },
+        )
+        context_text = (
+            f"Case: {case.title}\nDescription: {case.description or 'No description'}"
+        )
+
+    # Extract meaningful content for the title prompt + gate. The gate's
+    # purpose is a quality guard — don't ask the LLM to title a case with
+    # too little substance. Substance is NOT just user chat: an upload- or
+    # capture-driven investigation can have a confirmed problem statement,
+    # evidence, and file summaries while the user typed almost nothing. We
+    # measure the richest available signal (problem statement → evidence/
+    # file summaries → user chat) so the guard fires on genuinely empty
+    # cases without blocking content-rich ones. See _titleable_substance.
+    user_signals = _extract_user_signals_from_context(context_text)
+    user_message_content = _titleable_substance(case, user_signals)
+
+    # Extraction diagnostics. Lengths only, at DEBUG. This used to log 300 chars
+    # of raw conversation and 200 of extracted substance at INFO — verbatim user
+    # content, pre-redaction, straight into the log pipeline. That was already the
+    # wrong level for it, and auto-titling turned it from "whenever a client asks"
+    # into "every turn of every case that is not yet named". The lengths are what
+    # actually diagnose the failure this logging was added for (an empty
+    # extraction); the text was never needed to tell 0 from 200.
+    logger.debug(
+        "Title generation: extracted user signals",
+        extra={
+            "case_id": case_id,
+            "context_length": len(context_text) if context_text else 0,
+            "user_signals_length": len(user_signals or ""),
+            "substance_length": len(user_message_content or ""),
+        },
+    )
+
+    # The gate. A confirmed/proposed problem statement is, by itself, a
+    # title-grade summary of the case — when one exists the case is titleable
+    # regardless of how little the user typed. Otherwise require
+    # MIN_CONTENT_LENGTH_FOR_TITLE chars of substance (evidence/file summaries +
+    # chat) so we don't ask the LLM to title an empty case. This is the *only*
+    # gate; see the constants block for why turn count is no longer one.
+    has_problem_statement = _has_problem_statement(case)
+    if (
+        not has_problem_statement
+        and len(user_message_content) < MIN_CONTENT_LENGTH_FOR_TITLE
+    ):
+        logger.info(
+            f"Skipping title generation: insufficient content (case_id={case_id}, length={len(user_message_content)})",
+            extra={
+                "case_id": case_id,
+                "content_length": len(user_message_content),
+                "threshold": MIN_CONTENT_LENGTH_FOR_TITLE,
+                "has_problem_statement": has_problem_statement,
+            },
+        )
+        raise _TitleSubstanceTooThin(
+            f"Need at least {MIN_CONTENT_LENGTH_FOR_TITLE} characters of "
+            f"conversation content to generate a meaningful title "
+            f"(currently {len(user_message_content)} characters). "
+            f"Continue discussing your issue, then try again."
+        )
+
+    # Generate title using LLM with fallback logic
+    try:
+        generated_title, title_source = await _generate_title_with_llm(
+            context_text,
+            case,
+            max_words,
+            hint,
+            user_message_content,
+            llm_provider,
+            # Cost routing keys off the user's CHAT length (the original
+            # "simple single-issue conversation" signal), not the larger
+            # substance blob — otherwise every substance-rich case would
+            # always take the LLM path. Content/extractive still use the
+            # richer substance (user_message_content).
+            routing_signal=user_signals,
+        )
+    except ValueError:
+        raise ValidationException(
+            "Cannot generate meaningful title from available context"
+        )
+
+    # Persist the generated title to database (Approach 1: Generate AND persist)
+    try:
+        success = await case_service.update_case(
+            case_id, {"title": generated_title}, user_id
+        )
+        if not success:
+            logger.error(
+                f"Failed to persist generated title for case {case_id}",
+                extra={"case_id": case_id, "generated_title": generated_title},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to persist generated title",
+                headers={"x-correlation-id": correlation_id},
+            )
+
+        # Verify persistence by re-fetching the case from database
+        verification_case = await case_service.get_case(case_id, user_id)
+        if verification_case and verification_case.title != generated_title:
+            logger.error(
+                f"Title persistence verification failed for case {case_id}: expected '{generated_title}', got '{verification_case.title}'",
+                extra={
+                    "case_id": case_id,
+                    "expected_title": generated_title,
+                    "actual_title": verification_case.title,
+                },
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Title saved but verification failed - possible database issue",
+                headers={"x-correlation-id": correlation_id},
+            )
+
+        logger.info(
+            f"Title persistence verified for case {case_id}",
+            extra={"case_id": case_id, "title": generated_title},
+        )
+    except HTTPException:
+        # Re-raise HTTPException without modification to preserve original error
+        raise
+    except ServiceException as e:
+        # Handle service-level exceptions with proper error detail
+        logger.error(
+            f"Service error persisting generated title: {e}",
+            extra={"case_id": case_id, "correlation_id": correlation_id},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to persist generated title",
+            headers={"x-correlation-id": correlation_id},
+        )
+    except Exception as e:
+        # Handle unexpected exceptions
+        logger.error(
+            f"Unexpected error persisting generated title: {e}",
+            extra={"case_id": case_id, "correlation_id": correlation_id},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to persist generated title",
+            headers={"x-correlation-id": correlation_id},
+        )
+
+    return generated_title, title_source, len(user_message_content or "")
+
+
+# Ceiling on the auto-titling attempt. It sits on the turn's critical path (see
+# _auto_title_case_if_default for why), so it must never be able to hold a turn's
+# answer open: the extractive path is ~1ms and the LLM path ~0.5-1.2s, and a
+# titler that has stopped answering has to lose rather than delay the reply.
+AUTO_TITLE_TIMEOUT_SECONDS = 15.0
+
+
+async def _auto_title_case_if_default(
+    case_id: str,
+    user_id: str,
+    case_service: ICaseService,
+    llm_provider,
+) -> None:
+    """Name a case that is still carrying its ``Case-YYMMDD-N`` placeholder.
+
+    Titling policy lives on the server but the *trigger* used to live in each
+    client: the Slack agent and the Dashboard never called
+    ``POST /cases/{case_id}/title`` at all, so their cases kept the placeholder
+    forever, and the Copilot re-implemented the gate in TypeScript. One
+    server-side trigger is what makes the policy apply everywhere (fm#1069).
+
+    **This runs inline, before ``POST /cases/{case_id}/turns`` answers, and that
+    placement is load-bearing — do not move it to a BackgroundTasks task.** Two
+    separate hazards close because of it:
+
+    * **The next turn cannot clobber this write.** A title-only update takes
+      ``CaseService.update_case``'s metadata channel — a scoped UPDATE with no
+      version bump — deliberately, so it cannot stale-conflict with an in-flight
+      turn save. But that cuts both ways: the versioned full-row ``save`` the
+      engine performs writes ``title`` from its own in-memory snapshot, and OCC
+      cannot see a write that never bumped the version. A turn that had loaded the
+      case *before* titling landed would therefore save the placeholder straight
+      back over the generated title. Finishing before the response is what orders
+      the two: the client cannot submit turn N+1 until turn N has answered, so
+      every subsequent load already carries the new title. (A concurrent writer on
+      the *same* case from a different client can still race it — that is the
+      pre-existing property of the metadata channel, which user renames share.)
+    * **Two attempts cannot overlap.** For one sequential client there is never a
+      second in-flight attempt to duplicate the LLM call or lose a verification
+      read against.
+
+    The tenant needs no explicit re-binding here *because* of that placement: the
+    global ``bind_request_org_context`` dependency has already bound this
+    request's org in this task. Moving this off the request would silently break
+    that — ``get_current_org_id`` is total, answering the Standalone org for an
+    unbound context rather than failing, so a detached task would not raise, it
+    would quietly address the wrong tenant.
+
+    Cost is bounded by construction: it returns immediately unless the title is
+    still the placeholder, so a case is named at most once, and a case too thin to
+    name is refused by the substance gate *before* any LLM call.
+
+    Every failure is swallowed: this is best-effort naming, and nothing about a
+    turn should be reported as failed because its title could not be made.
+    """
+    try:
+        case = await case_service.get_case(case_id, user_id)
+        if not case or not _is_default_case_title(case.title):
+            return
+
+        title, source, _ = await asyncio.wait_for(
+            _generate_and_persist_title(
+                case=case,
+                case_id=case_id,
+                user_id=user_id,
+                case_service=case_service,
+                llm_provider=llm_provider,
+                max_words=MAX_TITLE_WORDS_DEFAULT,
+                hint=None,
+                correlation_id=f"auto-title:{case_id}",
+            ),
+            timeout=AUTO_TITLE_TIMEOUT_SECONDS,
+        )
+        logger.info(
+            "Auto-titled case on turn completion",
+            extra={"case_id": case_id, "title": title, "title_source": source},
+        )
+    except _TitleSubstanceTooThin as e:
+        # The gate working, not a fault: the case is genuinely too thin to name
+        # yet. Expected on early turns; the next turn tries again.
+        logger.debug(
+            f"Auto-titling skipped for case {case_id}: {e}",
+            extra={"case_id": case_id},
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Auto-titling timed out for case {case_id} after "
+            f"{AUTO_TITLE_TIMEOUT_SECONDS}s",
+            extra={"case_id": case_id},
+        )
+    except Exception as e:
+        # Everything else is a fault worth seeing at default level — including a
+        # plain ValidationException, which at this point means the LLM *and* the
+        # extractive fallback both failed to produce a title. Logging that at
+        # DEBUG alongside the gate would make a systematically broken titler
+        # indistinguishable from a stream of ordinary thin cases.
+        logger.warning(
+            f"Auto-titling failed for case {case_id}: {e}",
+            extra={"case_id": case_id, "error_type": type(e).__name__},
+        )
 
 
 def _generate_smart_extractive_title(
@@ -2280,8 +2430,8 @@ async def create_case_for_session(
     If force_new is true, always creates a new case.
 
     **Title Auto-Generation**: If title is not provided or empty, the backend
-    automatically generates a unique title in the format: Case-MMDD-N
-    (e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.
+    automatically generates a unique title in the format: Case-YYMMDD-N
+    (e.g., Case-261028-1, Case-261028-2). The sequence counter resets daily.
     """
     case_service = check_case_service_available(case_service)
 
@@ -2374,6 +2524,7 @@ async def resume_case_in_session(
 @trace("api_submit_turn")
 async def submit_turn(
     case_id: str,
+    request: Request,
     query: Optional[str] = Form(None),
     files: List[UploadFile] = File(default=[]),
     pasted_content: Optional[str] = Form(None),
@@ -2391,6 +2542,15 @@ async def submit_turn(
     A turn consists of an optional query and/or optional attachments.
     Attachments are preprocessed through Tier 0+1 before the LLM sees them.
     If no query is provided with attachments, an implicit query is generated.
+
+    **Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`
+    placeholder is named from its own content as part of processing the turn, if
+    it now has enough substance to name — so the name is already in place when
+    this responds. Clients do not need to call `POST /cases/{case_id}/title` for
+    this; that endpoint remains for user-initiated (re)naming. A case is
+    auto-titled at most once — the moment a real title lands, later turns leave
+    it alone. Naming is best-effort and time-bounded: it can never fail or
+    delay the turn itself.
     """
     import json
 
@@ -2586,6 +2746,23 @@ async def submit_turn(
                     case_id=case_id, user_id=current_user.user_id, payload=payload
                 ),
                 timeout=agent_timeout,
+            )
+
+            # Name the case from its own content. Called unconditionally: whether
+            # the case is *titleable* is decided inside, against the case as it
+            # stands after this turn, by the same gate the title endpoint uses.
+            #
+            # Awaited BEFORE returning rather than deferred to a background task,
+            # which orders it ahead of the next turn's load and so keeps that
+            # turn's full-row save from writing the placeholder back over the
+            # generated title. It costs the turn ~1ms on the extractive path and
+            # up to AUTO_TITLE_TIMEOUT_SECONDS in the worst case, once per case.
+            # See _auto_title_case_if_default — the placement is load-bearing.
+            await _auto_title_case_if_default(
+                case_id=case_id,
+                user_id=current_user.user_id,
+                case_service=case_service,
+                llm_provider=getattr(request.app.state, "llm_provider", None),
             )
 
             return response

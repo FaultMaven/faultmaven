@@ -47,6 +47,13 @@ def _make_mock_case(**overrides) -> Case:
     return Case(**defaults)
 
 
+def _mock_request() -> MagicMock:
+    """Minimal Request stand-in — the handler reads only app.state.llm_provider."""
+    request = MagicMock()
+    request.app.state.llm_provider = None
+    return request
+
+
 def _make_turn_response(**overrides) -> TurnResponse:
     """Create a mock TurnResponse."""
     defaults = {
@@ -455,6 +462,7 @@ class TestSubmitTurnRejectsMalformedIntent:
         current_user.user_id = "test-user-123"
         return await submit_turn(
             case_id="case_abc123def456",
+            request=_mock_request(),
             query="close it",
             files=[],
             pasted_content=None,
@@ -504,6 +512,7 @@ class TestSubmitTurnBillingExhaustion:
 
         return await submit_turn(
             case_id="case_abc123def456",
+            request=_mock_request(),
             query="why is the pod crashing?",
             files=[],
             pasted_content=None,
