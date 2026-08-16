@@ -626,6 +626,18 @@ class DIContainer(BaseDIContainer):
                 pass  # Container must be initialized via await container.initialize() at startup
         return getattr(self, "tenant_provider", None)
 
+    def get_organization_repository(self):
+        """Get the organization repository (the tenant-row substrate, ADR-010 D4).
+
+        ``None`` before the container is initialized. Callers that only need a
+        display label should degrade rather than refuse — see
+        ``modules/auth/api/auth._resolve_organization_summary``.
+        """
+        if not self._initialized:
+            if not getattr(self, "_initializing", False):
+                pass  # Container must be initialized via await container.initialize() at startup
+        return getattr(self, "organization_repository", None)
+
     def get_team_service(self):
         """Get the team service for KB team-scope resolution (None in standalone)."""
         if not self._initialized:

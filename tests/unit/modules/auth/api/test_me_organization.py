@@ -13,11 +13,15 @@ import pytest
 from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.modules.auth.api.auth import _resolve_organization_summary
 from faultmaven.modules.auth.domain.models.api_auth import UserInfoResponse
+from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 
 pytestmark = [pytest.mark.unit]
 
 _ORG_ID = "9f2b1c7e-1f3a-4c5d-8e91-0a2b3c4d5e6f"
-_REPO = "faultmaven.modules.auth.api.auth.SessionlessOrganizationRepository"
+
+#: Where the real tenancy predicate reads its configuration. Patching *here*
+#: rather than at ``usable_tenant_id`` keeps the sentinel rule under test.
+_PROVIDER = "faultmaven.providers.tenancy.factory.requested_tenant_provider"
 
 
 class _User:
@@ -39,16 +43,14 @@ class _Org:
 def _repo_returning(org):
     repo = AsyncMock()
     repo.get_organization = AsyncMock(return_value=org)
-    factory = lambda: repo  # noqa: E731 - the class is called with no args
-    return factory, repo
+    return repo
 
 
 class TestResolveOrganizationSummary:
     async def test_names_the_bound_tenant(self):
-        factory, repo = _repo_returning(_Org("Northwind Engineering"))
+        repo = _repo_returning(_Org("Northwind Engineering"))
 
-        with patch(_REPO, factory):
-            summary = await _resolve_organization_summary(_User(_ORG_ID))
+        summary = await _resolve_organization_summary(_User(_ORG_ID), repo)
 
         assert summary is not None
         assert summary.organization_id == _ORG_ID
@@ -57,14 +59,6 @@ class TestResolveOrganizationSummary:
         # re-derived — a second derivation is how the label and the tenant the
         # request actually wrote to would drift apart.
         repo.get_organization.assert_awaited_once_with(_ORG_ID)
-
-    async def test_no_organization_bound_is_none_without_a_lookup(self):
-        factory, repo = _repo_returning(_Org("never read"))
-
-        with patch(_REPO, factory):
-            assert await _resolve_organization_summary(_User(None)) is None
-
-        repo.get_organization.assert_not_awaited()
 
     async def test_unreadable_row_degrades_to_none_rather_than_raising(self):
         """A profile is still worth returning without its label.
@@ -76,36 +70,91 @@ class TestResolveOrganizationSummary:
         repo = AsyncMock()
         repo.get_organization = AsyncMock(side_effect=RuntimeError("db down"))
 
-        with patch(_REPO, lambda: repo):
-            assert await _resolve_organization_summary(_User(_ORG_ID)) is None
+        assert await _resolve_organization_summary(_User(_ORG_ID), repo) is None
+
+    async def test_an_unwired_repository_degrades_too(self):
+        """The composition root may not have wired one; that is not an error here.
+
+        ``get_organization_repository`` returns None rather than raising 503,
+        because a profile is worth returning without its label. Asserting it
+        keeps a future 503 from being introduced quietly at the dependency.
+        """
+        assert await _resolve_organization_summary(_User(_ORG_ID), None) is None
+
+    async def test_a_broken_tenancy_config_degrades_too(self):
+        """The "never raises" guarantee has to cover the predicate itself.
+
+        ``usable_tenant_id`` reaches settings through a deferred import, so it
+        is a failure site like any other. If it were outside the guard, a
+        misconfigured deployment would 500 `/auth/me` — signing users out of
+        the UI over a display string, the exact failure the degrade exists to
+        prevent. The sentinel is the actor here because that is the branch on
+        which the predicate actually reads the tenancy configuration.
+        """
+        repo = _repo_returning(_Org("never read"))
+
+        with patch(_PROVIDER, side_effect=RuntimeError("settings unreadable")):
+            assert (
+                await _resolve_organization_summary(_User(STANDALONE_ORG_ID), repo)
+                is None
+            )
+
+        repo.get_organization.assert_not_awaited()
 
     async def test_missing_row_is_none(self):
-        factory, _ = _repo_returning(None)
+        repo = _repo_returning(None)
 
-        with patch(_REPO, factory):
-            assert await _resolve_organization_summary(_User(_ORG_ID)) is None
+        assert await _resolve_organization_summary(_User(_ORG_ID), repo) is None
 
-    async def test_defers_the_is_this_a_tenant_question(self):
-        """The sentinel test is `usable_tenant_id`'s, and is not re-implemented.
+    async def test_nameless_row_is_absence_not_an_empty_label(self):
+        """A blank name must not reach the client as a present-but-empty chip.
 
-        Under multi-tenant the Standalone sentinel is not a tenant; under
-        single-tenant it is the deployment's one organization. This asserts the
-        *delegation* rather than either outcome, so the day that rule changes,
-        this endpoint changes with it instead of silently disagreeing.
+        ``Organization.name`` is non-empty by validation, so this state is not
+        reachable today. It is pinned because the alternative fallback — an
+        empty string — is indistinguishable from a real org whose name failed
+        to load, and a UI that hides absent orgs would render a nameless box
+        instead of nothing.
         """
-        factory, repo = _repo_returning(_Org("Default Organization"))
+        repo = _repo_returning(_Org(""))
 
-        with patch(
-            "faultmaven.modules.auth.api.auth.usable_tenant_id", return_value=None
-        ) as usable:
-            with patch(_REPO, factory):
-                assert (
-                    await _resolve_organization_summary(_User(STANDALONE_ORG_ID))
-                    is None
-                )
+        assert await _resolve_organization_summary(_User(_ORG_ID), repo) is None
 
-        usable.assert_called_once_with(STANDALONE_ORG_ID)
+    async def test_the_standalone_sentinel_is_not_a_tenant_under_multi(self):
+        """The reachable "no tenant bound" case, against the real predicate.
+
+        A ``DevUser`` can never hold ``organization_id = None`` — ``__post_init__``
+        substitutes the Standalone sentinel — so this, not a null org id, is how
+        "nothing to name" actually arrives. Only the tenancy *configuration* is
+        stubbed; ``usable_tenant_id`` runs for real, so if its sentinel rule ever
+        changes this endpoint changes with it instead of silently disagreeing.
+        """
+        repo = _repo_returning(_Org("Default Organization"))
+
+        with patch(_PROVIDER, return_value=BUILTIN_MULTI):
+            assert (
+                await _resolve_organization_summary(_User(STANDALONE_ORG_ID), repo)
+                is None
+            )
+
         repo.get_organization.assert_not_awaited()
+
+    async def test_the_standalone_sentinel_is_the_tenant_under_single(self):
+        """The same id is the deployment's one organization in standalone.
+
+        Paired with the multi-tenant case so the delegation is pinned in both
+        directions: the endpoint owns no copy of the sentinel rule, and a label
+        appears exactly where the predicate says there is a tenant to name.
+        """
+        repo = _repo_returning(_Org("Default Organization"))
+
+        with patch(_PROVIDER, return_value=BUILTIN_SINGLE):
+            summary = await _resolve_organization_summary(
+                _User(STANDALONE_ORG_ID), repo
+            )
+
+        assert summary is not None
+        assert summary.name == "Default Organization"
+        repo.get_organization.assert_awaited_once_with(STANDALONE_ORG_ID)
 
 
 class TestResponseContract:

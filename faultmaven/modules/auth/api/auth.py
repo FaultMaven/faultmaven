@@ -41,15 +41,16 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
     require_platform_admin,
 )
-from faultmaven.api.v1.dependencies import get_session_service
+from faultmaven.api.v1.dependencies import (
+    get_organization_repository,
+    get_session_service,
+)
 from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.container import container
 from faultmaven.exceptions import FaultMavenException
 from faultmaven.infrastructure.observability.tracing import trace
-from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
-    SessionlessOrganizationRepository,
-)
+from faultmaven.models.interfaces_user import IOrganizationRepository
 from faultmaven.modules.auth.domain.models.api_auth import (
     AuthenticationRequiredError,
     AuthError,
@@ -1009,8 +1010,17 @@ async def logout(
 
 async def _resolve_organization_summary(
     current_user: DevUser,
+    organization_repository: Optional[IOrganizationRepository],
 ) -> Optional[OrganizationSummary]:
     """Name the tenant this session is bound to, or None if there isn't one.
+
+    The repository arrives by injection rather than being constructed here, so
+    the endpoint is swappable through ``app.dependency_overrides`` like every
+    other API-layer collaborator (the composition root owns the instance; the
+    api layer may not reach into the container for it). It is sessionless
+    either way — a session is opened per operation — so the seam is about
+    substitutability, not query count. ``None`` means the composition root
+    never wired one, which reads here as one more "nothing to show".
 
     ``usable_tenant_id`` decides whether the bound organization is a real
     tenant — deliberately not re-tested here. It already knows the one case
@@ -1020,40 +1030,55 @@ async def _resolve_organization_summary(
     private copy of that test is how two call sites start disagreeing about
     what counts as a tenant.
 
-    Never raises. This is a display field on a profile endpoint: a user whose
-    organization row cannot be read still has a name, an email and roles worth
-    returning, and failing the whole request would sign them out of a UI that
-    only wanted a label. The absent field says "nothing to show" — the response
-    model says so too, so a client cannot read it as a permission signal.
+    Never raises, and the whole body is inside the guard for that reason —
+    ``usable_tenant_id`` reads settings through a deferred import, so leaving it
+    outside would let a config failure 500 the endpoint, which is the outcome
+    this function exists to prevent. This is a display field on a profile
+    endpoint: a user whose organization row cannot be read still has a name, an
+    email and roles worth returning, and failing the whole request would sign
+    them out of a UI that only wanted a label. The absent field says "nothing to
+    show" — the response model says so too, so a client cannot read it as a
+    permission signal.
+
+    A nameless organization is therefore absence, not an empty label: emitting
+    ``name=""`` would render a blank chip where the contract promised nothing at
+    all. ``Organization.name`` is non-empty by validation, so this is only ever
+    the unreachable case behaving like the reachable ones.
     """
-    tenant_id = usable_tenant_id(current_user.organization_id)
-    if not tenant_id:
+    if organization_repository is None:
         return None
 
     try:
-        organization = await SessionlessOrganizationRepository().get_organization(
-            tenant_id
+        tenant_id = usable_tenant_id(current_user.organization_id)
+        if not tenant_id:
+            return None
+
+        organization = await organization_repository.get_organization(tenant_id)
+        if organization is None or not organization.name:
+            return None
+
+        return OrganizationSummary(
+            organization_id=tenant_id,
+            name=organization.name,
         )
     except Exception as e:  # noqa: BLE001 — see docstring: display field only
         logger.warning(
-            "Could not read organization for profile",
-            extra={"organization_id": tenant_id, "error": str(e)},
+            "Could not resolve organization for profile",
+            extra={
+                "organization_id": current_user.organization_id,
+                "error": str(e),
+            },
         )
         return None
-
-    if organization is None:
-        return None
-
-    return OrganizationSummary(
-        organization_id=tenant_id,
-        name=getattr(organization, "name", None) or "",
-    )
 
 
 @router.get("/me", response_model=UserInfoResponse)
 @trace("auth_get_current_user")
 async def get_current_user_profile(
     current_user: DevUser = Depends(require_authentication),
+    organization_repository: Optional[IOrganizationRepository] = Depends(
+        get_organization_repository
+    ),
 ) -> UserInfoResponse:
     """Get current user profile
 
@@ -1074,7 +1099,9 @@ async def get_current_user_profile(
                 current_user.roles if current_user.roles else ["user"]
             ),  # Ensure roles are included; least privilege when absent
             last_login=None,  # TODO: Implement last login tracking
-            organization=await _resolve_organization_summary(current_user),
+            organization=await _resolve_organization_summary(
+                current_user, organization_repository
+            ),
         )
 
         logger.debug(
