@@ -20,7 +20,9 @@ Two properties carry the design and are tested here rather than assumed:
    wrong tenant. The org in force at the moment of the write is asserted directly.
 """
 
+import asyncio
 import io
+import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -38,7 +40,9 @@ from faultmaven.modules.case.api.routes import (
     _auto_title_case_if_default,
     _di_get_case_service_dependency,
     _is_default_case_title,
+    _TitleSubstanceTooThin,
     router,
+    submit_turn,
 )
 from faultmaven.modules.case.contracts import CaseState
 from faultmaven.modules.case.domain.models import Case
@@ -91,7 +95,17 @@ class TestIsDefaultCaseTitle:
 
     @pytest.mark.parametrize(
         "title",
-        ["Case-260101-1", "Case-260816-12", "Case-991231-999", "  Case-260101-1  "],
+        [
+            "Case-260101-1",
+            "Case-260816-12",
+            "Case-991231-999",
+            "  Case-260101-1  ",
+            # The pre-1519b1ec (2026-01-28) 4-digit MMDD form. Every case created
+            # before that day still carries it; matching only the current width
+            # would leave exactly those rows unnameable forever.
+            "Case-1106-1",
+            "Case-0127-1",
+        ],
     )
     def test_placeholders_are_recognised(self, title):
         assert _is_default_case_title(title) is True
@@ -104,7 +118,7 @@ class TestIsDefaultCaseTitle:
             # ends like the placeholder must never be silently overwritten.
             "Case-260101-1 follow-up",
             "Re: Case-260101-1",
-            "Case-2601-1",  # wrong date width
+            "Case-26011-1",  # 5 digits — neither the MMDD nor the YYMMDD width
             "Case-260101",  # no sequence
             "case-260101-1",  # lowercase is not what create_case writes
             "New Chat",
@@ -134,7 +148,6 @@ class TestAutoTitleTask:
         await _auto_title_case_if_default(
             case_id=case.case_id,
             user_id="user_123",
-            organization_id=TENANT_ORG,
             case_service=service,
             llm_provider=None,
         )
@@ -157,7 +170,6 @@ class TestAutoTitleTask:
         await _auto_title_case_if_default(
             case_id=case.case_id,
             user_id="user_123",
-            organization_id=TENANT_ORG,
             case_service=service,
             llm_provider=None,
         )
@@ -183,7 +195,6 @@ class TestAutoTitleTask:
             await _auto_title_case_if_default(
                 case_id=case.case_id,
                 user_id="user_123",
-                organization_id=TENANT_ORG,
                 case_service=service,
                 llm_provider=None,
             )
@@ -193,44 +204,41 @@ class TestAutoTitleTask:
         assert _is_default_case_title(case.title)
 
     @pytest.mark.asyncio
-    async def test_binds_the_captured_tenant_before_touching_the_database(self):
-        """The org must be bound at the moment of the read, not merely at request time.
+    async def test_a_titler_that_stops_answering_loses_rather_than_delays(self):
+        """The attempt sits on the turn's critical path, so it must be bounded.
 
-        Started from the Standalone default — the value an *unbound* context would
-        also produce — so the assertion can only pass if the task really re-bound
-        the tenant it was handed.
+        Without the timeout a hung provider would hold a turn's answer open for
+        the whole client wait — the turn succeeded, and only its name failed.
         """
-        set_current_org_id(STANDALONE_ORG_ID)
         case = _make_case()
         case.inquiry.proposed_problem_statement = (
             "Checkout API returns 502 for 30% of requests since the v2.1.3 deploy"
         )
         service = _service_for(case)
 
-        seen = {}
+        async def _never_returns(*args, **kwargs):
+            await asyncio.sleep(3600)
 
-        async def _get_case(case_id, user_id=None):
-            seen.setdefault("read", get_current_org_id())
-            return case
+        with (
+            patch(
+                "faultmaven.modules.case.api.routes._generate_and_persist_title",
+                new=AsyncMock(side_effect=_never_returns),
+            ),
+            patch(
+                "faultmaven.modules.case.api.routes.AUTO_TITLE_TIMEOUT_SECONDS", 0.05
+            ),
+        ):
+            await asyncio.wait_for(
+                _auto_title_case_if_default(
+                    case_id=case.case_id,
+                    user_id="user_123",
+                    case_service=service,
+                    llm_provider=None,
+                ),
+                timeout=5,
+            )
 
-        async def _update(case_id, updates, user_id=None):
-            seen["write"] = get_current_org_id()
-            case.title = updates["title"]
-            return True
-
-        service.get_case = AsyncMock(side_effect=_get_case)
-        service.update_case = AsyncMock(side_effect=_update)
-
-        await _auto_title_case_if_default(
-            case_id=case.case_id,
-            user_id="user_123",
-            organization_id=TENANT_ORG,
-            case_service=service,
-            llm_provider=None,
-        )
-
-        assert seen["read"] == TENANT_ORG
-        assert seen["write"] == TENANT_ORG
+        assert _is_default_case_title(case.title)
 
     @pytest.mark.asyncio
     async def test_a_missing_case_is_not_an_error(self):
@@ -240,7 +248,6 @@ class TestAutoTitleTask:
         await _auto_title_case_if_default(
             case_id="case_000000000000",
             user_id="user_123",
-            organization_id=TENANT_ORG,
             case_service=service,
             llm_provider=None,
         )
@@ -264,7 +271,6 @@ class TestAutoTitleTask:
         await _auto_title_case_if_default(
             case_id=case.case_id,
             user_id="user_123",
-            organization_id=TENANT_ORG,
             case_service=service,
             llm_provider=None,
         )
@@ -276,15 +282,60 @@ class TestAutoTitleTask:
 
         with patch(
             "faultmaven.modules.case.api.routes._generate_and_persist_title",
-            new=AsyncMock(side_effect=ValidationException("too thin")),
+            new=AsyncMock(side_effect=_TitleSubstanceTooThin("too thin")),
         ):
             await _auto_title_case_if_default(
                 case_id=case.case_id,
                 user_id="user_123",
-                organization_id=TENANT_ORG,
                 case_service=service,
                 llm_provider=None,
             )
+
+    @pytest.mark.asyncio
+    async def test_a_broken_titler_is_reported_while_a_thin_case_is_not(self, caplog):
+        """The gate refusing and the titler failing must not look the same.
+
+        Both refuse to produce a title and both are a 422 to a client, but one is
+        the gate working and the other is the titler broken. Auto-titling runs
+        unattended on every turn, so a systematically failing titler that logged
+        at DEBUG — alongside every ordinary thin case — would emit nothing at all
+        at default level.
+        """
+        case = _make_case()
+        service = _service_for(case)
+
+        # The gate refusing: quiet.
+        with patch(
+            "faultmaven.modules.case.api.routes._generate_and_persist_title",
+            new=AsyncMock(side_effect=_TitleSubstanceTooThin("too thin")),
+        ):
+            with caplog.at_level(logging.WARNING):
+                await _auto_title_case_if_default(
+                    case_id=case.case_id,
+                    user_id="user_123",
+                    case_service=service,
+                    llm_provider=None,
+                )
+        assert caplog.records == []
+
+        # Generation failing (LLM *and* extractive fallback): visible. This is a
+        # bare ValidationException — the same type the gate used to raise.
+        with patch(
+            "faultmaven.modules.case.api.routes._generate_and_persist_title",
+            new=AsyncMock(
+                side_effect=ValidationException(
+                    "Cannot generate meaningful title from available context"
+                )
+            ),
+        ):
+            with caplog.at_level(logging.WARNING):
+                await _auto_title_case_if_default(
+                    case_id=case.case_id,
+                    user_id="user_123",
+                    case_service=service,
+                    llm_provider=None,
+                )
+        assert any("Auto-titling failed" in r.message for r in caplog.records)
 
 
 # ==============================================================================
@@ -293,13 +344,16 @@ class TestAutoTitleTask:
 
 
 @pytest.mark.unit
-class TestTurnEndpointSchedulesAutoTitling:
-    """Drive the mounted route so the background task runs for real.
+class TestTurnEndpointNamesTheCase:
+    """Drive the mounted route so the titling runs through the real request cycle.
 
-    ``TestClient`` executes background tasks as part of the response cycle, so a
-    title that changed by the time the call returns is positive evidence that the
-    task was scheduled *and* executed — not that ``add_task`` was called with
-    plausible arguments.
+    Note what ``TestClient`` alone cannot tell you: it drains background tasks
+    before returning, so "the title changed by the time ``client.post`` returned"
+    is equally true of a deferred task. The ordering that matters — the write
+    lands *before the turn answers*, which is what stops the next turn's full-row
+    save from clobbering it — is pinned by
+    ``test_the_write_lands_before_the_turn_answers`` below, which calls the
+    handler directly.
     """
 
     @pytest.fixture
@@ -399,3 +453,113 @@ class TestTurnEndpointSchedulesAutoTitling:
 
         assert response.status_code == 200
         assert not _is_default_case_title(case.title)
+
+
+# ==============================================================================
+# The ordering that closes the clobber window
+# ==============================================================================
+
+
+@pytest.mark.unit
+class TestTitlingOrdering:
+    """The write must land before the turn answers, not merely before the test does.
+
+    The metadata channel skips the version bump on purpose, so the title write is
+    invisible to OCC. That cuts both ways: the engine's versioned full-row ``save``
+    writes ``title`` from its own in-memory snapshot, so a turn that loaded the
+    case *before* the title landed will save the placeholder straight back over it,
+    and OCC will not object. Finishing the titling before the response is what
+    orders them — a client cannot submit turn N+1 until turn N has answered.
+
+    Calling the handler directly is what makes this checkable. Through
+    ``TestClient`` a deferred background task also completes before the call
+    returns, so an end-to-end assertion cannot tell the two placements apart.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_write_lands_before_the_turn_answers(self):
+        case = _make_case()
+        case.inquiry.proposed_problem_statement = (
+            "Checkout API returns 502 for 30% of requests since the v2.1.3 deploy"
+        )
+        service = _service_for(case)
+
+        investigation_service = MagicMock()
+        investigation_service.process_turn = AsyncMock(
+            return_value=TurnResponse(
+                agent_response="Looking into it.",
+                turn_number=1,
+                milestones_completed=[],
+                case_state=CaseState.INQUIRY,
+                progress_made=True,
+            )
+        )
+
+        request = MagicMock()
+        request.app.state.llm_provider = None
+        user = UserDTO(
+            user_id="user_123",
+            username="testuser",
+            email="test@example.com",
+            display_name="Test User",
+            is_active=True,
+        )
+
+        response = await submit_turn(
+            case_id=case.case_id,
+            request=request,
+            query="The checkout API is throwing 502s.",
+            files=[],
+            pasted_content=None,
+            intent_type=None,
+            intent_data=None,
+            input_type=None,
+            source_url=None,
+            case_service=service,
+            investigation_service=investigation_service,
+            current_user=user,
+        )
+
+        # By the time the handler has produced its response object, the name is
+        # already persisted. Deferring the titling would leave the placeholder
+        # here, and the next turn would load — and re-save — that placeholder.
+        assert response.turn_number == 1
+        assert not _is_default_case_title(case.title)
+        service.update_case.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_titling_inherits_the_request_tenant_binding(self):
+        """No explicit re-bind: it runs in the request's own context, so it must
+        simply *stay* there.
+
+        ``get_current_org_id`` is total — an unbound context answers the Standalone
+        org rather than failing — so a titling call that had drifted out of the
+        request context would not raise, it would quietly address the wrong tenant.
+        Binding a non-Standalone org and asserting the write saw it is what
+        distinguishes "inherited the tenant" from "fell back to the default".
+        """
+        set_current_org_id(TENANT_ORG)
+        case = _make_case()
+        case.inquiry.proposed_problem_statement = (
+            "Checkout API returns 502 for 30% of requests since the v2.1.3 deploy"
+        )
+        service = _service_for(case)
+
+        seen = {}
+
+        async def _update(case_id, updates, user_id=None):
+            seen["write"] = get_current_org_id()
+            case.title = updates["title"]
+            return True
+
+        service.update_case = AsyncMock(side_effect=_update)
+
+        await _auto_title_case_if_default(
+            case_id=case.case_id,
+            user_id="user_123",
+            case_service=service,
+            llm_provider=None,
+        )
+
+        assert seen["write"] == TENANT_ORG
+        assert seen["write"] != STANDALONE_ORG_ID

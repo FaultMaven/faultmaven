@@ -8718,7 +8718,7 @@
     },
     "/api/v1/cases/sessions/{session_id}/case": {
       "post": {
-        "description": "Create or get case for a session\n\nAssociates a case with the given session. If no case exists, creates a new one.\nIf force_new is true, always creates a new case.\n\n**Title Auto-Generation**: If title is not provided or empty, the backend\nautomatically generates a unique title in the format: Case-MMDD-N\n(e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.",
+        "description": "Create or get case for a session\n\nAssociates a case with the given session. If no case exists, creates a new one.\nIf force_new is true, always creates a new case.\n\n**Title Auto-Generation**: If title is not provided or empty, the backend\nautomatically generates a unique title in the format: Case-YYMMDD-N\n(e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.",
         "operationId": "create_case_for_session_api_v1_cases_sessions__session_id__case_post",
         "parameters": [
           {

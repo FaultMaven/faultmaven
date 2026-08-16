@@ -26,7 +26,6 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Body,
     Depends,
     File,
@@ -60,7 +59,6 @@ from faultmaven.api.v1.dependencies import (
     get_session_id,
     get_session_service,
 )
-from faultmaven.config.tenant_context import get_current_org_id, set_current_org_id
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.exceptions import (
     AuthorizationError,
@@ -1668,7 +1666,13 @@ def _titleable_substance(case, user_signals: str) -> str:
 # ``Case-{YYMMDD}-{sequence}`` (see CaseService.create_case). Anchored on both
 # ends so a user-chosen title that merely *starts* "Case-..." is never mistaken
 # for a placeholder and silently overwritten.
-_DEFAULT_CASE_TITLE_RE = re.compile(r"^Case-\d{6}-\d+$")
+#
+# BOTH date widths are accepted. The generator emitted ``Case-{MMDD}-{seq}`` until
+# 1519b1ec (2026-01-28) made it year-safe; every case created before that day still
+# carries the 4-digit form. Matching only the current width would leave exactly
+# those rows unnameable forever — the oldest cases in any long-lived deployment,
+# and the ones whose titles a user is least likely to remember.
+_DEFAULT_CASE_TITLE_RE = re.compile(r"^Case-(?:\d{4}|\d{6})-\d+$")
 
 
 def _is_default_case_title(title: Optional[str]) -> bool:
@@ -1681,6 +1685,20 @@ def _is_default_case_title(title: Optional[str]) -> bool:
     a design that leaned on it would have no guard at all.
     """
     return bool(title and _DEFAULT_CASE_TITLE_RE.match(title.strip()))
+
+
+class _TitleSubstanceTooThin(ValidationException):
+    """The case does not carry enough substance to name yet.
+
+    A distinct type, not a distinct message. Both this and "the LLM and its
+    fallback both failed" are refusals to produce a title, and to a client both
+    are the same 422 — but to an operator they are opposite conditions: the first
+    is the gate working, the second is the titler broken. Auto-titling runs
+    unattended on every turn, so telling them apart by exception type is what
+    keeps a systematically failing titler from being indistinguishable from a
+    stream of ordinary thin cases. Matching on the message text would have tied
+    that distinction to user-facing copy.
+    """
 
 
 async def _generate_and_persist_title(
@@ -1742,19 +1760,20 @@ async def _generate_and_persist_title(
     user_signals = _extract_user_signals_from_context(context_text)
     user_message_content = _titleable_substance(case, user_signals)
 
-    # Debug logging to diagnose empty extraction
-    logger.info(
-        "Title generation: Extracted user signals",
+    # Extraction diagnostics. Lengths only, at DEBUG. This used to log 300 chars
+    # of raw conversation and 200 of extracted substance at INFO — verbatim user
+    # content, pre-redaction, straight into the log pipeline. That was already the
+    # wrong level for it, and auto-titling turned it from "whenever a client asks"
+    # into "every turn of every case that is not yet named". The lengths are what
+    # actually diagnose the failure this logging was added for (an empty
+    # extraction); the text was never needed to tell 0 from 200.
+    logger.debug(
+        "Title generation: extracted user signals",
         extra={
             "case_id": case_id,
             "context_length": len(context_text) if context_text else 0,
-            "user_signals_length": (
-                len(user_message_content) if user_message_content else 0
-            ),
-            "context_preview": context_text[:300] if context_text else None,
-            "user_signals_preview": (
-                user_message_content[:200] if user_message_content else None
-            ),
+            "user_signals_length": len(user_signals or ""),
+            "substance_length": len(user_message_content or ""),
         },
     )
 
@@ -1778,7 +1797,7 @@ async def _generate_and_persist_title(
                 "has_problem_statement": has_problem_statement,
             },
         )
-        raise ValidationException(
+        raise _TitleSubstanceTooThin(
             f"Need at least {MIN_CONTENT_LENGTH_FOR_TITLE} characters of "
             f"conversation content to generate a meaningful title "
             f"(currently {len(user_message_content)} characters). "
@@ -1872,73 +1891,102 @@ async def _generate_and_persist_title(
     return generated_title, title_source, len(user_message_content or "")
 
 
+# Ceiling on the auto-titling attempt. It sits on the turn's critical path (see
+# _auto_title_case_if_default for why), so it must never be able to hold a turn's
+# answer open: the extractive path is ~1ms and the LLM path ~0.5-1.2s, and a
+# titler that has stopped answering has to lose rather than delay the reply.
+AUTO_TITLE_TIMEOUT_SECONDS = 15.0
+
+
 async def _auto_title_case_if_default(
     case_id: str,
     user_id: str,
-    organization_id: str,
     case_service: ICaseService,
     llm_provider,
 ) -> None:
     """Name a case that is still carrying its ``Case-YYMMDD-N`` placeholder.
 
-    Runs as a background task after ``POST /cases/{case_id}/turns`` has answered,
-    so it never adds latency to a turn. It exists because titling policy lives on
-    the server but the *trigger* used to live in each client: the Slack agent and
-    the Dashboard never called ``POST /cases/{case_id}/title`` at all, so their
-    cases kept the placeholder forever, and the Copilot re-implemented the gate in
-    TypeScript. One server-side trigger is what makes the policy actually apply
-    everywhere (fm#1069).
+    Titling policy lives on the server but the *trigger* used to live in each
+    client: the Slack agent and the Dashboard never called
+    ``POST /cases/{case_id}/title`` at all, so their cases kept the placeholder
+    forever, and the Copilot re-implemented the gate in TypeScript. One
+    server-side trigger is what makes the policy apply everywhere (fm#1069).
 
-    Two properties make this safe to run on every turn:
+    **This runs inline, before ``POST /cases/{case_id}/turns`` answers, and that
+    placement is load-bearing — do not move it to a BackgroundTasks task.** Two
+    separate hazards close because of it:
 
-    * **Bounded by construction.** It returns immediately unless the title is still
-      the placeholder, so a case costs at most one successful titling. A case too
-      thin to title re-attempts each turn, but the substance gate refuses *before*
-      any LLM call, so those attempts cost reads and no tokens.
-    * **Cannot revert a concurrent write.** A title-only update takes
-      ``CaseService.update_case``'s metadata channel — a scoped UPDATE of that one
-      column with no version bump — so it can neither stale-conflict with an
-      in-flight turn save nor overwrite a state transition that lands beside it.
+    * **The next turn cannot clobber this write.** A title-only update takes
+      ``CaseService.update_case``'s metadata channel — a scoped UPDATE with no
+      version bump — deliberately, so it cannot stale-conflict with an in-flight
+      turn save. But that cuts both ways: the versioned full-row ``save`` the
+      engine performs writes ``title`` from its own in-memory snapshot, and OCC
+      cannot see a write that never bumped the version. A turn that had loaded the
+      case *before* titling landed would therefore save the placeholder straight
+      back over the generated title. Finishing before the response is what orders
+      the two: the client cannot submit turn N+1 until turn N has answered, so
+      every subsequent load already carries the new title. (A concurrent writer on
+      the *same* case from a different client can still race it — that is the
+      pre-existing property of the metadata channel, which user renames share.)
+    * **Two attempts cannot overlap.** For one sequential client there is never a
+      second in-flight attempt to duplicate the LLM call or lose a verification
+      read against.
 
-    Every failure is swallowed and logged: this is best-effort naming, and nothing
-    about a turn should be reported as failed because its title could not be made.
+    The tenant needs no explicit re-binding here *because* of that placement: the
+    global ``bind_request_org_context`` dependency has already bound this
+    request's org in this task. Moving this off the request would silently break
+    that — ``get_current_org_id`` is total, answering the Standalone org for an
+    unbound context rather than failing, so a detached task would not raise, it
+    would quietly address the wrong tenant.
+
+    Cost is bounded by construction: it returns immediately unless the title is
+    still the placeholder, so a case is named at most once, and a case too thin to
+    name is refused by the substance gate *before* any LLM call.
+
+    Every failure is swallowed: this is best-effort naming, and nothing about a
+    turn should be reported as failed because its title could not be made.
     """
     try:
-        # Re-bind the tenant explicitly. This runs after the response, and
-        # ``get_current_org_id`` is total — it answers the Standalone org when the
-        # contextvar is unset rather than signalling "unbound". So an unbound
-        # background task would not fail; under multi-tenant it would quietly
-        # address the wrong tenant. Binding the org captured from the request is
-        # what keeps that impossible, independent of whether Starlette happens to
-        # run this in the request's context.
-        set_current_org_id(organization_id)
-
         case = await case_service.get_case(case_id, user_id)
         if not case or not _is_default_case_title(case.title):
             return
 
-        title, source, _ = await _generate_and_persist_title(
-            case=case,
-            case_id=case_id,
-            user_id=user_id,
-            case_service=case_service,
-            llm_provider=llm_provider,
-            max_words=MAX_TITLE_WORDS_DEFAULT,
-            hint=None,
-            correlation_id=f"auto-title:{case_id}",
+        title, source, _ = await asyncio.wait_for(
+            _generate_and_persist_title(
+                case=case,
+                case_id=case_id,
+                user_id=user_id,
+                case_service=case_service,
+                llm_provider=llm_provider,
+                max_words=MAX_TITLE_WORDS_DEFAULT,
+                hint=None,
+                correlation_id=f"auto-title:{case_id}",
+            ),
+            timeout=AUTO_TITLE_TIMEOUT_SECONDS,
         )
         logger.info(
             "Auto-titled case on turn completion",
             extra={"case_id": case_id, "title": title, "title_source": source},
         )
-    except ValidationException as e:
-        # The substance gate refused — the case is genuinely too thin to name yet.
-        # Expected on early turns; the next turn tries again.
+    except _TitleSubstanceTooThin as e:
+        # The gate working, not a fault: the case is genuinely too thin to name
+        # yet. Expected on early turns; the next turn tries again.
         logger.debug(
             f"Auto-titling skipped for case {case_id}: {e}",
             extra={"case_id": case_id},
         )
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"Auto-titling timed out for case {case_id} after "
+            f"{AUTO_TITLE_TIMEOUT_SECONDS}s",
+            extra={"case_id": case_id},
+        )
     except Exception as e:
+        # Everything else is a fault worth seeing at default level — including a
+        # plain ValidationException, which at this point means the LLM *and* the
+        # extractive fallback both failed to produce a title. Logging that at
+        # DEBUG alongside the gate would make a systematically broken titler
+        # indistinguishable from a stream of ordinary thin cases.
         logger.warning(
             f"Auto-titling failed for case {case_id}: {e}",
             extra={"case_id": case_id, "error_type": type(e).__name__},
@@ -2382,7 +2430,7 @@ async def create_case_for_session(
     If force_new is true, always creates a new case.
 
     **Title Auto-Generation**: If title is not provided or empty, the backend
-    automatically generates a unique title in the format: Case-MMDD-N
+    automatically generates a unique title in the format: Case-YYMMDD-N
     (e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.
     """
     case_service = check_case_service_available(case_service)
@@ -2477,7 +2525,6 @@ async def resume_case_in_session(
 async def submit_turn(
     case_id: str,
     request: Request,
-    background_tasks: BackgroundTasks,
     query: Optional[str] = Form(None),
     files: List[UploadFile] = File(default=[]),
     pasted_content: Optional[str] = Form(None),
@@ -2699,17 +2746,19 @@ async def submit_turn(
                 timeout=agent_timeout,
             )
 
-            # Name the case from its own content, after the client has its answer.
-            # Scheduled unconditionally: whether the case is *titleable* is decided
-            # inside the task, against the case as it stands after this turn, by the
-            # same gate the title endpoint uses. The org is captured here, from the
-            # bound request context, because the task's own context cannot be
-            # trusted to carry it (see _auto_title_case_if_default).
-            background_tasks.add_task(
-                _auto_title_case_if_default,
+            # Name the case from its own content. Called unconditionally: whether
+            # the case is *titleable* is decided inside, against the case as it
+            # stands after this turn, by the same gate the title endpoint uses.
+            #
+            # Awaited BEFORE returning rather than deferred to a background task,
+            # which orders it ahead of the next turn's load and so keeps that
+            # turn's full-row save from writing the placeholder back over the
+            # generated title. It costs the turn ~1ms on the extractive path and
+            # up to AUTO_TITLE_TIMEOUT_SECONDS in the worst case, once per case.
+            # See _auto_title_case_if_default — the placement is load-bearing.
+            await _auto_title_case_if_default(
                 case_id=case_id,
                 user_id=current_user.user_id,
-                organization_id=get_current_org_id(),
                 case_service=case_service,
                 llm_provider=getattr(request.app.state, "llm_provider", None),
             )

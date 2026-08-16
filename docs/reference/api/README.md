@@ -1509,7 +1509,7 @@ Associates a case with the given session. If no case exists, creates a new one.
 If force_new is true, always creates a new case.
 
 **Title Auto-Generation**: If title is not provided or empty, the backend
-automatically generates a unique title in the format: Case-MMDD-N
+automatically generates a unique title in the format: Case-YYMMDD-N
 (e.g., Case-1028-1, Case-1028-2). The sequence counter resets daily.
 
 **Tags:** `cases`
