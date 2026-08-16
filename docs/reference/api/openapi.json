@@ -3131,7 +3131,7 @@
         "type": "object"
       },
       "InvestigationStage": {
-        "description": "Investigation stage within the Investigating Phase.\n\nThese three stages are pure DERIVED DISPLAY labels in the unified\nopportunistic flow. They are re-derived from the action-compliance\ngates (see ``InvestigationProgress.current_stage``); they do NOT drive\nprompt dispatch and there is NO path fork or prospective routing.\n\n- DIAGNOSIS \u2192 \"Investigating\" (default view)\n- MITIGATION \u2192 \"Mitigating\" (an optional inserted sub-activity)\n- TREATMENT \u2192 \"Resolving\"\n\nMITIGATION is not a separate path \u2014 it is an optional \"stop the\nbleeding\" insert that surfaces while the investigation continues.",
+        "description": "Investigation stage within the Investigating Phase.\n\nThese three stages are pure DERIVED labels in the unified opportunistic\nflow. They are re-derived from the action-compliance gates (see\n``InvestigationProgress.current_stage``); they do NOT drive prompt\ndispatch and there is NO path fork or prospective routing.\n\nDIAGNOSIS is the default. MITIGATION is not a separate path \u2014 it is an\noptional \"stop the bleeding\" insert that surfaces while the\ninvestigation continues. TREATMENT follows solution acceptance.",
         "enum": [
           "diagnosis",
           "mitigation",

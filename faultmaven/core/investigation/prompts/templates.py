@@ -2648,11 +2648,12 @@ def get_fallback_prompt_for_case(
         )
 
     elif case.state == CaseState.INVESTIGATING:
-        stage = (
-            case.progress.stage_display_name
-            if hasattr(case.progress, "stage_display_name")
-            else "Unknown"
-        )
+        # Same vocabulary as the primary prompt's identity block: the raw
+        # enum, uppercased. A display name here would mean the model reads
+        # ``DIAGNOSIS`` on the primary path and something else on the
+        # fallback — two names for one fact, surfacing exactly when a turn
+        # has already degraded (#1075).
+        stage = case.current_stage.value.upper()
         milestones = []
         if case.progress.symptom_verified:
             milestones.append("symptom_verified")

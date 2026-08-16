@@ -2892,7 +2892,13 @@ def build_investigation_context(
         }
         active_indicators = [k for k, v in indicators.items() if v]
 
-        milestones_str = f"<current_stage>{p.stage_display_name}</current_stage>\n"
+        # The stage is declared once, by the identity block above
+        # (``CURRENT_STAGE: {enum}``). It used to be repeated here under a
+        # display name, so the model was told the stage was ``DIAGNOSIS`` and
+        # then, lower down, that it was ``Investigating`` — one tag name, two
+        # vocabularies, reading as self-contradiction. The identity block is a
+        # reserved section and is never trimmed, so dropping this loses no
+        # stage information on any path (#1075).
         if active_gates:
             milestones_str += "<stage_gate_milestones>\n"
             for g in active_gates:
