@@ -4,6 +4,15 @@ Issue: kb_qa was synthesizing answers grounded in off-topic chunks when the
 KB didn't cover the queried topic (e.g. a ZooKeeper question landing on
 Kafka chunks via shared vocabulary). The fix short-circuits synthesis when
 the top chunk's score is below the KB's configured relevance threshold.
+
+The scores here are REAL cosine similarities measured against the shipped
+91-runbook KB with BGE-M3, not invented ones. That matters: this suite
+originally used synthetic scores clustered around 0 for "off-topic", which
+encoded the same wrong assumption as the threshold it was guarding — that
+BGE-M3 sends unrelated text toward orthogonality. It does not. Off-topic
+queries floor around 0.36-0.48 on this corpus, and on-topic ones run
+0.59-0.75, so a test that says "0.05 is off-topic, 0.42 is on-topic" passes
+against any threshold in a wide band and would not have caught #1072.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -40,9 +49,15 @@ class TestNoiseFloorRefuse:
 
     @pytest.mark.asyncio
     async def test_refuses_synthesis_when_max_score_below_threshold(self):
-        """Noise-floor scores (~0) must short-circuit before the synthesis call."""
-        # Mirrors the ISS-013 ZooKeeper run: avg ≈ -0.01, max well below 0.3.
-        chunks = _make_chunks([-0.01, -0.02, 0.05, 0.0, -0.03])
+        """The adjacent-vocabulary case the guard exists for must still refuse.
+
+        Measured top-5 for "ZooKeeper ensemble leader election failure after
+        rolling restart" against the shipped KB, which holds no ZooKeeper
+        runbook: it lands on Kafka chunks via shared vocabulary. This is the
+        tightest real constraint on the threshold — 0.477 is the highest
+        off-topic score observed anywhere.
+        """
+        chunks = _make_chunks([0.477, 0.470, 0.435, 0.422, 0.416])
         tool, llm_router = _make_tool(UnifiedKBConfig(), chunks)
 
         result = await tool.answer_question(
@@ -56,16 +71,52 @@ class TestNoiseFloorRefuse:
         assert result["sources"] == []
         assert result["chunk_count"] == 0
         assert result["confidence"] == 0.0
-        assert "no relevant" in result["answer"].lower()
 
     @pytest.mark.asyncio
-    async def test_synthesizes_when_max_score_clears_threshold(self):
-        """Even one strong chunk should let synthesis proceed."""
-        chunks = _make_chunks([0.05, 0.42, 0.1, 0.0, -0.01])
+    async def test_refusal_does_not_claim_the_kb_lacks_coverage(self):
+        """A similarity score is not evidence about what the KB contains.
+
+        The refusal text used to assert "the KB does not cover this topic".
+        Under #1072 that made a mis-scaled threshold worse than unhelpful: the
+        investigating model was handed a false statement about its own
+        knowledge base — on topics with dedicated runbooks — and told to stop
+        asking. Withholding an answer is fine; asserting absence is not.
+        """
+        chunks = _make_chunks([0.477, 0.470, 0.435])
+        tool, _ = _make_tool(UnifiedKBConfig(), chunks)
+
+        answer = (
+            await tool.answer_question(
+                question="Zookeeper QuorumCnxManager connection broken",
+                scope_id=None,
+                k=3,
+                filters={"$or": [{"scope": "global"}]},
+            )
+        )["answer"].lower()
+
+        assert "does not cover" not in answer
+        assert "no relevant content" not in answer
+        assert "searched" in answer
+
+    @pytest.mark.asyncio
+    async def test_synthesizes_on_the_weakest_observed_on_topic_query(self):
+        """The on-topic floor must clear the threshold, not straddle it.
+
+        Measured top-5 for "Runbook for diagnosing historical HikariCP
+        connection-pool exhaustion caused by long-held database connections" —
+        the weakest on-topic retrieval observed, and one of the live false
+        refusals in #1072. Retrieval is correct (9 of top-10 are
+        connection-exhaustion runbooks; the top two contain "HikariCP"
+        verbatim), so refusing here is purely a calibration failure.
+        """
+        chunks = _make_chunks([0.591, 0.588, 0.575, 0.570, 0.567])
         tool, llm_router = _make_tool(UnifiedKBConfig(), chunks)
 
         result = await tool.answer_question(
-            question="standard heap-dump procedure",
+            question=(
+                "Runbook for diagnosing historical HikariCP connection-pool "
+                "exhaustion caused by long-held database connections"
+            ),
             scope_id=None,
             k=5,
             filters={"$or": [{"scope": "global"}]},
@@ -76,9 +127,25 @@ class TestNoiseFloorRefuse:
         assert result["answer"] == "synthesized answer"
 
     @pytest.mark.asyncio
+    async def test_threshold_separates_measured_on_and_off_topic_populations(self):
+        """Pin the calibration itself, not just two points either side of it.
+
+        The old threshold was not merely a bad number — it was compared against
+        a scale nobody had measured. This asserts the invariant that makes any
+        number defensible: the floor sits strictly between the two observed
+        populations.
+        """
+        threshold = UnifiedKBConfig().relevance_threshold
+
+        worst_on_topic = 0.591  # HikariCP, weakest correct retrieval
+        best_off_topic = 0.477  # ZooKeeper -> Kafka, adjacent vocabulary
+
+        assert best_off_topic < threshold < worst_on_topic
+
+    @pytest.mark.asyncio
     async def test_threshold_disabled_for_case_evidence(self):
         """CaseEvidenceConfig opts out — always synthesizes from closest chunks."""
-        chunks = _make_chunks([-0.05, -0.1, 0.02])
+        chunks = _make_chunks([0.36, 0.35, 0.34])
         tool, llm_router = _make_tool(CaseEvidenceConfig(), chunks)
 
         result = await tool.answer_question(

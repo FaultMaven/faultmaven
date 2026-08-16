@@ -12,6 +12,9 @@ from pydantic import ValidationError
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
+from faultmaven.infrastructure.vector_similarity import (
+    cosine_from_chroma_distance,
+)
 from faultmaven.models.interfaces import IVectorStore
 
 logger = logging.getLogger(__name__)
@@ -237,7 +240,9 @@ class ChromaDBVectorStore(BaseExternalClient, IVectorStore):
                         "id": results["ids"][0][i],
                         "content": results["documents"][0][i],
                         "metadata": results["metadatas"][0][i],
-                        "score": 1.0 - results["distances"][0][i],
+                        "score": cosine_from_chroma_distance(
+                            results["distances"][0][i]
+                        ),
                     }
                 )
 

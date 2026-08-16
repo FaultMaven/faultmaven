@@ -358,8 +358,10 @@ class TestChromaDBVectorStore:
         assert len(results) == 2
         assert results[0]["id"] == "doc1"
         assert results[0]["content"] == "Content 1"
-        assert results[0]["score"] == 0.9  # 1.0 - 0.1
-        assert results[1]["score"] == 0.7  # 1.0 - 0.3
+        # Collections use ChromaDB's default `l2` space, whose distance is
+        # SQUARED euclidean, so cosine is `1 - d/2` and not `1 - d` (#1072).
+        assert results[0]["score"] == 0.95  # 1.0 - 0.1 / 2
+        assert results[1]["score"] == 0.85  # 1.0 - 0.3 / 2
 
     @pytest.mark.asyncio
     async def test_search_with_filters(self, vector_store):

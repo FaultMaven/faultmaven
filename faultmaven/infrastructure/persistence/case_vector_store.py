@@ -14,6 +14,9 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.embedding_guard import embed_query_or_raise
+from faultmaven.infrastructure.vector_similarity import (
+    cosine_from_chroma_distance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +213,9 @@ class CaseVectorStore(BaseExternalClient):
                                 if results["metadatas"][0]
                                 else {}
                             ),
-                            "score": 1.0 - results["distances"][0][i],
+                            "score": cosine_from_chroma_distance(
+                                results["distances"][0][i]
+                            ),
                         }
                     )
 

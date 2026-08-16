@@ -163,21 +163,40 @@ class DocumentQATool:
         # which for an uncovered topic means citing off-topic runbooks that
         # share vocabulary (e.g. ZooKeeper query → Kafka chunks via "leader
         # election"). Opt-in per KB type via KBConfig.relevance_threshold.
+        #
+        # `score` here is ALWAYS the raw per-chunk cosine similarity, even in
+        # hybrid mode: `_rerank` computes its four-signal composite to sort by
+        # and never writes it back onto the candidate. So the keyword and
+        # term-overlap legs reorder results but cannot lift one over this
+        # floor — a query whose distinguishing term appears verbatim in a
+        # chunk still clears it on embedding similarity alone (#1072). That is
+        # deliberate: the threshold is calibrated in cosine, and a composite of
+        # four heterogeneous signals is not a scale anyone has calibrated.
         threshold = self._kb_config.relevance_threshold
         if threshold is not None:
             max_score = max(chunk.get("score", 0.0) for chunk in chunks)
             if max_score < threshold:
                 logger.info(
                     f"Refusing synthesis: max score {max_score:.3f} < "
-                    f"threshold {threshold:.3f} (off-topic for this KB)"
+                    f"threshold {threshold:.3f} (below relevance floor)"
                 )
                 return {
+                    # Says only what a similarity score can support: these
+                    # particular results were too weak to answer from. It does
+                    # NOT claim "the KB does not cover this topic" — that is a
+                    # fact about coverage, and a cosine floor is not evidence
+                    # of it. The old wording asserted it, so a mis-scaled
+                    # threshold did not merely withhold an answer, it handed
+                    # the model a false statement about its own knowledge base
+                    # and told it to stop asking (#1072, same rule as #943).
                     "answer": (
-                        "No relevant content found in the knowledge base for "
-                        "this query — the KB does not cover this topic. "
-                        "Answer from other available context (file summaries, "
-                        "evidence, entity profile) instead of synthesizing "
-                        "from off-topic chunks."
+                        "The knowledge base was searched, and nothing it "
+                        "returned was a close enough match to answer from "
+                        "confidently. This does not establish whether the "
+                        "knowledge base covers the topic — consider "
+                        "rephrasing the query with different terms, or "
+                        "answer from other available context (file "
+                        "summaries, evidence, entity profile)."
                     ),
                     "sources": [],
                     "chunk_count": 0,

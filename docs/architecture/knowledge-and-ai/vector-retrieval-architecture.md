@@ -32,7 +32,7 @@ FaultMaven's browser extension provides rich implicit context that most RAG syst
 
 **Pre-retrieval filtering on this context should be the default path, not an optimization.** Every design decision should be evaluated through the lens of "does this exploit the context we uniquely have access to?" The `context_metadata` parameter in `hybrid_search()` exists for this purpose. Case-derived context (the affected service from the case's problem verification) is wired end-to-end today as a **soft** rerank boost: the engine derives it (`derive_kb_context_metadata()`), carries it on `ToolContext.kb_context_metadata`, and `KBToolAdapter` threads it through `AnswerFromKB` → `DocumentQATool` → `hybrid_search(context_metadata=…, filter_mode="soft")`. The remaining, higher-confidence integration is the copilot page-comprehension → API request body → `ToolContext` path that would justify the **hard** pre-filter (`filter_mode="hard"`); that cross-repo wiring is deferred.
 
-The service-metadata signal rides **only** on the agent QA tools path, which is the sole caller of `hybrid_search()`. The engine's own KB pre-fetch — `_prefetch_kb_context` (which also feeds the KB cause seeder) — takes a different route: `KnowledgeService.search_knowledge` → `KnowledgeVectorStore.search`, a single-pass pure-vector search (cosine similarity, `score = 1.0 − distance`) with **no reranker and no metadata-match boost**. So the prefetch/seeder path ranks by plain retrieval score, and the case's affected-service signal does not influence it. Wiring the signal there is possible future work (tracked as tech-debt issue #710).
+The service-metadata signal rides **only** on the agent QA tools path, which is the sole caller of `hybrid_search()`. The engine's own KB pre-fetch — `_prefetch_kb_context` (which also feeds the KB cause seeder) — takes a different route: `KnowledgeService.search_knowledge` → `KnowledgeVectorStore.search`, a single-pass pure-vector search (cosine similarity, `score = 1.0 − distance / 2`) with **no reranker and no metadata-match boost**. So the prefetch/seeder path ranks by plain retrieval score, and the case's affected-service signal does not influence it. Wiring the signal there is possible future work (tracked as tech-debt issue #710).
 
 ```text
 ChromaDB Instance
@@ -57,8 +57,12 @@ ChromaDB Instance
 | Library | sentence-transformers 3.0.1+ |
 | Dimensions | 1024 |
 | Language support | Multilingual |
-| Similarity metric | Cosine (HNSW index) |
+| Similarity metric | Cosine — computed from an `l2` HNSW index (see below) |
 | Loading | Globally cached via `model_cache.get_bge_m3_model()` |
+
+**The index space is `l2`, not `cosine`, and scores are converted.** No collection declares `hnsw:space`, so every one uses ChromaDB's default `l2`, whose distance is *squared* euclidean. Because BGE-M3 output is L2-normalized, that distance is `2 − 2·cos`. Ranking by it is identical to ranking by cosine **on the pure-vector path** — but the score is not cosine until converted, and any consumer that combines it with another signal or compares it to a constant is affected. `faultmaven/infrastructure/vector_similarity.py` holds the one conversion (`cos = 1 − distance / 2`) that every store calls.
+
+Getting this wrong is invisible in ranking and only shows up in an *absolute* comparison. It did: four stores used `1 − distance`, which is `2·cos − 1`, so the KB relevance threshold — documented as a cosine floor of 0.3 — was really a cosine floor of 0.65 and refused correctly-retrieved on-topic queries ([#1072](https://github.com/FaultMaven/faultmaven/issues/1072)). Declaring `cosine` is **not** an alternative fix: ChromaDB silently ignores a configuration space that disagrees with an existing collection, so it changes nothing without a full reindex.
 
 BGE-M3 is the canonical embedding model for both KB ingestion and evidence vectorization. The model is loaded once and cached for the process lifetime. The 1024-dimensional space provides strong semantic resolution for technical text including error messages, log fragments, and procedure descriptions across multiple languages.
 
@@ -97,10 +101,14 @@ Each candidate chunk is scored across four weighted signals:
 
 | Signal | Weight | Computation |
 |--------|--------|-------------|
-| Vector similarity | 40% | Original cosine score from ChromaDB (already 0–1) |
+| Vector similarity | 40% | Cosine score from ChromaDB, converted per §above (see note) |
 | Term overlap | 25% | Fraction of non-stop-word query terms found in chunk text (binary, not TF-IDF) |
 | Metadata match | 20% | Domain/service alignment with `context_metadata` + verification status bonus/penalty |
 | Freshness | 15% | Half-life decay: `1 / (1 + age_days / 365)` based on `last_updated` |
+
+**The 40% is only 40% now.** Signal 1 reads the store's score directly, so before #1072 it carried `2·cos − 1`. The `−1` is constant across candidates and drops out of the ordering, but the *slope* did not: the vector signal moved the composite by `0.8·cos` while the other three — genuine 0–1 quantities — moved it by their stated weights. The vector signal was effectively double-weighted, and these four numbers never described the blend they configured. Correcting the conversion makes them accurate for the first time; measured against the shipped KB, top-5 ordering changes on roughly a third of queries, always as a reshuffle within the same document set rather than a different set of runbooks.
+
+The weights have **not** been retuned on the corrected scale, deliberately. Picking new ones without a measured relevance judgement would repeat the error #1072 was: a plausible number, reasoned rather than observed. They now mean what they say, which is the precondition for tuning them, not a substitute for it.
 
 **Metadata match scoring details:**
 
@@ -213,6 +221,9 @@ Agent calls: answer_from_kb(question)
   │     Stage 1: vector + keyword recall
   │     Stage 2: rerank with 4-signal scoring (metadata match uses context)
   │
+  ├── Relevance gate: refuse synthesis if max chunk score < 0.5 (cosine)
+  │     Returns "searched, nothing close enough" WITHOUT calling the LLM
+  │
   ├── LLMRouter.route() with UnifiedKBConfig.system_prompt
   │     max_tokens=2000, temperature=0.3
   │     Synthesis guided by staleness-aware system prompt
@@ -222,6 +233,20 @@ Agent calls: answer_from_kb(question)
 ```
 
 **Engine pre-fetch path (no rerank).** The Tool Path above is the *only* caller that reaches `hybrid_search()` and therefore the *only* path carrying the service-metadata soft boost. The engine's `_prefetch_kb_context` — the symptom-verification KB pull that also feeds the KB cause seeder — instead calls `KnowledgeService.search_knowledge` → `KnowledgeVectorStore.search`: single-pass pure-vector similarity, no keyword recall, no four-signal reranker, no `context_metadata`. Its ranking is plain retrieval score; the case's affected-service signal is not applied. Bringing the signal onto that path is a possible future refinement (tech-debt #710).
+
+**The relevance gate, and how its threshold is set.** `UnifiedKBConfig.relevance_threshold` (0.5, cosine) refuses synthesis when no retrieved chunk clears it, so the synthesizer is never asked to ground an answer in chunks that merely share vocabulary — the canonical case being a ZooKeeper query landing on Kafka chunks via "leader election". Evidence retrieval opts out (`CaseEvidenceConfig` returns `None`): for forensic analysis the closest available content is always worth returning.
+
+The threshold is **derived from a measured distribution, not reasoned from first principles**, because reasoning produced a wrong number twice in #1072 — once in the conversion, once in the premise. BGE-M3 does not send unrelated text toward orthogonality; against the shipped 91-runbook KB, in true cosine:
+
+| Query class | Observed cosine |
+|---|---|
+| On-topic, correct runbook at rank 1 | 0.591 – 0.750 |
+| Off-topic, unrelated domain | 0.358 – 0.413 |
+| Off-topic, adjacent vocabulary (ZooKeeper → Kafka) | 0.477 |
+
+0.5 is the lowest value that still rejects the adjacent-vocabulary case, and clears the weakest on-topic observation by 0.09. It is biased low on purpose: a false refusal is a positive false claim about KB coverage, while a false accept only puts loosely related runbooks in front of a synthesizer already told to say when information is missing. **Re-derive it against both populations if the embedding model or corpus changes — do not nudge it.** A relative test (top-1 vs top-k spread) was evaluated and rejected: off-topic spread measured *wider* than on-topic (0.061 vs 0.023), which inverts the signal.
+
+Two properties of the gate worth knowing. First, the score it reads is always the raw per-chunk cosine, even in hybrid mode — `_rerank` computes its four-signal composite to sort by and never writes it back, so the keyword and term-overlap legs reorder results but cannot lift one over the floor. That is deliberate: the threshold is calibrated in cosine, and the composite is not a scale anyone has calibrated. Second, the refusal text says only that the search returned nothing close enough; it does **not** claim the KB lacks coverage. A similarity score is not evidence about what the KB contains, and asserting otherwise is what made the mis-scaled threshold actively harmful rather than merely unhelpful — the investigating model was handed a false statement about its own knowledge base and told to stop asking (same rule as #943).
 
 **Relay vs synthesis:** Full procedure detail must reach the engine — a compressed paraphrase of a runbook loses the actionable steps. The `DocumentQATool` synthesis prompt is aligned with this relay intent: it instructs the LLM to "preserve procedural detail — include full diagnostic steps, commands, and resolution procedures rather than summarizing them" and to "compress only background context, never actionable steps." `UnifiedKBConfig.system_prompt` reinforces this ("provide step-by-step instructions when procedures are available"), and `_format_tool_result()` wraps the `kb_qa` result with "Preserve key details, diagnostic steps, and resolution procedures — do NOT collapse it into a single sentence." All three now pull in the same direction; the earlier "be concise and factual" instruction that conflicted with relay has been removed.
 

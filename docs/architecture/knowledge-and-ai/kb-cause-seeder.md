@@ -114,7 +114,7 @@ live at the retrieval seam.
 
 **Ranking is plain retrieval score.** The prefetch runs
 `KnowledgeService.search_knowledge` → `KnowledgeVectorStore.search`, a single-pass
-pure-vector search (cosine similarity, `score = 1.0 − distance`) — **no reranker
+pure-vector search (cosine similarity, `score = 1.0 − distance / 2`) — **no reranker
 and no service-metadata boost**. The case-derived service signal
 (`context_metadata` → `hybrid_search(filter_mode="soft")` → the reranker's
 `_compute_metadata_score`) is wired only through the agent QA tools path
