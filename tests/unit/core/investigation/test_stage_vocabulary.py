@@ -41,6 +41,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
     build_investigation_context,
 )
 from faultmaven.core.investigation.prompts.templates import (
+    INVESTIGATION_BASE,
     get_fallback_prompt_for_case,
 )
 from faultmaven.modules.case.contracts import (
@@ -95,9 +96,16 @@ def _make_case(
 
 
 def _prompt_text(case: Case) -> str:
-    """Everything the model can read on the primary path, as one string."""
+    """Everything the model can read on the primary path, as one string.
+
+    Covers both surfaces a stage declaration could live on: the ctx
+    sections built per-turn, and the static template body they are
+    formatted into. Scanning only the former would miss a future
+    re-declaration written directly into INVESTIGATION_BASE — which is
+    precisely the regression these tests exist to catch.
+    """
     ctx = build_investigation_context(case, "user message", max_tokens=8000)
-    return "\n".join(str(v) for v in ctx.values())
+    return "\n".join([*(str(v) for v in ctx.values()), INVESTIGATION_BASE])
 
 
 # ============================================================

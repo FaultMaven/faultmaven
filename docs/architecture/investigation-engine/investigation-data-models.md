@@ -266,24 +266,22 @@ class InvestigationProgress(BaseModel):
         # Default: DIAGNOSIS. Sub-phase distinguished by symptom_verified /
         # cause_state, not by the stage enum.
         return InvestigationStage.DIAGNOSIS
-
-    @property
-    def stage_display_name(self) -> str:
-        """
-        User-facing stage name for UI display (redesign R4).
-
-        - DIAGNOSIS → "Investigating"
-        - MITIGATION → "Mitigating"
-        - TREATMENT → "Resolving"
-        """
-        stage = self.current_stage
-        if stage == InvestigationStage.DIAGNOSIS:
-            return "Investigating"
-        elif stage == InvestigationStage.MITIGATION:
-            return "Mitigating"
-        else:  # TREATMENT
-            return "Resolving"
 ```
+
+**One stage vocabulary: the enum.** There is no backend-side display
+mapping. `current_stage` returns the `InvestigationStage` enum; prompts
+emit it (`CURRENT_STAGE: {enum}`) and the API serves it, and display
+naming is owned by consumers — the Dashboard labels the raw value
+client-side, the way it already labels `CaseState`.
+
+A `stage_display_name` property used to sit here and rendered DIAGNOSIS as
+`"Investigating"`, colliding with `CaseState.investigating` — a different
+axis entirely (a case's lifecycle *state* vs its investigation *stage*).
+It reached only prompt construction, never the wire, and it caused the
+primary prompt to declare the stage twice under one tag name with two
+different values. Deleted in #1075; see
+`tests/unit/core/investigation/test_stage_vocabulary.py`, which pins the
+single-declaration invariant.
 
 **Assessment variables vs. the old boolean.** `cause_state` replaces the boolean
 `root_cause_identified` cleanly (no compat shim). Read sites use
