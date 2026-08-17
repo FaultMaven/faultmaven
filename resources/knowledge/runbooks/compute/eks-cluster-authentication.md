@@ -6,8 +6,8 @@ service: aws-eks
 symptom_class: [auth_failure]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [aws, eks, kubernetes, iam, aws-auth, oidc, kubectl, access-entries, irsa]
@@ -475,3 +475,5 @@ Set up an alerting rule on CloudWatch for `aws eks describe-cluster` returning c
 - [AWS EKS: Troubleshoot problems with Amazon EKS clusters and nodes](https://docs.aws.amazon.com/eks/latest/userguide/troubleshooting.html) — Official EKS troubleshooting guide covering `Unauthorized`/`AccessDenied` errors, node registration failures, aws-auth ConfigMap management, access entries, STS regional endpoint issues, and cluster health codes.
 - [AWS EKS: Grant IAM users and roles access to Kubernetes APIs](https://docs.aws.amazon.com/eks/latest/userguide/grant-k8s-access.html) — Authentication mode reference (`CONFIG_MAP`, `API`, `API_AND_CONFIG_MAP`), access entries vs ConfigMap comparison, migration guidance.
 - [AWS EKS: Troubleshooting IAM](https://docs.aws.amazon.com/eks/latest/userguide/security_iam_troubleshoot.html) — IAM-specific EKS troubleshooting for role assumption and token generation failures.
+- [AWS EKS: Create an IAM OIDC provider for your cluster](https://docs.aws.amazon.com/eks/latest/userguide/enable-iam-roles-for-service-accounts.html) — IRSA requires an IAM OIDC provider matching the cluster's OIDC issuer URL; grounds Step 8's issuer-to-provider correspondence check (`describe-cluster` issuer vs `aws iam list-open-id-connect-providers`) and Cause G's remediation (`eksctl utils associate-iam-oidc-provider --approve`), including the `sts.amazonaws.com` audience the provider must carry.
+- [AWS STS: AssumeRoleWithWebIdentity API Reference](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRoleWithWebIdentity.html) — STS validates the service account's web identity token against the registered provider before issuing credentials; grounds Cause G's failure chain and the `InvalidIdentityToken`/`ExpiredToken` error classes behind the IRSA credential-exchange symptoms.
