@@ -164,8 +164,6 @@ aws iam get-open-id-connect-provider \
 
 Expected output: the issuer URL returned by `describe-cluster` corresponds to one of the listed provider ARNs. For that provider, `URL` matches the issuer, `Audiences` contains `sts.amazonaws.com`, and the thumbprint matches the certificate currently served at the issuer endpoint. An empty list — or a list with no matching issuer — is only a finding once the account is confirmed correct, because querying the wrong account returns exactly the same empty result.
 
-For IRSA the audience is partition-invariant: the `aud` claim names the token's recipient — the STS service — not a regional endpoint, so it is `sts.amazonaws.com` in every partition, AWS China (`aws-cn`) included, where the EKS identity webhook stamps that same value. `sts.amazonaws.com.cn` is the plausible-looking wrong value: registering it as the provider audience produces `InvalidIdentityToken: Incorrect token audience`.
-
 ## Causes
 
 ### Cause A: Caller principal not in trust policy
@@ -394,6 +392,8 @@ For IRSA the audience is partition-invariant: the `aud` claim names the token's 
 **Indicators:**
 - root: [Step 8] no provider in that account has a `URL` matching the token issuer, or its `ClientIDList` omits `sts.amazonaws.com`
 - s1: [Step 2] Trust policy `Condition` `StringEquals` subject/audience values differ from what the provider token contains
+
+For IRSA the audience is partition-invariant: the `aud` claim names the token's recipient — the STS service — not a regional endpoint, so it is `sts.amazonaws.com` in every partition, AWS China (`aws-cn`) included, where the EKS identity webhook stamps that same value. `sts.amazonaws.com.cn` is the plausible-looking wrong value: registering it as the provider audience produces `InvalidIdentityToken: Incorrect token audience`.
 
 **Interventions:**
 - **remediation** (root): correct the OIDC provider thumbprint, or re-register the provider with the right URL/audience.

@@ -6,8 +6,8 @@ service: terraform
 symptom_class: [auth_failure, deployment_failure]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [terraform, plan, iac, infrastructure-as-code, provider, state-drift]
