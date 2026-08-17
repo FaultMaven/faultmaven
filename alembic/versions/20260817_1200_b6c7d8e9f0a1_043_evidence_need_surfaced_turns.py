@@ -66,8 +66,24 @@ def upgrade() -> None:
                 server_default="[]",
             )
         )
+        # Provenance: did the engine infer this need from an undeclared EVIDENCE
+        # suggestion, or did the model author it? Readers that reason about the
+        # model's deliberate demand must exclude inferred needs —
+        # ``_awaiting_recent_evidence`` stands anti-anchoring down on a recent
+        # outstanding ask, and inferred needs are minted most turns on a fixated
+        # case, which would hold it open permanently. Existing rows are all
+        # model-authored, so the default is correct for them.
+        batch.add_column(
+            sa.Column(
+                "engine_inferred",
+                sa.Boolean(),
+                nullable=False,
+                server_default=sa.false(),
+            )
+        )
 
 
 def downgrade() -> None:
     with op.batch_alter_table("evidence_needs") as batch:
+        batch.drop_column("engine_inferred")
         batch.drop_column("surfaced_turns")

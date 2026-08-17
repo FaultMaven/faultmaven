@@ -1164,6 +1164,12 @@ class EvidenceNeedModel(Base):
     # indexed, mutated as a unit.
     surfaced_turns = Column(JsonBlob, nullable=False, server_default="[]")
 
+    # Provenance (#1079): True when the engine inferred this need from an
+    # EVIDENCE suggestion the model raised without declaring one. Readers of
+    # the model's deliberate demand must exclude these — see
+    # MilestoneEngine._awaiting_recent_evidence.
+    engine_inferred = Column(Boolean, nullable=False, server_default="0")
+
     # Required iff state='superseded'; NULL otherwise. Mirrors the
     # Pydantic model_validator on EvidenceNeed.
     superseded_reason = Column(String(500), nullable=True)

@@ -477,6 +477,37 @@ class TestRepositoryRoundTrip:
         ].surfaced_turns == [2, 3]
 
     @pytest.mark.asyncio
+    async def test_engine_inferred_round_trips(self, repository):
+        """Provenance must survive save/reload (#1079).
+
+        ``_awaiting_recent_evidence`` excludes engine-inferred needs so an ask
+        raised most turns cannot hold the anti-anchoring stand-down open
+        forever. Dropped on save, every inferred need reloads as
+        model-authored and that stand-down never lifts.
+        """
+        case = _make_case()
+        need = _make_need(case_id=case.case_id)
+        need.engine_inferred = True
+        case.evidence_needs.append(need)
+
+        await repository.save(case)
+        retrieved = await repository.get(case.case_id)
+
+        assert retrieved.evidence_needs[0].engine_inferred is True
+
+    @pytest.mark.asyncio
+    async def test_engine_inferred_defaults_false_on_reload(self, repository):
+        """A model-authored need reloads as authored — the pre-043 reading for
+        every existing row."""
+        case = _make_case()
+        case.evidence_needs.append(_make_need(case_id=case.case_id))
+
+        await repository.save(case)
+        retrieved = await repository.get(case.case_id)
+
+        assert retrieved.evidence_needs[0].engine_inferred is False
+
+    @pytest.mark.asyncio
     async def test_multiple_needs_preserve_creation_order(self, repository):
         case = _make_case()
         # Force a stable creation-time ordering by setting created_at_turn.

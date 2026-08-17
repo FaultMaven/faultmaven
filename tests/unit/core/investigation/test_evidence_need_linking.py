@@ -93,13 +93,39 @@ class TestEveryEvidenceAskGetsANeed:
         assert len(case.evidence_needs) == 1
         assert fu.evidence_need_id == case.evidence_needs[0].need_id
 
-    def test_created_need_is_reported_in_metadata(self):
-        """``evidence_needs_updated`` is what ``_flatten_follow_ups`` resolves
-        ``new_index_N`` against; a need created here must appear in it."""
+    def test_created_need_is_not_appended_to_the_same_turn_index_space(self):
+        """``evidence_needs_updated`` is the index space the model's own
+        ``new_index_N`` refs resolve against. A backfilled need must NOT extend
+        it: linking assigns a real ``eneed_`` id so the flatten seam never has
+        to resolve it, and growing the list shifts the indices out from under a
+        model-emitted ref — silently resolving a stale ``new_index_1`` to an
+        unrelated engine-created need instead of dropping it.
+        """
         case = _Case()
         meta = _link(case, [_FollowUp(body="Provide the provider record")])
 
-        assert meta["evidence_needs_updated"] == [case.evidence_needs[0].need_id]
+        assert case.evidence_needs[0].need_id not in meta.get(
+            "evidence_needs_updated", []
+        )
+
+    def test_model_emitted_index_space_is_not_shifted_by_backfill(self):
+        """Concrete form of the above: the model authored one need this turn and
+        emitted two suggestions — the first undeclared, the second referencing
+        ``new_index_1`` (out of range, so it should be dropped downstream)."""
+        authored = _need("model authored ask about disk saturation")
+        case = _Case([authored])
+        meta = {"evidence_needs_updated": [authored.need_id]}
+
+        _link(
+            case,
+            [
+                _FollowUp(body="kubectl pod restart counts"),
+                _FollowUp(body="nginx upstream latency", need_id="new_index_1"),
+            ],
+            metadata=meta,
+        )
+
+        assert meta["evidence_needs_updated"] == [authored.need_id]
 
     def test_ask_is_recorded_on_the_needs_history(self):
         case = _Case()
@@ -301,22 +327,48 @@ class TestDeclaredLinkWins:
 
 @pytest.mark.unit
 class TestInferredNeedShape:
-    def test_ask_before_any_hypothesis_is_symptom_shaped(self):
-        case = _Case(hypotheses={})
-        _link(case, [_FollowUp(body="Share the pod logs")])
+    @pytest.mark.parametrize("hypotheses", [{}, {"hyp_1": object()}])
+    def test_inferred_needs_are_always_causal(self, hypotheses):
+        """Causal regardless of whether a differential exists yet.
 
-        assert case.evidence_needs[0].purpose == NeedPurpose.SYMPTOM_VERIFICATION
-
-    def test_ask_with_a_differential_open_is_causal(self):
-        case = _Case(hypotheses={"hyp_1": object()})
+        Both mechanisms an inferred need has to reach are causal-scoped: the
+        surface cap, and the obtainability wall —
+        ``_apply_evidence_need_updates`` applies a model-declared
+        ``obtainability`` only when ``purpose == CAUSAL_VERIFICATION``, and the
+        model validator coerces it back to UNKNOWN otherwise. Filing an inferred
+        need as SYMPTOM would silently discard the exact declaration the
+        prompt's "a refused ask is a wall" rule tells the model to make.
+        """
+        case = _Case(hypotheses=hypotheses)
         _link(case, [_FollowUp(body="Share the pod logs")])
 
         assert case.evidence_needs[0].purpose == NeedPurpose.CAUSAL_VERIFICATION
 
+    def test_inferred_need_is_marked_as_such(self):
+        """Provenance is structural, not a rationale substring: readers of the
+        model's deliberate demand (``_awaiting_recent_evidence``) key on it."""
+        case = _Case()
+        _link(case, [_FollowUp(body="Share the pod logs")])
+
+        assert case.evidence_needs[0].engine_inferred is True
+
+    def test_model_authored_needs_are_not_marked_inferred(self):
+        case = _Case([_need("Provide the OIDC provider record")])
+        _link(case, [_FollowUp(body="Provide the OIDC provider record")])
+
+        assert case.evidence_needs[0].engine_inferred is False
+
     def test_backfilled_need_carries_no_motivating_hypothesis(self):
         """Deliberate: the engine knows the ask was made, not which candidate
         it separates. Inventing a motivator would let the terminal-hypothesis
-        sweep supersede an ask the user is still being shown."""
+        sweep supersede an ask the user is still being shown, and would let one
+        refusal declare a wall on a candidate the data never spoke to.
+
+        Known cost, documented at the creation site: an unmotivated need cannot
+        satisfy ``verification_status._candidate_unresolvable``, so declaring it
+        UNOBTAINABLE stops the nagging but cannot on its own carry a case to
+        INSUFFICIENT_EVIDENCE.
+        """
         case = _Case(hypotheses={"hyp_1": object()})
         _link(case, [_FollowUp(body="Share the pod logs")])
 
@@ -476,3 +528,286 @@ class TestWireResponseCarriesTheNeedId:
 
         assert out[0]["evidence_need_id"] == case.evidence_needs[0].need_id
         assert out[0]["evidence_need_id"].startswith("eneed_")
+
+
+# ============================================================
+# Calibration against the recorded run (#1079)
+# ============================================================
+
+#: The EVIDENCE asks FaultMaven actually made on turns 5–15 of the fm#1079
+#: transcript (aws-iam-role-assumption-failure_20260817_001142.json), verbatim.
+#: Turns 7–15 are all the same request — the target-account IAM/OIDC provider
+#: record — reworded each turn, which is the loop the issue is about.
+_REAL_ASKS = [
+    (
+        5,
+        "Provide the redacted CloudTrail AssumeRoleWithWebIdentity event from account 111122223333 for the incident window beginning 2026-05-06T14:32:11Z. Include eventTime, errorCode, errorMessage, role ARN, and request parameters.",
+    ),
+    (
+        5,
+        "Provide the target-account IAM OIDC provider URL and client ID list, plus the projected token's issuer and audience claims only. Do not share the token itself.",
+    ),
+    (
+        5,
+        "Provide the EKS upgrade diff or runbook output showing changes to the cluster issuer, service-account token audience, or IRSA configuration around the incident window.",
+    ),
+    (
+        6,
+        "Return the command output for the absolute incident window around 2026-05-06T14:32:11Z–14:32:41Z, especially the target account's provider URL and ClientIDList.",
+    ),
+    (
+        7,
+        "Provide the read-only output from account 111122223333, covering DataProcessorRole and the matching EKS OIDC provider. This distinguishes a missing target-account provider from a provider with the wrong audience.",
+    ),
+    (
+        8,
+        "The target-account provider record is the decisive missing data. Please provide the output of the three read-only IAM commands in account 111122223333, covering DataProcessorRole and its matching OIDC provider.",
+    ),
+    (
+        9,
+        "The analytics team’s read-only output is the decisive missing data: it identifies which account’s OIDC provider is used by the web-identity target and whether that provider also has the audience mismatch.",
+    ),
+    (
+        10,
+        "Share the analytics team's read-only output showing the target-account role ARN and OIDC provider URL, ClientIDList, and ThumbprintList.",
+    ),
+    (
+        11,
+        "Provide the analytics team's read-only output for DataProcessorRole and its associated OIDC provider: provider URL, ClientIDList, and ThumbprintList. This confirms the exact provider before any IAM change.",
+    ),
+    (
+        12,
+        "Have the analytics team provide the target-account DataProcessorRole trust policy and the EKS issuer OIDC provider record—URL, ClientIDList, and ThumbprintList—covering the configuration active at 2026-05-06T14:32:11Z–14:32:41Z. This is the decisive data needed before changing IAM.",
+    ),
+    (
+        13,
+        "Provide the analytics team's read-only output for DataProcessorRole and the matching OIDC provider in account 111122223333, scoped to the current incident investigation.",
+    ),
+    (
+        14,
+        "Provide the analytics team’s read-only output from account 111122223333 showing the matching OIDC provider ARN and its URL, ClientIDList, and ThumbprintList. This is the decisive check before changing IAM.",
+    ),
+    (
+        15,
+        "The analytics team should provide the DataProcessorRole trust-policy provider ARN and matching OIDC provider output from account 111122223333, covering the exact issuer URL, ClientIDList, and ThumbprintList.",
+    ),
+]
+
+
+@pytest.mark.unit
+class TestCalibrationAgainstTheRecordedRun:
+    """The matcher is calibrated on the real transcript, not on invented
+    phrasings.
+
+    The first implementation used Jaccard at 0.55 and, replayed against these
+    exact asks, produced 14 separate needs — every one reading "asked once", so
+    mention decay still never fired and the fix did nothing on the run it was
+    built for. Its unit tests passed only because the fixtures were phrasings
+    invented to clear the threshold. These asks are the ground truth.
+    """
+
+    def _replay(self):
+        case = _Case()
+        for turn, body in _REAL_ASKS:
+            _link(case, [_FollowUp(body=body)], turn=turn)
+        return case
+
+    def test_the_repeated_ask_is_recognised_as_repeated(self):
+        case = self._replay()
+        most_asked = max(case.evidence_needs, key=lambda n: n.times_surfaced)
+
+        assert most_asked.times_surfaced >= 5, (
+            "the target-account provider request was made on nine turns; if the "
+            "matcher scores it as new each time, the ask count never rises and "
+            "mention decay cannot fire — the fm#1079 defect, unfixed"
+        )
+
+    def test_the_pool_does_not_grow_one_need_per_ask(self):
+        case = self._replay()
+
+        assert len(case.evidence_needs) < len(_REAL_ASKS) / 2
+
+    def test_the_pool_does_not_collapse_to_a_single_need(self):
+        """Guard the other way: these asks are not all the same request. The
+        CloudTrail event, the EKS upgrade diff and the provider record are
+        genuinely distinct, and folding everything into one entry would hide
+        live asks behind a shared counter."""
+        case = self._replay()
+
+        assert len(case.evidence_needs) >= 3
+
+    def test_decay_threshold_is_crossed_before_the_run_ends(self):
+        """The prompt rule is "third+: stop surfacing". For that to bite, some
+        need must reach 3 asks while the case is still live."""
+        case = self._replay()
+        most_asked = max(case.evidence_needs, key=lambda n: n.times_surfaced)
+
+        assert most_asked.last_surfaced_turn is not None
+        assert most_asked.surfaced_turns[2] <= 13, (
+            "the third ask must land with turns to spare, or the decay rule "
+            "fires only after the case has already stalled out"
+        )
+
+
+# ============================================================
+# Regressions the backfill would otherwise cause
+# ============================================================
+
+
+@pytest.mark.unit
+class TestAntiAnchoringIsNotDisabled:
+    """``_awaiting_recent_evidence`` stands anti-anchoring down when a recent
+    ask is still outstanding, on the reasoning that the agent is waiting on the
+    user rather than fixating. Its docstring promises a bound: "a single stale
+    need the user never answers cannot permanently disable anti-anchoring".
+
+    Backfill mints a fresh need, stamped with the current turn, for every
+    undeclared EVIDENCE ask — i.e. most turns on a fixated case. Counting those
+    would re-arm the stand-down every turn and break that bound, disabling
+    anti-anchoring exactly when a stuck investigation needs it. Inferred needs
+    are therefore excluded.
+    """
+
+    def _case_with(self, needs, turn):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(evidence_needs=needs, current_turn=turn)
+
+    def test_inferred_need_does_not_stand_anti_anchoring_down(self):
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+        inferred = _need("engine inferred ask")
+        inferred.engine_inferred = True
+        inferred.created_at_turn = 10
+
+        assert not MilestoneEngine._awaiting_recent_evidence(
+            self._case_with([inferred], 10), 3
+        )
+
+    def test_model_authored_need_still_stands_it_down(self):
+        """The mechanism must keep working for deliberate asks — this is the
+        control, so the fix above is a narrowing and not a disabling."""
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+        authored = _need("model authored ask")
+        authored.created_at_turn = 10
+
+        assert MilestoneEngine._awaiting_recent_evidence(
+            self._case_with([authored], 10), 3
+        )
+
+    def test_a_backfilled_ask_every_turn_never_holds_the_stand_down_open(self):
+        """The end-to-end shape: an agent asking for something every turn (the
+        fm#1079 loop) must not thereby suppress anti-anchoring forever."""
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+        case = _Case()
+        for turn in range(6, 16):
+            _link(
+                case,
+                [_FollowUp(body=f"Share artifact {turn} from host {turn}")],
+                turn=turn,
+            )
+
+        assert not MilestoneEngine._awaiting_recent_evidence(
+            self._case_with(case.evidence_needs, 15), 3
+        )
+
+
+@pytest.mark.unit
+class TestAsksTheUserNeverSeesAreNotRecorded:
+    """Linking must run before ``repository.save``, but the branches that swap
+    ``follow_ups`` for an engine-owned list run *after* it — so whether the ask
+    will actually be rendered has to be predicted.
+
+    It matters because recording drives decay: counting a suggestion the engine
+    then discards pushes a need toward "third+: stop surfacing" for asks the
+    user never saw, retiring a live request precisely because it kept being
+    suppressed.
+    """
+
+    def _case(self, state, terminal=False):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(state=state, is_terminal=terminal)
+
+    def test_gate_turn_is_treated_as_replaced(self):
+        from faultmaven.core.investigation.evidence_need_linking import (
+            suggestions_are_engine_replaced,
+        )
+        from faultmaven.modules.case.contracts import CaseState
+
+        assert suggestions_are_engine_replaced(
+            self._case(CaseState.INVESTIGATING), {}, gate_pending=True
+        )
+
+    def test_inquiry_turn_is_treated_as_replaced(self):
+        """Gate 1 always substitutes the confirm/refine pair on an unconfirmed
+        problem statement — the review's concrete case."""
+        from faultmaven.core.investigation.evidence_need_linking import (
+            suggestions_are_engine_replaced,
+        )
+        from faultmaven.modules.case.contracts import CaseState
+
+        assert suggestions_are_engine_replaced(
+            self._case(CaseState.INQUIRY), {}, gate_pending=False
+        )
+
+    def test_terminal_turn_is_treated_as_replaced(self):
+        from faultmaven.core.investigation.evidence_need_linking import (
+            suggestions_are_engine_replaced,
+        )
+        from faultmaven.modules.case.contracts import CaseState
+
+        assert suggestions_are_engine_replaced(
+            self._case(CaseState.RESOLVED, terminal=True), {}, gate_pending=False
+        )
+
+    @pytest.mark.parametrize(
+        "flag",
+        [
+            "resolution_ready_for_confirmation",
+            "resolution_suggest_close",
+            "resolution_needs_info_first_pass",
+            "close_pivoted_to_resolve",
+            "rca_infeasible_closure_message",
+            "override_suggestions",
+        ],
+    )
+    def test_each_resolution_branch_flag_is_treated_as_replaced(self, flag):
+        from faultmaven.core.investigation.evidence_need_linking import (
+            suggestions_are_engine_replaced,
+        )
+        from faultmaven.modules.case.contracts import CaseState
+
+        assert suggestions_are_engine_replaced(
+            self._case(CaseState.INVESTIGATING), {flag: True}, gate_pending=False
+        )
+
+    def test_an_ordinary_investigating_turn_is_not_replaced(self):
+        """The control — otherwise the guard would disable linking entirely."""
+        from faultmaven.core.investigation.evidence_need_linking import (
+            suggestions_are_engine_replaced,
+        )
+        from faultmaven.modules.case.contracts import CaseState
+
+        assert not suggestions_are_engine_replaced(
+            self._case(CaseState.INVESTIGATING), {}, gate_pending=False
+        )
+
+    def test_every_replacement_flag_is_read_somewhere_in_the_turn_path(self):
+        """The flag list is a hand-maintained mirror of ``_process_turn_impl``.
+        If a name drifts, the guard silently stops covering that branch."""
+        import inspect
+
+        from faultmaven.core.investigation.evidence_need_linking import (
+            _REPLACEMENT_METADATA_FLAGS,
+        )
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+        src = inspect.getsource(MilestoneEngine._process_turn_impl)
+        for flag in _REPLACEMENT_METADATA_FLAGS:
+            assert f'"{flag}"' in src, (
+                f"{flag} is no longer read in _process_turn_impl — the "
+                "replacement guard is out of step with the branches it mirrors"
+            )

@@ -102,9 +102,10 @@ class TestPgObtainabilitySql:
 # ============================================================
 
 
-def _row_with_surfaced(surfaced):
-    """As ``_row``, plus the trailing ``surfaced_turns`` column (#1079)."""
-    return _row("unknown") + (surfaced,)
+def _row_with_surfaced(surfaced, engine_inferred=False):
+    """As ``_row``, plus the trailing ``surfaced_turns`` / ``engine_inferred``
+    columns (#1079)."""
+    return _row("unknown") + (surfaced, engine_inferred)
 
 
 @pytest.mark.unit
@@ -160,9 +161,30 @@ class TestPgSurfacedTurnsReconstruction:
 
 @pytest.mark.unit
 class TestPgSurfacedTurnsSql:
+    def test_engine_inferred_reconstructs(self):
+        """Provenance drives the anti-anchoring exclusion; losing it on the
+        Postgres path re-arms the stand-down every turn in Cloud only."""
+        need = _repo()._row_to_evidence_need(
+            _row_with_surfaced([3], engine_inferred=True),
+            case_id="case_ce0000000001",
+            fulfilling_evidence_ids=[],
+        )
+        assert need is not None
+        assert need.engine_inferred is True
+
+    def test_engine_inferred_defaults_false_on_short_row(self):
+        need = _repo()._row_to_evidence_need(
+            _row("unknown"),
+            case_id="case_ce0000000001",
+            fulfilling_evidence_ids=[],
+        )
+        assert need is not None
+        assert need.engine_inferred is False
+
     def test_select_includes_surfaced_turns(self):
         select_block = _REPO_SOURCE.split("FROM evidence_needs")[0]
         assert "surfaced_turns" in select_block.rsplit("SELECT", 1)[1]
+        assert "engine_inferred" in select_block.rsplit("SELECT", 1)[1]
 
     def test_insert_and_param_include_surfaced_turns(self):
         insert_block = _REPO_SOURCE.split("INSERT INTO evidence_needs")[1].split(
@@ -170,6 +192,8 @@ class TestPgSurfacedTurnsSql:
         )[0]
         assert "surfaced_turns = EXCLUDED.surfaced_turns" in insert_block
         assert '"surfaced_turns": json.dumps(need.surfaced_turns)' in insert_block
+        assert "engine_inferred = EXCLUDED.engine_inferred" in insert_block
+        assert '"engine_inferred": need.engine_inferred' in insert_block
 
 
 @pytest.mark.unit

@@ -65,6 +65,7 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.core.investigation.evidence_need_linking import (
     link_evidence_suggestions_to_needs,
+    suggestions_are_engine_replaced,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
@@ -4991,15 +4992,33 @@ class MilestoneEngine:
             # and BEFORE _flatten_follow_ups (below) so the wire response
             # carries the IDs assigned here. After the terminal sweep, so a need
             # superseded this turn is not a match candidate.
+            # Skipped when the engine is going to REPLACE these suggestions
+            # further down (gate affordances, the resolution/close prose
+            # branches, the closure ack). Those turns never render the model's
+            # EVIDENCE asks, and recording an ask the user never saw would decay
+            # it toward "stop surfacing" for the wrong reason.
             if getattr(response_obj, "suggested_follow_ups", None):
                 try:
-                    link_evidence_suggestions_to_needs(
-                        case_updated,
-                        response_obj.suggested_follow_ups,
-                        metadata,
-                        case_updated.current_turn,
-                        self._resolve_id_ref,
+                    gate_pending = (
+                        engine_owned_affordances(case_updated, metadata) is not None
                     )
+                    if suggestions_are_engine_replaced(
+                        case_updated, metadata, gate_pending
+                    ):
+                        logger.debug(
+                            "Skipping evidence-need linking on case %s turn %s: "
+                            "the engine replaces this turn's suggestions",
+                            case_updated.case_id,
+                            case_updated.current_turn,
+                        )
+                    else:
+                        link_evidence_suggestions_to_needs(
+                            case_updated,
+                            response_obj.suggested_follow_ups,
+                            metadata,
+                            case_updated.current_turn,
+                            self._resolve_id_ref,
+                        )
                 except Exception as link_err:  # noqa: BLE001
                     # Never fail a turn over suggestion bookkeeping — the reply
                     # is still correct without the linkage, just un-countable.
@@ -10761,9 +10780,20 @@ class MilestoneEngine:
         progress, not fixation — so anti-anchoring stands down. Bounding it to
         recent asks ensures a single stale need the user never answers cannot
         permanently disable anti-anchoring for the rest of the case.
+
+        ENGINE-INFERRED needs are excluded (#1079). Those are minted by
+        ``evidence_need_linking`` from any EVIDENCE suggestion the model did not
+        declare a need for — which, on a fixated case, is most turns. Counting
+        them would stamp a fresh ``created_at_turn`` every turn and hold the
+        stand-down open forever, destroying the bound the paragraph above
+        promises and disabling anti-anchoring exactly when a stuck investigation
+        needs it. The signal this reads is the model's DELIBERATE demand, so it
+        reads only the needs the model authored.
         """
         return any(
-            n.is_outstanding and case.current_turn - n.created_at_turn < within_turns
+            n.is_outstanding
+            and not n.engine_inferred
+            and case.current_turn - n.created_at_turn < within_turns
             for n in (case.evidence_needs or [])
         )
 

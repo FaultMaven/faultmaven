@@ -675,7 +675,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at,
-                    obtainability, surfaced_turns
+                    obtainability, surfaced_turns, engine_inferred
                 FROM evidence_needs
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC, need_id ASC
@@ -729,7 +729,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Column order: ``need_id, purpose, request_text, rationale,
         priority, state, motivating_hypothesis_ids (JSONB),
         superseded_reason, created_at_turn, created_at, updated_at,
-        obtainability, surfaced_turns (JSONB)``.
+        obtainability, surfaced_turns (JSONB), engine_inferred``.
         On PG, JSONB is returned as a Python list directly (asyncpg);
         on dialect-compatibility paths a JSON string is also tolerated.
         """
@@ -779,6 +779,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     else NeedObtainability.UNKNOWN
                 ),
                 surfaced_turns=surfaced,
+                engine_inferred=bool(row[13]) if len(row) > 13 else False,
             )
         except Exception as need_err:  # noqa: BLE001
             logger.warning("Failed to load evidence_need %s: %s", row[0], need_err)
@@ -2203,7 +2204,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at,
-                    obtainability, surfaced_turns
+                    obtainability, surfaced_turns, engine_inferred
                 ) VALUES (
                     :need_id, :case_id, :organization_id,
                     :purpose, :request_text, :rationale,
@@ -2211,7 +2212,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     {self._cast('motivating_hypothesis_ids')},
                     :superseded_reason,
                     :created_at_turn, :created_at, :updated_at,
-                    :obtainability, {self._cast('surfaced_turns')}
+                    :obtainability, {self._cast('surfaced_turns')},
+                    :engine_inferred
                 )
                 ON CONFLICT (need_id) DO UPDATE SET
                     purpose = EXCLUDED.purpose,
@@ -2223,7 +2225,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     superseded_reason = EXCLUDED.superseded_reason,
                     updated_at = EXCLUDED.updated_at,
                     obtainability = EXCLUDED.obtainability,
-                    surfaced_turns = EXCLUDED.surfaced_turns
+                    surfaced_turns = EXCLUDED.surfaced_turns,
+                    engine_inferred = EXCLUDED.engine_inferred
             """)
 
             now = datetime.now(timezone.utc)
@@ -2247,6 +2250,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "updated_at": now,
                     "obtainability": need.obtainability.value,
                     "surfaced_turns": json.dumps(need.surfaced_turns),
+                    "engine_inferred": need.engine_inferred,
                 },
             )
 

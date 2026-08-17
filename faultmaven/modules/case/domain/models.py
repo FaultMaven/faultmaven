@@ -2396,6 +2396,23 @@ class EvidenceNeed(BaseModel):
         ),
     )
 
+    engine_inferred: bool = Field(
+        default=False,
+        description=(
+            "True when the engine created this need from an EVIDENCE suggestion "
+            "the model raised without declaring one (#1079), rather than the "
+            "model authoring it through ``evidence_need_updates``.\n\n"
+            "Provenance matters because an inferred need is thinner than an "
+            "authored one: it has no real rationale and no "
+            "``motivating_hypothesis_ids``, because the engine knows an ask was "
+            "made but not which candidate it discriminates. Readers that reason "
+            "about the model's *deliberate* demand must exclude these — see "
+            "``MilestoneEngine._awaiting_recent_evidence``, where counting them "
+            "would stand anti-anchoring down on every turn the agent happens to "
+            "ask for something."
+        ),
+    )
+
     created_at_turn: int = Field(
         description="Turn number when the need was created.",
         ge=0,

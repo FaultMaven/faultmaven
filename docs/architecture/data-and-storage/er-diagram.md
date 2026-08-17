@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-08-17 06:34 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-08-17 07:10 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -25,7 +25,7 @@
 | `enterprises` | 11 | `enterprise_id` | — |
 | `evidence` | 23 | `evidence_id` | cases, organizations, uploaded_files |
 | `evidence_need_fulfillment` | 5 | `need_id, evidence_id` | evidence, evidence_needs, organizations |
-| `evidence_needs` | 15 | `need_id` | cases, organizations |
+| `evidence_needs` | 16 | `need_id` | cases, organizations |
 | `hypotheses` | 25 | `hypothesis_id` | cases, causal_nodes, organizations, users |
 | `hypothesis_evidence` | 8 | `hypothesis_id, evidence_id` | evidence, hypotheses, organizations, users |
 | `investigation_sessions` | 17 | `session_id` | cases, organizations, users |
@@ -280,6 +280,7 @@ erDiagram
         VARCHAR obtainability
         TEXT motivating_hypothesis_ids
         TEXT surfaced_turns
+        BOOLEAN engine_inferred
         VARCHAR superseded_reason
         INTEGER created_at_turn
         DATETIME created_at
