@@ -63,6 +63,9 @@ from faultmaven.core.investigation.cause_assurance import (
     grade_cause_assurance,
     runbook_conversion_ready,
 )
+from faultmaven.core.investigation.evidence_need_linking import (
+    link_evidence_suggestions_to_needs,
+)
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
     create_hypothesis_manager,
@@ -4975,6 +4978,36 @@ class MilestoneEngine:
             # Runs BEFORE save() so the supersession lands in the same turn's
             # persisted state.
             _sweep_needs_for_terminal_hypotheses(case_updated)
+
+            # #1079: give every EVIDENCE suggestion a need to hang on, and
+            # record the ask on it. Both anti-nagging mechanisms (the
+            # obtainability wall and mention decay) act on an EvidenceNeed, so
+            # an ask with no need behind it is one neither can ever see — which
+            # is how the same request survived ten consecutive turns against a
+            # user declining it six times.
+            #
+            # Placed here for two ordering reasons: BEFORE save() so created
+            # needs and the recorded turn persist with the rest of the turn,
+            # and BEFORE _flatten_follow_ups (below) so the wire response
+            # carries the IDs assigned here. After the terminal sweep, so a need
+            # superseded this turn is not a match candidate.
+            if getattr(response_obj, "suggested_follow_ups", None):
+                try:
+                    link_evidence_suggestions_to_needs(
+                        case_updated,
+                        response_obj.suggested_follow_ups,
+                        metadata,
+                        case_updated.current_turn,
+                        self._resolve_id_ref,
+                    )
+                except Exception as link_err:  # noqa: BLE001
+                    # Never fail a turn over suggestion bookkeeping — the reply
+                    # is still correct without the linkage, just un-countable.
+                    logger.warning(
+                        "Evidence-need linking failed on case %s: %s",
+                        case_updated.case_id,
+                        link_err,
+                    )
 
             # Step 7: Save case (only if changes made, but turn history always updates)
             case_updated.updated_at = datetime.now(UTC)

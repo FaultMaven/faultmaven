@@ -798,7 +798,7 @@ class SQLiteCaseRepository(CaseRepository):
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at,
-                    obtainability
+                    obtainability, surfaced_turns
                 FROM evidence_needs
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC, need_id ASC
@@ -860,7 +860,7 @@ class SQLiteCaseRepository(CaseRepository):
         Column order: ``need_id, purpose, request_text, rationale,
         priority, state, motivating_hypothesis_ids (JSON),
         superseded_reason, created_at_turn, created_at, updated_at,
-        obtainability``.
+        obtainability, surfaced_turns (JSON)``.
         ``case_id`` and ``fulfilling_evidence_ids`` are passed in by
         the caller (the row doesn't carry case_id explicitly because
         the WHERE clause already filtered by case).
@@ -874,6 +874,15 @@ class SQLiteCaseRepository(CaseRepository):
                 motivating = json.loads(motivating_raw) if motivating_raw else []
             except (json.JSONDecodeError, TypeError):
                 motivating = []
+
+            # Ask history (#1079). Absent/corrupt reads as "never surfaced" —
+            # the same fail-safe direction the pre-043 rows carry, so a bad
+            # blob understates the count rather than silencing a live ask.
+            surfaced_raw = row[12] if len(row) > 12 else None
+            try:
+                surfaced = json.loads(surfaced_raw) if surfaced_raw else []
+            except (json.JSONDecodeError, TypeError):
+                surfaced = []
 
             def _parse_dt(value: Any) -> datetime:
                 if isinstance(value, datetime):
@@ -904,6 +913,7 @@ class SQLiteCaseRepository(CaseRepository):
                     if len(row) > 11 and row[11]
                     else NeedObtainability.UNKNOWN
                 ),
+                surfaced_turns=surfaced,
             )
         except Exception as need_err:  # noqa: BLE001
             logging.getLogger(__name__).warning(
@@ -2601,7 +2611,7 @@ class SQLiteCaseRepository(CaseRepository):
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at,
-                    obtainability
+                    obtainability, surfaced_turns
                 ) VALUES (
                     :need_id, :case_id, :organization_id,
                     :purpose, :request_text, :rationale,
@@ -2609,7 +2619,7 @@ class SQLiteCaseRepository(CaseRepository):
                     :motivating_hypothesis_ids,
                     :superseded_reason,
                     :created_at_turn, :created_at, :updated_at,
-                    :obtainability
+                    :obtainability, :surfaced_turns
                 )
                 ON CONFLICT (need_id) DO UPDATE SET
                     purpose = EXCLUDED.purpose,
@@ -2620,7 +2630,8 @@ class SQLiteCaseRepository(CaseRepository):
                     motivating_hypothesis_ids = EXCLUDED.motivating_hypothesis_ids,
                     superseded_reason = EXCLUDED.superseded_reason,
                     updated_at = EXCLUDED.updated_at,
-                    obtainability = EXCLUDED.obtainability
+                    obtainability = EXCLUDED.obtainability,
+                    surfaced_turns = EXCLUDED.surfaced_turns
             """)
 
             now = datetime.now(UTC)
@@ -2643,6 +2654,7 @@ class SQLiteCaseRepository(CaseRepository):
                     "created_at": need.created_at or now,
                     "updated_at": now,
                     "obtainability": need.obtainability.value,
+                    "surfaced_turns": json.dumps(need.surfaced_turns),
                 },
             )
 

@@ -28,6 +28,7 @@ from faultmaven.core.investigation.schemas import (
     SuggestedFollowUp,
 )
 from faultmaven.modules.case.contracts import (
+    EvidenceNeed,
     NeedPriority,
     NeedPurpose,
     NeedState,
@@ -329,3 +330,55 @@ class TestSuggestedFollowUpEvidenceNeedId:
             payload="Share whatever logs are relevant",
         )
         assert s.evidence_need_id is None
+
+
+# ============================================================
+# Ask history (#1079)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestSurfacedTurns:
+    """``surfaced_turns`` is the stored counter the mention-decay rule's
+    comment said did not exist ("no stored counter exists" — the model was
+    told to reconstruct the count from conversation history, which only
+    reaches back ``HISTORY_VERBATIM_TURNS`` turns)."""
+
+    def _need(self, **kw):
+        return EvidenceNeed(
+            case_id="case_000000000001",
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            request_text="the OIDC provider record",
+            rationale="discriminates the audience mismatch",
+            created_at_turn=1,
+            **kw,
+        )
+
+    def test_defaults_to_never_asked(self):
+        need = self._need()
+        assert need.surfaced_turns == []
+        assert need.times_surfaced == 0
+        assert need.last_surfaced_turn is None
+
+    def test_record_surfaced_accumulates(self):
+        need = self._need()
+        need.record_surfaced(3)
+        need.record_surfaced(7)
+        assert need.surfaced_turns == [3, 7]
+        assert need.times_surfaced == 2
+        assert need.last_surfaced_turn == 7
+
+    def test_record_surfaced_is_idempotent_per_turn(self):
+        """The count means "turns on which I asked" — a turn that surfaces the
+        same need through two suggestions must not read as two asks."""
+        need = self._need()
+        need.record_surfaced(5)
+        need.record_surfaced(5)
+        assert need.surfaced_turns == [5]
+
+    def test_turns_stay_sorted_when_recorded_out_of_order(self):
+        need = self._need()
+        need.record_surfaced(9)
+        need.record_surfaced(2)
+        assert need.surfaced_turns == [2, 9]
+        assert need.last_surfaced_turn == 9

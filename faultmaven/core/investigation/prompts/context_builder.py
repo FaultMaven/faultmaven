@@ -2099,6 +2099,29 @@ def _truncate_request_text(text: str) -> str:
     return text[: _REQUEST_TEXT_RENDER_CAP - 1].rstrip() + "…"
 
 
+def _render_ask_history(need) -> str:
+    """The ``asked N×`` fragment for a need's header line, or ``""`` if never.
+
+    This is the stored counter the mention-decay rule used to tell the model to
+    reconstruct "by scanning your prior turns in the conversation history"
+    (#1079). That scan cannot work: ``HISTORY_VERBATIM_TURNS`` is 3, and older
+    turns collapse to ``_build_turn_summary``, which records milestones,
+    artifact counts and 200 chars of the reply — never what was asked for. Past
+    three turns every repeat read as a first mention, so the ask never decayed.
+
+    Stating the count as a fact removes the reconstruction entirely. The last
+    turn is included because "asked 4×, last on turn 14" and "asked 4×, last on
+    turn 6" call for opposite responses — the first is a live loop, the second
+    is an old ask the user has moved past.
+    """
+    count = need.times_surfaced
+    if count <= 0:
+        return ""
+    if count == 1:
+        return f", asked once (turn {need.last_surfaced_turn})"
+    return f", asked {count}× (last turn {need.last_surfaced_turn})"
+
+
 def _render_need_line(need) -> tuple[str, str]:
     """Render one need into (header_line, motivator_line)."""
     purpose_label = (
@@ -2109,7 +2132,8 @@ def _render_need_line(need) -> tuple[str, str]:
     )
     header = (
         f"  - [{need.need_id}] {_truncate_request_text(need.request_text)} "
-        f"({purpose_label}, {need.priority.value.upper()}{status_suffix})"
+        f"({purpose_label}, {need.priority.value.upper()}{status_suffix}"
+        f"{_render_ask_history(need)})"
     )
     if need.purpose == NeedPurpose.SYMPTOM_VERIFICATION:
         motivator_line = "      motivated_by: problem_statement"
@@ -2181,9 +2205,14 @@ def _build_evidence_needs_block(case: Case) -> str:
 
           - [eneed_001] Response time metrics (SYMPTOM, HIGH)
               motivated_by: problem_statement
-          - [eneed_003] DB connection pool metrics (CAUSAL, HIGH)
+          - [eneed_003] DB connection pool metrics (CAUSAL, HIGH, asked 3× (last turn 9))
               motivated_by: [hyp_001, hyp_003]
         </evidence_needs>
+
+    The ``asked N×`` fragment is the durable ask history (#1079) — see
+    ``_render_ask_history``. It replaces the mention-decay rule's old
+    instruction to count prior mentions out of conversation history, which is
+    unreachable past the verbatim window.
 
     Output shape (MITIGATION/TREATMENT, both sections populated):
 

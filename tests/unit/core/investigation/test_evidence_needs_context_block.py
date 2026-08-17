@@ -716,3 +716,66 @@ class TestObtainabilityOverflowNotice:
             )
         out = _build_evidence_needs_block(case)
         assert "not shown" in out
+
+
+# ============================================================
+# Ask history on the need line (#1079)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestAskHistoryRendering:
+    """The rendered repeat count is what replaces the mention-decay rule's
+    old instruction to reconstruct mentions from conversation history.
+
+    That reconstruction is unreachable: ``HISTORY_VERBATIM_TURNS`` is 3 and
+    older turns collapse to a summary recording milestones and artifact counts
+    but never what was asked for. Past three turns every repeat read as a first
+    mention — which is how the same ask survived ten consecutive turns on
+    fm#1079 while the user declined it six times.
+    """
+
+    def test_never_asked_need_renders_no_history(self):
+        case = _make_case()
+        _make_need(case, request_text="kubectl get pods")
+
+        out = _build_evidence_needs_block(case)
+
+        assert "asked" not in out
+
+    def test_single_ask_names_the_turn(self):
+        case = _make_case()
+        need = _make_need(case, request_text="kubectl get pods")
+        need.record_surfaced(4)
+
+        out = _build_evidence_needs_block(case)
+
+        assert "asked once (turn 4)" in out
+
+    def test_repeat_asks_render_count_and_last_turn(self):
+        """Both numbers matter: 'asked 4×, last turn 14' is a live loop,
+        'asked 4×, last turn 6' is an old ask the user has moved past."""
+        case = _make_case()
+        need = _make_need(case, request_text="kubectl get pods")
+        for turn in (6, 8, 11, 14):
+            need.record_surfaced(turn)
+
+        out = _build_evidence_needs_block(case)
+
+        assert "asked 4× (last turn 14)" in out
+
+    def test_history_does_not_disturb_the_rest_of_the_line(self):
+        case = _make_case()
+        need = _make_need(
+            case,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+            priority=NeedPriority.HIGH,
+            request_text="the OIDC provider record",
+            motivating_hypothesis_ids=["hyp_001"],
+        )
+        need.record_surfaced(9)
+
+        out = _build_evidence_needs_block(case)
+
+        assert "(CAUSAL, HIGH, asked once (turn 9))" in out
+        assert "motivated_by: [hyp_001]" in out
