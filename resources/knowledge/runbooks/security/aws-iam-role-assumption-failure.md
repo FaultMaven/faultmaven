@@ -6,8 +6,8 @@ service: aws-iam
 symptom_class: [auth_failure]
 severity: high
 scope: global
-version: "2.1.0"
-last_updated: "2026-08-16"
+version: "2.1.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [sts, assume-role, trust-policy, external-id, cross-account, role-chaining, irsa, scp]
@@ -163,6 +163,8 @@ aws iam get-open-id-connect-provider \
 ```
 
 Expected output: the issuer URL returned by `describe-cluster` corresponds to one of the listed provider ARNs. For that provider, `URL` matches the issuer, `Audiences` contains `sts.amazonaws.com`, and the thumbprint matches the certificate currently served at the issuer endpoint. An empty list — or a list with no matching issuer — is only a finding once the account is confirmed correct, because querying the wrong account returns exactly the same empty result.
+
+For IRSA the audience is partition-invariant: the `aud` claim names the token's recipient — the STS service — not a regional endpoint, so it is `sts.amazonaws.com` in every partition, AWS China (`aws-cn`) included, where the EKS identity webhook stamps that same value. `sts.amazonaws.com.cn` is the plausible-looking wrong value: registering it as the provider audience produces `InvalidIdentityToken: Incorrect token audience`.
 
 ## Causes
 
@@ -501,3 +503,4 @@ Expected output: the issuer URL returned by `describe-cluster` corresponds to on
 - [The confused deputy problem — AWS IAM User Guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/confused-deputy.html) — ExternalId design rationale, cross-account and cross-service confused deputy prevention patterns
 - [Access to AWS accounts owned by third parties — AWS IAM User Guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html) — ExternalId best practices, multi-tenant external ID uniqueness, when to require ExternalId
 - [IAM roles for service accounts (IRSA) — AWS EKS User Guide](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) — OIDC provider setup, ServiceAccount annotation, trust policy condition keys for EKS
+- [Create an IAM OIDC provider for your cluster — AWS China EKS User Guide](https://docs.amazonaws.cn/en_us/eks/latest/userguide/enable-iam-roles-for-service-accounts.html) — the `aws-cn` partition's own EKS guide instructs the same `sts.amazonaws.com` audience as the commercial partition; grounds Step 8's partition-invariance note
