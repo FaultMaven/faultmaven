@@ -194,7 +194,7 @@ is pre-production and the existing plumbing is dead.
 | `IntentType.EVIDENCE_REQUEST` | `IntentType.EVIDENCE_NEED` (stays `NOT_IMPLEMENTED`; see §9.3) |
 | `EvidenceRequestToAdd` in `faultmaven/models/llm_schemas.py` | DELETED |
 | `evidence_requests` field on legacy `InvestigationStateUpdate` | DELETED |
-| `mentioned_request_ids` field on legacy `InvestigationStateUpdate` | DELETED (mention-decay is fully prompt-only — see §9.7) |
+| `mentioned_request_ids` field on legacy `InvestigationStateUpdate` | DELETED (the ask history is engine-recorded on the need, not LLM-emitted — see §9.7) |
 | `evidence_requests` field on `LLMResponse` in `faultmaven/models/api.py:245` | DELETED (orphan; never read in the current pipeline) |
 | `QueryIntent.evidence_id` | `QueryIntent.evidence_need_id` |
 | (no LLM schema class existed in the current pipeline) | `EvidenceNeedUpdate` in `faultmaven/core/investigation/schemas.py` |
@@ -929,11 +929,12 @@ symptom needs surface via `DiagnosisStateUpdate` (symptom-validation work
 is the DIAGNOSIS stage's first zone; there is no separate path-conditional
 dispatch block).
 
-**No `mentioned_need_ids` field.** Mention-decay is fully prompt-only
-in the new design (§9.7) — the LLM relies on conversation history,
-not an emitted list. Adding the field would create state-management
-overhead with no enforcement consumer (the
-`diagnostic_reasoning_validator` workstream was removed in PR #348).
+**No `mentioned_need_ids` field.** The ask history is not LLM-emitted: the
+engine records a surfacing on the need itself, at the seam where the
+suggestion is actually shipped (§9.7). An emitted list would be a claim
+about what the model *intended* to ask; `surfaced_turns` is a record of
+what the user was actually shown, which is the quantity the decay rule
+reasons about.
 
 ### 8.7 Persistence: New Table
 
@@ -1085,22 +1086,37 @@ surfacing, and wall rule identically (they are prior-not-gate and
 provenance-blind to safety). The engine acts as a bounded *creator*
 only for content it did not author.
 
-### 9.7 No Stored Mention-Count — Prompt-Only Decay
+### 9.7 Stored Ask History — Engine-Enforced Decay
 
-Mention-decay (§10.5) is enforced via prompt instruction rather than
-stored state. The LLM has the conversation history in context and can
-see what it has previously suggested. Adding a stored `mention_count`
-or `last_mentioned_at_turn` introduces state-management overhead for
-a behavior the LLM can self-regulate.
+> **Superseded (fm#1079, fm#1081).** This section originally argued for
+> prompt-only decay with no stored state: "the LLM has the conversation
+> history in context and can see what it has previously suggested… avoid
+> speculative state." Both halves of that turned out to be false, and the
+> current design is the opposite. The original reasoning is preserved
+> below the rule because it explains why the state was resisted.
+
+Every need carries `surfaced_turns` — the turns on which it was put to the
+user as an EVIDENCE suggestion — and the engine acts on it.
+
+**Why the stored count.** The LLM cannot see its own prior asks.
+`HISTORY_VERBATIM_TURNS` is 3; older turns collapse to a summary that
+records milestones, artifact counts and 200 characters of the reply, never
+what was asked for. Past three turns every repeat read as a first mention,
+so a rule phrased as "count your prior mentions" was unanswerable by
+construction. The count is now stated to the model as fact
+(`asked 3× (last turn 9)`).
+
+**Why engine enforcement.** Stating the count was not enough either. On
+`case_897ce7909658` the model had the rendered count, the decay rule and
+the "a refused ask is a wall" directive in context, and re-asked for the
+same data on turns 8, 11, 12, 13 and 15 after the user twice said no more
+existed. So the rule is now executed rather than requested — see §10.5.
 
 **Validator-removal context (PR #348).** The
 `diagnostic_reasoning_validator` workstream was removed entirely; the
-Rule-2 / compliance signal moved to offline eval/CI. There is no
-longer a post-generation validator that could backstop a stored
-mention-count anyway — runtime suggestion-quality enforcement is
-prompt-side only. If observed nagging becomes a problem in evaluation,
-the right response is a transcript-based eval rule (caught offline),
-not a stored field. Avoid speculative state.
+Rule-2 / compliance signal moved to offline eval/CI. That is still true,
+and it is why enforcement lives at the suggestion seam in the engine
+rather than in a post-generation validator.
 
 ---
 
@@ -1189,10 +1205,10 @@ inform conclusions; they don't determine them.
 after turn. If the user can't provide a particular piece of data,
 being repeatedly asked is irritating.
 
-**Mitigation: Prompt-only mention-decay (§9.7).**
+**Mitigation: engine-enforced mention-decay over the stored ask history
+(§9.7).**
 
-The LLM has conversation history and can see what it has previously
-suggested. Prompt rule:
+The policy is unchanged and still stated in the prompt:
 
 - First mention: full suggestion with rationale.
 - Second mention: brief reminder.
@@ -1201,8 +1217,33 @@ suggested. Prompt rule:
 - If the user asks "what else do you need?", the LLM surfaces all
   pending needs regardless.
 
-No stored state; the LLM self-regulates. If observed nagging persists,
-add `last_mentioned_at_turn` then.
+The third rule is executed by the engine rather than left to the model
+(fm#1079 — the observed nagging this section anticipated did happen, and
+self-regulation did not hold). A need is **ask-exhausted**
+(`is_ask_exhausted`) when it is outstanding, has two recorded asks, and its
+first ask is at least two turns old — the earliest point at which the
+stated policy's "third+" case is reachable. An exhausted need:
+
+- has its EVIDENCE suggestion **dropped** at the linking seam, before the
+  turn ships (`evidence_need_linking`);
+- **yields its rotating surface slot** (`select_surfaced_causal_needs`),
+  as an `UNOBTAINABLE` need does;
+- is rendered in a **separate "STOPPED surfacing" section** of
+  `<evidence_needs>` rather than among live asks, because the pool matches
+  on `request_text` — a need the model cannot see is one it re-authors,
+  and the duplicate resets the ask history.
+
+Exhaustion is measured from the *first* ask rather than from the count,
+because the count under-measures: `surfaced_turns` records a surfacing only
+when an EVIDENCE suggestion is emitted, so a re-ask made only in
+`agent_response` prose is invisible to it.
+
+**Exhaustion is not a wall.** It sets no `obtainability`, changes no state,
+and feeds nothing that can conclude — only a model-declared `UNOBTAINABLE`
+moves a case toward INSUFFICIENT_EVIDENCE (§5.3). Repetition shows an ask is
+not working; it says nothing about whether the data exists, and the engine
+cannot tell those apart. The need stays outstanding, stays matched against
+uploads, and stays the model's to dispose of.
 
 ### 10.6 Risk: Overhead for Simple Cases
 
@@ -1224,7 +1265,7 @@ cause. Zero prompt cost, zero cognitive load.
 | Updates are event-driven, not mandatory | LLM emits changes only when something happens |
 | The pool is mutable | LLM can revise, merge, or supersede its own needs |
 | Fulfillment is informational | Needs don't control milestones |
-| Suggestion decay is prompt-driven | LLM self-regulates from conversation history |
+| Suggestion decay is engine-enforced | The engine stops shipping a repeat the stated decay rule already retired (§10.5) |
 | Progressive activation | No cost for simple cases |
 
 The common thread: the evidence needs pool gives the LLM **memory and
@@ -1363,6 +1404,47 @@ authoritative**.
   step 4. This makes the "always-create a need per hypothesis" idea
   unnecessary: the pool stays demand-side (outstanding needs to look
   for), and re-verification reads the supply-side evidence record.
+
+### 11.7 Ask identity and enforced decay (fm#1079 / fm#1081, 2026-08)
+
+Two changes closed the nagging loop §10.5 anticipated. Where they touch
+§9.7 / §10.5, those sections have been rewritten in place; this is the
+as-built map.
+
+- **Every EVIDENCE ask has a durable identity (fm#1081).** Nothing had
+  required an EVIDENCE-type `SuggestedFollowUp` to carry an
+  `evidence_need_id`, and across 19 recorded simulator runs (138 EVIDENCE
+  suggestions) the field was populated zero times — so both anti-nagging
+  mechanisms, which act on an `EvidenceNeed`, had nothing to act on.
+  `evidence_need_linking` now attaches every EVIDENCE suggestion to a need
+  (matching an outstanding one by content overlap, or minting one marked
+  `engine_inferred`) and records the turn on `surfaced_turns`.
+  Engine-inferred needs are the orphan shape the terminal-hypothesis sweep
+  cannot reach, so `sweep_silent_inferred_needs` garbage-collects them
+  after 5 turns without a surfacing.
+
+- **The decay rule is enforced, not requested (fm#1079).** Identity made
+  the repeat visible; nothing acted on it, and the model went on re-asking
+  with the count in front of it. `is_ask_exhausted`
+  (`evidence_need_surfacing`) is now a deterministic function of the ask
+  history, and an exhausted need is dropped at the suggestion seam, yields
+  its surface slot, and is reported as suppressed in the context block —
+  see §10.5 for the rule and for why it deliberately stops short of
+  declaring `obtainability`.
+
+  **Residue, deliberate:** because a suppressed ask is not recorded, an
+  *engine-inferred* need accrues silence and is eventually swept, after
+  which the next repeat mints a fresh need and reaches the user again —
+  roughly a two-in-seven duty cycle rather than a permanent mute. That is
+  the safe direction for a need the engine guessed at. A *model-authored*
+  need gets no sweep and stays suppressed until the model disposes of it.
+
+  **Metric:** `faultmaven_evidence_ask_suppressed_total` counts withheld
+  repeats. It reads as a measure of the model, not the engine: every
+  increment is a repeat emitted after the rule and the count were both in
+  context. A sustained rate means the loop is still being generated and
+  only the suppression is holding it back — the prose channel is untouched,
+  so the user may still be reading the nag in `agent_response`.
 
 ---
 
