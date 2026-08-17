@@ -422,7 +422,7 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 
 ## Sources
 
-- [GitHub Actions — Monitoring and Troubleshooting Workflows](https://docs.github.com/en/actions/monitoring-and-troubleshooting-workflows) — Official troubleshooting procedures, debug logging, and runner diagnostics (Priority 1)
+- [GitHub Actions — Monitoring and Troubleshooting Workflows](https://docs.github.com/en/actions/how-tos/troubleshoot-workflows) — Official troubleshooting procedures, debug logging, and runner diagnostics (Priority 1)
 - [GitHub Actions — Workflow Syntax Reference](https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions) — Complete YAML syntax including `timeout-minutes`, `concurrency`, and expression syntax (Priority 1)
 - [GitHub Actions — Self-Hosted Runners](https://docs.github.com/en/actions/hosting-your-own-runners) — Runner setup, label management, and troubleshooting (Priority 1)
 - [GitHub Actions — Security Hardening](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions) — Secret management, OIDC authentication, and supply chain security (Priority 1)

@@ -7,8 +7,8 @@ symptom_class:
   - auth_failure
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags:
@@ -540,6 +540,6 @@ Expected output: `BucketOwner` (default) or `Requester`. When `Requester`, every
 ## Sources
 
 - [Troubleshoot access denied (403 Forbidden) errors in Amazon S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/troubleshoot-403-errors.html) - Priority 1. Enhanced-context error message formats for identity-based / resource-based / VPC endpoint / SCP / RCP / permissions boundary / session policy denials, including verbatim error strings; BlockPublicAcls / IgnorePublicAcls / BlockPublicPolicy / RestrictPublicBuckets behaviour; Requester Pays parameterisation; Object Ownership and ACL precedence; S3 Object Lock retention/legal-hold denial paths.
-- [Required permissions for Amazon S3 API operations / How Amazon S3 works with IAM](https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-with-s3-actions.html) - Priority 1. S3 action-to-API-operation mapping (one-to-one, one-to-many), bucket vs object ARN formats, Access Point ARN format with `/object/` suffix, identity-based vs resource-based policy semantics, principal element rules.
+- [How Amazon S3 works with IAM](https://docs.aws.amazon.com/AmazonS3/latest/userguide/security_iam_service-with-iam.html) - Priority 1. S3 action-to-API-operation mapping (one-to-one, one-to-many, many-to-one), bucket vs object ARN formats (object ARN requires the forward slash after the bucket name), Access Point ARN format with `/object/` suffix, identity-based vs resource-based policy semantics, principal element rules.
 - [Using server-side encryption with AWS KMS keys (SSE-KMS)](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html) - Priority 1. `kms:GenerateDataKey` / `kms:Decrypt` requirements for PUT/GET/multipart, cross-account constraint preventing the AWS managed `aws/s3` key from being shared, encryption context default of `aws:s3:arn`, SSE-KMS request signing requirements (TLS, SigV4).
 - [AWS IAM access denied troubleshooting](https://docs.aws.amazon.com/IAM/latest/UserGuide/troubleshoot_access-denied.html) - Priority 1. `simulate-principal-policy` Decision values (`allowed`, `implicitDeny`, `explicitDeny`), MatchedStatements interpretation, SCP/RCP/permissions-boundary evaluation order, organisation policy types.

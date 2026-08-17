@@ -413,7 +413,7 @@ Expected output: index table sorted by segment count descending; read-only histo
 
 ## Sources
 
-- [Elasticsearch Reference — Fix Common Cluster Issues](https://www.elastic.co/guide/en/elasticsearch/reference/current/fix-common-cluster-issues.html) — Priority 1; circuit breaker overview and cluster health triage
+- [Elasticsearch Reference — Fix Common Cluster Issues](https://www.elastic.co/docs/troubleshoot/elasticsearch/fix-common-cluster-issues) — Priority 1; circuit breaker overview and cluster health triage
 - [Elasticsearch Reference — Circuit Breaker Settings](https://www.elastic.co/guide/en/elasticsearch/reference/current/circuit-breaker.html) — Priority 1; all breaker types, default limits (parent 95%, request 60%, fielddata 40%), and configuration API
 - [Elasticsearch Reference — Search Slow Log](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-modules-slowlog.html) — Priority 1; threshold configuration for query and fetch phases, log format
 - [Elasticsearch Reference — Profile API](https://www.elastic.co/guide/en/elasticsearch/reference/current/search-profile.html) — Priority 1; query timing breakdown phases (create_weight, build_scorer, next_doc, score), aggregation profiling

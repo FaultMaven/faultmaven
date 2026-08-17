@@ -503,4 +503,4 @@ Expected output: the state file listing (S3/GCS) or `{ "exists": true }` (Azure)
 - [Terraform Language: Provider Requirements](https://developer.hashicorp.com/terraform/language/providers/requirements) — Priority 1. Version constraints, lock file (.terraform.lock.hcl), provider installation, pessimistic constraint operator.
 - [Terraform Language: State](https://developer.hashicorp.com/terraform/language/state) — Priority 1. State purpose, drift detection, remote storage, locking.
 - [Terraform CLI: State Commands](https://developer.hashicorp.com/terraform/cli/state) — Priority 1. state rm, state mv, state import, state list — used in Cause B resolution.
-- [Terraform Language: Backend Configuration](https://developer.hashicorp.com/terraform/language/settings/backends/configuration) — Priority 1. S3, Azure Blob, GCS backend setup, authentication, initialization errors.
+- [Terraform Language: Backend Configuration](https://developer.hashicorp.com/terraform/language/backend) — Priority 1. S3, Azure Blob, GCS backend setup, authentication, initialization errors.
