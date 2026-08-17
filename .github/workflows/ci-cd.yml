@@ -138,7 +138,13 @@ jobs:
   test-standalone:
     needs: [code-quality]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Anchored to the measured healthy cost, like Test Cloud below. The last
+    # three green main runs took 18m31s, 18m39s and 17m18s, so 20 left only
+    # 7-13% of margin — the same position Test Cloud was in when a slow runner
+    # cancelled it at 98% with every test passed (PR #1025). 30 clears the
+    # measured cost by ~60%. Standalone is the slower of the two jobs despite
+    # running the smaller selection (`not cloud`), so it reaches its cap first.
+    timeout-minutes: 30
     name: Test Standalone
 
     steps:
