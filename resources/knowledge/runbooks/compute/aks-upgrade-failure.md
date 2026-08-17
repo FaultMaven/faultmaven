@@ -6,8 +6,8 @@ service: azure-aks
 symptom_class: [deployment_failure]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [upgrade-failed, pod-drain-failure, quota-exceeded, subnet-is-full, allocation-failed, max-surge]
@@ -306,4 +306,3 @@ Expected output: rows for the VM size with a `Restrictions` column. An entry of 
 - [Troubleshoot a SubnetIsFull error code during an AKS cluster upgrade](https://learn.microsoft.com/en-us/troubleshoot/azure/azure-kubernetes/create-upgrade-delete/error-code-subnetisfull-upgrade) — exact SubnetIsFull error string and the larger-subnet node-pool remediation.
 - [Troubleshoot ZonalAllocationFailed, AllocationFailed, or OverconstrainedAllocationRequest](https://learn.microsoft.com/en-us/troubleshoot/azure/azure-kubernetes/error-codes/zonalallocation-allocationfailed-error) — exact allocation error strings, SKU/zone causes, and maxUnavailable / different-SKU resolutions.
 - [AKS cluster upgrade fails because of NSG rules](https://learn.microsoft.com/en-us/troubleshoot/azure/azure-kubernetes/create-upgrade-delete/upgrade-fails-because-of-nsg-rules) — NSG-rule cause and the `az network nsg list` / `az network nsg rule list` resolution.
-- [AKS troubleshooting landing page](https://learn.microsoft.com/en-us/troubleshoot/azure/azure-kubernetes/) — index of upgrade operation troubleshooting articles used to select the relevant error codes.

@@ -6,8 +6,8 @@ service: aws-route53
 symptom_class: [connection_refused, timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [route53, dns-resolver, private-hosted-zone, servfail, nxdomain, dns-failover]
@@ -250,7 +250,6 @@ Expected output: a `PRIMARY` and `SECONDARY` record exist; the primary has a `He
 
 ## Sources
 
-- [Resolver troubleshooting](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/resolver-troubleshooting.html) — primary requested source: Route 53 Resolver troubleshooting (fetch timed out; covered via the AWS docs pages below).
 - [Route 53 fix dns resolution private zone](https://www.repost.aws/knowledge-center/route-53-fix-dns-resolution-private-zone) — PHZ resolution: VPC DNS attributes, `list-hosted-zones-by-vpc`, VPC+2 / base-plus-two resolver, NXDOMAIN vs SERVFAIL, dig/nslookup QUESTION-SECTION check, rule-over-PHZ precedence, `.local` SERVFAIL.
 - [Route 53 fix dns resolution resolver](https://repost.aws/knowledge-center/route-53-fix-dns-resolution-resolver) — Resolver endpoint troubleshooting: SG egress UDP/TCP 53, NACL outbound 53 + inbound ephemeral 1024-65535, inbound/outbound endpoint roles.
 - [Route 53 resolver rules vpc](https://repost.aws/knowledge-center/route-53-resolver-rules-vpc) — Resolver rule association issues, most-specific-match rule selection, VPC+2 forwarding caveat.

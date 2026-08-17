@@ -6,8 +6,8 @@ service: aws-ec2
 symptom_class: [service_unavailable]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [aws, ebs, volume, attaching, detaching, stuck, ec2, nvme, nitro, force-detach]
@@ -407,6 +407,5 @@ Expected output: `AttachVolume` or `DetachVolume` events; inspect the `CloudTrai
 
 - [Detach an Amazon EBS volume — AWS EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-detaching-volume.html) — unmount procedure, `busy` state description, force detach guidance (Priority 1)
 - [Attach an Amazon EBS volume — AWS EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-attaching-volume.html) — attachment considerations, device naming, `AttachmentLimitExceeded` (Priority 1)
-- [Troubleshoot Amazon EBS volumes — AWS EBS User Guide](https://docs.aws.amazon.com/ebs/latest/userguide/ebs-troubleshooting.html) — volume status checks, stuck attachment states (Priority 1)
 - [Amazon EBS volume status checks — AWS EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/monitoring-volume-status.html) — `VolumeQueueLength`, status check failures (Priority 1)
 - [Amazon EBS and NVMe on Linux — AWS EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/nvme-ebs-volumes.html) — NVMe device naming, serial number to volume ID mapping (Priority 1)
