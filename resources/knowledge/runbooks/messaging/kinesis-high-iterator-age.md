@@ -6,8 +6,8 @@ service: aws-kinesis
 symptom_class: [latency, throughput_degradation]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [iterator-age, getrecords, provisionedthroughputexceeded, hot-shard, resharding]
@@ -267,10 +267,10 @@ Expected output: `Returned` record count and `MillisBehindLatest`. A high `Milli
 ## Sources
 
 - [Troubleshooting consumers](https://docs.aws.amazon.com/streams/latest/dev/troubleshooting-consumers.html) — iterator age / MillisBehindLatest, the three documented causes of consumers falling behind (reads exceeding per-shard limits, low maxRecords, slow processRecords), and 50%-of-retention data-loss risk / increase-retention stopgap.
-- [Troubleshooting](https://docs.aws.amazon.com/streams/latest/dev/troubleshooting.html) — top-level Kinesis Data Streams troubleshooting entry point (requested authoritative source).
 - [Monitoring with cloudwatch](https://docs.aws.amazon.com/streams/latest/dev/monitoring-with-cloudwatch.html) — exact CloudWatch metric names: GetRecords.IteratorAgeMilliseconds, IncomingBytes/Records, OutgoingBytes, Read/WriteProvisionedThroughputExceeded; enhanced (shard-level) monitoring behavior and 1-minute publish cadence.
 - [Enable enhanced monitoring](https://docs.aws.amazon.com/cli/latest/reference/kinesis/enable-enhanced-monitoring.html) — `aws kinesis enable-enhanced-monitoring` syntax and valid shard-level metric names.
 - [Update shard count](https://docs.aws.amazon.com/cli/latest/reference/kinesis/update-shard-count.html) — `aws kinesis update-shard-count` with `--scaling-type UNIFORM_SCALING --target-shard-count`.
 - [Describe stream summary](https://docs.aws.amazon.com/cli/latest/reference/kinesis/describe-stream-summary.html) — `describe-stream-summary` open shard count / retention output.
+- [Increase stream retention period](https://docs.aws.amazon.com/cli/latest/reference/kinesis/increase-stream-retention-period.html) — `aws kinesis increase-stream-retention-period` syntax and retention bounds (must exceed the current retention; maximum 8760 hours / 365 days), making the 168-hour mitigation value checkable.
 - [Kinesis using sdk java resharding](https://docs.aws.amazon.com/streams/latest/dev/kinesis-using-sdk-java-resharding.html) — resharding model: split-shard vs merge-shards behavior.
 - [Kinesis fis provisioned throughput](https://docs.aws.amazon.com/streams/latest/dev/kinesis-fis-provisioned-throughput.html) — ProvisionedThroughputExceededException (HTTP 400) causes: spikes, insufficient shard capacity, uneven partition-key distribution; per-shard write (1 MB/s, 1000 rec/s) and read (2 MB/s, 5 tps) limits.

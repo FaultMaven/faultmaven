@@ -6,8 +6,8 @@ service: gitlab-ci
 symptom_class: [deployment_failure, timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [job-stuck, no-active-runners, gitlab-runner, needs-error, job-timeout, artifacts-too-large]
@@ -247,7 +247,7 @@ Expected output: Lines showing successful job acquisition (`Checking for jobs...
 
 ## Sources
 
-- [Debugging](https://docs.gitlab.com/ee/ci/debugging.html) — CI Lint, Pipeline editor validation, BOM-corruption behavior, `config contains unknown keys`, rules vs only/except, jobs-not-running checklist.
+- [Debugging](https://docs.gitlab.com/ci/debugging/) — CI Lint, Pipeline editor validation, BOM-corruption behavior, `config contains unknown keys`, rules vs only/except, jobs-not-running checklist.
 - [Faq](https://docs.gitlab.com/runner/faq/) — runner-version-must-match-GitLab, `journalctl --unit=gitlab-runner.service`, `gitlab-runner --debug run`, debug-logging security caveat, stuck-job-from-tags behavior.
 - [Commands](https://docs.gitlab.com/runner/commands/) — exact `gitlab-runner verify` / `verify --delete` / `list` / `status` / `register` / `run` / `restart` semantics and output, `config.toml` default locations.
 - [Configure runners](https://docs.gitlab.com/ci/runners/configure_runners/) — tag matching ("must have all of the tags"), Run untagged jobs, timeout precedence (lower wins), `RUNNER_SCRIPT_TIMEOUT`/`RUNNER_AFTER_SCRIPT_TIMEOUT`, 60-minute inactivity kill, project timeout 10m–1month default 60m.

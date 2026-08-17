@@ -6,8 +6,8 @@ service: aws-ec2
 symptom_class: [connection_refused, timeout]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [aws, ec2, ssh, rdp, security-group, network-acl, routing, key-pair, ssm]
@@ -577,5 +577,5 @@ aws cloudwatch put-metric-alarm \
 ## Sources
 
 - [AWS EC2: Troubleshoot Connecting to Your Linux Instance](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/TroubleshootingInstancesConnecting.html) — Primary source: all common connection error messages, security group verification steps, key pair recovery procedure, AMI username table, NACL requirements.
-- [AWS EC2: Troubleshooting Overview](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/troubleshooting.html) — EC2 troubleshooting topic index; supplemental context on status checks and instance health.
+- [AWS EC2: Troubleshooting Overview](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/TroubleshootingInstances.html) — EC2 troubleshooting topic index; supplemental context on status checks and instance health.
 - [AWS Systems Manager Session Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager.html) — Session Manager requirements, IAM policy needs, CLI usage, and port-free access model used throughout mitigation and prevention sections.

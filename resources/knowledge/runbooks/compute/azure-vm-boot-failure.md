@@ -6,8 +6,8 @@ service: azure-vm
 symptom_class: [service_unavailable]
 severity: critical
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [kernel-panic, fstab, emergency-mode, waagent, serial-console, az-vm-repair]
@@ -220,7 +220,6 @@ Expected output: `Active: active (running)` for a healthy agent; the `curl` to t
 
 ## Sources
 
-- [Virtual machines](https://learn.microsoft.com/en-us/troubleshoot/azure/virtual-machines/) — Azure VM troubleshooting hub; entry point to the Linux VM boot-failure articles.
 - [Welcome virtual machines linux](https://learn.microsoft.com/en-us/troubleshoot/azure/virtual-machines/linux/welcome-virtual-machines-linux) — "VM is not booting" index (kernel panic, fstab, filesystem, agent articles).
 - [Linux kernel panic troubleshooting](https://learn.microsoft.com/en-us/troubleshoot/azure/virtual-machines/linux/linux-kernel-panic-troubleshooting) — exact kernel-panic strings, serial-console recovery, previous-kernel boot, repair-VM/initramfs path.
 - [Linux virtual machine cannot start fstab errors](https://learn.microsoft.com/en-us/troubleshoot/azure/virtual-machines/linux/linux-virtual-machine-cannot-start-fstab-errors) — emergency-mode/dependency-failed strings, fstab edit + `nofail`, `mount -a`, `reboot -f`, ALAR `repair-button fstab`.

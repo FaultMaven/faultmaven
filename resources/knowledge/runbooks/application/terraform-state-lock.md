@@ -6,8 +6,8 @@ service: terraform
 symptom_class: [timeout]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [terraform, state, lock, iac, infrastructure-as-code, dynamodb, s3-backend, terraform-cloud]
@@ -379,5 +379,5 @@ Expected output: `"ACTIVE"` if the table exists and is ready. A `ResourceNotFoun
 
 - [Terraform Language: State Locking](https://developer.hashicorp.com/terraform/language/state/locking) — Priority 1. Official documentation on lock behavior, backend support matrix, lock timeout configuration, and `Lock Info` field descriptions.
 - [Terraform CLI: force-unlock Command](https://developer.hashicorp.com/terraform/cli/commands/force-unlock) — Priority 1. Syntax, flags, usage, safety warnings, and when force-unlock is appropriate.
-- [Terraform Language: S3 Backend](https://developer.hashicorp.com/terraform/language/settings/backends/s3) — Priority 1. DynamoDB lock table schema requirements, IAM permissions, and backend configuration fields (`dynamodb_table`, `encrypt`, etc.).
-- [Terraform Language: Backend Configuration](https://developer.hashicorp.com/terraform/language/settings/backends/configuration) — Priority 1. General backend initialization, reconfiguration, and locking support across all backends.
+- [Terraform Language: S3 Backend](https://developer.hashicorp.com/terraform/language/backend/s3) — Priority 1. DynamoDB lock table schema requirements (`LockID` string partition key), IAM/DynamoDB permissions, and backend configuration fields (`dynamodb_table`, `encrypt`, etc.).
+- [Terraform Language: Backend Configuration](https://developer.hashicorp.com/terraform/language/backend) — Priority 1. General backend initialization, reconfiguration, and locking support across all backends.

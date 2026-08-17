@@ -6,8 +6,8 @@ service: elasticsearch
 symptom_class: [service_unavailable, disk_full]
 severity: critical
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [elasticsearch, cluster-health, shards, disk-watermark, allocation]
@@ -460,6 +460,6 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 ## Sources
 
-- [Elasticsearch Reference — Fix Common Cluster Issues](https://www.elastic.co/guide/en/elasticsearch/reference/current/fix-common-cluster-issues.html) — priority 1; watermark thresholds, allocation decider names, reroute commands
-- [Elasticsearch Reference — Troubleshooting](https://www.elastic.co/guide/en/elasticsearch/reference/current/troubleshooting.html) — priority 1; overview of cluster allocation topics and index-level blocks
+- [Elasticsearch Reference — Fix Common Cluster Issues](https://www.elastic.co/docs/troubleshoot/elasticsearch/fix-common-cluster-issues) — priority 1; watermark thresholds, allocation decider names, reroute commands
+- [Elasticsearch Reference — Troubleshooting](https://www.elastic.co/docs/troubleshoot/elasticsearch) — priority 1; overview of cluster allocation topics and index-level blocks
 - [Elasticsearch Docs — Red or Yellow Cluster Status](https://www.elastic.co/docs/troubleshoot/elasticsearch/red-yellow-cluster-status) — priority 1; diagnostic API commands and resolution patterns
