@@ -46,9 +46,9 @@ difference matters (``_awaiting_recent_evidence`` ignores inferred needs;
 Identity was necessary and not sufficient
 ========================================
 
-Giving asks an identity made the repeat *visible* — the pool now records that a
-request was made five times — but nothing acted on it. The count was rendered
-into the prompt beside a rule telling the model to stop at the third mention,
+Giving asks an identity made the repeat *visible* — a re-ask lands on the need it
+repeats rather than on a fresh one — but nothing acted on it. The count was
+rendered into the prompt beside a rule telling the model to stop at the third,
 and on ``case_897ce7909658`` the model read both and re-asked for the same STS
 call path on turns 8, 11, 12, 13 and 15, after the user had twice stated no
 further data existed. Every evidence-need row on that case still read
