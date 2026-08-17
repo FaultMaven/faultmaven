@@ -173,6 +173,22 @@ async def test_no_section_when_cause_not_established():
 
 
 @pytest.mark.asyncio
+async def test_no_map_without_a_stated_root_cause_section():
+    # The assurance grade passes on graph state alone (validated root, no
+    # RootCauseConclusion, no validated Hypothesis row) — verified
+    # constructible. The map must not appear as an unexplained picture with
+    # no Root Cause section above it.
+    case = _terminal_case(resolved=True)
+    case.root_cause_conclusion = None
+    summary = await ReportGenerationService()._generate_resolution_summary(
+        case, {"duration": "2h"}
+    )
+    assert "## Root Cause" not in summary
+    assert "## Causal Map" not in summary
+    assert "```mermaid" not in summary
+
+
+@pytest.mark.asyncio
 async def test_rendering_failure_omits_section_not_report(monkeypatch):
     def _boom(case):
         raise RuntimeError("serializer bug")

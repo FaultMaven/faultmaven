@@ -294,11 +294,84 @@ def test_no_map_without_problem_anchor():
 
 
 def test_no_map_when_graph_too_dense():
+    # Density counts the CONNECTED subgraph, so the filler roots must all
+    # feed the problem node to blow the cap.
     nodes, edges = _three_node_graph()
     extra = [
         _root_node(0x100 + i, f"filler cause {i}", turn=4) for i in range(MAX_NODES)
     ]
+    edges = edges + [
+        CausalEdge(
+            edge_id=f"ce_{_hex12(0x200 + i)}",
+            cause_node_id=n.node_id,
+            effect_node_id=nodes[0].node_id,
+            created_at_turn=4,
+        )
+        for i, n in enumerate(extra)
+    ]
     assert render_causal_map(_graded_case(nodes + extra, edges)) is None
+
+
+def test_orphan_nodes_are_pruned_not_drawn():
+    # A node with no rendered path into D is noise on this picture: it is
+    # dropped from the drawing and does not count toward the size gates.
+    nodes, edges = _three_node_graph()
+    orphan = _root_node(0x77, "unrelated stray theory", turn=4)
+    fenced = render_causal_map(_graded_case(nodes + [orphan], edges))
+    assert fenced is not None
+    assert "unrelated stray theory" not in fenced
+
+
+def test_no_map_when_validated_chain_misses_problem():
+    # The validated root's chain dead-ends short of D while a refuted
+    # side-edge touches D: the map cannot show how the established cause
+    # produced the problem, so it must not render.
+    nodes, edges = _three_node_graph()
+    refuted = CausalNode(
+        node_id=f"cn_{_hex12(0xC)}",
+        statement="network partition to the database",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.REFUTED,
+        refutation_reason="timeouts, not connection refusals",
+        generated_at_turn=3,
+    )
+    another = CausalNode(
+        node_id=f"cn_{_hex12(0xE)}",
+        statement="secondary effect off the causal path",
+        node_type=NodeType.INTERMEDIATE,
+        generated_at_turn=3,
+    )
+    edges = [
+        edges[0],  # validated root -> intermediate (dead-ends; never reaches D)
+        CausalEdge(  # refuted root -> off-path intermediate
+            edge_id=f"ce_{_hex12(5)}",
+            cause_node_id=refuted.node_id,
+            effect_node_id=another.node_id,
+            created_at_turn=3,
+        ),
+        CausalEdge(  # off-path intermediate -> D: a 3-node chain into D
+            edge_id=f"ce_{_hex12(6)}",
+            cause_node_id=another.node_id,
+            effect_node_id=nodes[0].node_id,
+            created_at_turn=3,
+        ),
+    ]
+    # The D-ancestry subgraph (D, refuted root, its intermediate) passes the
+    # size gates — only the validated-root-reaches-D rule can refuse it.
+    assert render_causal_map(_graded_case(nodes + [refuted, another], edges)) is None
+
+
+def test_no_map_when_a_kept_label_sanitizes_empty():
+    # A statement of only backticks sanitizes to nothing; a blank box in a
+    # final report is worse than no map.
+    nodes, edges = _three_node_graph()
+    nodes[2] = CausalNode(
+        node_id=nodes[2].node_id,
+        statement="```",
+        node_type=NodeType.INTERMEDIATE,
+        generated_at_turn=2,
+    )
+    assert render_causal_map(_graded_case(nodes, edges)) is None
 
 
 def test_no_map_when_problem_anchor_disconnected():

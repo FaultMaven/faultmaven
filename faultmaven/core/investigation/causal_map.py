@@ -1,7 +1,7 @@
 """Deterministic causal-map rendering for terminal reports (pure, contracts-only).
 
 Serializes the case's persisted causal graph into a fenced mermaid flowchart
-for the terminal summaries. The LLM never authors the diagram: every node and
+for the resolution summary. The LLM never authors the diagram: every node and
 edge here already passed the engine's ingestion/validation gates before being
 persisted, so the map can only assert structure the investigation actually
 established — the same derive-don't-trust stance as the rest of the engine
@@ -93,8 +93,11 @@ def _sanitize_label(text: str) -> str:
     return text
 
 
-def _node_line(mermaid_id: str, node: "CausalNode") -> str:
+def _node_line(mermaid_id: str, node: "CausalNode") -> Optional[str]:
+    """One mermaid node line, or None when the statement sanitizes away."""
     label = _sanitize_label(node.statement)
+    if not label:
+        return None
     if node.node_type == NodeType.PROBLEM:
         # Stadium shape marks the problem anchor D; its identity is the
         # symptom itself, so no state glyph.
@@ -106,10 +109,19 @@ def _node_line(mermaid_id: str, node: "CausalNode") -> str:
 def render_causal_map(case: "Case") -> Optional[str]:
     """Return a fenced ``mermaid`` block for the case's causal graph, or None.
 
-    None means "no map would inform here": the cause is not established, the
-    graph is trivially small or degenerately large, or too few edges survive
-    dangling-reference checks to draw a chain that reaches the problem
-    anchor. Callers treat None as "omit the section" — never as an error.
+    The map draws exactly the subgraph that explains the problem: after
+    resolving edges (dedup, dangling references dropped), only nodes with a
+    rendered path INTO the problem anchor D survive — orphan boxes and
+    chains that never arrive at the symptom are pruned rather than drawn
+    floating. The size gates count that pruned subgraph, and the validated
+    root must be part of it, or the map cannot show what the section claims
+    (how the established cause produced the problem).
+
+    None means "no map would inform here": the cause is not established,
+    the explanatory subgraph is trivially small or unreadably large, the
+    validated cause's chain does not reach D, or a node's statement
+    sanitizes to an empty label. Callers treat None as "omit the section" —
+    never as an error.
     """
     if grade_cause_assurance(case) not in (
         CauseAssuranceGrade.MECHANISTIC,
@@ -118,48 +130,75 @@ def render_causal_map(case: "Case") -> Optional[str]:
         return None
 
     nodes = list((case.causal_nodes or {}).values())
-    edges = list(case.causal_edges or [])
-    if not (MIN_NODES <= len(nodes) <= MAX_NODES):
-        return None
+    node_ids = {n.node_id for n in nodes}
     problem_ids = {n.node_id for n in nodes if n.node_type == NodeType.PROBLEM}
     if not problem_ids:
         return None
 
-    # Stable order: creation turn, then node id — deterministic across
-    # dict-insertion order and regenerations.
-    nodes.sort(key=lambda n: (n.generated_at_turn, n.node_id))
-    mermaid_ids = {n.node_id: f"n{i}" for i, n in enumerate(nodes, 1)}
-    validated_ids = {n.node_id for n in nodes if n.node_state == NodeState.VALIDATED}
-
-    lines = ["flowchart LR"]
-    for node in nodes:
-        lines.append(_node_line(mermaid_ids[node.node_id], node))
-
-    edge_lines: list[str] = []
+    # Resolve edges first: dedup on (cause, effect), drop dangling refs.
     seen_pairs: set[tuple[str, str]] = set()
-    reaches_problem = False
-    for edge in sorted(edges, key=lambda e: (e.created_at_turn, e.edge_id)):
+    resolved = []
+    for edge in sorted(
+        case.causal_edges or [], key=lambda e: (e.created_at_turn, e.edge_id)
+    ):
         pair = (edge.cause_node_id, edge.effect_node_id)
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
-        if edge.cause_node_id not in mermaid_ids or (
-            edge.effect_node_id not in mermaid_ids
-        ):
-            continue  # dangling reference — draw only what resolves
+        if edge.cause_node_id in node_ids and edge.effect_node_id in node_ids:
+            resolved.append(edge)
+
+    # Keep only the ancestry of D over rendered edges: nodes with a path
+    # into the symptom. Everything else is noise on this picture.
+    causes_of: dict[str, list[str]] = {}
+    for edge in resolved:
+        causes_of.setdefault(edge.effect_node_id, []).append(edge.cause_node_id)
+    kept: set[str] = set(problem_ids)
+    frontier = list(problem_ids)
+    while frontier:
+        for cause_id in causes_of.get(frontier.pop(), []):
+            if cause_id not in kept:
+                kept.add(cause_id)
+                frontier.append(cause_id)
+
+    kept_nodes = sorted(
+        (n for n in nodes if n.node_id in kept),
+        # Stable order: creation turn, then node id — deterministic across
+        # dict-insertion order and regenerations.
+        key=lambda n: (n.generated_at_turn, n.node_id),
+    )
+    kept_edges = [
+        e for e in resolved if e.cause_node_id in kept and e.effect_node_id in kept
+    ]
+    if not (MIN_NODES <= len(kept_nodes) <= MAX_NODES):
+        return None
+    if len(kept_edges) < MIN_EDGES:
+        return None
+    # The section claims to show how the established cause produced the
+    # problem — if no validated root sits on a chain into D, it cannot.
+    validated_ids = {
+        n.node_id for n in kept_nodes if n.node_state == NodeState.VALIDATED
+    }
+    if not any(
+        n.node_type == NodeType.ROOT and n.node_id in validated_ids for n in kept_nodes
+    ):
+        return None
+
+    mermaid_ids = {n.node_id: f"n{i}" for i, n in enumerate(kept_nodes, 1)}
+    lines = ["flowchart LR"]
+    for node in kept_nodes:
+        node_line = _node_line(mermaid_ids[node.node_id], node)
+        if node_line is None:
+            return None  # statement sanitized to nothing — omit, don't degrade
+        lines.append(node_line)
+
+    for edge in kept_edges:
         # A solid arrow leaves an established cause; everything unproven
         # stays dotted so the drawing never over-claims (M4 in ink).
         arrow = "-->" if edge.cause_node_id in validated_ids else "-.->"
-        edge_lines.append(
+        lines.append(
             f"    {mermaid_ids[edge.cause_node_id]} {arrow} "
             f"{mermaid_ids[edge.effect_node_id]}"
         )
-        reaches_problem = reaches_problem or edge.effect_node_id in problem_ids
 
-    # The chain must actually arrive at the symptom: a map whose problem
-    # anchor floats disconnected beside the arrows explains nothing.
-    if len(edge_lines) < MIN_EDGES or not reaches_problem:
-        return None
-
-    lines.extend(edge_lines)
     return "```mermaid\n" + "\n".join(lines) + "\n```"

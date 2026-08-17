@@ -579,6 +579,7 @@ class ReportGenerationService:
         # fall back to validated hypotheses only when no conclusion exists.
         rcc = case.root_cause_conclusion
         if rcc and rcc.root_cause:
+            root_cause_stated = True
             parts.append("## Root Cause\n")
             parts.append(f"{rcc.root_cause}\n")
             assurance_note = self._assurance_note(case)
@@ -604,25 +605,31 @@ class ReportGenerationService:
                     parts.append(f"- {cf}")
                 parts.append("")
         else:
-            validated = [
+            validated_hyps = [
                 h
                 for h in hypotheses
                 if hasattr(h, "state")
                 and hasattr(h.state, "value")
                 and h.state.value == "validated"
             ]
-            if validated:
+            if validated_hyps:
                 parts.append("## Root Cause\n")
                 parts.append("_Identified via validated hypothesis._\n")
-                for h in validated:
+                for h in validated_hyps:
                     parts.append(f"**{h.statement}**\n")
                     if getattr(h, "rationale", None):
                         parts.append(f"{h.rationale}\n")
                 # Last line already ends with \n; no extra separator needed.
+            root_cause_stated = bool(validated_hyps)
 
         # Causal Map — after the cause is stated, before the fix. Renders
-        # only for an established cause over a non-trivial graph.
-        parts.extend(self._causal_map_block(case))
+        # only for an established cause over a non-trivial graph, and only
+        # under a stated Root Cause section: the assurance grade can pass
+        # on graph state alone (validated root, no RootCauseConclusion, no
+        # validated Hypothesis row), and a map with no named cause above it
+        # would be an unexplained picture.
+        if root_cause_stated:
+            parts.extend(self._causal_map_block(case))
 
         # Solution Applied — same renderer as closure's Mitigation Status.
         if solutions:
