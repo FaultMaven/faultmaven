@@ -66,6 +66,7 @@ from faultmaven.core.investigation.cause_assurance import (
 from faultmaven.core.investigation.evidence_need_linking import (
     link_evidence_suggestions_to_needs,
     suggestions_are_engine_replaced,
+    sweep_silent_inferred_needs,
 )
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
@@ -77,6 +78,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_created_total,
     evidence_need_id_dropped_total,
     evidence_need_status_changed_total,
+    evidence_suggestion_unlinked_total,
     hypothesis_dedup_skipped_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
@@ -4997,6 +4999,22 @@ class MilestoneEngine:
             # branches, the closure ack). Those turns never render the model's
             # EVIDENCE asks, and recording an ask the user never saw would decay
             # it toward "stop surfacing" for the wrong reason.
+            # GC for engine-inferred needs. They are the orphan shape the
+            # terminal-hypothesis sweep above cannot reach (no motivator to key
+            # off) — the same shape ``_apply_evidence_need_updates`` refuses to
+            # let the MODEL create, for that exact reason. Run before linking so
+            # an ask repeated THIS turn is refreshed rather than swept a moment
+            # early, and unconditionally (not inside the suggestion branch) so a
+            # case that stops emitting suggestions still gets its pool cleaned.
+            try:
+                sweep_silent_inferred_needs(case_updated, case_updated.current_turn)
+            except Exception as sweep_err:  # noqa: BLE001
+                logger.warning(
+                    "Inferred-need sweep failed on case %s: %s",
+                    case_updated.case_id,
+                    sweep_err,
+                )
+
             if getattr(response_obj, "suggested_follow_ups", None):
                 try:
                     gate_pending = (
@@ -5022,11 +5040,21 @@ class MilestoneEngine:
                 except Exception as link_err:  # noqa: BLE001
                     # Never fail a turn over suggestion bookkeeping — the reply
                     # is still correct without the linkage, just un-countable.
+                    # Counted, not merely logged: a systematic failure here
+                    # turns the whole fix off, and a flat created/matched rate
+                    # reads identically to a model that started declaring its
+                    # own needs.
                     logger.warning(
                         "Evidence-need linking failed on case %s: %s",
                         case_updated.case_id,
                         link_err,
                     )
+                    try:
+                        evidence_suggestion_unlinked_total.labels(
+                            resolution="error"
+                        ).inc()
+                    except Exception:
+                        pass
 
             # Step 7: Save case (only if changes made, but turn history always updates)
             case_updated.updated_at = datetime.now(UTC)

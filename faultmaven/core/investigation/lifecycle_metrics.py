@@ -163,6 +163,12 @@ evidence_need_id_dropped_total = Counter(
 #   - ``matched`` — the ask matched an outstanding need. Sustained: the model is
 #     RE-asking for something already in the pool without linking to it, which
 #     is the fm#1079 loop shape specifically.
+#   - ``error`` — linking raised and the turn continued without it. ANY sustained
+#     rate here means the fix is silently off: the engine falls back to shipping
+#     unlinked asks, which is indistinguishable from a healthy system on the
+#     other two labels (a model that started declaring its needs also drives
+#     them to zero). Logs cannot carry this signal — they roll out of
+#     ``kubectl logs`` long before anyone asks the question.
 evidence_suggestion_unlinked_total = Counter(
     "faultmaven_evidence_suggestion_unlinked_total",
     "EVIDENCE-type suggestions emitted without an evidence_need_id, by how the "

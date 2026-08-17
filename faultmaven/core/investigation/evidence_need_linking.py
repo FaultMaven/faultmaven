@@ -37,9 +37,19 @@ Why the engine and not the prompt
 The prompt-side instruction is kept (it is still the model's job to author needs
 deliberately, with a real rationale and motivating hypotheses), but it cannot be
 the *guarantee*: it was in place for the whole of the run above and produced
-nothing. Backfill is the floor, not the intended path — a need created here is
-marked as such in its rationale so a reader can tell an engine-inferred ask from
-one the model reasoned about.
+nothing. Backfill is the floor, not the intended path — a need created here
+carries ``engine_inferred=True`` so readers can tell an inferred ask from one the
+model reasoned about, and so the two can be treated differently where the
+difference matters (``_awaiting_recent_evidence`` ignores inferred needs;
+``sweep_silent_inferred_needs`` garbage-collects them).
+
+An inferred need is deliberately thinner than an authored one: no real rationale,
+and no ``motivating_hypothesis_ids``, because the engine knows an ask was made but
+not which candidate it separates. That thinness has two consequences worth
+knowing, both handled rather than hidden — the orphan needs its own GC (see
+``_INFERRED_NEED_SILENCE_TURNS``), and it cannot satisfy
+``verification_status._candidate_unresolvable``, so declaring one UNOBTAINABLE
+stops the nagging without carrying a case to INSUFFICIENT_EVIDENCE.
 """
 
 from __future__ import annotations
@@ -54,6 +64,7 @@ from faultmaven.modules.case.contracts import (
     EvidenceNeed,
     NeedPriority,
     NeedPurpose,
+    NeedState,
 )
 
 if TYPE_CHECKING:
@@ -85,10 +96,51 @@ logger = logging.getLogger(__name__)
 #: together — a folded pair still surfaces, it just shares one counter.
 _MATCH_THRESHOLD = 0.40
 
+#: Minimum shared content words before an overlap score counts at all.
+#:
+#: The overlap coefficient divides by the SMALLER token set, which is what makes
+#: it robust to the length asymmetry these asks have — but it also means a tiny
+#: token set scores high on almost nothing. A two-token need ("Share pod
+#: status", minted from the ``label`` fallback when a suggestion carries no
+#: ``body``) reaches 0.5 on ONE shared generic word, so "Share the latest status
+#: of all PVCs in the production namespace" folds into it on ``status`` alone.
+#: Observed on ``k8s-pvc-pending_20260605_224649``.
+#:
+#: That fold is not the benign kind the threshold comment accepts: the two asks
+#: then share one decay counter (a live ask is told "asked 3×, stop surfacing"
+#: for mentions it never had), one ``obtainability`` declaration walls both, and
+#: the pool's ``request_text`` never records the second ask at all.
+#:
+#: A floor of two removes it without touching the calibration — the fm#1079
+#: transcript still yields 5 needs with the target-account ask at 8 repeats,
+#: identical to a floor of one.
+_MIN_SHARED_TOKENS = 2
+
 #: Cap on needs CREATED per turn by backfill. A well-behaved turn emits one to
 #: three EVIDENCE suggestions; this only bounds a pathological response, and the
 #: overflow is logged rather than dropped silently.
 _MAX_BACKFILLED_PER_TURN = 5
+
+#: Turns of silence after which an engine-inferred need is superseded.
+#:
+#: Inferred needs need their own garbage collection because they are, by the
+#: engine's own definition, malformed: ``_apply_evidence_need_updates`` REJECTS a
+#: model-emitted causal create with no motivating hypothesis precisely because
+#: "a need born with no motivator at all has none to key on, so it would never
+#: be auto-cleaned" — and ``_sweep_needs_for_terminal_hypotheses`` does key off a
+#: terminal motivator, so it skips these forever. Backfill has to create that
+#: shape anyway (it knows an ask was made, not which candidate it separates), so
+#: it owes the pool a different cleanup rule.
+#:
+#: Silence is the right signal: every inferred need records its creating turn in
+#: ``surfaced_turns``, so "the agent has not repeated this ask for N turns" is
+#: always answerable, and it means the agent moved on. Left alone these
+#: accumulate for the life of the case, occupy the three rotating surface slots
+#: ahead of model-authored discriminators (the surfacing sort key is
+#: rarity-then-id, NOT priority), inflate the "…and N more not shown" notice, and
+#: are reported as unmet discriminating data in the insufficient-evidence close
+#: record.
+_INFERRED_NEED_SILENCE_TURNS = 5
 
 #: Rationale carried by an engine-inferred need. Provenance is recorded
 #: structurally on ``EvidenceNeed.engine_inferred``, not here — the
@@ -166,7 +218,13 @@ def _similarity(left: str, right: str) -> float:
     a, b = _tokens(left), _tokens(right)
     if not a or not b:
         return 0.0
-    return len(a & b) / min(len(a), len(b))
+    shared = len(a & b)
+    if shared < _MIN_SHARED_TOKENS:
+        # One word in common is coincidence, not a repeat — see
+        # ``_MIN_SHARED_TOKENS``. Scored 0.0 rather than returned raw so a short
+        # candidate cannot clear the threshold on a single generic noun.
+        return 0.0
+    return shared / min(len(a), len(b))
 
 
 def _best_match(
@@ -227,14 +285,22 @@ def suggestions_are_engine_replaced(
     toward "third+: stop surfacing" for asks the user never saw — retiring a live
     request precisely because it kept being suppressed.
 
-    Conservative by construction: an unrecognised future replacement branch means
-    an ask is recorded that was not shown, so keep this list in step with
-    ``_process_turn_impl``. Under-recording is the safe direction — it keeps an
-    ask visible one turn longer rather than silencing it early.
+    NOT conservative by construction — the drift runs the unsafe way. This is a
+    hand-maintained mirror of ``_process_turn_impl``: a renamed flag is caught by
+    a test, but a NEW replacement branch keyed on a new flag is not, and its
+    effect is OVER-recording (decaying asks the user never saw). Any change to
+    the suggestion-replacement branches has to be reflected here.
     """
     if case.is_terminal or case.state != CaseState.INVESTIGATING:
-        # Terminal turns carry engine-owned regen/runbook cards; INQUIRY turns
-        # are Gate-1 territory where the confirm/refine pair always wins.
+        # Terminal turns carry engine-owned regen/runbook cards. INQUIRY is
+        # treated as replaced too, though the reason is weaker than it looks:
+        # Gate 1 substitutes the confirm/refine pair only once a problem
+        # statement has been PROPOSED (``_gate1_is_pending``), so on a
+        # pre-proposal turn the model's EVIDENCE suggestions do reach the user
+        # and go unrecorded. That is the safe direction — the ask starts its
+        # history a turn late rather than decaying early — and INQUIRY asks are
+        # scene-setting rather than the repeated discriminator demands this
+        # mechanism exists to bound.
         return True
     if gate_pending:
         return True
@@ -298,8 +364,18 @@ def link_evidence_suggestions_to_needs(
             resolved = resolve_id_ref(
                 declared, metadata.get("evidence_needs_updated", []), "eneed"
             )
+            # Outstanding only, matching the fallback path below. A model
+            # declaring a FULFILLED/SUPERSEDED need's id would otherwise record
+            # the ask on a dead need — which the `<evidence_needs>` block never
+            # renders, so the count would be invisible while the live ask it
+            # belongs to counted nowhere at all.
             target = next(
-                (n for n in case.evidence_needs if n.need_id == resolved), None
+                (
+                    n
+                    for n in case.evidence_needs
+                    if n.need_id == resolved and n.is_outstanding
+                ),
+                None,
             )
             if target is None:
                 logger.warning(
@@ -401,3 +477,65 @@ def _count(*, backfilled: bool) -> None:
         ).inc()
     except Exception:
         pass
+
+
+def sweep_silent_inferred_needs(case: Case, current_turn: int) -> int:
+    """Supersede engine-inferred needs the agent has stopped asking for.
+
+    Returns the number superseded.
+
+    The garbage collector inferred needs would otherwise never get. A causal
+    need with no motivating hypothesis is the orphan shape
+    ``_sweep_needs_for_terminal_hypotheses`` cannot reach — it keys off a
+    terminal motivator id, and these have none — which is exactly why
+    ``_apply_evidence_need_updates`` refuses to let the MODEL create one. The
+    engine has to create them anyway (it knows an ask was made, not which
+    candidate it separates), so this is the cleanup that makes that safe.
+
+    Only inferred needs are swept, and only OUTSTANDING ones. A model-authored
+    need is the model's deliberate demand and is not the engine's to retire; a
+    FULFILLED or SUPERSEDED need is already terminal.
+
+    Silence, not age, is the trigger — a need the agent is still repeating stays,
+    however old, and one it dropped goes, however recently created. Every
+    inferred need carries its creating turn in ``surfaced_turns`` (backfill
+    records the surfacing in the same breath as the creation), so
+    ``last_surfaced_turn`` is always set and the rule is always answerable.
+
+    Run BEFORE linking each turn, so a need that IS re-asked this turn is
+    refreshed by the linking pass rather than swept a moment earlier.
+    """
+    swept = 0
+    for need in case.evidence_needs:
+        if not need.engine_inferred or not need.is_outstanding:
+            continue
+        last = need.last_surfaced_turn
+        if last is None or current_turn - last < _INFERRED_NEED_SILENCE_TURNS:
+            continue
+        prior_state = need.state
+        need.state = NeedState.SUPERSEDED
+        need.superseded_reason = (
+            f"engine-inferred ask not repeated for "
+            f"{_INFERRED_NEED_SILENCE_TURNS} turns"
+        )
+        need.revoke_obtainability_if_terminal()
+        swept += 1
+        try:
+            from faultmaven.core.investigation.lifecycle_metrics import (
+                evidence_need_status_changed_total,
+            )
+
+            evidence_need_status_changed_total.labels(
+                from_state=prior_state.value,
+                to_state=NeedState.SUPERSEDED.value,
+            ).inc()
+        except Exception:
+            pass
+    if swept:
+        logger.info(
+            "Superseded %d silent engine-inferred need(s) on case %s at turn %s",
+            swept,
+            case.case_id,
+            current_turn,
+        )
+    return swept

@@ -15,9 +15,11 @@ resolves the field once it is set; nothing covered the field never being set.
 import pytest
 
 from faultmaven.core.investigation.evidence_need_linking import (
+    _INFERRED_NEED_SILENCE_TURNS,
     _MAX_BACKFILLED_PER_TURN,
     _similarity,
     link_evidence_suggestions_to_needs,
+    sweep_silent_inferred_needs,
 )
 from faultmaven.modules.case.contracts import (
     EvidenceNeed,
@@ -811,3 +813,230 @@ class TestAsksTheUserNeverSeesAreNotRecorded:
                 f"{flag} is no longer read in _process_turn_impl — the "
                 "replacement guard is out of step with the branches it mirrors"
             )
+
+
+# ============================================================
+# Short-ask folds (adversarial review, medium 1)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestSingleSharedTokenDoesNotFold:
+    """The overlap coefficient divides by the SMALLER token set, so a tiny set
+    scores high on almost nothing: a two-token need reaches 0.5 on ONE shared
+    generic word. Two-token needs are routine — they come from the ``label``
+    fallback when a suggestion carries no ``body``.
+
+    Observed on ``k8s-pvc-pending_20260605_224649``: "Share pod status" would
+    absorb "Share the latest status of all PVCs in the production namespace" on
+    the single word ``status``. That is not the benign fold the threshold
+    comment accepts — the two asks would share one decay counter, one
+    obtainability declaration would wall both, and the pool would never record
+    the second ask's content.
+    """
+
+    def test_one_shared_generic_word_is_not_a_repeat(self):
+        case = _Case([_need("Share pod status")])
+
+        _link(
+            case,
+            [
+                _FollowUp(
+                    body="Share the latest status of all PVCs in the "
+                    "production namespace to verify the patch"
+                )
+            ],
+        )
+
+        assert len(case.evidence_needs) == 2
+
+    def test_similarity_scores_a_single_shared_token_as_zero(self):
+        assert _similarity("Share pod status", "latest status of all PVCs") == 0.0
+
+    def test_two_shared_tokens_still_match(self):
+        """The floor must not disable matching for genuinely short repeats."""
+        assert _similarity("pod restart counts", "restart counts for the pod") > 0.0
+
+    def test_label_derived_need_does_not_absorb_unrelated_asks(self):
+        """End-to-end form: a label-only ask mints a short need, which must not
+        then swallow every later ask sharing one word with it."""
+        case = _Case()
+        _link(case, [_FollowUp(body="", label="Share pod status")], turn=3)
+        _link(
+            case,
+            [_FollowUp(body="Share the status of the ingress controller rollout")],
+            turn=4,
+        )
+
+        assert len(case.evidence_needs) == 2
+
+
+# ============================================================
+# Inferred-need GC (adversarial review, medium 2)
+# ============================================================
+
+
+@pytest.mark.unit
+class TestSilentInferredNeedsAreSwept:
+    """Inferred needs are causal needs with no motivating hypothesis — the
+    orphan shape ``_sweep_needs_for_terminal_hypotheses`` cannot reach, because
+    it keys off a terminal motivator id and these have none. That is precisely
+    why ``_apply_evidence_need_updates`` REJECTS a model-emitted causal create
+    with no motivator: "a need born with no motivator at all has none to key on,
+    so it would never be auto-cleaned."
+
+    Backfill must create that shape anyway, so it owes the pool a cleanup rule.
+    Without one these accumulate for the life of the case, occupy the three
+    rotating surface slots ahead of model-authored discriminators (the surfacing
+    sort key is rarity-then-id, not priority), and are reported as unmet
+    discriminating data in the insufficient-evidence close record.
+    """
+
+    def _inferred(self, case, text, turn):
+        _link(case, [_FollowUp(body=text)], turn=turn)
+        return case.evidence_needs[-1]
+
+    def test_a_silent_inferred_need_is_superseded(self):
+        case = _Case()
+        need = self._inferred(case, "kubectl pod restart counts on payments", 3)
+
+        assert sweep_silent_inferred_needs(case, 3 + _INFERRED_NEED_SILENCE_TURNS) == 1
+        assert need.state == NeedState.SUPERSEDED
+        assert need.superseded_reason
+
+    def test_a_need_still_being_asked_is_kept(self):
+        """Silence, not age, is the trigger — an old ask the agent is still
+        repeating is a live ask."""
+        case = _Case()
+        need = self._inferred(case, "kubectl pod restart counts on payments", 3)
+        for turn in range(4, 12):
+            _link(
+                case,
+                [_FollowUp(body="kubectl pod restart counts on payments")],
+                turn=turn,
+            )
+
+        assert sweep_silent_inferred_needs(case, 12) == 0
+        assert need.state == NeedState.PENDING
+
+    def test_the_sweep_does_not_touch_model_authored_needs(self):
+        """A model-authored need is the model's deliberate demand; retiring it
+        is not the engine's call."""
+        authored = _need("model authored ask about disk saturation")
+        authored.created_at_turn = 1
+        case = _Case([authored])
+
+        assert sweep_silent_inferred_needs(case, 50) == 0
+        assert authored.state == NeedState.PENDING
+
+    @pytest.mark.parametrize("terminal", [NeedState.FULFILLED, NeedState.SUPERSEDED])
+    def test_terminal_needs_are_left_alone(self, terminal):
+        case = _Case()
+        need = self._inferred(case, "kubectl pod restart counts on payments", 3)
+        need.state = terminal
+        if terminal == NeedState.SUPERSEDED:
+            need.superseded_reason = "already gone"
+        else:
+            need.fulfilling_evidence_ids = ["ev_1"]
+
+        assert sweep_silent_inferred_needs(case, 50) == 0
+
+    def test_swept_need_stops_occupying_a_surface_slot(self):
+        """The consequence that matters: a superseded need is no longer
+        outstanding, so it drops out of the causal surface rotation and out of
+        the close record's unmet-need list."""
+        case = _Case()
+        need = self._inferred(case, "kubectl pod restart counts on payments", 3)
+        sweep_silent_inferred_needs(case, 3 + _INFERRED_NEED_SILENCE_TURNS)
+
+        assert not need.is_outstanding
+
+    def test_a_long_case_does_not_accumulate_orphans_without_bound(self):
+        """Twenty turns of distinct one-off asks must not leave twenty live
+        needs in the pool."""
+        case = _Case()
+        for turn in range(1, 21):
+            _link(
+                case,
+                [_FollowUp(body=f"artifact{turn} from host{turn} in zone{turn}")],
+                turn=turn,
+            )
+            sweep_silent_inferred_needs(case, turn)
+
+        outstanding = [n for n in case.evidence_needs if n.is_outstanding]
+        assert len(outstanding) <= _INFERRED_NEED_SILENCE_TURNS + 1
+
+
+@pytest.mark.unit
+class TestSweepIsWiredBeforeLinking:
+    def _source(self):
+        import inspect
+
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+        return inspect.getsource(MilestoneEngine._process_turn_impl)
+
+    def test_turn_path_sweeps_inferred_needs(self):
+        assert "sweep_silent_inferred_needs(" in self._source()
+
+    def test_sweep_runs_before_linking(self):
+        """Otherwise an ask repeated this turn is swept a moment before the
+        linking pass would have refreshed it."""
+        src = self._source()
+        assert src.index("sweep_silent_inferred_needs(") < src.index(
+            "link_evidence_suggestions_to_needs("
+        )
+
+    def test_sweep_runs_before_the_save(self):
+        src = self._source()
+        assert src.index("sweep_silent_inferred_needs(") < src.index(
+            "await self.repository.save(case_updated)"
+        )
+
+
+@pytest.mark.unit
+class TestGuardCallIsPinned:
+    """``TestEngineWiring`` pins the linker call and its ordering, but not the
+    guard — deleting the ``suggestions_are_engine_replaced`` check from
+    ``_process_turn_impl`` left every other test green while restoring the
+    count-asks-the-user-never-saw defect."""
+
+    def test_turn_path_consults_the_replacement_guard(self):
+        import inspect
+
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+        src = inspect.getsource(MilestoneEngine._process_turn_impl)
+        assert "suggestions_are_engine_replaced(" in src, (
+            "the replacement guard is no longer consulted — EVIDENCE asks on "
+            "gate and resolution turns are being recorded despite never being "
+            "rendered to the user"
+        )
+
+    def test_guard_is_consulted_before_linking(self):
+        import inspect
+
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+        src = inspect.getsource(MilestoneEngine._process_turn_impl)
+        assert src.index("suggestions_are_engine_replaced(") < src.index(
+            "link_evidence_suggestions_to_needs("
+        )
+
+
+@pytest.mark.unit
+class TestDeclaredIdOnDeadNeed:
+    @pytest.mark.parametrize("terminal", [NeedState.FULFILLED, NeedState.SUPERSEDED])
+    def test_declared_terminal_need_is_not_recorded_on(self, terminal):
+        """A model naming a dead need's id must not park the ask there: the
+        block only renders outstanding needs, so the count would be invisible
+        while the live ask counted nowhere."""
+        dead = _need("Provide the OIDC provider record", state=terminal)
+        case = _Case([dead])
+        fu = _FollowUp(body="Provide the OIDC provider record", need_id=dead.need_id)
+
+        _link(case, [fu], turn=9)
+
+        assert dead.surfaced_turns == []
+        assert fu.evidence_need_id != dead.need_id
+        assert len(case.evidence_needs) == 2
