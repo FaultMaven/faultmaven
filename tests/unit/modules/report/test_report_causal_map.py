@@ -1,9 +1,11 @@
 """Causal Map section in terminal summaries.
 
 The section is engine-derived (serialized from the persisted causal graph,
-never LLM-authored) and gated: it appears only when the cause is established
-over a non-trivial graph, in both the resolution and closure summaries, and a
-rendering failure omits the section rather than failing the report.
+never LLM-authored) and gated: it appears only in RESOLUTION summaries
+(product decision — never in closure summaries, even when the close carries
+an established cause), only when the cause is established over a non-trivial
+graph, and a rendering failure omits the section rather than failing the
+report.
 
 Fixtures build the real graph shape for each grade rather than patching the
 assurance gate (the test_resolution_assurance_note pattern).
@@ -146,13 +148,17 @@ async def test_resolution_summary_embeds_causal_map():
 
 
 @pytest.mark.asyncio
-async def test_closure_summary_embeds_causal_map_when_cause_established():
+async def test_closure_summary_never_embeds_causal_map():
+    # Product decision: the map is a resolution-summary section only. This
+    # fixture's solution_deferred close DOES carry an established cause
+    # (the renderer's gate would pass), so this pins the closure path's
+    # omission specifically, not just the gate.
     service = ReportGenerationService()
     summary = await service._generate_closure_summary(
         _terminal_case(resolved=False), {"duration": "2h"}
     )
-    assert "## Causal Map" in summary
-    assert "```mermaid" in summary
+    assert "## Causal Map" not in summary
+    assert "```mermaid" not in summary
 
 
 @pytest.mark.asyncio

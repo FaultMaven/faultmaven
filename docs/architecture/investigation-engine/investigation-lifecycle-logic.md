@@ -1243,7 +1243,7 @@ When a case reaches a terminal state, the system synchronously generates a light
 | Case Status | Report Type | Content Focus |
 |-------------|-------------|---------------|
 | RESOLVED | `RESOLUTION_SUMMARY` | What the problem was, root cause, the causal map (when established over a non-trivial graph — §4.5.0), solution applied, confirming evidence, timeline, milestones reached, whether a mitigation was inserted |
-| CLOSED | `CLOSURE_SUMMARY` | What the problem was, investigation state at closure, approaches attempted, closure reason, the causal map (same gate), leading hypotheses with confidence, mitigation status, recommendation for next investigator (if escalated) |
+| CLOSED | `CLOSURE_SUMMARY` | What the problem was, investigation state at closure, approaches attempted, closure reason, leading hypotheses with confidence, mitigation status, recommendation for next investigator (if escalated) |
 
 **Generation approach**:
 
@@ -1850,11 +1850,11 @@ After a case reaches RESOLVED or CLOSED, the system auto-generates a terminal su
 | Case Status | Report Type | Content Structure |
 |-------------|-------------|-------------------|
 | RESOLVED | `RESOLUTION_SUMMARY` | Problem Statement, Root Cause (from validated hypotheses), Causal Map (gated), Solution Applied, Confirming Evidence, Timeline, Milestones Reached, Mitigation (if any) |
-| CLOSED | `CLOSURE_SUMMARY` | Problem Statement, Investigation State (milestones/evidence/hypotheses counts), Closure Reason, Causal Map (gated), Leading Hypotheses (top 5 by confidence), Mitigation Status, Timeline, Recommendation (for escalated/abandoned cases) |
+| CLOSED | `CLOSURE_SUMMARY` | Problem Statement, Investigation State (milestones/evidence/hypotheses counts), Closure Reason, Leading Hypotheses (top 5 by confidence), Mitigation Status, Timeline, Recommendation (for escalated/abandoned cases) |
 
 Summaries are built from case data fields (hypotheses, solutions, evidence, milestones, timestamps). Stored as `CaseReport` records with `auto_generated=True`. Duration is calculated from `created_at` to `resolved_at` or `closed_at`.
 
-**Causal Map** (`core/investigation/causal_map.py`): a fenced mermaid flowchart serialized deterministically from the persisted causal graph (`CausalNode`/`CausalEdge` rows) — engine-derived, never LLM-authored, so it can only depict structure the investigation established. Node glyphs carry state (✓ validated, ○ not established, ✗ refuted); solid arrows leave only VALIDATED causes; the legend is exported alongside the renderer so diagram and key cannot drift. Gated: renders only when the cause is established (assurance MECHANISTIC or above, the same recomputed grade as the assurance note) over a non-trivial, connected graph — size thresholds and label rules live as constants in `causal_map.py`, and the rendered chain must reach the problem anchor. Below the gate the section is omitted entirely; a rendering error also omits the section (fail-closed) and never blocks generation. The gate reads the graph, not `closure_reason`: a `solution_deferred` close typically passes; a close that never grounded a cause does not.
+**Causal Map** (`core/investigation/causal_map.py`): a fenced mermaid flowchart serialized deterministically from the persisted causal graph (`CausalNode`/`CausalEdge` rows) — engine-derived, never LLM-authored, so it can only depict structure the investigation established. Node glyphs carry state (✓ validated, ○ not established, ✗ refuted); solid arrows leave only VALIDATED causes; the legend is exported alongside the renderer so diagram and key cannot drift. **Resolution summaries only** (product decision — a closed case's map would read as a conclusion the case never reached, even when a `solution_deferred` close carries an established cause). Gated: renders only when the cause is established (assurance MECHANISTIC or above, the same recomputed grade as the assurance note) over a non-trivial, connected graph — size thresholds and label rules live as constants in `causal_map.py`, and the rendered chain must reach the problem anchor. Below the gate the section is omitted entirely; a rendering error also omits the section (fail-closed) and never blocks generation.
 
 **Report type enum** (`ReportType` in `case/domain/owned_models/report.py`):
 

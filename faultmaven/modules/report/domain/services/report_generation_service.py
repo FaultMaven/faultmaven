@@ -760,11 +760,14 @@ class ReportGenerationService:
         - Problem Statement
         - Investigation State (milestone/evidence/hypothesis counts)
         - Closure Reason (with human label)
-        - Causal Map (gated — established cause, non-trivial graph)
         - Leading Hypotheses (top 5 by confidence)
         - Mitigation Status (when a mitigation was inserted)
         - Timeline
         - Recommendation (for closed_insufficient_evidence only)
+
+        No Causal Map here — the map is a resolution-summary section only
+        (product decision): a closed case's graph reads as a conclusion
+        the case never reached.
         """
         title = case.title or "Untitled Case"
         description = case.description or "No description provided."
@@ -817,13 +820,6 @@ class ReportGenerationService:
         # state, so no separate snapshot column is needed.
         if closure_reason_raw == "closed_insufficient_evidence":
             parts.extend(self._insufficient_evidence_boundary_block(case, hypotheses))
-
-        # Causal Map — a close can still carry an established cause (e.g.
-        # solution_deferred). The renderer's assurance gate keys on the
-        # graph, not closure_reason: a close that never grounded a cause
-        # gets no map, while a close with a validated-but-unfixed cause
-        # legitimately shows what was established.
-        parts.extend(self._causal_map_block(case))
 
         # Leading Hypotheses — top hypotheses at time of closure
         if hypotheses:
