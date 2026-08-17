@@ -460,6 +460,6 @@ Expected output: The value of `cluster.max_shards_per_node` (default `1000`). Co
 
 ## Sources
 
-- [Elasticsearch Reference — Fix Common Cluster Issues](https://www.elastic.co/guide/en/elasticsearch/reference/current/fix-common-cluster-issues.html) — priority 1; watermark thresholds, allocation decider names, reroute commands
-- [Elasticsearch Reference — Troubleshooting](https://www.elastic.co/guide/en/elasticsearch/reference/current/troubleshooting.html) — priority 1; overview of cluster allocation topics and index-level blocks
+- [Elasticsearch Reference — Fix Common Cluster Issues](https://www.elastic.co/docs/troubleshoot/elasticsearch/fix-common-cluster-issues) — priority 1; watermark thresholds, allocation decider names, reroute commands
+- [Elasticsearch Reference — Troubleshooting](https://www.elastic.co/docs/troubleshoot/elasticsearch) — priority 1; overview of cluster allocation topics and index-level blocks
 - [Elasticsearch Docs — Red or Yellow Cluster Status](https://www.elastic.co/docs/troubleshoot/elasticsearch/red-yellow-cluster-status) — priority 1; diagnostic API commands and resolution patterns
