@@ -202,21 +202,30 @@ class TestRepeatedAskIncrementsRatherThanDuplicates:
         assert len(case.evidence_needs) == 1
         assert case.evidence_needs[0].times_surfaced == 1
 
-    def test_ten_turn_loop_reads_as_ten_asks_on_one_need(self):
-        """The exact fm#1079 shape, compressed: the same ask on ten
-        consecutive turns must leave one need reporting ten asks — the signal
-        both anti-nagging mechanisms need and never received."""
+    def test_ten_turn_loop_lands_on_one_need_and_stops_reaching_the_user(self):
+        """The exact fm#1079 shape, compressed. Two properties at once: the ten
+        asks fold onto ONE need (matching works), and the user stops receiving
+        them (the decay rule is enforced rather than requested).
+
+        The count is deliberately NOT ten. Recording stops when the ask stops
+        being shipped — a rendered "asked 10×" for eight asks nobody ever saw
+        would be a lie in the one place the model is asked to trust as fact.
+        """
         case = _Case()
+        shipped = []
         for turn in range(6, 16):
-            _link(
-                case,
-                [_FollowUp(body="Provide the target-account OIDC provider record")],
-                turn=turn,
-            )
+            follow_ups = [
+                _FollowUp(body="Provide the target-account OIDC provider record")
+            ]
+            _link(case, follow_ups, turn=turn)
+            if follow_ups:
+                shipped.append(turn)
 
         assert len(case.evidence_needs) == 1
-        assert case.evidence_needs[0].times_surfaced == 10
-        assert case.evidence_needs[0].last_surfaced_turn == 15
+        # Absolute, not expressed in the thresholds: the ask reaches the user on
+        # turns 6 and 7 and never again.
+        assert shipped == [6, 7]
+        assert case.evidence_needs[0].surfaced_turns == [6, 7]
 
     def test_two_asks_for_the_same_need_in_one_turn_count_once(self):
         """The count means "turns on which I asked" — that is the quantity the
@@ -608,24 +617,44 @@ class TestCalibrationAgainstTheRecordedRun:
     invented to clear the threshold. These asks are the ground truth.
     """
 
-    def _replay(self):
+    def _replay(self, sweep=False):
+        """Replay the transcript, returning (case, turns whose ask was shipped).
+
+        ``sweep`` runs ``sweep_silent_inferred_needs`` ahead of each turn, which
+        is the order ``_process_turn_impl`` uses — without it the replay measures
+        suppression alone, with it the full engine sequence including the
+        inferred-need GC.
+        """
         case = _Case()
+        shipped = []
         for turn, body in _REAL_ASKS:
-            _link(case, [_FollowUp(body=body)], turn=turn)
-        return case
+            if sweep:
+                sweep_silent_inferred_needs(case, turn)
+            follow_ups = [_FollowUp(body=body)]
+            _link(case, follow_ups, turn=turn)
+            if follow_ups:
+                shipped.append(turn)
+        return case, shipped
 
-    def test_the_repeated_ask_is_recognised_as_repeated(self):
-        case = self._replay()
-        most_asked = max(case.evidence_needs, key=lambda n: n.times_surfaced)
+    def test_the_repeated_ask_stops_reaching_the_user(self):
+        """What the matcher is FOR. Folding the repeats onto one need is only
+        useful if something acts on it, so the observable is the ask the user
+        stops receiving, not the counter.
 
-        assert most_asked.times_surfaced >= 5, (
-            "the target-account provider request was made on nine turns; if the "
-            "matcher scores it as new each time, the ask count never rises and "
-            "mention decay cannot fire — the fm#1079 defect, unfixed"
-        )
+        A matcher that scored each rewording as new would ship all thirteen: no
+        need would ever reach a second recorded ask, so nothing would be
+        suppressed — the fm#1079 defect, unfixed.
+        """
+        _, shipped = self._replay()
+
+        # Turns 10-15 are six reworded repeats of the target-account provider
+        # request the user had already declined. None of them reach the user.
+        assert [t for t in shipped if t >= 10] == []
+        # The earlier asks are genuinely distinct and must still be delivered.
+        assert sorted(set(shipped)) == [5, 6, 7, 8, 9]
 
     def test_the_pool_does_not_grow_one_need_per_ask(self):
-        case = self._replay()
+        case, _ = self._replay()
 
         assert len(case.evidence_needs) < len(_REAL_ASKS) / 2
 
@@ -634,21 +663,40 @@ class TestCalibrationAgainstTheRecordedRun:
         CloudTrail event, the EKS upgrade diff and the provider record are
         genuinely distinct, and folding everything into one entry would hide
         live asks behind a shared counter."""
-        case = self._replay()
+        case, _ = self._replay()
 
         assert len(case.evidence_needs) >= 3
 
-    def test_decay_threshold_is_crossed_before_the_run_ends(self):
-        """The prompt rule is "third+: stop surfacing". For that to bite, some
-        need must reach 3 asks while the case is still live."""
-        case = self._replay()
-        most_asked = max(case.evidence_needs, key=lambda n: n.times_surfaced)
+    def test_decay_bites_before_the_run_ends(self):
+        """The prompt rule is "third+: stop surfacing". For that to be worth
+        anything it has to bite while the case is still live — a rule that fires
+        after the case has already stalled out changes nothing.
 
-        assert most_asked.last_surfaced_turn is not None
-        assert most_asked.surfaced_turns[2] <= 13, (
-            "the third ask must land with turns to spare, or the decay rule "
-            "fires only after the case has already stalled out"
-        )
+        The recorded run ran to turn 15. Suppression starts at turn 10, so six
+        of the run's thirteen asks are withheld.
+        """
+        _, shipped = self._replay()
+
+        assert max(shipped) <= 9
+        assert len(_REAL_ASKS) - len(shipped) == 6
+
+    def test_the_gc_hands_a_persistent_nag_back_a_slot(self):
+        """The residue, pinned so a future change cannot quietly turn it into a
+        permanent mute or back into a per-turn nag.
+
+        Suppression stops an inferred need from being surfaced, so it accrues
+        silence and ``sweep_silent_inferred_needs`` retires it — after which the
+        next repeat mints a fresh need and reaches the user again. Deliberate: an
+        inferred need is the engine's guess at what was asked, and the matcher is
+        calibrated permissive, so a permanent mute would occasionally silence a
+        request the user could have answered.
+        """
+        _, shipped = self._replay(sweep=True)
+
+        # Two of the six turn-10-onward repeats get through, not zero and not
+        # six: turns 10-13 are muted, the GC retires the need, turn 14 mints a
+        # replacement and turn 15 is its second ask.
+        assert [t for t in shipped if t >= 10] == [14, 15]
 
 
 # ============================================================
@@ -904,9 +952,28 @@ class TestSilentInferredNeedsAreSwept:
         assert need.state == NeedState.SUPERSEDED
         assert need.superseded_reason
 
-    def test_a_need_still_being_asked_is_kept(self):
-        """Silence, not age, is the trigger — an old ask the agent is still
-        repeating is a live ask."""
+    def test_a_need_still_reaching_the_user_is_kept(self):
+        """Silence, not age, is the trigger — an old ask still being SURFACED is
+        a live ask, however long it has been in the pool."""
+        case = _Case()
+        need = self._inferred(case, "kubectl pod restart counts on payments", 3)
+        # Re-asked on turn 4, so still shipped (suppression needs two recorded
+        # asks AND two turns since the first).
+        _link(case, [_FollowUp(body="kubectl pod restart counts on payments")], turn=4)
+
+        assert need.surfaced_turns == [3, 4]
+        assert sweep_silent_inferred_needs(case, 8) == 0
+        assert need.state == NeedState.PENDING
+
+    def test_a_need_whose_repeats_are_suppressed_does_accrue_silence(self):
+        """The interaction between the two mechanisms, pinned because it is
+        surprising: an ask the model keeps making is still swept, because
+        suppression means it stopped reaching the user and ``surfaced_turns``
+        records surfacings, not intentions.
+
+        This is what keeps an inferred ask from being muted for the life of the
+        case — see ``test_the_gc_hands_a_persistent_nag_back_a_slot``.
+        """
         case = _Case()
         need = self._inferred(case, "kubectl pod restart counts on payments", 3)
         for turn in range(4, 12):
@@ -916,8 +983,10 @@ class TestSilentInferredNeedsAreSwept:
                 turn=turn,
             )
 
-        assert sweep_silent_inferred_needs(case, 12) == 0
-        assert need.state == NeedState.PENDING
+        assert need.surfaced_turns == [3, 4], "suppressed asks are not recorded"
+        assert sweep_silent_inferred_needs(case, 12) == 1
+        assert need.state == NeedState.SUPERSEDED
+        assert "not surfaced" in need.superseded_reason
 
     def test_the_sweep_does_not_touch_model_authored_needs(self):
         """A model-authored need is the model's deliberate demand; retiring it

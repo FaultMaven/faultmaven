@@ -178,6 +178,27 @@ evidence_suggestion_unlinked_total = Counter(
 )
 
 
+# Mention decay, enforced (fm#1079). Counts asks the engine WITHHELD because the
+# need behind them was already ask-exhausted — the model emitted the third-plus
+# repeat of a request the prompt's decay rule says to stop making, and the
+# suggestion was dropped instead of shipped.
+#
+# Reads as a measure of the MODEL, not of the engine: every increment is a
+# repeat the model chose to emit after seeing both the rule and the rendered ask
+# count. A sustained rate means the loop is still being generated and only the
+# suppression is holding it back (the prose channel is untouched, so the user
+# may still be reading the nag); a rate that falls while cases still close means
+# the model is disposing of stalled asks itself, which is the intended end
+# state. Zero on a deployment that HAS repeat asks would mean the enforcement is
+# not firing — the fm#1081 failure mode, where correct machinery sat inert.
+evidence_ask_suppressed_total = Counter(
+    "faultmaven_evidence_ask_suppressed_total",
+    "Repeat EVIDENCE asks withheld from the user because the need behind them "
+    "was already ask-exhausted (asked twice or more, first ask at least two "
+    "turns old).",
+)
+
+
 # §7.1 restatement guard (#656 turn-6 class): counts BLOCK EVENTS — the state
 # transition where a ROOT that would otherwise have validated (supported,
 # net-positive, AND-gate satisfied) is held at INCONCLUSIVE because its

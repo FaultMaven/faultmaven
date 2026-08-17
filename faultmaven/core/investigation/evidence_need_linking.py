@@ -43,6 +43,38 @@ model reasoned about, and so the two can be treated differently where the
 difference matters (``_awaiting_recent_evidence`` ignores inferred needs;
 ``sweep_silent_inferred_needs`` garbage-collects them).
 
+Identity was necessary and not sufficient
+========================================
+
+Giving asks an identity made the repeat *visible* — the pool now records that a
+request was made five times — but nothing acted on it. The count was rendered
+into the prompt beside a rule telling the model to stop at the third mention,
+and on ``case_897ce7909658`` the model read both and re-asked for the same STS
+call path on turns 8, 11, 12, 13 and 15, after the user had twice stated no
+further data existed. Every evidence-need row on that case still read
+``obtainability = unknown``.
+
+So the decay rule is enforced here rather than requested: an ask whose need is
+``is_ask_exhausted`` is DROPPED from the turn's suggestions instead of shipped.
+What is deliberately NOT done is declare the wall — the engine cannot tell "this
+ask is not working" from "this data does not exist", and only the latter may
+move a case toward INSUFFICIENT_EVIDENCE. Suppression touches nothing that can
+conclude; it stops the nag and leaves the judgment to the model and the user.
+
+One interaction worth knowing: a suppressed ask is not recorded, so an
+ENGINE-INFERRED need accrues silence even while the model keeps re-asking, and
+``sweep_silent_inferred_needs`` supersedes it after
+``_INFERRED_NEED_SILENCE_TURNS``. ``_best_match`` then skips the superseded need
+and the next repeat mints a fresh one reading "asked once", so a determined nag
+recovers a slot rather than being muted forever. Replaying the fm#1079
+transcript's own asks through both passes: of the six repeats on turns 10–15,
+four are dropped and two reach the user — a two-in-seven duty cycle in place of
+every turn. That residue is deliberate. An inferred need is the engine's guess
+at what was asked and the matcher is calibrated permissive, so a permanent mute
+would occasionally silence a request the user could have answered; a
+model-authored need, which is a deliberate demand, gets no sweep and stays muted
+until the model disposes of it.
+
 An inferred need is deliberately thinner than an authored one: no real rationale,
 and no ``motivating_hypothesis_ids``, because the engine knows an ask was made but
 not which candidate it separates. That thinness has two consequences worth
@@ -59,6 +91,7 @@ import re
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
+from faultmaven.core.investigation.evidence_need_surfacing import is_ask_exhausted
 from faultmaven.modules.case.contracts import (
     CaseState,
     EvidenceNeed,
@@ -133,8 +166,10 @@ _MAX_BACKFILLED_PER_TURN = 5
 #: it owes the pool a different cleanup rule.
 #:
 #: Silence is the right signal: every inferred need records its creating turn in
-#: ``surfaced_turns``, so "the agent has not repeated this ask for N turns" is
-#: always answerable, and it means the agent moved on. Left alone these
+#: ``surfaced_turns``, so "this ask has not reached the user for N turns" is
+#: always answerable. It means the agent moved on — or that the engine muted a
+#: repeat it kept making, which resolves the same way (see the docstring of
+#: ``sweep_silent_inferred_needs``). Left alone these
 #: accumulate for the life of the case, occupy the three rotating surface slots
 #: ahead of model-authored discriminators (the surfacing sort key is
 #: rarity-then-id, NOT priority), inflate the "…and N more not shown" notice, and
@@ -309,20 +344,39 @@ def suggestions_are_engine_replaced(
 
 def link_evidence_suggestions_to_needs(
     case: Case,
-    follow_ups: Iterable[Any],
+    follow_ups: list[Any],
     metadata: dict[str, Any],
     current_turn: int,
     resolve_id_ref: Callable[[str, list[str], str], str],
 ) -> None:
-    """Attach every EVIDENCE suggestion to a need and record the ask.
+    """Attach every EVIDENCE suggestion to a need, record the ask, and DROP the
+    ask when the need is already ask-exhausted.
 
-    Mutates ``case.evidence_needs`` (creating needs where an ask has none) and
-    the ``SuggestedFollowUp`` objects themselves (setting ``evidence_need_id``),
-    then records ``current_turn`` on each need's ``surfaced_turns``.
+    Mutates ``case.evidence_needs`` (creating needs where an ask has none), the
+    ``SuggestedFollowUp`` objects themselves (setting ``evidence_need_id``), and
+    ``follow_ups`` IN PLACE — a suggestion bound to an ask-exhausted need is
+    removed from the list rather than shipped. Everything retained records
+    ``current_turn`` on its need's ``surfaced_turns``.
+
+    The drop is the enforcement half of the mention-decay rule (fm#1079). That
+    rule — "First mention: full request. Second: brief reminder. Third+: stop
+    surfacing" — has been in the prompt throughout, alongside the rendered ask
+    count and the "a refused ask is a wall, not a pending one" directive, and
+    the model re-asked for the same STS call path on turns 8, 11, 12, 13 and 15
+    of ``case_897ce7909658`` after the user twice said no more data existed. The
+    policy was never the missing piece; an engine that acts on it was. So the
+    third ask is not made, rather than asked not to be made.
+
+    Ordering inside the loop is load-bearing: exhaustion is evaluated BEFORE
+    ``record_surfaced``. Recording first would let this turn's ask count toward
+    its own suppression, and would inflate the rendered ``asked N×`` with asks
+    the user never saw — the same over-recording hazard
+    ``suggestions_are_engine_replaced`` exists to avoid.
 
     Must run BEFORE the turn's ``repository.save`` so created needs and the ask
     history land in the same turn's persisted state, and before
-    ``_flatten_follow_ups`` so the wire response carries the resolved IDs.
+    ``_flatten_follow_ups`` so the wire response carries the resolved IDs and
+    not the dropped asks.
 
     Only call this when the suggestions will actually reach the user — see
     ``suggestions_are_engine_replaced`` at the call site. Recording an ask the
@@ -330,7 +384,8 @@ def link_evidence_suggestions_to_needs(
 
     Args:
         case: the case being updated (needs are appended to its pool).
-        follow_ups: this turn's ``SuggestedFollowUp`` objects.
+        follow_ups: this turn's ``SuggestedFollowUp`` objects. Filtered in
+            place; non-EVIDENCE entries and their order are preserved.
         metadata: turn metadata; ``evidence_needs_updated`` is read to resolve
             the model's own ``new_index_N`` refs. Needs created here are NOT
             appended to it: linking assigns a real ``eneed_`` id, so the flatten
@@ -342,14 +397,22 @@ def link_evidence_suggestions_to_needs(
         resolve_id_ref: the engine's ``_resolve_id_ref``, passed in so this
             module stays free of a ``MilestoneEngine`` import.
     """
-    created_this_turn = 0
+    if not follow_ups:
+        return
 
-    for follow_up in follow_ups or []:
+    created_this_turn = 0
+    # Retained asks, rebuilt so the drop is a filter rather than a mutation
+    # mid-iteration. Assigned back over ``follow_ups`` at the end.
+    retained: list[Any] = []
+
+    for follow_up in follow_ups:
         if getattr(follow_up, "action_type", None) != "EVIDENCE":
+            retained.append(follow_up)
             continue
 
         ask_text = _ask_text(follow_up)
         if not ask_text:
+            retained.append(follow_up)
             continue
 
         target: EvidenceNeed | None = None
@@ -405,6 +468,7 @@ def link_evidence_suggestions_to_needs(
                     current_turn,
                     ask_text,
                 )
+                retained.append(follow_up)
                 continue
             target = EvidenceNeed(
                 case_id=case.case_id,
@@ -455,8 +519,32 @@ def link_evidence_suggestions_to_needs(
             # on "the model sent no id at all" missed it.
             _count(backfilled=False)
 
+        # The decay rule, enforced. Evaluated BEFORE record_surfaced so this
+        # turn's ask cannot count toward its own suppression and so the rendered
+        # ``asked N×`` stays a count of asks the user actually saw.
+        #
+        # The need is NOT touched: no state change, no obtainability, no
+        # superseded_reason. It stays outstanding, stays matchable against
+        # inbound uploads, and stays visible to the model in its own
+        # ``<evidence_needs>`` section. Only the mechanical re-offer stops.
+        if is_ask_exhausted(target, current_turn):
+            logger.info(
+                "Suppressed a repeat EVIDENCE ask on case %s turn %s: need %s "
+                "already asked %d× since turn %s",
+                case.case_id,
+                current_turn,
+                target.need_id,
+                target.times_surfaced,
+                min(target.surfaced_turns),
+            )
+            _count_suppressed()
+            continue
+
         follow_up.evidence_need_id = target.need_id
         target.record_surfaced(current_turn)
+        retained.append(follow_up)
+
+    follow_ups[:] = retained
 
 
 def _count(*, backfilled: bool) -> None:
@@ -479,6 +567,25 @@ def _count(*, backfilled: bool) -> None:
         pass
 
 
+def _count_suppressed() -> None:
+    """Record that a repeat ask was withheld from the user.
+
+    Best-effort, like ``_count``. Worth its own series because it is the only
+    externally visible sign the enforcement fired: a suppressed ask leaves no
+    trace in the response (the suggestion simply is not there) and none in the
+    need (nothing about it is mutated), so without this the difference between
+    "the model stopped nagging" and "the engine stopped it" is unobservable.
+    """
+    try:
+        from faultmaven.core.investigation.lifecycle_metrics import (
+            evidence_ask_suppressed_total,
+        )
+
+        evidence_ask_suppressed_total.inc()
+    except Exception:
+        pass
+
+
 def sweep_silent_inferred_needs(case: Case, current_turn: int) -> int:
     """Supersede engine-inferred needs the agent has stopped asking for.
 
@@ -496,11 +603,24 @@ def sweep_silent_inferred_needs(case: Case, current_turn: int) -> int:
     need is the model's deliberate demand and is not the engine's to retire; a
     FULFILLED or SUPERSEDED need is already terminal.
 
-    Silence, not age, is the trigger — a need the agent is still repeating stays,
-    however old, and one it dropped goes, however recently created. Every
-    inferred need carries its creating turn in ``surfaced_turns`` (backfill
+    Silence, not age, is the trigger — a need still being SURFACED stays, however
+    old, and one that stopped reaching the user goes, however recently created.
+    Every inferred need carries its creating turn in ``surfaced_turns`` (backfill
     records the surfacing in the same breath as the creation), so
     ``last_surfaced_turn`` is always set and the rule is always answerable.
+
+    "Surfaced" and "asked" stopped being the same thing once the engine began
+    dropping ask-exhausted repeats: a need the model keeps re-asking accrues
+    silence anyway, because the asks are no longer shipped. That is deliberate,
+    and it is what keeps an inferred ask from being muted forever. An inferred
+    need reaches exhaustion two turns after its second surfacing and is swept
+    ``_INFERRED_NEED_SILENCE_TURNS`` turns after that; a model that is still
+    asking then mints a fresh need and the request reaches the user again. So an
+    inferred ask decays to roughly a two-in-seven duty cycle rather than to
+    zero — the safe direction, since an inferred need is the engine's guess at
+    what was asked and may have folded two distinct requests together. A
+    MODEL-AUTHORED need has no such sweep and stays muted until the model
+    disposes of it, which is right: that one is a deliberate demand.
 
     Run BEFORE linking each turn, so a need that IS re-asked this turn is
     refreshed by the linking pass rather than swept a moment earlier.
@@ -515,7 +635,7 @@ def sweep_silent_inferred_needs(case: Case, current_turn: int) -> int:
         prior_state = need.state
         need.state = NeedState.SUPERSEDED
         need.superseded_reason = (
-            f"engine-inferred ask not repeated for "
+            f"engine-inferred ask not surfaced for "
             f"{_INFERRED_NEED_SILENCE_TURNS} turns"
         )
         need.revoke_obtainability_if_terminal()

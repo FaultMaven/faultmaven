@@ -22,6 +22,67 @@ if TYPE_CHECKING:
 _SURFACED_CAUSAL_CAP = 3
 
 
+#: Recorded asks at or above which a need is a candidate for ask-exhaustion.
+#:
+#: NOT a new policy: the prompt has stated "First mention: full request. Second:
+#: brief reminder. Third+: stop surfacing" since the mention-decay rule was
+#: written. Two recorded asks means the next one is the third — the one the
+#: stated policy already says not to make. The engine stops making it instead of
+#: asking the model to refrain, because on fm#1079 the model read that rule, and
+#: the rendered ask count, and re-asked anyway on turns 8, 11, 12, 13 and 15.
+_ASK_REPEAT_FLOOR = 2
+
+#: Turns that must have elapsed since the FIRST recorded ask.
+#:
+#: Same derivation: the earliest a third mention can occur is two turns after
+#: the first (t, t+1, t+2), so this is the age at which the stated policy's
+#: "third+" case becomes reachable. Nothing about the number is tuned — both
+#: thresholds are read off the policy the prompt already states.
+#:
+#: The AGE arm exists because the COUNT arm cannot be trusted on its own.
+#: ``surfaced_turns`` records a surfacing only when an EVIDENCE-type
+#: ``SuggestedFollowUp`` is emitted (``evidence_need_linking``), so a re-ask that
+#: appears only in ``agent_response`` prose is invisible to it — on the fm#1079
+#: run the nagging need showed 2 recorded surfacings against 5 prose asks. Age
+#: is measured off ``min(surfaced_turns)``, which is correct as soon as ONE ask
+#: has been recorded and cannot be pushed later by asks that go uncounted, so an
+#: undercounting channel delays exhaustion by at most the turns before the
+#: second recorded ask rather than preventing it.
+_ASK_DECAY_AGE_TURNS = 2
+
+
+def is_ask_exhausted(need: "EvidenceNeed", current_turn: int) -> bool:
+    """Whether the engine has stopped putting this need to the user as an ask.
+
+    An *ask-exhausted* need is still a live need — it stays outstanding in the
+    pool, still matches inbound uploads, still counts toward the
+    verification-status rollup, and is still rendered in ``<evidence_needs>``
+    (in its own section, so the block does not misreport a withheld ask as a
+    live one). What stops is the mechanical re-offer: the EVIDENCE suggestion is
+    dropped at the seam and the need yields its rotating surface slot.
+
+    Deliberately NOT an obtainability declaration. ``UNOBTAINABLE`` is the
+    model's judgment that data cannot be gathered, and it is load-bearing —
+    ``verification_status._candidate_unresolvable`` reads it, so a wrongly
+    declared wall carries a case toward ``INSUFFICIENT_EVIDENCE`` on an untrue
+    premise. Repetition is evidence that an ask is not working; it is not
+    evidence that the data does not exist, and only the model (or the user) can
+    tell those apart. So this predicate suppresses the nag and leaves the
+    judgment where it belongs. Exhaustion feeds nothing that can conclude.
+
+    Monotone in the ask history: once exhausted, a need stays exhausted for as
+    long as it is outstanding. Re-arming on later activity would restore exactly
+    the loop this exists to break. The escapes are the correct ones and all
+    remove the need from ``is_outstanding``: it gets FULFILLED by data that
+    arrives, or the model supersedes it, or the model declares the wall.
+    """
+    if not need.is_outstanding:
+        return False
+    if need.times_surfaced < _ASK_REPEAT_FLOOR:
+        return False
+    return current_turn - min(need.surfaced_turns) >= _ASK_DECAY_AGE_TURNS
+
+
 def select_surfaced_causal_needs(case: "Case") -> "list[EvidenceNeed]":
     """The ≤``_SURFACED_CAUSAL_CAP`` causal evidence-needs to SHOW this turn.
 
@@ -59,12 +120,19 @@ def select_surfaced_causal_needs(case: "Case") -> "list[EvidenceNeed]":
     # churn. It stays outstanding in the pool (so the verification-status rollup
     # still counts it toward the declared wall, and the close record can name it
     # as the unmet need), it just isn't surfaced.
+    #
+    # An ASK-EXHAUSTED need yields its slot for the same reason on a different
+    # trigger (``is_ask_exhausted``): the engine has stopped putting it to the
+    # user, so holding one of the three rotating slots open for it would spend a
+    # slot on an ask that is not being made — starving live discriminators
+    # exactly as an UNOBTAINABLE one would.
     causal = [
         n
         for n in case.evidence_needs
         if n.is_outstanding
         and n.purpose == NeedPurpose.CAUSAL_VERIFICATION
         and n.obtainability != NeedObtainability.UNOBTAINABLE
+        and not is_ask_exhausted(n, case.current_turn)
     ]
     if len(causal) <= _SURFACED_CAUSAL_CAP:
         return causal

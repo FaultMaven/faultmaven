@@ -37,6 +37,7 @@ from faultmaven.core.investigation.causal_graph import (
     root_support_block_reasons,
 )
 from faultmaven.core.investigation.evidence_need_surfacing import (
+    is_ask_exhausted,
     select_surfaced_causal_needs,
 )
 from faultmaven.core.preprocessing.evidence_metadata import (
@@ -2214,6 +2215,26 @@ def _build_evidence_needs_block(case: Case) -> str:
     instruction to count prior mentions out of conversation history, which is
     unreachable past the verbatim window.
 
+    Ask-exhausted needs (``is_ask_exhausted``) are lifted out of the outstanding
+    list into their own section, because the engine has stopped shipping their
+    EVIDENCE suggestions and listing them among live asks would misdescribe the
+    system to the model:
+
+        Asks the engine has STOPPED surfacing (repeated without result — the
+        suggestion no longer reaches the user, so re-asking reaches no one).
+        Dispose of each — obtainability=unobtainable if the data cannot be
+        gathered, else supersede it — and proceed on what you have:
+
+          - [eneed_003] app-side STS debug output (CAUSAL, MEDIUM, asked 3× (last turn 12))
+              motivated_by: [hyp_002]
+
+    They are still outstanding: still matched against inbound uploads, still
+    counted by the verification-status rollup, and still the model's to dispose
+    of. Only the mechanical re-offer stopped. They are excluded from the
+    surface-cap rotation and from the "…and N more not shown" overflow for the
+    same reason UNOBTAINABLE needs are — a slot spent on an ask nobody is making
+    starves a live discriminator.
+
     Output shape (MITIGATION/TREATMENT, both sections populated):
 
         <evidence_needs>
@@ -2246,6 +2267,20 @@ def _build_evidence_needs_block(case: Case) -> str:
     )
 
     outstanding_all = [n for n in case.evidence_needs if n.is_outstanding]
+    # Ask-exhausted needs are split out BEFORE the surface cap and rendered in
+    # their own section (#1079). They are still outstanding and still matched
+    # against uploads, but the engine has stopped putting them to the user, so
+    # rendering them among the live asks would state something untrue — the
+    # model would read a pending ask it can still make, and re-make it into a
+    # channel that is closed. The section says what actually happened instead.
+    #
+    # Dropping them from the block entirely was the other option and is worse:
+    # the pool stays keyed on `request_text`, so a need the model cannot see is
+    # a need it re-authors, and the duplicate arrives with an empty ask history
+    # — resetting the very counter the suppression is computed from.
+    exhausted = [n for n in outstanding_all if is_ask_exhausted(n, case.current_turn)]
+    exhausted_ids = {n.need_id for n in exhausted}
+    outstanding_all = [n for n in outstanding_all if n.need_id not in exhausted_ids]
     # Surface-cap the causal asks (engine-differential + LLM-emitted causal) to the
     # rotating top-≤N (select_surfaced_causal_needs) so a broad retrieval-seeded
     # differential can't flood the user; SYMPTOM needs are unaffected. All needs stay
@@ -2288,7 +2323,7 @@ def _build_evidence_needs_block(case: Case) -> str:
         else []
     )
 
-    if not outstanding and not re_verification:
+    if not outstanding and not re_verification and not exhausted:
         return ""
 
     # Re-verification findings: chronological by the turn they were established.
@@ -2344,8 +2379,42 @@ def _build_evidence_needs_block(case: Case) -> str:
                 f"(cap reached)."
             )
 
-    if re_verification:
+    if exhausted:
         if outstanding:
+            lines.append("")
+        # A statement of engine state, not a fourth restatement of the decay
+        # rule. The suppression below has already happened whether or not the
+        # model acts on this; what the block owes the model is an accurate
+        # picture of which asks still reach the user.
+        lines.append(
+            "Asks the engine has STOPPED surfacing (repeated without result — " "the"
+        )
+        lines.append(
+            "suggestion no longer reaches the user, so re-asking reaches no "
+            "one). Dispose"
+        )
+        lines.append(
+            "of each — obtainability=unobtainable if the data cannot be "
+            "gathered, else"
+        )
+        lines.append("supersede it — and proceed on what you have:")
+        lines.append("")
+        for need in exhausted[:_EVIDENCE_NEEDS_RENDER_CAP]:
+            header, motivator_line = _render_need_line(need)
+            lines.append(header)
+            lines.append(motivator_line)
+        exhausted_overflow = len(exhausted) - len(
+            exhausted[:_EVIDENCE_NEEDS_RENDER_CAP]
+        )
+        if exhausted_overflow > 0:
+            lines.append("")
+            lines.append(
+                f"  …and {exhausted_overflow} more suppressed ask(s) not shown "
+                f"(cap reached)."
+            )
+
+    if re_verification:
+        if outstanding or exhausted:
             lines.append("")
         lines.append("Re-verification checklist (confirmed findings — re-check each to")
         lines.append(
