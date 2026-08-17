@@ -510,6 +510,40 @@ class ReportGenerationService:
             )
         return None
 
+    def _causal_map_block(self, case: Case) -> List[str]:
+        """Render the engine-derived causal map section, or nothing.
+
+        The map is serialized from the persisted causal graph — never
+        LLM-authored — so it can only depict structure the investigation
+        established. ``render_causal_map`` gates itself (cause established,
+        graph non-trivial) and returns None to mean "no map informs here".
+
+        Fail-closed: a rendering error omits the section rather than
+        shipping malformed diagram text in a final report, and never
+        blocks report generation. (Function-local import: the
+        _assurance_note precedent for report → core.investigation reads.)
+        """
+        from faultmaven.core.investigation.causal_map import render_causal_map
+
+        try:
+            fenced = render_causal_map(case)
+        except Exception:
+            logger.warning(
+                "Causal map rendering failed; omitting section",
+                extra={"case_id": case.case_id},
+                exc_info=True,
+            )
+            return []
+        if not fenced:
+            return []
+        return [
+            "## Causal Map\n",
+            "_From the investigation's causal analysis: ✓ validated · "
+            "○ candidate (not validated) · ✗ refuted. Solid arrows lead "
+            "from validated causes._\n",
+            f"{fenced}\n",
+        ]
+
     async def _generate_resolution_summary(
         self, case: Case, context: Dict[str, Any]
     ) -> str:
@@ -588,6 +622,10 @@ class ReportGenerationService:
                     if getattr(h, "rationale", None):
                         parts.append(f"{h.rationale}\n")
                 # Last line already ends with \n; no extra separator needed.
+
+        # Causal Map — after the cause is stated, before the fix. Renders
+        # only for an established cause over a non-trivial graph.
+        parts.extend(self._causal_map_block(case))
 
         # Solution Applied — same renderer as closure's Mitigation Status.
         if solutions:
@@ -781,6 +819,11 @@ class ReportGenerationService:
         # state, so no separate snapshot column is needed.
         if closure_reason_raw == "closed_insufficient_evidence":
             parts.extend(self._insufficient_evidence_boundary_block(case, hypotheses))
+
+        # Causal Map — a close can still carry an established cause (e.g.
+        # solution_deferred); the same assurance gate inside the renderer
+        # keeps it off unresolved/unclear closes.
+        parts.extend(self._causal_map_block(case))
 
         # Leading Hypotheses — top hypotheses at time of closure
         if hypotheses:
