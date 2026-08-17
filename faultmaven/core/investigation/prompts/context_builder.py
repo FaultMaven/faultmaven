@@ -2168,6 +2168,17 @@ def _render_finding_line(ev) -> str:
     )
 
 
+#: Heading for the suppressed-asks section of ``<evidence_needs>`` (#1079).
+#: Pre-wrapped so the rendered block keeps the same line discipline as the rest
+#: of the prompt regardless of how the source is formatted.
+_EXHAUSTED_SECTION_HEADER = (
+    "Asks the engine has STOPPED surfacing (repeated without result — the",
+    "suggestion no longer reaches the user, so re-asking reaches no one).",
+    "Dispose of each — obtainability=unobtainable if the data cannot be",
+    "gathered, else supersede it — and proceed on what you have:",
+)
+
+
 def _build_evidence_needs_block(case: Case) -> str:
     """Render the ``<evidence_needs>`` context block.
 
@@ -2383,29 +2394,16 @@ def _build_evidence_needs_block(case: Case) -> str:
         if outstanding:
             lines.append("")
         # A statement of engine state, not a fourth restatement of the decay
-        # rule. The suppression below has already happened whether or not the
-        # model acts on this; what the block owes the model is an accurate
-        # picture of which asks still reach the user.
-        lines.append(
-            "Asks the engine has STOPPED surfacing (repeated without result — " "the"
-        )
-        lines.append(
-            "suggestion no longer reaches the user, so re-asking reaches no "
-            "one). Dispose"
-        )
-        lines.append(
-            "of each — obtainability=unobtainable if the data cannot be "
-            "gathered, else"
-        )
-        lines.append("supersede it — and proceed on what you have:")
+        # rule. The suppression has already happened whether or not the model
+        # acts on this; what the block owes the model is an accurate picture of
+        # which asks still reach the user.
+        lines.extend(_EXHAUSTED_SECTION_HEADER)
         lines.append("")
         for need in exhausted[:_EVIDENCE_NEEDS_RENDER_CAP]:
             header, motivator_line = _render_need_line(need)
             lines.append(header)
             lines.append(motivator_line)
-        exhausted_overflow = len(exhausted) - len(
-            exhausted[:_EVIDENCE_NEEDS_RENDER_CAP]
-        )
+        exhausted_overflow = max(0, len(exhausted) - _EVIDENCE_NEEDS_RENDER_CAP)
         if exhausted_overflow > 0:
             lines.append("")
             lines.append(
