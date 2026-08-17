@@ -6,8 +6,8 @@ service: aws-dynamodb
 symptom_class: [throughput_degradation, latency]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [provisioned-throughput-exceeded, hot-partition, gsi-throttling, adaptive-capacity, exponential-backoff]
@@ -270,7 +270,8 @@ Expected output: `ContributorInsightsStatus` transitions to `ENABLED`; the resul
 ## Sources
 
 - [Error handling with DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Programming.Errors.html) — exact exception strings (`ProvisionedThroughputExceededException`, `ThrottlingException`, `RequestLimitExceeded`), HTTP 400 classification, SDK auto-retry behavior, and the exponential-backoff progression (50/100/200 ms) including batch-operation backoff guidance.
-- [Best practices for handling throttling (bp-throttling)](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-throttling.html) — hot partitions, partition-key design, adaptive capacity, randomizing requests, and using Contributor Insights to find throttled keys.
+- [Designing partition keys to distribute your workload](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-uniform-load.html) — hot partitions from low-cardinality/skewed partition keys (status codes and rounded dates as the documented "Bad" uniformity examples), design for many distinct, evenly-accessed key values — grounds Cause A's root and the partition-key Prevention guidance.
+- [Using write sharding to distribute workloads evenly](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-sharding.html) — random and calculated write-sharding suffixes that expand the partition-key space — grounds Cause A's sharding-suffix remediation and the Prevention sharding guidance.
 - [Understanding GSI write throttling and back pressure](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/gsi-throttling.html) — GSI back-pressure mechanism and the low-cardinality `status` GSI example used in Cause C.
 - [CloudWatch throttling metrics](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TroubleshootingThrottling-cloudwatch.html) — `ThrottledRequests`, `ReadThrottleEvents`, `WriteThrottleEvents` semantics and the GSI dimension requirement.
 - [DynamoDB burst and adaptive capacity](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/burst-adaptive-capacity.html) — adaptive capacity behavior and the 3000 RCU/sec, 1000 WCU/sec per-partition limits.
