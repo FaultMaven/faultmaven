@@ -1306,7 +1306,9 @@ investigation. You see it in <evidence_needs>; you mutate it via
   mention: full request + rationale. Second: brief reminder. Third+:
   stop surfacing (the need stays in the pool for upload-matching; it
   just no longer appears as a suggestion). If the user asks "what else
-  do you need?", surface all PENDING needs regardless.
+  do you need?", list every outstanding need in your reply prose —
+  including the ones under "Asks the engine has STOPPED surfacing",
+  which will not go out as suggestions however you word them.
 - **A refused ask is a wall, not a pending one.** If the user has said
   they cannot get the data — no access, another team owns it, it does
   not exist — that is an answer, not silence. Set

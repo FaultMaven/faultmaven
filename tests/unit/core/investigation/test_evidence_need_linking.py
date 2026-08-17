@@ -644,13 +644,32 @@ class TestCalibrationAgainstTheRecordedRun:
         A matcher that scored each rewording as new would ship all thirteen: no
         need would ever reach a second recorded ask, so nothing would be
         suppressed — the fm#1079 defect, unfixed.
+
+        Read the shipped turns honestly, though. Per ``_REAL_ASKS``, turns 7-15
+        are ONE request — the target-account IAM/OIDC provider record — and it
+        is still delivered on turns 5, 7, 8 and 9. Two matcher imperfections
+        account for that, and both are inherent to content-overlap matching
+        rather than incidental to this fixture:
+
+        - **turn 6 mis-folds.** It lands on the CloudTrail need it shares tokens
+          with, not on the provider-record need it actually repeats — so it is
+          that need's second ask, not the provider ask's third.
+        - **turn 8 splits.** Its rewording clears the threshold against no
+          existing need, so a THIRD need is minted for the same request and its
+          ask counter starts again at zero. Turn 9 is that new need's second
+          ask, so it ships too, and suppression only bites from turn 10.
+
+        A split restarts the counter. The more aggressively a model rewords an
+        ask, the more often suppression has to re-earn its trigger — so this
+        mechanism roughly halves the nag on this transcript, it does not end it.
         """
         _, shipped = self._replay()
 
-        # Turns 10-15 are six reworded repeats of the target-account provider
-        # request the user had already declined. None of them reach the user.
+        # Suppression holds from turn 10: all six repeats from there are
+        # withheld.
         assert [t for t in shipped if t >= 10] == []
-        # The earlier asks are genuinely distinct and must still be delivered.
+        # Turns 5-9 still ship: three distinct asks on turn 5, plus the two
+        # repeats that the mis-fold (6) and the split (8) let through.
         assert sorted(set(shipped)) == [5, 6, 7, 8, 9]
 
     def test_the_pool_does_not_grow_one_need_per_ask(self):
