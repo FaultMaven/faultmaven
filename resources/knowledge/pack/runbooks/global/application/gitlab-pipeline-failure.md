@@ -6,8 +6,8 @@ service: gitlab-ci
 symptom_class: [deployment_failure, timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [job-stuck, no-active-runners, gitlab-runner, needs-error, job-timeout, artifacts-too-large]

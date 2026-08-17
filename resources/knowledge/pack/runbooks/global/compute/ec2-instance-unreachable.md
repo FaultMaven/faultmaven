@@ -6,8 +6,8 @@ service: aws-ec2
 symptom_class: [connection_refused, timeout]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [aws, ec2, ssh, rdp, security-group, network-acl, routing, key-pair, ssm]

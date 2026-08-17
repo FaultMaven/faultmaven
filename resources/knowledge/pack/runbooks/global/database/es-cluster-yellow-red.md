@@ -6,8 +6,8 @@ service: elasticsearch
 symptom_class: [service_unavailable, disk_full]
 severity: critical
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-17"
 verified_by: "kb-researcher"
 status: draft
 tags: [elasticsearch, cluster-health, shards, disk-watermark, allocation]

@@ -132,7 +132,7 @@ Expected output: `ContributorInsightsStatus` transitions to `ENABLED`; the resul
   ```
 
   **Verification:** re-run Step 5 — Contributor Insights shows throttled traffic distributed across many keys with no single dominant key; re-run Step 1 returns `Sum = 0`.
-- **mitigation** (s1): Spread access over time by randomizing/jittering client request timing to the hot keys so the partition stays under its per-partition ceiling.
+- **mitigation** (s1): Raise table-wide provisioned capacity for short-term headroom while the partition-key redesign ships.
 
   ```bash
   aws dynamodb update-table \
