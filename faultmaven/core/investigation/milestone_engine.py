@@ -63,6 +63,11 @@ from faultmaven.core.investigation.cause_assurance import (
     grade_cause_assurance,
     runbook_conversion_ready,
 )
+from faultmaven.core.investigation.evidence_need_linking import (
+    link_evidence_suggestions_to_needs,
+    suggestions_are_engine_replaced,
+    sweep_silent_inferred_needs,
+)
 from faultmaven.core.investigation.hypothesis_manager import (
     HypothesisManager,
     create_hypothesis_manager,
@@ -73,6 +78,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_created_total,
     evidence_need_id_dropped_total,
     evidence_need_status_changed_total,
+    evidence_suggestion_unlinked_total,
     hypothesis_dedup_skipped_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
@@ -4975,6 +4981,80 @@ class MilestoneEngine:
             # Runs BEFORE save() so the supersession lands in the same turn's
             # persisted state.
             _sweep_needs_for_terminal_hypotheses(case_updated)
+
+            # #1079: give every EVIDENCE suggestion a need to hang on, and
+            # record the ask on it. Both anti-nagging mechanisms (the
+            # obtainability wall and mention decay) act on an EvidenceNeed, so
+            # an ask with no need behind it is one neither can ever see — which
+            # is how the same request survived ten consecutive turns against a
+            # user declining it six times.
+            #
+            # Placed here for two ordering reasons: BEFORE save() so created
+            # needs and the recorded turn persist with the rest of the turn,
+            # and BEFORE _flatten_follow_ups (below) so the wire response
+            # carries the IDs assigned here. After the terminal sweep, so a need
+            # superseded this turn is not a match candidate.
+            # Skipped when the engine is going to REPLACE these suggestions
+            # further down (gate affordances, the resolution/close prose
+            # branches, the closure ack). Those turns never render the model's
+            # EVIDENCE asks, and recording an ask the user never saw would decay
+            # it toward "stop surfacing" for the wrong reason.
+            # GC for engine-inferred needs. They are the orphan shape the
+            # terminal-hypothesis sweep above cannot reach (no motivator to key
+            # off) — the same shape ``_apply_evidence_need_updates`` refuses to
+            # let the MODEL create, for that exact reason. Run before linking so
+            # an ask repeated THIS turn is refreshed rather than swept a moment
+            # early, and unconditionally (not inside the suggestion branch) so a
+            # case that stops emitting suggestions still gets its pool cleaned.
+            try:
+                sweep_silent_inferred_needs(case_updated, case_updated.current_turn)
+            except Exception as sweep_err:  # noqa: BLE001
+                logger.warning(
+                    "Inferred-need sweep failed on case %s: %s",
+                    case_updated.case_id,
+                    sweep_err,
+                )
+
+            if getattr(response_obj, "suggested_follow_ups", None):
+                try:
+                    gate_pending = (
+                        engine_owned_affordances(case_updated, metadata) is not None
+                    )
+                    if suggestions_are_engine_replaced(
+                        case_updated, metadata, gate_pending
+                    ):
+                        logger.debug(
+                            "Skipping evidence-need linking on case %s turn %s: "
+                            "the engine replaces this turn's suggestions",
+                            case_updated.case_id,
+                            case_updated.current_turn,
+                        )
+                    else:
+                        link_evidence_suggestions_to_needs(
+                            case_updated,
+                            response_obj.suggested_follow_ups,
+                            metadata,
+                            case_updated.current_turn,
+                            self._resolve_id_ref,
+                        )
+                except Exception as link_err:  # noqa: BLE001
+                    # Never fail a turn over suggestion bookkeeping — the reply
+                    # is still correct without the linkage, just un-countable.
+                    # Counted, not merely logged: a systematic failure here
+                    # turns the whole fix off, and a flat created/matched rate
+                    # reads identically to a model that started declaring its
+                    # own needs.
+                    logger.warning(
+                        "Evidence-need linking failed on case %s: %s",
+                        case_updated.case_id,
+                        link_err,
+                    )
+                    try:
+                        evidence_suggestion_unlinked_total.labels(
+                            resolution="error"
+                        ).inc()
+                    except Exception:
+                        pass
 
             # Step 7: Save case (only if changes made, but turn history always updates)
             case_updated.updated_at = datetime.now(UTC)
@@ -10728,9 +10808,20 @@ class MilestoneEngine:
         progress, not fixation — so anti-anchoring stands down. Bounding it to
         recent asks ensures a single stale need the user never answers cannot
         permanently disable anti-anchoring for the rest of the case.
+
+        ENGINE-INFERRED needs are excluded (#1079). Those are minted by
+        ``evidence_need_linking`` from any EVIDENCE suggestion the model did not
+        declare a need for — which, on a fixated case, is most turns. Counting
+        them would stamp a fresh ``created_at_turn`` every turn and hold the
+        stand-down open forever, destroying the bound the paragraph above
+        promises and disabling anti-anchoring exactly when a stuck investigation
+        needs it. The signal this reads is the model's DELIBERATE demand, so it
+        reads only the needs the model authored.
         """
         return any(
-            n.is_outstanding and case.current_turn - n.created_at_turn < within_turns
+            n.is_outstanding
+            and not n.engine_inferred
+            and case.current_turn - n.created_at_turn < within_turns
             for n in (case.evidence_needs or [])
         )
 

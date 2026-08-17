@@ -675,7 +675,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at,
-                    obtainability
+                    obtainability, surfaced_turns, engine_inferred
                 FROM evidence_needs
                 WHERE case_id = :case_id
                 ORDER BY created_at ASC, need_id ASC
@@ -729,7 +729,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
         Column order: ``need_id, purpose, request_text, rationale,
         priority, state, motivating_hypothesis_ids (JSONB),
         superseded_reason, created_at_turn, created_at, updated_at,
-        obtainability``.
+        obtainability, surfaced_turns (JSONB), engine_inferred``.
         On PG, JSONB is returned as a Python list directly (asyncpg);
         on dialect-compatibility paths a JSON string is also tolerated.
         """
@@ -744,6 +744,20 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     motivating = json.loads(motivating_raw)
                 except (json.JSONDecodeError, TypeError):
                     motivating = []
+
+            # Ask history (#1079). Absent/corrupt reads as "never surfaced" —
+            # understating the count is the fail-safe direction (it keeps a live
+            # ask visible rather than silencing it on a bad blob).
+            surfaced_raw = row[12] if len(row) > 12 else None
+            if isinstance(surfaced_raw, list):
+                surfaced = list(surfaced_raw)
+            elif surfaced_raw is None:
+                surfaced = []
+            else:
+                try:
+                    surfaced = json.loads(surfaced_raw)
+                except (json.JSONDecodeError, TypeError):
+                    surfaced = []
 
             return EvidenceNeed(
                 need_id=str(row[0]),
@@ -764,6 +778,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     if len(row) > 11 and row[11]
                     else NeedObtainability.UNKNOWN
                 ),
+                surfaced_turns=surfaced,
+                engine_inferred=bool(row[13]) if len(row) > 13 else False,
             )
         except Exception as need_err:  # noqa: BLE001
             logger.warning("Failed to load evidence_need %s: %s", row[0], need_err)
@@ -2188,7 +2204,7 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     motivating_hypothesis_ids,
                     superseded_reason,
                     created_at_turn, created_at, updated_at,
-                    obtainability
+                    obtainability, surfaced_turns, engine_inferred
                 ) VALUES (
                     :need_id, :case_id, :organization_id,
                     :purpose, :request_text, :rationale,
@@ -2196,7 +2212,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     {self._cast('motivating_hypothesis_ids')},
                     :superseded_reason,
                     :created_at_turn, :created_at, :updated_at,
-                    :obtainability
+                    :obtainability, {self._cast('surfaced_turns')},
+                    :engine_inferred
                 )
                 ON CONFLICT (need_id) DO UPDATE SET
                     purpose = EXCLUDED.purpose,
@@ -2207,7 +2224,9 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     motivating_hypothesis_ids = EXCLUDED.motivating_hypothesis_ids,
                     superseded_reason = EXCLUDED.superseded_reason,
                     updated_at = EXCLUDED.updated_at,
-                    obtainability = EXCLUDED.obtainability
+                    obtainability = EXCLUDED.obtainability,
+                    surfaced_turns = EXCLUDED.surfaced_turns,
+                    engine_inferred = EXCLUDED.engine_inferred
             """)
 
             now = datetime.now(timezone.utc)
@@ -2230,6 +2249,8 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
                     "created_at": need.created_at or now,
                     "updated_at": now,
                     "obtainability": need.obtainability.value,
+                    "surfaced_turns": json.dumps(need.surfaced_turns),
+                    "engine_inferred": need.engine_inferred,
                 },
             )
 

@@ -1,17 +1,15 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-08-01 09:02 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-08-17 07:10 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
 ## Summary
 
-**40 tables** in the schema.
+**38 tables** in the schema.
 
 | Table | Columns | Primary Key | Foreign Keys |
 |-------|---------|-------------|--------------|
-| `agent_executions` | 17 | `execution_id` | cases, investigation_sessions, organizations |
-| `agent_tool_calls` | 13 | `tool_call_id` | agent_executions, organizations |
 | `case_actions` | 9 | `transition_id` | cases, organizations |
 | `case_checkpoints` | 9 | `checkpoint_id` | cases, organizations |
 | `case_entities` | 8 | `case_id, entity_type, entity_value, evidence_id` | cases, evidence, organizations |
@@ -27,7 +25,7 @@
 | `enterprises` | 11 | `enterprise_id` | — |
 | `evidence` | 23 | `evidence_id` | cases, organizations, uploaded_files |
 | `evidence_need_fulfillment` | 5 | `need_id, evidence_id` | evidence, evidence_needs, organizations |
-| `evidence_needs` | 14 | `need_id` | cases, organizations |
+| `evidence_needs` | 16 | `need_id` | cases, organizations |
 | `hypotheses` | 25 | `hypothesis_id` | cases, causal_nodes, organizations, users |
 | `hypothesis_evidence` | 8 | `hypothesis_id, evidence_id` | evidence, hypotheses, organizations, users |
 | `investigation_sessions` | 17 | `session_id` | cases, organizations, users |
@@ -55,40 +53,6 @@
 
 ```mermaid
 erDiagram
-    agent_executions {
-        VARCHAR execution_id PK
-        VARCHAR organization_id FK
-        VARCHAR case_id FK
-        VARCHAR session_id FK
-        VARCHAR agent_type
-        VARCHAR agent_model
-        VARCHAR status
-        DATETIME started_at
-        DATETIME completed_at
-        INTEGER execution_duration_ms
-        TEXT prompt
-        TEXT response
-        TEXT error_message
-        TEXT token_usage
-        TEXT metadata
-        DATETIME created_at
-        DATETIME updated_at
-    }
-    agent_tool_calls {
-        VARCHAR tool_call_id PK
-        VARCHAR organization_id FK
-        VARCHAR execution_id FK
-        VARCHAR tool_name
-        TEXT tool_input
-        TEXT tool_output
-        VARCHAR status
-        TEXT error_message
-        DATETIME started_at
-        DATETIME completed_at
-        INTEGER duration_ms
-        DATETIME created_at
-        DATETIME updated_at
-    }
     case_actions {
         INTEGER transition_id PK
         VARCHAR organization_id FK
@@ -315,6 +279,8 @@ erDiagram
         VARCHAR state
         VARCHAR obtainability
         TEXT motivating_hypothesis_ids
+        TEXT surfaced_turns
+        BOOLEAN engine_inferred
         VARCHAR superseded_reason
         INTEGER created_at_turn
         DATETIME created_at
@@ -655,8 +621,6 @@ erDiagram
         TEXT dev_roles
         VARCHAR account_kind
     }
-    agent_executions ||--o{ agent_tool_calls : ""
-    cases ||--o{ agent_executions : ""
     cases ||--o{ case_actions : ""
     cases ||--o{ case_checkpoints : ""
     cases ||--o{ case_entities : ""
@@ -688,11 +652,8 @@ erDiagram
     evidence_needs ||--o{ evidence_need_fulfillment : ""
     hypotheses ||--o{ hypothesis_evidence : ""
     hypotheses ||--o{ solutions : ""
-    investigation_sessions ||--o{ agent_executions : ""
     knowledge_items ||--o{ conversion_drafts : ""
     knowledge_items ||--o{ knowledge_suggestions : ""
-    organizations ||--o{ agent_executions : ""
-    organizations ||--o{ agent_tool_calls : ""
     organizations ||--o{ case_actions : ""
     organizations ||--o{ case_checkpoints : ""
     organizations ||--o{ case_entities : ""

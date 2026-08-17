@@ -2382,6 +2382,37 @@ class EvidenceNeed(BaseModel):
         max_length=500,
     )
 
+    surfaced_turns: List[int] = Field(
+        default_factory=list,
+        description=(
+            "Turns on which this need was surfaced to the user as an "
+            "EVIDENCE-type suggestion. The durable ask history (#1079): the "
+            "anti-nagging rule used to tell the model to count its own prior "
+            "mentions by reading conversation history, which is unreachable "
+            "past the verbatim window (older turns collapse to a summary that "
+            "records no asks at all). Recorded by the engine at the suggestion "
+            "seam so the count is a fact the prompt can state rather than "
+            "something the model must reconstruct."
+        ),
+    )
+
+    engine_inferred: bool = Field(
+        default=False,
+        description=(
+            "True when the engine created this need from an EVIDENCE suggestion "
+            "the model raised without declaring one (#1079), rather than the "
+            "model authoring it through ``evidence_need_updates``.\n\n"
+            "Provenance matters because an inferred need is thinner than an "
+            "authored one: it has no real rationale and no "
+            "``motivating_hypothesis_ids``, because the engine knows an ask was "
+            "made but not which candidate it discriminates. Readers that reason "
+            "about the model's *deliberate* demand must exclude these — see "
+            "``MilestoneEngine._awaiting_recent_evidence``, where counting them "
+            "would stand anti-anchoring down on every turn the agent happens to "
+            "ask for something."
+        ),
+    )
+
     created_at_turn: int = Field(
         description="Turn number when the need was created.",
         ge=0,
@@ -2405,6 +2436,27 @@ class EvidenceNeed(BaseModel):
         one the investigation is still waiting on.
         """
         return self.state in (NeedState.PENDING, NeedState.PARTIALLY_MET)
+
+    @property
+    def times_surfaced(self) -> int:
+        """How many distinct turns this need has been asked for."""
+        return len(self.surfaced_turns)
+
+    @property
+    def last_surfaced_turn(self) -> Optional[int]:
+        """The most recent turn this need was asked for, or None if never."""
+        return max(self.surfaced_turns) if self.surfaced_turns else None
+
+    def record_surfaced(self, turn: int) -> None:
+        """Record that this need was surfaced as an ask on ``turn``.
+
+        Idempotent per turn — a turn that surfaces the same need through more
+        than one suggestion counts once, so the rendered count reads as "turns
+        on which I asked", which is what the anti-nagging judgment needs.
+        """
+        if turn not in self.surfaced_turns:
+            self.surfaced_turns.append(turn)
+            self.surfaced_turns.sort()
 
     @staticmethod
     def admissible_state(

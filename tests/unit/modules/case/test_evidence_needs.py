@@ -423,6 +423,91 @@ class TestRepositoryRoundTrip:
         assert retrieved.evidence_needs[0].obtainability == NeedObtainability.UNKNOWN
 
     @pytest.mark.asyncio
+    async def test_surfaced_turns_round_trip(self, repository):
+        """The ask history survives save/reload (#1079).
+
+        This is what makes the rendered repeat count span the case rather than
+        the prompt's 3-turn verbatim window. Dropped on save, every turn would
+        reload as "never asked" and the mention-decay rule would never fire —
+        the state the aws-iam ten-turn loop ran in.
+        """
+        case = _make_case()
+        need = _make_need(
+            case_id=case.case_id,
+            purpose=NeedPurpose.CAUSAL_VERIFICATION,
+        )
+        need.record_surfaced(4)
+        need.record_surfaced(9)
+        case.evidence_needs.append(need)
+
+        await repository.save(case)
+        retrieved = await repository.get(case.case_id)
+
+        loaded = retrieved.evidence_needs[0]
+        assert loaded.surfaced_turns == [4, 9]
+        assert loaded.times_surfaced == 2
+        assert loaded.last_surfaced_turn == 9
+
+    @pytest.mark.asyncio
+    async def test_surfaced_turns_defaults_empty_on_reload(self, repository):
+        """A need never put to the user reloads as never-asked."""
+        case = _make_case()
+        case.evidence_needs.append(_make_need(case_id=case.case_id))
+
+        await repository.save(case)
+        retrieved = await repository.get(case.case_id)
+
+        assert retrieved.evidence_needs[0].surfaced_turns == []
+
+    @pytest.mark.asyncio
+    async def test_surfaced_turns_accumulate_across_saves(self, repository):
+        """Re-save must not reset the history — the count grows turn on turn."""
+        case = _make_case()
+        need = _make_need(case_id=case.case_id)
+        need.record_surfaced(2)
+        case.evidence_needs.append(need)
+        await repository.save(case)
+
+        reloaded = await repository.get(case.case_id)
+        reloaded.evidence_needs[0].record_surfaced(3)
+        await repository.save(reloaded)
+
+        assert (await repository.get(case.case_id)).evidence_needs[
+            0
+        ].surfaced_turns == [2, 3]
+
+    @pytest.mark.asyncio
+    async def test_engine_inferred_round_trips(self, repository):
+        """Provenance must survive save/reload (#1079).
+
+        ``_awaiting_recent_evidence`` excludes engine-inferred needs so an ask
+        raised most turns cannot hold the anti-anchoring stand-down open
+        forever. Dropped on save, every inferred need reloads as
+        model-authored and that stand-down never lifts.
+        """
+        case = _make_case()
+        need = _make_need(case_id=case.case_id)
+        need.engine_inferred = True
+        case.evidence_needs.append(need)
+
+        await repository.save(case)
+        retrieved = await repository.get(case.case_id)
+
+        assert retrieved.evidence_needs[0].engine_inferred is True
+
+    @pytest.mark.asyncio
+    async def test_engine_inferred_defaults_false_on_reload(self, repository):
+        """A model-authored need reloads as authored — the pre-043 reading for
+        every existing row."""
+        case = _make_case()
+        case.evidence_needs.append(_make_need(case_id=case.case_id))
+
+        await repository.save(case)
+        retrieved = await repository.get(case.case_id)
+
+        assert retrieved.evidence_needs[0].engine_inferred is False
+
+    @pytest.mark.asyncio
     async def test_multiple_needs_preserve_creation_order(self, repository):
         case = _make_case()
         # Force a stable creation-time ordering by setting created_at_turn.

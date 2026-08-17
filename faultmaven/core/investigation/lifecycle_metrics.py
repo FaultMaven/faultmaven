@@ -145,6 +145,39 @@ evidence_need_id_dropped_total = Counter(
 )
 
 
+# #1079: EVIDENCE suggestions that arrived with NO ``evidence_need_id`` and had
+# to be attached to a need by ``evidence_need_linking``. This is the counter the
+# defect went unseen for want of: ``evidence_need_id_dropped_total`` only fires
+# on an unresolvable ``new_index_N``, so an ask that simply never declared a
+# need incremented nothing, and 138 consecutive unlinked asks across 19 runs
+# were indistinguishable from a healthy system.
+#
+# Healthy-system expectation: falling toward zero as the model adopts the
+# prompt's linking rule. It is NOT an error counter — the linking floor is
+# working when this fires — but a sustained high rate means the pool is being
+# authored by the engine's inference rather than the model's reasoning, and the
+# needs carry no rationale or motivating hypothesis as a result.
+# Labels:
+#   - ``created`` — no outstanding need matched the ask; a new one was recorded.
+#     Sustained: the model raises asks it never declares.
+#   - ``matched`` — the ask matched an outstanding need. Sustained: the model is
+#     RE-asking for something already in the pool without linking to it, which
+#     is the fm#1079 loop shape specifically.
+#   - ``error`` — linking raised and the turn continued without it. ANY sustained
+#     rate here means the fix is silently off: the engine falls back to shipping
+#     unlinked asks, which is indistinguishable from a healthy system on the
+#     other two labels (a model that started declaring its needs also drives
+#     them to zero). Logs cannot carry this signal — they roll out of
+#     ``kubectl logs`` long before anyone asks the question.
+evidence_suggestion_unlinked_total = Counter(
+    "faultmaven_evidence_suggestion_unlinked_total",
+    "EVIDENCE-type suggestions emitted without an evidence_need_id, by how the "
+    "engine attached them to a need (created a new one, or matched an "
+    "outstanding one).",
+    ["resolution"],
+)
+
+
 # §7.1 restatement guard (#656 turn-6 class): counts BLOCK EVENTS — the state
 # transition where a ROOT that would otherwise have validated (supported,
 # net-positive, AND-gate satisfied) is held at INCONCLUSIVE because its

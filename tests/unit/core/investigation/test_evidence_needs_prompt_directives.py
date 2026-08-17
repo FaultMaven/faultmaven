@@ -105,17 +105,38 @@ class TestLifecycleBlockContent:
             "Same-turn IDs",
             "Mutability",
             "Mention decay",
+            "A refused ask is a wall",
         ],
     )
     def test_directive_present(self, directive_marker):
         assert directive_marker in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
 
-    def test_mention_decay_references_conversation_history_mechanism(self):
-        """Per design §10.5 the decay rule has no stored counter — the
-        LLM scans its prior turns to count mentions. Without that
-        framing the LLM may treat every turn as a first mention."""
-        assert "prior turns" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
-        assert "no stored counter" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+    def test_mention_decay_reads_the_count_from_evidence_needs(self):
+        """The decay rule points at the rendered ask count, NOT at
+        conversation history (#1079).
+
+        The rule previously told the model to count its own prior mentions by
+        scanning the conversation history. That is unreachable: only
+        ``HISTORY_VERBATIM_TURNS`` (3) turns are verbatim and older turns
+        collapse to a summary recording no asks at all, so past three turns
+        every repeat read as a first mention and the ask never decayed. The
+        count is now a stored fact rendered into ``<evidence_needs>``.
+        """
+        assert "<evidence_needs>" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+        assert "asked 3×" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+        # The unsatisfiable instruction must not come back.
+        assert "no stored counter" not in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+
+    def test_refused_ask_directs_the_obtainability_wall(self):
+        """A user saying they cannot get the data must route to
+        ``obtainability=unobtainable``, not to another ask (#1079).
+
+        This is the branch the aws-iam stall never took: the user declined the
+        same target-account record six times and the agent re-asked on every
+        one of the ten turns that followed.
+        """
+        assert "obtainability=unobtainable" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
+        assert "cannot get the data" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
 
     def test_references_evidence_need_id_field(self):
         """The mention-decay rule requires populating ``evidence_need_id``

@@ -95,3 +95,130 @@ class TestPgObtainabilitySql:
         assert "obtainability" in insert_block
         assert ":obtainability" in insert_block
         assert '"obtainability": need.obtainability.value' in insert_block
+
+
+# ============================================================
+# Ask history persistence (#1079)
+# ============================================================
+
+
+def _row_with_surfaced(surfaced, engine_inferred=False):
+    """As ``_row``, plus the trailing ``surfaced_turns`` / ``engine_inferred``
+    columns (#1079)."""
+    return _row("unknown") + (surfaced, engine_inferred)
+
+
+@pytest.mark.unit
+class TestPgSurfacedTurnsReconstruction:
+    """``surfaced_turns`` is what makes the ask count durable across turns.
+    Losing it on the Postgres path would put Cloud back in the fm#1079 state —
+    every repeat reading as a first mention — while SQLite CI stayed green.
+    """
+
+    def test_jsonb_list_maps_to_surfaced_turns(self):
+        need = _repo()._row_to_evidence_need(
+            _row_with_surfaced([3, 7, 11]),
+            case_id="case_ce0000000001",
+            fulfilling_evidence_ids=[],
+        )
+        assert need is not None
+        assert need.surfaced_turns == [3, 7, 11]
+        assert need.times_surfaced == 3
+        assert need.last_surfaced_turn == 11
+
+    def test_json_string_is_tolerated(self):
+        """Dialect-compatibility paths hand back a JSON string, not a list."""
+        need = _repo()._row_to_evidence_need(
+            _row_with_surfaced("[4, 9]"),
+            case_id="case_ce0000000001",
+            fulfilling_evidence_ids=[],
+        )
+        assert need is not None
+        assert need.surfaced_turns == [4, 9]
+
+    @pytest.mark.parametrize("bad", [None, "not json"])
+    def test_absent_or_corrupt_reads_as_never_surfaced(self, bad):
+        """Fail-safe direction: understating the count keeps a live ask
+        visible rather than silencing it on a bad blob."""
+        need = _repo()._row_to_evidence_need(
+            _row_with_surfaced(bad),
+            case_id="case_ce0000000001",
+            fulfilling_evidence_ids=[],
+        )
+        assert need is not None
+        assert need.surfaced_turns == []
+
+    def test_pre_migration_row_length_is_tolerated(self):
+        """A short row (no surfaced_turns column) must not raise."""
+        need = _repo()._row_to_evidence_need(
+            _row("unknown"),
+            case_id="case_ce0000000001",
+            fulfilling_evidence_ids=[],
+        )
+        assert need is not None
+        assert need.surfaced_turns == []
+
+
+@pytest.mark.unit
+class TestPgSurfacedTurnsSql:
+    def test_engine_inferred_reconstructs(self):
+        """Provenance drives the anti-anchoring exclusion; losing it on the
+        Postgres path re-arms the stand-down every turn in Cloud only."""
+        need = _repo()._row_to_evidence_need(
+            _row_with_surfaced([3], engine_inferred=True),
+            case_id="case_ce0000000001",
+            fulfilling_evidence_ids=[],
+        )
+        assert need is not None
+        assert need.engine_inferred is True
+
+    def test_engine_inferred_defaults_false_on_short_row(self):
+        need = _repo()._row_to_evidence_need(
+            _row("unknown"),
+            case_id="case_ce0000000001",
+            fulfilling_evidence_ids=[],
+        )
+        assert need is not None
+        assert need.engine_inferred is False
+
+    def test_select_includes_surfaced_turns(self):
+        select_block = _REPO_SOURCE.split("FROM evidence_needs")[0]
+        assert "surfaced_turns" in select_block.rsplit("SELECT", 1)[1]
+        assert "engine_inferred" in select_block.rsplit("SELECT", 1)[1]
+
+    def test_insert_and_param_include_surfaced_turns(self):
+        insert_block = _REPO_SOURCE.split("INSERT INTO evidence_needs")[1].split(
+            "junction"
+        )[0]
+        assert "surfaced_turns = EXCLUDED.surfaced_turns" in insert_block
+        assert '"surfaced_turns": json.dumps(need.surfaced_turns)' in insert_block
+        assert "engine_inferred = EXCLUDED.engine_inferred" in insert_block
+        assert '"engine_inferred": need.engine_inferred' in insert_block
+
+
+@pytest.mark.unit
+class TestSurfacedTurnsMigrationTypeIsJsonbOnPostgres:
+    """Migration 043 must declare ``surfaced_turns`` with the PostgreSQL JSONB
+    variant, not a bare ``sa.Text()``.
+
+    The repository writes this column through ``_cast('surfaced_turns')``, which
+    emits ``CAST(... AS JSONB)`` on PostgreSQL. A TEXT column would accept every
+    write on SQLite (where the cast is a no-op) and reject every write in Cloud
+    — green CI, broken deploy. Same class of PostgreSQL-only dark path the rest
+    of this module guards.
+    """
+
+    def test_migration_declares_the_jsonb_variant(self):
+        source = (
+            Path(__file__).resolve().parents[5]
+            / "alembic"
+            / "versions"
+            / "20260817_1200_b6c7d8e9f0a1_043_evidence_need_surfaced_turns.py"
+        ).read_text()
+
+        assert "surfaced_turns" in source
+        assert "with_variant(" in source and "postgresql.JSONB" in source, (
+            "surfaced_turns must carry the postgresql JSONB variant — a bare "
+            "sa.Text() rejects the repository's CAST(... AS JSONB) write on "
+            "every PostgreSQL save while SQLite CI stays green"
+        )

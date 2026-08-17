@@ -1299,12 +1299,21 @@ investigation. You see it in <evidence_needs>; you mutate it via
   shortcut to stop investigating.
 - **Mention decay (anti-nagging).** When surfacing a PENDING need as
   an EVIDENCE-type SuggestedFollowUp, populate `evidence_need_id`
-  with the need's ID. Count mentions by scanning your prior turns in
-  the conversation history — no stored counter exists. First mention:
-  full request + rationale. Second: brief reminder. Third+: stop
-  surfacing (the need stays in the pool for upload-matching; it just
-  no longer appears as a suggestion). If the user asks "what else do
-  you need?", surface all PENDING needs regardless.
+  with the need's ID. <evidence_needs> shows how often each need has
+  already been asked for and on which turn (`asked 3× (last turn 9)`)
+  — read the count from there; do not try to reconstruct it from the
+  conversation history, which does not go back far enough. First
+  mention: full request + rationale. Second: brief reminder. Third+:
+  stop surfacing (the need stays in the pool for upload-matching; it
+  just no longer appears as a suggestion). If the user asks "what else
+  do you need?", surface all PENDING needs regardless.
+- **A refused ask is a wall, not a pending one.** If the user has said
+  they cannot get the data — no access, another team owns it, it does
+  not exist — that is an answer, not silence. Set
+  `obtainability=unobtainable` on that need and proceed on what you
+  have, stating the boundary and what it leaves unproven. Asking a
+  third time for something the user has already declined does not make
+  it available; it stalls the investigation on data that is not coming.
 """
 
 

@@ -1157,6 +1157,19 @@ class EvidenceNeedModel(Base):
     # mutated as a unit by the engine on hypothesis-retirement events.
     motivating_hypothesis_ids = Column(JsonBlob, nullable=False, server_default="[]")
 
+    # JSON list of turn numbers on which this need was surfaced to the user as
+    # an EVIDENCE suggestion (#1079). Durable so the rendered ask count spans
+    # the whole case rather than the prompt's verbatim history window. Stored as
+    # a blob for the same reasons as motivating_hypothesis_ids: small, never
+    # indexed, mutated as a unit.
+    surfaced_turns = Column(JsonBlob, nullable=False, server_default="[]")
+
+    # Provenance (#1079): True when the engine inferred this need from an
+    # EVIDENCE suggestion the model raised without declaring one. Readers of
+    # the model's deliberate demand must exclude these — see
+    # MilestoneEngine._awaiting_recent_evidence.
+    engine_inferred = Column(Boolean, nullable=False, server_default="0")
+
     # Required iff state='superseded'; NULL otherwise. Mirrors the
     # Pydantic model_validator on EvidenceNeed.
     superseded_reason = Column(String(500), nullable=True)
