@@ -33,7 +33,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "a5b6c7d8e9f0"  # current head (042 — operator audit role actions)
+HEAD_REVISION = "b6c7d8e9f0a1"  # current head (043 — evidence need surfaced turns)
 # Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
 # (029) regardless of no-op migrations stacked above it — more robust than a
 # relative "downgrade -1", which follows whatever the current head is.
