@@ -511,21 +511,19 @@ class ReportGenerationService:
         return None
 
     def _causal_map_block(self, case: Case) -> List[str]:
-        """Render the engine-derived causal map section, or nothing.
+        """The engine-derived causal map section, or nothing.
 
-        The map is serialized from the persisted causal graph — never
-        LLM-authored — so it can only depict structure the investigation
-        established. ``render_causal_map`` gates itself (cause established,
-        graph non-trivial) and returns None to mean "no map informs here".
-
-        Fail-closed: a rendering error omits the section rather than
-        shipping malformed diagram text in a final report, and never
-        blocks report generation. (Function-local import: the
-        _assurance_note precedent for report → core.investigation reads.)
+        Rendering, gating, and the legend are owned by
+        ``core.investigation.causal_map`` (see its docstrings). Fail-closed
+        here: any error — the import included — omits the section rather
+        than blocking report generation.
         """
-        from faultmaven.core.investigation.causal_map import render_causal_map
-
         try:
+            from faultmaven.core.investigation.causal_map import (
+                CAUSAL_MAP_LEGEND,
+                render_causal_map,
+            )
+
             fenced = render_causal_map(case)
         except Exception:
             logger.warning(
@@ -538,9 +536,7 @@ class ReportGenerationService:
             return []
         return [
             "## Causal Map\n",
-            "_From the investigation's causal analysis: ✓ validated · "
-            "○ candidate (not validated) · ✗ refuted. Solid arrows lead "
-            "from validated causes._\n",
+            f"{CAUSAL_MAP_LEGEND}\n",
             f"{fenced}\n",
         ]
 
@@ -549,9 +545,10 @@ class ReportGenerationService:
     ) -> str:
         """Generate resolution summary for RESOLVED cases.
 
-        Content structure per investigation-lifecycle-logic.md §1.7.4:
+        Content structure per investigation-lifecycle-logic.md §4.5.0:
         - Problem Statement
         - Root Cause (with mechanism if available)
+        - Causal Map (gated — established cause, non-trivial graph)
         - Solution Applied
         - Confirming Evidence (citation list, not a count)
         - Hypotheses Considered (grouped by status)
@@ -759,10 +756,11 @@ class ReportGenerationService:
     ) -> str:
         """Generate closure summary for CLOSED cases.
 
-        Content structure per investigation-lifecycle-logic.md §1.7.4:
+        Content structure per investigation-lifecycle-logic.md §4.5.0:
         - Problem Statement
         - Investigation State (milestone/evidence/hypothesis counts)
         - Closure Reason (with human label)
+        - Causal Map (gated — established cause, non-trivial graph)
         - Leading Hypotheses (top 5 by confidence)
         - Mitigation Status (when a mitigation was inserted)
         - Timeline
@@ -821,8 +819,10 @@ class ReportGenerationService:
             parts.extend(self._insufficient_evidence_boundary_block(case, hypotheses))
 
         # Causal Map — a close can still carry an established cause (e.g.
-        # solution_deferred); the same assurance gate inside the renderer
-        # keeps it off unresolved/unclear closes.
+        # solution_deferred). The renderer's assurance gate keys on the
+        # graph, not closure_reason: a close that never grounded a cause
+        # gets no map, while a close with a validated-but-unfixed cause
+        # legitimately shows what was established.
         parts.extend(self._causal_map_block(case))
 
         # Leading Hypotheses — top hypotheses at time of closure

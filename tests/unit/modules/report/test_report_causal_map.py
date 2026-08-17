@@ -137,6 +137,12 @@ async def test_resolution_summary_embeds_causal_map():
     assert "```mermaid" in summary
     # Section lands between the cause and the fix narrative.
     assert summary.index("## Root Cause") < summary.index("## Causal Map")
+    # The legend ships from causal_map (single source for the symbols).
+    assert "not established" in summary
+    # CommonMark spacing: header and fence are blank-line separated from
+    # their neighbors, so the map never merges into an adjacent block.
+    assert "\n\n## Causal Map\n" in summary
+    assert "```\n\n## " in summary
 
 
 @pytest.mark.asyncio

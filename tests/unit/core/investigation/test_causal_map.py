@@ -226,6 +226,35 @@ def test_labels_are_sanitized_and_truncated():
     assert all(len(ln) < 150 for ln in fenced.splitlines())
 
 
+def test_hash_sequences_are_neutralized():
+    # Mermaid decodes its own '#code;' escapes inside labels, so a literal
+    # '#' must ship as '#35;' or '#123;' in a statement would render '{'.
+    nodes, edges = _three_node_graph()
+    nodes[2] = CausalNode(
+        node_id=nodes[2].node_id,
+        statement="parser fails at token #123; in config",
+        node_type=NodeType.INTERMEDIATE,
+        generated_at_turn=2,
+    )
+    fenced = render_causal_map(_graded_case(nodes, edges))
+    assert "#35;123;" in fenced
+
+
+def test_truncation_measures_raw_text_not_escaped():
+    # 99 raw chars with 20 '&' — escaping inflates well past the cap, but
+    # the cap must measure what the author wrote, so nothing is cut.
+    nodes, edges = _three_node_graph()
+    nodes[2] = CausalNode(
+        node_id=nodes[2].node_id,
+        statement=("A & B & C " * 10).strip(),
+        node_type=NodeType.INTERMEDIATE,
+        generated_at_turn=2,
+    )
+    fenced = render_causal_map(_graded_case(nodes, edges))
+    assert "…" not in fenced
+    assert fenced.count("&amp;") == 20
+
+
 def test_duplicate_edges_render_once():
     nodes, edges = _three_node_graph()
     edges = edges + [
@@ -270,6 +299,28 @@ def test_no_map_when_graph_too_dense():
         _root_node(0x100 + i, f"filler cause {i}", turn=4) for i in range(MAX_NODES)
     ]
     assert render_causal_map(_graded_case(nodes + extra, edges)) is None
+
+
+def test_no_map_when_problem_anchor_disconnected():
+    # Enough nodes and resolvable edges, but no rendered edge arrives at
+    # D: the symptom would float beside the chain, explaining nothing.
+    nodes, edges = _three_node_graph()
+    stray = CausalNode(
+        node_id=f"cn_{_hex12(0xF)}",
+        statement="downstream retries amplify load",
+        node_type=NodeType.INTERMEDIATE,
+        generated_at_turn=3,
+    )
+    edges = [
+        edges[0],  # root -> intermediate
+        CausalEdge(
+            edge_id=f"ce_{_hex12(4)}",
+            cause_node_id=nodes[2].node_id,
+            effect_node_id=stray.node_id,
+            created_at_turn=3,
+        ),
+    ]
+    assert render_causal_map(_graded_case(nodes + [stray], edges)) is None
 
 
 def test_no_map_when_edges_dangle():

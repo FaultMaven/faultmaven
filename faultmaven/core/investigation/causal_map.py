@@ -37,7 +37,16 @@ from faultmaven.modules.case.contracts import (
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case, CausalNode
 
-__all__ = ["render_causal_map"]
+__all__ = ["CAUSAL_MAP_LEGEND", "render_causal_map"]
+
+# The human-readable key for the symbols this module draws. Owned here,
+# beside the glyph table and arrow rule it describes, so the diagram and
+# its legend cannot drift apart; the report renders it verbatim.
+CAUSAL_MAP_LEGEND = (
+    "_From the investigation's causal analysis: ✓ validated · "
+    "○ not established (candidate or inconclusive) · ✗ refuted. "
+    "Solid arrows lead from validated causes._"
+)
 
 # Below MIN the map is a restated sentence; above MAX it is an unreadable
 # hairball (dev-DB terminal graphs top out around 15 nodes).
@@ -62,20 +71,25 @@ _WHITESPACE = re.compile(r"\s+")
 def _sanitize_label(text: str) -> str:
     """Make a node statement safe inside a double-quoted mermaid label.
 
-    Order matters: ampersands first, so the entities introduced for the
-    angle brackets survive. Double quotes would terminate the label, so
-    they become apostrophes.
+    Truncation runs on the raw text, BEFORE escaping, so the cap measures
+    what the author wrote (escaping inflates '&' to 5 chars) and the cut
+    can never bisect an inserted entity into visible garbage.
+
+    Mermaid decodes two escape syntaxes inside labels — HTML entities and
+    its own ``#code;`` form — so '&'/'<'/'>' become entities and '#'
+    becomes ``#35;`` (a literal '#'), keeping accidental sequences like
+    '#123;' in a statement from being decoded into other characters.
+    Double quotes would terminate the label (they become apostrophes);
+    a backtick right after the opening quote flips mermaid into
+    markdown-string parsing, so backticks are dropped.
     """
     text = _WHITESPACE.sub(" ", text).strip()
-    text = text.replace("&", "&amp;")
-    text = text.replace('"', "'")
-    text = text.replace("<", "&lt;").replace(">", "&gt;")
-    # A backtick right after the opening quote flips mermaid into
-    # markdown-string parsing; real node statements carry inline code
-    # spans, so drop backticks rather than risk it.
-    text = text.replace("`", "")
+    text = text.replace('"', "'").replace("`", "")
     if len(text) > MAX_LABEL_CHARS:
         text = text[: MAX_LABEL_CHARS - 1].rstrip() + "…"
+    text = text.replace("&", "&amp;")
+    text = text.replace("<", "&lt;").replace(">", "&gt;")
+    text = text.replace("#", "#35;")
     return text
 
 
@@ -93,9 +107,9 @@ def render_causal_map(case: "Case") -> Optional[str]:
     """Return a fenced ``mermaid`` block for the case's causal graph, or None.
 
     None means "no map would inform here": the cause is not established, the
-    graph is trivially small or degenerately large, the problem anchor is
-    missing, or too few edges survive dangling-reference checks. Callers
-    treat None as "omit the section" — never as an error.
+    graph is trivially small or degenerately large, or too few edges survive
+    dangling-reference checks to draw a chain that reaches the problem
+    anchor. Callers treat None as "omit the section" — never as an error.
     """
     if grade_cause_assurance(case) not in (
         CauseAssuranceGrade.MECHANISTIC,
@@ -105,16 +119,17 @@ def render_causal_map(case: "Case") -> Optional[str]:
 
     nodes = list((case.causal_nodes or {}).values())
     edges = list(case.causal_edges or [])
-    if not (MIN_NODES <= len(nodes) <= MAX_NODES) or len(edges) < MIN_EDGES:
+    if not (MIN_NODES <= len(nodes) <= MAX_NODES):
         return None
-    if not any(n.node_type == NodeType.PROBLEM for n in nodes):
+    problem_ids = {n.node_id for n in nodes if n.node_type == NodeType.PROBLEM}
+    if not problem_ids:
         return None
 
     # Stable order: creation turn, then node id — deterministic across
     # dict-insertion order and regenerations.
     nodes.sort(key=lambda n: (n.generated_at_turn, n.node_id))
-    by_id = {n.node_id: n for n in nodes}
     mermaid_ids = {n.node_id: f"n{i}" for i, n in enumerate(nodes, 1)}
+    validated_ids = {n.node_id for n in nodes if n.node_state == NodeState.VALIDATED}
 
     lines = ["flowchart LR"]
     for node in nodes:
@@ -122,23 +137,28 @@ def render_causal_map(case: "Case") -> Optional[str]:
 
     edge_lines: list[str] = []
     seen_pairs: set[tuple[str, str]] = set()
+    reaches_problem = False
     for edge in sorted(edges, key=lambda e: (e.created_at_turn, e.edge_id)):
         pair = (edge.cause_node_id, edge.effect_node_id)
         if pair in seen_pairs:
             continue
-        cause = by_id.get(edge.cause_node_id)
-        if cause is None or edge.effect_node_id not in by_id:
-            continue  # dangling reference — draw only what resolves
         seen_pairs.add(pair)
+        if edge.cause_node_id not in mermaid_ids or (
+            edge.effect_node_id not in mermaid_ids
+        ):
+            continue  # dangling reference — draw only what resolves
         # A solid arrow leaves an established cause; everything unproven
         # stays dotted so the drawing never over-claims (M4 in ink).
-        arrow = "-->" if cause.node_state == NodeState.VALIDATED else "-.->"
+        arrow = "-->" if edge.cause_node_id in validated_ids else "-.->"
         edge_lines.append(
             f"    {mermaid_ids[edge.cause_node_id]} {arrow} "
             f"{mermaid_ids[edge.effect_node_id]}"
         )
+        reaches_problem = reaches_problem or edge.effect_node_id in problem_ids
 
-    if len(edge_lines) < MIN_EDGES:
+    # The chain must actually arrive at the symptom: a map whose problem
+    # anchor floats disconnected beside the arrows explains nothing.
+    if len(edge_lines) < MIN_EDGES or not reaches_problem:
         return None
 
     lines.extend(edge_lines)
