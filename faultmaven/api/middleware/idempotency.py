@@ -119,14 +119,14 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        # Scope the cache to the caller. A request that carries no credential
-        # must not participate in idempotency in either direction — it may
-        # neither read nor write the cache. Unidentified callers would
-        # otherwise all share one bucket, and because the cache lookup happens
-        # before ``call_next`` (route-level ``Depends`` auth never runs on a
-        # hit) an unauthenticated request could be served an authenticated
-        # caller's response body.
-        caller_identity = self._caller_identity(request)
+        # Scope the cache to the principal behind the request. A request that
+        # carries no credential must not participate in idempotency in either
+        # direction — it may neither read nor write the cache. Unidentified
+        # callers would otherwise all share one bucket, and because the cache
+        # lookup happens before ``call_next`` (route-level ``Depends`` auth
+        # never runs on a hit) an unauthenticated request could be served an
+        # authenticated caller's response body.
+        caller_identity = await self._caller_identity(request)
         if caller_identity is None:
             return await call_next(request)
 
@@ -257,43 +257,140 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             return True
         return any(marker in path for marker in EXCLUDED_PATH_MARKERS)
 
-    def _caller_identity(self, request: Request) -> Optional[str]:
-        """Hash the raw credential material that identifies the caller.
+    def _auth_service(self, request: Request):
+        """The verifier used to name the principal, or ``None``.
 
-        ``Authorization`` is **required and sufficient**. It is the only header
-        a caller cannot simply choose: ``X-Session-ID`` is client-supplied and
-        guessable, so accepting it alone would let one caller pre-seed a bucket
-        that a later caller with the same session id is then served from.
+        Read straight off ``app.state`` — wired by the composition root in
+        ``main.py`` beside the other auth services — rather than through
+        ``api.middleware.auth.get_auth_service``, whose fallback *constructs* an
+        ``AuthService`` when none is wired. Constructing one per request inside
+        a middleware would load keys (and generate a development RSA pair) on
+        the hot path. An app without the service wired simply falls back to the
+        raw-credential scope below, which is what this middleware did for every
+        request before fm#1087.
+        """
+        try:
+            return getattr(request.app.state, "auth_service", None)
+        except Exception:  # pragma: no cover - defensive
+            return None
 
-        ``X-Session-ID`` is deliberately **not** mixed in either. It rotates far
-        more often than the token: the copilot attaches both headers
-        (``fetch-utils.ts`` ``getAuthHeaders``) and, on a 401, its retry path
-        calls ``refreshSession()``, which persists a *new* session id before
-        re-sending. Including it would put that retry in a different bucket, so
-        the request would execute a second time — precisely the duplicate this
-        middleware exists to prevent, on the one path where it matters most.
-        One authenticated principal replaying its own response across two
-        sessions is correct behaviour, not a leak.
+    async def _caller_identity(self, request: Request) -> Optional[str]:
+        """Name the principal this request belongs to, as a cache scope.
+
+        ``Authorization`` is **required**: it is the only header a caller cannot
+        simply choose. ``X-Session-ID`` is client-supplied and guessable, so
+        accepting it alone would let one caller pre-seed a bucket that a later
+        caller with the same session id is then served from.
 
         Returns ``None`` when there is no ``Authorization`` header, which the
         dispatcher treats as "do not participate in idempotency" — the same
         fail-closed shape as ``DeduplicationMiddleware`` returning a ``None``
         request hash when there is no session id.
 
-        The identity is derived from the *raw* credential on the wire, never
-        from a decoded JWT claim. This middleware runs before any signature
-        verification, so a claim such as ``sub`` is attacker-controlled at this
-        point: keying on it would let a forged, unverified token select which
-        caller's cache bucket to land in. The raw string cannot be forged into
-        another caller's bucket without already possessing that caller's
-        credential. It is hashed so no credential material reaches Redis keys
-        or logs.
+        **Scope the bucket to the principal, not to the credential (fm#1087).**
+        Hashing the raw ``Authorization`` header put every rotation of a
+        caller's credential in a different bucket. The copilot refreshes its
+        access token periodically, so a retry issued after a refresh carried a
+        new bearer string, missed the cache and executed the turn a second time
+        — committing a duplicate message to the case. That is the identical
+        failure this middleware already reasons about for ``X-Session-ID``,
+        which is excluded *because* it rotates; the access token rotates the
+        same way, on the same 401 -> refresh -> retry path, and the exclusion
+        had only ever been applied to one of the two rotating identifiers.
+
+        One authenticated principal replaying its own response across two
+        access tokens is correct behaviour, not a leak — exactly as it is
+        across two session ids.
+
+        **Why ``sub`` is safe here and was not before.** The previous docstring
+        refused to key on a JWT claim, and its reasoning was right for the code
+        as written: this middleware runs before route-level ``Depends`` auth, so
+        an *undecoded* claim is attacker-controlled, and because a cache hit
+        returns before ``call_next`` a forged token would have been a
+        bucket-selection primitive over other callers' response bodies. That is
+        a statement about ordering, not an immutable constraint. The token is
+        now verified **here**, by the same
+        ``AuthService.verify_token_with_revocation_check`` the mandatory-auth
+        middleware, the tenant binder and the optional-auth dependency use:
+        signature, expiry, issuer, audience, required claims, ``type ==
+        "access"`` and the revocation list. A ``sub`` that survives that is not
+        forgeable without already holding a live credential for that principal.
+
+        Verification failure is **not** an error path: an unverifiable
+        ``Authorization`` header names no principal, so the identity falls back
+        to the raw credential hash — the narrowest scope available, reachable
+        only by a caller presenting that byte-identical header. Narrowing can
+        cost a replay; it can never serve one caller another's body. This is
+        also the path an app takes when no ``AuthService`` is wired, and it is
+        what keeps a non-JWT bearer scheme scoped rather than silently
+        unprotected.
+
+        The two scopes are namespaced apart so a verified principal and a raw
+        credential can never hash into the same bucket. Both are hashed, so no
+        credential material and no user id reaches Redis keys or logs.
+
+        The namespacing does mean one *new* fork, and it is deliberate: a token
+        that verified on the first attempt and has since expired or been revoked
+        moves from the ``sub`` scope to the ``raw`` one, so that retry misses
+        where the old code would have replayed. On every surface this feature
+        exists for — turn submission, case creation, closure, reports — the miss
+        cannot duplicate anything: they take ``require_authentication``, which
+        rejects that same dead token, so the request falls through to the 401 it
+        was going to get anyway, and a 401 is never cached.
+
+        The exhaustive residual, stated rather than waved at: three POST routes
+        admit an unverified caller via ``get_current_user_optional``. Two are
+        searches (``/knowledge/search``, ``/knowledge/documents/search``), which
+        re-run harmlessly. The third, ``/cases/sessions/{sid}/case``, falls back
+        to the session's user — and only its ``force_new=true`` variant creates
+        anything, since ``force_new=false`` returns the session's existing case
+        by construction. A dead-credential retry there re-runs where it used to
+        replay. ``POST /api/v1/sessions`` is already excluded structurally.
+
+        The copilot reaches none of that: on a 401 it refreshes and retries with
+        a *new* token, which is the case this change exists to fix.
         """
         authorization = request.headers.get("Authorization")
         if not authorization:
             return None
 
-        return hashlib.sha256(authorization.encode("utf-8")).hexdigest()
+        principal = await self._verified_principal(request, authorization)
+        if principal is not None:
+            return f"sub:{hashlib.sha256(principal.encode('utf-8')).hexdigest()}"
+
+        return f"raw:{hashlib.sha256(authorization.encode('utf-8')).hexdigest()}"
+
+    async def _verified_principal(
+        self, request: Request, authorization: str
+    ) -> Optional[str]:
+        """The verified ``sub`` of the bearer token, or ``None``.
+
+        Every failure — no bearer token, no verifier wired, bad signature,
+        expired, revoked, wrong token type — returns ``None`` so the caller
+        falls back to the raw-credential scope. Nothing here may raise: this
+        runs before ``dispatch``'s try block, and idempotency scoping must never
+        turn a serviceable request into a 500.
+        """
+        from .auth import _extract_token
+
+        token = _extract_token(authorization, None)
+        if not token:
+            return None
+
+        auth_service = self._auth_service(request)
+        if auth_service is None:
+            return None
+
+        try:
+            claims = await auth_service.verify_token_with_revocation_check(
+                token, token_type="access"
+            )
+        except Exception as e:
+            logger.debug(f"Idempotency scope falling back to raw credential: {e}")
+            return None
+
+        subject = claims.get("sub")
+        return subject if isinstance(subject, str) and subject else None
 
     async def _body_fingerprint(self, request: Request) -> str:
         """Fingerprint the request body so a reused key cannot swap payloads.
@@ -350,9 +447,11 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     ) -> str:
         """Create a Redis cache key scoped to caller and route.
 
-        The key must not be reachable by anyone but the caller that created it,
-        so caller identity is part of the hashed material rather than an
-        advisory extra.
+        The key must not be reachable by anyone but the principal that created
+        it, so caller identity is part of the hashed material rather than an
+        advisory extra. It identifies the *principal* rather than the
+        credential, so a retry that straddles a token refresh still lands in the
+        bucket its first attempt wrote (fm#1087) — see ``_caller_identity``.
 
         The query string is included because it selects behaviour, not just
         presentation: ``POST /api/v1/cases/sessions/{sid}/case?force_new=true``
