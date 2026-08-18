@@ -456,3 +456,124 @@ async def test_a_broken_verifier_degrades_instead_of_500ing(auth_service):
     assert first.status_code == 200, "a broken verifier must not 500 the request"
     assert retry.status_code == 200
     assert _replayed(retry), "it must still replay under the raw fallback scope"
+
+
+# ---------------------------------------------------------------------------
+# Tenancy: the raw-credential scope distinguished org contexts as a side effect
+# (the org claim rides inside the signed token). Keying on ``sub`` alone would
+# drop that and lean on ``resolve_organization_claim`` reading the org off the
+# user record — an invariant that lives in another module, is not enforced here,
+# and would put two different-tenant requests in one bucket if it ever stopped
+# holding. The org is carried in the scope instead.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.asyncio
+async def test_one_sub_under_two_orgs_does_not_share_a_bucket(auth_service):
+    """Same principal, different verified tenant — must not replay across them.
+
+    A cache hit returns before ``call_next``, so a shared bucket here would hand
+    the second request the first tenant's response body without the route ever
+    running.
+    """
+    app, _ = _build_app(auth_service)
+    OTHER_ORG = "44444444-4444-4444-4444-444444444444"
+    in_org_a = forge_access_token(
+        auth_service,
+        user_id=USER_ID,
+        organization_id=ORG_ID,
+        email="user@example.com",
+        roles=["member"],
+    )
+    in_org_b = forge_access_token(
+        auth_service,
+        user_id=USER_ID,
+        organization_id=OTHER_ORG,
+        email="user@example.com",
+        roles=["member"],
+    )
+    assert _claims_of(in_org_a)["sub"] == _claims_of(in_org_b)["sub"]
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/json-turn",
+            headers={"Authorization": f"Bearer {in_org_a}", "Idempotency-Key": KEY},
+            json={"query": "same body"},
+        )
+        cross_tenant = await client.post(
+            "/api/v1/json-turn",
+            headers={"Authorization": f"Bearer {in_org_b}", "Idempotency-Key": KEY},
+            json={"query": "same body"},
+        )
+
+    assert not _replayed(first)
+    assert not _replayed(cross_tenant), "a different tenant must not be served my body"
+    assert app.state.route_calls["json"] == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_refresh_fix_still_holds_with_the_org_term(auth_service):
+    """Carrying the org must not undo fm#1087: a refresh keeps sub *and* org."""
+    app, _ = _build_app(auth_service)
+    before_refresh = _access_token(auth_service)
+    after_refresh = _access_token(auth_service)
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/json-turn",
+            headers={
+                "Authorization": f"Bearer {before_refresh}",
+                "Idempotency-Key": KEY,
+            },
+            json={"query": "same body"},
+        )
+        retry = await client.post(
+            "/api/v1/json-turn",
+            headers={
+                "Authorization": f"Bearer {after_refresh}",
+                "Idempotency-Key": KEY,
+            },
+            json={"query": "same body"},
+        )
+
+    assert not _replayed(first)
+    assert _replayed(retry)
+    assert app.state.route_calls["json"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_claims_without_a_usable_sub_degrade_instead_of_500ing(auth_service):
+    """The claim reads are inside the guard, not protected by another module's type.
+
+    ``verify_token_with_revocation_check`` is typed ``-> Dict[str, Any]`` and
+    raises on every failure, so ``claims`` is never ``None`` today. That is a
+    contract in ``auth_service``, not structure here — a verifier that returned
+    ``None`` must degrade to the raw scope, not 500 every idempotent POST.
+    """
+
+    class _NullReturningVerifier:
+        async def verify_token_with_revocation_check(self, *args, **kwargs):
+            return None
+
+    app, _ = _build_app(auth_service)
+    app.state.auth_service = _NullReturningVerifier()
+    token = _access_token(auth_service)
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/json-turn",
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": KEY},
+            json={"query": "same body"},
+        )
+        retry = await client.post(
+            "/api/v1/json-turn",
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": KEY},
+            json={"query": "same body"},
+        )
+
+    assert first.status_code == 200
+    assert _replayed(retry), "must still replay under the raw fallback scope"

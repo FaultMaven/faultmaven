@@ -315,6 +315,18 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         signature, expiry, issuer, audience, required claims, ``type ==
         "access"`` and the revocation list. A ``sub`` that survives that is not
         forgeable without already holding a live credential for that principal.
+        The scope is that ``sub`` *and* the verified ``organization_id``
+        alongside it — see ``_verified_principal`` for why the org is carried
+        rather than assumed.
+
+        One caveat on the revocation half, so it is not read as stronger than it
+        is: ``AuthService._is_revoked`` is **fail-open by design** — if the
+        revocation store is unavailable it reports "not revoked" rather than
+        rejecting all traffic. During a store outage a revoked token therefore
+        still scopes as a principal and can replay. That is this deployment's
+        documented posture rather than something this middleware chooses, and it
+        is bounded by the access-token lifetime; but revocation is a
+        best-effort term in the scope, not a guarantee.
 
         Verification failure is **not** an error path: an unverifiable
         ``Authorization`` header names no principal, so the identity falls back
@@ -363,21 +375,50 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
     async def _verified_principal(
         self, request: Request, authorization: str
     ) -> Optional[str]:
-        """The verified ``sub`` of the bearer token, or ``None``.
+        """The verified principal as scope material, or ``None``.
+
+        The material is the ``sub`` **and** the ``organization_id`` the token
+        was minted under, both read from the same verified claim set.
+
+        Carrying the org is not defence in depth for its own sake; it replaces a
+        cross-module invariant with structure. Hashing the raw ``Authorization``
+        header distinguished org contexts as a side effect, because the org
+        claim is inside the signed token. Keying on ``sub`` alone would drop
+        that, and the safety of dropping it would rest on
+        ``resolve_organization_claim`` reading the org off the user record — so
+        that two tokens for one ``sub`` always agree on it. That holds today,
+        but it holds in ``jwt_token_generator``, not here: an org rebind, or any
+        future path where the org rides the credential rather than a membership
+        row, would put two different-tenant requests in one bucket. A cache hit
+        returns before ``call_next``, so the second would be served the first's
+        body — the failure class the original docstring was written to prevent,
+        reached from the other side. Multi-tenancy is on the beta path, so this
+        is a matter of when it is exercised.
+
+        Folding it in cannot backfire, because an extra term can only **split**
+        buckets, never merge them: two principals with different ``sub`` never
+        collide whatever their org says. A missing, stale or wrong org can
+        therefore cost a replay; it can never serve one caller another's body.
 
         Every failure — no bearer token, no verifier wired, bad signature,
-        expired, revoked, wrong token type — returns ``None`` so the caller
-        falls back to the raw-credential scope. Nothing here may raise: this
-        runs before ``dispatch``'s try block, and idempotency scoping must never
-        turn a serviceable request into a 500.
+        expired, revoked, wrong token type, or a claim set that does not carry a
+        usable ``sub`` — returns ``None`` so the caller falls back to the
+        raw-credential scope. Nothing here may raise: this runs before
+        ``dispatch``'s try block, and idempotency scoping must never turn a
+        serviceable request into a 500.
 
-        The lazy import is inside the guard for that reason and not by
-        oversight. It is resolved at request time, so it can fail at request
-        time — a circular import through a partially initialized module, or
-        ``_extract_token`` being renamed in ``auth.py``, which neither startup
-        nor ``lint-imports`` would catch. Outside the guard that lands as a 500
-        on every POST carrying an ``Idempotency-Key``; inside it, it degrades to
-        the raw scope like any other reason the principal cannot be named.
+        Everything is therefore inside the guard, including two things that look
+        like they do not need to be. The lazy import resolves at request time,
+        so it can fail at request time — a circular import through a partially
+        initialized module, or ``_extract_token`` being renamed in ``auth.py``,
+        which neither startup nor ``lint-imports`` would catch. And the claim
+        reads are safe only because ``verify_token_with_revocation_check`` is
+        typed ``-> Dict[str, Any]`` and raises on every failure path, so
+        ``claims`` is never ``None`` — a type contract in another module, which
+        is not what "must never 500" should rest on. Both would land as a 500 on
+        every POST carrying an ``Idempotency-Key``; inside the guard they
+        degrade to the raw scope like any other reason the principal cannot be
+        named.
         """
         try:
             from .auth import _extract_token
@@ -393,12 +434,22 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
             claims = await auth_service.verify_token_with_revocation_check(
                 token, token_type="access"
             )
+
+            subject = claims.get("sub")
+            if not isinstance(subject, str) or not subject:
+                return None
+
+            organization = claims.get("organization_id")
+            if not isinstance(organization, str):
+                organization = ""
+
+            # A separator no id can contain, so ``(sub, org)`` pairs cannot be
+            # re-partitioned into the same string by a value that happens to
+            # span the boundary.
+            return f"{subject}\x1f{organization}"
         except Exception as e:
             logger.debug(f"Idempotency scope falling back to raw credential: {e}")
             return None
-
-        subject = claims.get("sub")
-        return subject if isinstance(subject, str) and subject else None
 
     async def _body_fingerprint(self, request: Request) -> str:
         """Fingerprint the request body so a reused key cannot swap payloads.
