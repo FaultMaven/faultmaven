@@ -2853,6 +2853,19 @@ def _build_causal_graph_block(case: Case) -> str:
             f"(Confidence: {h.likelihood*100:.0f}%, State: {h.state.value})"
         )
         chain_ids = h.path or ([h.root_node_id] if h.root_node_id else [])
+        if not chain_ids and h.state.value not in ("refuted", "retired"):
+            # An unanchored hypothesis renders as a bare statement with no rungs
+            # under it — legible only if you notice an absence. Say it, the same
+            # way the block names every other recovery action inline. This is the
+            # recovery path after the engine REFUSES a root_node_ref that named a
+            # root another hypothesis already owns (fm#1091): without the ask
+            # restated here, the model has no reason to revisit an anchoring it
+            # believes it already made.
+            lines.append(
+                "    (no chain yet — emit this hypothesis's OWN root cause node "
+                "and point root_node_ref at it; a root another hypothesis "
+                "already owns cannot be reused)"
+            )
         for nid in chain_ids:
             n = nodes.get(nid)
             if n is None or n.node_type.value == "problem":

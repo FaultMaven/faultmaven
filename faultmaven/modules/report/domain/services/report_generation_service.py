@@ -472,6 +472,14 @@ class ReportGenerationService:
           asserting them to the user is the same over-claim.
         - ``PROPOSED`` — uncorrelated or still pending. Kept only when nothing
           was applied, and labeled as a proposal rather than as the fix.
+
+        A proposal still pending BESIDE an executed fix is therefore dropped.
+        That is deliberate: the engine supersedes a pending action when the next
+        one is proposed, so a proposal that outlives an accepted one is the model
+        restating the fix at resolution time (the third entry in fm#1091), and
+        "Solution Applied" is a claim about what was done. A genuinely distinct
+        follow-up recommendation lives in the narrative and the transcript, not
+        in a section that says applied.
         """
         proposed_actions = getattr(case, "proposed_actions", []) or []
         applied: List[Any] = []
