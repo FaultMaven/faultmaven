@@ -29,7 +29,10 @@ _SURFACED_CAUSAL_CAP = 3
 #: written. Two recorded asks means the next one is the third — the one the
 #: stated policy already says not to make. The engine stops making it instead of
 #: asking the model to refrain, because on fm#1079 the model read that rule, and
-#: the rendered ask count, and re-asked anyway on turns 8, 11, 12, 13 and 15.
+#: the rendered ask count, and surfaced one need seven times anyway
+#: (``case_897ce7909658`` / ``eneed_1fd2c33f2a43``, turns 3, 5, 6, 7, 9, 10, 12)
+#: and another eight times (``case_6a540e0da057`` / ``eneed_930baee1cae6``,
+#: turns 5–12), while the user was cooperating and supplying data.
 _ASK_REPEAT_FLOOR = 2
 
 #: Turns that must have elapsed since the FIRST recorded ask.

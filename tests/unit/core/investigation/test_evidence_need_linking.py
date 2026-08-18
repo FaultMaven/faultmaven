@@ -5,8 +5,8 @@ with no ``evidence_need_id``, and nothing noticed. Across 19 recorded simulator
 runs (six scenarios, 138 EVIDENCE suggestions) the field was populated zero
 times, so both anti-nagging mechanisms — the obtainability wall and mention
 decay, which act on an ``EvidenceNeed`` — had nothing to act on. On the aws-iam
-scenario the agent asked for the same target-account record across ten
-consecutive turns while the user declined six times.
+scenario the agent asked for the same target-account record turn after turn and
+nothing in the pool recorded a repeat.
 
 The existing ``test_evidence_need_id_resolution.py`` covers the seam that
 resolves the field once it is set; nothing covered the field never being set.

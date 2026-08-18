@@ -20,10 +20,10 @@ silently when it was absent. Across 19 recorded simulator runs — six scenarios
 138 EVIDENCE suggestions — the field was populated **zero** times. So every ask
 FaultMaven put to a user was a free-floating string that existed only in that
 turn's response: nothing to declare a wall on, nothing to count mentions of,
-nothing for the surface cap to bound. On fm#1079 the agent asked for the same
-target-account IAM record on ten consecutive turns while the user declined six
-times, and no engine mechanism could see a repeat, because from the pool's point
-of view no ask had ever been made.
+nothing for the surface cap to bound. On fm#1079 the agent put the same
+target-account IAM ask to the user turn after turn, and no engine mechanism
+could see a repeat, because from the pool's point of view no ask had ever been
+made.
 
 This module reconciles the two: before the turn is saved, every EVIDENCE
 suggestion is attached to a need — an existing one where the ask matches, a
@@ -49,9 +49,16 @@ Identity was necessary and not sufficient
 Giving asks an identity made the repeat *visible* — a re-ask lands on the need it
 repeats rather than on a fresh one — but nothing acted on it. The count was
 rendered into the prompt beside a rule telling the model to stop at the third,
-and on ``case_897ce7909658`` the model read both and re-asked for the same STS
-call path on turns 8, 11, 12, 13 and 15, after the user had twice stated no
-further data existed. Every evidence-need row on that case still read
+and the pool recorded the rule being ignored: on ``case_897ce7909658``,
+``eneed_1fd2c33f2a43`` carries ``surfaced_turns = [3, 5, 6, 7, 9, 10, 12]`` —
+seven surfacings of one need, which ended FULFILLED — and on
+``case_6a540e0da057``, ``eneed_930baee1cae6`` carries
+``surfaced_turns = [5, 6, 7, 8, 9, 10, 11, 12]``, eight. What that measures is
+over-offering while the user COOPERATES: on ``case_897ce7909658`` the user
+submitted a new data file on each of turns 8, 11, 12 and 13. It is not
+re-asking after a refusal — reviewing the transcripts of these cases found no
+instance of a need re-surfaced after the user stated the data was unavailable.
+Every evidence-need row on ``case_897ce7909658`` still read
 ``obtainability = unknown``.
 
 So the decay rule is enforced here rather than requested: an ask whose need is
@@ -361,11 +368,12 @@ def link_evidence_suggestions_to_needs(
     The drop is the enforcement half of the mention-decay rule (fm#1079). That
     rule — "First mention: full request. Second: brief reminder. Third+: stop
     surfacing" — has been in the prompt throughout, alongside the rendered ask
-    count and the "a refused ask is a wall, not a pending one" directive, and
-    the model re-asked for the same STS call path on turns 8, 11, 12, 13 and 15
-    of ``case_897ce7909658`` after the user twice said no more data existed. The
-    policy was never the missing piece; an engine that acts on it was. So the
-    third ask is not made, rather than asked not to be made.
+    count, and the pool still recorded one need surfaced seven times on
+    ``case_897ce7909658`` (``eneed_1fd2c33f2a43``, turns 3, 5, 6, 7, 9, 10, 12)
+    and eight times on ``case_6a540e0da057`` (``eneed_930baee1cae6``, turns
+    5–12) — while the user was cooperating and supplying data. The policy was
+    never the missing piece; an engine that acts on it was. So the third ask is
+    not made, rather than asked not to be made.
 
     Ordering inside the loop is load-bearing: exhaustion is evaluated BEFORE
     ``record_surfaced``. Recording first would let this turn's ask count toward

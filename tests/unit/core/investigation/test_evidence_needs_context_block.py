@@ -731,8 +731,9 @@ class TestAskHistoryRendering:
     That reconstruction is unreachable: ``HISTORY_VERBATIM_TURNS`` is 3 and
     older turns collapse to a summary recording milestones and artifact counts
     but never what was asked for. Past three turns every repeat read as a first
-    mention — which is how the same ask survived ten consecutive turns on
-    fm#1079 while the user declined it six times.
+    mention — which is how one need on fm#1079 was surfaced seven times
+    (``case_897ce7909658`` / ``eneed_1fd2c33f2a43``, turns 3, 5, 6, 7, 9, 10,
+    12) while the user was cooperating and supplying data.
     """
 
     def test_never_asked_need_renders_no_history(self):
