@@ -1143,6 +1143,16 @@ LLM is told the owner's id and statement and instructed to emit its own root —
 to update the owner instead, if the two really are one cause (which routes back to
 §7.8). Counter: `faultmaven_hypothesis_root_adoption_refused_total`.
 
+**Contested refs are settled in a second pass.** A turn's refs are applied in
+emission order (adds before re-roots), so a root that is owned when it is first
+read may be FREED later in the same batch — the hand-off shape, where the owner
+deepens onto a new root and the old one becomes the new hypothesis's cause.
+Judging on first read would refuse a hand-off the model expressed correctly and
+then GC the very chain it handed over, so contested refs are re-checked against
+final ownership and the abandoned-chain GC runs once, after every move has
+settled (`prune_abandoned_nodes` then drops only what no hypothesis still
+references).
+
 The bar is **ownership, not similarity.** A "does this hypothesis's statement match
 this node's?" test would have to fire on the normal path too, where a hypothesis and
 its root are legitimately worded differently ("expired cert breaks TLS" rooted at

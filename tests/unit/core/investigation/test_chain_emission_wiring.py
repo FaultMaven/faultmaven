@@ -543,3 +543,39 @@ def test_re_anchoring_a_hypothesis_to_its_own_root_is_not_refused():
     assert h.root_node_id == root_id
     assert h.path[0] == root_id
     assert "system_feedback" not in metadata
+
+
+def test_handoff_is_honored_when_the_owner_re_roots_in_the_same_batch():
+    """The batch applies adds before re-roots, so a new hypothesis anchoring at a
+    root whose owner is re-rooting away reads as contested on first pass. Settling
+    contested refs afterwards honors the hand-off — and deferring the GC keeps the
+    handed-over chain alive instead of pruning it out from under the adopter."""
+    eng = _engine()
+    case = _case()
+    owner, adopter = _hyp(), _second_hyp()
+    case.hypotheses = {owner.hypothesis_id: owner, adopter.hypothesis_id: adopter}
+    handed_over = _root_owned_by(eng, case, owner)
+
+    # One emission: the adopter takes the old root, the owner deepens onto a new
+    # chain. hyp_root_refs is ordered adds-first, mirroring the apply layer.
+    metadata = {
+        "hypotheses_generated": [adopter.hypothesis_id],
+        "hyp_root_refs": {
+            adopter.hypothesis_id: handed_over,
+            owner.hypothesis_id: "new_index_0",
+        },
+    }
+    eng._apply_chain_emission(case, _two_rung_chain(), metadata)
+
+    # The hand-off stands: the adopter owns the old chain, the owner is on the new
+    # one, and nothing was refused or collected.
+    assert adopter.root_node_id == handed_over
+    assert handed_over in case.causal_nodes
+    assert owner.root_node_id not in (None, handed_over)
+    assert len(owner.path) == 3  # root -> intermediate -> D
+    assert "system_feedback" not in metadata
+    # No dangling edges after the deferred GC.
+    assert all(
+        e.cause_node_id in case.causal_nodes and e.effect_node_id in case.causal_nodes
+        for e in case.causal_edges
+    )

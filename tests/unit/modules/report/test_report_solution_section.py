@@ -69,10 +69,16 @@ def _solution(description: str) -> Solution:
     )
 
 
-def _action(case_id: str, description: str, state: str, turn: int) -> ProposedAction:
+def _action(
+    case_id: str,
+    description: str,
+    state: str,
+    turn: int,
+    action_type: InvestigationActionType = InvestigationActionType.SOLUTION,
+) -> ProposedAction:
     return ProposedAction(
         case_id=case_id,
-        action_type=InvestigationActionType.SOLUTION,
+        action_type=action_type,
         description=description,
         proposed_in_turn=turn,
         state=state,
@@ -113,12 +119,47 @@ async def test_only_the_executed_fix_is_reported_as_applied():
 
 
 @pytest.mark.asyncio
-async def test_standing_proposal_is_labeled_a_proposal_when_nothing_was_executed():
-    # No action was ever correlated/accepted: the summary still shows the fix
-    # under discussion, but must not claim it was applied.
+async def test_pending_fix_still_shows_when_only_a_stop_gap_was_executed():
+    """An accepted MITIGATION classifies APPLIED like any other executed action,
+    and offer supersession never touches mitigations — so the permanent fix
+    pending beside it is a distinct remediation, not a restatement of the
+    stop-gap. Dropping it would delete the actual fix from the summary."""
     case = _resolved_case()
-    case.solutions = [_solution("Bound the cache and restore the limit")]
-    case.proposed_actions = []
+    stop_gap = "Restart the checkout-api pods to stop the bleeding"
+    permanent = "Bound orderSummaryCache and restore the memory limit to 1Gi"
+    case.solutions = [_solution(stop_gap), _solution(permanent)]
+    case.proposed_actions = [
+        _action(
+            case.case_id,
+            stop_gap,
+            "accepted",
+            2,
+            action_type=InvestigationActionType.MITIGATION,
+        ),
+        _action(case.case_id, permanent, "pending", 6),
+    ]
+
+    summary = await ReportGenerationService()._generate_resolution_summary(
+        case, {"duration": "38 minutes"}
+    )
+
+    assert "## Solution Applied" in summary
+    assert stop_gap in summary
+    assert "## Proposed Solution" in summary
+    assert permanent in summary
+    assert "not recorded as executed" in summary
+    # Order: what was done, then what is still outstanding.
+    assert summary.index("## Solution Applied") < summary.index("## Proposed Solution")
+
+
+@pytest.mark.asyncio
+async def test_standing_proposal_is_labeled_a_proposal_when_nothing_was_executed():
+    # Instrumented, but the fix was never run: the summary shows it as the
+    # standing proposal rather than claiming it was applied.
+    case = _resolved_case()
+    fix = "Bound the cache and restore the limit"
+    case.solutions = [_solution(fix)]
+    case.proposed_actions = [_action(case.case_id, fix, "pending", 5)]
 
     summary = await ReportGenerationService()._generate_resolution_summary(
         case, {"duration": "38 minutes"}
@@ -127,7 +168,27 @@ async def test_standing_proposal_is_labeled_a_proposal_when_nothing_was_executed
     assert "## Proposed Solution" in summary
     assert "## Solution Applied" not in summary
     assert "No fix was recorded as executed" in summary
-    assert "Bound the cache and restore the limit" in summary
+    assert fix in summary
+
+
+@pytest.mark.asyncio
+async def test_uninstrumented_case_keeps_the_pre_existing_rendering():
+    # No ProposedAction rows at all — an un-instrumented (or legacy) case carries
+    # no execution signal, so it must not acquire a "no fix was executed" claim
+    # its record cannot support. Prior behavior: surface every solution.
+    case = _resolved_case()
+    fix = "Bound the cache and restore the limit"
+    case.solutions = [_solution(fix)]
+    case.proposed_actions = []
+
+    summary = await ReportGenerationService()._generate_resolution_summary(
+        case, {"duration": "38 minutes"}
+    )
+
+    assert "## Solution Applied" in summary
+    assert "## Proposed Solution" not in summary
+    assert "No fix was recorded as executed" not in summary
+    assert fix in summary
 
 
 @pytest.mark.asyncio
