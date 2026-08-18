@@ -28,6 +28,10 @@ from faultmaven.modules.case.domain.models import (
     EvidenceCategory,
     EvidenceSourceType,
     EvidenceStance,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
+    HypothesisState,
     InquiryData,
     NodeEvidenceLink,
     NodeState,
@@ -408,3 +412,63 @@ def test_no_map_when_edges_dangle():
         for e in edges
     ]
     assert render_causal_map(_graded_case(nodes, dangling)) is None
+
+
+# ------------------------------------------------- self-contradiction (fm#1091)
+
+
+def _hypothesis_rooted_at(root_id: str, state: HypothesisState) -> Hypothesis:
+    return Hypothesis(
+        statement="a step's working set exceeds the runner's available RAM",
+        category=HypothesisCategory.OTHER,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=1,
+        rationale="r",
+        state=state,
+        refutation_reason=(
+            "the log shows JVM heap pressure, not a runner-level memory event"
+            if state == HypothesisState.REFUTED
+            else None
+        ),
+        root_node_id=root_id,
+    )
+
+
+def test_no_map_when_a_validated_node_is_rooted_by_a_refuted_hypothesis():
+    """The report's own Hypotheses section would list this cause as Refuted.
+    Drawing it as the validated cause of D contradicts that in the same
+    document, so the map is withheld rather than drawn (fm#1091)."""
+    nodes, edges = _three_node_graph()
+    case = _graded_case(nodes, edges)
+    validated_root = next(n for n in nodes if n.node_state == NodeState.VALIDATED)
+    hyp = _hypothesis_rooted_at(validated_root.node_id, HypothesisState.REFUTED)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+
+    assert render_causal_map(case) is None
+
+
+def test_map_still_renders_when_the_rooted_hypothesis_stands():
+    # The same graph with a standing hypothesis on the root renders normally —
+    # the valve keys on the contradiction, not on the presence of a hypothesis.
+    nodes, edges = _three_node_graph()
+    case = _graded_case(nodes, edges)
+    validated_root = next(n for n in nodes if n.node_state == NodeState.VALIDATED)
+    hyp = _hypothesis_rooted_at(validated_root.node_id, HypothesisState.VALIDATED)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+
+    fenced = render_causal_map(case)
+    assert fenced is not None
+    assert "✓" in fenced
+
+
+def test_refuted_hypothesis_on_an_unvalidated_node_does_not_suppress_the_map():
+    # A refuted hypothesis rooted at a node the map draws as ○/✗ is not a
+    # contradiction — the two axes agree, and that is the ordinary shape of a
+    # case with one live cause and several disproven ones.
+    nodes, edges = _three_node_graph()
+    case = _graded_case(nodes, edges)
+    unvalidated = next(n for n in nodes if n.node_type == NodeType.INTERMEDIATE)
+    hyp = _hypothesis_rooted_at(unvalidated.node_id, HypothesisState.REFUTED)
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+
+    assert render_causal_map(case) is not None

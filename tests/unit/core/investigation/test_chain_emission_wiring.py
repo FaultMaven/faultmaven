@@ -387,3 +387,159 @@ def test_reroot_gcs_full_abandoned_multi_rung_chain():
         e.cause_node_id in case.causal_nodes and e.effect_node_id in case.causal_nodes
         for e in case.causal_edges
     )
+
+
+# ---------------------------------------------------------------------------
+# One cause, one chain (fm#1091) — a hypothesis may not adopt the chain root
+# another hypothesis already owns. Sharing a root makes the two axes describe
+# the same cause with different statements, and everything derived off the root
+# afterwards (support mirroring, node state, the VALIDATED projection, the
+# report's causal map) then speaks about the wrong one.
+# ---------------------------------------------------------------------------
+
+
+def _second_hyp() -> Hypothesis:
+    return Hypothesis(
+        statement="An unbounded cache consumes the JVM heap",
+        category=HypothesisCategory.CODE,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=4,
+        rationale="r",
+        state=HypothesisState.ACTIVE,
+    )
+
+
+def _root_owned_by(eng, case, hyp) -> str:
+    """Anchor ``hyp`` on a fresh root->D chain and return that root's id."""
+    eng._apply_chain_emission(
+        case,
+        _updates(
+            nodes=[
+                SimpleNamespace(
+                    statement="a step's working set exceeds the runner's RAM",
+                    node_type=NodeType.ROOT,
+                    produces="D",
+                    and_group=None,
+                )
+            ]
+        ),
+        {
+            "hypotheses_generated": [],
+            "hyp_root_refs": {hyp.hypothesis_id: "new_index_0"},
+        },
+    )
+    assert hyp.root_node_id is not None
+    return hyp.root_node_id
+
+
+def test_hypothesis_cannot_adopt_another_hypothesis_root():
+    eng = _engine()
+    case = _case()
+    owner, adopter = _hyp(), _second_hyp()
+    case.hypotheses = {
+        owner.hypothesis_id: owner,
+        adopter.hypothesis_id: adopter,
+    }
+    owned_root = _root_owned_by(eng, case, owner)
+
+    metadata = {
+        "hypotheses_generated": [adopter.hypothesis_id],
+        "hyp_root_refs": {adopter.hypothesis_id: owned_root},
+    }
+    eng._apply_chain_emission(case, _updates(), metadata)
+
+    # The adopter stays flat; the owner keeps its chain untouched.
+    assert adopter.root_node_id is None
+    assert adopter.path == []
+    assert owner.root_node_id == owned_root
+    # The LLM is told what to do instead — emit its own root.
+    feedback = metadata.get("system_feedback", "")
+    assert owned_root in feedback
+    assert owner.hypothesis_id in feedback
+    assert "One cause = one chain" in feedback
+
+
+def test_reroot_onto_another_hypothesis_root_is_refused():
+    # The same rule on the update path: a hypothesis that already owns a chain
+    # may not be re-rooted onto a root another hypothesis owns.
+    eng = _engine()
+    case = _case()
+    owner, mover = _hyp(), _second_hyp()
+    case.hypotheses = {owner.hypothesis_id: owner, mover.hypothesis_id: mover}
+    owned_root = _root_owned_by(eng, case, owner)
+    eng._apply_chain_emission(
+        case,
+        _two_rung_chain(),
+        {
+            "hypotheses_generated": [],
+            "hyp_root_refs": {mover.hypothesis_id: "new_index_0"},
+        },
+    )
+    mover_root = mover.root_node_id
+    assert mover_root not in (None, owned_root)
+
+    eng._apply_chain_emission(
+        case,
+        _updates(),
+        {
+            "hypotheses_generated": [],
+            "hyp_root_refs": {mover.hypothesis_id: owned_root},
+        },
+    )
+
+    # Unmoved — and the mover's own chain is still intact (no GC on a refusal).
+    assert mover.root_node_id == mover_root
+    assert mover_root in case.causal_nodes
+    assert owner.root_node_id == owned_root
+
+
+def test_two_new_hypotheses_cannot_share_one_emitted_root():
+    # Same-turn variant: the first ref wins the new root, the second is refused
+    # (the ownership check reads the live hypotheses, not a pre-loop snapshot).
+    eng = _engine()
+    case = _case()
+    first, second = _hyp(), _second_hyp()
+    case.hypotheses = {first.hypothesis_id: first, second.hypothesis_id: second}
+
+    metadata = {
+        "hypotheses_generated": [first.hypothesis_id, second.hypothesis_id],
+        "hyp_root_refs": {
+            first.hypothesis_id: "new_index_0",
+            second.hypothesis_id: "new_index_0",
+        },
+    }
+    eng._apply_chain_emission(
+        case,
+        _updates(
+            nodes=[
+                SimpleNamespace(
+                    statement="one emitted root",
+                    node_type=NodeType.ROOT,
+                    produces="D",
+                    and_group=None,
+                )
+            ]
+        ),
+        metadata,
+    )
+
+    rooted = [h for h in (first, second) if h.root_node_id is not None]
+    assert len(rooted) == 1
+    assert "One cause = one chain" in metadata.get("system_feedback", "")
+
+
+def test_re_anchoring_a_hypothesis_to_its_own_root_is_not_refused():
+    # Idempotence: the LLM re-stating the same root_node_ref for the hypothesis
+    # that already owns it is a no-op, not a self-collision.
+    eng = _engine()
+    case = _case()
+    h = _hyp()
+    case.hypotheses = {h.hypothesis_id: h}
+    root_id = _root_owned_by(eng, case, h)
+
+    metadata = {"hypotheses_generated": [], "hyp_root_refs": {h.hypothesis_id: root_id}}
+    eng._apply_chain_emission(case, _updates(), metadata)
+
+    assert h.root_node_id == root_id
+    assert h.path[0] == root_id
+    assert "system_feedback" not in metadata

@@ -1,18 +1,24 @@
-"""Deterministic causal-map rendering for terminal reports (pure, contracts-only).
+"""Deterministic causal-map rendering for terminal reports (contracts-only).
 
 Serializes the case's persisted causal graph into a fenced mermaid flowchart
 for the resolution summary. The LLM never authors the diagram: every node and
 edge here already passed the engine's ingestion/validation gates before being
 persisted, so the map can only assert structure the investigation actually
 established — the same derive-don't-trust stance as the rest of the engine
-lane. Output is a pure function of the graph rows, so it is stable across
-regenerations and pinnable in tests.
+lane. Output is a function of the graph rows alone (the one side effect is a
+counter on the suppression path below), so it is stable across regenerations
+and pinnable in tests.
 
 The map renders only when it would inform: the cause must be established
 (assurance at MECHANISTIC or above, the same recomputed-from-graph grade the
 resolution summary's assurance note uses), and the graph must be neither
 trivial (a two-box arrow says nothing a sentence doesn't) nor too dense to
 read. Anything else returns None and the report simply has no map section.
+
+One more thing can send it back None: a node it would draw as ✓ validated whose
+hypothesis the SAME report lists as refuted. That contradiction means the two
+axes disagree about the cause, and the map is the half that asserts it caused
+the problem — so it is withheld rather than drawn (fm#1091).
 
 AND-groups (M7 co-necessity) are not visually distinguished from OR
 alternatives in v1 — each edge is still a true causal link, so the drawing
@@ -28,8 +34,12 @@ import re
 from typing import TYPE_CHECKING, Optional
 
 from faultmaven.core.investigation.cause_assurance import grade_cause_assurance
+from faultmaven.core.investigation.lifecycle_metrics import (
+    causal_map_suppressed_contradiction_total,
+)
 from faultmaven.modules.case.contracts import (
     CauseAssuranceGrade,
+    HypothesisState,
     NodeState,
     NodeType,
 )
@@ -119,9 +129,10 @@ def render_causal_map(case: "Case") -> Optional[str]:
 
     None means "no map would inform here": the cause is not established,
     the explanatory subgraph is trivially small or unreadably large, the
-    validated cause's chain does not reach D, or a node's statement
-    sanitizes to an empty label. Callers treat None as "omit the section" —
-    never as an error.
+    validated cause's chain does not reach D, a drawn ✓ node is contradicted
+    by a REFUTED hypothesis rooted there, or a node's statement sanitizes to
+    an empty label. Callers treat None as "omit the section" — never as an
+    error.
     """
     if grade_cause_assurance(case) not in (
         CauseAssuranceGrade.MECHANISTIC,
@@ -182,6 +193,24 @@ def render_causal_map(case: "Case") -> Optional[str]:
     if not any(
         n.node_type == NodeType.ROOT and n.node_id in validated_ids for n in kept_nodes
     ):
+        return None
+    # Self-contradiction valve (fm#1091). The hypothesis axis and the node axis
+    # are derived separately and normally agree — a hypothesis reads VALIDATED
+    # because its root node is. When they DISAGREE (a node this map would stamp
+    # ✓ is the chain root of a hypothesis the report's own "Hypotheses
+    # Considered" section lists as Refuted), the map is the half that makes the
+    # strongest claim: solid arrows leading from that statement INTO the problem.
+    # Drawing it would assert a refuted mechanism as the established cause in the
+    # same document that refutes it. The engine cannot tell here which axis is
+    # right, so it withholds the picture rather than pick — the same
+    # NO-INCORRECT-CONCLUSION direction the gates above take.
+    refuted_roots = {
+        h.root_node_id
+        for h in (case.hypotheses or {}).values()
+        if h.root_node_id and h.state == HypothesisState.REFUTED
+    }
+    if validated_ids & refuted_roots:
+        causal_map_suppressed_contradiction_total.inc()
         return None
 
     mermaid_ids = {n.node_id: f"n{i}" for i, n in enumerate(kept_nodes, 1)}

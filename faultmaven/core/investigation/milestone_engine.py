@@ -80,6 +80,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_status_changed_total,
     evidence_suggestion_unlinked_total,
     hypothesis_dedup_skipped_total,
+    hypothesis_root_adoption_refused_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
     narration_overclaim_total,
@@ -8719,6 +8720,47 @@ class MilestoneEngine:
             root_id = _resolve_root(ref)
             hyp = case.hypotheses.get(hyp_id)
             if root_id is None or hyp is None:
+                continue
+            # One cause, one chain (M3/§7.8): a chain root belongs to exactly
+            # ONE hypothesis. A ref naming a root ANOTHER hypothesis already owns
+            # is REFUSED — the hypothesis stays where it is and the LLM is told to
+            # emit its own root. Adopting a foreign chain silently re-labels this
+            # hypothesis's cause with the owner's statement, and everything
+            # derived from the root afterwards — the mirrored support, the node
+            # state, the VALIDATED projection back onto the hypothesis, the
+            # report's causal map — then speaks about a cause this hypothesis
+            # never claimed. Observed live (fm#1091): a cache-exhaustion
+            # hypothesis adopted the root of a REFUTED runner-out-of-memory
+            # hypothesis, and the resolution summary drew that refuted statement
+            # as the validated cause of the problem while the real cause appeared
+            # nowhere in the map. Refusing is the safe direction: an unanchored
+            # hypothesis holds identification (no map, no IDENTIFIED), where a
+            # mis-anchored one concludes wrongly.
+            owner = next(
+                (
+                    h
+                    for h in case.hypotheses.values()
+                    if h.hypothesis_id != hyp_id and h.root_node_id == root_id
+                ),
+                None,
+            )
+            if owner is not None:
+                hypothesis_root_adoption_refused_total.inc()
+                _add_system_feedback(
+                    metadata,
+                    f"Hypothesis {hyp_id} was NOT anchored to node {root_id}: "
+                    f"that node is already the chain root of {owner.hypothesis_id} "
+                    f"('{(owner.statement or '')[:80]}'). One cause = one chain. "
+                    f"Emit a NEW root node stating THIS hypothesis's own cause and "
+                    f"point its root_node_ref at it — or, if the two are the same "
+                    f"cause, update {owner.hypothesis_id} instead of keeping both.",
+                )
+                logger.info(
+                    "Refused hypothesis root adoption (fm#1091): %s -> %s owned by %s",
+                    hyp_id,
+                    root_id,
+                    owner.hypothesis_id,
+                )
                 continue
             old_root = hyp.root_node_id
             old_path = hyp.path or []

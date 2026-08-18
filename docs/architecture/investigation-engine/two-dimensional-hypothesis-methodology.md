@@ -1117,6 +1117,55 @@ enforcement; the deeper fix for repeated re-emission is showing the LLM its
 standing hypotheses so it never emits a duplicate — a context/prompt change
 tracked separately, not in scope here.
 
+### 7.8.1 One cause, one CHAIN: a root belongs to exactly one hypothesis (fm#1091)
+
+§7.8 stops two records for one cause. The dual failure is one record adopting
+another's cause: an emitted `root_node_ref` may name **any** existing `cn_` root,
+and the engine used to accept it as long as it resolved to a ROOT node. So a
+hypothesis could anchor itself on the chain root of a *different* hypothesis, and
+the two axes then described one node with two statements.
+
+Nothing downstream can survive that. A root node **is** its hypothesis's cause
+statement, and the engine reads the node, not the hypothesis, everywhere it
+matters: B1 mirrors the adopter's grounding onto the owner's root, `derive_node_states`
+validates that root on the mirrored support, the §9.2 projection reads the
+validation back onto the adopter, and the report's causal map draws the *owner's*
+statement as the validated cause of `D`. Observed live (fm#1091): a cache-exhaustion
+hypothesis adopted the root of a REFUTED runner-out-of-memory hypothesis, and the
+resolution summary drew "a step's working set exceeds the runner's available RAM"
+with solid arrows into the problem — while its own Hypotheses section listed that
+statement as Refuted at 0%, and the real cause appeared in the map nowhere.
+
+**Rule (attach-time, both emission paths).** A `root_node_ref` resolving to a root
+that is already some *other* hypothesis's `root_node_id` is REFUSED. The hypothesis
+keeps whatever anchoring it had (usually none), its own chain is not GC'd, and the
+LLM is told the owner's id and statement and instructed to emit its own root — or
+to update the owner instead, if the two really are one cause (which routes back to
+§7.8). Counter: `faultmaven_hypothesis_root_adoption_refused_total`.
+
+The bar is **ownership, not similarity.** A "does this hypothesis's statement match
+this node's?" test would have to fire on the normal path too, where a hypothesis and
+its root are legitimately worded differently ("expired cert breaks TLS" rooted at
+"the API's TLS cert expired at 02:00"), and refusing there would strand chains the
+model built correctly. Adoption of an *owned* root is anomalous by construction —
+the normal emission points at a `new_index_N` the same turn — so the collision test
+is exact, cheap, and carries no false-refusal risk of that kind.
+
+Refusing leaves the hypothesis flat, which holds identification (`cause_state`
+cannot reach IDENTIFIED off a chain that does not exist) until the model emits a
+real root. That is the intended direction under NO-INCORRECT-CONCLUSION: an
+unanchored hypothesis delays a conclusion, a mis-anchored one publishes the wrong
+one. The orphan-chain post-pass (T1/T2a) is unaffected — it only ever re-attaches
+roots that no hypothesis references.
+
+**Backstop at the report boundary.** The map additionally refuses to draw a node
+as ✓ validated when a REFUTED hypothesis is rooted there — whatever the store
+contains, the same document must not assert as the established cause a statement it
+lists as refuted. The whole map is withheld (the section is simply absent) rather
+than redrawn, because the engine cannot tell at render time which axis is right.
+Counter: `faultmaven_causal_map_suppressed_contradiction_total`, expected to stay
+at zero now that the attach-time rule holds the relation.
+
 ### 7.9 Narration-truth coherence — the transcript is a guarantee surface for disposition claims (INV-40)
 
 §7.6 binds the two guarantees to the conclusion the engine *surfaces to every
