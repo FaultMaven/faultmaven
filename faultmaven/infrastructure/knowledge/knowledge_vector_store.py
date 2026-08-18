@@ -261,6 +261,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         query: str,
         k: int = 5,
         where: Optional[Dict[str, Any]] = None,
+        query_embedding: Optional[List[float]] = None,
     ) -> List[Dict[str, Any]]:
         """Search for similar documents in a KB collection.
 
@@ -270,6 +271,10 @@ class KnowledgeVectorStore(BaseExternalClient):
             k: Number of results to return.
             where: ChromaDB metadata filters. **Required** for faultmaven_kb
                    collection (must include a SCOPE_FILTER_KEYS filter).
+            query_embedding: Precomputed vector for ``query``. Supplied by
+                   callers that already embedded the same text (see
+                   :meth:`hybrid_search`) so one query is not embedded twice.
+                   When None the query is embedded here, as before.
 
         Returns:
             List of matching documents with content, metadata, and scores.
@@ -286,7 +291,8 @@ class KnowledgeVectorStore(BaseExternalClient):
         # policy exists for. Raising in the wrapper would burn the full retry
         # budget on a model that cannot recover in seconds, and would charge
         # ChromaDB's circuit breaker for an embedder fault.
-        query_embedding = await self._embed_query_or_raise(query, "search")
+        if query_embedding is None:
+            query_embedding = await self._embed_query_or_raise(query, "search")
 
         async def _search_wrapper():
             collection = self._get_or_create_collection(collection_name)
@@ -396,11 +402,18 @@ class KnowledgeVectorStore(BaseExternalClient):
         # Cast a wide net: retrieve k*3 from vector, k*2 from keyword-constrained
         recall_k = max(k * 3, 15)  # At least 15 candidates for meaningful reranking
 
+        # One embedding serves the whole sweep. The vector recall and every
+        # keyword-constrained probe search the SAME query text, so the vector is
+        # loop-invariant; embedding it per probe repeated an identical local
+        # model call (~1.2-2.3s each on CPU) and dominated Stage-1 latency.
+        query_embedding = await self._embed_query_or_raise(query, "hybrid search")
+
         vector_results = await self.search(
             collection_name=collection_name,
             query=query,
             k=recall_k,
             where=where,
+            query_embedding=query_embedding,
         )
 
         # Keyword-constrained retrieval for identifier-heavy queries
@@ -409,7 +422,7 @@ class KnowledgeVectorStore(BaseExternalClient):
         if keywords:
             keyword_results = await self._keyword_constrained_search(
                 collection_name=collection_name,
-                query=query,
+                query_embedding=query_embedding,
                 keywords=keywords,
                 k=k * 2,
                 where=where,
@@ -478,7 +491,7 @@ class KnowledgeVectorStore(BaseExternalClient):
     async def _keyword_constrained_search(
         self,
         collection_name: str,
-        query: str,
+        query_embedding: List[float],
         keywords: List[str],
         k: int,
         where: Optional[Dict[str, Any]] = None,
@@ -497,7 +510,7 @@ class KnowledgeVectorStore(BaseExternalClient):
             try:
                 results = await self._single_keyword_search(
                     collection_name=collection_name,
-                    query=query,
+                    query_embedding=query_embedding,
                     keyword=keyword,
                     k=k,
                     where=where,
@@ -521,17 +534,19 @@ class KnowledgeVectorStore(BaseExternalClient):
     async def _single_keyword_search(
         self,
         collection_name: str,
-        query: str,
+        query_embedding: List[float],
         keyword: str,
         k: int,
         where: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Vector search filtered to documents containing a specific keyword.
 
-        Raises:
-            KnowledgeBaseError: If the embedding model is unavailable.
+        Takes the query VECTOR rather than the query text. Every keyword in a
+        sweep constrains the same query, so the embedding is loop-invariant:
+        embedding here re-ran an identical local model call per keyword. The
+        embedder-unavailable failure now surfaces from the single embed in
+        :meth:`hybrid_search`, before any keyword is probed.
         """
-        query_embedding = await self._embed_query_or_raise(query, "keyword search")
 
         async def _search_wrapper():
             collection = self._get_or_create_collection(collection_name)
