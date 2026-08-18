@@ -16,7 +16,11 @@
 # BUILD FROM SOURCE (contributors): `start --build` builds the API from this repo;
 # `start --build-dashboard` also builds the Dashboard from ../faultmaven-dashboard.
 # These layer docker-compose.build.yml / docker-compose.dashboard-build.yml on top.
-# `start --pull` refreshes the pre-built images before starting.
+# `start --pull` refreshes the pre-built images before starting, and FAILS if the
+# refresh does not happen — starting on a stale cache would silently contradict
+# the request. An implicit `:latest` refresh warns loudly instead of failing, so
+# an offline start still works; either way the build that actually starts is
+# reported, because a container keeps its old image until something recreates it.
 
 set -e
 
@@ -82,6 +86,71 @@ print_error() {
 
 print_warning() {
     echo -e "${YELLOW}⚠${NC} $1"
+}
+
+# Digest of a local image, or empty when it is not present.
+image_digest() {
+    docker image inspect "$1" --format '{{index .RepoDigests 0}}' 2>/dev/null \
+        | sed 's/.*@//' || true
+}
+
+# Short provenance of a local image, for the post-start report.
+image_provenance() {
+    local ref="$1" rev built
+    rev="$(docker image inspect "$ref" \
+        --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null || true)"
+    built="$(docker image inspect "$ref" --format '{{.Created}}' 2>/dev/null || true)"
+    [ -z "$built" ] && { echo ""; return; }
+    if [ -n "$rev" ] && [ "$rev" != "<no value>" ]; then
+        echo "${rev:0:8} built ${built:0:19}Z"
+    else
+        echo "built ${built:0:19}Z (locally built — no revision label)"
+    fi
+}
+
+# Refresh pre-built images, dependably.
+#
+# This used to be `docker compose pull || print_warning "...continuing with
+# locally cached images"`, which turned a failed refresh into a soft warning and
+# started the stack on whatever the local cache held. That is the failure mode
+# that actually matters here: a mutable ':latest' which silently did not move
+# leaves a deployment that LOOKS current and is not, and no later step can tell
+# the difference — the containers start, report healthy, and serve old code.
+#
+# So: retry once (registry blips are the common cause and a retry fixes them),
+# fail CLOSED when a refresh was explicitly requested, and when the refresh was
+# implicit make the warning name the consequence rather than the cause.
+refresh_images() {
+    local required="$1"; shift
+    local -a extra=("$@")
+    local attempt rc=0
+
+    for attempt in 1 2; do
+        rc=0
+        docker compose "${COMPOSE_FILES[@]}" "${extra[@]}" pull || rc=$?
+        [ "$rc" -eq 0 ] && break
+        if [ "$attempt" -eq 1 ]; then
+            print_warning "Image refresh failed — retrying once"
+            sleep 3
+        fi
+    done
+
+    if [ "$rc" -ne 0 ]; then
+        if [ "$required" = true ]; then
+            print_error "Could not refresh images from the registry"
+            echo "  --pull was requested, so starting on a possibly stale local image"
+            echo "  would silently contradict it. Nothing has been started."
+            echo ""
+            echo "  • Check connectivity to ghcr.io"
+            echo "  • If intentionally offline, drop --pull to start on the cached image"
+            return 1
+        fi
+        print_warning "Image refresh failed — STARTING ON THE LOCAL CACHE, which may be STALE"
+        echo "  A ':latest' tag that did not refresh runs old code while looking current."
+        echo "  The image actually starting is reported below; check it before trusting a"
+        echo "  deploy, or re-run with --pull once connectivity is back."
+    fi
+    return 0
 }
 
 print_info() {
@@ -544,14 +613,28 @@ cmd_start() {
         # Refresh when asked (--pull), OR when tracking a mutable ':latest' tag so
         # `start` picks up newly published builds instead of a stale local cache.
         # Pinned (immutable) tags skip the registry round-trip.
+        local api_ref="ghcr.io/faultmaven/faultmaven:${api_tag}"
+        local digest_before digest_after
+        digest_before="$(image_digest "$api_ref")"
+
         if [ "$PULL_MODE" = true ]; then
             print_info "Refreshing pre-built images from registry..."
-            docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" pull || \
-                print_warning "Image refresh failed; continuing with locally cached images"
+            refresh_images true "${profile_args[@]}" || exit 1
         elif [ "$api_tag" = "latest" ] || [ "$dash_tag" = "latest" ]; then
             print_info "Refreshing :latest images (pin FM_IMAGE_TAG / FM_DASHBOARD_IMAGE_TAG to skip)..."
-            docker compose "${COMPOSE_FILES[@]}" "${profile_args[@]}" pull || \
-                print_warning "Image refresh failed (offline?); continuing with locally cached images"
+            refresh_images false "${profile_args[@]}"
+        fi
+
+        # Say whether the refresh actually moved anything. "Already current" and
+        # "silently did not refresh" are indistinguishable without this, and they
+        # are the two cases a deploy check needs to tell apart.
+        digest_after="$(image_digest "$api_ref")"
+        if [ -n "$digest_before" ] && [ -n "$digest_after" ]; then
+            if [ "$digest_before" != "$digest_after" ]; then
+                print_success "API image updated: ${digest_before:7:12} -> ${digest_after:7:12}"
+            else
+                print_info "API image already current (${digest_after:7:12})"
+            fi
         fi
 
         # Heads-up about the up step, using the ACTUAL configured tag.
@@ -630,6 +713,23 @@ cmd_start() {
         local duration=$((end_time - start_time))
         echo ""
         print_success "FaultMaven services started successfully! (${duration}s)"
+
+        # Report the build that is ACTUALLY running, every time.
+        #
+        # A container keeps its existing image until something recreates it, and
+        # a ':latest' that failed to refresh is invisible at this point — the
+        # stack starts, reports healthy, and serves old code. Printing the
+        # revision and build date turns "did my deploy take?" from an
+        # investigation into a line of output.
+        local running_ref running_prov
+        running_ref="$(docker compose ps -q api 2>/dev/null \
+            | head -1 \
+            | xargs -r docker inspect --format '{{.Config.Image}}' 2>/dev/null || true)"
+        if [ -n "$running_ref" ]; then
+            running_prov="$(image_provenance "$running_ref")"
+            [ -n "$running_prov" ] && print_info "API build: ${running_prov}"
+        fi
+
         echo ""
         echo "Next steps:"
         echo "  1. Check health:  ./faultmaven.sh health"
@@ -1257,6 +1357,7 @@ cmd_help() {
     echo "Options:"
     echo "  --demo                      Start with demo data (sample runbooks)"
     echo "  --pull                      Refresh pre-built images from the registry before starting"
+    echo "                              (fails rather than starting on a stale local image)"
     echo "  --build                     Build the API from THIS repo's source instead of pulling"
     echo "  --build-dashboard           Also build the Dashboard from ../faultmaven-dashboard"
     echo "  --no-color                  Disable colored output"
