@@ -419,3 +419,40 @@ async def test_retry_with_an_expired_token_cannot_duplicate(auth_service):
     assert retry.status_code == 401, "the route must reject the dead credential"
     assert app.state.route_calls["guarded"] == 1, "no second turn was committed"
     assert len(await fake.keys("idempotency:*")) == 1, "a 401 must not be cached"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_broken_verifier_degrades_instead_of_500ing(auth_service):
+    """Naming the principal is best-effort; serving the request is not.
+
+    ``_verified_principal`` runs *before* ``dispatch``'s try block, so anything
+    that escapes it 500s every POST carrying an ``Idempotency-Key``. Simulated
+    with a verifier that raises something no auth path models — the same shape
+    an ImportError from the request-time ``from .auth import _extract_token``
+    would take.
+    """
+
+    class _BrokenVerifier:
+        async def verify_token_with_revocation_check(self, *args, **kwargs):
+            raise TypeError("verifier contract drifted")
+
+    app, _ = _build_app(auth_service)
+    app.state.auth_service = _BrokenVerifier()
+    token = _access_token(auth_service)
+
+    async with _client(app) as client:
+        first = await client.post(
+            "/api/v1/json-turn",
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": KEY},
+            json={"query": "same body"},
+        )
+        retry = await client.post(
+            "/api/v1/json-turn",
+            headers={"Authorization": f"Bearer {token}", "Idempotency-Key": KEY},
+            json={"query": "same body"},
+        )
+
+    assert first.status_code == 200, "a broken verifier must not 500 the request"
+    assert retry.status_code == 200
+    assert _replayed(retry), "it must still replay under the raw fallback scope"

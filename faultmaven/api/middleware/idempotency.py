@@ -370,18 +370,26 @@ class IdempotencyMiddleware(BaseHTTPMiddleware):
         falls back to the raw-credential scope. Nothing here may raise: this
         runs before ``dispatch``'s try block, and idempotency scoping must never
         turn a serviceable request into a 500.
+
+        The lazy import is inside the guard for that reason and not by
+        oversight. It is resolved at request time, so it can fail at request
+        time — a circular import through a partially initialized module, or
+        ``_extract_token`` being renamed in ``auth.py``, which neither startup
+        nor ``lint-imports`` would catch. Outside the guard that lands as a 500
+        on every POST carrying an ``Idempotency-Key``; inside it, it degrades to
+        the raw scope like any other reason the principal cannot be named.
         """
-        from .auth import _extract_token
-
-        token = _extract_token(authorization, None)
-        if not token:
-            return None
-
-        auth_service = self._auth_service(request)
-        if auth_service is None:
-            return None
-
         try:
+            from .auth import _extract_token
+
+            token = _extract_token(authorization, None)
+            if not token:
+                return None
+
+            auth_service = self._auth_service(request)
+            if auth_service is None:
+                return None
+
             claims = await auth_service.verify_token_with_revocation_check(
                 token, token_type="access"
             )
