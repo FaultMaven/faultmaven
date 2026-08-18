@@ -2175,7 +2175,10 @@ _EXHAUSTED_SECTION_HEADER = (
     "Asks the engine has STOPPED surfacing (repeated without result — the",
     "suggestion no longer reaches the user, so re-asking reaches no one).",
     "Dispose of each — obtainability=unobtainable if the data cannot be",
-    "gathered, else supersede it — and proceed on what you have:",
+    "gathered, else supersede it — and proceed on what you have. Exception:",
+    "if the user has said the data is coming (queued, or produced by a step",
+    "that has not finished), leave the need as it is — it stays in the pool",
+    "and still matches the upload when it arrives:",
 )
 
 
@@ -2234,7 +2237,10 @@ def _build_evidence_needs_block(case: Case) -> str:
         Asks the engine has STOPPED surfacing (repeated without result — the
         suggestion no longer reaches the user, so re-asking reaches no one).
         Dispose of each — obtainability=unobtainable if the data cannot be
-        gathered, else supersede it — and proceed on what you have:
+        gathered, else supersede it — and proceed on what you have. Exception:
+        if the user has said the data is coming (queued, or produced by a step
+        that has not finished), leave the need as it is — it stays in the pool
+        and still matches the upload when it arrives:
 
           - [eneed_003] app-side STS debug output (CAUSAL, MEDIUM, asked 3× (last turn 12))
               motivated_by: [hyp_002]

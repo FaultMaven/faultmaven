@@ -131,9 +131,11 @@ class TestLifecycleBlockContent:
         """A user saying they cannot get the data must route to
         ``obtainability=unobtainable``, not to another ask (#1079).
 
-        This is the branch the aws-iam stall never took: the user declined the
-        same target-account record six times and the agent re-asked on every
-        one of the ten turns that followed.
+        This directive covers the refusal case only. The repetition measured on
+        fm#1079 was not a refusal — the user was cooperating and supplying data
+        while the same need was surfaced seven times
+        (``case_897ce7909658`` / ``eneed_1fd2c33f2a43``); that is what the
+        engine-side decay in fm#1084 addresses.
         """
         assert "obtainability=unobtainable" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK
         assert "cannot get the data" in _EVIDENCE_NEEDS_LIFECYCLE_BLOCK

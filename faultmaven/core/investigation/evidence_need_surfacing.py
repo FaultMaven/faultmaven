@@ -29,7 +29,10 @@ _SURFACED_CAUSAL_CAP = 3
 #: written. Two recorded asks means the next one is the third — the one the
 #: stated policy already says not to make. The engine stops making it instead of
 #: asking the model to refrain, because on fm#1079 the model read that rule, and
-#: the rendered ask count, and re-asked anyway on turns 8, 11, 12, 13 and 15.
+#: the rendered ask count, and surfaced one need seven times anyway
+#: (``case_897ce7909658`` / ``eneed_1fd2c33f2a43``, turns 3, 5, 6, 7, 9, 10, 12)
+#: and another eight times (``case_6a540e0da057`` / ``eneed_930baee1cae6``,
+#: turns 5–12), while the user was cooperating and supplying data.
 _ASK_REPEAT_FLOOR = 2
 
 #: Turns that must have elapsed since the FIRST recorded ask.
@@ -39,15 +42,17 @@ _ASK_REPEAT_FLOOR = 2
 #: "third+" case becomes reachable. Nothing about the number is tuned — both
 #: thresholds are read off the policy the prompt already states.
 #:
-#: The AGE arm exists because the COUNT arm cannot be trusted on its own.
-#: ``surfaced_turns`` records a surfacing only when an EVIDENCE-type
-#: ``SuggestedFollowUp`` is emitted (``evidence_need_linking``), so a re-ask that
-#: appears only in ``agent_response`` prose is invisible to it — on the fm#1079
-#: run the nagging need showed 2 recorded surfacings against 5 prose asks. Age
-#: is measured off ``min(surfaced_turns)``, which is correct as soon as ONE ask
-#: has been recorded and cannot be pushed later by asks that go uncounted, so an
-#: undercounting channel delays exhaustion by at most the turns before the
-#: second recorded ask rather than preventing it.
+#: The AGE arm is a GUARD on the count arm, not a second route to exhaustion:
+#: ``is_ask_exhausted`` requires both, so age can only ever withhold suppression.
+#: What it guards is the floor being two rather than three. On
+#: ``case_897ce7909658`` three needs stopped at exactly two recorded surfacings —
+#: turns [9, 11], [13, 14] and [14, 15] — so a count-only rule of three would
+#: have fired on none of them; the floor has to be two for repeats of that shape
+#: to be reachable at all. But two surfacings on CONSECUTIVE turns are only the
+#: policy's "third+" case once a third turn exists to make it in, which is what
+#: age measured off ``min(surfaced_turns)`` supplies: it holds [13, 14] until
+#: turn 15 and [14, 15] until turn 16, while [9, 11] clears it the moment its
+#: second ask is recorded.
 _ASK_DECAY_AGE_TURNS = 2
 
 

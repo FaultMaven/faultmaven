@@ -14,11 +14,12 @@ Why it was inert
 
 Nothing branched on the count. It was rendered and persisted, and every decision
 that could follow from it was left to the model. On ``case_897ce7909658``
-(``sha-ed1b575``, which includes fm#1081) the agent re-asked for the STS call
-path on turns 8, 11, 12, 13 and 15 after the user answered it and twice stated
-no further data existed, and every evidence-need row on that case still read
-``obtainability = unknown``. A fourth restatement of the rule was not going to
-help.
+(``sha-ed1b575``, which includes fm#1081) one need — ``eneed_1fd2c33f2a43`` —
+was surfaced as an EVIDENCE suggestion on turns 3, 5, 6, 7, 9, 10 and 12 while
+the user kept supplying data (a new file on each of turns 8, 11, 12 and 13), and
+every evidence-need row on that case still read ``obtainability = unknown``.
+``case_6a540e0da057`` / ``eneed_930baee1cae6`` shows the same shape across turns
+5–12, eight surfacings. A fourth restatement of the rule was not going to help.
 
 What these pin
 ==============
@@ -354,6 +355,38 @@ class TestTheBlockReportsTheSuppression:
         _need(case, asked_on=[5, 6])
 
         assert "STOPPED surfacing" in _build_evidence_needs_block(case)
+
+    def test_the_heading_offers_every_disposition_a_withheld_ask_can_have(self):
+        """The heading is the only place the model is told what to do with an
+        ask the engine has stopped making, so it has to name every disposition
+        that can be correct. Two of them dispose of the need. The third does
+        not: a user who has said the data is coming has neither refused it nor
+        made it irrelevant, and with only the two disposal branches offered the
+        model walls the need ``unobtainable`` instead — recorded on
+        ``case_4964aeb3f105`` / ``eneed_eb39124108d6`` (surfaced turns 13 and
+        14, walled at turn 15 on data the user had promised) and on
+        ``case_90b23feeb72c`` / ``eneed_ac0991ec8d73``, where the prose of the
+        same turn still called that data the next decisive data point.
+
+        Asserted against the RENDERED heading rather than the constant: reading
+        the constant back would pass whatever the constant happens to say.
+        """
+        case = _case(turn=10)
+        _need(case, asked_on=[5, 6])
+        block = _build_evidence_needs_block(case)
+        heading = " ".join(
+            block.split("STOPPED surfacing", 1)[1].split("\n\n", 1)[0].split()
+        )
+
+        # The data cannot be gathered — declare the wall.
+        assert "obtainability=unobtainable if the data cannot be gathered" in heading
+        # The ask is no longer worth making — supersede it.
+        assert "else supersede it" in heading
+        # The data is on its way — leave the need alone; it still matches the
+        # upload, it just stops being offered.
+        assert "the user has said the data is coming" in heading
+        assert "leave the need as it is" in heading
+        assert "still matches the upload when it arrives" in heading
 
     def test_an_exhausted_ask_is_not_counted_as_hidden_demand(self):
         """The "…and N more not shown" notice exists so the model never reads
