@@ -510,14 +510,45 @@ class ReportGenerationService:
             )
         return None
 
+    def _causal_map_block(self, case: Case) -> List[str]:
+        """The engine-derived causal map section, or nothing.
+
+        Rendering, gating, and the legend are owned by
+        ``core.investigation.causal_map`` (see its docstrings). Fail-closed
+        here: any error — the import included — omits the section rather
+        than blocking report generation.
+        """
+        try:
+            from faultmaven.core.investigation.causal_map import (
+                CAUSAL_MAP_LEGEND,
+                render_causal_map,
+            )
+
+            fenced = render_causal_map(case)
+        except Exception:
+            logger.warning(
+                "Causal map rendering failed; omitting section",
+                extra={"case_id": case.case_id},
+                exc_info=True,
+            )
+            return []
+        if not fenced:
+            return []
+        return [
+            "## Causal Map\n",
+            f"{CAUSAL_MAP_LEGEND}\n",
+            f"{fenced}\n",
+        ]
+
     async def _generate_resolution_summary(
         self, case: Case, context: Dict[str, Any]
     ) -> str:
         """Generate resolution summary for RESOLVED cases.
 
-        Content structure per investigation-lifecycle-logic.md §1.7.4:
+        Content structure per investigation-lifecycle-logic.md §4.5.0:
         - Problem Statement
         - Root Cause (with mechanism if available)
+        - Causal Map (gated — established cause, non-trivial graph)
         - Solution Applied
         - Confirming Evidence (citation list, not a count)
         - Hypotheses Considered (grouped by status)
@@ -548,6 +579,7 @@ class ReportGenerationService:
         # fall back to validated hypotheses only when no conclusion exists.
         rcc = case.root_cause_conclusion
         if rcc and rcc.root_cause:
+            root_cause_stated = True
             parts.append("## Root Cause\n")
             parts.append(f"{rcc.root_cause}\n")
             assurance_note = self._assurance_note(case)
@@ -573,21 +605,31 @@ class ReportGenerationService:
                     parts.append(f"- {cf}")
                 parts.append("")
         else:
-            validated = [
+            validated_hyps = [
                 h
                 for h in hypotheses
                 if hasattr(h, "state")
                 and hasattr(h.state, "value")
                 and h.state.value == "validated"
             ]
-            if validated:
+            if validated_hyps:
                 parts.append("## Root Cause\n")
                 parts.append("_Identified via validated hypothesis._\n")
-                for h in validated:
+                for h in validated_hyps:
                     parts.append(f"**{h.statement}**\n")
                     if getattr(h, "rationale", None):
                         parts.append(f"{h.rationale}\n")
                 # Last line already ends with \n; no extra separator needed.
+            root_cause_stated = bool(validated_hyps)
+
+        # Causal Map — after the cause is stated, before the fix. Renders
+        # only for an established cause over a non-trivial graph, and only
+        # under a stated Root Cause section: the assurance grade can pass
+        # on graph state alone (validated root, no RootCauseConclusion, no
+        # validated Hypothesis row), and a map with no named cause above it
+        # would be an unexplained picture.
+        if root_cause_stated:
+            parts.extend(self._causal_map_block(case))
 
         # Solution Applied — same renderer as closure's Mitigation Status.
         if solutions:
@@ -721,7 +763,7 @@ class ReportGenerationService:
     ) -> str:
         """Generate closure summary for CLOSED cases.
 
-        Content structure per investigation-lifecycle-logic.md §1.7.4:
+        Content structure per investigation-lifecycle-logic.md §4.5.0:
         - Problem Statement
         - Investigation State (milestone/evidence/hypothesis counts)
         - Closure Reason (with human label)
@@ -729,6 +771,10 @@ class ReportGenerationService:
         - Mitigation Status (when a mitigation was inserted)
         - Timeline
         - Recommendation (for closed_insufficient_evidence only)
+
+        No Causal Map here — the map is a resolution-summary section only
+        (product decision): a closed case's graph reads as a conclusion
+        the case never reached.
         """
         title = case.title or "Untitled Case"
         description = case.description or "No description provided."
