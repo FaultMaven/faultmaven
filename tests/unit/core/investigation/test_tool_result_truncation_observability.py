@@ -295,3 +295,44 @@ async def test_a_formatter_trimmed_kb_qa_result_is_not_counted_twice():
     # ...and so do the numerator and the distribution, at the formatter only.
     assert truncated.labels.return_value.inc.call_count == 1
     assert sizes.labels.return_value.observe.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_an_answer_quoting_the_trim_marker_is_still_measured():
+    """A kb_qa answer that merely *quotes* the marker must not read as trimmed.
+
+    The loop detects "the formatter already counted this one" from the marker
+    it appends. A substring search would also match an answer that happens to
+    contain that literal — a runbook about this very truncation, say — and the
+    result would silently lose its histogram sample, plus its truncation count
+    if redaction then pushed it past the cap.
+
+    The check is anchored to the tail instead: the formatter emits
+    ``marker + suffix`` at the very end, and both are static instruction text
+    the redactor does not rewrite, so a genuine trim always ends that way while
+    a quotation does not.
+    """
+    quoting_answer = (
+        "Runbooks sometimes end with " + me.KB_QA_ANSWER_TRUNCATED_MARKER + " inline."
+    )
+    engine = _engine_returning(quoting_answer, called_tool="kb_qa")
+
+    with (
+        patch.object(me, "tool_result_relayed_total") as relayed,
+        patch.object(me, "tool_result_truncated_total") as truncated,
+        patch.object(me, "tool_result_chars") as sizes,
+    ):
+        await engine._tool_augmented_generate(
+            prompt="Search",
+            schema_model=SampleResponse,
+            investigation_tools=[
+                {"type": "function", "function": {"name": "kb_qa", "parameters": {}}}
+            ],
+            tool_context=MagicMock(),
+        )
+
+    relayed.labels.assert_called_once_with(tool="kb_qa")
+    # The answer is well under the cap, so it is measured here and never cut.
+    sizes.labels.assert_called_once_with(tool="kb_qa")
+    sizes.labels.return_value.observe.assert_called_once()
+    truncated.labels.assert_not_called()

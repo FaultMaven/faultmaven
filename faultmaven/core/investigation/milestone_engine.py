@@ -6170,9 +6170,16 @@ class MilestoneEngine:
                 # this site steps aside for that result so the observation is
                 # made exactly once, at whichever site last saw the whole
                 # string.
-                formatter_trimmed = (
-                    func_name == "kb_qa"
-                    and KB_QA_ANSWER_TRUNCATED_MARKER in result_text
+                # Anchored to the END rather than a substring search. The
+                # formatter emits `... + marker + suffix`, and both are static
+                # instruction text carrying no entity the redactor rewrites, so
+                # that tail survives sanitisation intact. A plain `in` test
+                # would also match an answer that merely QUOTES the marker --
+                # costing that result its histogram sample, and, if redaction
+                # then expanded it past the cap, its truncation count too. An
+                # answer would now have to END on the marker to be misread.
+                formatter_trimmed = func_name == "kb_qa" and result_text.endswith(
+                    KB_QA_ANSWER_TRUNCATED_MARKER + KB_QA_RELAY_SUFFIX
                 )
                 if not formatter_trimmed:
                     tool_result_chars.labels(tool=metric_tool).observe(original_chars)
