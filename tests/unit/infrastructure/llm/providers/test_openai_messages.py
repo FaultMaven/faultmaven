@@ -569,3 +569,59 @@ class TestOpenAIDefaultReasoningFamily:
 
             request_body = mock_session.post.call_args.kwargs["json"]
             assert request_body["reasoning_effort"] == "none"
+
+
+@pytest.mark.unit
+class TestDefaultReasoningPlainCallCap:
+    """Families that reason by DEFAULT need a cap on PLAIN chat calls too.
+
+    The two branches above cover tools (forced ``"none"``) and structured JSON
+    (capped ``"low"``). A plain chat call -- neither tools nor response_format --
+    matched neither, so on a default-reasoning family the request went out with
+    no effort param and server-side reasoning ran uncapped, billing against
+    ``max_completion_tokens``: the same budget the answer is drawn from. Observed
+    on the KB synthesis path, where a 2000-token budget returned a 215-character
+    answer after ~1950 tokens of hidden reasoning, while sibling calls on the
+    same prompt returned 5-8KB.
+
+    The tools and structured branches for this family are already pinned by
+    ``TestOpenAIDefaultReasoningFamily`` (``test_gpt56_tool_call_sends_effort_none``,
+    ``test_gpt56_structured_call_keeps_low_cap``); this class covers only the
+    plain-call gap they leave and the scoping around it.
+    """
+
+    async def test_default_reasoning_model_plain_call_is_capped(self):
+        provider = OpenAIProvider(_config_for("gpt-5.6-luna"))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi")  # no tools, no response_format
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert request_body["reasoning_effort"] == "none"
+
+    @pytest.mark.parametrize("model", ["gpt-5", "gpt-5.4-mini", "o1", "o3-mini"])
+    async def test_cap_does_not_leak_to_models_that_do_not_default_reason(self, model):
+        """Scoping guard. These families accept ``reasoning_effort`` but do NOT
+        reason unless asked, so forcing the param on a plain turn would change
+        behaviour on models that never had the starvation problem."""
+        provider = OpenAIProvider(_config_for(model))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi")
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert "reasoning_effort" not in request_body
+
+    async def test_explicit_caller_effort_overrides_the_plain_cap(self):
+        """The cap is a default, not a pin: a caller that deliberately asks for
+        reasoning on a plain call still gets it."""
+        provider = OpenAIProvider(_config_for("gpt-5.6-luna"))
+        mock_session = _mock_aiohttp_session(_mock_openai_response("ok"))
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            await provider.generate("hi", reasoning_effort="low")
+
+            request_body = mock_session.post.call_args.kwargs["json"]
+            assert request_body["reasoning_effort"] == "low"
