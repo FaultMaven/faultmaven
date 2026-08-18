@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 # Context lines: ±N lines around each match. Keep small — log entries are
 # typically self-contained on a single line, and large context windows cause
 # the TOOL_RESULT_MAX_CHARS truncation to cut off matches.
+#
+# Whether that is still true is now measurable rather than assumed (#1088):
+# ``faultmaven_tool_result_truncated_total{tool="search_file"}`` over
+# ``faultmaven_tool_result_relayed_total{tool="search_file"}`` is this
+# constant's clip rate, and ``faultmaven_tool_result_chars{tool="search_file"}``
+# is the size distribution it is holding down. Check them before widening this.
 DEFAULT_CONTEXT_LINES = 3
 DEFAULT_MAX_RESULTS = 20
 # Ceiling for LLM-requested max_results (prevents unbounded memory use)

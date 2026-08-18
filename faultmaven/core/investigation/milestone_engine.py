@@ -116,6 +116,11 @@ from faultmaven.core.investigation.state_validator import (
     StateValidator,
     ValidationSeverity,
 )
+from faultmaven.core.investigation.tool_loop_metrics import (
+    tool_result_chars,
+    tool_result_relayed_total,
+    tool_result_truncated_total,
+)
 from faultmaven.core.investigation.verification_status import (
     VerificationStatus,
     assess_verification_status,
@@ -2937,6 +2942,13 @@ KB_QA_RELAY_PREFIX = (
     "key details, diagnostic steps, and resolution procedures — do "
     "NOT collapse it into a single sentence.\n\n"
 )
+# Appended to a kb_qa answer that ``_format_tool_result`` trimmed to fit the
+# relay wrapper (#1086). Named rather than inlined because the tool loop reads
+# it back: a result carrying this marker has ALREADY been measured into the
+# tool-result budget metrics at the formatter, against its true pre-trim size,
+# and must not be measured a second time at the cut site (#1088).
+KB_QA_ANSWER_TRUNCATED_MARKER = "\n[answer truncated]"
+
 KB_QA_RELAY_SUFFIX = (
     "\n\n"
     "SOURCE CITATION: At the end of `agent_response`, append a "
@@ -5720,6 +5732,18 @@ class MilestoneEngine:
         # oversized prompt can never be sent (accumulated observations compact to
         # fit — see _bound_tool_loop_messages / _resolve_tool_loop_budget).
         tool_loop_budget = self._resolve_tool_loop_budget(provider_name)
+        # Label vocabulary for the tool-result budget metrics below. The
+        # tool name on a tool call is MODEL-SUPPLIED, so it is unbounded:
+        # a hallucinated name reaches `execute_tool`, comes back as a short
+        # "Tool 'x' not found" error, and would still be relayed -- and a
+        # model that invents names freely would mint a Prometheus label per
+        # invention. Bound it to what this call actually OFFERED; anything
+        # else is by definition not a tool and folds into `unknown`.
+        offered_tool_names = frozenset(
+            (t.get("function") or {}).get("name") or ""
+            for t in investigation_tools
+            if isinstance(t, dict)
+        ) - {""}
         # Per-message token-count cache (by id) reused across iterations so the
         # large stable head isn't re-tokenized every loop — see
         # _bound_tool_loop_messages.
@@ -6109,8 +6133,74 @@ class MilestoneEngine:
                 if redaction_ctx:
                     result_text = await redaction_ctx.asanitize(result_text)
 
-                # Truncate long results, preserving any protected tail.
-                if len(result_text) > self.TOOL_RESULT_MAX_CHARS:
+                # Truncate long results.
+                #
+                # This is the point where a tool result stops being what the
+                # tool produced and becomes what the model sees, and until
+                # #1088 it was silent: no log line, no counter, nothing
+                # recorded that it had fired. "We don't know what this costs
+                # us" was therefore a property of the implementation, not a
+                # gap in the sample -- the only available estimate came from
+                # arithmetic across two unrelated log lines, for one tool, on
+                # one run.
+                #
+                # Record it before deciding the ceiling. The cap is a single
+                # global constant shared by tools that are not alike, so the
+                # measurement is per tool.
+                #
+                # Measured here rather than at the tool: after redaction and
+                # after per-tool formatting is the string that actually enters
+                # the context. The ONE exception is a kb_qa answer the
+                # formatter already trimmed -- see below.
+                original_chars = len(result_text)
+                metric_tool = (
+                    func_name if func_name in offered_tool_names else "unknown"
+                )
+                tool_result_relayed_total.labels(tool=metric_tool).inc()
+
+                # #1086 gave kb_qa a SECOND, earlier cut: _format_tool_result
+                # trims the answer to fit the wrapper so the relay instructions
+                # survive, which means an oversized kb_qa answer usually lands
+                # at or under the cap by the time it reaches this line. Measured
+                # only here, kb_qa -- the tool this issue was opened about --
+                # would report a clip rate near zero while still being clipped,
+                # which is worse than not measuring it: the number looks honest
+                # and is wrong. The formatter therefore records its own trim
+                # into these same counters, against the TRUE pre-trim size, and
+                # this site steps aside for that result so the observation is
+                # made exactly once, at whichever site last saw the whole
+                # string.
+                formatter_trimmed = (
+                    func_name == "kb_qa"
+                    and KB_QA_ANSWER_TRUNCATED_MARKER in result_text
+                )
+                if not formatter_trimmed:
+                    tool_result_chars.labels(tool=metric_tool).observe(original_chars)
+
+                if original_chars > self.TOOL_RESULT_MAX_CHARS:
+                    # A kb_qa result can reach here already trimmed and STILL be
+                    # oversized, because redaction runs in between and expands
+                    # text (an IPv4 becomes a 29-char placeholder). That is a
+                    # second cut on one result, worth a log line but not a
+                    # second increment -- the clip rate must stay a rate.
+                    if not formatter_trimmed:
+                        tool_result_truncated_total.labels(tool=metric_tool).inc()
+                    # WARNING, not INFO: this discards content the model was
+                    # meant to reason over, and the counters are no-ops unless
+                    # ENABLE_METRICS -- which a standalone run does not set. The
+                    # log line is what makes the clip observable there at all.
+                    logger.warning(
+                        "tool_result_truncated",
+                        extra={
+                            "tool": metric_tool,
+                            "original_chars": original_chars,
+                            "cap_chars": self.TOOL_RESULT_MAX_CHARS,
+                            "dropped_chars": (
+                                original_chars - self.TOOL_RESULT_MAX_CHARS
+                            ),
+                            "after_formatter_trim": formatter_trimmed,
+                        },
+                    )
                     result_text = self._truncate_tool_result(result_text, func_name)
 
                 # Append tool result message
@@ -7278,13 +7368,34 @@ class MilestoneEngine:
             # both instructions intact and marks what was dropped.
             budget = MilestoneEngine.TOOL_RESULT_MAX_CHARS - len(prefix) - len(suffix)
             if len(content) > budget:
-                marker = "\n[answer truncated]"
+                marker = KB_QA_ANSWER_TRUNCATED_MARKER
                 logger.info(
                     "kb_qa answer trimmed to fit the tool-result budget",
                     extra={
                         "original_chars": len(content),
                         "budget_chars": budget,
                         "dropped_chars": len(content) - budget,
+                    },
+                )
+                # Feed this cut into the SAME counters the tool loop uses
+                # (#1088). This trim is the one that actually clips kb_qa in
+                # practice -- the loop's cap rarely sees an oversized kb_qa
+                # result because this ran first -- so leaving it out would make
+                # kb_qa report the lowest clip rate in the system while being
+                # the tool the ceiling question is about. Sized on the WRAPPED
+                # string, so the number is comparable with every other tool's,
+                # which is also measured wrapped and pre-cut.
+                wrapped_chars = len(prefix) + len(content) + len(suffix)
+                tool_result_chars.labels(tool="kb_qa").observe(wrapped_chars)
+                tool_result_truncated_total.labels(tool="kb_qa").inc()
+                logger.warning(
+                    "tool_result_truncated",
+                    extra={
+                        "tool": "kb_qa",
+                        "original_chars": wrapped_chars,
+                        "cap_chars": MilestoneEngine.TOOL_RESULT_MAX_CHARS,
+                        "dropped_chars": len(content) - budget,
+                        "at": "formatter",
                     },
                 )
                 content = content[: budget - len(marker)] + marker
