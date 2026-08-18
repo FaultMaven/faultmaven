@@ -2926,6 +2926,29 @@ def _closed_suggestions(case, remaining: int) -> list:
 # =============================================================================
 
 
+# The kb_qa relay wrapper, split so the truncation path can protect the tail.
+# The SUFFIX is instructions, not prose: the citation format and "return via the
+# schema tool, do not reply with plain text". Head-first truncation would delete
+# how the model is told to answer, so its length is needed at the truncation
+# site as well as at the formatting site.
+KB_QA_RELAY_PREFIX = (
+    "KNOWLEDGE BASE RESULT — Place the content below into the "
+    "`agent_response` field of your structured response. Preserve "
+    "key details, diagnostic steps, and resolution procedures — do "
+    "NOT collapse it into a single sentence.\n\n"
+)
+KB_QA_RELAY_SUFFIX = (
+    "\n\n"
+    "SOURCE CITATION: At the end of `agent_response`, append a "
+    "compact source line in italic markdown using this exact format:\n"
+    "*Sources: [title1], [title2]*\n"
+    "Use only the primary source title(s) from the content above. "
+    "One short line — no verbose attribution paragraph.\n\n"
+    "Then return the structured response by calling the response "
+    "schema tool. Do not reply with plain text."
+)
+
+
 class MilestoneEngine:
     """
     Data-Driven and Opportunistic Investigation Engine.
@@ -6086,11 +6109,9 @@ class MilestoneEngine:
                 if redaction_ctx:
                     result_text = await redaction_ctx.asanitize(result_text)
 
-                # Truncate long results
+                # Truncate long results, preserving any protected tail.
                 if len(result_text) > self.TOOL_RESULT_MAX_CHARS:
-                    result_text = (
-                        result_text[: self.TOOL_RESULT_MAX_CHARS] + "\n[truncated]"
-                    )
+                    result_text = self._truncate_tool_result(result_text, func_name)
 
                 # Append tool result message
                 messages.append(
@@ -7199,6 +7220,35 @@ class MilestoneEngine:
             msg["provider_metadata"] = response.provider_metadata
         return msg
 
+    @classmethod
+    def _truncate_tool_result(cls, text: str, tool_name: str) -> str:
+        """Cut an oversized tool result to the cap, protecting a tail if it has one.
+
+        This runs AFTER PII redaction, and that ordering is why the protection
+        cannot live in the formatter alone. Redaction *expands* text: every
+        entity becomes a ``<TYPE_digest>`` placeholder, so an IPv4 address grows
+        from 8 characters to 29. A reservation computed while wrapping is
+        therefore no longer true by the time the cap is applied, and a kb_qa
+        answer sized exactly to the budget re-crosses it once its entities are
+        replaced.
+
+        For kb_qa the tail is instructions rather than prose, so cutting
+        head-first would delete how the model is told to answer while keeping
+        the answer it is meant to relay. The last ``len(KB_QA_RELAY_SUFFIX)``
+        characters are preserved verbatim: that block is static instruction text
+        containing no entity the redactor rewrites, so its length survives
+        sanitisation and the slice still lands on the suffix.
+        """
+        cap = cls.TOOL_RESULT_MAX_CHARS
+        marker = "\n[truncated]"
+
+        protected = len(KB_QA_RELAY_SUFFIX) if tool_name == "kb_qa" else 0
+        if protected and len(text) > protected + len(marker):
+            head = text[: cap - protected - len(marker)]
+            return head + marker + text[-protected:]
+
+        return text[:cap] + marker
+
     @staticmethod
     def _format_tool_result(result: Any, tool_name: str = "") -> str:
         """Format a ToolResult into a string for the LLM."""
@@ -7216,22 +7266,8 @@ class MilestoneEngine:
                 result.data if isinstance(result.data, str) else json.dumps(result.data)
             )
             logger.info(f"kb_qa result: {len(content)} chars")
-            prefix = (
-                "KNOWLEDGE BASE RESULT — Place the content below into the "
-                "`agent_response` field of your structured response. Preserve "
-                "key details, diagnostic steps, and resolution procedures — do "
-                "NOT collapse it into a single sentence.\n\n"
-            )
-            suffix = (
-                "\n\n"
-                "SOURCE CITATION: At the end of `agent_response`, append a "
-                "compact source line in italic markdown using this exact format:\n"
-                "*Sources: [title1], [title2]*\n"
-                "Use only the primary source title(s) from the content above. "
-                "One short line — no verbose attribution paragraph.\n\n"
-                "Then return the structured response by calling the response "
-                "schema tool. Do not reply with plain text."
-            )
+            prefix = KB_QA_RELAY_PREFIX
+            suffix = KB_QA_RELAY_SUFFIX
             # Reserve the wrapper before the generic cap can reach it. The
             # truncation below keeps the HEAD of the result, so an oversized
             # answer loses the TAIL — and the tail here is not prose, it is the

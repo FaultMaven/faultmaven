@@ -19,7 +19,10 @@ prompt's mix of prose, shell commands and markdown.
 
 import pytest
 
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine import (
+    KB_QA_RELAY_SUFFIX,
+    MilestoneEngine,
+)
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.document_qa_tool import SYNTHESIS_MAX_TOKENS
 
@@ -113,3 +116,46 @@ def test_relay_instructions_survive_the_largest_answer_the_budget_allows():
         "told how to return its response"
     )
     assert "SOURCE CITATION" in wrapped, "the citation guidance was truncated away"
+
+
+def test_relay_tail_survives_redaction_growth_past_the_cap():
+    """PII redaction runs BEFORE truncation, and it EXPANDS text.
+
+    Each entity becomes a ``<TYPE_digest>`` placeholder — an IPv4 address grows
+    from 8 characters to 29 — so an answer wrapped to exactly the budget
+    re-crosses the cap once its entities are replaced. A reservation made while
+    formatting cannot hold across that step, which is why the tail protection
+    lives at the truncation site. Without it the generic head-first cut would
+    remove the schema-tool instruction again, on any deployment with redaction
+    enabled and entities in the answer.
+    """
+    wrapped = MilestoneEngine._format_tool_result(
+        ToolResult(success=True, data="A" * 7400), tool_name="kb_qa"
+    )
+    # Stand in for sanitisation: entities replaced by longer placeholders.
+    grown = wrapped.replace("A" * 50, "<IP_ADDRESS_0123456789abcdef>" * 30, 1)
+    assert (
+        len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    ), "test setup must actually push the result past the cap"
+
+    out = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+
+    assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    assert out.endswith(
+        KB_QA_RELAY_SUFFIX
+    ), "the relay instructions were cut by the post-redaction truncation"
+    assert "Do not reply with plain text." in out
+
+
+def test_other_tools_keep_plain_head_truncation():
+    """The tail protection is scoped to kb_qa and must not change other tools.
+
+    search_file and deep_analysis results are data, not instructions, and their
+    tools already budget themselves against this cap; silently relocating their
+    cut would change what the model sees for reasons unrelated to this fix.
+    """
+    out = MilestoneEngine._truncate_tool_result("X" * 9000, "search_file")
+
+    assert out.startswith("X" * 100)
+    assert out.endswith("[truncated]")
+    assert KB_QA_RELAY_SUFFIX not in out
