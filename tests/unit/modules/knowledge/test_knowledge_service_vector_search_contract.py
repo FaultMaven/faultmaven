@@ -218,8 +218,21 @@ def test_knowledge_vector_store_search_signature_unchanged():
     params = list(sig.parameters.keys())
     # Drop 'self'
     params = [p for p in params if p != "self"]
-    assert params == ["collection_name", "query", "k", "where"], (
+    assert params == [
+        "collection_name",
+        "query",
+        "k",
+        "where",
+        "query_embedding",
+    ], (
         f"KnowledgeVectorStore.search signature changed to {params}. "
         f"If this is intentional, update the callers in "
         f"knowledge_service.py AND this test."
     )
+    # ``query_embedding`` was appended (default None) so ``hybrid_search`` can
+    # embed a query once and reuse the vector across the keyword sweep. It is
+    # optional and trailing, so the callers in knowledge_service.py -- which
+    # pass the first four by keyword and never supply a vector -- keep working
+    # unchanged. Pinned here too: dropping the default would silently break them
+    # in exactly the swallowed-TypeError way this test exists to catch.
+    assert sig.parameters["query_embedding"].default is None

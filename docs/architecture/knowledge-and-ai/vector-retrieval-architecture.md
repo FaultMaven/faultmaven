@@ -83,11 +83,13 @@ This pipeline is implemented in `infrastructure/knowledge/knowledge_vector_store
 
 ### Stage 1: Recall
 
-Two ChromaDB queries run in parallel against the same collection and scope filter:
+Both arms query the same collection and scope filter, and **share a single query embedding**. The query text is embedded once in `hybrid_search()` and that vector is passed into every ChromaDB call below — the recall query and each keyword probe alike. This is a latency property, not a ranking one: BGE-M3 runs locally on CPU at 1.2–2.3s per call, so embedding inside the keyword loop (as the code did until the vector was hoisted) made the dominant cost of a KB lookup scale with keyword count while recomputing an identical vector each time.
+
+The arms run sequentially rather than concurrently. Once the embedding is shared, each ChromaDB query costs roughly 40ms, so there is no longer anything material to parallelize.
 
 **Query A — Pure vector search:** Retrieves `k * 3` candidates (minimum 15) ranked by cosine similarity. This is the broad semantic net.
 
-**Query B — Keyword-constrained vector search:** For each extracted keyword, runs a vector search with `where_document={"$contains": keyword}` to require that the keyword is present in the chunk text. Results are then ranked by cosine similarity within that filtered set. Up to 3 keywords are used; results from all keyword passes are deduplicated.
+**Query B — Keyword-constrained vector search:** For each extracted keyword, runs a vector search with `where_document={"$contains": keyword}` to require that the keyword is present in the chunk text. Results are then ranked by cosine similarity within that filtered set. Up to 3 keywords are used, so this arm issues up to 3 separate ChromaDB queries; results from all keyword passes are deduplicated. Every probe reuses the one query vector — only the `where_document` filter differs between them.
 
 > **Important:** The keyword gate is binary `$contains`, not BM25. There is no term frequency or inverse document frequency scoring. The value of this path is catching identifier matches — error codes, service names, CamelCase tokens — that pure embedding search tends to underweight.
 
@@ -225,7 +227,8 @@ Agent calls: answer_from_kb(question)
   │     Returns "searched, nothing close enough" WITHOUT calling the LLM
   │
   ├── LLMRouter.route() with UnifiedKBConfig.system_prompt
-  │     max_tokens=2000, temperature=0.3
+  │     max_tokens=SYNTHESIS_MAX_TOKENS (2000), temperature=0.3
+  │     Plain chat call: no tools, no response_format
   │     Synthesis guided by staleness-aware system prompt
   │
   └── UnifiedKBConfig.format_response()
@@ -233,6 +236,10 @@ Agent calls: answer_from_kb(question)
 ```
 
 **Engine pre-fetch path (no rerank).** The Tool Path above is the *only* caller that reaches `hybrid_search()` and therefore the *only* path carrying the service-metadata soft boost. The engine's `_prefetch_kb_context` — the symptom-verification KB pull that also feeds the KB cause seeder — instead calls `KnowledgeService.search_knowledge` → `KnowledgeVectorStore.search`: single-pass pure-vector similarity, no keyword recall, no four-signal reranker, no `context_metadata`. Its ranking is plain retrieval score; the case's affected-service signal is not applied. Bringing the signal onto that path is a possible future refinement (tech-debt #710).
+
+**The synthesis answer ceiling.** `DocumentQATool.SYNTHESIS_MAX_TOKENS` (2000) is not the limit that actually binds a KB answer. Whatever the synthesizer writes is wrapped by `MilestoneEngine._format_tool_result()` — about 590 characters of relay instruction and citation guidance — and the combined string is then truncated to `MilestoneEngine.TOOL_RESULT_MAX_CHARS` (8000) before it re-enters the model's context. That leaves roughly 7,410 characters for the answer itself, about 1,850 tokens at the 3.9–4.1 characters per token measured on real KB answers. The token budget therefore already exceeds what the pipeline will accept, and raising it on its own is inert: the surplus is generated, billed, and then discarded. Because the two constants live in different modules with nothing structural holding them together, `tests/unit/modules/agent/tools/test_kb_synthesis_budget.py` pins their agreement in both directions — the budget must be able to fill the character cap, and must not reach far past it. Change them together or not at all.
+
+Answers do reach this ceiling in practice. Observed synthesis answers run 5,261–7,729 characters, and the longest of those was truncated by the engine rather than by the token budget. Whether 8,000 characters is the right allowance for a runbook procedure inside the investigation context is a separate question from the budget's internal coherence, and remains open.
 
 **The relevance gate, and how its threshold is set.** `UnifiedKBConfig.relevance_threshold` (0.5, cosine) refuses synthesis when no retrieved chunk clears it, so the synthesizer is never asked to ground an answer in chunks that merely share vocabulary — the canonical case being a ZooKeeper query landing on Kafka chunks via "leader election". Evidence retrieval opts out (`CaseEvidenceConfig` returns `None`): for forensic analysis the closest available content is always worth returning.
 

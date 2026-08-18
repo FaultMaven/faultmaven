@@ -22,6 +22,29 @@ from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)
 
+# Output budget for one synthesis answer.
+#
+# Sized to the ceiling that actually binds, which is DOWNSTREAM of this call.
+# The engine truncates any tool result to ``MilestoneEngine.TOOL_RESULT_MAX_CHARS``
+# (8000) before it re-enters the model's context, and the kb_qa result carries
+# ~590 characters of relay wrapper on top of this answer plus its own "Sources:"
+# line. That leaves roughly 7.2K characters for the answer itself -- about 1850
+# tokens at the 3.9-4.1 characters/token measured on real KB answers. 2000
+# therefore already covers everything the pipeline can accept: raising it only
+# buys generation time for text the engine then discards.
+#
+# What made this budget LOOK too small was not its size. On models that reason
+# by default, hidden reasoning billed against this same budget: one observed
+# call spent ~1950 of 2000 tokens reasoning and returned a 215-character stub
+# while siblings on the same prompt returned 5-8KB. That competing claimant is
+# removed in the OpenAI provider, by capping effort on plain chat calls. The
+# budget itself is correct and stays put.
+#
+# Raise this only TOGETHER with TOOL_RESULT_MAX_CHARS -- on its own it is inert.
+# ``test_kb_synthesis_budget.py`` pins the two in agreement so a future change
+# to either one cannot silently drift out of step.
+SYNTHESIS_MAX_TOKENS = 2000
+
 
 class DocumentQATool:
     """
@@ -237,7 +260,7 @@ Answer:"""
                 {"role": "system", "content": self._kb_config.system_prompt},
                 {"role": "user", "content": synthesis_prompt},
             ],
-            max_tokens=2000,
+            max_tokens=SYNTHESIS_MAX_TOKENS,
             temperature=0.3,  # Low temperature for factual accuracy
         )
 

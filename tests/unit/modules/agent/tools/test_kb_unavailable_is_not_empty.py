@@ -104,19 +104,51 @@ async def test_store_search_raises_when_the_embedder_is_unavailable():
 
 @pytest.mark.asyncio
 async def test_keyword_arm_does_not_swallow_the_availability_error():
-    """``_keyword_constrained_search`` catches per-keyword failures so one bad
-    keyword cannot sink a query. That handler sits three lines below the raise,
-    which is exactly how #868's first attempt was rendered inert — so the typed
-    error must be re-raised past it."""
+    """The hybrid sweep must raise, not degrade, when the embedder is gone.
+
+    ``_keyword_constrained_search`` catches per-keyword failures so one bad
+    keyword cannot sink a query, and that handler is exactly how #868's first
+    attempt was rendered inert. The sweep now embeds ONCE up front, which puts
+    the availability failure structurally outside that handler rather than
+    three lines above it — so this asserts on ``hybrid_search``, the entry the
+    tool actually calls, instead of the keyword helper it delegates to.
+    """
     with patch(_EMBEDDER, new=AsyncMock(return_value=None)):
         with pytest.raises(KnowledgeBaseError):
-            await _store()._keyword_constrained_search(
+            await _store().hybrid_search(
                 collection_name="faultmaven_kb",
                 query="CrashLoopBackOff on payment-svc",
-                keywords=["CrashLoopBackOff", "payment-svc"],
                 k=5,
                 where={"scope": "global"},
             )
+
+
+@pytest.mark.asyncio
+async def test_keyword_loop_still_reraises_a_typed_availability_error():
+    """The per-keyword handler must not absorb ``KnowledgeBaseError``.
+
+    The sweep now embeds ONCE up front, so an unavailable embedder surfaces
+    before any keyword is probed — which means the ``except KnowledgeBaseError:
+    raise`` guard inside the loop is no longer reached by the embedder path that
+    motivated it. The guard still stands between a typed availability error and
+    the broad ``except Exception`` three lines below, so it is pinned directly
+    here rather than left to be deleted as dead code by a later refactor: a
+    probe that raises the typed error must propagate, not be folded into a
+    partial result set that reads as a complete keyword sweep.
+    """
+    store = _store()
+    store._single_keyword_search = AsyncMock(
+        side_effect=KnowledgeBaseError("vector store unavailable")
+    )
+
+    with pytest.raises(KnowledgeBaseError):
+        await store._keyword_constrained_search(
+            collection_name="faultmaven_kb",
+            query_embedding=[0.1] * 8,
+            keywords=["CrashLoopBackOff", "payment-svc"],
+            k=5,
+            where={"scope": "global"},
+        )
 
 
 # ---------------------------------------------------------------------------
