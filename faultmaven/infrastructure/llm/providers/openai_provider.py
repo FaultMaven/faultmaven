@@ -85,6 +85,23 @@ class OpenAIProvider(BaseLLMProvider):
     # (gpt-4.1/gpt-4o) reject the param and must never receive it.
     _STRUCTURED_REASONING_EFFORT = "low"
 
+    # Effort applied to PLAIN chat calls -- no ``tools``, no ``response_format``
+    # -- on families that reason by DEFAULT. Those models bill hidden reasoning
+    # against ``max_completion_tokens``, the same budget the answer is drawn
+    # from, so an uncapped plain call can spend nearly all of it reasoning and
+    # return a truncated stub. Observed on the KB synthesis path: a 2000-token
+    # budget produced a 215-character answer, ~1950 tokens having gone to hidden
+    # reasoning, while sibling calls on the same prompt returned 5-8KB.
+    #
+    # The two branches below cover tools (forced ``"none"``) and structured JSON
+    # (capped ``"low"``); a plain chat call matched NEITHER and so went out with
+    # no effort param at all. ``"none"`` rather than ``"low"`` because the plain
+    # calls that reach here are grounded generation -- answer strictly from
+    # context supplied in the prompt -- where hidden reasoning adds little and
+    # competes with the answer for one budget. Verified accepted WITHOUT tools
+    # on gpt-5.6 (the tools branch only proves it valid alongside them).
+    _DEFAULT_REASONING_PLAIN_EFFORT = "none"
+
     @classmethod
     def _uses_completion_tokens_param(cls, model_name: str) -> bool:
         """Whether the model takes ``max_completion_tokens`` over ``max_tokens``.
@@ -291,6 +308,14 @@ class OpenAIProvider(BaseLLMProvider):
             and self._caps_reasoning_effort(effective_model)
         ):
             payload["reasoning_effort"] = self._STRUCTURED_REASONING_EFFORT
+
+        # A plain chat call on a default-reasoning family matched neither branch
+        # above, so server-side reasoning ran uncapped and billed against the
+        # answer's own token budget. Cap it explicitly. Set BEFORE the kwargs
+        # merge below, so a caller that passes ``reasoning_effort`` deliberately
+        # still overrides this default rather than being silently pinned.
+        if defaults_reasoning and not tools and not response_format:
+            payload["reasoning_effort"] = self._DEFAULT_REASONING_PLAIN_EFFORT
 
         # Add any additional kwargs, filtering out None values
         payload.update({k: v for k, v in kwargs.items() if v is not None})
