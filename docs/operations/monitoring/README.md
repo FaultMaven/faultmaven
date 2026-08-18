@@ -28,6 +28,12 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
 - Evidence and investigation lifecycle metrics — see
   [Evidence Metrics](./evidence-metrics.md) and
   [Lifecycle Metrics](./lifecycle-metrics.md)
+- `faultmaven_tool_result_relayed_total{tool}`,
+  `faultmaven_tool_result_truncated_total{tool}`,
+  `faultmaven_tool_result_chars{tool}` — what the investigation tool loop relays into the
+  model's context and what the `TOOL_RESULT_MAX_CHARS` cap cuts off, per tool.
+  See [Tool-Result Context Budget](./tool-result-budget.md) for the clip-rate
+  query and what raising the cap would actually cost.
 
 ## Overview
 
@@ -37,6 +43,7 @@ requires `ENABLE_METRICS=true`). Key first-party metric families:
 | [Configuration](./configuration.md) | Setup and configuration |
 | [Logging Policy](./logging-policy.md) | Standards and policies |
 | [LLM Cost & Token Observability](./llm-cost-observability.md) | LLM spend metrics, price table, and cost-spike diagnosis |
+| [Tool-Result Context Budget](./tool-result-budget.md) | Per-tool truncation clip rate and size distribution for the investigation tool loop |
 
 ## Guides
 
