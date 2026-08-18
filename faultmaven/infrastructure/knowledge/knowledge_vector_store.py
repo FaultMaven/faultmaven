@@ -11,9 +11,11 @@ filter in the `where` clause. Unscoped queries are rejected with ValueError
 to prevent cross-tenant data leaks.
 
 Hybrid search: Two-stage retrieval + reranking pipeline:
-  Stage 1 — Recall: Casts a wide net with two parallel retrievals:
+  Stage 1 — Recall: Casts a wide net with two sequential retrieval arms that
+  share ONE query embedding (the vector is the same for every arm and probe):
     a) Pure vector search (semantic similarity)
-    b) Keyword-constrained vector search (exact identifier matches)
+    b) Keyword-constrained vector search (exact identifier matches), one
+       ChromaDB query per keyword, up to 3
   Stage 2 — Rerank: Scores candidates using multiple signals:
     - Term overlap (how many query terms appear in the chunk)
     - Metadata match (domain/service alignment with query context)
@@ -291,7 +293,12 @@ class KnowledgeVectorStore(BaseExternalClient):
         # policy exists for. Raising in the wrapper would burn the full retry
         # budget on a model that cannot recover in seconds, and would charge
         # ChromaDB's circuit breaker for an embedder fault.
-        if query_embedding is None:
+        # Falsy rather than ``is None``: an empty list is not a usable vector.
+        # Letting it through would hand ChromaDB a malformed query inside
+        # ``call_external``, which retries and charges its circuit breaker for
+        # what is an embedder-side fault -- precisely what embedding before the
+        # wrapper (see above) exists to prevent.
+        if not query_embedding:
             query_embedding = await self._embed_query_or_raise(query, "search")
 
         async def _search_wrapper():

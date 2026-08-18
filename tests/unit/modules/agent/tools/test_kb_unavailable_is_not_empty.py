@@ -123,6 +123,34 @@ async def test_keyword_arm_does_not_swallow_the_availability_error():
             )
 
 
+@pytest.mark.asyncio
+async def test_keyword_loop_still_reraises_a_typed_availability_error():
+    """The per-keyword handler must not absorb ``KnowledgeBaseError``.
+
+    The sweep now embeds ONCE up front, so an unavailable embedder surfaces
+    before any keyword is probed — which means the ``except KnowledgeBaseError:
+    raise`` guard inside the loop is no longer reached by the embedder path that
+    motivated it. The guard still stands between a typed availability error and
+    the broad ``except Exception`` three lines below, so it is pinned directly
+    here rather than left to be deleted as dead code by a later refactor: a
+    probe that raises the typed error must propagate, not be folded into a
+    partial result set that reads as a complete keyword sweep.
+    """
+    store = _store()
+    store._single_keyword_search = AsyncMock(
+        side_effect=KnowledgeBaseError("vector store unavailable")
+    )
+
+    with pytest.raises(KnowledgeBaseError):
+        await store._keyword_constrained_search(
+            collection_name="faultmaven_kb",
+            query_embedding=[0.1] * 8,
+            keywords=["CrashLoopBackOff", "payment-svc"],
+            k=5,
+            where={"scope": "global"},
+        )
+
+
 # ---------------------------------------------------------------------------
 # The property that matters: what the model is told
 # ---------------------------------------------------------------------------

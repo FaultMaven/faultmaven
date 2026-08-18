@@ -314,7 +314,18 @@ class OpenAIProvider(BaseLLMProvider):
         # answer's own token budget. Cap it explicitly. Set BEFORE the kwargs
         # merge below, so a caller that passes ``reasoning_effort`` deliberately
         # still overrides this default rather than being silently pinned.
-        if defaults_reasoning and not tools and not response_format:
+        #
+        # ``_caps_reasoning_effort`` is required as well as ``defaults_reasoning``,
+        # matching the ``response_format`` branch above: it is the "does this
+        # model accept the parameter at all" predicate and the documented opt-out
+        # hook for gateway subclasses. Without it a subclass that opted out of
+        # only that predicate would still be sent the parameter here and 400.
+        if (
+            defaults_reasoning
+            and not tools
+            and not response_format
+            and self._caps_reasoning_effort(effective_model)
+        ):
             payload["reasoning_effort"] = self._DEFAULT_REASONING_PLAIN_EFFORT
 
         # Add any additional kwargs, filtering out None values

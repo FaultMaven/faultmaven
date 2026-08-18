@@ -7216,12 +7216,14 @@ class MilestoneEngine:
                 result.data if isinstance(result.data, str) else json.dumps(result.data)
             )
             logger.info(f"kb_qa result: {len(content)} chars")
-            return (
+            prefix = (
                 "KNOWLEDGE BASE RESULT — Place the content below into the "
                 "`agent_response` field of your structured response. Preserve "
                 "key details, diagnostic steps, and resolution procedures — do "
                 "NOT collapse it into a single sentence.\n\n"
-                f"{content}\n\n"
+            )
+            suffix = (
+                "\n\n"
                 "SOURCE CITATION: At the end of `agent_response`, append a "
                 "compact source line in italic markdown using this exact format:\n"
                 "*Sources: [title1], [title2]*\n"
@@ -7230,6 +7232,27 @@ class MilestoneEngine:
                 "Then return the structured response by calling the response "
                 "schema tool. Do not reply with plain text."
             )
+            # Reserve the wrapper before the generic cap can reach it. The
+            # truncation below keeps the HEAD of the result, so an oversized
+            # answer loses the TAIL — and the tail here is not prose, it is the
+            # citation format plus "return via the schema tool, do not reply
+            # with plain text". A long KB answer would therefore silently strip
+            # the instructions that tell the model how to answer at all, which
+            # is the opposite of the intended failure. Trimming the ANSWER keeps
+            # both instructions intact and marks what was dropped.
+            budget = MilestoneEngine.TOOL_RESULT_MAX_CHARS - len(prefix) - len(suffix)
+            if len(content) > budget:
+                marker = "\n[answer truncated]"
+                logger.info(
+                    "kb_qa answer trimmed to fit the tool-result budget",
+                    extra={
+                        "original_chars": len(content),
+                        "budget_chars": budget,
+                        "dropped_chars": len(content) - budget,
+                    },
+                )
+                content = content[: budget - len(marker)] + marker
+            return prefix + content + suffix
 
         # search_file results: append citation guidance so the LLM cites
         # filename and line numbers in its response.

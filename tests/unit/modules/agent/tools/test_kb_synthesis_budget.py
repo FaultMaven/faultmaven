@@ -30,6 +30,10 @@ pytestmark = [pytest.mark.unit]
 # sizing against it is what guarantees the budget can reach the cap.
 MIN_CHARS_PER_TOKEN = 3.909
 
+# Sparsest measured encoding, used to size the LARGEST answer the budget can
+# produce: more characters per token means a longer string for the same tokens.
+MAX_CHARS_PER_TOKEN = 4.107
+
 # How far past the usable allowance the budget may sit before it is buying
 # generation the engine throws away. Some slack is right -- the encoding varies
 # per answer -- but a budget that could write half again as much as can ever be
@@ -82,3 +86,30 @@ def test_synthesis_budget_is_not_sized_past_what_the_engine_accepts():
         f"the excess is generated and discarded. Raise "
         f"TOOL_RESULT_MAX_CHARS together with it, or leave the budget alone"
     )
+
+
+def test_relay_instructions_survive_the_largest_answer_the_budget_allows():
+    """The wrapper's tail is instructions, not prose — it must not be truncated.
+
+    ``_format_tool_result`` places the citation format and "return the
+    structured response by calling the response schema tool. Do not reply with
+    plain text." AFTER the answer, and the engine truncates by keeping the HEAD.
+    An answer large enough to overflow therefore used to strip the instructions
+    that tell the model how to answer at all — the opposite of the intended
+    failure, and silent. The wrapper reserves its own space instead, trimming
+    the answer rather than itself.
+    """
+    biggest_answer = "A" * int(SYNTHESIS_MAX_TOKENS * MAX_CHARS_PER_TOKEN)
+    wrapped = MilestoneEngine._format_tool_result(
+        ToolResult(success=True, data=biggest_answer), tool_name="kb_qa"
+    )
+
+    assert len(wrapped) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS, (
+        f"wrapped kb_qa result is {len(wrapped)} chars, past the "
+        f"{MilestoneEngine.TOOL_RESULT_MAX_CHARS} cap — the engine would cut the tail"
+    )
+    assert "Do not reply with plain text." in wrapped, (
+        "the schema-tool instruction was truncated away; the model is no longer "
+        "told how to return its response"
+    )
+    assert "SOURCE CITATION" in wrapped, "the citation guidance was truncated away"
