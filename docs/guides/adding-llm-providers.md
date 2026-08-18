@@ -52,16 +52,33 @@ CHAT_PROVIDER="fireworks"
 ```bash
 # Environment Configuration
 OPENAI_API_KEY="sk-your_openai_key"
-OPENAI_MODEL="gpt-4o"
+OPENAI_MODEL="gpt-5.4-mini"
 CHAT_PROVIDER="openai"
 ```
 
 **Available Models**:
-- `gpt-4o` (Default, recommended)
-- `gpt-4o-mini` (Faster, cheaper)
-- `gpt-3.5-turbo` (Legacy)
+- `gpt-5.4-mini` (Default — `settings.openai_model`)
+- `gpt-5.x` family (reasoning models; see below)
+- `o1` / `o3` / `o4` series (reasoning models; see below)
+- `gpt-4o`, `gpt-4o-mini` (non-reasoning, still supported)
 
 **Features**: Best response quality, extensive capabilities, higher cost.
+
+#### Reasoning-family models
+
+The `gpt-5.x` and o-series models bill **hidden reasoning tokens against the same budget the visible answer is drawn from** (`max_completion_tokens`, which these families require in place of `max_tokens`). An uncapped call can therefore spend nearly its whole budget reasoning and return a truncated stub — while reporting success. `OpenAIProvider` sets `reasoning_effort` on three call shapes:
+
+| Call shape | Effort | Why |
+|------------|--------|-----|
+| Carries `tools` | `"none"` | The gpt-5.6 family rejects function tools on `/v1/chat/completions` unless reasoning is explicitly disabled |
+| Carries `response_format`, no tools | `"low"` | Hidden reasoning must not starve the schema JSON and truncate it |
+| Plain chat — neither of the above | `"none"`, and only for families that reason by **default** | Nothing else caps these; server-side default reasoning otherwise competes with the answer for one budget |
+
+The plain-chat cap is scoped to `_DEFAULT_REASONING_MODEL_FAMILIES` (currently `gpt-5.6`), the families that reason without being asked. Models that accept the parameter but stay silent unless asked — `gpt-5`, `gpt-5.4-mini`, `o1`, `o3-mini` — are deliberately left alone, since forcing the parameter there would change behaviour on models that never had the problem. In all three cases an explicit `reasoning_effort` from the caller still wins: the provider sets its value before merging caller kwargs.
+
+Adding a new default-reasoning family is a deliberate act. Extend `_DEFAULT_REASONING_MODEL_FAMILIES` only after probing the model, because the constraints that define the family — rejecting non-default `temperature`, rejecting tools without `reasoning_effort: "none"` — are verified per family rather than inferred from the version number.
+
+> Note for grounded-generation paths (KB synthesis, document conversion, intent classification): these supply their own context and ask the model to answer strictly from it, so hidden reasoning buys little and competes directly with the answer for the token budget. That is why the plain-chat default is `"none"` rather than `"low"`.
 
 ### 3. Anthropic (Claude)
 
