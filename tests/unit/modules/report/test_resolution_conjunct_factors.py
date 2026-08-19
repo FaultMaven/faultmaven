@@ -64,10 +64,10 @@ async def test_co_necessary_conditions_are_rendered_under_the_root_cause():
         _resolved_case([_LIMIT]), {"duration": "32 minutes"}
     )
     assert "## Root Cause" in summary
-    assert "**The cause required these conditions too:**" in summary
+    assert "**Producing the problem also required:**" in summary
     assert f"- {_LIMIT}" in summary
     # Stated as co-necessity, under the cause and before the next section.
-    factors_at = summary.index("The cause required these conditions too")
+    factors_at = summary.index("Producing the problem also required")
     assert summary.index("## Root Cause") < factors_at
 
 
@@ -77,4 +77,4 @@ async def test_a_single_factor_cause_grows_no_empty_section():
         _resolved_case([]), {"duration": "32 minutes"}
     )
     assert "## Root Cause" in summary
-    assert "required these conditions too" not in summary
+    assert "Producing the problem also required" not in summary

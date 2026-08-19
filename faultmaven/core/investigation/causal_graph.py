@@ -119,11 +119,23 @@ def incoming_and_groups(
     ``(effect_node_id, and_group)`` are co-necessary (an AND-set, M7). A
     ``None`` key collects the independent (OR-alternative) direct causes — each
     is its own sufficient cause, not part of a conjunction.
+
+    A blank key ("" or whitespace) names no group and normalizes to ``None``.
+    ``_add_edge`` normalizes on the way in, but ``and_group`` is an
+    unconstrained ``Optional[str]`` at every layer and rows persisted before
+    that guard cannot be reached by it — so the normalization lives HERE, where
+    every reader is healed at once: the M7 prover would otherwise keep a
+    silently-strengthened gate on legacy data, and ``validated_and_conjuncts``
+    would publish "the cause required these conditions too" over causes the
+    graph holds as independent alternatives.
     """
     groups: dict[str | None, list[str]] = {}
     for e in edges:
         if e.effect_node_id == node_id:
-            groups.setdefault(e.and_group, []).append(e.cause_node_id)
+            key = e.and_group
+            if isinstance(key, str) and not key.strip():
+                key = None
+            groups.setdefault(key, []).append(e.cause_node_id)
     return groups
 
 
@@ -177,23 +189,30 @@ def validated_and_conjuncts(case: "Case", chain_node_ids: list[str]) -> list[str
     return sorted(statements)
 
 
-def _conjuncts_for_hypothesis(case: "Case", hyp: "Hypothesis") -> list[str]:
+def conjuncts_for_chain(case: "Case", hyp=None, root=None) -> list[str]:
     """``validated_and_conjuncts`` over the chain a conclusion would mirror.
 
-    The path is the chain when the hypothesis carries one. A path-less
-    hypothesis still has its root (M3 requires it before validation), and the
-    fallback adds the PROBLEM node: the canonical two-factor shape is both
-    conjuncts pointing straight at D, so an AND-set there is the common case
-    and reading the root's incoming edges alone would report none."""
-    chain = list(hyp.path or [])
+    The ONE chain-builder, shared by the per-turn mirror here and the terminal
+    confirm-stamp in ``cause_assurance`` (which reaches it through the graph
+    hook). Both must name the same conjuncts for the same case; implementing
+    the rule twice across that module boundary would let the two conclusions a
+    single case passes through disagree, with nothing watching.
+
+    The path is the chain when the hypothesis carries one — ``chain_path_to_problem``
+    builds it as ``[root, ..., D]``, so an AND-set at any depth including D is
+    covered. A path-less hypothesis still has its root (M3 requires it before
+    validation), and the fallback adds the PROBLEM node: the canonical
+    two-factor shape is both conjuncts pointing straight at D, so reading the
+    root's incoming edges alone would report none.
+    """
+    chain = list(getattr(hyp, "path", None) or []) if hyp is not None else []
     if not chain:
+        root_id = getattr(root, "node_id", None) or getattr(hyp, "root_node_id", None)
         problem = next(
             (n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM),
             None,
         )
-        chain = [
-            x for x in (hyp.root_node_id, problem.node_id if problem else None) if x
-        ]
+        chain = [x for x in (root_id, problem.node_id if problem else None) if x]
     return validated_and_conjuncts(case, chain)
 
 
@@ -2076,7 +2095,7 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
                 rcc.confidence_level == expected_level
                 and (prior_confirmed or not confirmed_hyps)
                 and list(rcc.contributing_factors or [])
-                == _conjuncts_for_hypothesis(case, prior)
+                == conjuncts_for_chain(case, prior)
             ):
                 return False  # faithful mirror: root, grade AND conjuncts agree
         # else: stale/misgraded engine mirror — refresh from the current
@@ -2151,7 +2170,7 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
         # a cause the investigation established as a conjunction would reach the
         # report as its first conjunct alone. NOT the LLM's own factor prose:
         # single authority is unchanged, this is the graph speaking.
-        contributing_factors=_conjuncts_for_hypothesis(case, hyp),
+        contributing_factors=conjuncts_for_chain(case, hyp),
         determined_by=_ENGINE_RCC_AUTHOR,
     )
     if llm_authored:
@@ -2930,5 +2949,5 @@ register_graph_hooks(
     derive_node_states=derive_node_states,
     sole_cluster_origin=sole_cluster_origin,
     project_hypothesis_states_from_roots=project_hypothesis_states_from_roots,
-    validated_and_conjuncts=validated_and_conjuncts,
+    conjuncts_for_chain=conjuncts_for_chain,
 )

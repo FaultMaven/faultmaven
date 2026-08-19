@@ -1036,10 +1036,20 @@ edge-ordered — neither repository loads `causal_edges` with an `ORDER BY`, so
 row order would make both the text and that equality check vary with fetch order
 on PostgreSQL. The same conjuncts travel to the runbook boundary
 (`CaseConversionRequest.root_cause_conditions`), because a runbook recording
-half a cause outlives the case it came from. The LLM gets no schema field for
-any of this by design: the way to say "the problem needed both" is the AND-set,
-and the engine reads it — a blank `and_group` is normalized to `None` at ingest
-so an empty grouping token cannot be published as co-necessity.
+half a cause outlives the case it came from. One chain-builder
+(`conjuncts_for_chain`) serves both mint sites, the per-turn mirror and the
+terminal confirm-stamp — the stamp can only cross that module boundary by hook,
+and a second copy of the rule would let the two conclusions one case passes
+through name different conjuncts.
+
+The report heading attributes the requirement to **producing the problem**, not
+to the root cause: an AND-set can sit on any rung of the mirrored chain, and a
+conjunct co-necessary with an intermediate is a condition of that mechanism step
+rather than of the cause. The LLM gets no schema field for any of this by
+design: the way to say "the problem needed both" is the AND-set, and the engine
+reads it — a blank `and_group` names no group and normalizes to `None` at the
+READ site (`incoming_and_groups`), not only at ingest, because rows persisted
+before that guard cannot be reached by it and are exactly the rows at risk.
 Grade labeling needs nothing new and already covers the fallback — the assurance
 grade and the over-claim flag are recomputed from the graph at every surface (turn
 response, resolved payload, report note), so a fallback conclusion standing at

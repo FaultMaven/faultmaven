@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import pytest
 
 from faultmaven.core.investigation.causal_graph import (
+    conjuncts_for_chain,
     seed_problem_node,
     validated_and_conjuncts,
 )
@@ -377,3 +378,41 @@ def test_the_confirm_stamp_degrades_when_the_graph_hook_is_missing():
     hyp = case.hypotheses["hyp_0000000000aa"]
     with patch.dict(cause_assurance._GRAPH_HOOKS, {}, clear=True):
         assert cause_assurance._conjuncts_for_root(case, root, hyp) == []
+
+
+def test_a_blank_and_group_persisted_before_the_ingest_guard_is_not_a_conjunction():
+    """Read-side twin of the ingest test. ``_add_edge`` cannot reach rows already
+    stored with "", and those are exactly the rows the guard was written for —
+    so the normalization has to hold where the graph is READ, or a legacy case
+    publishes co-necessity over independent alternatives."""
+    case, _d = _conjunction_case(and_group=None)
+    # Simulate the persisted shape: a stored edge whose and_group is blank.
+    for edge in case.causal_edges:
+        if edge.effect_node_id == _M:
+            edge.and_group = ""
+    _recompute_cause_state_from_chain(case)
+
+    assert case.causal_nodes[_B].node_state == NodeState.VALIDATED
+    assert case.root_cause_conclusion.contributing_factors == []
+
+
+def test_both_mint_sites_build_the_same_chain():
+    """``causal_graph`` (per-turn mirror) and ``cause_assurance`` (terminal
+    confirm-stamp) must name the SAME conjuncts for one case. They sit either
+    side of a module boundary the stamp can only cross by hook, so this pins
+    that there is one chain-builder rather than two copies free to drift."""
+    from faultmaven.core.investigation import cause_assurance
+
+    case, _d = _conjunction_case()
+    _recompute_cause_state_from_chain(case)
+    hyp = case.hypotheses["hyp_0000000000aa"]
+    root = case.causal_nodes[_A]
+
+    assert cause_assurance._conjuncts_for_root(case, root, hyp) == conjuncts_for_chain(
+        case, hyp
+    )
+    # ...including on the path-less fallback, where the rule is least obvious.
+    hyp.path = []
+    assert cause_assurance._conjuncts_for_root(case, root, hyp) == conjuncts_for_chain(
+        case, hyp
+    )
