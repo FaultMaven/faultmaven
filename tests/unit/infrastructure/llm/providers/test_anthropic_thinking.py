@@ -293,6 +293,21 @@ class TestEnabledThinkingBudget:
         assert any("minimum" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
+    async def test_explicit_zero_budget_is_refused_not_defaulted(self, caplog):
+        """ANTHROPIC_THINKING_BUDGET_TOKENS=0 is an explicit value, not an
+        unset one: it must hit the below-minimum refuse path (downgrade with
+        a warning), never silently take the 4096 default."""
+        provider = AnthropicProvider(
+            _config(thinking_mode="enabled", thinking_budget_tokens=0)
+        )
+
+        with caplog.at_level("WARNING"):
+            body = await _sent_request_body(provider, tools=_TOOLS, max_tokens=8000)
+
+        assert "thinking" not in body
+        assert any("minimum" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
     async def test_unset_budget_uses_default(self):
         provider = AnthropicProvider(_config(thinking_mode="enabled"))
 

@@ -80,10 +80,11 @@ class AnthropicProvider(BaseLLMProvider):
             return {"type": "adaptive"}
 
         if mode == "enabled":
-            budget = (
-                self.config.thinking_budget_tokens
-                or self._THINKING_DEFAULT_BUDGET_TOKENS
-            )
+            # `is None` (not `or`): an explicit budget of 0 must reach the
+            # below-minimum refuse path, not silently take the default.
+            budget = self.config.thinking_budget_tokens
+            if budget is None:
+                budget = self._THINKING_DEFAULT_BUDGET_TOKENS
             if budget < self._THINKING_MIN_BUDGET_TOKENS:
                 self.logger.warning(
                     "Anthropic thinking disabled for this call: "
