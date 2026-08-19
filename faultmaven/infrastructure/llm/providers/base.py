@@ -9,6 +9,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 # Import structured output capability system
@@ -17,6 +18,95 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputStrategy,
     create_strategy_for_capability,
 )
+
+
+class StopReason(str, Enum):
+    """Why the model stopped generating, normalised across nine provider APIs.
+
+    Every provider reports this and every provider words it differently —
+    OpenAI ``finish_reason: "length"``, Anthropic ``stop_reason: "max_tokens"``,
+    Gemini ``finishReason: "MAX_TOKENS"``, Ollama ``done_reason: "length"``,
+    llama.cpp a ``stopped_limit`` boolean. Consumers must never match on those
+    strings: a normalised enum is the single vocabulary, and the raw value is
+    only ever read by the provider that produced it.
+
+    ``UNKNOWN`` is a real state, not a synonym for "finished normally". Some
+    providers supply no signal at all on the way we call them (HuggingFace),
+    and any response we did not parse a reason out of lands here too. Collapsing
+    it into "not truncated" would make every ``if response.is_truncated`` check
+    fail open — silently reporting a cut body as complete, which is exactly the
+    defect this field exists to close.
+
+    ``CONTENT_FILTER`` is deliberately distinct from ``MAX_TOKENS``. Both cut
+    the body short, but the recovery is opposite: retrying a length-stop with a
+    bigger budget is correct, retrying a safety block with a bigger budget just
+    spends money to be refused again.
+    """
+
+    STOP = "stop"  # Model finished on its own (or hit a stop sequence)
+    MAX_TOKENS = "max_tokens"  # Output cut at the generation cap — INCOMPLETE
+    CONTENT_FILTER = "content_filter"  # Blocked by the provider's safety layer
+    TOOL_CALLS = "tool_calls"  # Stopped to hand control back for a tool call
+    UNKNOWN = "unknown"  # No signal parsed — NOT a claim that it completed
+
+
+# Raw provider spellings → normalised reason. Keys are lowercased before lookup.
+#
+# One shared table rather than a map per provider because the vocabularies are
+# disjoint: no provider spells "length" to mean anything but the output cap, and
+# no two providers use the same token for different reasons. A single table is
+# therefore unambiguous, and it means a new provider usually needs no new
+# mapping code at all.
+_STOP_REASON_ALIASES: Dict[str, "StopReason"] = {
+    # Natural completion
+    "stop": StopReason.STOP,
+    "stop_sequence": StopReason.STOP,
+    "end_turn": StopReason.STOP,  # Anthropic
+    "complete": StopReason.STOP,  # Cohere v2
+    "eos_token": StopReason.STOP,  # HuggingFace TGI
+    "eos": StopReason.STOP,
+    # Output cap reached — the body is INCOMPLETE
+    "length": StopReason.MAX_TOKENS,  # OpenAI-family, Ollama done_reason
+    "max_tokens": StopReason.MAX_TOKENS,  # Anthropic, Cohere v2, Gemini
+    "max_length": StopReason.MAX_TOKENS,  # HuggingFace TGI
+    "stopped_limit": StopReason.MAX_TOKENS,  # llama.cpp
+    "model_length": StopReason.MAX_TOKENS,  # vLLM
+    # Safety / policy block — NOT truncation, do not retry bigger
+    "content_filter": StopReason.CONTENT_FILTER,  # OpenAI-family
+    "safety": StopReason.CONTENT_FILTER,  # Gemini
+    "recitation": StopReason.CONTENT_FILTER,  # Gemini
+    "prohibited_content": StopReason.CONTENT_FILTER,  # Gemini
+    "blocklist": StopReason.CONTENT_FILTER,  # Gemini
+    # Gemini's "blocked for a reason it did not name" — still a block, and the
+    # Gemini provider treated it as one before this table existed.
+    "blocked_reason_unspecified": StopReason.CONTENT_FILTER,
+    "spii": StopReason.CONTENT_FILTER,  # Gemini
+    "image_safety": StopReason.CONTENT_FILTER,  # Gemini
+    "refusal": StopReason.CONTENT_FILTER,
+    # Handing control back for a tool call
+    "tool_calls": StopReason.TOOL_CALLS,  # OpenAI-family
+    "tool_call": StopReason.TOOL_CALLS,  # Cohere v2
+    "tool_use": StopReason.TOOL_CALLS,  # Anthropic
+    "function_call": StopReason.TOOL_CALLS,
+}
+
+
+def normalize_stop_reason(raw: Any) -> StopReason:
+    """Map a provider's raw stop/finish value onto :class:`StopReason`.
+
+    Anything unrecognised — including ``None``, an empty string, and a value a
+    provider added after this table was written — becomes ``UNKNOWN`` rather
+    than ``STOP``. Guessing "it finished" from silence is the failure mode the
+    enum exists to prevent.
+    """
+    if raw is None:
+        return StopReason.UNKNOWN
+    if isinstance(raw, StopReason):
+        return raw
+    text = str(raw).strip().lower()
+    if not text:
+        return StopReason.UNKNOWN
+    return _STOP_REASON_ALIASES.get(text, StopReason.UNKNOWN)
 
 
 @dataclass
@@ -161,11 +251,20 @@ class NormalizedResponse:
 
 @dataclass
 class LLMResponse:
-    """
-    Legacy response structure - DEPRECATED
+    """One provider response, normalised across the nine provider APIs.
 
-    This will be replaced by NormalizedResponse in upcoming refactor.
-    Kept for backward compatibility during migration.
+    This carried a "DEPRECATED, will be replaced by NormalizedResponse" note
+    for years. ``NormalizedResponse`` was in fact written — it is directly
+    above — but nothing ever constructed it: every provider returns this type,
+    and every consumer reads it. The note was therefore misdirection either
+    way, inviting new cross-provider fields to be deferred to a successor that
+    never arrived, which is part of how the stop reason went nine providers
+    without a home. Treat THIS as the normalised response and add such fields
+    here; migrating to the other class is a separate decision that has not been
+    taken in either direction.
+
+    Fields are additive with defaults. Downstream repos pin core ``@main`` and
+    construct responses of their own, so a new field must never be required.
     """
 
     content: str
@@ -198,6 +297,22 @@ class LLMResponse:
     # response was served from FaultMaven's local LLMResponseCache (zero provider
     # spend). Never conflate the two — doing so mislabels billed calls as free.
     prompt_cache_hit: bool = False
+    # Why generation stopped, normalised (see StopReason). Defaults to UNKNOWN
+    # so a provider that has not been taught to report — or a response we could
+    # not parse a reason out of — never claims to have finished cleanly.
+    stop_reason: StopReason = StopReason.UNKNOWN
+
+    @property
+    def is_truncated(self) -> bool:
+        """True only when the provider SAID it cut the body at the output cap.
+
+        Derived, never stored: ``UNKNOWN`` reads as False here because there is
+        nothing to act on, but it stays distinguishable on ``stop_reason`` for
+        anything that needs to tell "completed" from "no signal" — logging and
+        metrics especially, where the UNKNOWN share is what tells you which
+        providers still have a blind spot.
+        """
+        return self.stop_reason is StopReason.MAX_TOKENS
 
 
 @dataclass

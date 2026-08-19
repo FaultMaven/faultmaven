@@ -20,6 +20,10 @@ from faultmaven.core.preprocessing.models import (
     UnifiedDataType,
 )
 from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
+from faultmaven.infrastructure.llm.truncation import (
+    annotate_if_truncated,
+    generate_with_truncation_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +72,36 @@ class LocalTier2Service(ITier2SearchService):
 
         tokens_used = 0
         try:
-            response = await self.llm_client.generate(
-                messages=[{"role": "user", "content": prompt}],
+
+            async def _analyze(cap: int):
+                return await self.llm_client.generate(
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=cap,
+                )
+
+            response = await generate_with_truncation_retry(
+                _analyze,
                 max_tokens=self.max_tokens,
+                ceiling=self.max_tokens * 2,
+                label="tier-2 deep analysis",
             )
-            answer = response.content if hasattr(response, "content") else str(response)
+            # ``llm_client`` is an ILLMProvider — the router, per
+            # ``create_tier2_service`` — so ``generate`` returns an
+            # ``LLMResponse``. This used to hedge with
+            # ``hasattr(response, "content") else str(response)``, tolerating a
+            # bare string the DI cannot actually produce. The hedge is gone
+            # because the contract is now stated (``ILLMProvider.generate ->
+            # LLMResponse``) and because a response-level signal cannot be read
+            # off a stand-in that only pretends to be one; anything genuinely
+            # unexpected still lands in the except below and degrades to raw
+            # excerpts rather than failing the turn (#1094).
+            answer = response.content
+            # The consumer of this answer is the investigation engine — another
+            # LLM, which will otherwise read a sentence that stops mid-clause as
+            # the whole of what the evidence says. Annotate rather than refuse:
+            # partial analysis of a log file still carries the excerpts, which
+            # are attached below regardless.
+            answer = annotate_if_truncated(answer, response)
             tokens_used = getattr(response, "tokens_used", 0)
         except Exception as e:
             logger.error(f"Local LLM analysis failed: {e}")

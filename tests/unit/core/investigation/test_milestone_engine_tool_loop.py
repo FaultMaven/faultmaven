@@ -1795,3 +1795,120 @@ class TestAdvisoryIsNotEmittedForAnIndexThatWasNeverWritten:
         assert (
             emitted is expect_advisory
         ), f"indexed={indexed} emitted the advisory={emitted}"
+
+
+# =========================================================================
+# Truncation on the tool-augmented path (#1094)
+# =========================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestToolLoopTruncationLadder:
+    """The gap #513's ladder left open.
+
+    ``_generate_structured_output_inner`` has raised the cap on a cut body
+    since #513. This path never did: ``max_tokens`` was a fixed 8000 and the
+    schema-tool arguments went straight into ``_parse_schema_tool_call``, whose
+    repair machinery — nested-JSON parsing, the ``state_updates`` string→``{}``
+    coercion, validation degradation — is quite capable of turning a truncated
+    payload into a structurally valid response. Those state updates are then
+    APPLIED to the case. A cut becomes a claim.
+    """
+
+    def _tools(self):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_file",
+                    "description": "Search files",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                    },
+                },
+            }
+        ]
+
+    async def test_a_truncated_call_is_retried_at_a_doubled_cap(self):
+        from faultmaven.core.investigation.milestone_engine import (
+            STRUCTURED_OUTPUT_MAX_TOKENS,
+        )
+        from faultmaven.infrastructure.llm.providers import StopReason
+
+        cut = _make_schema_response({"agent_response": "partial"})
+        cut.stop_reason = StopReason.MAX_TOKENS
+        whole = _make_schema_response(
+            {"agent_response": "complete", "next_action": "continue"}
+        )
+
+        mock_provider = AsyncMock()
+        mock_provider.generate = AsyncMock(side_effect=[cut, whole])
+        engine = _make_engine(
+            mock_provider=mock_provider, mock_registry=_make_mock_registry()
+        )
+
+        result = await engine._tool_augmented_generate(
+            prompt="Investigate",
+            schema_model=SampleResponse,
+            investigation_tools=self._tools(),
+            tool_context=MagicMock(),
+        )
+
+        assert result.agent_response == "complete"
+        caps = [c.kwargs["max_tokens"] for c in mock_provider.generate.await_args_list]
+        assert caps == [
+            STRUCTURED_OUTPUT_MAX_TOKENS,
+            STRUCTURED_OUTPUT_MAX_TOKENS * 2,
+        ]
+
+    async def test_a_complete_call_is_not_retried(self):
+        """Negative control — the loop must not double every call."""
+        whole = _make_schema_response({"agent_response": "complete"})
+
+        mock_provider = AsyncMock()
+        mock_provider.generate = AsyncMock(return_value=whole)
+        engine = _make_engine(
+            mock_provider=mock_provider, mock_registry=_make_mock_registry()
+        )
+
+        await engine._tool_augmented_generate(
+            prompt="Investigate",
+            schema_model=SampleResponse,
+            investigation_tools=self._tools(),
+            tool_context=MagicMock(),
+        )
+
+        assert mock_provider.generate.await_count == 1
+
+    async def test_the_retry_is_metered_too(self):
+        """Both attempts are real billed calls when a dedicated DA provider is used.
+
+        Metering sits inside the retry so DA-turn spend does not under-report
+        on exactly the turns that cost the most.
+        """
+        from faultmaven.infrastructure.llm.providers import StopReason
+
+        cut = _make_schema_response({"agent_response": "partial"})
+        cut.stop_reason = StopReason.MAX_TOKENS
+        whole = _make_schema_response({"agent_response": "complete"})
+
+        da_provider = AsyncMock()
+        da_provider.provider_name = "openai"
+        da_provider.generate = AsyncMock(side_effect=[cut, whole])
+        engine = _make_engine(
+            mock_registry=_make_mock_registry(), da_provider=da_provider
+        )
+
+        with patch(
+            "faultmaven.core.investigation.milestone_engine.record_provider_call"
+        ) as record:
+            await engine._tool_augmented_generate(
+                prompt="Investigate",
+                schema_model=SampleResponse,
+                investigation_tools=self._tools(),
+                tool_context=MagicMock(),
+            )
+
+        assert record.call_count == 2

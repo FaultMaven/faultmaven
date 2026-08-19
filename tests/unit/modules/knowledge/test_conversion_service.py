@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
@@ -57,6 +58,7 @@ from faultmaven.modules.knowledge.domain.services.conversion_service import (
     ANALYSIS_SYSTEM_PROMPT,
     CONVERSION_SYSTEM_PROMPT,
     DEFAULT_ORGANIZATION_ID,
+    RUNBOOK_MAX_TOKENS_CEILING,
     ConversionRejectedError,
     ConversionService,
 )
@@ -278,9 +280,24 @@ def _make_analysis_json(
     )
 
 
-def _make_llm_response(content: str):
-    """Create a mock LLM response object with a .content attribute."""
-    return SimpleNamespace(content=content)
+def _make_llm_response(content: str, stop_reason: StopReason = StopReason.STOP):
+    """Build a real ``LLMResponse``, which is what the router actually returns.
+
+    This used to be a ``SimpleNamespace`` carrying only ``.content``. That was
+    enough while ``.content`` was the only thing the service read, and it stopped
+    being enough the moment the service started asking whether the response was
+    cut off (#1094) — a stand-in that answers only the questions the code asked
+    yesterday cannot fail when the code starts asking a new one.
+    """
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="test",
+        model="test-model",
+        tokens_used=100,
+        response_time_ms=10,
+        stop_reason=stop_reason,
+    )
 
 
 def _make_preprocessing_result(
@@ -2353,3 +2370,161 @@ class TestSymptomClassProducePath:
             await service._convert_from_case_impl(request, user_id="user-1")
 
         assert capture.await_args.kwargs["failure_mode"].symptom_class == ["timeout"]
+
+
+# =============================================================================
+# Truncation: a runbook is complete or it is not written (#1094)
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestTruncatedRunbookIsNeverPersisted:
+    """The worst place a silent cut can land.
+
+    A runbook is PERSISTED to the knowledge base and later retrieved to drive
+    other investigations, so a half-procedure ships as an authoritative one and
+    the reader has no way to tell that step 4 of 7 is missing rather than
+    absent by design.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_runbook_would_pass_every_content_validator(
+        self, service, mock_runbook_content
+    ):
+        """Why the stop reason is the only thing that can catch this.
+
+        The validators check for frontmatter delimiters, a length floor and the
+        required section headings. A body cut near the end satisfies all three,
+        because the sections are written in order and the cut takes the tail.
+        Nothing downstream of generation can distinguish it from a complete
+        runbook — which is precisely the argument for checking at the source.
+        """
+        cut = mock_runbook_content[: int(len(mock_runbook_content) * 0.8)]
+
+        assert len(cut) >= 100
+        assert "---" in cut
+        assert any(
+            h in cut
+            for h in ["## Symptom Recognition", "## Diagnostic Steps", "## Causes"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_conversion_retries_once_then_refuses_to_persist(
+        self,
+        service,
+        mock_llm_router,
+        source_file,
+        source_document_text,
+        mock_analysis_response,
+        mock_runbook_content,
+        tmp_path,
+    ):
+        """Retry bigger; if it is still cut, fail retryably and write nothing."""
+        cut = mock_runbook_content[: int(len(mock_runbook_content) * 0.8)]
+        preprocessing = _make_preprocessing_result(source_document_text)
+        with patch.object(
+            service._preprocessor, "preprocess", return_value=preprocessing
+        ):
+            mock_llm_router.route.side_effect = [
+                _make_llm_response(mock_analysis_response),
+                _make_llm_response(cut, StopReason.MAX_TOKENS),
+                _make_llm_response(cut, StopReason.MAX_TOKENS),
+            ]
+            with patch.object(
+                type(service),
+                "_data_dir",
+                new_callable=lambda: property(lambda self: tmp_path),
+            ):
+                result = await service.convert_document(
+                    file_path=source_file,
+                    content_type="text/markdown",
+                    original_filename="test_document.md",
+                    scope="global",
+                    user_id="user-123",
+                )
+
+        assert result.drafts == []
+        assert result.status == ConversionStatus.FAILED
+        assert any("truncated" in w.lower() for w in result.warnings)
+
+        # Three calls: analysis, conversion, conversion retried at double.
+        assert mock_llm_router.route.call_count == 3
+        assert (
+            mock_llm_router.route.call_args_list[2].kwargs["max_tokens"]
+            == RUNBOOK_MAX_TOKENS_CEILING
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_recovered_runbook_is_persisted_normally(
+        self,
+        service,
+        mock_llm_router,
+        source_file,
+        source_document_text,
+        mock_analysis_response,
+        mock_runbook_content,
+        tmp_path,
+    ):
+        """The retry is a recovery, not just a nicer failure."""
+        cut = mock_runbook_content[: int(len(mock_runbook_content) * 0.8)]
+        preprocessing = _make_preprocessing_result(source_document_text)
+        with patch.object(
+            service._preprocessor, "preprocess", return_value=preprocessing
+        ):
+            mock_llm_router.route.side_effect = [
+                _make_llm_response(mock_analysis_response),
+                _make_llm_response(cut, StopReason.MAX_TOKENS),
+                _make_llm_response(mock_runbook_content),
+            ]
+            with patch.object(
+                type(service),
+                "_data_dir",
+                new_callable=lambda: property(lambda self: tmp_path),
+            ):
+                result = await service.convert_document(
+                    file_path=source_file,
+                    content_type="text/markdown",
+                    original_filename="test_document.md",
+                    scope="global",
+                    user_id="user-123",
+                )
+
+        assert result.status == ConversionStatus.COMPLETED
+        assert len(result.drafts) == 1
+
+    @pytest.mark.asyncio
+    async def test_truncated_analysis_says_so_instead_of_parse_error(
+        self, service, mock_llm_router, source_file, source_document_text, tmp_path
+    ):
+        """A cut analysis used to surface as "could not be parsed".
+
+        Right shape (loud), wrong diagnosis: the document did not have bad JSON
+        in it, the response ran out of room. Now it is retried, and named.
+        """
+        preprocessing = _make_preprocessing_result(source_document_text)
+        with patch.object(
+            service._preprocessor, "preprocess", return_value=preprocessing
+        ):
+            mock_llm_router.route.side_effect = [
+                _make_llm_response(
+                    '{"is_actionable": true, "failure_mo', StopReason.MAX_TOKENS
+                ),
+                _make_llm_response(
+                    '{"is_actionable": true, "failure_mo', StopReason.MAX_TOKENS
+                ),
+            ]
+            with patch.object(
+                type(service),
+                "_data_dir",
+                new_callable=lambda: property(lambda self: tmp_path),
+            ):
+                with pytest.raises(ConversionRejectedError) as exc:
+                    await service.convert_document(
+                        file_path=source_file,
+                        content_type="text/markdown",
+                        original_filename="test_document.md",
+                        scope="global",
+                        user_id="user-123",
+                    )
+
+        assert "truncated" in str(exc.value).lower()
