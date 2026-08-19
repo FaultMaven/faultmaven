@@ -329,3 +329,48 @@ def test_hedged_only_root_gets_confident_link_recovery_note():
     line = next(ln for ln in block.splitlines() if "cn_00000000fed9" in ln)
     assert "CONFIDENT causal observation" in line
     assert "SECOND INDEPENDENT" not in line
+
+
+def test_unanchored_hypothesis_carries_the_anchoring_ask():
+    """A hypothesis with no chain renders as a statement with nothing under it —
+    an absence the model has to notice. The block states the ask instead, which
+    is the recovery path after a refused root adoption (fm#1091)."""
+    case = _case(hyps=[_hyp(statement="the cache is unbounded")])
+
+    block = _build_causal_graph_block(case)
+
+    assert "no chain yet" in block
+    assert "root_node_ref" in block
+
+
+def test_anchored_hypothesis_has_no_anchoring_ask():
+    root = _node("cn_0000000000a1", statement="cache is unbounded")
+    problem = _node("cn_00000000000d", statement="pods OOM", node_type=NodeType.PROBLEM)
+    case = _case(
+        nodes=[root, problem],
+        hyps=[
+            _hyp(
+                statement="the cache is unbounded",
+                root_node_id=root.node_id,
+                path=[root.node_id, problem.node_id],
+            )
+        ],
+    )
+
+    assert "no chain yet" not in _build_causal_graph_block(case)
+
+
+def test_refuted_hypothesis_gets_no_anchoring_ask():
+    # A refuted theory is not being asked to build a chain — the block would be
+    # nagging for work the lifecycle has already closed.
+    case = _case(
+        hyps=[
+            _hyp(
+                statement="the runner ran out of RAM",
+                state=HypothesisState.REFUTED,
+                refutation_reason="the log shows JVM heap pressure",
+            )
+        ]
+    )
+
+    assert "no chain yet" not in _build_causal_graph_block(case)

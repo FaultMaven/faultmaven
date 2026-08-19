@@ -80,6 +80,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     evidence_need_status_changed_total,
     evidence_suggestion_unlinked_total,
     hypothesis_dedup_skipped_total,
+    hypothesis_root_adoption_refused_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
     narration_overclaim_total,
@@ -8715,26 +8716,101 @@ class MilestoneEngine:
         # of its now-dead nodes so the elaborated chain does not co-exist with the
         # abandoned degenerate stub for the same cause (the double-representation /
         # orphan-chain divergence).
+        def _other_owner(hyp_id: str, root_id: str):
+            """The OTHER hypothesis currently rooted at ``root_id``, if any."""
+            return next(
+                (
+                    h
+                    for h in case.hypotheses.values()
+                    if h.hypothesis_id != hyp_id and h.root_node_id == root_id
+                ),
+                None,
+            )
+
+        def _attach(hyp, root_id: str) -> list | None:
+            """Point ``hyp`` at ``root_id``. Returns the path it abandoned (``[]``
+            when it abandoned nothing), or None when the move was declined.
+
+            On a RE-ROOT (the hypothesis already had a root) only move it once
+            the new chain actually reaches D. Abandoning a working [root, D]
+            link for an empty path would strand the hypothesis: the graph is
+            emission-only (no projection floor), so nothing would restore the
+            link this turn. At creation (no prior root) an empty path is fine —
+            there was no link to lose.
+            """
+            old_root = hyp.root_node_id
+            old_path = hyp.path or []
+            new_path = chain_path_to_problem(root_id, case)
+            if old_root and old_root != root_id and not new_path:
+                return None
+            hyp.root_node_id = root_id
+            hyp.path = new_path
+            return old_path if (old_root and old_root != root_id) else []
+
+        # One cause, one chain (M3/§7.8.1): a chain root belongs to exactly ONE
+        # hypothesis. A ref naming a root ANOTHER hypothesis owns is REFUSED —
+        # adopting a foreign chain silently re-labels this hypothesis's cause with
+        # the owner's statement, and everything derived from the root afterwards
+        # (the mirrored support, the node state, the VALIDATED projection back onto
+        # the hypothesis, the report's causal map) then speaks about a cause this
+        # hypothesis never claimed. Observed live (fm#1091): a cache-exhaustion
+        # hypothesis adopted the root of a REFUTED runner-out-of-memory hypothesis,
+        # and the resolution summary drew that refuted statement as the validated
+        # cause of the problem while the real cause appeared nowhere in the map.
+        #
+        # Contested refs are settled in a SECOND pass, because the batch is applied
+        # in emission order (adds before re-roots) and a root that is owned when we
+        # first read it may be FREED by a re-root later in the same batch — the
+        # hand-off shape, where the owner deepens onto a new root and the old one
+        # becomes the new hypothesis's cause. Judging on first read would refuse a
+        # hand-off the model expressed correctly, AND then GC the very chain it
+        # handed over.
+        abandoned: list[list] = []
+        contested: list[tuple[str, str]] = []
         for hyp_id, ref in metadata.get("hyp_root_refs", {}).items():
             root_id = _resolve_root(ref)
             hyp = case.hypotheses.get(hyp_id)
             if root_id is None or hyp is None:
                 continue
-            old_root = hyp.root_node_id
-            old_path = hyp.path or []
-            new_path = chain_path_to_problem(root_id, case)
-            # On a RE-ROOT (the hypothesis already had a root) only move it once
-            # the new chain actually reaches D. Abandoning a working [root, D]
-            # link for an empty path would strand the hypothesis: the graph is
-            # emission-only (no projection floor), so nothing would restore the
-            # link this turn. At creation (no prior root) an empty path is fine —
-            # there was no link to lose.
-            if old_root and old_root != root_id and not new_path:
+            if _other_owner(hyp_id, root_id) is not None:
+                contested.append((hyp_id, root_id))
                 continue
-            hyp.root_node_id = root_id
-            hyp.path = new_path
-            if old_root and old_root != root_id:
-                self._gc_orphan_chain(case, old_path)
+            freed = _attach(hyp, root_id)
+            if freed:
+                abandoned.append(freed)
+
+        for hyp_id, root_id in contested:
+            hyp = case.hypotheses.get(hyp_id)
+            if hyp is None:
+                continue
+            owner = _other_owner(hyp_id, root_id)
+            if owner is None:  # freed by a re-root above — the hand-off, honored
+                freed = _attach(hyp, root_id)
+                if freed:
+                    abandoned.append(freed)
+                continue
+            hypothesis_root_adoption_refused_total.inc()
+            _add_system_feedback(
+                metadata,
+                f"Hypothesis {hyp_id} was NOT anchored to node {root_id}: "
+                f"that node is already the chain root of {owner.hypothesis_id} "
+                f"('{(owner.statement or '')[:80]}'). One cause = one chain. "
+                f"Emit a NEW root node stating THIS hypothesis's own cause and "
+                f"point its root_node_ref at it — or, if the two are the same "
+                f"cause, update {owner.hypothesis_id} instead of keeping both.",
+            )
+            logger.info(
+                "Refused hypothesis root adoption (fm#1091): %s -> %s owned by %s",
+                hyp_id,
+                root_id,
+                owner.hypothesis_id,
+            )
+
+        # GC runs only once every move is settled: a chain abandoned by a re-root
+        # may have been ADOPTED by a hand-off in the second pass, and
+        # prune_abandoned_nodes drops only what no hypothesis still references.
+        for old_path in abandoned:
+            self._gc_orphan_chain(case, old_path)
 
         # B1 (#695): mirror each hypothesis's flat causal SUPPORTS links onto its
         # (now-linked) chain ROOT node. The flat hypothesis_evidence and

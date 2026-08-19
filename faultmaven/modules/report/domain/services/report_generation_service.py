@@ -36,12 +36,15 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CauseAssuranceGrade,
     ICaseRepository,
+    InvestigationActionType,
     NeedObtainability,
     NeedPurpose,
     ReportGenerationRequest,
     ReportGenerationResponse,
     ReportStatus,
     ReportType,
+    SolutionOutcome,
+    classify_solution_outcome,
 )
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -447,6 +450,74 @@ class ReportGenerationService:
             source = f" — _{ev.source_type.value}_"
         return f"- **[{category_label}]** {summary}{source}"
 
+    @staticmethod
+    def _solutions_by_outcome(case: Case) -> tuple[List[Any], List[Any]]:
+        """Split the case's solutions into ``(applied, still-proposed)``.
+
+        The engine mints one ``Solution`` per LLM fix proposal and never stamps
+        its lifecycle fields, so ``case.solutions`` accumulates every re-proposal
+        of the same remediation — three paraphrases of "bound the cache and
+        restore the limit" in the case that prompted this (fm#1091), rendered as
+        three numbered fixes under a heading that says they were *applied*.
+
+        What actually happened is recorded on the ``ProposedAction`` each
+        solution is co-created with. So the section is derived the same way the
+        runbook boundary derives it (``classify_solution_outcome``) rather than by
+        paraphrase-matching:
+
+        - ``APPLIED``  — the user executed it. These are the fix.
+        - ``FAILED``   — superseded, rejected, or engine-downgraded: never run,
+          and therefore never "applied". Dropped entirely; the runbook boundary
+          already refuses to launder these into knowledge, and a summary
+          asserting them to the user is the same over-claim.
+        - ``PROPOSED`` — uncorrelated or still pending. Whether it is rendered is
+          the caller's call (see ``_permanent_fix_executed``), because a standing
+          proposal means different things beside an executed permanent fix and
+          beside an executed stop-gap.
+
+        A case carrying NO ``ProposedAction`` at all is un-instrumented rather
+        than un-executed — there is nothing to correlate against, and
+        ``classify_solution_outcome`` would call every row PROPOSED. Such a case
+        is left to the pre-existing "surface every solution" behavior by the
+        caller, so an old resolved case does not acquire a "no fix was executed"
+        claim the record cannot support.
+        """
+        proposed_actions = getattr(case, "proposed_actions", []) or []
+        applied: List[Any] = []
+        standing: List[Any] = []
+        for sol in case.solutions or []:
+            outcome = classify_solution_outcome(sol, proposed_actions)
+            if outcome == SolutionOutcome.APPLIED:
+                applied.append(sol)
+            elif outcome != SolutionOutcome.FAILED:
+                standing.append(sol)
+        return applied, standing
+
+    @staticmethod
+    def _permanent_fix_executed(case: Case) -> bool:
+        """Did the user execute a SOLUTION (permanent remediation), as opposed to
+        a MITIGATION stop-gap?
+
+        This is what decides whether a standing proposal is noise or content.
+        ``classify_solution_outcome`` reports APPLIED for any accepted actionable
+        action, mitigations included, and offer supersession covers SOLUTION
+        offers only — so a pending SOLUTION beside an accepted MITIGATION is a
+        genuinely distinct remediation (the permanent fix, still not run), while a
+        pending SOLUTION beside an accepted SOLUTION is the model restating the
+        fix at resolution time (the third entry in fm#1091). Dropping the first
+        would delete the actual fix from the summary; keeping the second is the
+        redundancy this section exists to remove.
+        """
+        for action in getattr(case, "proposed_actions", []) or []:
+            action_type = getattr(action, "action_type", None)
+            if (
+                getattr(action, "state", None) == "accepted"
+                and getattr(action_type, "value", action_type)
+                == InvestigationActionType.SOLUTION.value
+            ):
+                return True
+        return False
+
     def _format_solution_block(self, sol: Any, index: int) -> List[str]:
         """Render a single Solution as a list of paragraph-level lines.
 
@@ -548,8 +619,10 @@ class ReportGenerationService:
         Content structure per investigation-lifecycle-logic.md §4.5.0:
         - Problem Statement
         - Root Cause (with mechanism if available)
-        - Causal Map (gated — established cause, non-trivial graph)
-        - Solution Applied
+        - Causal Map (gated — established cause, non-trivial graph, no
+          validated/refuted contradiction)
+        - Solution Applied (the executed fix; "Proposed Solution" when none
+          was executed)
         - Confirming Evidence (citation list, not a count)
         - Hypotheses Considered (grouped by status)
         - Timeline
@@ -565,7 +638,6 @@ class ReportGenerationService:
             to_json_compatible(case.resolved_at) if case.resolved_at else "Unknown"
         )
         duration = context.get("duration", "Unknown")
-        solutions = case.solutions or []
         hypotheses = self._list_hypotheses(case)
         evidence_items = case.evidence or []
 
@@ -631,12 +703,33 @@ class ReportGenerationService:
         if root_cause_stated:
             parts.extend(self._causal_map_block(case))
 
-        # Solution Applied — same renderer as closure's Mitigation Status.
-        if solutions:
+        # Solution Applied — the fix the user actually executed, not every fix
+        # the assistant proposed on the way there (see _solutions_by_outcome).
+        # A case with no ProposedAction rows carries no execution signal at all,
+        # so it keeps the pre-existing "surface every solution" rendering rather
+        # than acquiring a claim its record cannot support.
+        if not (getattr(case, "proposed_actions", []) or []):
+            applied_solutions, standing_solutions = list(case.solutions or []), []
+        else:
+            applied_solutions, standing_solutions = self._solutions_by_outcome(case)
+        if applied_solutions:
             parts.append("## Solution Applied\n")
-            for i, sol in enumerate(solutions, 1):
+            for i, sol in enumerate(applied_solutions, 1):
                 parts.extend(self._format_solution_block(sol, i))
-            # _format_solution_block's last line ends with \n; no extra separator needed.
+        # A standing proposal is rendered only while the permanent fix is still
+        # outstanding — beside an executed SOLUTION it is a restatement of it.
+        if standing_solutions and not self._permanent_fix_executed(case):
+            parts.append("## Proposed Solution\n")
+            parts.append(
+                "_The permanent fix below was proposed but not recorded as "
+                "executed._\n"
+                if applied_solutions
+                else "_No fix was recorded as executed; this was the standing "
+                "proposal when the case resolved._\n"
+            )
+            for i, sol in enumerate(standing_solutions, 1):
+                parts.extend(self._format_solution_block(sol, i))
+        # _format_solution_block's last line ends with \n; no extra separator needed.
 
         # Confirming Evidence — cite the evidence that grounded the conclusion,
         # not a bare count. Prefer the explicit evidence_basis on the

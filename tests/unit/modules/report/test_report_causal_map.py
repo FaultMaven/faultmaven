@@ -204,3 +204,39 @@ async def test_rendering_failure_omits_section_not_report(monkeypatch):
     assert "## Causal Map" not in summary
     assert "## Root Cause" in summary
     assert "## Timeline" in summary
+
+
+@pytest.mark.asyncio
+async def test_no_map_section_when_the_map_would_contradict_the_hypotheses():
+    """fm#1091 at the section boundary: the summary lists this cause as Refuted
+    a few sections below, so the map that would draw it as the validated cause
+    of D is absent — the document never asserts both."""
+    from faultmaven.modules.case.domain.models import (
+        Hypothesis,
+        HypothesisCategory,
+        HypothesisGenerationMode,
+        HypothesisState,
+    )
+
+    case = _terminal_case(resolved=True)
+    hyp = Hypothesis(
+        statement="connection pool exhausted",
+        category=HypothesisCategory.OTHER,
+        generation_mode=HypothesisGenerationMode.SYSTEMATIC,
+        generated_at_turn=1,
+        rationale="r",
+        state=HypothesisState.REFUTED,
+        refutation_reason="pool metrics were flat during the incident",
+        root_node_id="cn_00000000000a",  # the VALIDATED root the map would draw
+    )
+    case.hypotheses = {hyp.hypothesis_id: hyp}
+
+    summary = await ReportGenerationService()._generate_resolution_summary(
+        case, {"duration": "2h"}
+    )
+
+    assert "## Causal Map" not in summary
+    assert "```mermaid" not in summary
+    # The rest of the report is unaffected — including the refutation it states.
+    assert "## Root Cause" in summary
+    assert "**Refuted:**" in summary

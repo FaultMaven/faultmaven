@@ -454,6 +454,40 @@ hypothesis_dedup_skipped_total = Counter(
     "gate from duplicate inflation. One increment per skipped item.",
 )
 
+# fm#1091 soundness telemetry. An LLM ``root_node_ref`` named a chain root that
+# ANOTHER hypothesis already owns, so the attach was refused (one cause = one
+# chain, M3/§7.8). Adopting a foreign chain re-labels the adopting hypothesis's
+# cause with the owner's statement, and every derivation off that root —
+# support mirroring, node-state validation, the VALIDATED projection, the
+# report's causal map — then speaks about a cause the hypothesis never claimed.
+# Zero is the healthy state. A sustained-nonzero rate means the model keeps
+# reaching for an existing root rather than emitting its own (the mandate to
+# anchor EVERY hypothesis pushing it toward the nearest available root) — a
+# prompt-calibration signal, not a soundness alarm: the refusal already held
+# the line, at the cost of a turn's anchoring.
+hypothesis_root_adoption_refused_total = Counter(
+    "faultmaven_hypothesis_root_adoption_refused_total",
+    "A hypothesis's emitted root_node_ref was refused because the named chain "
+    "root already belongs to a different hypothesis (fm#1091). One increment "
+    "per refused attach; the hypothesis keeps its prior anchoring and the LLM "
+    "is told to emit its own root.",
+)
+
+# fm#1091 backstop telemetry, the report-side twin of the counter above. The
+# resolution summary's causal map was withheld because a node it would have
+# drawn ✓ validated is the chain root of a REFUTED hypothesis — the two axes
+# disagree about the cause, so the map is not drawn. Zero is the healthy state
+# now that the attach-time guard holds the 1:1 chain↔hypothesis relation; a
+# nonzero value means a contradiction reached a terminal report by some OTHER
+# route and is worth tracing, not that the report was wrong (the valve is what
+# kept it right).
+causal_map_suppressed_contradiction_total = Counter(
+    "faultmaven_causal_map_suppressed_contradiction_total",
+    "A terminal report's causal map was suppressed because a node it would "
+    "render as validated is rooted by a REFUTED hypothesis (fm#1091). One "
+    "increment per suppressed render.",
+)
+
 # INV-37 outcome telemetry (closed-gate resolve-preservation). A pending
 # CLOSE was about to terminally commit, but the case had become resolvable
 # (assess_closure_readiness → SUGGEST_RESOLVE) since the close was proposed;
