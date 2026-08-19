@@ -83,9 +83,19 @@ def _case() -> Case:
     )
 
 
-def _hit(parent_id, score):
-    """A retrieval hit as the wrapper reads it: ``.parent_document_id`` + ``.score``."""
-    return SimpleNamespace(parent_document_id=parent_id, score=score)
+def _hit(parent_id, score, letters=("A",)):
+    """A retrieval hit as the wrapper reads it.
+
+    ``.matched_cause_letters`` is the #1092 join key: which of the parent
+    runbook's causes THIS chunk carries. Defaults to Cause A because most tests
+    here stub a single-cause runbook; a hit carrying no letters is a non-cause
+    chunk and seeds nothing.
+    """
+    return SimpleNamespace(
+        parent_document_id=parent_id,
+        score=score,
+        matched_cause_letters=list(letters),
+    )
 
 
 def _good_cause(letter="A", root_stmt="root A: the underlying fault") -> dict:
@@ -218,7 +228,7 @@ async def test_wrapper_dedups_to_distinct_runbooks_best_score_wins(
     engine = _engine(ks)
     await engine._seed_candidate_causes_from_kb(
         _case(),
-        [_hit("rb1", 0.4), _hit("rb2", 0.7), _hit("rb1", 0.9)],
+        [_hit("rb1", 0.4), _hit("rb2", 0.7, ("B",)), _hit("rb1", 0.9)],
     )
     # Consulted in rank order, once per distinct runbook.
     assert ks.calls == ["rb1", "rb2"]
@@ -261,11 +271,109 @@ async def test_wrapper_caps_runbooks_consulted(enable_seeder, seed_spy):
     engine = _engine(ks)
     await engine._seed_candidate_causes_from_kb(
         _case(),
-        [_hit("rb1", 0.9), _hit("rb2", 0.8), _hit("rb3", 0.7)],
+        [_hit("rb1", 0.9), _hit("rb2", 0.8, ("B",)), _hit("rb3", 0.7, ("C",))],
     )
     assert ks.calls == ["rb1", "rb2"]
     assert "rb3" not in ks.calls
     assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb1", "rb2"]
+
+
+# ---------------------------------------------------------------------------
+# Wrapper: seed the causes RETRIEVAL matched, not the runbook's first N (#1092)
+# ---------------------------------------------------------------------------
+
+
+async def test_wrapper_seeds_only_the_causes_retrieval_matched(enable_seeder, seed_spy):
+    """The #1092 regression, in its exact shape.
+
+    A runbook whose author order is A, B, C, D, where the chunk that matched is
+    D's. The wrapper used to discard which chunk matched, re-fetch the whole
+    causes record and hand the seeder A, B, C — three causes the query never
+    surfaced — while D, the one that did, fell past MAX_SEEDED_CAUSES. This is
+    the live incident: a k8s OOMKilled/exit-137 case seeded the GKE runbook's
+    three *unschedulable* causes and never reached its OOMKilled cause.
+    """
+    causes = [_good_cause(x) for x in ("A", "B", "C", "D")]
+    ks = _KnowledgeStub({"rb1": causes})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("D",))])
+
+    passed = seed_spy[0].runbooks
+    assert [c["cause_letter"] for c in passed[0].causes] == ["D"]
+
+
+async def test_wrapper_orders_matched_causes_by_retrieval_score(
+    enable_seeder, seed_spy
+):
+    # Two chunks of one runbook matched: C scored above A. The seeder consumes
+    # causes in the order handed to it, so retrieval order must survive the
+    # hand-off — author order (A before C) must NOT win.
+    ks = _KnowledgeStub({"rb1": [_good_cause(x) for x in ("A", "B", "C")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.6, ("A",)), _hit("rb1", 0.9, ("C",))]
+    )
+
+    assert [c["cause_letter"] for c in seed_spy[0].runbooks[0].causes] == ["C", "A"]
+
+
+async def test_wrapper_ties_keep_author_order(enable_seeder, seed_spy):
+    # One chunk carrying two headings gives both causes the same score. The sort
+    # is stable, so the author's own most-likely-first order breaks the tie
+    # rather than an arbitrary one.
+    ks = _KnowledgeStub({"rb1": [_good_cause(x) for x in ("A", "B", "C")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("C", "A"))])
+
+    assert [c["cause_letter"] for c in seed_spy[0].runbooks[0].causes] == ["A", "C"]
+
+
+async def test_wrapper_non_cause_chunk_hit_seeds_nothing(enable_seeder, seed_spy):
+    # A hit on a runbook's Symptom Recognition / Diagnostic Steps / Prevention
+    # chunk carries no cause letter. It shows the runbook is topically relevant,
+    # never that any particular cause of it applies — so nothing seeds, and the
+    # causes record is not even loaded.
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.95, ())])
+
+    assert ks.calls == []
+    assert seed_spy == []
+
+
+async def test_wrapper_ranks_runbooks_by_best_matched_cause(enable_seeder, seed_spy):
+    # rb2's top chunk (0.95) is a non-cause chunk; its matched CAUSE scored 0.4.
+    # rb1's matched cause scored 0.7. Ranking on best-any-chunk would put rb2
+    # first; ranking on best matched cause — the only score that speaks to a
+    # cause — puts rb1 first.
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")], "rb2": [_good_cause("B")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(),
+        [
+            _hit("rb2", 0.95, ()),
+            _hit("rb1", 0.70, ("A",)),
+            _hit("rb2", 0.40, ("B",)),
+        ],
+    )
+
+    assert ks.calls == ["rb1", "rb2"]
+    assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb1", "rb2"]
+    assert seed_spy[0].runbooks[0].score == 0.70
+
+
+async def test_wrapper_letter_naming_no_cause_in_record_is_dropped(
+    enable_seeder, seed_spy
+):
+    # A chunk heading names Cause E but the causes record holds only A — a
+    # produce-side inconsistency. Drop that runbook rather than fall back to
+    # seeding whatever the record happens to hold.
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("E",))])
+
+    assert ks.calls == ["rb1"]
+    assert seed_spy == []
 
 
 # ---------------------------------------------------------------------------
@@ -440,13 +548,14 @@ class _SearchRecordingStub:
         return self.results
 
 
-def _search_hit(score=0.9, parent_id="rb1"):
+def _search_hit(score=0.9, parent_id="rb1", letters=("A",)):
     return SimpleNamespace(
         title="t",
         snippet="s",
         score=score,
         document_type="runbook",
         parent_document_id=parent_id,
+        matched_cause_letters=list(letters),
     )
 
 
@@ -596,7 +705,7 @@ async def test_prefetch_depth_lets_second_runbook_reach_the_seeder():
         _search_hit(score=0.90, parent_id="rb_a"),
         _search_hit(score=0.85, parent_id="rb_a"),
         _search_hit(score=0.80, parent_id="rb_a"),
-        _search_hit(score=0.75, parent_id="rb_b"),
+        _search_hit(score=0.75, parent_id="rb_b", letters=("B",)),
     ]
     ks = _SearchRecordingStub(results)
     engine = _engine(ks)
@@ -652,7 +761,7 @@ async def test_prefetch_then_seed_end_to_end_seeds_both_runbooks(enable_seeder):
         _search_hit(score=0.90, parent_id="rb_a"),
         _search_hit(score=0.85, parent_id="rb_a"),
         _search_hit(score=0.80, parent_id="rb_a"),
-        _search_hit(score=0.75, parent_id="rb_b"),
+        _search_hit(score=0.75, parent_id="rb_b", letters=("B",)),
     ]
     # Distinct roots AND statements so neither the exact-root nor the paraphrase
     # dedup collapses them — both are genuinely distinct causes.

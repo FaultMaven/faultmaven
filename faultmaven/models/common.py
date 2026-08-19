@@ -198,3 +198,18 @@ class SearchResult(BaseModel):
             "is the chunk id."
         ),
     )
+    matched_cause_letters: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Cause letters whose ``### Cause X:`` heading appears in THIS hit's "
+            "chunk text — i.e. which of the parent runbook's metadata['causes'] "
+            "records retrieval actually matched. Empty for a hit on a non-cause "
+            "chunk (Symptom Recognition, Diagnostic Steps, Prevention...) or a "
+            "non-runbook document. Sibling of parent_document_id: that field says "
+            "WHICH runbook holds the causes record, this one says WHICH causes in "
+            "it the query matched. The KB cause seeder joins on it so it can seed "
+            "the causes retrieval surfaced instead of the runbook's first N in "
+            "author order (#1092). A chunk may span more than one heading, so this "
+            "is a list; attribution is to every cause the matched text covers."
+        ),
+    )

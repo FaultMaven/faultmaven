@@ -10249,16 +10249,54 @@ class MilestoneEngine:
                 seed_candidate_causes,
             )
 
-            # Dedup hits to distinct parent runbooks, best score wins; rank by score.
-            best_score_by_runbook: dict[str, float] = {}
+            # Fold hits into {runbook: {cause_letter: best score}}. Retrieval is
+            # CHUNK-level and a runbook's ``## Causes`` section chunks
+            # one-Cause-per-chunk, so a hit names not just WHICH runbook matched
+            # but WHICH OF ITS CAUSES did (`matched_cause_letters`, derived from
+            # the chunk's own ``### Cause X:`` headings). Keeping that identity is
+            # the fix for #1092: this used to collapse hits to
+            # `parent_document_id`, discard which chunk matched, re-fetch the
+            # runbook's FULL cause list and seed its first MAX_SEEDED_CAUSES in
+            # AUTHOR order — so a k8s OOM/exit-137 case seeded the GKE runbook's
+            # three *unschedulable* causes (A/B/C: capacity, machine type,
+            # taints) while the OOMKilled cause that actually matched (D) sat one
+            # slot past the cap, and a GitHub-Actions runbook that matched on
+            # "exit code 137" seeded its causes A/B/C verbatim — runner RAM, disk
+            # full, missing secret — into a Kubernetes investigation.
+            #
+            # A hit on a NON-cause chunk (Symptom Recognition, Diagnostic Steps,
+            # Prevention) contributes no letter and therefore seeds nothing. That
+            # is deliberate: such a hit is evidence the runbook is topically
+            # relevant, never evidence that any particular cause of it applies —
+            # and a seeded cause is asserted to the user as a candidate root, so
+            # precision is worth more here than fan-out. Runbooks that seed
+            # nothing are already a normal, served outcome (the flat-prose path).
+            best_score_by_cause: dict[str, dict[str, float]] = {}
             for hit in kb_hits:
                 parent_id = getattr(hit, "parent_document_id", None)
                 if not parent_id:
                     continue
-                if hit.score > best_score_by_runbook.get(parent_id, -1.0):
-                    best_score_by_runbook[parent_id] = hit.score
+                for letter in getattr(hit, "matched_cause_letters", None) or []:
+                    per_cause = best_score_by_cause.setdefault(parent_id, {})
+                    if hit.score > per_cause.get(letter, -1.0):
+                        per_cause[letter] = hit.score
+
+            if not best_score_by_cause:
+                logger.debug(
+                    "KB cause seeder: no retrieved chunk mapped to a runbook "
+                    "cause for case %s — nothing to seed (the runbook prose "
+                    "still reaches the LLM via kb_context)",
+                    case.case_id,
+                )
+                return
+
+            # Rank runbooks by their best MATCHED cause — a runbook is worth
+            # entering only for the causes retrieval surfaced in it, so that is
+            # the score that should order them.
             ranked = sorted(
-                best_score_by_runbook.items(), key=lambda kv: kv[1], reverse=True
+                best_score_by_cause.items(),
+                key=lambda kv: max(kv[1].values()),
+                reverse=True,
             )
 
             # The per-runbook causes lookups are independent — issue them
@@ -10271,19 +10309,55 @@ class MilestoneEngine:
                     for parent_id, _ in top
                 )
             )
-            runbooks: list = [
-                SeededRunbook(item_id=parent_id, score=score, causes=causes)
-                for (parent_id, score), causes in zip(top, causes_per_runbook)
-                if causes
-            ]
+            runbooks: list = []
+            for (parent_id, scores_by_letter), causes in zip(top, causes_per_runbook):
+                if not causes:
+                    continue
+                # Keep only the causes retrieval matched, best-scoring first.
+                # sorted() is stable, so causes tied on score (the common case —
+                # one chunk carrying two headings) keep the author's own
+                # most-likely-first order.
+                matched = sorted(
+                    (
+                        c
+                        for c in causes
+                        if str(c.get("cause_letter", "")) in scores_by_letter
+                    ),
+                    key=lambda c: scores_by_letter[str(c.get("cause_letter", ""))],
+                    reverse=True,
+                )
+                if not matched:
+                    # The chunk's heading letter names no cause in the record —
+                    # a produce-side inconsistency (heading vs extracted causes),
+                    # not a normal outcome. Visible, never silent.
+                    logger.warning(
+                        "KB cause seeder: runbook %s matched cause letter(s) %s "
+                        "but its causes record holds none of them (case %s)",
+                        parent_id,
+                        sorted(scores_by_letter),
+                        case.case_id,
+                    )
+                    continue
+                runbooks.append(
+                    SeededRunbook(
+                        item_id=parent_id,
+                        score=max(scores_by_letter.values()),
+                        causes=matched,
+                    )
+                )
             if not runbooks:
-                # Matched runbook(s) carried no causes record → the flat-prose path
-                # serves them. Logged (not silent) so a legitimate zero-seed is
-                # traceable and cannot be confused with the seeder crashing below.
+                # None of the runbooks LOOKED UP yielded a seedable cause — either
+                # it carried no causes record (flat prose) or its record held none
+                # of the matched letters (warned individually just above). Counts
+                # `top`, the slice actually fetched, not `ranked`: reporting every
+                # ranked runbook here would claim nine runbooks contributed
+                # nothing when only MAX_SEEDED_RUNBOOKS were ever consulted.
+                # Logged (not silent) so a legitimate zero-seed is traceable and
+                # cannot be confused with the seeder crashing below.
                 logger.debug(
-                    "KB cause seeder: %d matched runbook(s) carried no causes "
-                    "record for case %s — flat-prose path serves them",
-                    len(ranked),
+                    "KB cause seeder: none of the %d consulted runbook(s) yielded "
+                    "a seedable cause for case %s — flat-prose path serves them",
+                    len(top),
                     case.case_id,
                 )
                 return
