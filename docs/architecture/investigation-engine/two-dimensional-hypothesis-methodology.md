@@ -806,7 +806,20 @@ this design:
 The constructive half is §9.5's confirm-stamp: it promotes a cause the user
 explicitly confirmed and records *how* (`RootCauseConclusion.established_by`
 plus the node link's reasoning), which the resolution report renders beside the
-assurance grade. Resolution is **reconciled, never refused** — a
+assurance grade.
+
+Those two records have **different audiences, and therefore different text**
+(#1097). The node link is the durable audit trail — it names the evidence row
+and the node so the promotion can be reconstructed, and those ids are the point
+of it. `established_by` is rendered *verbatim to a user*, so it carries the
+prose form: the two legs of the promotion, with no ids and no grade shorthand.
+Writing one string onto both surfaces is how `ev_…`, `cn_…` and "M2 gone⇒gone"
+reached a resolution summary as debug output. The same rule governs
+`mechanism`, which the report prints and any harvested runbook inherits: it is
+the chain's rungs, never the engine's synthetic PROBLEM terminal. Because
+terminal cases never recompute, both fields are also normalized at the READ
+(`established_by_for_display` / `mechanism_for_display`, beside the model) so
+cases resolved before the split do not render the internal form forever. Resolution is **reconciled, never refused** — a
 refuse-on-divergence gate would convert an engine defect into a deadlock no
 user action can clear (NO COLLAPSE). And "no root cause established" is a
 nameable state: before it had a rendering, the resolution recap reached for the

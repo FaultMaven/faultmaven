@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from faultmaven.modules.case.contracts import (
     SolutionOutcome,
     classify_solution_outcome,
+    mechanism_for_display,
 )
 
 # =============================================================================
@@ -315,7 +316,14 @@ class CaseConversionRequest(BaseModel):
         # Root cause
         rc_obj = getattr(case, "root_cause_conclusion", None)
         root_cause = getattr(rc_obj, "root_cause", None) if rc_obj else None
-        rc_mechanism = getattr(rc_obj, "mechanism", None) if rc_obj else None
+        # Normalized for display (#1097): a runbook OUTLIVES the case it came
+        # from, so a legacy conclusion's dangling "→ the problem" terminal would
+        # be preserved as knowledge rather than just shown once in a summary.
+        rc_mechanism = (
+            mechanism_for_display(getattr(rc_obj, "mechanism", None))
+            if rc_obj
+            else None
+        )
         rc_conditions = (
             list(getattr(rc_obj, "contributing_factors", None) or []) if rc_obj else []
         )

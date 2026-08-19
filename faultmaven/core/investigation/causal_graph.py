@@ -189,6 +189,32 @@ def validated_and_conjuncts(case: "Case", chain_node_ids: list[str]) -> list[str
     return sorted(statements)
 
 
+def mechanism_for_chain(case: "Case", hyp) -> str:
+    """The mirrored chain's mechanism, as user-facing prose (#1097).
+
+    The chain's INTERMEDIATE rungs, in order — the "how" between the cause and
+    the symptom. Both mint sites (the per-turn mirror here and the terminal
+    confirm-stamp in ``cause_assurance``) render one conclusion, so they build
+    this one way: the duplicated copies drifted apart on exactly the field a
+    reader sees, and the runbook harvest reads ``mechanism`` too.
+
+    The PROBLEM node is deliberately NOT appended. It is the engine's synthetic
+    anchor, not a mechanism step, and the report renders this under "How it
+    produced the symptom" — so a trailing "→ the problem" restated the heading
+    in arrow notation and read as debug output escaping into prose (#1097). The
+    no-rung case already stated a sentence rather than an arrow; this makes the
+    two agree.
+    """
+    inter = [
+        case.causal_nodes[nid].statement
+        for nid in (getattr(hyp, "path", None) or [])[1:-1]
+        if nid in case.causal_nodes
+    ]
+    return (" → ".join(inter) if inter else "Directly produces the observed problem.")[
+        :2000
+    ]
+
+
 def conjuncts_for_chain(case: "Case", hyp=None, root=None) -> list[str]:
     """``validated_and_conjuncts`` over the chain a conclusion would mirror.
 
@@ -2126,17 +2152,7 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     if hyp is None:
         return False
     root = case.causal_nodes[hyp.root_node_id]
-    # Mechanism = the chain's intermediate rungs (root -> ... -> D), if any.
-    inter = [
-        case.causal_nodes[nid].statement
-        for nid in (hyp.path or [])[1:-1]
-        if nid in case.causal_nodes
-    ]
-    mechanism = (
-        " → ".join(inter + ["the problem"])
-        if inter
-        else "Directly produces the observed problem."
-    )[:2000]
+    mechanism = mechanism_for_chain(case, hyp)
     # M2 confidence grades: the GRADE, not the LLM's likelihood, rules the
     # mirror in both directions. A validated root — EMPIRICAL or DEDUCTIVE
     # alike — is mechanistic, so the mirror reads CONFIDENT at the fixed
@@ -2948,6 +2964,7 @@ register_graph_hooks(
     support_count_held_root_ids=support_count_held_root_ids,
     derive_node_states=derive_node_states,
     sole_cluster_origin=sole_cluster_origin,
+    mechanism_for_chain=mechanism_for_chain,
     project_hypothesis_states_from_roots=project_hypothesis_states_from_roots,
     conjuncts_for_chain=conjuncts_for_chain,
 )
