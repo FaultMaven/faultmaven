@@ -2164,26 +2164,33 @@ async def _generate_title_with_llm(
             top_p=LLM_TITLE_TOP_P,
         )
 
+        # A title cut at the output cap is a mid-word title, and it is
+        # persisted. Fall back to the placeholder rather than retrying: the
+        # budget here is a handful of tokens for a handful of words, so a cut
+        # means the model ignored the length instruction, not that it needed
+        # more room — a bigger cap would buy a longer wrong answer (#1094).
+        if response is not None and response.is_truncated:
+            logger.warning(
+                "Title generation: response truncated at the output cap",
+                extra={"stop_reason": response.stop_reason.value},
+            )
+            raise ValueError("LLM response was truncated at the output limit")
+
         if response and response.content and response.content.strip():
             # Strip quotes/punctuation; collapse whitespace
             generated_title = response.content.strip().strip('"').strip("'").strip()
 
-            # Check for error placeholder strings from LLM providers
-            error_placeholders = [
-                "[Response truncated due to token limit]",
-                "[Content blocked by safety filters]",
-                "[Response blocked]",
-                "[Error]",
-            ]
-            if any(
-                placeholder.lower() in generated_title.lower()
-                for placeholder in error_placeholders
-            ):
-                logger.warning(
-                    "Title generation: LLM returned error placeholder",
-                    extra={"error_placeholder": generated_title},
-                )
-                raise ValueError(f"LLM returned error placeholder: {generated_title}")
+            # The sentinel-string blacklist that used to sit here is gone.
+            #
+            # It existed only because a provider wrote placeholder strings
+            # ("[Response truncated due to token limit]",
+            # "[Content blocked by safety filters]") into `content` when it had
+            # nothing real to return, and this was the far end of the system
+            # string-matching them back out. Both halves are retired: the
+            # provider now reports `stop_reason` and leaves content empty, the
+            # cut is caught above, and a blocked response falls through the
+            # empty-content guard on this very line into the placeholder title
+            # (#1094).
 
             generated_title = re.sub(
                 r"\s+", " ", generated_title

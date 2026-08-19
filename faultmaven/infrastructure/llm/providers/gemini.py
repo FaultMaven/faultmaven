@@ -19,7 +19,14 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig, ToolCall
+from .base import (
+    BaseLLMProvider,
+    LLMResponse,
+    ProviderConfig,
+    StopReason,
+    ToolCall,
+    normalize_stop_reason,
+)
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -405,40 +412,51 @@ class GeminiProvider(BaseLLMProvider):
                 input_tokens = max(_prompt - cache_read_tokens, 0)
                 tokens_used = _usage.get("totalTokenCount") or (_prompt + output_tokens)
 
-        # Handle potential safety blocks or other issues
-        if not content and "candidates" in response_data:
-            candidate = response_data["candidates"][0]
-            if "finishReason" in candidate:
-                finish_reason = candidate["finishReason"]
-                if finish_reason in ["SAFETY", "BLOCKED_REASON_UNSPECIFIED"]:
-                    content = "[Content blocked by safety filters]"
-                elif finish_reason == "MAX_TOKENS":
-                    content = "[Response truncated due to token limit]"
+        # Normalise the stop reason once and carry it on the response.
+        #
+        # This provider has always PARSED finishReason; what it never did was
+        # hand the fact to anyone. It compensated by writing sentinel strings
+        # into `content` ("[Response truncated due to token limit]",
+        # "[Content blocked by safety filters]"), which then had to be
+        # string-matched back out at the far end of the system — a placeholder
+        # invented in one layer and blacklisted in another, both because there
+        # was no field to carry it. `stop_reason` is that field, so the
+        # sentinels are gone: a blocked or empty response now returns empty
+        # content plus the reason, which every caller can read (#1094).
+        _candidates = response_data.get("candidates") or []
+        _candidate = _candidates[0] if _candidates else {}
+        stop_reason = normalize_stop_reason(_candidate.get("finishReason"))
 
-        # Check for MAX_TOKENS truncation — behavior depends on request type.
-        # Structured requests (JSON schema, tool calling) need complete output
-        # for valid parsing. Unstructured (plain text) can use partial content.
-        if content and "candidates" in response_data:
-            candidate = response_data["candidates"][0]
-            finish_reason = candidate.get("finishReason", "")
-            if finish_reason == "MAX_TOKENS":
-                is_structured = bool(rf) or bool(tools_param)
-                if is_structured:
-                    # Structured output: truncated JSON is unusable — raise to
-                    # trigger retry or fallback
-                    raise LLMException(
-                        f"Response truncated due to token limit (finishReason=MAX_TOKENS). "
-                        f"Response length: {len(content)} chars. "
-                        "Increase max_tokens parameter or simplify prompt.",
-                        retryable=True,
-                    )
-                else:
-                    # Unstructured text: partial content is still valuable.
-                    # Log warning but return the content as-is.
-                    self.logger.warning(
-                        f"Gemini response truncated (MAX_TOKENS) but returning "
-                        f"partial content ({len(content)} chars) for unstructured request."
-                    )
+        # Truncation handling stays behaviour-preserving for STRUCTURED calls:
+        # a cut JSON body is unusable, and the engine's max_tokens ladder is
+        # driven by this raise (`is_output_truncation_error` matches the literal
+        # "finishreason=max_tokens" in the message — do not reword it without
+        # migrating that classifier in the same change).
+        #
+        # The gate moved off `content` deliberately: it used to be
+        # `if content and ...`, which only ever fired because the sentinel above
+        # had made empty content truthy. With the sentinel gone, an empty
+        # truncated structured response would otherwise slip through as a
+        # successful empty answer.
+        if stop_reason is StopReason.MAX_TOKENS:
+            is_structured = bool(rf) or bool(tools_param)
+            if is_structured:
+                # Structured output: truncated JSON is unusable — raise to
+                # trigger retry or fallback
+                raise LLMException(
+                    f"Response truncated due to token limit (finishReason=MAX_TOKENS). "
+                    f"Response length: {len(content)} chars. "
+                    "Increase max_tokens parameter or simplify prompt.",
+                    retryable=True,
+                )
+            else:
+                # Unstructured text: partial content is still valuable, and a
+                # hard raise here would turn every over-long prose answer into a
+                # turn failure. Return it, flagged — the caller decides.
+                self.logger.warning(
+                    f"Gemini response truncated (MAX_TOKENS) but returning "
+                    f"partial content ({len(content)} chars) for unstructured request."
+                )
 
         # Calculate metrics
         response_time_ms = int((time.time() - start_time) * 1000)
@@ -474,6 +492,7 @@ class GeminiProvider(BaseLLMProvider):
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,
             prompt_cache_hit=bool(cache_read_tokens > 0),
+            stop_reason=stop_reason,
         )
 
     def _calculate_confidence(
@@ -513,12 +532,9 @@ class GeminiProvider(BaseLLMProvider):
                 model_confidence = confidence
                 break
 
-        # Check if content was blocked by safety filters
-        if "[Content blocked by safety filters]" in content:
-            return 0.1  # Very low confidence for blocked content
-
-        if "[Response truncated due to token limit]" in content:
-            return 0.5  # Medium confidence for truncated responses
+        # Blocked and truncated responses are scored from finishReason further
+        # down, not by sniffing sentinel strings out of `content` — the provider
+        # no longer writes any (#1094).
 
         # Adjust based on content quality
         content_length = len(content.strip())

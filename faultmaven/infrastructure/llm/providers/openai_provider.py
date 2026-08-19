@@ -16,7 +16,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, normalize_stop_reason
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -354,7 +354,14 @@ class OpenAIProvider(BaseLLMProvider):
                     if not data.get("choices") or len(data["choices"]) == 0:
                         raise LLMException("OpenAI API returned no choices")
 
-                    message = data["choices"][0]["message"]
+                    choice = data["choices"][0]
+                    message = choice["message"]
+
+                    # Why generation stopped. "length" means the body was cut at
+                    # max_completion_tokens and is INCOMPLETE — the caller has to
+                    # be able to see that, so it travels on the response instead
+                    # of being dropped here (#1094).
+                    stop_reason = normalize_stop_reason(choice.get("finish_reason"))
 
                     # Extract content (may be None if tool_calls present)
                     content = message.get("content", "")
@@ -398,6 +405,7 @@ class OpenAIProvider(BaseLLMProvider):
                         output_tokens=output_tokens,
                         cache_read_tokens=cache_read_tokens,
                         prompt_cache_hit=bool(cache_read_tokens > 0),
+                        stop_reason=stop_reason,
                     )
         except asyncio.TimeoutError:
             raise LLMException(

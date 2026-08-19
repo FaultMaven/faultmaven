@@ -330,6 +330,60 @@ minimal-prompt retry. That is a smaller *input* rather than a larger output cap,
 so it is not a targeted fix — the inner loop's `max_tokens` escalation is — but it
 frees budget and is strictly better than the hard failure it replaced.
 
+**How truncation is detected (#1094).** There are three triggers, and only the
+third is direct:
+
+| Trigger | Fires when | Blind to |
+|---|---|---|
+| `is_output_truncation_error` — provider wording | The provider *raises* on the cut. Only Gemini does, and only on structured requests | Every other provider, which returns HTTP 200 with a cut body |
+| `is_truncated_json_error` — parse position | The body fails to parse *at its end* | Prose (a cut sentence is valid text), and a cut that lands on syntactically complete JSON |
+| `LLMResponse.stop_reason` — the provider says so | Any provider reports `MAX_TOKENS` | Only providers that supply no signal at all (`UNKNOWN`) |
+
+The first two are side effects; the third is the fact. All nine providers now
+populate `stop_reason`.
+
+The engine consults it **after** attempting the parse, not before. A cut only
+matters if it cost us the answer, and on prompt-only / BEST_EFFORT modes the
+answer is not the whole body — those models routinely emit a complete ```json
+block and then keep talking, so a cap landing in the trailing prose leaves
+valid JSON. Gating before the parse would discard that response, spend a second
+full-size generation, and on a second trailing-off hand the turn to the
+minimal-prompt degrade, losing the prompt context as well. So the ladder
+engages only once something has actually failed — at which point the stop
+reason rescues the two shapes the positional test declines: a body both cut and
+malformed mid-document, and a `ValidationError` from a body that parsed but
+lost a required field to the cut.
+
+`UNKNOWN` is a distinct state and never triggers the ladder: a provider that
+reports nothing is not evidence of a cut.
+
+**A response the provider reported as cut is never cached.** The response cache
+keys on `(case, prompt, model)` and deliberately not on `max_tokens`, so a
+stored truncated body is exactly what a retry at a bigger cap would be served
+instead of reaching the provider — turning "retry with more room" into "return
+the same cut body", silently and indistinguishably from a genuine second
+truncation. Declining the write closes that for every caller without a flag to
+remember. It does not replace the engine ladder's `bypass_cache`: the two cover
+disjoint halves, since a cut body from a provider that reports nothing is
+invisible to the store rule and IS cached, and there the parse-time test plus
+`bypass_cache` are what keep the retry off it. The truncation helper never
+retries on `UNKNOWN`, so it cannot reach that half.
+
+Outside the engine, consumers use
+`infrastructure/llm/truncation.generate_with_truncation_retry` — call, and if
+the provider says it ran out, double the cap once and retry. What to do when
+the retry is *also* cut is per consumer, and the split is deliberate: read
+paths (KB/evidence QA synthesis, tier-2 deep analysis) return the partial with
+an explicit truncation notice **prefixed** — head-first because the relays
+downstream trim to a character cap by keeping the head, so a tail notice is
+dropped exactly when the answer is longest (the same reason engine system
+feedback is prepended) — because refusing would destroy real
+value; write paths (runbook conversion) refuse, because a half-procedure
+persisted to the knowledge base and later retrieved as authoritative is worse
+than no runbook. Case titles fall back to the placeholder without retrying —
+the budget is a handful of tokens, so a cut means the model ignored the length
+instruction, not that it needed more room.
+
 ### 2.x.1 Surfacing a degraded turn
 
 A silent degrade is its own (softer) risk to guarantee 1: the user cannot tell a

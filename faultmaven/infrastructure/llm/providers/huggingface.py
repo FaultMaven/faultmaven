@@ -8,7 +8,7 @@ accessing open-source models and specialized models.
 import asyncio
 import json
 import time
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import aiohttp
 
@@ -17,7 +17,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, normalize_stop_reason
 
 
 class HuggingFaceProvider(BaseLLMProvider):
@@ -157,19 +157,39 @@ class HuggingFaceProvider(BaseLLMProvider):
 
         # Extract content from Hugging Face response format
         content = ""
+        result_obj: Any = None
         if isinstance(response_data, list) and len(response_data) > 0:
             # Standard text generation response
             first_result = response_data[0]
+            result_obj = first_result
             if "generated_text" in first_result:
                 content = first_result["generated_text"]
             elif "text" in first_result:
                 content = first_result["text"]
         elif isinstance(response_data, dict):
             # Some models return different formats
+            result_obj = response_data
             if "generated_text" in response_data:
                 content = response_data["generated_text"]
             elif "text" in response_data:
                 content = response_data["text"]
+
+        # Stop reason, when the endpoint volunteers one.
+        #
+        # TGI reports it under `details.finish_reason`, but ONLY when the
+        # request asks for `parameters.details: true` — and this provider
+        # deliberately does not ask. Non-TGI endpoints behind the same
+        # inference URL reject unknown parameters, so requesting details to
+        # gain a signal would trade a blind spot on one provider for broken
+        # requests on another; HuggingFace is already documented as the
+        # not-recommended provider (no tool calling). So in practice this stays
+        # UNKNOWN, which is a state the enum represents honestly rather than
+        # papering over as "finished normally" (#1094). Parsed anyway, because
+        # a TGI deployment that does return details costs nothing to read.
+        details = result_obj.get("details") if isinstance(result_obj, dict) else None
+        stop_reason = normalize_stop_reason(
+            details.get("finish_reason") if isinstance(details, dict) else None
+        )
 
         # Calculate metrics
         response_time_ms = int((time.time() - start_time) * 1000)
@@ -188,6 +208,7 @@ class HuggingFaceProvider(BaseLLMProvider):
             tokens_used=tokens_used,
             response_time_ms=response_time_ms,
             cached=False,
+            stop_reason=stop_reason,
         )
 
     def _estimate_tokens(self, content: str) -> int:

@@ -422,3 +422,179 @@ async def test_a_truncation_retry_honours_the_shared_attempt_ceiling():
     exhausted = await handler.handle_error(err, retry_count=2)
     assert exhausted.action is ErrorAction.FAIL
     assert exhausted.error_code == "RETRY_EXHAUSTED"
+
+
+# ---------------------------------------------------------------------------
+# The third trigger: the provider simply says so (#1094)
+# ---------------------------------------------------------------------------
+
+
+def _decode_error(body: str) -> json.JSONDecodeError:
+    """The decoder's own error for *body*, rather than a hand-built stand-in."""
+    try:
+        json.loads(body, strict=False)
+    except json.JSONDecodeError as exc:
+        return exc
+    raise AssertionError(f"{body!r} unexpectedly parsed")
+
+
+def _llm_response(content: str, stop_reason):
+    from faultmaven.infrastructure.llm.providers import LLMResponse
+
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="openai",
+        model="gpt-5.4-mini",
+        tokens_used=8000,
+        response_time_ms=10,
+        stop_reason=stop_reason,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_body_that_parses_is_kept_even_when_the_provider_reports_a_cut():
+    """A cut only matters if it cost us the answer.
+
+    On prompt-only / BEST_EFFORT modes the answer is not the whole body: those
+    models routinely emit a complete ```json block and then keep talking, which
+    is why the extractor handles "Some text\n```json\n{...}\n```\nMore text".
+    When the cap lands in that trailing prose the JSON is whole and validates.
+
+    Raising on the stop reason alone would throw that good response away, spend
+    a second full-size generation, and — if the second attempt also trailed off
+    — hand the turn to the minimal-prompt degrade, losing the prompt context
+    too. So the stop reason is consulted only once something has failed.
+    """
+    from faultmaven.infrastructure.llm.providers import StopReason
+
+    trailing_prose_cut = (
+        "Here is the response you asked for:\n"
+        "```json\n" + COMPLETE + "\n```\n"
+        "I should note that this conclusion depends on the kubelet log excerpt "
+        "shared earlier, and that disk pressure on node-3 would also expl"
+    )
+
+    engine = _make_engine()
+    generate = AsyncMock(
+        return_value=_llm_response(trailing_prose_cut, StopReason.MAX_TOKENS)
+    )
+    engine.llm_provider.generate = generate
+
+    result = await engine._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?", schema_model=_Schema
+    )
+
+    assert result.agent_response == "the kubelet on node-3 is out of disk"
+    assert len(_attempts(generate)) == 1, "a usable response must not be retried"
+
+
+@pytest.mark.asyncio
+async def test_the_stop_reason_rescues_a_cut_the_positional_test_declines():
+    """What the typed signal is actually worth on this path.
+
+    ``is_truncated_json_error`` is positional, and deliberately says False for a
+    body malformed in the MIDDLE — on its own that is right, since a bigger cap
+    cannot fix a stray token. But a body that is BOTH malformed and cut is a
+    real shape, and there the provider's report is the only evidence that more
+    room is the remedy. Without it the turn spends its attempts repeating the
+    same failing call at the same size.
+    """
+    from faultmaven.infrastructure.llm.providers import StopReason
+
+    # Malformed mid-document (bad literal), so the positional test declines it.
+    assert (
+        is_truncated_json_error(
+            _decode_error(MALFORMED),
+            MALFORMED,
+        )
+        is False
+    )
+
+    engine = _make_engine()
+    generate = AsyncMock(
+        side_effect=[
+            _llm_response(MALFORMED, StopReason.MAX_TOKENS),
+            _llm_response(COMPLETE, StopReason.STOP),
+        ]
+    )
+    engine.llm_provider.generate = generate
+
+    result = await engine._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?", schema_model=_Schema
+    )
+
+    assert result.agent_response == "the kubelet on node-3 is out of disk"
+    first, second = _attempts(generate)
+    assert first["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS
+    assert second["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS * 2
+    assert second["bypass_cache"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_body_without_a_reported_cut_still_does_not_ladder():
+    """Negative control for the pair above — the guard is the stop reason.
+
+    The same malformed body with no provider report keeps its existing
+    behaviour exactly: one attempt, no cap raise, hard failure. That contrast
+    is the whole point. Without the report there is no evidence a bigger cap
+    would help, and spending a rung on every stray token is a rung a real
+    truncation cannot use.
+    """
+    from faultmaven.infrastructure.llm.providers import StopReason
+
+    engine = _make_engine()
+    generate = AsyncMock(
+        side_effect=[
+            _llm_response(MALFORMED, StopReason.STOP),
+            _llm_response(COMPLETE, StopReason.STOP),
+        ]
+    )
+    engine.llm_provider.generate = generate
+
+    with pytest.raises(MilestoneEngineError):
+        await engine._generate_structured_output_inner(
+            prompt="why is node-3 NotReady?", schema_model=_Schema
+        )
+
+    assert generate.await_count == 1
+    assert _attempts(generate)[0]["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_a_complete_response_is_not_diverted_into_the_ladder():
+    """Negative control. Only MAX_TOKENS may spend the turn's attempts."""
+    from faultmaven.infrastructure.llm.providers import StopReason
+
+    engine = _make_engine()
+    generate = AsyncMock(return_value=_llm_response(COMPLETE, StopReason.STOP))
+    engine.llm_provider.generate = generate
+
+    result = await engine._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?", schema_model=_Schema
+    )
+
+    assert result.agent_response == "the kubelet on node-3 is out of disk"
+    assert len(_attempts(generate)) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_stop_reason_is_not_treated_as_a_cut():
+    """A provider that reports nothing is not evidence of truncation.
+
+    UNKNOWN is the default and the honest state for HuggingFace and for any
+    parse gap. Treating it as a cut would put every such call through the
+    ladder and burn the turn's attempts on responses that were never truncated.
+    """
+    from faultmaven.infrastructure.llm.providers import StopReason
+
+    engine = _make_engine()
+    generate = AsyncMock(return_value=_llm_response(COMPLETE, StopReason.UNKNOWN))
+    engine.llm_provider.generate = generate
+
+    result = await engine._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?", schema_model=_Schema
+    )
+
+    assert result.agent_response == "the kubelet on node-3 is out of disk"
+    assert len(_attempts(generate)) == 1

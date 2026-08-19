@@ -353,6 +353,24 @@ observed (gemini-3.5-flash, the default); Gemini 2.5 is left at native dynamic
 thinking — it ran clean, and capping it would change a working reasoning path
 without evidence.
 
+**Every response carries a normalised stop reason.** `LLMResponse.stop_reason`
+(`STOP | MAX_TOKENS | CONTENT_FILTER | TOOL_CALLS | UNKNOWN`, with a derived
+`is_truncated`) is populated by all nine providers from whatever their API
+calls it — `finish_reason: "length"`, `stop_reason: "max_tokens"`,
+`finishReason: "MAX_TOKENS"`, `done_reason`, llama.cpp's `stopped_limit`. Map
+new providers with `normalize_stop_reason()`; never match the raw strings, and
+never write a placeholder into `content` (that channel was retired in #1094).
+`UNKNOWN` means "no signal", not "finished" — HuggingFace as called supplies
+none — so it must never be collapsed into False, or every `if is_truncated`
+fails open. Consumers recover via
+`infrastructure/llm/truncation.generate_with_truncation_retry` (double the cap
+once); what happens if the retry is also cut is per-consumer — read paths
+(KB/evidence QA, tier-2) annotate and return the partial, write paths (runbook
+conversion) refuse to persist. The reason is logged and counted at the router
+(`llm_stop_reasons_total`), and a response reported as cut is never written to
+the response cache — the key omits `max_tokens`, so a stored cut body is what a
+retry at a bigger cap would be served instead of reaching the provider.
+
 **Tool calling is required for the investigation role.** Directed Analysis
 (`search_file`, `deep_analysis`) needs function/tool calling; a tool-incapable
 model can't gather evidence yet would still conclude — the premature-conclusion

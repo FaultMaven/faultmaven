@@ -19,7 +19,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, normalize_stop_reason
 
 
 class GroqProvider(BaseLLMProvider):
@@ -191,7 +191,11 @@ class GroqProvider(BaseLLMProvider):
                 if not data.get("choices") or len(data["choices"]) == 0:
                     raise LLMException("Groq API returned no choices")
 
-                message = data["choices"][0]["message"]
+                choice = data["choices"][0]
+                message = choice["message"]
+
+                # OpenAI-compatible "length" ⇒ cut at the cap (#1094).
+                stop_reason = normalize_stop_reason(choice.get("finish_reason"))
 
                 # Extract content (may be None if tool_calls present)
                 content = message.get("content", "")
@@ -234,6 +238,7 @@ class GroqProvider(BaseLLMProvider):
                     output_tokens=output_tokens,
                     cache_read_tokens=cache_read_tokens,
                     prompt_cache_hit=bool(cache_read_tokens > 0),
+                    stop_reason=stop_reason,
                 )
         except asyncio.TimeoutError:
             raise LLMException(

@@ -17,7 +17,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
+from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
+from faultmaven.infrastructure.llm.truncation import TRUNCATION_NOTICE
+from faultmaven.modules.agent.tools.document_qa_tool import (
+    SYNTHESIS_MAX_TOKENS,
+    SYNTHESIS_MAX_TOKENS_CEILING,
+    DocumentQATool,
+)
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import (
     UnifiedKBConfig,
 )
@@ -31,12 +37,31 @@ def _make_chunks(titles, score=0.6):
     ]
 
 
+def _llm_response(content: str, stop_reason: StopReason = StopReason.STOP):
+    """Real ``LLMResponse`` rather than a ``MagicMock``.
+
+    A MagicMock answers every attribute with a truthy Mock, so the moment the
+    tool started consulting ``is_truncated`` (#1094) the stand-in silently
+    claimed every synthesis had been cut off. A fake that cannot say "no" is
+    not a fake, it is a defect generator.
+    """
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="test",
+        model="test-model",
+        tokens_used=100,
+        response_time_ms=10,
+        stop_reason=stop_reason,
+    )
+
+
 def _make_tool(chunks, answer="synthesized runbook guidance"):
     vector_store = MagicMock()
     vector_store.hybrid_search = AsyncMock(return_value=chunks)
     vector_store.search = AsyncMock(return_value=chunks)
     llm_router = MagicMock()
-    llm_router.route = AsyncMock(return_value=MagicMock(content=answer))
+    llm_router.route = AsyncMock(return_value=_llm_response(answer))
     tool = DocumentQATool(vector_store, llm_router, UnifiedKBConfig())
     return tool, llm_router
 
@@ -129,3 +154,75 @@ class TestAnswerFromKBRelaysProseWithSources:
         # cause-node seeding will replace.
         assert "Flush the cache." in rendered
         assert "Sources: CoreDNS Failures" in rendered
+
+
+# --------------------------------------------------------------------------- #
+# Truncation on the read path (#1094)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+class TestTruncatedSynthesis:
+    """A cut KB answer is returned — but never as if it were whole.
+
+    This answer goes into the case transcript with citations and a confidence
+    score, and the agent reasons over it. Refusing it would destroy real value
+    on a read path; returning it silently is what let "the runbook says only
+    this" become indistinguishable from "the answer stopped here".
+    """
+
+    async def test_retries_once_at_double_then_annotates(self):
+        tool, llm_router = _make_tool(_make_chunks(["Runbook A"]))
+        llm_router.route = AsyncMock(
+            side_effect=[
+                _llm_response("half an answ", StopReason.MAX_TOKENS),
+                _llm_response("half an answ", StopReason.MAX_TOKENS),
+            ]
+        )
+
+        result = await tool.answer_question("why", scope_id="u1", k=5)
+
+        assert llm_router.route.call_count == 2
+        caps = [c.kwargs["max_tokens"] for c in llm_router.route.call_args_list]
+        assert caps == [SYNTHESIS_MAX_TOKENS, SYNTHESIS_MAX_TOKENS_CEILING]
+        assert result["truncated"] is True
+        # The partial text is still there — annotated, not replaced.
+        assert "half an answ" in result["answer"]
+        assert TRUNCATION_NOTICE.strip() in result["answer"]
+
+    async def test_a_recovered_answer_carries_no_notice(self):
+        tool, llm_router = _make_tool(_make_chunks(["Runbook A"]))
+        llm_router.route = AsyncMock(
+            side_effect=[
+                _llm_response("half an answ", StopReason.MAX_TOKENS),
+                _llm_response("the whole answer"),
+            ]
+        )
+
+        result = await tool.answer_question("why", scope_id="u1", k=5)
+
+        assert result["truncated"] is False
+        assert result["answer"] == "the whole answer"
+        assert TRUNCATION_NOTICE.strip() not in result["answer"]
+
+    async def test_a_complete_answer_is_not_retried(self):
+        tool, llm_router = _make_tool(_make_chunks(["Runbook A"]))
+
+        result = await tool.answer_question("why", scope_id="u1", k=5)
+
+        assert llm_router.route.call_count == 1
+        assert result["truncated"] is False
+
+    async def test_every_return_path_reports_the_flag(self):
+        """Uniform shape, so `result["truncated"]` is never a KeyError.
+
+        The quiet paths — an empty KB, a match below the relevance floor — do
+        not reach synthesis, and omitting the key there would make a caller
+        blow up precisely when nothing interesting happened.
+        """
+        tool, llm_router = _make_tool([])
+
+        result = await tool.answer_question("why", scope_id="u1", k=5)
+
+        assert result["truncated"] is False
+        llm_router.route.assert_not_called()

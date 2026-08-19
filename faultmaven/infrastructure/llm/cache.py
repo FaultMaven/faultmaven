@@ -32,7 +32,7 @@ sha256, so they are safe to call from async code without a thread hop.
 import hashlib
 from typing import Any, Dict, Optional
 
-from .providers import LLMResponse
+from .providers import LLMResponse, StopReason
 
 
 class LLMResponseCache:
@@ -97,6 +97,12 @@ class LLMResponseCache:
             tokens_used=cache_entry["tokens_used"],
             response_time_ms=0,  # Cached response
             cached=True,
+            # Rehydrate the stop reason with the rest of the entry. A field
+            # stored but not rehydrated is worse than one never stored: every
+            # replay would confidently report UNKNOWN, laundering a cut body
+            # into a complete-looking one for as long as the entry lives — and
+            # there is no TTL and no eviction API here (#1094).
+            stop_reason=cache_entry.get("stop_reason", StopReason.UNKNOWN),
         )
 
     def store(
@@ -123,6 +129,7 @@ class LLMResponseCache:
             "provider": response.provider,
             "model": response.model,
             "tokens_used": response.tokens_used,
+            "stop_reason": response.stop_reason,
         }
 
         # Evict the oldest entry when full. Insertion order is age-of-first-write

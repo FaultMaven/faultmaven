@@ -17,7 +17,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, normalize_stop_reason
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -245,6 +245,10 @@ class AnthropicProvider(BaseLLMProvider):
                         )
                     )
 
+        # Why generation stopped: end_turn / max_tokens / stop_sequence /
+        # tool_use. "max_tokens" means the body is INCOMPLETE (#1094).
+        stop_reason = normalize_stop_reason(response_data.get("stop_reason"))
+
         # Calculate metrics. Anthropic reports disjoint token buckets:
         # input_tokens is the UNCACHED prompt; cache_read/creation are separate.
         response_time_ms = int((time.time() - start_time) * 1000)
@@ -278,6 +282,7 @@ class AnthropicProvider(BaseLLMProvider):
             cache_write_tokens=cache_write_tokens,
             cache_read_tokens=cache_read_tokens,
             prompt_cache_hit=bool(cache_read_tokens > 0),
+            stop_reason=stop_reason,
         )
 
     def _calculate_confidence(
