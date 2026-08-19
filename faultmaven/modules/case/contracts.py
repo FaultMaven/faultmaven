@@ -446,6 +446,7 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     classify_solution_outcome,
     established_by_for_display,
     mechanism_for_display,
+    normalize_stored_report_content,
 )
 
 # ============================================================
@@ -535,6 +536,7 @@ __all__ = [
     "classify_solution_outcome",
     "established_by_for_display",
     "mechanism_for_display",
+    "normalize_stored_report_content",
     "MitigationRecord",
     "TemporalState",
     "TERMINAL_HYPOTHESIS_STATES",
