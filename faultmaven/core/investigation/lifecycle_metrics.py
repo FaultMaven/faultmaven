@@ -706,3 +706,100 @@ kb_cause_seed_letter_mismatch_total = Counter(
     "runbook's causes record, so the runbook seeded nothing (fm#1092). One "
     "increment per dropped runbook. Zero is the healthy state.",
 )
+
+
+# fm#1103 produce-side integrity signal, at WRITE time rather than read time.
+# The counter above is the same defect seen from retrieval: it can only fire
+# after a case has already lost its seeds, only once the runbook is retrieved,
+# and only for the heading-present-but-WRONG-letter shape — a cause whose
+# heading is missing from every chunk yields no letter at all, so it contributes
+# ``no_cause_chunk_matched`` and never trips that alarm.
+#
+# This one fires where the document ACQUIRES its causes record, when the chunk
+# texts and the record are both in hand: every ``cause_letter`` in the record
+# must be recoverable from at least one of that document's own chunks, because
+# that recovery IS the seeder's join. It catches both shapes — wrong letter and
+# missing heading — before the runbook can ever seed, and points at the producer
+# rather than at a case that quietly under-seeded months later.
+#
+# ``chunker`` says which side produced the chunks, which is the actionable bit:
+#
+#   pack    — build-time chunks from a KB pack (``kb_init``). The VENDORED pack
+#             is pinned by a corpus test, so a fire here means an out-of-tree
+#             pack (``KB_PACK_DIR``) built by a drifted kb-toolkit.
+#   runtime — chunks from the in-process ``ContentChunker``: a verified
+#             case->runbook conversion, an edit to a published runbook (which
+#             re-chunks while the record stands unchanged — the most reachable
+#             of the three), or a boot-time re-index of an existing row (where
+#             the record may be the pack's while the chunks are ours).
+#
+# Zero is the healthy state. Deliberately a bare alarm rather than half of a
+# ratio: any nonzero value is actionable on its own, and the paired WARNING log
+# names the document and the missing letters, which is the unit an operator acts
+# on. Never raises — an unseedable cause is a recall loss, and turning it into a
+# failed ingest would take the KB bootstrap down for a produce-side data bug.
+kb_cause_unseedable_at_ingest_total = Counter(
+    "faultmaven_kb_cause_unseedable_at_ingest_total",
+    "A document was indexed with a ``causes`` record holding letters that none "
+    "of its own chunk texts can recover, so those causes can never be seeded "
+    "(fm#1103). One increment per document, labeled by ``chunker`` (pack | "
+    "runtime). Zero is the healthy state.",
+    ["chunker"],
+)
+
+
+# fm#1103 liveness for the counter above — the guard's own guard.
+#
+# ``_report_unseedable_causes`` swallows its errors on purpose: a diagnostic must
+# never fail the write it observes. But a swallow with no witness means a broken
+# check reads exactly like a clean corpus — the counter above sits at zero, and
+# "zero is the healthy state" becomes a lie told by the very metric that exists to
+# prevent silent failure. That is this PR's own thesis one level up, so the
+# swallow is reported rather than hidden: a WARNING with the traceback, and this.
+#
+# Nonzero means the record/chunk agreement is NOT being checked for some or all
+# ingests, and the alarm above cannot be trusted until this returns to zero. It is
+# the numerator of nothing — it exists so a dashboard can tell "no drift found"
+# apart from "nothing looked".
+kb_cause_ingest_check_failed_total = Counter(
+    "faultmaven_kb_cause_ingest_check_failed_total",
+    "The ingest-time causes/chunk agreement check raised and was swallowed, so "
+    "that document went unchecked (fm#1103). Nonzero invalidates "
+    "``kb_cause_unseedable_at_ingest_total`` until it returns to zero.",
+)
+
+
+# #1096 trust-grant observability. Since a conjunction is no longer a MECE
+# contest (§7.1.2), an ``and_group`` the model emits over two ALREADY-VALIDATED
+# rivals dissolves an arbitration hold: identification is granted, the
+# conjunction is published, and the resolution confirm-stamp unblocks. That is
+# the intended mechanism — the model authors causal structure everywhere else,
+# and demanding M7 proof before honoring the grouping would recreate the
+# deadlock the fix removes — but a stuck contest is exactly the state a model
+# has an incentive to escape, and the merge is MONOTONE, so there is no
+# take-back and no later turn at which the grant is re-examined.
+#
+# This counts the suspicious SEQUENCE specifically: the grouping arrived AFTER
+# both members were validated, rather than being emitted with the causes. A
+# conjunction modeled up front (the shape the prompt asks for) never increments
+# it. Non-zero is not proof of a hallucinated group — a genuine late
+# recognition looks identical from here — it is the population to audit.
+causal_and_set_late_grouping_total = Counter(
+    "faultmaven_causal_and_set_late_grouping_total",
+    "An ``and_group`` was added to an EXISTING edge and thereby joined two or "
+    "more already-VALIDATED causes of one effect (#1096) — the sequence that "
+    "can dissolve a standing MECE hold. One increment per completed AND-set.",
+)
+
+# The refusal twin of the above: a re-emission tried to move an edge to a
+# DIFFERENT group or clear its group, and was dropped (the merge is monotone).
+# The model then reasons over a graph shape it does not have, so the refusal
+# must leave a witness even though it never reaches the transcript
+# (``ingest_emitted_chain`` is pure and takes no metadata channel).
+causal_and_group_regroup_refused_total = Counter(
+    "faultmaven_causal_and_group_regroup_refused_total",
+    "A re-emitted edge tried to change or clear a standing ``and_group`` and "
+    "was refused (#1096; the grouping merge is monotone), labeled by "
+    "``attempt`` (regroup | ungroup).",
+    ["attempt"],
+)

@@ -22,6 +22,7 @@ Key Improvements over Original:
 """
 
 import hashlib
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -113,6 +114,124 @@ def _matched_cause_letters(chunk_text: str) -> List[str]:
         if letter not in seen:
             seen.append(letter)
     return seen
+
+
+def _letter_can_head_a_cause(letter: str) -> bool:
+    """Could a ``### Cause X:`` heading for this letter exist at all?
+
+    Asked OF the shared grammar rather than by restating its ``[A-Z]`` character
+    class here, so the two cannot drift: a letter the grammar widens to admit
+    tomorrow is admitted here the same day.
+
+    Used only to word the alarm. A record declaring ``cause_letter: "a"`` is
+    genuinely unseedable — the seeder's join is case-sensitive — so it is still
+    reported; this just keeps the report from blaming markdown that is fine.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
+        CAUSE_HEADING_RE,
+    )
+
+    match = CAUSE_HEADING_RE.match(f"### Cause {letter}: name")
+    # The capture must be the whole letter, not a prefix of it: a record value
+    # like "A: x" builds a heading the pattern happily matches, capturing just
+    # "A" — a letter retrieval would never recover under the name declared.
+    return bool(match and match.group(1) == letter)
+
+
+def _unrecoverable_cause_letters(
+    chunks: List[str], causes: Optional[List[Dict[str, Any]]]
+) -> List[str]:
+    """Cause letters the record declares that NO chunk's text can recover.
+
+    The write-time form of the seeder's read-time join (fm#1103). Retrieval hands
+    the seeder a chunk; the seeder decides which of the parent runbook's
+    ``metadata["causes"]`` records that hit names by parsing ``### Cause X:`` out
+    of the chunk's own text (:func:`_matched_cause_letters`) and matching it
+    against ``cause_letter``. So a cause whose letter appears in no chunk is
+    structurally unseedable — permanently, silently, and no matter how often the
+    runbook is retrieved.
+
+    Nothing enforced that agreement where the two are written. The shipped pack
+    is pinned by a corpus test, but a case->runbook conversion, an edit to a
+    published runbook, a boot-time re-index and an out-of-tree ``KB_PACK_DIR``
+    pack are not — and the retrieval-side counter
+    (``kb_cause_seed_letter_mismatch_total``) sees only the wrong-letter shape,
+    only after a case has already lost its seeds. Here both sides are in hand,
+    so the check is exact and costs a regex pass.
+
+    Scope is deliberately the letters the record DECLARES. An entry carrying no
+    usable ``cause_letter`` is also unseedable, but it is a malformed record
+    rather than a record/chunk disagreement — the extractor and the runbook
+    validator own that, and folding it in here would fire this alarm for a defect
+    it cannot describe.
+
+    Returns the missing letters in record order (deduped), or [] when the record
+    is empty/absent — the overwhelmingly common case, and the healthy one.
+    """
+    if not causes:
+        return []
+    declared: List[str] = []
+    for cause in causes:
+        if not isinstance(cause, dict):
+            continue
+        letter = str(cause.get("cause_letter") or "")
+        if letter and letter not in declared:
+            declared.append(letter)
+    if not declared:
+        return []
+    recoverable: set = set()
+    for chunk in chunks:
+        recoverable.update(_matched_cause_letters(chunk))
+    return [letter for letter in declared if letter not in recoverable]
+
+
+def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:
+    """Read ``causes`` off a ``knowledge_items`` metadata value, however it arrives.
+
+    Callers hand it either shape and neither has to know which: the *decoded*
+    dict off a domain ``KnowledgeItem.metadata``, or the *raw* column off an ORM
+    row. The raw one is why both branches are needed — ``JsonBlob`` is
+    ``Text().with_variant(JSONB, "postgresql")``, so it comes back as a JSON
+    string or an object depending on backend and writer, and handling one shape
+    loses the record silently on the other (the bug
+    ``kb_init._decode_metadata`` documents). Read-only: the dict branch aliases
+    its caller's attribute, so callers must not mutate.
+
+    A third copy of that decode, alongside ``kb_init._decode_metadata`` and
+    ``KnowledgeItemRepository._parse_json_dict``. Kept local for the same reason
+    the second one was: reaching for either would mean a domain service calling a
+    bootstrap-private helper or a repository-private method, to read one key.
+
+    Returns None unless the value decodes to a dict whose ``causes`` is a list —
+    the same tolerance :meth:`get_runbook_causes` applies to the domain shape.
+    A value that is present but undecodable warns on the way to that None: it is
+    the one "no record" answer that is really "unread record", and it silently
+    disables the caller's check.
+    """
+    if isinstance(knowledge_metadata, dict):
+        decoded: Any = knowledge_metadata
+    elif knowledge_metadata:
+        try:
+            decoded = json.loads(knowledge_metadata)
+        except (json.JSONDecodeError, TypeError) as decode_error:
+            # An undecodable value is NOT "no record" — it is a record we could
+            # not read, and returning None quietly makes it indistinguishable
+            # from a prose runbook. That matters here more than it looks: the
+            # caller reads this to CHECK the record, so a silent miss disables
+            # the check for exactly the row whose metadata is already suspect.
+            logger.warning(
+                "Unreadable knowledge_items metadata (%s): treating the row as "
+                "carrying no causes record, so its causes/chunk agreement goes "
+                "unchecked.",
+                decode_error,
+            )
+            return None
+    else:
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    causes = decoded.get("causes")
+    return causes if isinstance(causes, list) else None
 
 
 def build_kb_scope_filter(
@@ -765,6 +884,7 @@ class KnowledgeService:
         self,
         document: KnowledgeBaseDocument,
         prechunked: Optional[List[tuple[str, List[float]]]] = None,
+        causes: Optional[List[Dict[str, Any]]] = None,
     ) -> int:
         """Index a document's chunks + embeddings into the vector store.
 
@@ -778,6 +898,12 @@ class KnowledgeService:
                 :class:`ContentChunker` and embedded with BGE-M3 — the
                 upload/draft path. Per-chunk metadata is derived from the
                 document frontmatter either way (it is not carried in the pack).
+            causes: The ``metadata["causes"]`` record being written alongside
+                these chunks, when there is one. Not indexed — checked. This is
+                the one moment both sides of the KB cause seeder's join exist
+                together, so it is where a record whose letters no chunk can
+                recover gets caught (fm#1103). Observed, never enforced: see
+                :meth:`_report_unseedable_causes`.
         Returns:
             Number of chunks indexed. Never 0 for a failure — see Raises.
 
@@ -835,6 +961,26 @@ class KnowledgeService:
                     subject=f"Indexing document {document.document_id}",
                     operation="index_document",
                 )
+
+            # Both sides of the seeder's join are in hand for the only time:
+            # these exact chunk texts, and the causes record about to be stored
+            # against them. Check it here (fm#1103) — after this the two are
+            # only ever re-united by a retrieval, in a case that has already
+            # lost the seeds.
+            #
+            # Ahead of the write, so an indexing failure (or the SQL rollback
+            # ingest_runbook does on one) can leave an alarm naming a document
+            # that never landed. Deliberate: the disagreement is a property of
+            # the DATA, independent of whether this attempt stored it, so the
+            # alarm is true either way and a retry at worst counts it twice.
+            # Checking after the write instead would trade that for missing the
+            # report entirely whenever indexing fails.
+            self._report_unseedable_causes(
+                document.document_id,
+                chunks,
+                causes,
+                chunker=("pack" if prechunked is not None else "runtime"),
+            )
 
             # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)
@@ -918,6 +1064,111 @@ class KnowledgeService:
                 f"Vector indexing failed for {document.document_id}: {e}",
                 error_code="KNOWLEDGE_INDEXING_FAILED",
             ) from e
+
+    @staticmethod
+    def _report_unseedable_causes(
+        document_id: str,
+        chunks: List[str],
+        causes: Optional[List[Dict[str, Any]]],
+        *,
+        chunker: str,
+    ) -> None:
+        """Warn + count when a stored causes record outruns its own chunks (fm#1103).
+
+        The KB cause seeder joins a retrieval hit to a cause by parsing
+        ``### Cause X:`` out of the matched chunk's text and matching it against
+        ``cause_letter``. A letter no chunk carries therefore names a cause that
+        can never be seeded — and nothing says so: the runbook is well-formed
+        from either side alone, the case just quietly gets fewer candidates.
+
+        Observed, not enforced. Refusing the write would convert a recall loss
+        into a failed ingest, which on the pack path is a failed KB bootstrap —
+        a produce-side data bug must not take the deployment down. So the
+        document is indexed as asked and the drift is made loud instead: a
+        WARNING naming the document and the missing letters (the unit a producer
+        acts on) plus ``kb_cause_unseedable_at_ingest_total`` labeled by which
+        chunker produced the disagreement.
+
+        Swallows its own errors — a diagnostic on the ingest path must not be
+        able to fail the write it is observing — but reports the swallow LOUDLY,
+        which is the part that is easy to get wrong. A check that dies quietly
+        leaves ``kb_cause_unseedable_at_ingest_total`` reading zero, and zero is
+        this alarm's healthy state: a broken guard would be indistinguishable
+        from a clean corpus, which is the exact silent-failure shape the guard
+        exists to close. So the swallow costs a WARNING with the traceback and
+        an increment of ``kb_cause_ingest_check_failed_total``.
+        """
+        try:
+            missing = _unrecoverable_cause_letters(chunks, causes)
+            if not missing:
+                return
+            from faultmaven.core.investigation.lifecycle_metrics import (
+                kb_cause_unseedable_at_ingest_total,
+            )
+
+            kb_cause_unseedable_at_ingest_total.labels(chunker=chunker).inc()
+            # Say which SIDE is wrong when the letter itself proves it. A letter
+            # the heading grammar cannot express (``cause_letter: "a"``) is
+            # unseedable — the seeder's join is case-sensitive, so reporting it
+            # is correct — but the Causes section is not what needs fixing, and
+            # advice pointing there would send a producer looking at healthy
+            # markdown. Normalising case instead would be worse than imprecise:
+            # it would call a cause recoverable that retrieval cannot join.
+            ungrammatical = [
+                letter for letter in missing if not _letter_can_head_a_cause(letter)
+            ]
+            absent = [letter for letter in missing if letter not in ungrammatical]
+            if absent:
+                logger.warning(
+                    "UNSEEDABLE RUNBOOK CAUSES %s: the causes record declares "
+                    "letter(s) %s that no chunk of this document carries a "
+                    "'### Cause X:' heading for (%d chunks, %s chunker). Those "
+                    "causes can never be seeded into an investigation — "
+                    "retrieval has no way to name them. Fix the runbook's "
+                    "Causes section (or the producer that emitted the record) "
+                    "and re-ingest.",
+                    document_id,
+                    ", ".join(absent),
+                    len(chunks),
+                    chunker,
+                )
+            if ungrammatical:
+                logger.warning(
+                    "UNSEEDABLE RUNBOOK CAUSES %s: the causes record declares "
+                    "letter(s) %s that no '### Cause X:' heading can express, "
+                    "so no chunk could ever carry them (%s chunker). The "
+                    "markdown is not what is wrong here — the RECORD is "
+                    "malformed, and whichever producer emitted it is what to "
+                    "fix.",
+                    document_id,
+                    ", ".join(ungrammatical),
+                    chunker,
+                )
+        except Exception as check_error:
+            # Loud, not debug. Production runs at INFO, so a DEBUG line here
+            # would let a broken check disappear while its counter kept
+            # reporting a clean corpus — see the docstring.
+            logger.warning(
+                "UNSEEDABLE-CAUSES CHECK FAILED for %s (%s chunker): %s. That "
+                "document went unchecked, and kb_cause_unseedable_at_ingest_"
+                "total cannot be read as a clean bill of health until this "
+                "stops.",
+                document_id,
+                chunker,
+                check_error,
+                exc_info=True,
+            )
+            try:
+                from faultmaven.core.investigation.lifecycle_metrics import (
+                    kb_cause_ingest_check_failed_total,
+                )
+
+                kb_cause_ingest_check_failed_total.inc()
+            except Exception:
+                # The deferred import is among the likelier things to have
+                # failed above; the WARNING already carries the report, and
+                # nothing here may raise into the write.
+                pass
 
     async def _discard_vectors_for_vanished_row(self, document_id: str) -> None:
         """Drop vectors written for a row that was deleted mid-update (#952).
@@ -1022,7 +1273,8 @@ class KnowledgeService:
                 await self._discard_vectors_for_vanished_row(document_id)
             else:
                 await self._index_document_in_vector_store(
-                    self._build_index_model(observed)
+                    self._build_index_model(observed),
+                    causes=_row_causes(observed.metadata),
                 )
         except Exception as restore_error:
             logger.error(
@@ -1251,7 +1503,7 @@ class KnowledgeService:
         )
         try:
             chunks_created = await self._index_document_in_vector_store(
-                doc_model, prechunked=prechunked
+                doc_model, prechunked=prechunked, causes=causes
             )
         except Exception:
             await self._delete_knowledge_item_row(document_id)
@@ -1349,9 +1601,16 @@ class KnowledgeService:
             created_at=to_json_compatible(row.created_at),
             updated_at=to_json_compatible(row.updated_at),
         )
+        # A repair re-chunks with the RUNTIME chunker while the row keeps the
+        # causes record it was ingested with — for a pack runbook that pairs our
+        # chunks with kb-toolkit's record, the one place the two producers meet.
+        # Read straight off the row: get_runbook_causes applies the seeder's
+        # verification-level filter, and an EXPERIMENTAL row's record is
+        # unseedable for that reason rather than this one.
+        row_causes = _row_causes(getattr(row, "knowledge_metadata", None))
         try:
             return await self._index_document_in_vector_store(
-                doc_model, prechunked=None
+                doc_model, prechunked=None, causes=row_causes
             )
         except KnowledgeBaseError as e:
             # Deliberate, documented tolerance — see the docstring. A failed
@@ -2406,8 +2665,13 @@ class KnowledgeService:
             # a recency signal.
             if needs_reindex:
                 item.updated_at = datetime.now(timezone.utc)
+                # An edit re-chunks the content but leaves ``metadata["causes"]``
+                # exactly as it was — editing a runbook's Causes section is the
+                # everyday way for the record and the chunks to stop agreeing, so
+                # the new pairing is checked like an ingest (fm#1103).
                 await self._index_document_in_vector_store(
-                    self._build_index_model(item)
+                    self._build_index_model(item),
+                    causes=_row_causes(item.metadata),
                 )
 
             # Everything from here is compensated as one unit. The vectors
