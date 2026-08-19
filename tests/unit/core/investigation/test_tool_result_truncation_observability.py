@@ -336,3 +336,129 @@ async def test_an_answer_quoting_the_trim_marker_is_still_measured():
     sizes.labels.assert_called_once_with(tool="kb_qa")
     sizes.labels.return_value.observe.assert_called_once()
     truncated.labels.assert_not_called()
+
+
+KB_QA_TOOL = [{"type": "function", "function": {"name": "kb_qa", "parameters": {}}}]
+
+
+class _ExpandingRedaction:
+    """Stands in for PII redaction, which EXPANDS text.
+
+    Every entity becomes a ``<TYPE_digest>`` placeholder — an IPv4 grows from 8
+    characters to 29 — so a kb_qa answer the formatter sized exactly to the
+    budget re-crosses the cap here and is cut a SECOND time. That is the only
+    way the loop's cut site ever sees a kb_qa result, so it is the only way to
+    test what the loop logs about one.
+    """
+
+    def __init__(self, needle: str, replacement: str):
+        self._needle = needle
+        self._replacement = replacement
+
+    async def asanitize(self, text: str) -> str:
+        return text.replace(self._needle, self._replacement)
+
+
+async def _run_kb_qa(engine, redaction_ctx=None):
+    return await engine._tool_augmented_generate(
+        prompt="Look it up",
+        schema_model=SampleResponse,
+        investigation_tools=KB_QA_TOOL,
+        tool_context=MagicMock(),
+        redaction_ctx=redaction_ctx,
+    )
+
+
+def _oversized_kb_answer() -> str:
+    """A KB answer past the relay budget, with an entity for redaction to grow."""
+    para = "Background: 10.0.0.1 cache retention detail for the checkout API.\n\n"
+    return "## Diagnose\n\n" + para * 200 + "\n\n## Remediation\n\n1. Bound the cache."
+
+
+@pytest.mark.asyncio
+async def test_the_loop_logs_the_count_its_cut_returned_not_the_overflow(caplog):
+    """The loop-site count must come from the cut, not from the cap arithmetic.
+
+    ``original_chars - TOOL_RESULT_MAX_CHARS`` is the OVERFLOW. On every
+    non-kb_qa tool that also happens to be what the cut destroys, so the only
+    existing loop-site test — which uses ``search_file`` — cannot tell the two
+    formulas apart. On kb_qa they diverge, because the elide additionally
+    spends two markers and its paragraph realignment. Reverting this field to
+    the overflow is a silent re-open of #1088's second blocking finding.
+    """
+    answer = _oversized_kb_answer()
+    engine = _engine_returning(answer, called_tool="kb_qa")
+    redaction = _ExpandingRedaction("10.0.0.1", "<IP_ADDRESS_0123456789abcdef>")
+
+    with caplog.at_level("WARNING", logger=me.__name__):
+        await _run_kb_qa(engine, redaction_ctx=redaction)
+
+    loop_cuts = [
+        r
+        for r in caplog.records
+        if r.getMessage() == "tool_result_truncated"
+        and getattr(r, "at", None) == "tool_loop"
+    ]
+    assert len(loop_cuts) == 1, (
+        "the redaction-expanded kb_qa result was not cut at the loop site; "
+        "this test cannot observe what it claims to"
+    )
+    record = loop_cuts[0]
+
+    # Ground truth: what the cut helper actually destroys on this same input.
+    formatted = MilestoneEngine._format_tool_result(
+        ToolResult(success=True, data=answer), tool_name="kb_qa"
+    )
+    grown = formatted.replace("10.0.0.1", "<IP_ADDRESS_0123456789abcdef>")
+    _, destroyed = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+
+    assert record.dropped_chars == destroyed
+    assert record.dropped_chars != record.original_chars - record.cap_chars, (
+        "the loop reported the overflow rather than what the cut destroyed — "
+        "the two diverge on kb_qa by the markers and the realignment"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_second_cut_is_flagged_so_the_clip_count_can_deduplicate(caplog):
+    """One physical clip, two records — the flag is what tells them apart.
+
+    A kb_qa answer trimmed at the formatter and regrown past the cap by
+    redaction logs at both sites. The documented clip-rate query filters on
+    ``after_formatter_trim``, so forcing it False double-counts exactly the
+    tool the ceiling question is about. The Prometheus counters are protected
+    by the marker anchor; this field is the log's only protection.
+    """
+    engine = _engine_returning(_oversized_kb_answer(), called_tool="kb_qa")
+    redaction = _ExpandingRedaction("10.0.0.1", "<IP_ADDRESS_0123456789abcdef>")
+
+    with caplog.at_level("WARNING", logger=me.__name__):
+        await _run_kb_qa(engine, redaction_ctx=redaction)
+
+    cuts = [r for r in caplog.records if r.getMessage() == "tool_result_truncated"]
+    assert len(cuts) == 2, (
+        f"expected a formatter record and a loop record for one twice-cut "
+        f"answer, got {len(cuts)}"
+    )
+    by_site = {getattr(r, "at", None): r for r in cuts}
+    assert set(by_site) == {"formatter", "tool_loop"}
+    assert by_site["tool_loop"].after_formatter_trim is True, (
+        "the second cut is not flagged, so the documented clip-rate query "
+        "counts one physical clip twice"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_first_and_only_cut_is_not_flagged_as_a_second_one(caplog):
+    """The other half: a flag that is always True dedups away real clips."""
+    engine = _engine_returning("x" * (MilestoneEngine.TOOL_RESULT_MAX_CHARS + 500))
+
+    with caplog.at_level("WARNING", logger=me.__name__):
+        await _run(engine)
+
+    cuts = [r for r in caplog.records if r.getMessage() == "tool_result_truncated"]
+    assert len(cuts) == 1
+    assert cuts[0].after_formatter_trim is False, (
+        "a first-and-only cut was flagged as a second one; the clip-rate "
+        "query would filter out a real clip"
+    )

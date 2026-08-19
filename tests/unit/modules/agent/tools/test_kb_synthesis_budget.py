@@ -17,6 +17,9 @@ The chars/token figures are measured on real synthesis calls, not assumed:
 prompt's mix of prose, shell commands and markdown.
 """
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
@@ -24,7 +27,15 @@ from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
 )
 from faultmaven.models.interfaces import ToolResult
-from faultmaven.modules.agent.tools.document_qa_tool import SYNTHESIS_MAX_TOKENS
+from faultmaven.modules.agent.tools.document_qa_tool import (
+    KB_ANSWER_RELAY_CHARS,
+    SYNTHESIS_MAX_TOKENS,
+    DocumentQATool,
+)
+from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
+    CaseEvidenceConfig,
+)
+from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import UnifiedKBConfig
 
 pytestmark = [pytest.mark.unit]
 
@@ -138,7 +149,7 @@ def test_relay_tail_survives_redaction_growth_past_the_cap():
         len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
     ), "test setup must actually push the result past the cap"
 
-    out = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+    out, _ = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
 
     assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS
     assert out.endswith(
@@ -154,8 +165,188 @@ def test_other_tools_keep_plain_head_truncation():
     tools already budget themselves against this cap; silently relocating their
     cut would change what the model sees for reasons unrelated to this fix.
     """
-    out = MilestoneEngine._truncate_tool_result("X" * 9000, "search_file")
+    out, dropped = MilestoneEngine._truncate_tool_result("X" * 9000, "search_file")
 
     assert out.startswith("X" * 100)
     assert out.endswith("[truncated]")
+    # cap + marker, not cap: this branch appends the marker on top of a
+    # cap-length slice. Pre-existing and pinned byte-identical by #1090; kb_qa
+    # is stricter only because its formatter reserves the relay wrapper.
+    assert len(out) == MilestoneEngine.TOOL_RESULT_MAX_CHARS + len("\n[truncated]")
+    assert dropped == 9000 - MilestoneEngine.TOOL_RESULT_MAX_CHARS
     assert KB_QA_RELAY_SUFFIX not in out
+
+
+# ---------------------------------------------------------------------------
+# The allowance the synthesizer is TOLD it has (#1088)
+# ---------------------------------------------------------------------------
+#
+# The two tests above keep the TOKEN budget in step with the character cap.
+# They do not make the model aware of either: it was instructed to preserve
+# full procedural detail with no length target at all, so it wrote to whatever
+# the material wanted and the engine removed the surplus. Measured over one
+# simulation run, 3 KB answers in 5 overflowed, by 540-1249 characters.
+#
+# ``KB_ANSWER_RELAY_CHARS`` is that missing target. It lives in the tool rather
+# than being imported from the engine because ``milestone_engine`` imports this
+# package's tools -- the dependency runs one way only -- so it needs the same
+# cross-module pin the token budget already has.
+
+
+def test_stated_allowance_fits_inside_what_the_engine_will_relay():
+    """Telling the model a number larger than the cap teaches it to overflow."""
+    usable = MilestoneEngine.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
+
+    assert KB_ANSWER_RELAY_CHARS <= usable, (
+        f"the synthesizer is told it has {KB_ANSWER_RELAY_CHARS} characters but "
+        f"the engine relays at most {usable}; the instruction would license "
+        f"exactly the overflow it exists to prevent"
+    )
+
+
+def test_stated_allowance_leaves_room_for_the_source_line():
+    """``format_response`` appends "Sources: ..." to this answer before wrapping.
+
+    That line is part of what has to fit, and it is not free — five runbook
+    titles run comfortably past 100 characters. An allowance equal to the full
+    relay budget would be overflowed by the source line alone.
+    """
+    usable = MilestoneEngine.TOOL_RESULT_MAX_CHARS - _wrapper_overhead_chars()
+
+    assert usable - KB_ANSWER_RELAY_CHARS >= 250, (
+        f"only {usable - KB_ANSWER_RELAY_CHARS} characters of headroom between "
+        f"the stated allowance and the relay budget — not enough for the "
+        f"appended source line"
+    )
+
+
+def test_stated_allowance_is_not_so_small_it_wastes_the_budget():
+    """The other direction: an allowance far under the cap throws away room.
+
+    Sized against the token budget, which is itself sized to the cap: an
+    allowance the budget cannot even reach would be telling the model to stop
+    well short of what the pipeline will happily carry.
+    """
+    reachable = SYNTHESIS_MAX_TOKENS * MIN_CHARS_PER_TOKEN
+
+    assert KB_ANSWER_RELAY_CHARS >= reachable * 0.8, (
+        f"the synthesizer is told it has {KB_ANSWER_RELAY_CHARS} characters "
+        f"while its token budget reaches {reachable:.0f} and the engine would "
+        f"accept them; the instruction is leaving answer room unused"
+    )
+
+
+@pytest.mark.asyncio
+async def test_synthesis_prompt_tells_the_model_its_allowance():
+    """The number has to reach the model, not just live in a constant.
+
+    Without it the prompt asks for maximum procedural detail and says nothing
+    about length, so "compress only background context, never actionable steps"
+    has no threshold to act on and the model has no reason to apply it.
+    """
+    chunks = [
+        {
+            "content": "chunk",
+            "metadata": {"title": "Kubernetes Container OOMKilled"},
+            "score": 0.71,
+        }
+    ]
+    vector_store = MagicMock()
+    vector_store.hybrid_search = AsyncMock(return_value=chunks)
+    vector_store.search = AsyncMock(return_value=chunks)
+
+    router = MagicMock()
+    router.route = AsyncMock(
+        return_value=SimpleNamespace(content="answer", is_truncated=False)
+    )
+
+    tool = DocumentQATool(vector_store, router, UnifiedKBConfig())
+    await tool.answer_question(question="Why was it OOMKilled?", scope_id=None, k=5)
+
+    router.route.assert_awaited()
+    prompt = router.route.await_args.kwargs["messages"][-1]["content"]
+
+    assert f"{KB_ANSWER_RELAY_CHARS:,}" in prompt, (
+        "the synthesis prompt does not state the character allowance; the "
+        "model cannot prioritise remediation over background against a limit "
+        "it has not been told"
+    )
+    assert "never diagnostic commands or remediation steps" in prompt, (
+        "the allowance was stated without saying what to drop first, which is "
+        "the half that protects the procedure"
+    )
+
+
+@pytest.mark.asyncio
+async def test_case_evidence_answers_are_not_told_the_kb_relay_allowance():
+    """The allowance is a fact about ONE KB's downstream channel.
+
+    ``AnswerFromCaseEvidence`` subclasses ``DocumentQATool`` and shares this
+    synthesis prompt, but its results are not relayed through the engine's
+    ``kb_qa`` branch — ``_format_tool_result`` special-cases that name only. So
+    an evidence answer gets no relay wrapper, no middle-elide, and a plain
+    head-first cut at the full cap. Stating the kb_qa number there would shorten
+    those answers against a ceiling that is not theirs, and describe an eliding
+    behaviour they do not have.
+    """
+    chunks = [{"content": "chunk", "metadata": {"filename": "app.log"}, "score": 0.71}]
+    vector_store = MagicMock()
+    vector_store.hybrid_search = AsyncMock(return_value=chunks)
+    vector_store.search = AsyncMock(return_value=chunks)
+
+    router = MagicMock()
+    router.route = AsyncMock(
+        return_value=SimpleNamespace(content="answer", is_truncated=False)
+    )
+
+    tool = DocumentQATool(vector_store, router, CaseEvidenceConfig())
+    await tool.answer_question(question="What errors?", scope_id="case_1", k=5)
+
+    prompt = router.route.await_args.kwargs["messages"][-1]["content"]
+
+    assert CaseEvidenceConfig().answer_char_allowance is None
+    assert f"{KB_ANSWER_RELAY_CHARS:,}" not in prompt
+    assert "Fit the answer within" not in prompt, (
+        "the case-evidence answer was given a length allowance derived from a "
+        "relay wrapper its results never pass through"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_retry_ceiling_still_permits_a_retry():
+    """A ceiling at or below the budget removes the retry rather than shrinking it.
+
+    ``generate_with_truncation_retry`` returns the partial untouched when
+    ``min(max_tokens * 2, ceiling) <= max_tokens``. So the natural-looking fix
+    for "the retry generates tokens the relay discards" — clamp the ceiling to
+    what the relay can carry, about ``KB_ANSWER_RELAY_CHARS / 3.9`` ≈ 1790 —
+    silently reinstates the #1094 starvation failure instead of bounding it.
+    Pinned because the failure mode is invisible: nothing errors, the answer is
+    just quietly short.
+    """
+    from faultmaven.infrastructure.llm.truncation import (
+        generate_with_truncation_retry,
+    )
+    from faultmaven.modules.agent.tools.document_qa_tool import (
+        SYNTHESIS_MAX_TOKENS_CEILING,
+    )
+
+    caps: list = []
+
+    async def call(max_tokens: int):
+        caps.append(max_tokens)
+        return SimpleNamespace(content="partial", is_truncated=len(caps) == 1)
+
+    await generate_with_truncation_retry(
+        call,
+        max_tokens=SYNTHESIS_MAX_TOKENS,
+        ceiling=SYNTHESIS_MAX_TOKENS_CEILING,
+        label="test",
+    )
+
+    assert len(caps) == 2, (
+        f"a truncated synthesis was not retried: ceiling "
+        f"{SYNTHESIS_MAX_TOKENS_CEILING} against budget {SYNTHESIS_MAX_TOKENS} "
+        f"leaves no room, so the helper returns the partial instead"
+    )
+    assert caps[1] > caps[0]

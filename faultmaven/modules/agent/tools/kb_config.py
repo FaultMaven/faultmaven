@@ -155,6 +155,26 @@ class KBConfig(ABC):
         return None
 
     @property
+    def answer_char_allowance(self) -> Optional[int]:
+        """Characters this KB's answer is TOLD it has, or ``None`` to say nothing.
+
+        Not every KB sits behind the same downstream ceiling, so this is a
+        per-config fact rather than a property of the synthesis prompt. The
+        unified KB is relayed through ``MilestoneEngine._format_tool_result``'s
+        ``kb_qa`` branch, which wraps the answer in relay instructions and then
+        elides its middle to fit ``TOOL_RESULT_MAX_CHARS`` -- so an answer there
+        has a real allowance worth stating, and #1088 measured what happens
+        without it. Case evidence takes a different path: no wrapper, no elide,
+        a plain head-first cut at the full cap. Stating the unified KB's number
+        there would be telling that answer something untrue about its own
+        pipeline, so the default is to say nothing.
+
+        Returns:
+            Character allowance to state in the synthesis prompt, or None.
+        """
+        return None
+
+    @property
     @abstractmethod
     def empty_result_message(self) -> str:
         """Message for a search that ran successfully and matched nothing.
