@@ -644,3 +644,65 @@ prompt_context_recovery_total = Counter(
     "``reason`` (input_overflow | output_truncation | unclassified).",
     ["reason"],
 )
+
+
+# fm#1092 outcome telemetry for the KB cause seeder's retrieval join. The seeder
+# instantiates a retrieved runbook's causes as candidate hypotheses; it used to
+# seed a matched runbook's FIRST THREE causes in author order, which put
+# wrong-domain candidates in front of the user. It now seeds only the causes
+# whose chunk retrieval actually matched — a strictly narrower intake, so the
+# recall side of that trade needs measuring rather than assuming.
+#
+# One increment per seeding ATTEMPT (retrieval returned hits and the flag is on),
+# labeled by the outcome actually achieved. The labels are mutually exclusive and
+# sum to attempts, so the load-bearing signal is intrinsic: ``seeded / total`` is
+# the seeding yield, and its complement is the zero-seed rate.
+#
+#   seeded                 — at least one candidate hypothesis was created.
+#   all_causes_skipped     — causes were handed to the seeder but every one was
+#                            skipped (dedup, unsupported shape, malformed). Read
+#                            with the skip taxonomy, not as a retrieval problem.
+#   no_cause_chunk_matched — hits existed but none carried a ``### Cause`` chunk.
+#                            THIS is the recall trade the join makes: the old
+#                            author-order fallback would have seeded something
+#                            here, right or wrong. A high share means queries are
+#                            landing on Symptom Recognition / Diagnostic Steps
+#                            prose rather than cause blocks — a retrieval-ranker
+#                            signal, and the number to weigh before ever
+#                            reinstating a fallback.
+#   no_seedable_cause      — cause chunks matched, but the consulted runbooks
+#                            carried no causes record (flat prose) or none of the
+#                            matched letters. The latter also increments
+#                            ``kb_cause_seed_letter_mismatch_total``.
+#   crashed                — a seeder bug; the transition still completed.
+#
+# No level is "healthy" in the abstract — this is a rate to watch for movement.
+# A rising ``no_cause_chunk_matched`` share is the first thing that would tell us
+# the fallback removal costs more recall than the wrong-domain seeds it prevents.
+kb_cause_seed_attempt_total = Counter(
+    "faultmaven_kb_cause_seed_attempt_total",
+    "KB cause-seeding attempts at the INQUIRY->INVESTIGATING transition, labeled "
+    "by ``outcome`` (seeded | all_causes_skipped | no_cause_chunk_matched | "
+    "no_seedable_cause | crashed). Labels are exclusive and sum to attempts, so "
+    "``seeded``/total is the seeding yield (fm#1092).",
+    ["outcome"],
+)
+
+# fm#1092 produce-side integrity signal. A retrieved chunk carried a
+# ``### Cause X:`` heading whose letter names no cause in that runbook's
+# ``metadata["causes"]`` record — the chunk text and the extracted record
+# disagree, so the join finds nothing and the runbook is dropped.
+#
+# Zero is the healthy state, and unlike the outcome counter above this one is an
+# alarm: it means a runbook's causes are UNSEEDABLE while looking well-formed
+# from either side alone. The likely origins are the case->runbook conversion
+# path or an uploaded document whose heading form drifted from the shared
+# ``CAUSE_HEADING_RE``. The shipped pack is pinned against this by a corpus test;
+# generated and uploaded runbooks are not, which is what makes the counter the
+# only sighting of the drift in production.
+kb_cause_seed_letter_mismatch_total = Counter(
+    "faultmaven_kb_cause_seed_letter_mismatch_total",
+    "A matched chunk's ``### Cause X:`` heading named a letter absent from the "
+    "runbook's causes record, so the runbook seeded nothing (fm#1092). One "
+    "increment per dropped runbook. Zero is the healthy state.",
+)
