@@ -146,3 +146,36 @@ def test_absent_metadata_is_not_warned_about():
     finally:
         logger.removeHandler(handler)
     assert [r for r in records if r.levelno >= logging.WARNING] == []
+
+
+# ---------------------------------------------------------------------------
+# The warning must diagnose without publishing what it read
+# ---------------------------------------------------------------------------
+
+
+def test_the_unreadable_warning_never_logs_the_value(caplog):
+    """``knowledge_metadata`` is author-supplied document metadata of unbounded
+    size, and this branch fires per row inside sweeps — so interpolating the
+    value would put user KB content in the logs, repeatedly, to say something its
+    shape already says."""
+    secret = '{"causes": "CONFIDENTIAL-RUNBOOK-BODY-' + "x" * 500 + '"'  # truncated
+    with caplog.at_level("WARNING"):
+        assert _row_metadata(secret) == {}
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "CONFIDENTIAL-RUNBOOK-BODY" not in logged
+    assert "str of" in logged, "the shape must still be diagnosable"
+    assert str(len(secret)) in logged
+
+
+def test_a_value_that_decodes_to_a_non_object_is_reported_too():
+    """Deliberate widening over the pre-fm#1107 wrapper, which only caught a
+    decode ERROR. ``"[1,2,3]"`` parses fine and is still unusable as metadata —
+    it disables the causes check exactly like a corrupt value, so it earns the
+    same report rather than a silent ``{}``."""
+    assert _row_metadata("[1, 2, 3]") == {}
+    assert _row_metadata("null") == {}
+
+
+def test_absent_metadata_never_reaches_the_warning():
+    assert _row_metadata(None) == {}
+    assert _row_metadata("") == {}

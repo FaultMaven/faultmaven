@@ -626,13 +626,27 @@ async def _restamp_stale_rows(
         # Selection is inside the guard as well as the query: this is a
         # maintenance sweep, and no shape it fails to understand may take
         # startup down with it.
-        stale = [
-            item_id
-            for item_id, metadata, is_published in rows
-            if is_published
-            and not _BUILTIN_ITEM_ID_RE.match(item_id or "")
-            and (decode_json_blob(metadata) or {}).get("chunk_stamp") != current
-        ]
+        stale = []
+        for item_id, metadata, is_published in rows:
+            if not is_published or _BUILTIN_ITEM_ID_RE.match(item_id or ""):
+                continue
+            decoded = decode_json_blob(metadata)
+            if decoded is None and metadata:
+                # Present but unreadable. Do NOT restamp it: the stamp write is
+                # read-modify-write, so it would replace a blob we could not read
+                # (destroying any causes record in it), and we cannot even tell
+                # whether this row is stale. Naming the ROW is the diagnostic
+                # that matters — the decoder itself only ever sees the value, and
+                # deliberately does not log it.
+                logger.warning(
+                    "KB restamp: skipping %s — its metadata is present but "
+                    "unreadable, so its chunk stamp cannot be judged or safely "
+                    "rewritten. Repair or clear that row's metadata.",
+                    item_id,
+                )
+                continue
+            if (decoded or {}).get("chunk_stamp") != current:
+                stale.append(item_id)
     except Exception as e:
         logger.warning(f"KB restamp skipped: could not select stale rows: {e}")
         return []

@@ -1919,3 +1919,25 @@ async def test_an_unreadable_row_set_never_fails_startup():
             raise RuntimeError("db down")
 
     assert await kb_init._restamp_stale_rows(service, lambda: _Boom([])) == []
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_skips_and_names_a_row_whose_metadata_is_unreadable(caplog):
+    """It cannot judge whether such a row is stale, and restamping it would send
+    the stamp write at a blob it could not read. Naming the ROW is the diagnostic
+    that matters — the decoder only ever sees a value, and deliberately does not
+    log it."""
+    service = MagicMock()
+    service.restamp_document = AsyncMock(return_value=2)
+    rows = [
+        ("authored-bad", '{"causes": [{"cause_letter": "A"}', True),  # truncated
+        ("authored-ok", {}, True),
+    ]
+    with caplog.at_level("WARNING"):
+        done = await _restamp(rows, service)
+
+    assert done == ["authored-ok"]
+    service.restamp_document.assert_awaited_once_with("authored-ok")
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "authored-bad" in logged
+    assert "cause_letter" not in logged, "the blob itself must not be logged"
