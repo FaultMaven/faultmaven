@@ -473,6 +473,21 @@ llm_tokens = Counter(
     labelnames=["provider", "model"],
 )
 
+# Why each response stopped, normalised (faultmaven...providers.StopReason).
+#
+# Labelled by reason rather than counting truncations alone so the UNKNOWN
+# share stays legible: UNKNOWN means the provider told us nothing, not that the
+# response completed, and a provider sitting at 100% UNKNOWN is a blind spot to
+# fix rather than a clean bill of health. `max_tokens` is the alert-worthy one —
+# every one of those is a response that was cut and may have been consumed as
+# if it were whole (#1094).
+llm_stop_reasons = Counter(
+    "llm_stop_reasons_total",
+    "LLM responses by normalised stop reason "
+    "(stop|max_tokens|content_filter|tool_calls|unknown)",
+    labelnames=["provider", "model", "stop_reason"],
+)
+
 # --- Fine-grained LLM spend metrics ---------------------------------------
 # These are emitted at the registry chokepoint, once per REAL provider API call
 # — including fallback / low-confidence attempts that the caller discards. That

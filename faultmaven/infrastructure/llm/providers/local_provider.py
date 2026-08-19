@@ -16,7 +16,13 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import (
+    BaseLLMProvider,
+    LLMResponse,
+    ProviderConfig,
+    StopReason,
+    normalize_stop_reason,
+)
 
 
 class LocalProvider(BaseLLMProvider):
@@ -198,6 +204,10 @@ class LocalProvider(BaseLLMProvider):
                 # Extract token usage (Ollama specific)
                 tokens_used = data.get("eval_count", 0)
 
+                # Ollama reports why it stopped in `done_reason`: "stop" for a
+                # natural end, "length" when num_predict was reached (#1094).
+                stop_reason = normalize_stop_reason(data.get("done_reason"))
+
                 response_time = self._get_response_time_ms()
 
                 return LLMResponse(
@@ -207,6 +217,7 @@ class LocalProvider(BaseLLMProvider):
                     model=model,
                     tokens_used=tokens_used,
                     response_time_ms=response_time,
+                    stop_reason=stop_reason,
                 )
 
     async def _call_openai_compatible_api(
@@ -274,7 +285,10 @@ class LocalProvider(BaseLLMProvider):
                         self.logger.error(f"No choices: {error_msg}")
                         raise LLMException(error_msg)
 
-                    message = data["choices"][0]["message"]
+                    choice = data["choices"][0]
+                    message = choice["message"]
+                    # OpenAI-compatible "length" ⇒ cut at the cap (#1094).
+                    stop_reason = normalize_stop_reason(choice.get("finish_reason"))
                     content = message.get("content") or ""
                     self.logger.debug(f"Raw content: {repr(content)}")
 
@@ -334,6 +348,7 @@ class LocalProvider(BaseLLMProvider):
                         output_tokens=output_tokens,
                         cache_read_tokens=cache_read_tokens,
                         prompt_cache_hit=bool(cache_read_tokens > 0),
+                        stop_reason=stop_reason,
                     )
 
             except asyncio.TimeoutError as e:
@@ -401,6 +416,21 @@ class LocalProvider(BaseLLMProvider):
                 # Extract token usage (llama.cpp specific)
                 tokens_used = data.get("tokens_predicted", 0)
 
+                # llama.cpp reports stop conditions as booleans. `stopped_limit`
+                # is the one that means "hit n_predict" — the output cap.
+                #
+                # NOT `truncated`: on this server that flag means the PROMPT
+                # exceeded the context window and was cut, which is an input
+                # problem. Reading it as output truncation would send the
+                # retry-with-a-bigger-cap ladder after a failure a bigger cap
+                # makes strictly worse (#1094).
+                if data.get("stopped_limit"):
+                    stop_reason = StopReason.MAX_TOKENS
+                elif data.get("stopped_eos") or data.get("stopped_word"):
+                    stop_reason = StopReason.STOP
+                else:
+                    stop_reason = StopReason.UNKNOWN
+
                 response_time = self._get_response_time_ms()
 
                 return LLMResponse(
@@ -410,4 +440,5 @@ class LocalProvider(BaseLLMProvider):
                     model=model,
                     tokens_used=tokens_used,
                     response_time_ms=response_time,
+                    stop_reason=stop_reason,
                 )

@@ -15,7 +15,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, normalize_stop_reason
 
 
 class FireworksProvider(BaseLLMProvider):
@@ -170,7 +170,10 @@ class FireworksProvider(BaseLLMProvider):
                     if not data.get("choices") or len(data["choices"]) == 0:
                         raise LLMException("Fireworks API returned no choices")
 
-                    message = data["choices"][0]["message"]
+                    choice = data["choices"][0]
+                    message = choice["message"]
+                    # OpenAI-compatible "length" ⇒ cut at the cap (#1094).
+                    stop_reason = normalize_stop_reason(choice.get("finish_reason"))
                     content = message.get("content") or ""
                     content = (
                         self._validate_response_content(content) if content else ""
@@ -205,6 +208,7 @@ class FireworksProvider(BaseLLMProvider):
                         output_tokens=output_tokens,
                         cache_read_tokens=cache_read_tokens,
                         prompt_cache_hit=bool(cache_read_tokens > 0),
+                        stop_reason=stop_reason,
                     )
         except asyncio.TimeoutError:
             raise LLMException(

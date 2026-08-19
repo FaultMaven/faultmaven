@@ -7,6 +7,7 @@ import pytest
 from faultmaven.core.preprocessing.models import AnalysisContext, UnifiedDataType
 from faultmaven.core.preprocessing.tier2.interface import ITier2SearchService
 from faultmaven.core.preprocessing.tier2.local_service import LocalTier2Service
+from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 
 
 @pytest.fixture
@@ -18,13 +19,33 @@ def mock_storage():
     return storage
 
 
+def _llm_response(content: str, stop_reason: StopReason = StopReason.STOP):
+    """A real ``LLMResponse``, which is what an ILLMProvider returns.
+
+    A ``MagicMock`` answers every attribute with a truthy Mock, so once this
+    service started consulting ``is_truncated`` (#1094) the stand-in would have
+    claimed every analysis was cut off — and a fake that cannot say "no" makes
+    the test agree with whatever the code does.
+    """
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="local",
+        model="llama3.2",
+        tokens_used=150,
+        response_time_ms=10,
+        stop_reason=stop_reason,
+    )
+
+
 @pytest.fixture
 def mock_llm():
     llm = AsyncMock()
-    response = MagicMock()
-    response.content = "Analysis: Found 2 errors related to connection timeout."
-    response.tokens_used = 150
-    llm.generate = AsyncMock(return_value=response)
+    llm.generate = AsyncMock(
+        return_value=_llm_response(
+            "Analysis: Found 2 errors related to connection timeout."
+        )
+    )
     return llm
 
 
@@ -120,16 +141,64 @@ class TestLocalTier2Analyze:
         assert result.backend_used == "local_llm"
 
     @pytest.mark.asyncio
-    async def test_response_without_content_attr(self, service, context):
-        """Test when LLM response doesn't have .content attribute."""
+    async def test_a_response_that_is_not_an_llm_response_degrades_to_excerpts(
+        self, service, context
+    ):
+        """The client is an ILLMProvider; a bare string is not a shape it returns.
+
+        This used to assert the opposite — that a plain string was accepted and
+        used as the answer — via a ``hasattr(response, "content")`` hedge. The
+        DI cannot produce such a client (``create_tier2_service`` is handed the
+        router), and the hedge stopped being harmless once a response-level
+        signal had to be read: ``is_truncated`` cannot be read off a stand-in
+        that only pretends to be a response, so tolerating one would mean
+        silently treating every such call as complete.
+
+        Something genuinely unexpected still degrades rather than failing the
+        turn — the raw excerpts are returned, which is what the caller needs.
+        """
         service.llm_client.generate.return_value = "plain string response"
+
         result = await service.analyze(
             file_ref="ref_1",
             query="error",
             context=context,
             data_type=UnifiedDataType.LOGS,
         )
-        assert result.answer == "plain string response"
+
+        assert "LLM analysis failed" in result.answer
+        assert "line2 error occurred" in result.answer
+        assert result.backend_used == "local_llm"
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_analysis_is_annotated_after_one_retry(
+        self, service, context
+    ):
+        """Its consumer is another LLM, which must not read a cut clause as the whole.
+
+        Annotate rather than refuse: partial analysis of a log file is still
+        worth something, and the excerpts travel with it regardless.
+        """
+        from faultmaven.infrastructure.llm.truncation import TRUNCATION_NOTICE
+
+        service.llm_client.generate = AsyncMock(
+            return_value=_llm_response("Found 2 errors rel", StopReason.MAX_TOKENS)
+        )
+
+        result = await service.analyze(
+            file_ref="ref_1",
+            query="error",
+            context=context,
+            data_type=UnifiedDataType.LOGS,
+        )
+
+        assert service.llm_client.generate.await_count == 2
+        caps = [
+            c.kwargs["max_tokens"] for c in service.llm_client.generate.await_args_list
+        ]
+        assert caps == [service.max_tokens, service.max_tokens * 2]
+        assert "Found 2 errors rel" in result.answer
+        assert TRUNCATION_NOTICE.strip() in result.answer
 
 
 class TestLocalTier2IsAvailable:
