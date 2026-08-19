@@ -650,6 +650,12 @@ class ConversionService:
             source_parts.append(f"PROBLEM: {request.description}")
         if request.root_cause:
             source_parts.append(f"ROOT CAUSE: {request.root_cause}")
+        if request.root_cause_conditions:
+            # Co-necessary with the cause above, not optional extras (#1096):
+            # the runbook's Cause must record every condition the problem
+            # required, or the next investigator reads a one-factor cause.
+            conditions = "\n".join(f"- {c}" for c in request.root_cause_conditions)
+            source_parts.append(f"CONDITIONS THE CAUSE ALSO REQUIRED:\n{conditions}")
         if request.root_cause_mechanism:
             source_parts.append(f"CAUSAL MECHANISM: {request.root_cause_mechanism}")
         if request.solutions:

@@ -736,12 +736,14 @@ def register_graph_hooks(
     derive_node_states,
     sole_cluster_origin,
     project_hypothesis_states_from_roots,
+    conjuncts_for_chain,
 ) -> None:
     """Called once from ``causal_graph`` at module import."""
     _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
     _GRAPH_HOOKS["derive"] = derive_node_states
     _GRAPH_HOOKS["sole_cluster_origin"] = sole_cluster_origin
     _GRAPH_HOOKS["project_hyp_states"] = project_hypothesis_states_from_roots
+    _GRAPH_HOOKS["and_conjuncts"] = conjuncts_for_chain
 
 
 def _graph_hooks() -> dict:
@@ -993,6 +995,25 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
     return True
 
 
+def _conjuncts_for_root(case: "Case", root: "CausalNode", hyp) -> list[str]:
+    """The VALIDATED causes co-necessary with the chain a conclusion mirrors
+    (#1096), via the graph hook — ``causal_graph`` owns BOTH the AND-set reading
+    and the chain construction (``conjuncts_for_chain``), and this module cannot
+    import it (see the module docstring). Building the chain here instead would
+    be a second copy of that rule across a module boundary, free to drift until
+    the per-turn mirror and this terminal stamp name different conjunct sets for
+    one case.
+
+    The hook is read defensively (``.get``, like every other hook consumer
+    here): this runs on the unguarded RESOLVED-execution path, so a missing
+    registration degrades to naming no conjuncts — the pre-#1096 conclusion —
+    never a KeyError that 500s the transition."""
+    fn = _graph_hooks().get("and_conjuncts")
+    if fn is None:
+        return []
+    return fn(case, hyp, root)
+
+
 def _mint_confirmed_mirror(case: "Case", root: "CausalNode", provenance: str) -> None:
     """Mint the engine conclusion mirror for a just-confirmed root when NO
     conclusion exists (the count-held-at-RESOLVED shape). Mechanism text
@@ -1027,6 +1048,10 @@ def _mint_confirmed_mirror(case: "Case", root: "CausalNode", provenance: str) ->
         if inter
         else "Directly produces the observed problem."
     )[:2000]
+    # The cause's co-necessary conjuncts (#1096), derived from the graph by the
+    # same function the per-turn mirror uses — a conclusion minted HERE must
+    # carry the whole conjunction for the same reason one minted there does.
+    conjuncts = _conjuncts_for_root(case, root, hyp)
     likelihood = CONFIRMED_RCC_LIKELIHOOD_FLOOR
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause=root.statement[:1000],
@@ -1039,6 +1064,7 @@ def _mint_confirmed_mirror(case: "Case", root: "CausalNode", provenance: str) ->
             for link in root.evidence_links
             if link.stance == EvidenceStance.SUPPORTS
         ],
+        contributing_factors=conjuncts,
         determined_by=ENGINE_RCC_AUTHOR,
         established_by=provenance,
     )
@@ -1076,7 +1102,11 @@ def _upgrade_engine_mirror(
         likelihood=likelihood,
         validated_hypothesis_id=rcc.validated_hypothesis_id,
         evidence_basis=evidence_basis,
-        contributing_factors=list(rcc.contributing_factors or []),
+        # Re-derived, not carried (#1096): the stamp re-derives node states just
+        # above, and a terminal case never recomputes again — so a conjunct that
+        # validated on the way here would otherwise be frozen out of the only
+        # conclusion the report will ever read.
+        contributing_factors=_conjuncts_for_root(case, root, hyp),
         determined_by=ENGINE_RCC_AUTHOR,
         established_by=provenance,
     )

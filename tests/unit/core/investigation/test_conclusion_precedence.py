@@ -402,9 +402,14 @@ def test_mirror_renders_mechanism_from_the_chains_rung_statements():
 
 
 def test_replacement_drops_llm_only_fields_rather_than_blending_them():
-    """Single authority: the engine does not carry LLM-only fields into text it
-    renders from the graph, so `contributing_factors` (and the UI key-insights
-    derived from it) are an accepted loss on replacement."""
+    """Single authority: the engine does not carry LLM prose into text it renders
+    from the graph, so an LLM-authored `contributing_factors` is dropped on
+    replacement rather than blended in.
+
+    The mirror does populate that field — from the graph's M7 AND-sets (#1096,
+    `validated_and_conjuncts`) — which is why this fixture's empty result is the
+    assertion that matters: its graph carries no conjunction, so the engine has
+    nothing of its own to name and the LLM's two factors are simply gone."""
     case, root, hyp, rival = _validated_root_case()
     case.root_cause_conclusion = RootCauseConclusion(
         root_cause=_LLM_TEXT,

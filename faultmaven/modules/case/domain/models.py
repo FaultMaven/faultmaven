@@ -4179,7 +4179,17 @@ class RootCauseConclusion(BaseModel):
     # ============================================================
     contributing_factors: List[str] = Field(
         default_factory=list,
-        description="Secondary factors that made the problem worse or more likely",
+        description=(
+            "The cause's CO-NECESSARY conditions (#1096): the statements of "
+            "VALIDATED causal nodes that share an M7 AND-set with the chain this "
+            "conclusion mirrors, and are not themselves on it. Engine-derived "
+            "from the graph (``causal_graph.validated_and_conjuncts``) at every "
+            "mint, never authored — a conclusion renders one chain, so without "
+            "this a cause the investigation established as a conjunction would "
+            "be surfaced as its first conjunct alone. The LLM has no schema "
+            "field for it by design (§7.7 single authority: the engine does not "
+            "blend LLM prose into text it renders from the graph)."
+        ),
     )
 
     # ============================================================

@@ -555,7 +555,12 @@ def _transform_resolved(case: Case) -> CaseUIResponse_Resolved:
     # Resolution summary
     key_insights = []
     if case.root_cause_conclusion:
-        # Extract contributing factors as key insights if available
+        # Since #1096 this field is engine-derived: the cause's co-necessary
+        # conditions, read from the graph's AND-sets (it was LLM-only before,
+        # and in practice always empty — the LLM schema never had the field).
+        # Surfaced here as key insights because a condition the problem
+        # required IS the investigation's finding; the [:5] cut is inherited
+        # and holds because an AND-set that wide is not a real differential.
         key_insights = case.root_cause_conclusion.contributing_factors[:5]  # Top 5
 
     resolution_summary = ResolutionSummary(

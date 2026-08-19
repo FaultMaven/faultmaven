@@ -1302,7 +1302,9 @@ class RootCauseConclusion(BaseModel):
 
     contributing_factors: List[str] = Field(
         default_factory=list,
-        description="Secondary factors that made problem worse or enabled it"
+        # Engine-derived (#1096): the VALIDATED nodes co-necessary (M7 AND-set)
+        # with the chain this conclusion mirrors. Never LLM-authored.
+        description="The cause's co-necessary conditions, read from the graph"
     )
 
     determined_at: datetime = Field(

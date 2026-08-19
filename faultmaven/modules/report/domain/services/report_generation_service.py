@@ -669,10 +669,23 @@ class ReportGenerationService:
             if getattr(rcc, "mechanism", None):
                 parts.append(f"**How it produced the symptom:** {rcc.mechanism}\n")
             if getattr(rcc, "contributing_factors", None):
+                # The cause's co-necessary conjuncts (#1096) — engine-derived
+                # from the graph's AND-sets, so the heading states co-necessity
+                # rather than the weaker "contributed to". Without this the
+                # report renders a cause the investigation established as a
+                # conjunction as its first conjunct alone, and a runbook
+                # harvested from it inherits the same half-cause.
+                #
+                # The heading attributes the requirement to PRODUCING THE
+                # PROBLEM, not to the root cause: an AND-set can sit on any rung
+                # of the mirrored chain, and a conjunct co-necessary with an
+                # intermediate is a condition of that mechanism step rather than
+                # of the cause. This wording is what the graph proves at every
+                # depth.
                 # Trailing \n on the bold label so the join produces a
                 # blank line before the list — CommonMark requires this
                 # for the bullets to render as a proper list.
-                parts.append("**Contributing factors:**\n")
+                parts.append("**Producing the problem also required:**\n")
                 for cf in rcc.contributing_factors:
                     parts.append(f"- {cf}")
                 parts.append("")
