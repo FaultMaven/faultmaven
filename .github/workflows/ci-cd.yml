@@ -309,8 +309,15 @@ jobs:
         env:
           # Cloud configuration - optional features enabled (external services mocked)
           SKIP_SERVICE_CHECKS: "true"
+          # OPIK_ENABLED=true keeps the @opik.track decorators applied (the
+          # cloud-shaped import path); OPIK_TRACK_DISABLE=true is the SDK's
+          # own kill switch, so every tracked call is a per-call no-op and no
+          # Opik client is ever built. With "false" here, unit tests calling
+          # DataClassifier().classify() had the SDK shipping span batches to
+          # Comet Cloud (401) from every cloud CI run — the #1121 defect
+          # reproduced inside CI.
           OPIK_ENABLED: "true"
-          OPIK_TRACK_DISABLE: "false"
+          OPIK_TRACK_DISABLE: "true"
           PROMETHEUS_ENABLED: "true"
           TRACING_ENABLED: "true"
           METRICS_ENABLED: "true"
