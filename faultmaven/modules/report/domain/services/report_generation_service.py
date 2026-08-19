@@ -667,8 +667,11 @@ class ReportGenerationService:
             # is not provenance, it is a comment in a database column.
             # Normalized for display (#1097): terminal cases never recompute,
             # so a case resolved before the audit/prose split still carries the
-            # id-bearing audit line in this field. Function-local import, the
-            # same report -> core.investigation precedent as _assurance_note.
+            # id-bearing audit line in this field. Both normalizers come from
+            # the case contracts at module scope — they live beside the model
+            # whose fields they describe, so this carries no import-cycle
+            # constraint (unlike _assurance_note's deferred core.investigation
+            # read, which does).
             established_by = established_by_for_display(
                 getattr(rcc, "established_by", None)
             )

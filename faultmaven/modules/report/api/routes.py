@@ -62,6 +62,9 @@ from faultmaven.modules.case.contracts import (
     ReportStatus,
     ReportType,
 )
+from faultmaven.modules.report.domain.services.report_display import (
+    normalize_stored_report_content,
+)
 from faultmaven.providers.tenancy.base import TenantProvider
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -102,7 +105,11 @@ class ReportResponse(BaseModel):
             case_id=report.case_id,
             report_type=report.report_type.value,
             title=report.title,
-            content=report.content,
+            # Stored reports are served verbatim — a summary is generated
+            # once at the terminal transition and never re-rendered — so
+            # pre-#1097 rows still carry the engine notation that fix
+            # removed from the producers (#1097 follow-up).
+            content=normalize_stored_report_content(report.content),
             format=report.format,
             generation_status=report.generation_status.value,
             generated_at=report.generated_at,
