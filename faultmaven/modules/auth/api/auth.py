@@ -1101,6 +1101,13 @@ async def _resolve_profile_timestamps(
     fallback = (to_json_compatible(current_user.created_at), None)
 
     if user_service is None:
+        # Observable on purpose: a silent degrade here is how a renamed
+        # ``app.state.user_service`` would reproduce #1120 with green tests.
+        logger.warning(
+            "UserService unavailable; /auth/me profile timestamps degrade "
+            "to the token principal's view",
+            extra={"user_id": current_user.user_id},
+        )
         return fallback
 
     try:

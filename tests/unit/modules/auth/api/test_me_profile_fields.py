@@ -15,11 +15,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.infrastructure.persistence.user_repository import User
 from faultmaven.modules.auth.api.auth import (
     _resolve_profile_timestamps,
     get_current_user_profile,
+    router,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
@@ -173,3 +177,33 @@ class TestEndpointWiring:
         # Identity fields still come from the authenticated principal.
         assert response.user_id == _USER_ID
         assert response.username == "faultmavenuserguest"
+
+
+class TestRealDependencyChain:
+    """The stored timestamps must arrive through ``Depends(get_user_service)``
+    reading ``app.state.user_service`` — not through kwargs handed to the
+    handler. The direct-call tests above would stay green if that attribute
+    were renamed or the dependency mistyped, because the ``user_service is
+    None`` branch degrades; this one goes through the real wire, so breaking
+    the wire breaks the test."""
+
+    def test_stored_timestamps_flow_through_app_state(self):
+        app = FastAPI()
+        app.include_router(router, prefix="/api/v1")
+        # Only authentication is overridden — token minting is not the wiring
+        # under test. get_user_service is deliberately NOT overridden: it must
+        # find the service on app.state itself, exactly as main.py wires it.
+        principal = _principal(
+            created_at=datetime(2026, 8, 19, 21, 4, 10, tzinfo=timezone.utc)
+        )
+        app.dependency_overrides[require_authentication] = lambda: principal
+        app.state.user_service = _UserService(_row(_ROW_LAST_LOGIN))
+
+        response = TestClient(app).get("/api/v1/auth/me")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["created_at"] == "2026-02-14T22:45:53Z"
+        assert body["last_login"] == "2026-08-17T21:04:31Z"
+        # The principal's request-time timestamp did NOT leak through.
+        assert body["created_at"] != "2026-08-19T21:04:10Z"
