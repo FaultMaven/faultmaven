@@ -609,11 +609,15 @@ jobs:
             # "correct" the id to whatever the log shows.
             # → vulnerability-exceptions.md "chromadb" (fm#902)
             --ignore-vuln GHSA-f4j7-r4q5-qw2c
-            # lupa sandbox escape — no upstream fix; Lua bodies are module
-            # string constants, no user input reaches them. Staged: OSV's
-            # range stops at 2.6 today, but the doc records the bug observed
-            # in 2.8 ("advisory range may trail releases") — when the range
-            # extends, this must not red the gate for an accepted risk.
+            # lupa sandbox escape — no upstream fix (2.7 and 2.8 are build
+            # and packaging releases); Lua bodies are module string constants,
+            # no user input reaches them. PRE-ARMED, NOT LOAD-BEARING: the
+            # advisory range stops at 2.6 while we pin 2.8, so pip-audit has
+            # nothing to report and this flag currently suppresses nothing.
+            # Keep it anyway — if the range is corrected to cover 2.8, this
+            # must not red the gate on a risk already accepted. Do not delete
+            # it for being inert; see the doc section on why the scanners are
+            # quiet (which is also why lupa has no Dependabot alert to watch).
             # → vulnerability-exceptions.md "lupa"
             --ignore-vuln GHSA-69v7-xpr6-6gjm
           )
