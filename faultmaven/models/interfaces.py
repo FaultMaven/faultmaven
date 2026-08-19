@@ -5,6 +5,9 @@ from typing import TYPE_CHECKING, Any, ContextManager, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import
+    from faultmaven.infrastructure.llm.providers import LLMResponse
+
 
 # Tool interfaces
 class ToolResult(BaseModel):
@@ -182,12 +185,19 @@ class ILLMProvider(ABC):
     """
 
     @abstractmethod
-    async def generate(self, prompt: str, **kwargs) -> str:
-        """Generate text response using the configured LLM provider.
+    async def generate(self, prompt: str, **kwargs) -> "LLMResponse":
+        """Generate a response using the configured LLM provider.
 
         This method sends a prompt to the LLM provider and returns the generated
         response. The implementation handles provider-specific request formatting,
         authentication, error handling, and response parsing.
+
+        Returns an ``LLMResponse``, not a bare string. The annotation said
+        ``str`` for years while every implementation and the router returned the
+        dataclass, which is how callers ended up hedging with
+        ``hasattr(response, "content")`` and why response-level signals had no
+        agreed home. The type is quoted and imported only under TYPE_CHECKING so
+        naming it here adds no runtime import from models into infrastructure.
 
         Args:
             prompt: The input text prompt for generation. Must be non-empty string.
@@ -199,9 +209,12 @@ class ILLMProvider(ABC):
                      - timeout: Request timeout in seconds
 
         Returns:
-            Generated text response from the LLM provider. Response length
-            depends on provider limits and max_tokens parameter. Empty responses
-            indicate generation failure or filtering.
+            ``LLMResponse`` carrying the generated ``content`` plus the
+            call's metadata: token accounting, any ``tool_calls``, and
+            ``stop_reason`` — which says WHY generation stopped and must be
+            consulted before treating ``content`` as a complete answer. A
+            response with ``is_truncated`` set was cut at the output cap and is
+            incomplete regardless of how well-formed it looks.
 
         Raises:
             LLMProviderException: When provider request fails (auth, network, etc.)
@@ -214,8 +227,10 @@ class ILLMProvider(ABC):
 
             >>> provider = OpenAIProvider()
             >>> response = await provider.generate("Explain quantum computing")
-            >>> print(len(response))
+            >>> print(len(response.content))
             1247
+            >>> response.is_truncated
+            False
 
             Advanced generation with parameters:
 
@@ -224,7 +239,7 @@ class ILLMProvider(ABC):
                 temperature=0.1,
                 max_tokens=500
             )
-            >>> "def " in response
+            >>> "def " in response.content
             True
 
         Note:

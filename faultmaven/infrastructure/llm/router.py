@@ -19,7 +19,12 @@ from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.infrastructure.shims import llm_latency, llm_requests, llm_tokens
+from faultmaven.infrastructure.shims import (
+    llm_latency,
+    llm_requests,
+    llm_stop_reasons,
+    llm_tokens,
+)
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
 
@@ -185,6 +190,29 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             )
             if cached_response:
                 self.logger.info("✅ Using cached response")
+                if cached_response.is_truncated:
+                    # UNREACHABLE while the store guard below holds — that
+                    # guard declines to write a response the provider reported
+                    # as cut, this cache is a per-process dict so nothing
+                    # survives a restart, and the store site 100 lines down is
+                    # the only writer. Kept anyway, as a backstop rather than a
+                    # live path, and this comment says which it is because the
+                    # earlier version claimed the opposite and contradicted the
+                    # store site.
+                    #
+                    # It earns its place on cost: relaxing that guard, or adding
+                    # a second writer (``store`` is public), reintroduces a
+                    # failure that is both silent and permanent — a cut body
+                    # served as an answer for the life of the process, with no
+                    # TTL and no eviction API to clear it. One branch is a cheap
+                    # price for that not being silent (#1094). Exercised by
+                    # storing a truncated entry directly, which is exactly the
+                    # shape a future writer would take.
+                    self.logger.warning(
+                        f"⚠️ Serving a TRUNCATED response from cache "
+                        f"(provider={cached_response.provider} "
+                        f"model={cached_response.model})"
+                    )
                 cached_response.sanitized_prompt = sanitized_prompt
                 if self.settings.observability.opik_log_raw_prompts:
                     cached_response.raw_prompt = prompt
@@ -247,17 +275,37 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             #
             # ``bypass_cache`` suppresses the *lookup* only — this write still
             # runs, and it must. A caller sets the flag precisely because the
-            # entry already under this key is unusable: the truncated body the
-            # first attempt stored before the caller discovered it would not
+            # entry already under this key is unusable: a truncated body an
+            # earlier attempt stored before the caller discovered it would not
             # parse. max_tokens is not part of the cache key, so the retry lands
             # on that same key, and the cache has no eviction API — overwriting
             # it with the complete response is the only thing that stops the
             # poisoned entry being served to every later identical call (#513).
+            #
+            # A response the provider SAYS it cut is never stored at all
+            # (#1094). The cache exists to serve a good answer a second time,
+            # and an incomplete one is never worth replaying: storing it poisons
+            # the key until something happens to overwrite it, and — because
+            # max_tokens is not part of the key — it is what a retry at a bigger
+            # cap would be served instead of reaching the provider, silently
+            # turning "retry with more room" into "return the same cut body".
+            # Declining the write closes that structurally, for every caller
+            # present and future, with no flag to remember to pass.
+            #
+            # This does NOT make ``bypass_cache`` redundant, and the two cover
+            # disjoint halves. A provider that reports no stop reason
+            # (HuggingFace, or any parse gap) can hand back a cut body with
+            # ``is_truncated`` False: invisible here, so it IS stored, and the
+            # engine's parse-time positional test is what catches it — with
+            # ``bypass_cache`` the only thing stopping the retry being answered
+            # from that entry. Conversely the truncation helper never retries on
+            # UNKNOWN, so it can never reach that half.
             if (
                 model
                 and not messages
                 and sanitized_prompt
                 and response.confidence >= self.confidence_threshold
+                and not response.is_truncated
             ):
                 self.cache.store(sanitized_prompt, model, response, case_id=case_id)
 
@@ -275,6 +323,26 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 sanitized_prompt=sanitized_prompt,
                 sanitized_messages=sanitized_messages,
             )
+
+            # Truncation is a normal-looking success at every other layer: HTTP
+            # 200, a body, a token count. This is the one chokepoint every
+            # routed call passes through, so it is where the cut becomes
+            # observable — one log line and one metric, from which the real
+            # truncation rate can be read rather than inferred from token
+            # counts landing suspiciously exactly on a cap (#1094).
+            if response.is_truncated:
+                self.logger.warning(
+                    f"⚠️ LLM response truncated at the output cap "
+                    f"(provider={response.provider} model={response.model} "
+                    f"max_tokens={max_tokens} "
+                    f"output_tokens={response.output_tokens or response.tokens_used})"
+                    f" — the body is INCOMPLETE"
+                )
+            llm_stop_reasons.labels(
+                provider=response.provider,
+                model=response.model,
+                stop_reason=response.stop_reason.value,
+            ).inc()
 
             # Prometheus + SLA accounting (no-ops when metrics are disabled)
             llm_requests.labels(

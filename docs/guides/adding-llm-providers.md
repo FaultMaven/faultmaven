@@ -608,6 +608,10 @@ class CohereProvider(BaseLLMProvider, ILLMProvider):
                 content = data["generations"][0]["text"]
                 content = self._validate_response_content(content)
 
+                # Normalise the provider's stop reason. REQUIRED — see
+                # "Reporting why generation stopped" below.
+                stop_reason = normalize_stop_reason(data.get("finish_reason"))
+
                 # Calculate usage metrics
                 tokens_used = data.get("meta", {}).get("billed_units", {}).get("input_tokens", 0)
                 tokens_used += data.get("meta", {}).get("billed_units", {}).get("output_tokens", 0)
@@ -621,8 +625,39 @@ class CohereProvider(BaseLLMProvider, ILLMProvider):
                     model=effective_model,
                     tokens_used=tokens_used,
                     response_time_ms=response_time,
+                    stop_reason=stop_reason,
                 )
 ```
+
+### Reporting why generation stopped
+
+Every provider API says why it stopped generating, and each says it
+differently: OpenAI `finish_reason: "length"`, Anthropic `stop_reason:
+"max_tokens"`, Gemini `finishReason: "MAX_TOKENS"`, Cohere a top-level
+`finish_reason: "MAX_TOKENS"`, Ollama `done_reason: "length"`, llama.cpp a
+`stopped_limit` boolean. Map it with `normalize_stop_reason()` from
+`.base` and pass the result as `stop_reason`.
+
+This is not optional bookkeeping. A response cut at the output cap arrives as
+an ordinary HTTP 200 with a body and a token count; without this field it is
+indistinguishable from a complete one, and downstream it gets cited,
+persisted, and reasoned over as if it were whole (#1094). `LLMResponse.is_truncated`
+is what consumers read, and the shared
+`infrastructure/llm/truncation.generate_with_truncation_retry` is what most of
+them do about it.
+
+Three rules:
+
+- **Leave it `UNKNOWN` when the API tells you nothing.** Do not map silence to
+  `STOP`. `UNKNOWN` is a real state meaning "no signal", and it is what keeps a
+  parse gap from silently reading as "finished fine".
+- **Do not map a safety block to `MAX_TOKENS`.** They both cut the body short,
+  but retry-bigger is the right recovery for one and pure waste for the other.
+  `CONTENT_FILTER` exists for this.
+- **Never substitute a placeholder string into `content`.** Writing
+  `"[Response truncated...]"` where an answer should be pushes the problem into
+  text that then has to be string-matched back out somewhere else. Report the
+  reason and return whatever content there is, even if that is `""`.
 
 ### Step 2: Register with Schema and Container
 
@@ -869,7 +904,7 @@ service = AgentService(
 
 **Required Methods Summary**:
 
-- ✅ `async def generate()` - Core LLM generation (returns `LLMResponse`)
+- ✅ `async def generate()` - Core LLM generation (returns `LLMResponse`, with `stop_reason` populated)
 - ✅ `def is_available()` - Configuration validation (returns `bool`)
 - ✅ `def get_supported_models()` - Model listing (returns `List[str]`)
 - ✅ `property provider_name` - Unique identifier (returns `str`)

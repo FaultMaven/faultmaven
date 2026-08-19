@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 from faultmaven.modules.agent.tools.document_qa_tool import DocumentQATool
 from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
     CaseEvidenceConfig,
@@ -35,12 +36,31 @@ def _make_chunks(scores):
     ]
 
 
+def _llm_response(content: str, stop_reason: StopReason = StopReason.STOP):
+    """Real ``LLMResponse`` rather than a ``MagicMock``.
+
+    A MagicMock answers every attribute with a truthy Mock, so the moment the
+    tool started consulting ``is_truncated`` (#1094) the stand-in silently
+    claimed every synthesis had been cut off. A fake that cannot say "no" is
+    not a fake, it is a defect generator.
+    """
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="test",
+        model="test-model",
+        tokens_used=100,
+        response_time_ms=10,
+        stop_reason=stop_reason,
+    )
+
+
 def _make_tool(kb_config, chunks):
     vector_store = MagicMock()
     vector_store.hybrid_search = AsyncMock(return_value=chunks)
     vector_store.search = AsyncMock(return_value=chunks)
     llm_router = MagicMock()
-    llm_router.route = AsyncMock(return_value=MagicMock(content="synthesized answer"))
+    llm_router.route = AsyncMock(return_value=_llm_response("synthesized answer"))
     return DocumentQATool(vector_store, llm_router, kb_config), llm_router
 
 

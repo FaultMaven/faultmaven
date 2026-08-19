@@ -513,6 +513,19 @@ class DocumentPreprocessor:
                 response_format={"type": "json_object"},
             )
 
+            if response.is_truncated:
+                # Fail-open is right here — triage is advisory and a document
+                # that cannot be classified should still be converted — but the
+                # reason must not be silent. A 256-token budget for a three-field
+                # JSON verdict should never run out, so a cut here means the
+                # model is writing prose instead of the verdict, and that is
+                # worth seeing rather than swallowing as a parse error (#1094).
+                logger.warning(
+                    "Content triage response truncated at the 256-token cap; "
+                    "proceeding without a triage verdict"
+                )
+                return None
+
             import json
 
             result = json.loads(response.content)
