@@ -340,18 +340,31 @@ third is direct:
 | `LLMResponse.stop_reason` — the provider says so | Any provider reports `MAX_TOKENS` | Only providers that supply no signal at all (`UNKNOWN`) |
 
 The first two are side effects; the third is the fact. All nine providers now
-populate `stop_reason`, and the engine consults it before parsing, so the
-`max_tokens` ladder engages on a cut that would previously have parsed cleanly
-and been applied to the case — and been cached at full confidence, with no
-eviction. `UNKNOWN` is a distinct state and never triggers the ladder: a
-provider that reports nothing is not evidence of a cut.
+populate `stop_reason`.
+
+The engine consults it **after** attempting the parse, not before. A cut only
+matters if it cost us the answer, and on prompt-only / BEST_EFFORT modes the
+answer is not the whole body — those models routinely emit a complete ```json
+block and then keep talking, so a cap landing in the trailing prose leaves
+valid JSON. Gating before the parse would discard that response, spend a second
+full-size generation, and on a second trailing-off hand the turn to the
+minimal-prompt degrade, losing the prompt context as well. So the ladder
+engages only once something has actually failed — at which point the stop
+reason rescues the two shapes the positional test declines: a body both cut and
+malformed mid-document, and a `ValidationError` from a body that parsed but
+lost a required field to the cut.
+
+`UNKNOWN` is a distinct state and never triggers the ladder: a provider that
+reports nothing is not evidence of a cut.
 
 Outside the engine, consumers use
 `infrastructure/llm/truncation.generate_with_truncation_retry` — call, and if
 the provider says it ran out, double the cap once and retry. What to do when
 the retry is *also* cut is per consumer, and the split is deliberate: read
 paths (KB/evidence QA synthesis, tier-2 deep analysis) return the partial with
-an explicit truncation notice appended, because refusing would destroy real
+an explicit truncation notice **prefixed** — head-first because the relays
+downstream trim to a character cap by keeping the head, so a tail notice is
+dropped exactly when the answer is longest — because refusing would destroy real
 value; write paths (runbook conversion) refuse, because a half-procedure
 persisted to the knowledge base and later retrieved as authoritative is worse
 than no runbook. Case titles fall back to the placeholder without retrying —

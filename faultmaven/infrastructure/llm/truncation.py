@@ -33,25 +33,38 @@ from .providers import LLMResponse
 
 logger = logging.getLogger(__name__)
 
-# Appended to prose handed onward after a cut we could not recover from.
+# Prefixed to prose handed onward after a cut we could not recover from.
 #
 # This is a NOTICE bolted onto real content, not a placeholder that REPLACES
 # it — the substitute-a-sentinel-string channel is the anti-pattern #1094
 # retired, and reintroducing it here would undo that. The wording is aimed at
 # an LLM reader as much as a human one: several consumers feed this text
 # straight back into a model that must not treat it as a complete answer.
+#
+# It goes at the HEAD, and that is load-bearing rather than stylistic. Every
+# consumer that annotates feeds a relay which trims to a character cap by
+# KEEPING THE HEAD — ``MilestoneEngine._format_tool_result`` gives a kb_qa
+# answer 7410 characters and cuts the rest, and ``_truncate_tool_result`` does
+# the same for tier-2. A response that filled a 2000-token cap is roughly
+# 7800-8200 characters, so a notice appended at the tail lands squarely in the
+# dropped region — dropped, that is, in exactly the case where the answer is
+# longest and its incompleteness matters most. At the head it always survives.
 TRUNCATION_NOTICE = (
-    "\n\n[TRUNCATED: this response hit the model's output limit and stops "
+    "[TRUNCATED: the answer below hit the model's output limit and stops "
     "mid-answer. Treat it as incomplete — do not read the absence of further "
     "content as an absence of further information.]"
 )
 
 
 def annotate_if_truncated(text: str, response: LLMResponse) -> str:
-    """Append :data:`TRUNCATION_NOTICE` to *text* when *response* was cut."""
+    """Prefix :data:`TRUNCATION_NOTICE` to *text* when *response* was cut.
+
+    Head-first, so the notice survives the head-keeping character caps every
+    consumer of this text sits behind. See the constant for the arithmetic.
+    """
     if not response.is_truncated:
         return text
-    return f"{text.rstrip()}{TRUNCATION_NOTICE}"
+    return f"{TRUNCATION_NOTICE}\n\n{text.lstrip()}"
 
 
 async def generate_with_truncation_retry(

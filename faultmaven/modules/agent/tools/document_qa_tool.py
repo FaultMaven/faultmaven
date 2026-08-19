@@ -195,6 +195,11 @@ class DocumentQATool:
                 "sources": [],
                 "chunk_count": 0,
                 "confidence": 0.0,
+                # Every return from this method carries the same keys. A path
+                # that omits `truncated` makes the caller's `result["truncated"]`
+                # a KeyError on exactly the quiet paths — an empty KB, a weak
+                # match — rather than reporting the honest False.
+                "truncated": False,
             }
 
         logger.debug(f"Retrieved {len(chunks)} chunks")
@@ -242,6 +247,7 @@ class DocumentQATool:
                     "sources": [],
                     "chunk_count": 0,
                     "confidence": 0.0,
+                    "truncated": False,
                 }
 
         # Step 3: Build context using config (KB-specific metadata formatting)

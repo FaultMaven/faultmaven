@@ -212,3 +212,17 @@ class TestTruncatedSynthesis:
 
         assert llm_router.route.call_count == 1
         assert result["truncated"] is False
+
+    async def test_every_return_path_reports_the_flag(self):
+        """Uniform shape, so `result["truncated"]` is never a KeyError.
+
+        The quiet paths — an empty KB, a match below the relevance floor — do
+        not reach synthesis, and omitting the key there would make a caller
+        blow up precisely when nothing interesting happened.
+        """
+        tool, llm_router = _make_tool([])
+
+        result = await tool.answer_question("why", scope_id="u1", k=5)
+
+        assert result["truncated"] is False
+        llm_router.route.assert_not_called()

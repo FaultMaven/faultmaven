@@ -7911,26 +7911,25 @@ class MilestoneEngine:
                     raise _on_truncation(gen_exc) from None
                 raise
 
-            # Typed truncation signal, ahead of any parsing.
+            # The provider's own truncation signal, kept for the parse block
+            # below rather than acted on here.
             #
-            # The two triggers below it are both indirect: a provider that
-            # happens to RAISE (only Gemini does), and a JSON body that happens
-            # to fail to parse. Neither fires for a provider that returns HTTP
-            # 200 with a cut body — which is all the others. Now that every
-            # provider reports its stop reason, the ladder engages on the fact
-            # itself rather than on its side effects (#1094). A cut body that
-            # coincidentally parses as valid JSON — the case that used to slip
-            # through entirely, and get cached at full confidence — is caught
-            # here too.
-            if not isinstance(response, str) and getattr(
+            # Deliberately NOT a pre-parse gate. A cut is only a problem if it
+            # cost us the ANSWER, and on the prompt-only/BEST_EFFORT modes the
+            # answer is not the whole body: those models routinely emit a
+            # complete ```json block and then keep talking, which is why the
+            # extractor below handles "Some text\n```json\n{...}\n```\nMore
+            # text". When the cap lands in that trailing prose the JSON is
+            # whole and validates, and raising on the stop reason alone would
+            # discard a good response, spend a second full-size generation, and
+            # on a second trailing-off hand the turn to the minimal-prompt
+            # degrade — throwing away the prompt context too.
+            #
+            # So: try to parse first, and let the stop reason decide only once
+            # something has actually failed.
+            provider_reported_cut = not isinstance(response, str) and getattr(
                 response, "is_truncated", False
-            ):
-                raise _on_truncation(
-                    RuntimeError(
-                        f"provider {getattr(response, 'provider', '?')} reported "
-                        f"stop_reason=max_tokens"
-                    )
-                ) from None
+            )
 
             content = response if isinstance(response, str) else response.content
 
@@ -8024,6 +8023,25 @@ class MilestoneEngine:
                 # is a ValidationError and correctly falls through untouched.
                 if is_truncated_json_error(validation_error, content):
                     raise _on_truncation(validation_error) from None
+
+                # The provider said it hit the cap and the body did not survive
+                # parsing. The positional test above misses two shapes of that:
+                # a body cut in a way that leaves it malformed in the MIDDLE
+                # (correctly not truncation on its own — a bigger cap cannot fix
+                # a stray token — but with the provider confirming a cut, more
+                # room is the right remedy), and a ValidationError from a body
+                # that parsed but lost a required field to the cut, which
+                # ``is_truncated_json_error`` deliberately declines to claim
+                # because it cannot tell that case from a schema violation.
+                # The stop reason can (#1094).
+                if provider_reported_cut:
+                    raise _on_truncation(
+                        RuntimeError(
+                            f"provider {getattr(response, 'provider', '?')} "
+                            f"reported stop_reason=max_tokens and the body did "
+                            f"not parse: {validation_error}"
+                        )
+                    ) from None
                 # Re-raise to trigger retry
                 raise
 

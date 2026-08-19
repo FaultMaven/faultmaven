@@ -106,12 +106,12 @@ class TestRetryPolicy:
 
 
 class TestAnnotation:
-    def test_notice_appended_only_when_truncated(self):
+    def test_notice_prepended_only_when_truncated(self):
         cut = annotate_if_truncated("half an ans", _response(StopReason.MAX_TOKENS))
         whole = annotate_if_truncated("a full answer", _response(StopReason.STOP))
 
-        assert cut.endswith(TRUNCATION_NOTICE)
-        assert cut.startswith("half an ans")
+        assert cut.startswith(TRUNCATION_NOTICE)
+        assert "half an ans" in cut
         assert whole == "a full answer"
 
     def test_notice_annotates_rather_than_replaces(self):
@@ -126,3 +126,40 @@ class TestAnnotation:
         )
 
         assert "the real partial text" in cut
+
+    def test_the_notice_survives_a_head_keeping_character_cap(self):
+        """Placement is load-bearing, not stylistic.
+
+        Every consumer that annotates feeds a relay which trims to a character
+        cap by KEEPING THE HEAD. A truncated synthesis by definition filled its
+        token budget, so it lands well over that cap — meaning a notice
+        appended at the TAIL is dropped in exactly the case where the answer is
+        longest and its incompleteness matters most, leaving only the relay's
+        own generic marker, which cannot distinguish "the relay trimmed this"
+        from "the model was cut off".
+
+        Sized against the real budget rather than a made-up number, so a change
+        to the wrapper or the cap re-checks this rather than silently
+        invalidating it.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            KB_QA_RELAY_PREFIX,
+            KB_QA_RELAY_SUFFIX,
+            MilestoneEngine,
+        )
+
+        budget = (
+            MilestoneEngine.TOOL_RESULT_MAX_CHARS
+            - len(KB_QA_RELAY_PREFIX)
+            - len(KB_QA_RELAY_SUFFIX)
+        )
+        # A synthesis that actually filled a 2000-token cap, at the 3.9-4.1
+        # chars/token measured on real KB answers.
+        oversized = "A" * 7900
+        assert len(oversized) > budget, "the premise of this test stopped holding"
+
+        annotated = annotate_if_truncated(
+            oversized, _response(StopReason.MAX_TOKENS, oversized)
+        )
+
+        assert TRUNCATION_NOTICE in annotated[:budget]
