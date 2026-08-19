@@ -736,7 +736,19 @@ class GeminiProvider(BaseLLMProvider):
         defs = schema.pop("$defs", None) or {}
 
         def _strip_unsupported(node: dict) -> None:
-            """Remove fields that Gemini does not support."""
+            """Remove fields that Gemini does not support.
+
+            ``const`` is dropped like the rest, but its *constraint* is not:
+            it is rewritten as a one-member ``enum``, which Gemini does
+            accept. Without that, a single-value ``Literal`` reaches the
+            model as a bare ``{"type": "string"}`` and nothing enforces the
+            value. Under pydantic < 2.10 that was masked — a single-value
+            ``Literal`` emitted ``const`` AND a redundant ``enum: [x]``, so
+            dropping ``const`` left the enum behind. Pydantic >= 2.10 emits
+            ``const`` alone, so the rewrite is what carries the constraint.
+            """
+            if "const" in node and "enum" not in node:
+                node["enum"] = [node["const"]]
             for field in GeminiProvider._GEMINI_UNSUPPORTED_FIELDS:
                 node.pop(field, None)
 

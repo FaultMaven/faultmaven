@@ -620,8 +620,14 @@ jobs:
           # Glob-built so a future lockfile cannot silently escape the audit.
           REQS=()
           for f in requirements/*.txt; do
-            # An unmatched glob leaves the literal pattern; skipping
-            # non-files is what lets the empty-list guard below actually fire.
+            # An unmatched glob leaves the literal pattern as one iteration.
+            # With a single list that would make REQS non-empty and the guard
+            # below silent, so the -f test is what keeps it able to fire. (The
+            # two-list version this replaced happened to survive that case for
+            # an unrelated reason: the literal fell into the non-cloud arm, so
+            # the CLOUD side was empty and its guard tripped. Neither version
+            # was ever fail-open — this one just does not depend on the
+            # accident.)
             [ -f "$f" ] || continue
             REQS+=(-r "$f")
           done

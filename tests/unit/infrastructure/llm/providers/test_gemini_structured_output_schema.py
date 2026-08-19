@@ -16,7 +16,7 @@ the fix reuses that helper on the ``response_schema`` path. These tests pin:
      ``response_schema`` (guards the one-line fix, not just the helper).
 """
 
-from typing import List, Optional, Union
+from typing import List, Literal, Optional, Union
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -112,6 +112,77 @@ def test_resolve_refs_strips_all_unsupported_keys_from_pydantic_schema(provider)
     # Optional fields became nullable (not anyOf).
     assert resolved["properties"]["note"].get("nullable") is True
     assert resolved["properties"]["maybe_inner"].get("nullable") is True
+
+
+@pytest.mark.unit
+def test_single_value_literal_keeps_its_constraint(provider):
+    """A one-member ``Literal`` must still constrain the model's output.
+
+    Gemini rejects ``const``, so the sanitizer drops it — but dropping it
+    alone throws the constraint away. Pydantic < 2.10 hid that: a
+    single-value ``Literal`` emitted ``const`` AND a redundant
+    ``enum: [x]``, so the enum survived the strip. Pydantic >= 2.10 emits
+    ``const`` alone, which is why the sanitizer rewrites it rather than
+    merely removing it.
+    """
+
+    class _Tagged(BaseModel):
+        state: Literal["inquiry"]
+        level: Literal["low", "high"]
+        free: str
+
+    raw = _Tagged.model_json_schema()
+    # Sanity: this pydantic really does emit a bare const for the one-member
+    # Literal. If a future pydantic reinstates the redundant enum, this
+    # assertion fails loudly rather than making the test vacuous.
+    assert raw["properties"]["state"].get("const") == "inquiry"
+    assert "enum" not in raw["properties"]["state"]
+
+    resolved = provider._resolve_refs_for_gemini(raw)
+
+    _assert_no_unsupported_keys(resolved)
+    # The constraint survives, expressed the way Gemini accepts it.
+    assert resolved["properties"]["state"]["enum"] == ["inquiry"]
+    assert "const" not in resolved["properties"]["state"]
+    # A multi-member Literal is untouched, and a plain string gains nothing.
+    assert resolved["properties"]["level"]["enum"] == ["low", "high"]
+    assert "enum" not in resolved["properties"]["free"]
+
+
+@pytest.mark.unit
+def test_const_rewrite_does_not_override_an_existing_enum(provider):
+    """Where both keys are present, the enum is authoritative."""
+    resolved = provider._resolve_refs_for_gemini(
+        {
+            "type": "object",
+            "properties": {
+                "x": {"type": "string", "const": "a", "enum": ["a", "b"]},
+            },
+        }
+    )
+
+    assert resolved["properties"]["x"]["enum"] == ["a", "b"]
+    assert "const" not in resolved["properties"]["x"]
+
+
+@pytest.mark.unit
+def test_nested_single_value_literal_keeps_its_constraint(provider):
+    """The rewrite applies at every depth, not just at the top level."""
+
+    class _Leaf(BaseModel):
+        kind: Literal["leaf"]
+
+    class _Root(BaseModel):
+        leaf: _Leaf
+        leaves: List[_Leaf]
+
+    resolved = provider._resolve_refs_for_gemini(_Root.model_json_schema())
+
+    _assert_no_unsupported_keys(resolved)
+    assert resolved["properties"]["leaf"]["properties"]["kind"]["enum"] == ["leaf"]
+    assert resolved["properties"]["leaves"]["items"]["properties"]["kind"]["enum"] == [
+        "leaf"
+    ]
 
 
 @pytest.mark.unit
