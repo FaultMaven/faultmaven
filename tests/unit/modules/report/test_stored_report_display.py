@@ -8,10 +8,13 @@ Dashboard's Report tab kept showing the engine notation on every case resolved
 before the fix — including the case the issue was filed on.
 """
 
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
 import pytest
 
-from faultmaven.modules.case.contracts import CONFIRMED_ESTABLISHED_BY
-from faultmaven.modules.report.domain.services.report_display import (
+from faultmaven.modules.case.contracts import (
+    CONFIRMED_ESTABLISHED_BY,
     normalize_stored_report_content,
 )
 
@@ -85,22 +88,98 @@ def test_empty_and_missing_content_pass_through():
     assert normalize_stored_report_content("") == ""
 
 
-def test_the_read_path_applies_it():
-    """All three report read endpoints funnel through ReportResponse.from_domain."""
-    from faultmaven.modules.case.domain.owned_models.report import (
-        CaseReport,
-        ReportStatus,
-        ReportType,
-    )
-    from faultmaven.modules.report.api.routes import ReportResponse
+class _Row:
+    """The stored columns ``_row_to_report`` reads, duck-typed."""
 
-    report = CaseReport(
+    report_id = "rep_1"
+    case_id = "case_eb44251de48f"
+    report_type = "resolution_summary"
+    title = "Resolution Summary"
+    content = _LEGACY_REPORT
+    format = "markdown"
+    generation_status = "completed"
+    generation_time_ms = 0
+    version = 1
+    is_current = True
+    linked_to_closure = False
+    generated_by = "engine"
+    generated_at = datetime(2026, 8, 19, tzinfo=timezone.utc)
+    updated_at = None
+    report_metadata = None
+    metadata = None
+
+
+@pytest.mark.parametrize(
+    "repo_module",
+    [
+        "faultmaven.modules.case.infrastructure.sqlite_case_repository",
+        "faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository",
+    ],
+)
+def test_every_repository_normalizes_where_a_row_becomes_a_report(repo_module):
+    """The boundary, not the presentation site.
+
+    Applied per-reader this is a discipline every future consumer must opt into,
+    and the first attempt had already missed one — the report DOWNLOAD endpoint,
+    in a different module, served the raw column while the Report tab was clean.
+    Applied here it is a property of any report loaded from storage, which is
+    what makes the download path correct without knowing about it.
+    """
+    import importlib
+
+    module = importlib.import_module(repo_module)
+    repo_cls = next(
+        obj
+        for name, obj in vars(module).items()
+        if name.endswith("CaseRepository") and hasattr(obj, "_row_to_report")
+    )
+
+    report = repo_cls._row_to_report(repo_cls.__new__(repo_cls), _Row())
+
+    assert "ev_a9f662e1c86f" not in report.content
+    assert "gone⇒gone" not in report.content
+    assert "→ the problem" not in report.content
+    assert CONFIRMED_ESTABLISHED_BY in report.content
+
+
+@pytest.mark.asyncio
+async def test_the_download_endpoint_serves_normalized_bytes():
+    """The surface the first attempt missed, and the worse one to leave leaking:
+    a download is the copy most likely to leave the product — attached to a
+    ticket, pasted into a postmortem — and unlike the tab it keeps its content
+    indefinitely.
+
+    Driven through the endpoint with a repository that builds its report the
+    real way (``_row_to_report``), so this asserts the BYTES a user receives
+    rather than that some function was called.
+    """
+    from unittest.mock import AsyncMock
+
+    from faultmaven.modules.case.api.routes import download_case_report
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        SQLiteCaseRepository,
+    )
+
+    report = SQLiteCaseRepository._row_to_report(
+        SQLiteCaseRepository.__new__(SQLiteCaseRepository), _Row()
+    )
+
+    case_service = AsyncMock()
+    case_service.get_case = AsyncMock(return_value=object())
+    case_repository = AsyncMock()
+    case_repository.get_report = AsyncMock(return_value=report)
+    user = SimpleNamespace(user_id="u")
+
+    response = await download_case_report(
         case_id="case_eb44251de48f",
-        report_type=ReportType.RESOLUTION_SUMMARY,
-        title="Resolution Summary",
-        content=_LEGACY_REPORT,
-        generation_status=ReportStatus.COMPLETED,
-        generation_time_ms=0,
+        report_id="rep_1",
+        format="markdown",
+        case_service=case_service,
+        case_repository=case_repository,
+        current_user=user,
     )
 
-    assert "ev_a9f662e1c86f" not in ReportResponse.from_domain(report).content
+    body = response.body.decode("utf-8")
+    for leaked in ("ev_a9f662e1c86f", "cn_984e2337cbda", "gone⇒gone", "→ the problem"):
+        assert leaked not in body
+    assert CONFIRMED_ESTABLISHED_BY in body

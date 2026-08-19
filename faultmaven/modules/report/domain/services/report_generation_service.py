@@ -676,6 +676,13 @@ class ReportGenerationService:
                 getattr(rcc, "established_by", None)
             )
             if established_by:
+                # LOAD-BEARING WORDING. This label and the mechanism one below
+                # are what `normalize_stored_report_content` anchors on to
+                # repair reports written before #1097 — stored summaries are
+                # served as-is, never re-rendered. Changing either string
+                # silently stops those rows being normalized, with nothing
+                # failing to say so. Change both together, or accept that
+                # pre-#1097 reports go back to showing engine notation.
                 parts.append(f"_Established by: {established_by}._\n")
             mechanism = mechanism_for_display(getattr(rcc, "mechanism", None))
             if mechanism:
