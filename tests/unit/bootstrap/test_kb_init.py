@@ -17,6 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from faultmaven.bootstrap import kb_init
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    chunk_stamp_identity,
+)
 
 RUNBOOK_MD = """---
 id: example-runbook
@@ -190,6 +193,8 @@ async def test_bootstrap_skips_unchanged_runbook(tmp_path: Path):
 
     existing = MagicMock()
     existing.content = RUNBOOK_MD  # identical to the pack's runbook content
+    # ...and stamped by this code, which is the other half of "unchanged".
+    existing.knowledge_metadata = {"chunk_stamp": chunk_stamp_identity()}
 
     result = await kb_init.bootstrap_kb(
         knowledge_service=knowledge_service,
@@ -252,7 +257,8 @@ async def test_bootstrap_re_ingests_on_causes_change_with_unchanged_markdown(
     existing = MagicMock()
     existing.content = RUNBOOK_MD  # markdown unchanged → content hash matches
     existing.knowledge_metadata = {
-        "causes": [{"cause_letter": "A", "cause_name": "OLD cause"}]
+        "causes": [{"cause_letter": "A", "cause_name": "OLD cause"}],
+        "chunk_stamp": chunk_stamp_identity(),
     }
 
     result = await kb_init.bootstrap_kb(
@@ -279,9 +285,23 @@ async def test_bootstrap_re_ingests_on_causes_change_with_unchanged_markdown(
 # Parameterising by the STORED SHAPE is the point; a dict-only fixture asserts a
 # shape the production writer never produces.
 CAUSES_RECORD = [{"cause_letter": "A", "cause_name": "Same cause"}]
+
+# fm#1108 added a THIRD idempotency axis beside content hash and causes: the
+# identity of the chunk stamp (schema version + cause-heading grammar) the
+# chunks were written with. A row carrying no stamp — or a stale one — is not
+# "unchanged", it is content whose stored join key no longer means what it says,
+# so it must re-ingest. These fixtures therefore carry the CURRENT identity to
+# keep meaning "already ingested by this code".
+CURRENT_STAMP = chunk_stamp_identity()
 METADATA_SHAPES = [
-    pytest.param({"causes": CAUSES_RECORD}, id="postgresql-jsonb-dict"),
-    pytest.param(json.dumps({"causes": CAUSES_RECORD}), id="sqlite-text-json-string"),
+    pytest.param(
+        {"causes": CAUSES_RECORD, "chunk_stamp": CURRENT_STAMP},
+        id="postgresql-jsonb-dict",
+    ),
+    pytest.param(
+        json.dumps({"causes": CAUSES_RECORD, "chunk_stamp": CURRENT_STAMP}),
+        id="sqlite-text-json-string",
+    ),
 ]
 
 
@@ -322,11 +342,19 @@ async def test_bootstrap_skips_when_causes_match_in_either_metadata_shape(
     "stored_metadata",
     [
         pytest.param(
-            {"causes": [{"cause_letter": "A", "cause_name": "OLD cause"}]},
+            {
+                "causes": [{"cause_letter": "A", "cause_name": "OLD cause"}],
+                "chunk_stamp": CURRENT_STAMP,
+            },
             id="postgresql-jsonb-dict",
         ),
         pytest.param(
-            json.dumps({"causes": [{"cause_letter": "A", "cause_name": "OLD cause"}]}),
+            json.dumps(
+                {
+                    "causes": [{"cause_letter": "A", "cause_name": "OLD cause"}],
+                    "chunk_stamp": CURRENT_STAMP,
+                }
+            ),
             id="sqlite-text-json-string",
         ),
     ],
@@ -1569,3 +1597,318 @@ def test_parse_json_dict_handles_dict_and_str_inputs():
     assert repo._parse_json_dict(None) is None
     assert repo._parse_json_dict("") is None
     assert repo._parse_json_dict("[1, 2]") is None  # non-dict JSON → None
+
+
+# ---------------------------------------------------------------------------
+# fm#1108: the chunk stamp is a third idempotency axis
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stored_stamp",
+    [
+        pytest.param(None, id="never-stamped-predates-1108"),
+        pytest.param("0000000000000000", id="stale-stamp-grammar-or-schema-moved"),
+    ],
+)
+async def test_bootstrap_re_ingests_when_the_chunk_stamp_is_absent_or_stale(
+    tmp_path: Path, stored_stamp
+):
+    """Content and causes both unchanged, and it STILL re-ingests.
+
+    This is the lever that makes fm#1108 take effect instead of waiting. The
+    seeder's join key now lives in chunk metadata, stamped by a specific schema
+    and cause-heading grammar; a row written before that, or under a grammar
+    since edited, holds stamps that no longer mean what they say. Neither fact
+    is in the content hash — the grammar lives in code — so without this axis a
+    grammar change would leave every stored stamp quietly wrong, which is the
+    exact hazard fm#1108 exists to close.
+
+    Cheap by construction: pack re-ingest is prechunked, so it costs no
+    embedding.
+    """
+    pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+    knowledge_service._vector_store = MagicMock()
+    knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+    stored = {"causes": CAUSES_RECORD}
+    if stored_stamp is not None:
+        stored["chunk_stamp"] = stored_stamp
+
+    existing = MagicMock()
+    existing.content = RUNBOOK_MD  # content hash matches
+    existing.knowledge_metadata = stored  # causes match too
+
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=existing),
+        organization_id="org-test",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+
+    assert result.ingested == ["global/example.md"]
+    assert result.skipped_unchanged == []
+    knowledge_service._vector_store.delete_documents_by_parent_id.assert_awaited()
+
+
+def test_the_stamp_identity_tracks_the_cause_heading_grammar():
+    """The identity must be DERIVED from the grammar, not a constant someone
+    remembers to bump. ``CAUSE_HEADING_RE`` is a manual mirror of kb-toolkit's
+    and is expected to change; a discipline-based bump is exactly the kind of
+    step that gets skipped, and skipping it is silent."""
+    import re
+
+    from faultmaven.modules.knowledge.domain.services import runbook_grammar as g
+
+    before = chunk_stamp_identity()
+    saved = g.CAUSE_HEADING_RE
+    try:
+        g.CAUSE_HEADING_RE = re.compile(r"^### Cause ([A-Z]+):\s*(.+?)\s*$", re.M)
+        assert chunk_stamp_identity() != before
+    finally:
+        g.CAUSE_HEADING_RE = saved
+    assert chunk_stamp_identity() == before, "identity must be stable otherwise"
+
+
+@pytest.mark.asyncio
+async def test_a_stamp_change_does_not_republish_an_unpublished_runbook():
+    """The stamp axis must not undo an operator's unpublish.
+
+    ``delete_document`` retires a built-in by dropping its VECTORS — retrieval
+    ignores ``is_published``, so that is what actually removes it from
+    investigations — and its contract is that the retirement survives restart
+    until the runbook's CONTENT changes. Re-ingest is delete-then-create and the
+    created row is published by default, so re-ingesting for a stamp change
+    would put a deliberately retired runbook back into retrieval on the strength
+    of a code edit. Skipping is also right on its own terms: an unpublished
+    built-in has no vectors, so it carries no stamps to refresh.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+        knowledge_service = MagicMock()
+        knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+        knowledge_service._vector_store = MagicMock()
+        knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+        existing = MagicMock()
+        existing.content = RUNBOOK_MD  # content unchanged
+        existing.knowledge_metadata = {"causes": CAUSES_RECORD}  # no stamp
+        existing.is_published = False  # ...but retired by an operator
+
+        result = await kb_init.bootstrap_kb(
+            knowledge_service=knowledge_service,
+            db_session_factory=_make_session_factory(existing_row=existing),
+            organization_id="org-test",
+            project_root=tmp_path,
+            pack_dir=pack_dir,
+        )
+
+        assert result.ingested == []
+        assert result.skipped_unchanged == ["global/example.md"]
+        knowledge_service.ingest_runbook.assert_not_awaited()
+        knowledge_service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_content_change_still_re_ingests_an_unpublished_runbook():
+    """The converse, so the guard above cannot become a blanket exemption.
+
+    A content change IS an intentional new version — the documented behaviour
+    the unpublish contract carves out — and must still re-ingest.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+        knowledge_service = MagicMock()
+        knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+        knowledge_service._vector_store = MagicMock()
+        knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+        existing = MagicMock()
+        existing.content = "# Something else entirely\n"  # content MOVED
+        existing.knowledge_metadata = {"causes": CAUSES_RECORD}
+        existing.is_published = False
+
+        result = await kb_init.bootstrap_kb(
+            knowledge_service=knowledge_service,
+            db_session_factory=_make_session_factory(existing_row=existing),
+            organization_id="org-test",
+            project_root=tmp_path,
+            pack_dir=pack_dir,
+        )
+
+        assert result.ingested == ["global/example.md"]
+
+
+# ---------------------------------------------------------------------------
+# fm#1108: authored rows converge on the current stamp
+# ---------------------------------------------------------------------------
+
+
+class _RestampSession:
+    """A session whose `execute(...).all()` returns fixed (id, metadata, published)
+    triples — the shape `_restamp_stale_rows` selects."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, *_args, **_kwargs):
+        result = MagicMock()
+        result.all.return_value = list(self._rows)
+        return result
+
+
+def _restamp_factory(rows):
+    def factory():
+        return _RestampSession(rows)
+
+    return factory
+
+
+async def _restamp(rows, service, **kwargs):
+    return await kb_init._restamp_stale_rows(service, _restamp_factory(rows), **kwargs)
+
+
+def _service_that_restamps(written=3):
+    service = MagicMock()
+    service.restamp_document = AsyncMock(return_value=written)
+    return service
+
+
+@pytest.mark.asyncio
+async def test_an_authored_row_with_no_stamp_is_restamped():
+    """The gap neither existing pass covered: the pack gate only walks the pack,
+    and the repair pass selects on MISSING VECTORS — these rows have perfectly
+    good vectors, just stamped by older code. Without this selector a verified
+    conversion keeps pre-fm#1108 chunks forever and the read-path legacy parse
+    never drains."""
+    service = _service_that_restamps()
+    done = await _restamp([("authored-1", {}, True)], service)
+    assert done == ["authored-1"]
+    service.restamp_document.assert_awaited_once_with("authored-1")
+
+
+@pytest.mark.asyncio
+async def test_a_row_already_carrying_the_current_stamp_is_left_alone():
+    """Otherwise every boot re-embeds the whole authored KB, forever."""
+    service = _service_that_restamps()
+    rows = [("authored-1", {"chunk_stamp": chunk_stamp_identity()}, True)]
+    assert await _restamp(rows, service) == []
+    service.restamp_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_stamp_is_restamped_like_an_absent_one():
+    service = _service_that_restamps()
+    rows = [("authored-1", {"chunk_stamp": "0000000000000000"}, True)]
+    assert await _restamp(rows, service) == ["authored-1"]
+
+
+@pytest.mark.asyncio
+async def test_built_ins_are_left_to_the_pack_gate():
+    """Doing them here would duplicate the pack path's work with an EMBEDDING;
+    the pack path is prechunked and free."""
+    service = _service_that_restamps()
+    rows = [("kb_0123456789ab", {}, True), ("authored-1", {}, True)]
+    assert await _restamp(rows, service) == ["authored-1"]
+
+
+@pytest.mark.asyncio
+async def test_an_unpublished_row_is_never_restamped():
+    """Same trap as the pack gate: retrieval ignores is_published, so a retired
+    runbook is one whose vectors were deleted. Re-indexing it would put it back
+    into investigations — and it has no chunks to re-stamp anyway."""
+    service = _service_that_restamps()
+    assert await _restamp([("authored-1", {}, False)], service) == []
+    service.restamp_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_respects_the_per_boot_chunk_budget():
+    """It re-chunks and re-embeds with BGE-M3, so an unbounded sweep would
+    reintroduce the on-pod embedding timeout the pack exists to avoid."""
+    service = _service_that_restamps(written=10)
+    rows = [(f"authored-{i}", {}, True) for i in range(5)]
+    done = await _restamp(rows, service, max_chunks=15)
+    assert len(done) == 2, "budget must stop the sweep, deferring the rest"
+
+
+@pytest.mark.asyncio
+async def test_a_bulk_stale_set_is_sliced_not_refused():
+    """The one place this pass must NOT copy ``_repair_orphaned_rows``.
+
+    Repair treats an oversized set as a bulk-loss anomaly and declines it
+    wholesale. Here an oversized set is just the FIRST BOOT after fm#1108 —
+    every authored row is stale at once — so refusing would mean any deployment
+    with more authored runbooks than the cap (25 by default) never converges,
+    which is the exact failure this pass exists to fix.
+    """
+    service = _service_that_restamps()
+    rows = [(f"authored-{i}", {}, True) for i in range(9)]
+    done = await _restamp(rows, service, max_rows=3)
+    assert done == ["authored-0", "authored-1", "authored-2"]
+
+
+@pytest.mark.asyncio
+async def test_convergence_is_monotone_across_boots():
+    """Each boot takes a bounded prefix and the restamped rows stop being stale,
+    so repeated boots finish the migration rather than churning the same head."""
+    remaining = {f"authored-{i}" for i in range(7)}
+    service = MagicMock()
+
+    async def _restamp_one(item_id):
+        remaining.discard(item_id)
+        return 2
+
+    service.restamp_document = AsyncMock(side_effect=_restamp_one)
+
+    boots = 0
+    while remaining and boots < 10:
+        rows = [(i, {}, True) for i in sorted(remaining)]
+        await _restamp(rows, service, max_rows=3)
+        boots += 1
+
+    assert not remaining, "the sweep must drain, not stall on the same prefix"
+    assert boots == 3
+
+
+@pytest.mark.asyncio
+async def test_one_failing_row_does_not_stop_the_sweep_or_startup():
+    service = MagicMock()
+    service.restamp_document = AsyncMock(side_effect=[RuntimeError("boom"), 2])
+    rows = [("authored-1", {}, True), ("authored-2", {}, True)]
+    assert await _restamp(rows, service) == ["authored-2"]
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_wrote_nothing_is_not_recorded_as_restamped():
+    """`restamp_document` returns 0 when it skipped or could not repair. Counting
+    it would report convergence that did not happen."""
+    service = _service_that_restamps(written=0)
+    assert await _restamp([("authored-1", {}, True)], service) == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_row_set_never_fails_startup():
+    service = _service_that_restamps()
+
+    class _Boom(_RestampSession):
+        async def execute(self, *_a, **_k):
+            raise RuntimeError("db down")
+
+    assert await kb_init._restamp_stale_rows(service, lambda: _Boom([])) == []

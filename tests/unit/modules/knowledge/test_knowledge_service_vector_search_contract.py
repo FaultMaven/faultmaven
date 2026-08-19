@@ -233,6 +233,29 @@ async def test_search_result_surfaces_matched_cause_letters():
 
 
 @pytest.mark.asyncio
+async def test_search_reads_the_stamp_in_preference_to_the_chunk_text():
+    """fm#1108 at the seam that matters: ``search_knowledge`` itself.
+
+    The stamp and the text are made to DISAGREE, so this can only pass by
+    reading the stamp. Every test above supplies un-stamped hits and therefore
+    exercises the legacy fallback — which is the right default for them (that is
+    what a pre-1108 chunk looks like) but means none of them cover the new path.
+    """
+    service = _service_with_hits(
+        [
+            {
+                "id": "kb_abc_chunk_6",
+                "content": "### Cause Z: a heading the stamp does not agree with",
+                "metadata": {"parent_document_id": "kb_abc", "cause_letters": "D"},
+                "score": 0.8,
+            }
+        ]
+    )
+    results = await service.search_knowledge("q", limit=5)
+    assert results[0].matched_cause_letters == ["D"]
+
+
+@pytest.mark.asyncio
 async def test_matched_cause_letters_empty_for_a_non_cause_chunk():
     """A hit on Symptom Recognition / Diagnostic Steps / Prevention names no
     cause. The seeder reads [] as "retrieval surfaced no cause here" and seeds

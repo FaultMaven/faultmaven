@@ -66,6 +66,27 @@ class VectorMetadata(BaseModel):
     chunk_index: Optional[int] = None
     total_chunks: Optional[int] = None
     parent_document_id: Optional[str] = None
+    # The ``### Cause X:`` letters this chunk's text carries, comma-joined
+    # (``"A,B"``), stamped at index time by the same grammar that extracted the
+    # parent's ``metadata["causes"]`` record in the same operation (fm#1108).
+    #
+    # This is the KB cause seeder's JOIN KEY, and it is stored rather than
+    # re-derived on purpose. Retrieval used to re-run ``CAUSE_HEADING_RE`` over
+    # each hit's chunk text, which made the join a function of the grammar IN
+    # FORCE AT READ TIME — and the grammar is a manual mirror of kb-toolkit's
+    # that is *expected* to change (there is a cross-repo CI job requiring it).
+    # Nothing re-ingests on a grammar change, so a code-only edit silently
+    # re-interpreted chunks already in the store while their SQL record stayed
+    # as the old grammar extracted it. Stamped, the join is pinned to the moment
+    # both sides were written and a later grammar change cannot reach back.
+    #
+    # Emitted whenever it is not None, INCLUDING the empty string — "stamped,
+    # this chunk carries no cause heading" and "indexed before the stamp
+    # existed" are different facts, and only key-presence tells them apart. The
+    # read path needs that distinction to know when it must fall back to
+    # parsing (verified: an empty-string value round-trips through ChromaDB
+    # with the key intact).
+    cause_letters: Optional[str] = None
 
     @classmethod
     def reject_undeclared_keys(cls, md: Optional[Dict[str, Any]]) -> None:
@@ -119,6 +140,7 @@ class VectorMetadata(BaseModel):
         "severity",
         "symptom_class",
         "parent_document_id",
+        "cause_letters",
         mode="before",
     )
     @classmethod
@@ -165,4 +187,9 @@ class VectorMetadata(BaseModel):
             data["total_chunks"] = self.total_chunks
         if self.parent_document_id:
             data["parent_document_id"] = self.parent_document_id
+        # ``is not None``, not truthiness: "" means "stamped, no cause heading
+        # here" and must be stored, because its ABSENCE is what tells the read
+        # path a chunk predates the stamp and has to be parsed instead.
+        if self.cause_letters is not None:
+            data["cause_letters"] = self.cause_letters
         return data

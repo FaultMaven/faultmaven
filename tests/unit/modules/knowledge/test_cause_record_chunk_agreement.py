@@ -70,20 +70,34 @@ def _chunk(letter: str) -> str:
     return f"### Cause {letter}: Something broke\n**Statement:** it did"
 
 
+def _letters(*chunk_texts: str) -> list:
+    """Chunk texts → the per-chunk letter lists the predicates now take.
+
+    The stamp is parsed once at index time and both stored and checked, so the
+    predicates take parsed letters. Tests still SAY markdown — running it through
+    the real parse is what keeps them honest about the grammar.
+    """
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        _matched_cause_letters,
+    )
+
+    return [_matched_cause_letters(t) for t in chunk_texts]
+
+
 # ---------------------------------------------------------------------------
 # The predicate: which declared letters can no chunk recover
 # ---------------------------------------------------------------------------
 
 
 def test_every_declared_letter_present_is_clean():
-    chunks = ["## Causes\n\n" + _chunk("A"), _chunk("B")]
+    chunks = _letters("## Causes\n\n" + _chunk("A"), _chunk("B"))
     assert _unrecoverable_cause_letters(chunks, [_cause("A"), _cause("B")]) == []
 
 
 def test_a_letter_no_chunk_carries_is_reported():
     """The shape the retrieval-side counter is structurally blind to: the heading
     is missing everywhere, so retrieval produces no letter to disagree with."""
-    chunks = ["## Causes\n\n" + _chunk("A"), _chunk("B")]
+    chunks = _letters("## Causes\n\n" + _chunk("A"), _chunk("B"))
     missing = _unrecoverable_cause_letters(
         chunks, [_cause("A"), _cause("B"), _cause("C")]
     )
@@ -93,7 +107,7 @@ def test_a_letter_no_chunk_carries_is_reported():
 def test_a_drifted_heading_form_reports_every_letter():
     """A producer whose heading form left the shared grammar (``#### Cause A:``)
     recovers nothing — the record looks well-formed, the chunks join to nothing."""
-    chunks = ["#### Cause A: Something broke", "Cause B - Something else"]
+    chunks = _letters("#### Cause A: Something broke", "Cause B - Something else")
     assert _unrecoverable_cause_letters(chunks, [_cause("A"), _cause("B")]) == [
         "A",
         "B",
@@ -102,14 +116,14 @@ def test_a_drifted_heading_form_reports_every_letter():
 
 def test_missing_letters_keep_record_order_and_dedupe():
     causes = [_cause("D"), _cause("B"), _cause("D"), _cause("A")]
-    assert _unrecoverable_cause_letters([_chunk("B")], causes) == ["D", "A"]
+    assert _unrecoverable_cause_letters(_letters(_chunk("B")), causes) == ["D", "A"]
 
 
 def test_a_chunk_heading_absent_from_the_record_is_not_this_check():
     """The opposite direction is the seeder's own alarm
     (``kb_cause_seed_letter_mismatch_total``) and is not double-counted here: a
     stray heading costs no cause its seedability."""
-    chunks = [_chunk("A"), _chunk("Z")]
+    chunks = _letters(_chunk("A"), _chunk("Z"))
     assert _unrecoverable_cause_letters(chunks, [_cause("A")]) == []
 
 
@@ -177,6 +191,13 @@ def _document(content: str) -> KnowledgeBaseDocument:
     )
 
 
+_RUNBOOK_ONE_CAUSE = (
+    "# Node drain stalls\n\n"
+    "## Causes\n\n"
+    "### Cause A: Pod disruption budget blocks eviction\n"
+    "**Statement:** the PDB has no spare replica\n"
+)
+
 _RUNBOOK = (
     "# Node drain stalls\n\n"
     "## Causes\n\n"
@@ -204,7 +225,9 @@ async def test_runtime_chunked_record_that_outruns_its_chunks_is_counted():
             _document(_RUNBOOK),
             causes=[_cause("A"), _cause("B"), _cause("C")],
         )
-    counter.labels.assert_called_once_with(chunker="runtime")
+    counter.labels.assert_called_once_with(
+        chunker="runtime", direction="record_letter_unchunked"
+    )
     assert counter.labels.return_value.inc.call_count == 1
 
 
@@ -221,7 +244,9 @@ async def test_pack_chunks_are_labeled_as_the_pack_chunker():
             prechunked=[("## Causes\n\n" + _chunk("A"), [0.0, 1.0])],
             causes=[_cause("A"), _cause("B")],
         )
-    counter.labels.assert_called_once_with(chunker="pack")
+    counter.labels.assert_called_once_with(
+        chunker="pack", direction="record_letter_unchunked"
+    )
 
 
 @pytest.mark.asyncio
@@ -363,8 +388,13 @@ async def test_a_lowercase_record_letter_is_still_reported_as_unseedable():
     retrieval cannot deliver."""
     service = _service()
     with patch(_COUNTER) as counter:
-        await _index(service, _document(_RUNBOOK), causes=[_cause("a")])
-    counter.labels.assert_called_once_with(chunker="runtime")
+        await _index(service, _document(_RUNBOOK_ONE_CAUSE), causes=[_cause("a")])
+    # Exactly ONE direction: a mis-cased record letter is a malformed record,
+    # not a chunk carrying an undeclared heading. Counting it both ways would
+    # double-report one defect and blame the markdown for half of it.
+    counter.labels.assert_called_once_with(
+        chunker="runtime", direction="record_letter_unchunked"
+    )
 
 
 @pytest.mark.asyncio
@@ -374,7 +404,7 @@ async def test_an_inexpressible_letter_blames_the_record_not_the_markdown(caplog
     service = _service()
     with patch(_COUNTER):
         with caplog.at_level("WARNING"):
-            await _index(service, _document(_RUNBOOK), causes=[_cause("a")])
+            await _index(service, _document(_RUNBOOK_ONE_CAUSE), causes=[_cause("a")])
     reported = "\n".join(
         r.getMessage() for r in caplog.records if r.levelname == "WARNING"
     )
@@ -388,12 +418,16 @@ async def test_the_two_shapes_are_reported_separately_when_both_occur(caplog):
     with patch(_COUNTER) as counter:
         with caplog.at_level("WARNING"):
             await _index(
-                service, _document(_RUNBOOK), causes=[_cause("C"), _cause("a")]
+                service,
+                _document(_RUNBOOK_ONE_CAUSE),
+                causes=[_cause("C"), _cause("a")],
             )
     reported = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert any("Fix the runbook's Causes section" in m for m in reported)
     assert any("the RECORD is malformed" in m for m in reported)
-    # One document, one increment — the counter counts documents, not letters.
+    # Still ONE increment: both messages describe the same direction (letters the
+    # record declares that no chunk carries), split only by which side is at
+    # fault. The counter counts documents per direction, not letters.
     assert counter.labels.return_value.inc.call_count == 1
 
 
@@ -573,7 +607,9 @@ def test_runtime_chunker_recovers_every_cause_letter_of_every_shipped_runbook():
         if not causes:
             continue
         checked += 1
-        missing = _unrecoverable_cause_letters(chunker.split(content), causes)
+        missing = _unrecoverable_cause_letters(
+            _letters(*chunker.split(content)), causes
+        )
         assert not missing, (
             f"{Path(source).name}: the runtime chunker leaves cause(s) "
             f"{missing} with no chunk carrying their heading — unseedable"
