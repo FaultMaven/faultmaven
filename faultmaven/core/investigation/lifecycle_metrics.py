@@ -738,13 +738,26 @@ kb_cause_seed_letter_mismatch_total = Counter(
 # names the document and the missing letters, which is the unit an operator acts
 # on. Never raises — an unseedable cause is a recall loss, and turning it into a
 # failed ingest would take the KB bootstrap down for a produce-side data bug.
+# ``direction`` names WHICH disagreement, because the two have opposite fixes:
+#
+#   record_letter_unchunked  — the record declares a letter no chunk carries a
+#                              heading for. The cause can never be seeded; fix
+#                              the Causes section or the record's producer.
+#   chunk_letter_unrecorded  — a chunk carries a heading for a letter the record
+#                              does not declare. A hit on it names nothing;
+#                              usually a ``### Cause X:`` outside the
+#                              ``## Causes`` section the extractor reads. This
+#                              is what ``kb_cause_seed_letter_mismatch_total``
+#                              reports from the far end, after a case has
+#                              already been served without those seeds.
 kb_cause_unseedable_at_ingest_total = Counter(
     "faultmaven_kb_cause_unseedable_at_ingest_total",
-    "A document was indexed with a ``causes`` record holding letters that none "
-    "of its own chunk texts can recover, so those causes can never be seeded "
-    "(fm#1103). One increment per document, labeled by ``chunker`` (pack | "
-    "runtime). Zero is the healthy state.",
-    ["chunker"],
+    "A document was indexed with a ``causes`` record and chunk headings that "
+    "disagree, so causes cannot be seeded (fm#1103). One increment per document "
+    "per direction, labeled by ``chunker`` (pack | runtime) and ``direction`` "
+    "(record_letter_unchunked | chunk_letter_unrecorded). Zero is the healthy "
+    "state.",
+    ["chunker", "direction"],
 )
 
 
@@ -802,4 +815,32 @@ causal_and_group_regroup_refused_total = Counter(
     "was refused (#1096; the grouping merge is monotone), labeled by "
     "``attempt`` (regroup | ungroup).",
     ["attempt"],
+)
+
+
+# fm#1108 migration drain gauge, and the only thing that says when the last
+# read-time parse can be deleted.
+#
+# The seeder's join key is now STAMPED onto each chunk at index time
+# (``VectorMetadata.cause_letters``) instead of re-derived by re-parsing chunk
+# text on every retrieval. Chunks written before that change carry no stamp, so
+# retrieval still parses them — exactly the old behaviour, for old data only.
+#
+# Every such fallback increments this. It is not an alarm: a nonzero value is
+# the expected state immediately after the change, and it falls as content
+# re-ingests (a pack whose grammar identity or content moved, a verified
+# conversion, an edit, a boot repair). A STEADY ZERO is the signal that no live
+# retrieval depends on the derivation any more and the fallback — with it the
+# last read-time parse, and the last way a grammar change can retroactively
+# re-interpret stored chunks — can be removed.
+#
+# Watch it as a rate, not a total. A value that stops falling means some
+# population never re-ingests: authored runbooks are the expected long tail
+# (``kb_init`` re-ingests the pack, never authored rows), and that is what would
+# justify building a reindex sweep rather than waiting.
+kb_cause_letters_unstamped_total = Counter(
+    "faultmaven_kb_cause_letters_unstamped_total",
+    "A retrieval hit carried no ``cause_letters`` stamp, so its cause letters "
+    "were parsed from chunk text the old way (fm#1108). Falls to zero as "
+    "content re-ingests; a steady zero means the fallback can be deleted.",
 )
