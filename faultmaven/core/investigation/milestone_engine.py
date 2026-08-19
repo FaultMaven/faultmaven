@@ -143,6 +143,7 @@ from faultmaven.infrastructure.llm.metering import (
 from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputMode,
 )
+from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
 from faultmaven.models.interfaces import ILLMProvider
 from faultmaven.modules.agent.tools.vectorize_file_tool import (
     VECTORIZED_SYSTEM_MESSAGE,
@@ -5895,8 +5896,16 @@ class MilestoneEngine:
                 except Exception:
                     pass
 
-            try:
-                response = await provider.generate(**generate_kwargs)
+            async def _tool_loop_call(cap: int):
+                """One tool-loop generation at *cap*, metered.
+
+                Metering lives INSIDE the retry closure, not after it: a
+                truncation retry is a second real API call, billed like the
+                first. Counting only the winner would make DA-turn spend
+                under-report exactly on the turns that cost the most.
+                """
+                call_kwargs = dict(generate_kwargs, max_tokens=cap)
+                result = await provider.generate(**call_kwargs)
                 if self.da_provider is not None:
                     # A dedicated DA provider is a concrete provider instance,
                     # so this call bypassed the registry metering chokepoint.
@@ -5905,12 +5914,37 @@ class MilestoneEngine:
                     # registry already metered the underlying call.)
                     record_provider_call(
                         getattr(provider, "provider_name", "unknown"),
-                        generate_kwargs.get("model")
-                        or getattr(response, "model", None)
+                        call_kwargs.get("model")
+                        or getattr(result, "model", None)
                         or "unknown",
-                        response,
-                        getattr(response, "response_time_ms", 0),
+                        result,
+                        getattr(result, "response_time_ms", 0),
                     )
+                return result
+
+            try:
+                # Same ladder the non-tool structured path has had since #513:
+                # a cut body means the response is unusable, and the first
+                # remedy is more room. This path never had it — `max_tokens` was
+                # a fixed 8000 and the schema-tool arguments were parsed
+                # unguarded, so a truncated tool call went into
+                # `_parse_schema_tool_call`, where the partial-repair machinery
+                # (nested-JSON parsing, the state_updates → {} coercion,
+                # validation degradation) could turn it into a structurally
+                # valid response whose state updates were then APPLIED to the
+                # case. Raising the cap first is what stops that (#1094).
+                #
+                # Escalation only; the escalate-to-degrade tail stays on the
+                # non-tool path, which owns the case context that drives it. If
+                # the retry is also cut, behaviour is what it was before: parse
+                # what came back, and let the existing failure handling below
+                # take it if the parse fails.
+                response = await generate_with_truncation_retry(
+                    _tool_loop_call,
+                    max_tokens=max_tokens,
+                    ceiling=STRUCTURED_OUTPUT_MAX_TOKENS_CEILING,
+                    label=f"tool loop iteration {iteration}",
+                )
                 # Per-turn ceiling: the call is now metered into the active turn
                 # tracker (record_provider_call above for a dedicated DA provider,
                 # or the registry chokepoint for the router), so its running total
@@ -7876,6 +7910,27 @@ class MilestoneEngine:
                 if is_output_truncation_error(gen_exc):
                     raise _on_truncation(gen_exc) from None
                 raise
+
+            # Typed truncation signal, ahead of any parsing.
+            #
+            # The two triggers below it are both indirect: a provider that
+            # happens to RAISE (only Gemini does), and a JSON body that happens
+            # to fail to parse. Neither fires for a provider that returns HTTP
+            # 200 with a cut body — which is all the others. Now that every
+            # provider reports its stop reason, the ladder engages on the fact
+            # itself rather than on its side effects (#1094). A cut body that
+            # coincidentally parses as valid JSON — the case that used to slip
+            # through entirely, and get cached at full confidence — is caught
+            # here too.
+            if not isinstance(response, str) and getattr(
+                response, "is_truncated", False
+            ):
+                raise _on_truncation(
+                    RuntimeError(
+                        f"provider {getattr(response, 'provider', '?')} reported "
+                        f"stop_reason=max_tokens"
+                    )
+                ) from None
 
             content = response if isinstance(response, str) else response.content
 

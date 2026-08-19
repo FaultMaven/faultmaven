@@ -18,6 +18,10 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KnowledgeVectorStore,
 )
 from faultmaven.infrastructure.llm.router import LLMRouter
+from faultmaven.infrastructure.llm.truncation import (
+    annotate_if_truncated,
+    generate_with_truncation_retry,
+)
 from faultmaven.modules.agent.tools.kb_config import KBConfig
 
 logger = logging.getLogger(__name__)
@@ -44,6 +48,20 @@ logger = logging.getLogger(__name__)
 # ``test_kb_synthesis_budget.py`` pins the two in agreement so a future change
 # to either one cannot silently drift out of step.
 SYNTHESIS_MAX_TOKENS = 2000
+
+# Cap the one truncation retry may raise to (#1094).
+#
+# Expressed against the budget above so the two cannot drift apart. Note what
+# this retry is and is not for: it does NOT exist to produce a LONGER answer —
+# the relay ceiling reasoned about above still binds, and text beyond it is
+# generated and then discarded (``test_kb_synthesis_budget.py`` pins that
+# agreement, and the engine-side cut is itself observable since #1090). It
+# exists to recover a COMPLETE answer when something other than the answer
+# consumed the first budget. That is the failure actually observed here: hidden
+# reasoning tokens billed against the same 2000, leaving 54 tokens of visible
+# answer. Doubling once buys the answer its normal room back; it does not
+# license routinely writing twice the relay allowance.
+SYNTHESIS_MAX_TOKENS_CEILING = SYNTHESIS_MAX_TOKENS * 2
 
 
 class DocumentQATool:
@@ -254,17 +272,35 @@ Answer:"""
 
         logger.debug(f"Calling synthesis LLM: {synthesis_provider}/{synthesis_model}")
 
-        response = await self._llm_router.route(
-            model=synthesis_model,
-            messages=[
-                {"role": "system", "content": self._kb_config.system_prompt},
-                {"role": "user", "content": synthesis_prompt},
-            ],
+        async def _synthesize(cap: int):
+            return await self._llm_router.route(
+                model=synthesis_model,
+                messages=[
+                    {"role": "system", "content": self._kb_config.system_prompt},
+                    {"role": "user", "content": synthesis_prompt},
+                ],
+                max_tokens=cap,
+                temperature=0.3,  # Low temperature for factual accuracy
+            )
+
+        # Give the answer more room once if the provider says it ran out.
+        #
+        # This is a READ path, so a cut that survives the retry is returned
+        # rather than refused: a partial runbook excerpt is usually still worth
+        # something, and failing the tool would destroy that value. What is not
+        # acceptable is returning it as if it were whole — the answer went into
+        # the case transcript, got cited, and was reasoned over with nothing
+        # downstream able to tell "the runbook says only this" from "the answer
+        # stopped here" (#1094). The notice makes that distinction travel with
+        # the text, to the agent and to the user alike.
+        response = await generate_with_truncation_retry(
+            _synthesize,
             max_tokens=SYNTHESIS_MAX_TOKENS,
-            temperature=0.3,  # Low temperature for factual accuracy
+            ceiling=SYNTHESIS_MAX_TOKENS_CEILING,
+            label=f"{self._kb_config.__class__.__name__} synthesis",
         )
 
-        answer = response.content.strip()
+        answer = annotate_if_truncated(response.content.strip(), response)
 
         # Extract sources using config (KB-specific)
         sources = list(
@@ -285,6 +321,7 @@ Answer:"""
             "sources": sources,
             "chunk_count": len(chunks),
             "confidence": avg_score,
+            "truncated": response.is_truncated,
         }
 
     async def _dispatch_search(

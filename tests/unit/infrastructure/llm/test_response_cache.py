@@ -16,7 +16,7 @@ rather than a single example.
 import pytest
 
 from faultmaven.infrastructure.llm.cache import LLMResponseCache
-from faultmaven.infrastructure.llm.providers import LLMResponse
+from faultmaven.infrastructure.llm.providers import LLMResponse, StopReason
 
 pytestmark = [pytest.mark.unit, pytest.mark.llm]
 
@@ -243,3 +243,42 @@ def test_the_cache_never_exceeds_max_size():
             case_id="case-1",
         )
         assert len(cache.cache) <= 5
+
+
+# --------------------------------------------------------------------------- #
+# What a replay is allowed to claim about itself
+# --------------------------------------------------------------------------- #
+
+
+def test_the_stop_reason_survives_a_round_trip():
+    """A field stored but not rehydrated is worse than one never stored.
+
+    The entry keeps a hand-picked subset of the response, so anything not
+    explicitly carried comes back as its default. For ``stop_reason`` that
+    default is UNKNOWN, which is exactly the state that reads as "not
+    truncated" — so a dropped field would have every replay report a cut body
+    as a clean one, for as long as the entry lives. There is no TTL here and no
+    eviction API, so "as long as it lives" can mean the life of the process
+    (#1094).
+    """
+    cache = LLMResponseCache()
+    cache.store(
+        PROMPT,
+        "gpt-5.4-mini",
+        _response(stop_reason=StopReason.MAX_TOKENS),
+        case_id="case-1",
+    )
+
+    hit = cache.check(PROMPT, "gpt-5.4-mini", case_id="case-1")
+
+    assert hit is not None
+    assert hit.stop_reason is StopReason.MAX_TOKENS
+    assert hit.is_truncated is True
+
+
+def test_a_complete_response_replays_as_complete():
+    cache = _seeded()
+
+    hit = cache.check(PROMPT, "gpt-5.4-mini", case_id="case-1")
+
+    assert hit.is_truncated is False

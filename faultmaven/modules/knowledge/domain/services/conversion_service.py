@@ -27,6 +27,7 @@ from faultmaven.exceptions import (
     NotFoundError,
     ValidationException,
 )
+from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
 from faultmaven.infrastructure.persistence.models import (
     ConversionDraftModel,
     ConversionJobModel,
@@ -73,6 +74,17 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 
 logger = logging.getLogger(__name__)
+
+# Output budget for one runbook conversion, and the cap the single truncation
+# retry may raise it to (#1094). A full runbook — frontmatter, symptom
+# recognition, diagnostic steps, causes, resolution — is a long document, so a
+# genuine overrun is plausible here in a way it is not on short prose paths.
+RUNBOOK_MAX_TOKENS = 4096
+RUNBOOK_MAX_TOKENS_CEILING = RUNBOOK_MAX_TOKENS * 2
+
+# Same pair for the analysis pass that precedes conversion.
+ANALYSIS_MAX_TOKENS = 2048
+ANALYSIS_MAX_TOKENS_CEILING = ANALYSIS_MAX_TOKENS * 2
 
 # Single-tenant default organization. Conversion sources (KB-bound uploads)
 # require organization_id NOT NULL on both the upload and the conversion job;
@@ -781,16 +793,38 @@ class ConversionService:
         """Analyze document for failure modes using KNOWLEDGE_PROVIDER."""
         knowledge_model = self._settings.llm.get_knowledge_model()
 
-        response = await self._llm_router.route(
-            messages=[
-                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Analyze this document:\n\n{text}"},
-            ],
-            model=knowledge_model,
-            max_tokens=2048,
-            temperature=0.2,
-            response_format={"type": "json_object"},
+        async def _analyze(cap: int):
+            return await self._llm_router.route(
+                messages=[
+                    {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Analyze this document:\n\n{text}"},
+                ],
+                model=knowledge_model,
+                max_tokens=cap,
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+
+        # A document with many failure modes can genuinely outgrow the budget.
+        # This path already failed LOUDLY on a cut body — the JSON does not
+        # parse — which was the right shape but the wrong recovery: it reported
+        # "could not be parsed" for a document that simply needed more room, and
+        # a retry with the same cap could never differ. Raise the cap once, and
+        # say what actually happened if it is still cut (#1094).
+        response = await generate_with_truncation_retry(
+            _analyze,
+            max_tokens=ANALYSIS_MAX_TOKENS,
+            ceiling=ANALYSIS_MAX_TOKENS_CEILING,
+            label=f"document analysis ({filename})",
         )
+
+        if response.is_truncated:
+            raise ConversionRejectedError(
+                "LLM analysis response was truncated at the output limit "
+                f"({ANALYSIS_MAX_TOKENS_CEILING} tokens); the document may "
+                "contain too many failure modes for a single analysis pass",
+                error_code=ConversionErrorCode.LLM_PARSE_ERROR,
+            )
 
         try:
             data = json.loads(response.content)
@@ -918,17 +952,48 @@ class ConversionService:
                 f"--- SOURCE MATERIAL ---\n{text}\n--- END SOURCE MATERIAL ---"
             )
 
-            response = await self._llm_router.route(
-                messages=[
-                    {"role": "system", "content": CONVERSION_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                model=knowledge_model,
-                max_tokens=4096,
-                temperature=0.3,
+            async def _convert(cap: int):
+                return await self._llm_router.route(
+                    messages=[
+                        {"role": "system", "content": CONVERSION_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    model=knowledge_model,
+                    max_tokens=cap,
+                    temperature=0.3,
+                )
+
+            response = await generate_with_truncation_retry(
+                _convert,
+                max_tokens=RUNBOOK_MAX_TOKENS,
+                ceiling=RUNBOOK_MAX_TOKENS_CEILING,
+                label=f"runbook conversion ({failure_mode.id})",
             )
 
             runbook_content = response.content.strip()
+
+            # A runbook cut mid-procedure is complete-or-nothing.
+            #
+            # This is the one consumer where a partial is worse than an error.
+            # The output is PERSISTED as a KB document and later retrieved to
+            # drive other investigations, so a half-procedure ships as an
+            # authoritative one — the reader has no way to tell that step 4 of 7
+            # is missing rather than absent by design. And it passes every
+            # validator below: a cut body still has frontmatter delimiters, is
+            # far longer than 100 characters, and (since the sections are
+            # written in order) still carries the required headings. Nothing
+            # after this point can catch it, which is precisely why the check
+            # belongs here (#1094).
+            if response.is_truncated:
+                return ConversionError(
+                    failure_mode_id=failure_mode.id,
+                    error=(
+                        "LLM response was truncated at the output limit "
+                        f"({RUNBOOK_MAX_TOKENS_CEILING} tokens) — refusing to "
+                        "persist an incomplete runbook"
+                    ),
+                    retryable=True,
+                )
 
             # Validate LLM output before writing to disk
             if not runbook_content or len(runbook_content) < 100:

@@ -63,11 +63,13 @@ def metrics(monkeypatch):
         llm_requests=MagicMock(),
         llm_latency=MagicMock(),
         llm_tokens=MagicMock(),
+        llm_stop_reasons=MagicMock(),
         sla_tracker=MagicMock(),
     )
     monkeypatch.setattr(router_module, "llm_requests", mocks.llm_requests)
     monkeypatch.setattr(router_module, "llm_latency", mocks.llm_latency)
     monkeypatch.setattr(router_module, "llm_tokens", mocks.llm_tokens)
+    monkeypatch.setattr(router_module, "llm_stop_reasons", mocks.llm_stop_reasons)
     monkeypatch.setattr(router_module, "sla_tracker", mocks.sla_tracker)
     return mocks
 
@@ -191,3 +193,64 @@ class TestCachedPathMetrics:
         metrics.llm_latency.labels.assert_not_called()
         metrics.llm_tokens.labels.assert_not_called()
         metrics.sla_tracker.record_request_metrics.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+class TestStopReasonMetric:
+    """Truncation must be countable, not inferred (#1094).
+
+    The issue that motivated this could only estimate the truncation rate by
+    looking for token counts landing *exactly* on a cap — a proxy that misses
+    every cut that stopped a token short. The router is the one chokepoint
+    every routed call passes, so recording the reason here is what turns that
+    estimate into a measurement.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_reason_is_recorded_on_every_call(self, router, metrics):
+        from faultmaven.infrastructure.llm.providers import StopReason
+
+        await router.route(prompt="test", model="gpt-4")
+
+        metrics.llm_stop_reasons.labels.assert_called_once_with(
+            provider="openai", model="gpt-4", stop_reason=StopReason.UNKNOWN.value
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_response_is_labelled_max_tokens(
+        self, router, mock_registry, metrics
+    ):
+        from faultmaven.infrastructure.llm.providers import StopReason
+
+        mock_registry.route_request = AsyncMock(
+            return_value=_make_response(stop_reason=StopReason.MAX_TOKENS)
+        )
+
+        await router.route(prompt="test", model="gpt-4")
+
+        metrics.llm_stop_reasons.labels.assert_called_once_with(
+            provider="openai", model="gpt-4", stop_reason="max_tokens"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_response_is_also_logged(
+        self, router, mock_registry, metrics, caplog
+    ):
+        """Metrics answer "how often"; the log answers "which call".
+
+        Both are needed — a truncation rate with no way to find an instance is
+        not actionable.
+        """
+        import logging
+
+        from faultmaven.infrastructure.llm.providers import StopReason
+
+        mock_registry.route_request = AsyncMock(
+            return_value=_make_response(stop_reason=StopReason.MAX_TOKENS)
+        )
+
+        with caplog.at_level(logging.WARNING):
+            await router.route(prompt="test", model="gpt-4")
+
+        assert any("truncated" in r.getMessage().lower() for r in caplog.records)

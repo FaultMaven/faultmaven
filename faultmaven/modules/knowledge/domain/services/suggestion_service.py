@@ -214,11 +214,23 @@ Format as Markdown with these sections:
                     max_tokens=2000,
                     temperature=0.3,
                 )
-                return (
-                    response.get("content", "")
-                    if isinstance(response, dict)
-                    else str(response)
-                )
+                # ``generate`` returns an LLMResponse. The old code read it as a
+                # dict and otherwise fell back to ``str(response)``, which would
+                # have written the dataclass REPR into a knowledge suggestion —
+                # inert today only because both construction sites pass no
+                # provider, so this branch never runs. Corrected rather than
+                # left as a trap for whoever wires the provider up, and a
+                # truncated draft falls through to the template below rather
+                # than being persisted half-written (#1094).
+                if response is None or response.is_truncated:
+                    self.logger.warning(
+                        "Suggestion generation truncated at the output cap; "
+                        "falling back to the template"
+                    )
+                else:
+                    content = (response.content or "").strip()
+                    if content:
+                        return content
             except Exception as e:
                 self.logger.warning(f"LLM generation failed: {e}")
 

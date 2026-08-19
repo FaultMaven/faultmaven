@@ -18,7 +18,7 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig
+from .base import BaseLLMProvider, LLMResponse, ProviderConfig, normalize_stop_reason
 
 
 class CohereProvider(BaseLLMProvider):
@@ -172,6 +172,11 @@ class CohereProvider(BaseLLMProvider):
 
                     message = data["message"]
 
+                    # Cohere v2 reports the stop reason at the TOP level of the
+                    # response, not inside `message`: COMPLETE / MAX_TOKENS /
+                    # STOP_SEQUENCE / TOOL_CALL / ERROR (#1094).
+                    stop_reason = normalize_stop_reason(data.get("finish_reason"))
+
                     # Extract content
                     content = message.get("content", "")
 
@@ -214,6 +219,7 @@ class CohereProvider(BaseLLMProvider):
                         tool_calls=tool_calls,
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
+                        stop_reason=stop_reason,
                     )
         except asyncio.TimeoutError:
             raise LLMException(

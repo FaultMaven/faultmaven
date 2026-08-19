@@ -330,6 +330,34 @@ minimal-prompt retry. That is a smaller *input* rather than a larger output cap,
 so it is not a targeted fix — the inner loop's `max_tokens` escalation is — but it
 frees budget and is strictly better than the hard failure it replaced.
 
+**How truncation is detected (#1094).** There are three triggers, and only the
+third is direct:
+
+| Trigger | Fires when | Blind to |
+|---|---|---|
+| `is_output_truncation_error` — provider wording | The provider *raises* on the cut. Only Gemini does, and only on structured requests | Every other provider, which returns HTTP 200 with a cut body |
+| `is_truncated_json_error` — parse position | The body fails to parse *at its end* | Prose (a cut sentence is valid text), and a cut that lands on syntactically complete JSON |
+| `LLMResponse.stop_reason` — the provider says so | Any provider reports `MAX_TOKENS` | Only providers that supply no signal at all (`UNKNOWN`) |
+
+The first two are side effects; the third is the fact. All nine providers now
+populate `stop_reason`, and the engine consults it before parsing, so the
+`max_tokens` ladder engages on a cut that would previously have parsed cleanly
+and been applied to the case — and been cached at full confidence, with no
+eviction. `UNKNOWN` is a distinct state and never triggers the ladder: a
+provider that reports nothing is not evidence of a cut.
+
+Outside the engine, consumers use
+`infrastructure/llm/truncation.generate_with_truncation_retry` — call, and if
+the provider says it ran out, double the cap once and retry. What to do when
+the retry is *also* cut is per consumer, and the split is deliberate: read
+paths (KB/evidence QA synthesis, tier-2 deep analysis) return the partial with
+an explicit truncation notice appended, because refusing would destroy real
+value; write paths (runbook conversion) refuse, because a half-procedure
+persisted to the knowledge base and later retrieved as authoritative is worse
+than no runbook. Case titles fall back to the placeholder without retrying —
+the budget is a handful of tokens, so a cut means the model ignored the length
+instruction, not that it needed more room.
+
 ### 2.x.1 Surfacing a degraded turn
 
 A silent degrade is its own (softer) risk to guarantee 1: the user cannot tell a

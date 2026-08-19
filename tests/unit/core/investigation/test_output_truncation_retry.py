@@ -422,3 +422,98 @@ async def test_a_truncation_retry_honours_the_shared_attempt_ceiling():
     exhausted = await handler.handle_error(err, retry_count=2)
     assert exhausted.action is ErrorAction.FAIL
     assert exhausted.error_code == "RETRY_EXHAUSTED"
+
+
+# ---------------------------------------------------------------------------
+# The third trigger: the provider simply says so (#1094)
+# ---------------------------------------------------------------------------
+
+
+def _llm_response(content: str, stop_reason):
+    from faultmaven.infrastructure.llm.providers import LLMResponse
+
+    return LLMResponse(
+        content=content,
+        confidence=0.9,
+        provider="openai",
+        model="gpt-5.4-mini",
+        tokens_used=8000,
+        response_time_ms=10,
+        stop_reason=stop_reason,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cut_body_that_parses_cleanly_still_raises_the_cap():
+    """The case both existing triggers miss by construction.
+
+    The ladder had two ways in: a provider that RAISES (only Gemini does), and
+    a body that fails to parse. A cut that lands on a syntactically complete
+    JSON document satisfies neither — it parses, it validates, and the engine
+    applies a response whose later fields the model never got to write. Worse,
+    the router caches it at full confidence, and the cache has no eviction.
+
+    Now that every provider reports its stop reason, the ladder engages on the
+    fact rather than on its side effects.
+    """
+    from faultmaven.infrastructure.llm.providers import StopReason
+
+    engine = _make_engine()
+    generate = AsyncMock(
+        side_effect=[
+            _llm_response(COMPLETE, StopReason.MAX_TOKENS),
+            _llm_response(COMPLETE, StopReason.STOP),
+        ]
+    )
+    engine.llm_provider.generate = generate
+
+    result = await engine._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?", schema_model=_Schema
+    )
+
+    assert result.agent_response == "the kubelet on node-3 is out of disk"
+    first, second = _attempts(generate)
+    assert first["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS
+    assert second["max_tokens"] == STRUCTURED_OUTPUT_MAX_TOKENS * 2
+    # Same cache-bypass requirement as the parse-time trigger: max_tokens is not
+    # part of the cache key, so without it the retry is served the cut body.
+    assert second["bypass_cache"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_complete_response_is_not_diverted_into_the_ladder():
+    """Negative control. Only MAX_TOKENS may spend the turn's attempts."""
+    from faultmaven.infrastructure.llm.providers import StopReason
+
+    engine = _make_engine()
+    generate = AsyncMock(return_value=_llm_response(COMPLETE, StopReason.STOP))
+    engine.llm_provider.generate = generate
+
+    result = await engine._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?", schema_model=_Schema
+    )
+
+    assert result.agent_response == "the kubelet on node-3 is out of disk"
+    assert len(_attempts(generate)) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_stop_reason_is_not_treated_as_a_cut():
+    """A provider that reports nothing is not evidence of truncation.
+
+    UNKNOWN is the default and the honest state for HuggingFace and for any
+    parse gap. Treating it as a cut would put every such call through the
+    ladder and burn the turn's attempts on responses that were never truncated.
+    """
+    from faultmaven.infrastructure.llm.providers import StopReason
+
+    engine = _make_engine()
+    generate = AsyncMock(return_value=_llm_response(COMPLETE, StopReason.UNKNOWN))
+    engine.llm_provider.generate = generate
+
+    result = await engine._generate_structured_output_inner(
+        prompt="why is node-3 NotReady?", schema_model=_Schema
+    )
+
+    assert result.agent_response == "the kubelet on node-3 is out of disk"
+    assert len(_attempts(generate)) == 1

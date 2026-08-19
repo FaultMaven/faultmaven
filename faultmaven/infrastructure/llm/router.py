@@ -19,7 +19,12 @@ from faultmaven.config.settings import get_settings
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.security.redaction import DataSanitizer
-from faultmaven.infrastructure.shims import llm_latency, llm_requests, llm_tokens
+from faultmaven.infrastructure.shims import (
+    llm_latency,
+    llm_requests,
+    llm_stop_reasons,
+    llm_tokens,
+)
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
 
@@ -185,6 +190,18 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             )
             if cached_response:
                 self.logger.info("✅ Using cached response")
+                if cached_response.is_truncated:
+                    # The entry survived a store, so a one-time cut is now the
+                    # permanent answer for this key: there is no TTL and no
+                    # eviction API, and only a `bypass_cache` retry ever
+                    # overwrites an entry. Consumers still see `is_truncated`
+                    # and act on it, but the replay itself is worth saying out
+                    # loud (#1094).
+                    self.logger.warning(
+                        f"⚠️ Serving a TRUNCATED response from cache "
+                        f"(provider={cached_response.provider} "
+                        f"model={cached_response.model})"
+                    )
                 cached_response.sanitized_prompt = sanitized_prompt
                 if self.settings.observability.opik_log_raw_prompts:
                     cached_response.raw_prompt = prompt
@@ -275,6 +292,26 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 sanitized_prompt=sanitized_prompt,
                 sanitized_messages=sanitized_messages,
             )
+
+            # Truncation is a normal-looking success at every other layer: HTTP
+            # 200, a body, a token count. This is the one chokepoint every
+            # routed call passes through, so it is where the cut becomes
+            # observable — one log line and one metric, from which the real
+            # truncation rate can be read rather than inferred from token
+            # counts landing suspiciously exactly on a cap (#1094).
+            if response.is_truncated:
+                self.logger.warning(
+                    f"⚠️ LLM response truncated at the output cap "
+                    f"(provider={response.provider} model={response.model} "
+                    f"max_tokens={max_tokens} "
+                    f"output_tokens={response.output_tokens or response.tokens_used})"
+                    f" — the body is INCOMPLETE"
+                )
+            llm_stop_reasons.labels(
+                provider=response.provider,
+                model=response.model,
+                stop_reason=response.stop_reason.value,
+            ).inc()
 
             # Prometheus + SLA accounting (no-ops when metrics are disabled)
             llm_requests.labels(
