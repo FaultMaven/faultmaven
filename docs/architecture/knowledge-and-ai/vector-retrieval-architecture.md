@@ -264,6 +264,20 @@ This is scoped to `kb_qa`; every other tool result keeps the plain head-first
 cut, because their content is data rather than a procedure and their tools
 already budget themselves against the cap.
 
+Both of the engine's cut sites elide, not only the formatter. PII redaction
+runs between them and *expands* text — an IPv4 becomes a 29-character
+placeholder — so an answer the formatter sized exactly to the budget
+re-crosses the cap and `_truncate_tool_result` fires. That site preserves the
+relay suffix, but cutting the answer head-first there would discard the same
+remediation and source line one step later.
+
+The allowance itself belongs to the KB config, not to the synthesis prompt.
+`AnswerFromCaseEvidence` subclasses `DocumentQATool` and shares the prompt, but
+its results are not relayed through the `kb_qa` branch — no wrapper, no elide,
+a plain cut at the full cap — so `KBConfig.answer_char_allowance` returns
+`None` there and the length rule is simply not stated. A KB states a number
+only when it has one.
+
 Answers do reach this ceiling in practice. Observed synthesis answers run 5,261–7,729 characters, and the longest of those was truncated by the engine rather than by the token budget. Whether 8,000 characters is the right allowance for a runbook procedure inside the investigation context is a separate question from the budget's internal coherence, and remains open.
 
 **The relevance gate, and how its threshold is set.** `UnifiedKBConfig.relevance_threshold` (0.5, cosine) refuses synthesis when no retrieved chunk clears it, so the synthesizer is never asked to ground an answer in chunks that merely share vocabulary — the canonical case being a ZooKeeper query landing on Kafka chunks via "leader election". Evidence retrieval opts out (`CaseEvidenceConfig` returns `None`): for forensic analysis the closest available content is always worth returning.

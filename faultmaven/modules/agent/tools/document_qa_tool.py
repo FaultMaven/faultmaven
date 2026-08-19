@@ -279,7 +279,22 @@ class DocumentQATool:
         # Step 3: Build context using config (KB-specific metadata formatting)
         context = self._build_context_from_chunks(chunks)
 
-        # Step 4: Build synthesis prompt using config
+        # Step 4: Build synthesis prompt using config.
+        #
+        # The length rule is per-KB, not universal: only a KB whose answers are
+        # relayed through a bounded channel has an allowance to state, and
+        # stating someone else's number would misdescribe that KB's own
+        # pipeline. See ``KBConfig.answer_char_allowance`` (#1088).
+        allowance = self._kb_config.answer_char_allowance
+        length_instruction = (
+            f"\n- Fit the answer within {allowance:,} characters. Anything past "
+            f"that is elided before the answer is read, so if the material does "
+            f"not fit, cut background and explanation — never diagnostic "
+            f"commands or remediation steps"
+            if allowance
+            else ""
+        )
+
         synthesis_prompt = f"""Answer the following question using ONLY the provided context.
 
 Question: {question}
@@ -292,8 +307,7 @@ Instructions:
 - Preserve procedural detail — include full diagnostic steps, commands, and resolution procedures rather than summarizing them
 - Cite sources accurately with {self._kb_config.get_citation_format()}
 - If information is missing, state that clearly
-- Compress only background context, never actionable steps
-- Fit the answer within {KB_ANSWER_RELAY_CHARS:,} characters. Anything past that is elided before the answer is read, so if the material does not fit, cut background and explanation — never diagnostic commands or remediation steps
+- Compress only background context, never actionable steps{length_instruction}
 
 Answer:"""
 

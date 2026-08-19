@@ -3011,13 +3011,22 @@ def _elide_answer_middle(content: str, budget: int) -> str:
     head-first cut every other tool result gets -- see
     ``KB_QA_ANSWER_TAIL_SHARE`` for why kb_qa is the exception.
 
-    Both markers are inside the returned budget. The end-anchored
-    ``KB_QA_ANSWER_TRUNCATED_MARKER`` is retained deliberately: the tool loop
-    reads it back to know this cut already fed the truncation metrics, so one
-    relayed result yields exactly one observation (#1090). It reads as an
-    overall "this answer was trimmed" flag; the inline marker says where.
+    Both markers are inside the returned budget. The result always ENDS on
+    ``KB_QA_ANSWER_TRUNCATED_MARKER``, which is load-bearing rather than
+    decorative: the tool loop reads that anchor back to know this cut already
+    fed the truncation metrics, so one relayed result yields exactly one
+    observation (#1090). It reads as an overall "this answer was trimmed" flag;
+    the inline marker says where. Content arriving already marked keeps the
+    marker it has rather than gaining a second one -- the anchor holds either
+    way, since slicing the tail carries the existing marker along with it.
     """
-    end_marker = KB_QA_ANSWER_TRUNCATED_MARKER
+    # Already marked means this is the SECOND cut on one answer: the formatter
+    # trimmed it, then redaction expanded it back past the cap. One marker
+    # still says the true thing; two in a row just read as noise to the model
+    # that has to relay this.
+    already_marked = content.endswith(KB_QA_ANSWER_TRUNCATED_MARKER)
+    end_marker = "" if already_marked else KB_QA_ANSWER_TRUNCATED_MARKER
+
     # Sized on a worst-case count so the marker cannot itself push the result
     # past the budget once the real number is substituted in.
     elided_len = len(KB_QA_ANSWER_ELIDED_TEMPLATE.format(dropped=len(content)))
@@ -3027,12 +3036,14 @@ def _elide_answer_middle(content: str, budget: int) -> str:
     # to the plain head-first cut rather than emit markers with no answer
     # between them.
     if available < 2:
-        return content[: budget - len(end_marker)] + end_marker
+        return content[: max(0, budget - len(end_marker))] + end_marker
 
     tail_chars = int(available * KB_QA_ANSWER_TAIL_SHARE)
     head_chars = available - tail_chars
 
     head = _trim_head_to_paragraph(content[:head_chars])
+    # Sliced from the end, so an existing marker rides along on the tail and
+    # the result still ends on the anchor the tool loop looks for.
     tail = _trim_tail_to_paragraph(content[len(content) - tail_chars :])
 
     dropped = len(content) - len(head) - len(tail)
@@ -3040,26 +3051,30 @@ def _elide_answer_middle(content: str, budget: int) -> str:
     return head + elided + tail + end_marker
 
 
-def _trim_head_to_paragraph(head: str) -> str:
-    """Back the head up to a paragraph boundary, if one is close enough.
+# Most a paragraph realignment may spend to land on a clean boundary.
+#
+# Bounded in absolute characters rather than as a share of the slice, because
+# the cost being traded is answer text and the benefit is cosmetic. A share --
+# "up to a third" -- scales the cosmetic allowance with the budget, so on the
+# standard 7,410 it could discard ~2,400 characters to tidy two seams, on
+# answers whose measured overflow was 540-1,249. A paragraph that does not
+# begin within this many characters is left cut mid-sentence, which the
+# markers on either side already explain.
+PARAGRAPH_REALIGN_MAX_CHARS = 400
 
-    Only when it costs less than a third of the head -- a long final paragraph
-    is worth keeping mid-sentence rather than dropping whole.
-    """
+
+def _trim_head_to_paragraph(head: str) -> str:
+    """Back the head up to a paragraph boundary, if one is cheaply reachable."""
     cut = head.rfind("\n\n")
-    if cut > len(head) * 2 // 3:
+    if cut >= 0 and len(head) - cut <= PARAGRAPH_REALIGN_MAX_CHARS:
         return head[:cut].rstrip()
     return head.rstrip()
 
 
 def _trim_tail_to_paragraph(tail: str) -> str:
-    """Advance the tail to a paragraph boundary, if one is close enough.
-
-    Same bound from the other end: drop a leading partial paragraph only when
-    it costs less than a third of the tail.
-    """
+    """Advance the tail to a paragraph boundary, if one is cheaply reachable."""
     cut = tail.find("\n\n")
-    if 0 <= cut < len(tail) // 3:
+    if 0 <= cut <= PARAGRAPH_REALIGN_MAX_CHARS:
         return tail[cut:].lstrip()
     return tail.lstrip()
 
@@ -7471,14 +7486,27 @@ class MilestoneEngine:
         characters are preserved verbatim: that block is static instruction text
         containing no entity the redactor rewrites, so its length survives
         sanitisation and the slice still lands on the suffix.
+
+        Preserving the suffix is necessary and not sufficient. Everything
+        between the head and that suffix is the ANSWER, and cutting it
+        head-first here would undo the whole point of eliding its middle in the
+        formatter: the remediation steps and the ``Sources:`` line would go,
+        leaving a suffix that instructs the model to cite "the primary source
+        title(s) from the content above" with the source line gone -- the exact
+        failure #1088 fixed one step earlier. This path is not hypothetical: the
+        formatter sizes the answer to a budget that redaction then invalidates by
+        expanding it. So the answer between the wrapper is elided in the middle
+        here too, by the same helper, and only genuinely tail-less results (every
+        other tool) take the plain head-first cut.
         """
         cap = cls.TOOL_RESULT_MAX_CHARS
         marker = "\n[truncated]"
 
         protected = len(KB_QA_RELAY_SUFFIX) if tool_name == "kb_qa" else 0
         if protected and len(text) > protected + len(marker):
-            head = text[: cap - protected - len(marker)]
-            return head + marker + text[-protected:]
+            body = text[:-protected]
+            suffix = text[-protected:]
+            return _elide_answer_middle(body, cap - protected) + suffix
 
         return text[:cap] + marker
 
@@ -7513,12 +7541,22 @@ class MilestoneEngine:
             # _elide_answer_middle below: not head-first either.
             budget = MilestoneEngine.TOOL_RESULT_MAX_CHARS - len(prefix) - len(suffix)
             if len(content) > budget:
+                # Elide FIRST, then report. ``len(content) - budget`` was the
+                # true drop while the cut was a plain slice to the budget; the
+                # middle-elide also spends its two markers and its paragraph
+                # realignment, so that expression now under-reports by a few
+                # hundred characters. It is the field #1090 added to size this
+                # ceiling and the one the dashboard aggregates, so it has to be
+                # what was actually removed (#1088).
+                original_chars_answer = len(content)
+                content = _elide_answer_middle(content, budget)
+                dropped_chars = original_chars_answer - len(content)
                 logger.info(
                     "kb_qa answer trimmed to fit the tool-result budget",
                     extra={
-                        "original_chars": len(content),
+                        "original_chars": original_chars_answer,
                         "budget_chars": budget,
-                        "dropped_chars": len(content) - budget,
+                        "dropped_chars": dropped_chars,
                     },
                 )
                 # Feed this cut into the SAME counters the tool loop uses
@@ -7529,7 +7567,7 @@ class MilestoneEngine:
                 # the tool the ceiling question is about. Sized on the WRAPPED
                 # string, so the number is comparable with every other tool's,
                 # which is also measured wrapped and pre-cut.
-                wrapped_chars = len(prefix) + len(content) + len(suffix)
+                wrapped_chars = len(prefix) + original_chars_answer + len(suffix)
                 tool_result_chars.labels(tool="kb_qa").observe(wrapped_chars)
                 tool_result_truncated_total.labels(tool="kb_qa").inc()
                 logger.warning(
@@ -7538,15 +7576,10 @@ class MilestoneEngine:
                         "tool": "kb_qa",
                         "original_chars": wrapped_chars,
                         "cap_chars": MilestoneEngine.TOOL_RESULT_MAX_CHARS,
-                        "dropped_chars": len(content) - budget,
+                        "dropped_chars": dropped_chars,
                         "at": "formatter",
                     },
                 )
-                # Remove the MIDDLE, not the tail. The answer's tail is its
-                # remediation steps and its source line, and both are named by
-                # instructions the model is about to read (#1088) -- see
-                # ``KB_QA_ANSWER_TAIL_SHARE``.
-                content = _elide_answer_middle(content, budget)
             return prefix + content + suffix
 
         # search_file results: append citation guidance so the LLM cites

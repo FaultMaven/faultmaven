@@ -22,13 +22,17 @@ search_file — dropping 540, 655 and 1249 characters. So the cap binds this one
 tool, and it binds it on 3 answers in 5.
 """
 
+import logging
+
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import (
     KB_QA_ANSWER_TRUNCATED_MARKER,
     KB_QA_RELAY_PREFIX,
     KB_QA_RELAY_SUFFIX,
+    PARAGRAPH_REALIGN_MAX_CHARS,
     MilestoneEngine,
+    _elide_answer_middle,
 )
 from faultmaven.models.interfaces import ToolResult
 
@@ -162,3 +166,108 @@ def test_an_answer_that_fits_is_relayed_untouched():
     assert answer in relayed, "a fitting answer was modified"
     assert "elided" not in relayed
     assert KB_QA_ANSWER_TRUNCATED_MARKER not in relayed
+
+
+def test_the_post_redaction_cut_also_keeps_the_tail():
+    """The second cut must not undo the first.
+
+    Redaction runs between the formatter and ``_truncate_tool_result`` and it
+    EXPANDS text — every entity becomes a longer ``<TYPE_digest>`` placeholder —
+    so an answer the formatter sized exactly to the budget re-crosses the cap.
+    That second cut used to be head-first, protecting only the relay suffix,
+    which discarded the very remediation and source line the formatter had just
+    gone out of its way to preserve, and left the suffix instructing the model
+    to cite titles from content no longer present.
+    """
+    relayed = _relayed(_runbook_answer(_answer_budget() - 400))
+    # Stand in for sanitisation: entities replaced by longer placeholders.
+    grown = relayed.replace("Background:", "<IP_ADDRESS_0123456789abcdef>" * 20)
+    assert (
+        len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    ), "test setup must actually push the result past the cap"
+
+    out = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+
+    assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    assert out.endswith(KB_QA_RELAY_SUFFIX), "the relay instructions were cut"
+    assert REMEDIATION_COMMAND in out, (
+        "the post-redaction cut discarded the remediation steps the formatter "
+        "preserved — the pre-#1088 failure, one step later"
+    )
+    assert SOURCE_LINE in out, (
+        "the post-redaction cut discarded the source line while the suffix "
+        "still instructs the model to cite it"
+    )
+
+
+def test_reported_dropped_chars_is_what_was_actually_removed(caplog):
+    """The dashboard aggregates this field to size the ceiling.
+
+    While the cut was a plain slice to the budget, ``len(content) - budget`` was
+    exactly what went. The middle-elide also spends its two markers and its
+    paragraph realignment, so the old expression under-reports.
+    """
+    answer = _runbook_answer(OVERSIZED)
+
+    with caplog.at_level(logging.WARNING):
+        relayed = _relayed(answer)
+
+    records = [r for r in caplog.records if r.msg == "tool_result_truncated"]
+    assert records, "the truncation was not reported at all"
+    reported = records[-1].dropped_chars
+
+    actual = len(answer) - (
+        len(relayed) - len(KB_QA_RELAY_PREFIX) - len(KB_QA_RELAY_SUFFIX)
+    )
+    assert (
+        reported == actual
+    ), f"reported {reported} dropped characters but {actual} were removed"
+
+
+def test_the_trim_does_not_spend_the_budget_on_tidy_seams():
+    """Paragraph realignment is cosmetic; the characters it costs are answer.
+
+    Bounding the realignment in absolute characters rather than as a share of
+    the slice keeps that cost from scaling with the budget.
+    """
+    relayed = _relayed(_runbook_answer(OVERSIZED))
+
+    unused = MilestoneEngine.TOOL_RESULT_MAX_CHARS - len(relayed)
+    assert unused <= 2 * PARAGRAPH_REALIGN_MAX_CHARS, (
+        f"{unused} characters of the cap went unused after trimming — the "
+        f"realignment is discarding answer text to tidy two seams"
+    )
+
+
+@pytest.mark.parametrize("budget", [0, 1, 12, 19, 20, 200])
+def test_a_degenerate_budget_still_produces_something_that_fits(budget):
+    """The fallback branch must fall back to something smaller, not larger.
+
+    ``content[: budget - len(marker)]`` is a NEGATIVE slice once the budget is
+    under the marker length: it returns the content minus its last few
+    characters, thousands over the cap rather than under it. Reachable by the
+    wrapper edit the branch exists to survive.
+    """
+    out = _elide_answer_middle("A" * 9000, budget)
+
+    assert len(out) <= max(
+        budget, len(KB_QA_ANSWER_TRUNCATED_MARKER)
+    ), f"a budget of {budget} produced {len(out)} characters"
+
+
+def test_a_twice_cut_answer_carries_one_marker_not_two():
+    """The formatter trims, redaction re-inflates, the loop trims again.
+
+    One marker still says the true thing. Two in a row read as noise to the
+    model that has to relay the answer onward.
+    """
+    relayed = _relayed(_runbook_answer(OVERSIZED))
+    grown = relayed.replace("Background:", "<IP_ADDRESS_0123456789abcdef>" * 3)
+    assert (
+        len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
+    ), "setup must re-cross the cap"
+
+    out = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+
+    assert out.count(KB_QA_ANSWER_TRUNCATED_MARKER) == 1
+    assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS

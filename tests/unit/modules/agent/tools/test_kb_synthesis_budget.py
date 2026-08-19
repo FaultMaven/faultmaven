@@ -32,6 +32,9 @@ from faultmaven.modules.agent.tools.document_qa_tool import (
     SYNTHESIS_MAX_TOKENS,
     DocumentQATool,
 )
+from faultmaven.modules.agent.tools.kb_configs.case_evidence_config import (
+    CaseEvidenceConfig,
+)
 from faultmaven.modules.agent.tools.kb_configs.unified_kb_config import UnifiedKBConfig
 
 pytestmark = [pytest.mark.unit]
@@ -266,4 +269,39 @@ async def test_synthesis_prompt_tells_the_model_its_allowance():
     assert "never diagnostic commands or remediation steps" in prompt, (
         "the allowance was stated without saying what to drop first, which is "
         "the half that protects the procedure"
+    )
+
+
+@pytest.mark.asyncio
+async def test_case_evidence_answers_are_not_told_the_kb_relay_allowance():
+    """The allowance is a fact about ONE KB's downstream channel.
+
+    ``AnswerFromCaseEvidence`` subclasses ``DocumentQATool`` and shares this
+    synthesis prompt, but its results are not relayed through the engine's
+    ``kb_qa`` branch — ``_format_tool_result`` special-cases that name only. So
+    an evidence answer gets no relay wrapper, no middle-elide, and a plain
+    head-first cut at the full cap. Stating the kb_qa number there would shorten
+    those answers against a ceiling that is not theirs, and describe an eliding
+    behaviour they do not have.
+    """
+    chunks = [{"content": "chunk", "metadata": {"filename": "app.log"}, "score": 0.71}]
+    vector_store = MagicMock()
+    vector_store.hybrid_search = AsyncMock(return_value=chunks)
+    vector_store.search = AsyncMock(return_value=chunks)
+
+    router = MagicMock()
+    router.route = AsyncMock(
+        return_value=SimpleNamespace(content="answer", is_truncated=False)
+    )
+
+    tool = DocumentQATool(vector_store, router, CaseEvidenceConfig())
+    await tool.answer_question(question="What errors?", scope_id="case_1", k=5)
+
+    prompt = router.route.await_args.kwargs["messages"][-1]["content"]
+
+    assert CaseEvidenceConfig().answer_char_allowance is None
+    assert f"{KB_ANSWER_RELAY_CHARS:,}" not in prompt
+    assert "Fit the answer within" not in prompt, (
+        "the case-evidence answer was given a length allowance derived from a "
+        "relay wrapper its results never pass through"
     )
