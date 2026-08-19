@@ -25,6 +25,7 @@ emission-only.) Belief propagation (§6.1 / §9.4) is a follow-on.
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -64,6 +65,8 @@ from faultmaven.core.investigation.cause_assurance import (
 )
 from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
 from faultmaven.core.investigation.lifecycle_metrics import (
+    causal_and_group_regroup_refused_total,
+    causal_and_set_late_grouping_total,
     hypothesis_support_mirrored_to_root_total,
     llm_rcc_cause_linked_total,
     llm_rcc_cause_named_total,
@@ -93,6 +96,12 @@ from faultmaven.modules.case.contracts import (
 
 if TYPE_CHECKING:
     from faultmaven.modules.case.contracts import Case, Hypothesis
+
+# Observability only. This module derives graph truth and is otherwise free of
+# I/O, but it already owns the §7.1/§7.1.2 calibration counters, and the #1096
+# grouping events below need a per-case witness a counter cannot carry (which
+# group, which members, which turn).
+logger = logging.getLogger(__name__)
 
 # §7.1.1 guard 3: a sibling counts as "excluded" only when its refutation is
 # ABSOLUTE — REFUTED and belief at/under this bar. A merely-inconclusive or
@@ -1251,6 +1260,27 @@ def ingest_emitted_chain(
             # conjunction flicker turn to turn).
             if existing.and_group is None and and_group is not None:
                 existing.and_group = and_group
+                _observe_late_grouping(case, effect_id, and_group)
+            elif and_group != existing.and_group and existing.and_group is not None:
+                # Refused, and the model gets no witness of it from here
+                # (ingest is pure and has no system_feedback channel), so the
+                # refusal is recorded where an operator can see it — the model
+                # is now reasoning over a grouping the graph does not have.
+                attempt = "ungroup" if and_group is None else "regroup"
+                causal_and_group_regroup_refused_total.labels(attempt=attempt).inc()
+                logger.info(
+                    f"Refused an and_group {attempt} on edge "
+                    f"{cause_id}->{effect_id} for case {case.case_id}: "
+                    f"{existing.and_group!r} stands (the merge is monotone)",
+                    extra={
+                        "event": "causal_and_group_regroup_refused",
+                        "case_id": case.case_id,
+                        "turn": current_turn,
+                        "attempt": attempt,
+                        "standing_group": existing.and_group,
+                        "emitted_group": and_group,
+                    },
+                )
             return
         case.causal_edges.append(
             CausalEdge(
@@ -1847,6 +1877,16 @@ def _normalize_and_group(and_group: object) -> str | None:
       alternatives would otherwise collapse them into one conjunction —
       silently strengthening the M7 gate and, since #1096, publishing "the
       cause required these conditions too" about causes that are alternatives.
+    - A NUMBER is honored, as its string form. ``and_group: 1`` is plausible
+      JSON from a model numbering its groups, and the key is an opaque identity
+      token — "1" groups exactly what the emitter meant to group, so there is
+      nothing to gain by discarding it and a conjunction to lose (the #1096
+      factor loss again). Deliberate, not incidental: the schema declares
+      ``Optional[str]`` and Pydantic v2 does not coerce int->str, so this
+      reaches only the duck-typed callers (``kb_cause_seeder``'s specs). Bool
+      is excluded — ``and_group: true`` is a model confusing the field for a
+      flag, not naming a group, and "True" would silently group everything
+      that made the same mistake. Any other type (list, dict) names no group.
     - An over-long key is folded to fit the column. A plain truncation would
       make two distinct long keys sharing a 64-char prefix into ONE group —
       the same silent M7 strengthening by another route — so the fold keeps a
@@ -1857,15 +1897,61 @@ def _normalize_and_group(and_group: object) -> str | None:
     The key is an identity token, never rendered: ``validated_and_conjuncts``
     publishes the member nodes' statements, not the group name.
     """
-    if not isinstance(and_group, str):
+    if isinstance(and_group, bool) or not isinstance(and_group, (str, int, float)):
         return None
-    and_group = and_group.strip()
+    and_group = str(and_group).strip()
     if not and_group:
         return None
     if len(and_group) <= _AND_GROUP_MAX_LEN:
         return and_group
     digest = hashlib.sha256(and_group.encode("utf-8")).hexdigest()[:8]
     return f"{and_group[: _AND_GROUP_MAX_LEN - 9]}-{digest}"
+
+
+def _observe_late_grouping(case: Case, effect_id: str, and_group: str) -> None:
+    """Record a grouping that arrived AFTER its members were already validated.
+
+    Since #1096 a conjunction is not a MECE contest (§7.1.2), so a grouping token
+    over two already-VALIDATED rivals dissolves an arbitration hold: it grants
+    identification, publishes the conjunction and unblocks the confirm-stamp.
+    That is the intended mechanism — the model authors causal structure
+    everywhere else, and demanding M7 proof before honoring a grouping would
+    recreate the deadlock the fix removes — but the merge is MONOTONE, so the
+    grant is permanent and never re-examined, and a stuck contest is exactly
+    the state a model has an incentive to escape.
+
+    So the SEQUENCE is made observable, not refused. Fires only when this
+    grouping completes an AND-set whose members were ALREADY validated: a
+    conjunction modeled up front — the shape the prompt asks for — never
+    reaches here, because its causes are still CANDIDATE when the edges are
+    emitted. Non-zero is a population to audit, not a verdict: a genuine late
+    recognition is indistinguishable from a hallucinated one at this point, and
+    the engine is deliberately not the one guessing which it saw.
+    """
+    members = [
+        e.cause_node_id
+        for e in case.causal_edges
+        if e.effect_node_id == effect_id and e.and_group == and_group
+    ]
+    validated = sorted(
+        nid for nid in members if _state(nid, case.causal_nodes) == NodeState.VALIDATED
+    )
+    if len(validated) < 2:
+        return
+    causal_and_set_late_grouping_total.inc()
+    logger.info(
+        f"Late and_group {and_group!r} joined {len(validated)} already-validated "
+        f"causes of {effect_id} for case {case.case_id}: they are now ONE "
+        f"conjunctive cause and no longer contest each other",
+        extra={
+            "event": "causal_and_set_late_grouping",
+            "case_id": case.case_id,
+            "turn": case.current_turn,
+            "effect_node_id": effect_id,
+            "and_group": and_group,
+            "validated_members": validated,
+        },
+    )
 
 
 def _co_necessary_sets(edges: list[CausalEdge]) -> list[list[str]]:

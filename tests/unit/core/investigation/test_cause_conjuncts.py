@@ -679,3 +679,121 @@ def test_the_fold_does_not_merge_distinct_long_keys():
     assert _normalize_and_group(a) == _normalize_and_group(a)
     assert _normalize_and_group("   ") is None
     assert _normalize_and_group(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Observability of the trust grant (adversarial review of the arbitration fix).
+#
+# Since a conjunction is no longer a contest, an `and_group` emitted over two
+# ALREADY-VALIDATED rivals dissolves an arbitration hold — permanently, because
+# the merge is monotone. Honoring it is the intended design (the model authors
+# causal structure everywhere else), but the sequence must leave a trace.
+# ---------------------------------------------------------------------------
+
+
+def test_a_late_grouping_over_validated_rivals_is_counted():
+    """The suspicious sequence: both causes validate as rivals, and only THEN
+    does a grouping token arrive that makes them one conjunctive cause."""
+    from unittest.mock import patch
+
+    from faultmaven.core.investigation import causal_graph
+    from faultmaven.core.investigation.causal_graph import mece_contested_root_ids
+
+    case, d = _conjunction_case(and_group=None)
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+    # They are rivals, and the engine is holding identification.
+    assert mece_contested_root_ids(case) == {_A, _B}
+
+    with patch.object(causal_graph, "causal_and_set_late_grouping_total") as ctr:
+        ingest_emitted_chain(
+            case,
+            nodes_to_add=[],
+            edges_to_add=[_EmittedEdge(_A, _M, "g1"), _EmittedEdge(_B, _M, "g1")],
+            node_evidence=[],
+            current_turn=6,
+        )
+        ctr.inc.assert_called_once()
+    # ...and the grant is real: the hold is gone.
+    _recompute_cause_state_from_chain(case)
+    assert mece_contested_root_ids(case) == set()
+
+
+def test_a_conjunction_modelled_up_front_is_not_counted():
+    """The counter must measure the SEQUENCE, not conjunctions. A cause modelled
+    as an AND-set when its nodes are emitted — the shape the prompt asks for —
+    has CANDIDATE members at edge time and never reaches the observer, so the
+    signal stays readable."""
+    from unittest.mock import patch
+
+    from faultmaven.core.investigation import causal_graph
+
+    with patch.object(causal_graph, "causal_and_set_late_grouping_total") as ctr:
+        case, _d = _conjunction_case()  # grouped at construction
+        _recompute_cause_state_from_chain(case)
+        ctr.inc.assert_not_called()
+
+    assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+def test_a_late_grouping_of_unvalidated_causes_is_not_counted():
+    """Nothing was dissolved: an AND-set completed over causes that had not
+    validated grants no identification, so it is not the audited population."""
+    from unittest.mock import patch
+
+    from faultmaven.core.investigation import causal_graph
+
+    case, _d = _conjunction_case(and_group=None, second_supports=("b1",))
+    case.causal_nodes[_A].evidence_links = []  # neither cause is established
+    _recompute_cause_state_from_chain(case)
+    assert case.causal_nodes[_A].node_state != NodeState.VALIDATED
+
+    with patch.object(causal_graph, "causal_and_set_late_grouping_total") as ctr:
+        ingest_emitted_chain(
+            case,
+            nodes_to_add=[],
+            edges_to_add=[_EmittedEdge(_A, _M, "g1"), _EmittedEdge(_B, _M, "g1")],
+            node_evidence=[],
+            current_turn=6,
+        )
+        ctr.inc.assert_not_called()
+
+
+def test_a_refused_regroup_leaves_a_witness():
+    """The refusal never reaches the transcript (ingest is pure and has no
+    system_feedback channel), so the model goes on reasoning over a grouping the
+    graph does not have. That divergence has to be visible somewhere."""
+    from unittest.mock import call, patch
+
+    from faultmaven.core.investigation import causal_graph
+
+    case, _d = _conjunction_case()  # standing group "g1"
+    with patch.object(causal_graph, "causal_and_group_regroup_refused_total") as ctr:
+        ingest_emitted_chain(
+            case,
+            nodes_to_add=[],
+            edges_to_add=[_EmittedEdge(_A, _M, "g2"), _EmittedEdge(_B, _M, None)],
+            node_evidence=[],
+            current_turn=6,
+        )
+        # Both refusal shapes are distinguishable in the metric.
+        assert ctr.labels.call_args_list == [
+            call(attempt="regroup"),
+            call(attempt="ungroup"),
+        ]
+    # The refusal stands — the graph is unchanged.
+    assert incoming_and_groups(_M, case.causal_edges) == {"g1": [_A, _B]}
+
+
+def test_a_numeric_and_group_is_honored_and_a_boolean_is_not():
+    """``and_group: 1`` is plausible JSON from a model numbering its groups, and
+    the key is an opaque identity token — discarding it loses a conjunction and
+    gains nothing. ``and_group: true`` is the field mistaken for a flag, and
+    honoring it would group everything that made the same mistake."""
+    from faultmaven.core.investigation.causal_graph import _normalize_and_group
+
+    assert _normalize_and_group(1) == "1"
+    assert _normalize_and_group(2) != _normalize_and_group(1)
+    assert _normalize_and_group(True) is None
+    assert _normalize_and_group(["g1"]) is None
+    assert _normalize_and_group({"k": "v"}) is None
