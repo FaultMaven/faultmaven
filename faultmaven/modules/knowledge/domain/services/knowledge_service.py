@@ -164,13 +164,16 @@ def _unrecoverable_cause_letters(
 
 
 def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:
-    """Read ``causes`` off a raw ``knowledge_items.knowledge_metadata`` value.
+    """Read ``causes`` off a ``knowledge_items`` metadata value, however it arrives.
 
-    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so the column
-    comes back as a JSON *string* or an already-decoded ``dict`` depending on
-    backend and writer — handling only one shape loses the record silently on the
-    other (the bug ``kb_init._decode_metadata`` documents). Read-only: the dict
-    branch aliases the session-bound ORM attribute, so callers must not mutate.
+    Callers hand it either shape and neither has to know which: the *decoded*
+    dict off a domain ``KnowledgeItem.metadata``, or the *raw* column off an ORM
+    row. The raw one is why both branches are needed — ``JsonBlob`` is
+    ``Text().with_variant(JSONB, "postgresql")``, so it comes back as a JSON
+    string or an object depending on backend and writer, and handling one shape
+    loses the record silently on the other (the bug
+    ``kb_init._decode_metadata`` documents). Read-only: the dict branch aliases
+    its caller's attribute, so callers must not mutate.
 
     A third copy of that decode, alongside ``kb_init._decode_metadata`` and
     ``KnowledgeItemRepository._parse_json_dict``. Kept local for the same reason
@@ -928,6 +931,14 @@ class KnowledgeService:
             # against them. Check it here (fm#1103) — after this the two are
             # only ever re-united by a retrieval, in a case that has already
             # lost the seeds.
+            #
+            # Ahead of the write, so an indexing failure (or the SQL rollback
+            # ingest_runbook does on one) can leave an alarm naming a document
+            # that never landed. Deliberate: the disagreement is a property of
+            # the DATA, independent of whether this attempt stored it, so the
+            # alarm is true either way and a retry at worst counts it twice.
+            # Checking after the write instead would trade that for missing the
+            # report entirely whenever indexing fails.
             self._report_unseedable_causes(
                 document.document_id,
                 chunks,
