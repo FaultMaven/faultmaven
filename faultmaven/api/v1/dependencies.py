@@ -61,6 +61,19 @@ async def get_organization_repository(
     return getattr(request.app.state, "organization_repository", None)
 
 
+async def get_user_service(request: Request) -> Optional[Any]:
+    """Get the UserService from app.state (Composition Root).
+
+    Optional rather than 503 on absence, for the same reason as
+    ``get_organization_repository``: the core read path is the persisted
+    profile timestamps on ``/auth/me``, which degrade to the token
+    principal's view rather than failing a profile request over display
+    fields. Admin routes, which cannot work without the service, carry
+    their own stricter dependency (``api/routes/admin.py``).
+    """
+    return getattr(request.app.state, "user_service", None)
+
+
 async def get_preprocessing_service(request: Request) -> PreprocessingService:
     """Get PreprocessingService instance from app.state (Composition Root)"""
     preprocessing_service = request.app.state.preprocessing_service

@@ -44,6 +44,7 @@ from faultmaven.api.v1.auth_dependencies import (
 from faultmaven.api.v1.dependencies import (
     get_organization_repository,
     get_session_service,
+    get_user_service,
 )
 from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.config.tenant_context import usable_tenant_id
@@ -1072,6 +1073,57 @@ async def _resolve_organization_summary(
         return None
 
 
+async def _resolve_profile_timestamps(
+    current_user: DevUser,
+    user_service: Optional[Any],
+) -> tuple[str, Optional[str]]:
+    """``(created_at, last_login)`` from the stored user row, ISO strings.
+
+    ``DevUser`` is the token principal, not the account: the auth dependency
+    synthesizes its ``created_at`` at request time (the JWT carries no such
+    claim) and it has no last-login field at all. Presenting either as account
+    metadata is fabrication (#1120), so both timestamps come from the persisted
+    user row instead, read through ``UserService`` — the same row the SSO login
+    path stamps ``last_login_at`` on and the admin listing already reports.
+
+    Degrades rather than raises, on the same grounds as
+    ``_resolve_organization_summary``: these are display fields on a profile
+    endpoint, and failing the request over them would sign the user out of a UI
+    that only wanted a label. When the service is unwired, the row is absent
+    (a principal minted for an account the repository never stored — possible
+    under ``AUTH_MODE=local`` dev tokens), or the read fails, the fallback is
+    the principal's own view: its synthesized ``created_at`` (prior behavior,
+    honest only in being present — the schema requires the field) and a null
+    ``last_login``. A null from a *found* row is not a fallback: local
+    passwordless login does not stamp ``last_login_at``, so null there
+    faithfully reports the row.
+    """
+    fallback = (to_json_compatible(current_user.created_at), None)
+
+    if user_service is None:
+        return fallback
+
+    try:
+        stored = await user_service.get_user(current_user.user_id)
+        if stored is None:
+            return fallback
+
+        return (
+            to_json_compatible(stored.created_at),
+            (
+                to_json_compatible(stored.last_login_at)
+                if stored.last_login_at
+                else None
+            ),
+        )
+    except Exception as e:  # noqa: BLE001 — see docstring: display fields only
+        logger.warning(
+            "Could not resolve persisted profile timestamps",
+            extra={"user_id": current_user.user_id, "error": str(e)},
+        )
+        return fallback
+
+
 @router.get("/me", response_model=UserInfoResponse)
 @trace("auth_get_current_user")
 async def get_current_user_profile(
@@ -1079,6 +1131,7 @@ async def get_current_user_profile(
     organization_repository: Optional[IOrganizationRepository] = Depends(
         get_organization_repository
     ),
+    user_service: Optional[Any] = Depends(get_user_service),
 ) -> UserInfoResponse:
     """Get current user profile
 
@@ -1087,18 +1140,22 @@ async def get_current_user_profile(
     correlation_id = str(uuid.uuid4())
 
     try:
+        created_at, last_login = await _resolve_profile_timestamps(
+            current_user, user_service
+        )
+
         # Build extended user profile
         user_info = UserInfoResponse(
             user_id=current_user.user_id,
             username=current_user.username,
             email=current_user.email,
             display_name=current_user.display_name,
-            created_at=to_json_compatible(current_user.created_at),
+            created_at=created_at,
             is_dev_user=current_user.is_dev_user,
             roles=(
                 current_user.roles if current_user.roles else ["user"]
             ),  # Ensure roles are included; least privilege when absent
-            last_login=None,  # TODO: Implement last login tracking
+            last_login=last_login,
             organization=await _resolve_organization_summary(
                 current_user, organization_repository
             ),
