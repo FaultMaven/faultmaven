@@ -264,17 +264,37 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             #
             # ``bypass_cache`` suppresses the *lookup* only — this write still
             # runs, and it must. A caller sets the flag precisely because the
-            # entry already under this key is unusable: the truncated body the
-            # first attempt stored before the caller discovered it would not
+            # entry already under this key is unusable: a truncated body an
+            # earlier attempt stored before the caller discovered it would not
             # parse. max_tokens is not part of the cache key, so the retry lands
             # on that same key, and the cache has no eviction API — overwriting
             # it with the complete response is the only thing that stops the
             # poisoned entry being served to every later identical call (#513).
+            #
+            # A response the provider SAYS it cut is never stored at all
+            # (#1094). The cache exists to serve a good answer a second time,
+            # and an incomplete one is never worth replaying: storing it poisons
+            # the key until something happens to overwrite it, and — because
+            # max_tokens is not part of the key — it is what a retry at a bigger
+            # cap would be served instead of reaching the provider, silently
+            # turning "retry with more room" into "return the same cut body".
+            # Declining the write closes that structurally, for every caller
+            # present and future, with no flag to remember to pass.
+            #
+            # This does NOT make ``bypass_cache`` redundant, and the two cover
+            # disjoint halves. A provider that reports no stop reason
+            # (HuggingFace, or any parse gap) can hand back a cut body with
+            # ``is_truncated`` False: invisible here, so it IS stored, and the
+            # engine's parse-time positional test is what catches it — with
+            # ``bypass_cache`` the only thing stopping the retry being answered
+            # from that entry. Conversely the truncation helper never retries on
+            # UNKNOWN, so it can never reach that half.
             if (
                 model
                 and not messages
                 and sanitized_prompt
                 and response.confidence >= self.confidence_threshold
+                and not response.is_truncated
             ):
                 self.cache.store(sanitized_prompt, model, response, case_id=case_id)
 

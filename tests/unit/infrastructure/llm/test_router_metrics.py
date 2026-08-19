@@ -254,3 +254,99 @@ class TestStopReasonMetric:
             await router.route(prompt="test", model="gpt-4")
 
         assert any("truncated" in r.getMessage().lower() for r in caplog.records)
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+class TestTruncatedResponsesAreNotCached:
+    """An incomplete answer is never worth replaying (#1094).
+
+    Two failures, one write. Storing a cut body poisons the key until something
+    happens to overwrite it — and because ``max_tokens`` is not part of the
+    cache key, that stored body is what a retry at a BIGGER cap gets served
+    instead of reaching the provider. "Retry with more room" silently becomes
+    "return the same cut body", and the caller cannot tell the difference from
+    a genuine second truncation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_response_is_not_stored(
+        self, router, mock_registry, metrics
+    ):
+        from faultmaven.infrastructure.llm.providers import StopReason
+
+        mock_registry.route_request = AsyncMock(
+            return_value=_make_response(stop_reason=StopReason.MAX_TOKENS)
+        )
+
+        await router.route(prompt="test", model="gpt-4")
+
+        router.cache.store.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_complete_response_is_still_stored(self, router, metrics):
+        """Negative control — the cache must not be disabled wholesale."""
+        from faultmaven.infrastructure.llm.providers import StopReason
+
+        await router.route(prompt="test", model="gpt-4")
+
+        router.cache.store.assert_called_once()
+        assert (
+            router.cache.store.call_args.args[2].stop_reason
+            is not StopReason.MAX_TOKENS
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_stop_reason_is_still_stored(
+        self, router, mock_registry, metrics
+    ):
+        """UNKNOWN is not evidence of a cut, and must not disable caching.
+
+        The provider-blind half is covered elsewhere: a cut body from a
+        provider that reports nothing IS stored here, the engine's parse-time
+        test catches it, and ``bypass_cache`` keeps the retry off that entry.
+        """
+        from faultmaven.infrastructure.llm.providers import StopReason
+
+        mock_registry.route_request = AsyncMock(
+            return_value=_make_response(stop_reason=StopReason.UNKNOWN)
+        )
+
+        await router.route(prompt="test", model="gpt-4")
+
+        router.cache.store.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_retry_at_a_bigger_cap_reaches_the_provider(self, router):
+        """End to end, through a REAL cache — the failure the rule prevents.
+
+        Mocking the cache would prove only that a method was not called. This
+        drives the actual helper against the actual ``LLMResponseCache`` with a
+        prompt-shaped call (the shape that arms it), and asserts the provider
+        saw both attempts.
+        """
+        from faultmaven.infrastructure.llm.cache import LLMResponseCache
+        from faultmaven.infrastructure.llm.providers import StopReason
+        from faultmaven.infrastructure.llm.truncation import (
+            generate_with_truncation_retry,
+        )
+
+        router.cache = LLMResponseCache()
+        calls = []
+
+        async def _route_request(**kwargs):
+            calls.append(kwargs.get("max_tokens"))
+            if len(calls) == 1:
+                return _make_response(content="cut", stop_reason=StopReason.MAX_TOKENS)
+            return _make_response(content="whole", stop_reason=StopReason.STOP)
+
+        router.registry.route_request = _route_request
+
+        async def _call(cap: int):
+            return await router.route(prompt="test", model="gpt-4", max_tokens=cap)
+
+        result = await generate_with_truncation_retry(_call, max_tokens=1000)
+
+        assert calls == [1000, 2000], "the retry must reach the provider"
+        assert result.content == "whole"
+        assert result.is_truncated is False

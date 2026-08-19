@@ -49,6 +49,11 @@ logger = logging.getLogger(__name__)
 # 7800-8200 characters, so a notice appended at the tail lands squarely in the
 # dropped region — dropped, that is, in exactly the case where the answer is
 # longest and its incompleteness matters most. At the head it always survives.
+#
+# This is the same conclusion the engine reached for system feedback, which is
+# prepended for exactly this reason ("the turn record truncates feedback
+# head-first" — see ``_withdraw_stale_solution_proposals``). Any notice that
+# must outlive a head-keeping trim belongs at the front.
 TRUNCATION_NOTICE = (
     "[TRUNCATED: the answer below hit the model's output limit and stops "
     "mid-answer. Treat it as incomplete — do not read the absence of further "
@@ -75,6 +80,14 @@ async def generate_with_truncation_retry(
     label: str = "llm call",
 ) -> LLMResponse:
     """Run *call*, and retry once with a bigger cap if the body was cut.
+
+    The retry differs from the first attempt only in the cap, and the router's
+    response cache does not key on the cap — so a cached first attempt would be
+    handed straight back and no retry would actually happen, silently, reading
+    exactly like a genuine second truncation. That is closed at the router
+    rather than here: a response the provider reported as cut is never stored,
+    so there is nothing under the key for the retry to be answered from, and no
+    caller has to remember to pass a bypass flag (#1094).
 
     Args:
         call: Coroutine function taking the generation cap to use and returning

@@ -367,7 +367,9 @@ fails open. Consumers recover via
 once); what happens if the retry is also cut is per-consumer — read paths
 (KB/evidence QA, tier-2) annotate and return the partial, write paths (runbook
 conversion) refuse to persist. The reason is logged and counted at the router
-(`llm_stop_reasons_total`).
+(`llm_stop_reasons_total`), and a response reported as cut is never written to
+the response cache — the key omits `max_tokens`, so a stored cut body is what a
+retry at a bigger cap would be served instead of reaching the provider.
 
 **Tool calling is required for the investigation role.** Directed Analysis
 (`search_file`, `deep_analysis`) needs function/tool calling; a tool-incapable

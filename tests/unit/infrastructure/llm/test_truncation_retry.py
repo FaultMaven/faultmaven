@@ -163,3 +163,34 @@ class TestAnnotation:
         )
 
         assert TRUNCATION_NOTICE in annotated[:budget]
+
+    def test_the_notice_survives_the_real_kb_qa_relay_formatter(self):
+        """The same property, asserted through the code that actually trims.
+
+        The test above computes the budget and slices it itself, which pins the
+        arithmetic but not the formatter. This drives
+        ``_format_tool_result`` — the thing that really wraps and cuts a kb_qa
+        answer on its way to the model — so a change to HOW it trims (not just
+        to the cap) is caught too. The failing case here is the DEFAULT case:
+        an answer flagged MAX_TOKENS filled its budget by definition, so it is
+        always over the relay allowance.
+        """
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+        from faultmaven.models.interfaces import ToolResult
+
+        # ~8060 chars: a full 2000-token answer at the 4.03 chars/token
+        # measured on real KB answers.
+        answer = "The runbook says to check the connection pool. " * 172
+        annotated = annotate_if_truncated(
+            answer, _response(StopReason.MAX_TOKENS, answer)
+        )
+
+        relayed = MilestoneEngine._format_tool_result(
+            ToolResult(success=True, data=annotated), tool_name="kb_qa"
+        )
+
+        assert len(annotated) > MilestoneEngine.TOOL_RESULT_MAX_CHARS - 590, (
+            "the premise stopped holding: this answer no longer overflows the "
+            "relay budget, so the test would pass even with a tail notice"
+        )
+        assert TRUNCATION_NOTICE in relayed

@@ -357,6 +357,18 @@ lost a required field to the cut.
 `UNKNOWN` is a distinct state and never triggers the ladder: a provider that
 reports nothing is not evidence of a cut.
 
+**A response the provider reported as cut is never cached.** The response cache
+keys on `(case, prompt, model)` and deliberately not on `max_tokens`, so a
+stored truncated body is exactly what a retry at a bigger cap would be served
+instead of reaching the provider — turning "retry with more room" into "return
+the same cut body", silently and indistinguishably from a genuine second
+truncation. Declining the write closes that for every caller without a flag to
+remember. It does not replace the engine ladder's `bypass_cache`: the two cover
+disjoint halves, since a cut body from a provider that reports nothing is
+invisible to the store rule and IS cached, and there the parse-time test plus
+`bypass_cache` are what keep the retry off it. The truncation helper never
+retries on `UNKNOWN`, so it cannot reach that half.
+
 Outside the engine, consumers use
 `infrastructure/llm/truncation.generate_with_truncation_retry` — call, and if
 the provider says it ran out, double the cap once and retry. What to do when
@@ -364,7 +376,8 @@ the retry is *also* cut is per consumer, and the split is deliberate: read
 paths (KB/evidence QA synthesis, tier-2 deep analysis) return the partial with
 an explicit truncation notice **prefixed** — head-first because the relays
 downstream trim to a character cap by keeping the head, so a tail notice is
-dropped exactly when the answer is longest — because refusing would destroy real
+dropped exactly when the answer is longest (the same reason engine system
+feedback is prepended) — because refusing would destroy real
 value; write paths (runbook conversion) refuse, because a half-procedure
 persisted to the knowledge base and later retrieved as authoritative is worse
 than no runbook. Case titles fall back to the placeholder without retrying —
