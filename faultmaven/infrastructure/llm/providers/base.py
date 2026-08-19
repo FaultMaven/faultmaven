@@ -327,6 +327,14 @@ class ProviderConfig:
     timeout: int = 30
     default_model: Optional[str] = None
     confidence_score: float = 0.8
+    # Provider-interpreted extended-thinking knobs (#1116). `None` (the
+    # default everywhere) means the provider sends no thinking configuration
+    # at all — byte-identical requests to pre-#1116 behavior. Currently only
+    # AnthropicProvider reads these ("off" | "adaptive" | "enabled"); other
+    # providers ignore them. Additive with defaults so every existing
+    # ProviderConfig construction site is unaffected.
+    thinking_mode: Optional[str] = None
+    thinking_budget_tokens: Optional[int] = None
 
     def __post_init__(self):
         if self.models is None:
