@@ -9,6 +9,7 @@ from .base import (
     BaseLLMProvider,
     LLMResponse,
     ProviderConfig,
+    ReasoningIntent,
     StopReason,
     normalize_stop_reason,
 )
@@ -22,6 +23,7 @@ from .registry import ProviderRegistry, get_registry, reset_registry
 __all__ = [
     "BaseLLMProvider",
     "LLMResponse",
+    "ReasoningIntent",
     "StopReason",
     "normalize_stop_reason",
     "ProviderConfig",

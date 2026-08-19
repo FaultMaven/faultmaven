@@ -23,6 +23,7 @@ from .base import (
     BaseLLMProvider,
     LLMResponse,
     ProviderConfig,
+    ReasoningIntent,
     StopReason,
     ToolCall,
     normalize_stop_reason,
@@ -148,15 +149,18 @@ class GeminiProvider(BaseLLMProvider):
         return int(m.group(1)) if m else None
 
     def _structured_thinking_config(
-        self, model: str, is_structured: bool
+        self,
+        model: str,
+        is_structured: bool,
+        intent: Optional[ReasoningIntent] = None,
     ) -> Optional[Dict[str, Any]]:
-        """``thinkingConfig`` payload for a structured-output call, or None to
-        leave it unset.
+        """``thinkingConfig`` payload for this call, or None to leave it unset.
 
-        Caps thinking ONLY on Gemini 3.x+ models, where dynamic thinking
-        starved the structured JSON output and truncated to a MAX_TOKENS 500
-        (observed on gemini-3.5-flash, the shipped Gemini default). Returns
-        ``{"thinkingLevel": "low"}`` there.
+        With no caller intent (the default), preserves the shape-based rule:
+        caps thinking ONLY on Gemini 3.x+ structured calls, where dynamic
+        thinking starved the structured JSON output and truncated to a
+        MAX_TOKENS 500 (observed on gemini-3.5-flash, the shipped Gemini
+        default). Returns ``{"thinkingLevel": "low"}`` there.
 
         Returns None everywhere else:
         - non-structured calls (partial text is still usable, so starvation is
@@ -165,17 +169,53 @@ class GeminiProvider(BaseLLMProvider):
         - Gemini 2.5 — bills thinking against maxOutputTokens too, but was not
           observed to starve; left at native dynamic thinking rather than
           changing a working, reasoning-heavy path without evidence.
+
+        A caller-declared :class:`ReasoningIntent` (#1118) refines the rule on
+        3.x+ only — ``thinkingLevel`` is 3.x vocabulary, and pre-3.x models
+        have no knob this provider can turn (1.5/2.0 reject ``thinkingConfig``;
+        2.5 takes the integer ``thinkingBudget`` this provider no longer
+        sends), so there the intent is logged and the model's native behavior
+        stands. On 3.x+:
+
+        - EXTRACTION → ``{"thinkingLevel": "low"}`` on every shape, plain
+          calls included (grounded generation does not need the reasoning
+          loop, and it bills against the same budget as the answer);
+        - INFERENCE → None. Native dynamic thinking IS the model reasoning at
+          its own discretion — the honoured translation is to not cap it. On a
+          structured call this lifts the starvation guard at the caller's
+          explicit request; such a caller should pair the intent with an
+          output floor (``min_output_tokens``, #1117) so a starved response
+          fails loudly instead of truncating silently.
         """
-        if not is_structured:
+        major = self._gemini_major_version(model)
+        if major is None or major < 3:
+            if intent is not None:
+                self.logger.info(
+                    f"reasoning intent '{intent.value}' cannot be expressed "
+                    f"on {model} (thinkingLevel is 3.x vocabulary; earlier "
+                    f"models have no supported thinking knob here) — "
+                    f"proceeding with the model's native behavior"
+                )
             return None
 
-        major = self._gemini_major_version(model)
-        if major is not None and major >= 3:
-            # 3.x+ uses the string thinkingLevel; the 2.5-era integer
-            # thinkingBudget 400s on these models.
+        if intent is ReasoningIntent.INFERENCE:
+            if is_structured:
+                self.logger.info(
+                    f"reasoning_intent='inference' on a structured call to "
+                    f"{model}: lifting the thinkingLevel starvation cap at "
+                    f"the caller's request — native dynamic thinking bills "
+                    f"against maxOutputTokens, so the caller should declare "
+                    f"an output floor (min_output_tokens)"
+                )
+            return None
+        if intent is ReasoningIntent.EXTRACTION:
             return {"thinkingLevel": self._GEMINI_3X_STRUCTURED_THINKING_LEVEL}
 
-        return None
+        if not is_structured:
+            return None
+        # 3.x+ uses the string thinkingLevel; the 2.5-era integer
+        # thinkingBudget 400s on these models.
+        return {"thinkingLevel": self._GEMINI_3X_STRUCTURED_THINKING_LEVEL}
 
     async def generate(
         self,
@@ -239,6 +279,17 @@ class GeminiProvider(BaseLLMProvider):
         tools_param = kwargs.pop("tools", None)
         tool_choice = kwargs.pop("tool_choice", None)
 
+        # Caller-declared reasoning intent (#1118), translated into
+        # thinkingConfig below. ``min_output_tokens`` (#1117) is enforced at
+        # the router (budget bump + floor check); Gemini 3.x has no integer
+        # thinking allocation to size from it (thinkingLevel only).
+        reasoning_intent = kwargs.pop("reasoning_intent", None)
+        if reasoning_intent is not None and not isinstance(
+            reasoning_intent, ReasoningIntent
+        ):
+            reasoning_intent = ReasoningIntent(reasoning_intent)
+        kwargs.pop("min_output_tokens", None)
+
         # Prepare request body for Gemini API format
         if messages:
             converted = self._convert_messages_to_gemini(messages)
@@ -292,7 +343,9 @@ class GeminiProvider(BaseLLMProvider):
         # is the same object referenced by request_body["generationConfig"], so
         # mutating it here is sufficient.
         thinking_config = self._structured_thinking_config(
-            selected_model, is_structured=bool(rf) or bool(tools_param)
+            selected_model,
+            is_structured=bool(rf) or bool(tools_param),
+            intent=reasoning_intent,
         )
         if thinking_config is not None:
             generation_config["thinkingConfig"] = thinking_config

@@ -85,6 +85,11 @@ class HuggingFaceProvider(BaseLLMProvider):
         if not selected_model:
             selected_model = "microsoft/DialoGPT-medium"
 
+        # Router-level reasoning knobs (#1117/#1118) this provider has no
+        # mechanism for; popped so they cannot leak into the request body,
+        # logging any intent it cannot act on.
+        self._discard_reasoning_kwargs(kwargs, model=selected_model)
+
         # Prepare headers for Hugging Face API
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",

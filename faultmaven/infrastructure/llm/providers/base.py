@@ -109,6 +109,47 @@ def normalize_stop_reason(raw: Any) -> StopReason:
     return _STOP_REASON_ALIASES.get(text, StopReason.UNKNOWN)
 
 
+class ReasoningIntent(str, Enum):
+    """What a call needs from hidden reasoning, declared by the CALLER (#1118).
+
+    Before this existed, providers inferred the reasoning decision from the
+    call's *shape* (tools present / ``response_format`` / plain chat). Shape is
+    a proxy for purpose, and a coarse one: KB synthesis and hypothesis
+    generation are both structured calls, but one is grounded extraction and
+    the other is inference over candidate causes — the provider cannot tell
+    them apart from shape alone.
+
+    The vocabulary is deliberately semantic, not a raw effort level.
+    ``reasoning_effort`` is OpenAI's word, ``thinkingLevel`` is Gemini's,
+    Anthropic partitions a ``thinking`` budget — a caller in a tool module has
+    no business knowing which provider it landed on. Each provider translates
+    the intent into its own mechanism, and the mapping can change per provider
+    without touching a single call site.
+
+    Layering: caller intent is a REQUEST; provider/model hard constraints are
+    the override (e.g. gpt-5.6 rejects function tools alongside reasoning on
+    /chat/completions — that call runs with reasoning off no matter what the
+    caller asked). An intent that cannot be honoured is logged, never silently
+    dropped, so "I asked for reasoning and did not get it" is diagnosable.
+
+    ``None`` (the parameter's default, not an enum member) preserves the
+    shape-based per-provider defaults exactly — existing callers see no change.
+    """
+
+    # Grounded transformation of context supplied in the prompt ("answer
+    # strictly from the provided documents"). Hidden reasoning adds little and
+    # competes with the answer for one shared token budget — translate to the
+    # provider's minimum reasoning.
+    EXTRACTION = "extraction"
+
+    # Reasoning over candidates (hypothesis generation, causal analysis).
+    # Reasoning is welcome — translate to the provider's default/moderate
+    # reasoning where the model allows it. NOTE: no production call site
+    # declares this yet; whether any call SHOULD reason is #1116's experiment
+    # to answer. This member exists so that experiment is expressible.
+    INFERENCE = "inference"
+
+
 @dataclass
 class ToolCall:
     """Tool/function call from LLM.
@@ -446,6 +487,34 @@ class BaseLLMProvider(ABC):
             )
             for tc in raw
         ]
+
+    def _discard_reasoning_kwargs(
+        self, kwargs: Dict[str, Any], model: Optional[str] = None
+    ) -> None:
+        """Pop the router-level reasoning knobs this provider cannot act on.
+
+        ``reasoning_intent`` (#1118) and ``min_output_tokens`` (#1117) travel
+        to every provider as ``generate()`` kwargs. Providers with a reasoning
+        control (OpenAI ``reasoning_effort``, Gemini ``thinkingLevel``)
+        translate the intent themselves; every other provider calls this at
+        the top of ``generate()`` — mirroring the ``cache_prompt`` pattern —
+        so the keys can never leak into a request body, and so an intent that
+        cannot be applied is LOGGED rather than silently dropped.
+
+        ``min_output_tokens`` needs no log: it is enforced at the router
+        (pre-call budget bump + post-call floor check), so a provider with no
+        reasoning partition to size loses nothing by dropping it.
+        """
+        intent = kwargs.pop("reasoning_intent", None)
+        kwargs.pop("min_output_tokens", None)
+        if intent is not None:
+            intent_value = getattr(intent, "value", intent)
+            self.logger.info(
+                f"reasoning_intent='{intent_value}' declared, but "
+                f"{self.provider_name} has no reasoning control on this call "
+                f"path (model: {model or self.config.default_model}) — "
+                f"proceeding with the model's native behavior"
+            )
 
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:
         """Whether this provider/model supports function calling (tools API).

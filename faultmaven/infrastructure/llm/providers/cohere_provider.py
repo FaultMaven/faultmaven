@@ -107,6 +107,10 @@ class CohereProvider(BaseLLMProvider):
         messages = kwargs.pop("messages", None)
         # Anthropic-only caching hint; drop before payload.update(kwargs).
         kwargs.pop("cache_prompt", None)
+        # Router-level reasoning knobs (#1117/#1118) this provider has no
+        # mechanism for; popped so they cannot leak into the request body,
+        # logging any intent it cannot act on.
+        self._discard_reasoning_kwargs(kwargs, model=model)
 
         # Prepare request payload in Cohere v2 format
         payload = {

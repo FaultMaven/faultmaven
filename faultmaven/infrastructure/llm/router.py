@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
+from faultmaven.exceptions import LLMOutputFloorError
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.security.redaction import DataSanitizer
@@ -29,7 +30,7 @@ from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
 
 from .cache import LLMResponseCache
-from .providers import LLMResponse, get_registry
+from .providers import LLMResponse, ReasoningIntent, get_registry
 
 # Opik native tracing for LLM calls
 try:
@@ -142,6 +143,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         provider_override: Optional[str] = None,
         cache_prompt: bool = False,
         bypass_cache: bool = False,
+        reasoning_intent: Optional[ReasoningIntent] = None,
+        min_output_tokens: Optional[int] = None,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -158,6 +161,30 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             reached, and it needs the good response to replace the bad entry,
             because nothing else ever will.
 
+        reasoning_intent: what this call needs from hidden reasoning (#1118),
+            declared per call site — ``ReasoningIntent.EXTRACTION`` for
+            grounded transformation of supplied context, ``INFERENCE`` for
+            reasoning over candidates. Semantic on purpose: each provider
+            translates it into its own mechanism (OpenAI ``reasoning_effort``,
+            Gemini ``thinkingLevel``), hard model constraints override it, and
+            an intent that cannot be honoured is logged by the provider, never
+            silently dropped. ``None`` (default) preserves the shape-based
+            per-provider defaults exactly.
+
+        min_output_tokens: the minimum VISIBLE output this call needs (#1117).
+            Reasoning models bill hidden reasoning against the same token
+            budget the answer is drawn from, so a nominally-large ``max_tokens``
+            can still yield a starved stub. The floor is enforced twice: before
+            the call, ``max_tokens`` is raised to at least the floor (a total
+            budget below it can never satisfy it); after the call, a response
+            cut at the cap with less visible output than the floor raises
+            :class:`~faultmaven.exceptions.LLMOutputFloorError` instead of
+            returning a body the caller pre-declared unusable. ``None``
+            (default) keeps the existing behavior — truncated responses are
+            returned for the caller to inspect. A floor bounds STARVATION, not
+            verbosity: a response the model finished cleanly below the floor is
+            returned as-is.
+
         Args:
             prompt: Input prompt (optional if messages is provided)
             model: Specific model to use (optional)
@@ -171,6 +198,29 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Validate prompt or messages
         if prompt is None and not messages:
             raise TypeError("Either prompt or messages must be provided")
+
+        # Normalize the reasoning knobs up front, loudly — a typo'd intent or a
+        # nonsensical floor is a caller bug and must fail at the call site, not
+        # mutate into silent provider behavior.
+        if reasoning_intent is not None and not isinstance(
+            reasoning_intent, ReasoningIntent
+        ):
+            reasoning_intent = ReasoningIntent(reasoning_intent)
+        if min_output_tokens is not None:
+            if min_output_tokens < 1:
+                raise ValueError(
+                    f"min_output_tokens must be a positive integer, "
+                    f"got {min_output_tokens!r}"
+                )
+            if max_tokens < min_output_tokens:
+                # A total budget below the floor can never satisfy it — the
+                # "larger total" translation from #1117. Logged so budget
+                # arithmetic stays visible in traces.
+                self.logger.info(
+                    f"⬆️ Raising max_tokens {max_tokens} → {min_output_tokens} "
+                    f"to honour the declared output floor"
+                )
+                max_tokens = min_output_tokens
 
         # Sanitize before sending to external providers (conditional).
         # Off the event loop via the sanitizer's async boundary (#654).
@@ -253,6 +303,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 confidence_threshold=self.confidence_threshold,
                 provider_override=provider_override,
                 cache_prompt=cache_prompt,
+                reasoning_intent=reasoning_intent,
+                min_output_tokens=min_output_tokens,
                 timeout=self._resolve_timeout(),  # Provider-aware ceiling
                 retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
                 retry_delay=1.0,
@@ -344,6 +396,40 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 stop_reason=response.stop_reason.value,
             ).inc()
 
+            # Output floor (#1117): a response cut at the cap with less visible
+            # output than the caller's declared floor is a starved answer —
+            # hidden reasoning consumed the budget the answer needed — and the
+            # caller pre-declared it unusable, so fail loudly instead of
+            # returning it. Only truncated responses are tested: a body the
+            # model finished cleanly (STOP) below the floor is a short answer,
+            # not a starved one.
+            #
+            # Visible output is estimated from content length (~4 chars/token),
+            # NOT read from ``output_tokens``: OpenAI's ``completion_tokens``
+            # and Anthropic's ``output_tokens`` INCLUDE hidden reasoning, so on
+            # exactly the starved call this exists to catch (fm#1094: ~1,946
+            # reasoning tokens inside a 2,000 count, 215 chars of answer) the
+            # reported number reads as ample and the check would fail open. The
+            # heuristic is coarse, and that is acceptable: the floor is a
+            # starvation guard, not a precision instrument — a genuinely
+            # starved body misses it by an order of magnitude.
+            if min_output_tokens is not None and response.is_truncated:
+                visible_output_tokens = len(response.content or "") // 4
+                if visible_output_tokens < min_output_tokens:
+                    llm_requests.labels(
+                        provider=response.provider,
+                        model=response.model,
+                        status="output_floor_starved",
+                    ).inc()
+                    raise LLMOutputFloorError(
+                        f"LLM response starved below the declared output floor: "
+                        f"~{visible_output_tokens} visible output tokens "
+                        f"(estimated from {len(response.content or '')} chars) "
+                        f"< min_output_tokens={min_output_tokens}, with "
+                        f"stop_reason=MAX_TOKENS at max_tokens={max_tokens} "
+                        f"(provider={response.provider} model={response.model})"
+                    )
+
             # Prometheus + SLA accounting (no-ops when metrics are disabled)
             llm_requests.labels(
                 provider=response.provider, model=response.model, status="success"
@@ -361,6 +447,12 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
             return response
 
+        except LLMOutputFloorError:
+            # Not a provider failure — the provider answered; the answer is one
+            # the caller pre-declared unusable. Its dedicated metric was
+            # recorded at the raise site; re-raise without the misleading
+            # "all providers failed" framing below.
+            raise
         except Exception as e:
             # Provider unknown on failure (the whole fallback chain failed)
             llm_requests.labels(
@@ -454,6 +546,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 - response_format: Structured output format (optional)
                 - tools: Tool/function definitions (optional)
                 - tool_choice: Tool choice strategy (optional)
+                - reasoning_intent: Caller-declared reasoning need (#1118, optional)
+                - min_output_tokens: Visible-output floor (#1117, optional)
 
         Returns:
             LLMResponse with generated content
@@ -475,6 +569,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         provider_override = kwargs.get("provider_override")
         cache_prompt = kwargs.get("cache_prompt", False)
         bypass_cache = kwargs.get("bypass_cache", False)
+        reasoning_intent = kwargs.get("reasoning_intent")
+        min_output_tokens = kwargs.get("min_output_tokens")
 
         # Call existing route method with all the robust functionality
         response = await self.route(
@@ -491,6 +587,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             provider_override=provider_override,
             cache_prompt=cache_prompt,
             bypass_cache=bypass_cache,
+            reasoning_intent=reasoning_intent,
+            min_output_tokens=min_output_tokens,
         )
 
         # Return the full LLMResponse (milestone_engine expects this)

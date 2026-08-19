@@ -102,6 +102,11 @@ class AnthropicProvider(BaseLLMProvider):
         # below so it works regardless of where `system` came from. Transparent
         # to the model output — only affects billing of the stable prefix.
         cache_prompt = bool(kwargs.pop("cache_prompt", False))
+        # Router-level reasoning knobs (#1117/#1118). This provider does not
+        # translate them yet — extended-thinking support replaces this call
+        # with a real mapping (intent → `thinking` config, floor → the
+        # budget_tokens/max_tokens partition).
+        self._discard_reasoning_kwargs(kwargs, model=selected_model)
         if messages:
             converted = self._convert_messages_to_anthropic(messages)
             request_body["messages"] = converted["messages"]

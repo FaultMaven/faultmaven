@@ -123,6 +123,12 @@ class LocalProvider(BaseLLMProvider):
         # Get effective model
         effective_model = self.get_effective_model(model)
 
+        # Router-level reasoning knobs (#1117/#1118) this provider has no
+        # mechanism for. Popped HERE, before transport dispatch, because the
+        # Ollama path merges raw kwargs into payload["options"] — the keys
+        # must never reach a request body. Logs any intent it cannot act on.
+        self._discard_reasoning_kwargs(kwargs, model=effective_model)
+
         # Intelligently detect API format for optimal compatibility
         # Priority order: Ollama -> OpenAI-compatible -> Raw llama.cpp
 

@@ -16,7 +16,13 @@ from faultmaven.infrastructure.llm.structured_output_capability import (
     StructuredOutputCapability,
 )
 
-from .base import BaseLLMProvider, LLMResponse, ProviderConfig, normalize_stop_reason
+from .base import (
+    BaseLLMProvider,
+    LLMResponse,
+    ProviderConfig,
+    ReasoningIntent,
+    normalize_stop_reason,
+)
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -101,6 +107,13 @@ class OpenAIProvider(BaseLLMProvider):
     # competes with the answer for one budget. Verified accepted WITHOUT tools
     # on gpt-5.6 (the tools branch only proves it valid alongside them).
     _DEFAULT_REASONING_PLAIN_EFFORT = "none"
+
+    # Effort for a caller-declared INFERENCE intent (#1118). ``"medium"`` is
+    # the API's own default level for reasoning models — the intent knob
+    # re-requests the model's default rather than inventing an allocation.
+    # No production call site declares INFERENCE yet (#1116 owns that
+    # decision); the mapping exists so the experiment is expressible.
+    _INFERENCE_REASONING_EFFORT = "medium"
 
     @classmethod
     def _uses_completion_tokens_param(cls, model_name: str) -> bool:
@@ -204,6 +217,77 @@ class OpenAIProvider(BaseLLMProvider):
         """
         return self._capability_for_model_name(self.get_effective_model(model))
 
+    def _apply_reasoning_intent(
+        self,
+        payload: Dict[str, Any],
+        intent: ReasoningIntent,
+        model: str,
+        *,
+        has_tools: bool,
+        has_response_format: bool,
+        defaults_reasoning: bool,
+    ) -> None:
+        """Translate a caller's :class:`ReasoningIntent` into ``reasoning_effort``.
+
+        Caller intent is a request; the model's hard constraints override it:
+
+        - Function tools on /chat/completions: the gpt-5.6 family REQUIRES
+          ``reasoning_effort: "none"`` (already forced above — that branch is
+          correctness, not policy), and the other reasoning families 400 on the
+          param alongside tools. Either way no intent can move the effort here.
+        - Models that reject the param entirely (gpt-4o/gpt-4.1,
+          o1-mini/o1-preview, gateway subclasses that opt out): nothing to set.
+
+        Where the param is available:
+
+        - INFERENCE → ``"medium"`` (the API's default reasoning level).
+        - EXTRACTION → the verified minimum: ``"none"`` on the gpt-5.6 family
+          for plain calls (the only shape it is verified on), ``"low"``
+          otherwise — ``"low"`` is the broadly-valid floor across the gpt-5 and
+          o-series families, and the safe choice wherever ``"none"`` is
+          unverified.
+
+        An intent that cannot be honoured is logged, never silently dropped
+        (#1118): INFERENCE always (the caller asked for reasoning and is not
+        getting it); EXTRACTION only where the model reasons anyway and cannot
+        be capped (tools on a reasoning family) — on a non-reasoning model
+        EXTRACTION is satisfied by construction.
+        """
+        if has_tools:
+            if intent is ReasoningIntent.INFERENCE:
+                self.logger.warning(
+                    f"reasoning_intent='inference' cannot be honoured on "
+                    f"{model} with function tools: /chat/completions rejects "
+                    f"tools alongside reasoning — proceeding with reasoning "
+                    f"off (would need /v1/responses support)"
+                )
+            elif self._caps_reasoning_effort(model):
+                self.logger.info(
+                    f"reasoning_intent='extraction' cannot set "
+                    f"reasoning_effort on {model} with function tools (the "
+                    f"API 400s on the combination) — proceeding with the "
+                    f"model's native tool-call behavior"
+                )
+            return
+
+        if not self._caps_reasoning_effort(model):
+            if intent is ReasoningIntent.INFERENCE:
+                self.logger.warning(
+                    f"reasoning_intent='inference' cannot be honoured on "
+                    f"{model}: the model does not accept reasoning_effort — "
+                    f"proceeding without reasoning"
+                )
+            return
+
+        if intent is ReasoningIntent.INFERENCE:
+            payload["reasoning_effort"] = self._INFERENCE_REASONING_EFFORT
+        else:  # EXTRACTION
+            payload["reasoning_effort"] = (
+                self._DEFAULT_REASONING_PLAIN_EFFORT
+                if defaults_reasoning and not has_response_format
+                else self._STRUCTURED_REASONING_EFFORT
+            )
+
     async def generate(
         self,
         prompt: str,
@@ -251,6 +335,20 @@ class OpenAIProvider(BaseLLMProvider):
         # Anthropic-only caching hint; OpenAI caches prompts automatically and
         # rejects unknown body fields, so drop it before payload.update(kwargs).
         kwargs.pop("cache_prompt", None)
+        # Caller-declared reasoning intent (#1118), translated into
+        # ``reasoning_effort`` after the shape-based defaults below. Popped
+        # here so neither key can leak into the request body. None preserves
+        # the shape-based defaults exactly. ``min_output_tokens`` (#1117) is
+        # enforced at the router (budget bump + floor check) — there is no
+        # OpenAI parameter to translate it into on /chat/completions.
+        reasoning_intent = kwargs.pop("reasoning_intent", None)
+        if reasoning_intent is not None and not isinstance(
+            reasoning_intent, ReasoningIntent
+        ):
+            # The router normalizes, but this provider is also called directly
+            # (registry, connection tests) — accept the string spelling too.
+            reasoning_intent = ReasoningIntent(reasoning_intent)
+        kwargs.pop("min_output_tokens", None)
         token_limit_param = (
             "max_completion_tokens"
             if self._uses_completion_tokens_param(effective_model)
@@ -327,6 +425,20 @@ class OpenAIProvider(BaseLLMProvider):
             and self._caps_reasoning_effort(effective_model)
         ):
             payload["reasoning_effort"] = self._DEFAULT_REASONING_PLAIN_EFFORT
+
+        # Caller-declared intent (#1118) refines the shape-based defaults
+        # above; the hard constraints (tools, models that reject the param)
+        # stay in charge. Runs BEFORE the kwargs merge so an explicit
+        # ``reasoning_effort`` kwarg still has the last word.
+        if reasoning_intent is not None:
+            self._apply_reasoning_intent(
+                payload,
+                reasoning_intent,
+                effective_model,
+                has_tools=bool(tools),
+                has_response_format=bool(response_format),
+                defaults_reasoning=defaults_reasoning,
+            )
 
         # Add any additional kwargs, filtering out None values
         payload.update({k: v for k, v in kwargs.items() if v is not None})
