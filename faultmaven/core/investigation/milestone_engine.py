@@ -2990,6 +2990,16 @@ KB_QA_RELAY_SUFFIX = (
 # the allowance by 540-1249 characters (7-17% of the answer), so a 35% tail
 # reservation puts every observed elision strictly inside the middle -- the
 # preserved tail is real answer text in every case seen, not padding.
+#
+# Those overflows are CENSORED LOWER BOUNDS, not a demand distribution. The run
+# predates #1094: synthesis was capped at 2000 tokens with no retry, and three
+# of the five answers sit within a few percent of what 2000 tokens can write.
+# So what was measured is how far past the budget a capped answer reached, not
+# how long the answer wanted to be, and a post-#1094 run should be expected to
+# show a wider band. The mechanism does not depend on the number -- the elide
+# fires whatever the overflow, and the budget is hard-bounded either way -- but
+# do not treat 0.35 as tuned without re-measuring. See
+# docs/operations/monitoring/tool-result-budget.md.
 KB_QA_ANSWER_TAIL_SHARE = 0.35
 
 # Marks where content was removed. Carries the count because the model is asked
@@ -3027,7 +3037,8 @@ def _elide_answer_middle(content: str, budget: int) -> tuple[str, int]:
     head-first cut every other tool result gets -- see
     ``KB_QA_ANSWER_TAIL_SHARE`` for why kb_qa is the exception.
 
-    Both markers are inside the returned budget. The result always ENDS on
+    Both markers are inside the returned budget. On every path reachable from
+    the two production callers the result ENDS on
     ``KB_QA_ANSWER_TRUNCATED_MARKER``, which is load-bearing rather than
     decorative: the tool loop reads that anchor back to know this cut already
     fed the truncation metrics, so one relayed result yields exactly one
@@ -3035,6 +3046,13 @@ def _elide_answer_middle(content: str, budget: int) -> tuple[str, int]:
     the inline marker says where. Content arriving already marked keeps the
     marker it has rather than gaining a second one -- the anchor holds either
     way, since slicing the tail carries the existing marker along with it.
+
+    "Reachable" is the honest qualifier, not a hedge. The degenerate-budget
+    branch below slices to ``budget - len(end_marker)``, and on
+    already-marked content that slice can land inside the marker it was meant
+    to preserve. Both callers pass a budget three orders of magnitude larger,
+    so the corner is unreachable today; it is called out rather than asserted
+    away because a wrapper edit is exactly what would open it.
     """
     # Nothing to do. Both production callers already gate on the overflow, so
     # this is defensive rather than load-bearing -- but without it the head and
