@@ -1747,3 +1747,168 @@ async def test_a_content_change_still_re_ingests_an_unpublished_runbook():
         )
 
         assert result.ingested == ["global/example.md"]
+
+
+# ---------------------------------------------------------------------------
+# fm#1108: authored rows converge on the current stamp
+# ---------------------------------------------------------------------------
+
+
+class _RestampSession:
+    """A session whose `execute(...).all()` returns fixed (id, metadata, published)
+    triples — the shape `_restamp_stale_rows` selects."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, *_args, **_kwargs):
+        result = MagicMock()
+        result.all.return_value = list(self._rows)
+        return result
+
+
+def _restamp_factory(rows):
+    def factory():
+        return _RestampSession(rows)
+
+    return factory
+
+
+async def _restamp(rows, service, **kwargs):
+    return await kb_init._restamp_stale_rows(service, _restamp_factory(rows), **kwargs)
+
+
+def _service_that_restamps(written=3):
+    service = MagicMock()
+    service.restamp_document = AsyncMock(return_value=written)
+    return service
+
+
+@pytest.mark.asyncio
+async def test_an_authored_row_with_no_stamp_is_restamped():
+    """The gap neither existing pass covered: the pack gate only walks the pack,
+    and the repair pass selects on MISSING VECTORS — these rows have perfectly
+    good vectors, just stamped by older code. Without this selector a verified
+    conversion keeps pre-fm#1108 chunks forever and the read-path legacy parse
+    never drains."""
+    service = _service_that_restamps()
+    done = await _restamp([("authored-1", {}, True)], service)
+    assert done == ["authored-1"]
+    service.restamp_document.assert_awaited_once_with("authored-1")
+
+
+@pytest.mark.asyncio
+async def test_a_row_already_carrying_the_current_stamp_is_left_alone():
+    """Otherwise every boot re-embeds the whole authored KB, forever."""
+    service = _service_that_restamps()
+    rows = [("authored-1", {"chunk_stamp": chunk_stamp_identity()}, True)]
+    assert await _restamp(rows, service) == []
+    service.restamp_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_stamp_is_restamped_like_an_absent_one():
+    service = _service_that_restamps()
+    rows = [("authored-1", {"chunk_stamp": "0000000000000000"}, True)]
+    assert await _restamp(rows, service) == ["authored-1"]
+
+
+@pytest.mark.asyncio
+async def test_built_ins_are_left_to_the_pack_gate():
+    """Doing them here would duplicate the pack path's work with an EMBEDDING;
+    the pack path is prechunked and free."""
+    service = _service_that_restamps()
+    rows = [("kb_0123456789ab", {}, True), ("authored-1", {}, True)]
+    assert await _restamp(rows, service) == ["authored-1"]
+
+
+@pytest.mark.asyncio
+async def test_an_unpublished_row_is_never_restamped():
+    """Same trap as the pack gate: retrieval ignores is_published, so a retired
+    runbook is one whose vectors were deleted. Re-indexing it would put it back
+    into investigations — and it has no chunks to re-stamp anyway."""
+    service = _service_that_restamps()
+    assert await _restamp([("authored-1", {}, False)], service) == []
+    service.restamp_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_respects_the_per_boot_chunk_budget():
+    """It re-chunks and re-embeds with BGE-M3, so an unbounded sweep would
+    reintroduce the on-pod embedding timeout the pack exists to avoid."""
+    service = _service_that_restamps(written=10)
+    rows = [(f"authored-{i}", {}, True) for i in range(5)]
+    done = await _restamp(rows, service, max_chunks=15)
+    assert len(done) == 2, "budget must stop the sweep, deferring the rest"
+
+
+@pytest.mark.asyncio
+async def test_a_bulk_stale_set_is_sliced_not_refused():
+    """The one place this pass must NOT copy ``_repair_orphaned_rows``.
+
+    Repair treats an oversized set as a bulk-loss anomaly and declines it
+    wholesale. Here an oversized set is just the FIRST BOOT after fm#1108 —
+    every authored row is stale at once — so refusing would mean any deployment
+    with more authored runbooks than the cap (25 by default) never converges,
+    which is the exact failure this pass exists to fix.
+    """
+    service = _service_that_restamps()
+    rows = [(f"authored-{i}", {}, True) for i in range(9)]
+    done = await _restamp(rows, service, max_rows=3)
+    assert done == ["authored-0", "authored-1", "authored-2"]
+
+
+@pytest.mark.asyncio
+async def test_convergence_is_monotone_across_boots():
+    """Each boot takes a bounded prefix and the restamped rows stop being stale,
+    so repeated boots finish the migration rather than churning the same head."""
+    remaining = {f"authored-{i}" for i in range(7)}
+    service = MagicMock()
+
+    async def _restamp_one(item_id):
+        remaining.discard(item_id)
+        return 2
+
+    service.restamp_document = AsyncMock(side_effect=_restamp_one)
+
+    boots = 0
+    while remaining and boots < 10:
+        rows = [(i, {}, True) for i in sorted(remaining)]
+        await _restamp(rows, service, max_rows=3)
+        boots += 1
+
+    assert not remaining, "the sweep must drain, not stall on the same prefix"
+    assert boots == 3
+
+
+@pytest.mark.asyncio
+async def test_one_failing_row_does_not_stop_the_sweep_or_startup():
+    service = MagicMock()
+    service.restamp_document = AsyncMock(side_effect=[RuntimeError("boom"), 2])
+    rows = [("authored-1", {}, True), ("authored-2", {}, True)]
+    assert await _restamp(rows, service) == ["authored-2"]
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_wrote_nothing_is_not_recorded_as_restamped():
+    """`restamp_document` returns 0 when it skipped or could not repair. Counting
+    it would report convergence that did not happen."""
+    service = _service_that_restamps(written=0)
+    assert await _restamp([("authored-1", {}, True)], service) == []
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_row_set_never_fails_startup():
+    service = _service_that_restamps()
+
+    class _Boom(_RestampSession):
+        async def execute(self, *_a, **_k):
+            raise RuntimeError("db down")
+
+    assert await kb_init._restamp_stale_rows(service, lambda: _Boom([])) == []

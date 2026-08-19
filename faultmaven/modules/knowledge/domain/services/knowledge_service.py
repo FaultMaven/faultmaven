@@ -322,52 +322,44 @@ def _unrecorded_chunk_letters(
     return seen
 
 
+def _row_metadata(knowledge_metadata: Any) -> Dict[str, Any]:
+    """Decode a raw ``knowledge_items.knowledge_metadata`` value to a dict.
+
+    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so the value
+    arrives as a JSON *string* or an already-decoded ``dict`` depending on
+    backend and writer — handling one shape loses the record silently on the
+    other (the bug ``kb_init._decode_metadata`` documents). Read-only: the dict
+    branch aliases its caller's attribute, so callers must not mutate it in
+    place; copy first.
+
+    Returns ``{}`` for absent/undecodable values so every caller's ``.get`` is
+    safe. A value that is present but undecodable warns on the way: it is the
+    one "no metadata" answer that is really "unread metadata".
+    """
+    if isinstance(knowledge_metadata, dict):
+        return knowledge_metadata
+    if not knowledge_metadata:
+        return {}
+    try:
+        decoded = json.loads(knowledge_metadata)
+    except (json.JSONDecodeError, TypeError) as decode_error:
+        logger.warning(
+            "Unreadable knowledge_items metadata (%s): treating the row as "
+            "carrying none, so its causes record and chunk stamp both read as "
+            "absent.",
+            decode_error,
+        )
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
 def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:
     """Read ``causes`` off a ``knowledge_items`` metadata value, however it arrives.
 
-    Callers hand it either shape and neither has to know which: the *decoded*
-    dict off a domain ``KnowledgeItem.metadata``, or the *raw* column off an ORM
-    row. The raw one is why both branches are needed — ``JsonBlob`` is
-    ``Text().with_variant(JSONB, "postgresql")``, so it comes back as a JSON
-    string or an object depending on backend and writer, and handling one shape
-    loses the record silently on the other (the bug
-    ``kb_init._decode_metadata`` documents). Read-only: the dict branch aliases
-    its caller's attribute, so callers must not mutate.
-
-    A third copy of that decode, alongside ``kb_init._decode_metadata`` and
-    ``KnowledgeItemRepository._parse_json_dict``. Kept local for the same reason
-    the second one was: reaching for either would mean a domain service calling a
-    bootstrap-private helper or a repository-private method, to read one key.
-
     Returns None unless the value decodes to a dict whose ``causes`` is a list —
     the same tolerance :meth:`get_runbook_causes` applies to the domain shape.
-    A value that is present but undecodable warns on the way to that None: it is
-    the one "no record" answer that is really "unread record", and it silently
-    disables the caller's check.
     """
-    if isinstance(knowledge_metadata, dict):
-        decoded: Any = knowledge_metadata
-    elif knowledge_metadata:
-        try:
-            decoded = json.loads(knowledge_metadata)
-        except (json.JSONDecodeError, TypeError) as decode_error:
-            # An undecodable value is NOT "no record" — it is a record we could
-            # not read, and returning None quietly makes it indistinguishable
-            # from a prose runbook. That matters here more than it looks: the
-            # caller reads this to CHECK the record, so a silent miss disables
-            # the check for exactly the row whose metadata is already suspect.
-            logger.warning(
-                "Unreadable knowledge_items metadata (%s): treating the row as "
-                "carrying no causes record, so its causes/chunk agreement goes "
-                "unchecked.",
-                decode_error,
-            )
-            return None
-    else:
-        return None
-    if not isinstance(decoded, dict):
-        return None
-    causes = decoded.get("causes")
+    causes = _row_metadata(knowledge_metadata).get("causes")
     return causes if isinstance(causes, list) else None
 
 
@@ -1793,9 +1785,15 @@ class KnowledgeService:
         # unseedable for that reason rather than this one.
         row_causes = _row_causes(getattr(row, "knowledge_metadata", None))
         try:
-            return await self._index_document_in_vector_store(
+            written = await self._index_document_in_vector_store(
                 doc_model, prechunked=None, causes=row_causes
             )
+            if written > 0:
+                # These chunks carry the current stamp, so the row should say so
+                # — otherwise the fm#1108 restamp sweep sees a repaired row as
+                # still stale and re-embeds it on the next boot.
+                await self._record_chunk_stamp(item_id)
+            return written
         except KnowledgeBaseError as e:
             # Deliberate, documented tolerance — see the docstring. A failed
             # boot-time repair leaves the row orphaned for a later attempt; it
@@ -1805,6 +1803,96 @@ class KnowledgeService:
                 "leaving the row orphaned for a later boot to retry"
             )
             return 0
+
+    async def restamp_document(self, item_id: str) -> int:
+        """Re-index a row so its chunks carry the CURRENT cause stamp (fm#1108).
+
+        The convergence path for content ``kb_init`` never walks. The pack's
+        runbooks re-stamp through the bootstrap's idempotency gate, but authored
+        rows — verified conversions, edits — are not in the pack, and the repair
+        pass that could have caught them selects on MISSING VECTORS, not stale
+        stamps. Without this they would keep their pre-fm#1108 chunks
+        indefinitely, so the read path's legacy parse (and with it the
+        grammar-drift hazard) would never drain for exactly the population most
+        exposed to it: LLM-written headings sit nearest the grammar's edges.
+
+        Skips an UNPUBLISHED row. Retrieval ignores ``is_published``, so a
+        retired runbook is one whose vectors were deleted; writing fresh ones
+        would put it back into investigations on the strength of a maintenance
+        pass. It has no chunks to re-stamp either way.
+
+        The new stamp identity is recorded on the row ONLY after the vectors
+        are written (by the indexing path itself), so a failure leaves the row
+        stale and the next boot retries it — rather than marking it done and
+        never returning. Returns the number of chunks written (0 when skipped or
+        unrepairable).
+
+        Costs an embed: it re-chunks and re-embeds through the runtime path.
+        Callers MUST bound how many rows they restamp per boot.
+        """
+        from sqlalchemy import select as _select
+
+        from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
+        async with self._db_session_factory() as session:
+            found = await session.execute(
+                _select(KnowledgeItemModel).where(KnowledgeItemModel.item_id == item_id)
+            )
+            row = found.scalar_one_or_none()
+
+        if row is None:
+            return 0
+        if not row.is_published:
+            logger.debug(
+                "restamp_document: %s is unpublished — no vectors to re-stamp",
+                item_id,
+            )
+            return 0
+
+        # reindex_missing_vectors records the stamp itself on success — it is
+        # the one writing the chunks, so it is where that belongs.
+        return await self.reindex_missing_vectors(item_id)
+
+    async def _record_chunk_stamp(self, item_id: str) -> None:
+        """Note on the row which stamp identity its chunks now carry.
+
+        Written after a successful (re-)index, never before. The row is the only
+        place a later boot can cheaply ask "are these chunks stamped by the
+        current schema and grammar?" — reading it from the vector store would
+        mean a per-runbook metadata query at startup. Leaving it unwritten is
+        safe but expensive: the row stays a restamp candidate and pays the
+        embedding cost again on every boot, forever.
+
+        Best-effort and read-modify-write on the whole metadata dict, so the
+        ``causes`` record beside it is preserved. Failure is logged, not raised:
+        the vectors are already correct, and the cost of not recording it is a
+        repeated repair, not wrong data.
+        """
+        from sqlalchemy import select as _select
+
+        from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
+
+        try:
+            async with self._db_session_factory() as session:
+                found = await session.execute(
+                    _select(KnowledgeItemModel).where(
+                        KnowledgeItemModel.item_id == item_id
+                    )
+                )
+                row = found.scalar_one_or_none()
+                if row is None:
+                    return
+                metadata = dict(_row_metadata(row.knowledge_metadata))
+                metadata["chunk_stamp"] = chunk_stamp_identity()
+                row.knowledge_metadata = json.dumps(metadata)
+                await session.commit()
+        except Exception as record_error:
+            logger.warning(
+                "Could not record the chunk stamp for %s (%s) — its vectors are "
+                "correct, but it will be restamped again on the next boot.",
+                item_id,
+                record_error,
+            )
 
     async def _delete_knowledge_item_row(self, item_id: str) -> None:
         """Best-effort cleanup of an orphaned knowledge_items row.

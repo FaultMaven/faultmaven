@@ -165,11 +165,35 @@ built-in has no vectors, so it carries no stamps to refresh, and it is
 re-vectorised by stamping code if it is ever republished. A content change still
 re-ingests it, which is the documented "intentional new version".
 
-**Known limit:** `kb_init` walks the pack only, so authored runbooks (verified
-conversions, edits) are never re-stamped by boot. They re-stamp when next
-verified, edited or repaired. `kb_cause_letters_unstamped_total` is what says
-whether that tail is draining or has stalled — a value that stops falling is the
-evidence that would justify building a reindex sweep.
+**Authored rows converge through their own selector.** `kb_init` walks the pack
+only, and the orphan-repair pass beside it selects on **missing vectors** — so an
+authored runbook with perfectly good pre-stamp chunks was invisible to both, and
+would have kept them indefinitely. `_restamp_stale_rows` is the selector neither
+had: it picks rows whose `metadata["chunk_stamp"]` is absent or stale and
+re-indexes them.
+
+Detection is **SQL-only** — `ingest_runbook` records the identity on the row, so
+staleness is decidable without reading a vector, and only
+`item_id`/`is_published`/metadata are fetched, never `content`.
+
+It is bounded by the repair budgets (`max_rows`/`max_chunks`), because unlike the
+pack path it re-chunks and **re-embeds**. Both bounds **slice rather than
+refuse** — that is the one place this pass must not copy `_repair_orphaned_rows`,
+whose equivalent guard declines an oversized set as a bulk-loss anomaly. Here an
+oversized set is simply the first boot after this change (every authored row is
+stale at once), so refusing would leave any deployment with more authored
+runbooks than the cap — 25 by default — permanently unconverged. Slicing makes
+convergence monotone: each boot restamps a bounded prefix, and a restamped row
+stops being stale, so repeated boots drain the set. Built-ins are excluded (the pack gate does them prechunked, for
+free) and unpublished rows are excluded (see above — retrieval ignores the flag,
+so re-indexing one would return retired content to investigations). The new stamp
+is recorded on the row **only after** the vectors are written, so a failure
+retries rather than marking a row converged whose chunks never changed.
+
+`kb_cause_letters_unstamped_total` remains the drain gauge. With the sweep in
+place a value that stops falling means the sweep is being deferred — a stale set
+above `max_rows`, or a per-boot chunk budget consistently exhausted — not that
+nothing is converging.
 
 ### 1a. Retrieval scope and trust boundary
 

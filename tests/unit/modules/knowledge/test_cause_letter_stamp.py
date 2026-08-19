@@ -18,6 +18,7 @@ pack, because the grammar is part of the stamp identity.
 """
 
 import re
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -265,3 +266,89 @@ def test_chunk_text_handed_in_place_of_parsed_letters_is_refused():
     ordinary prose — so the result looks plausible and nothing reports it."""
     with pytest.raises(TypeError):
         _carried_cause_letters(["### Cause A: text"])
+
+
+# ---------------------------------------------------------------------------
+# restamp_document: the service half of the convergence path
+# ---------------------------------------------------------------------------
+
+
+def _restamp_service(row):
+    service = KnowledgeService.__new__(KnowledgeService)
+    service.reindex_missing_vectors = AsyncMock(return_value=4)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = row
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(return_value=result)
+    service._db_session_factory = MagicMock(return_value=session)
+    return service
+
+
+@pytest.mark.asyncio
+async def test_restamp_reindexes_a_published_row():
+    row = MagicMock()
+    row.is_published = True
+    service = _restamp_service(row)
+    assert await service.restamp_document("doc-1") == 4
+    service.reindex_missing_vectors.assert_awaited_once_with("doc-1")
+
+
+@pytest.mark.asyncio
+async def test_restamp_refuses_an_unpublished_row():
+    """Retrieval ignores ``is_published``, so a retired runbook is one whose
+    vectors were deleted. Writing fresh ones would return it to investigations
+    on the strength of a maintenance pass — and there are no chunks on it to
+    re-stamp in the first place."""
+    row = MagicMock()
+    row.is_published = False
+    service = _restamp_service(row)
+    assert await service.restamp_document("doc-1") == 0
+    service.reindex_missing_vectors.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restamp_of_a_vanished_row_is_a_no_op():
+    service = _restamp_service(None)
+    assert await service.restamp_document("doc-1") == 0
+    service.reindex_missing_vectors.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_stamp_is_recorded_only_after_the_vectors_are_written():
+    """Recording it first would mark a row converged whose chunks were never
+    rewritten — it would then be skipped forever, with the legacy parse serving
+    it and nothing saying so."""
+    service = KnowledgeService.__new__(KnowledgeService)
+    service._record_chunk_stamp = AsyncMock()
+    service._vector_store = MagicMock()
+    service._index_document_in_vector_store = AsyncMock(return_value=0)
+
+    row = MagicMock()
+    row.item_id = "doc-1"
+    row.title = "t"
+    row.content = "# c\n"
+    row.item_type = "runbook"
+    row.tags = []
+    row.source_url = None
+    row.scope = "global"
+    row.owner_id = None
+    row.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    row.updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    row.knowledge_metadata = None
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = row
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(return_value=result)
+    service._db_session_factory = MagicMock(return_value=session)
+
+    assert await service.reindex_missing_vectors("doc-1") == 0
+    service._record_chunk_stamp.assert_not_awaited()
+
+    service._index_document_in_vector_store = AsyncMock(return_value=3)
+    assert await service.reindex_missing_vectors("doc-1") == 3
+    service._record_chunk_stamp.assert_awaited_once_with("doc-1")
