@@ -424,24 +424,70 @@ LY_NOT_ADVERB = {
     "rally",
     "tally",
     "policy",
+    # Proper nouns that reach incident titles as service or month names.
+    "july",
+    "italy",
+    "fastly",
 }
 
 
-def _word_can_end_title(word: str) -> bool:
+# Punctuation that clings to a token without being part of the word. Stripped
+# from BOTH ends before judging a word, and from the RIGHT end of the word the
+# title actually keeps. The two sets differ deliberately: ``is_title_valid``
+# accepts ")]}" as a final character, so those are judged-through but never
+# stripped off the kept word — trimming them would leave an unbalanced bracket
+# ("Timeout (Staging" from "Timeout (Staging)").
+_TITLE_EDGE_PUNCT = ".,!?;:\"'()[]“”‘’"
+_TITLE_TRAILING_REPAIR = ".,!?;:\"'“”‘’"
+
+
+def _is_manner_adverb(bare: str) -> bool:
+    """Is this an "-ly" adverb rather than an "-ly" noun or adjective?
+
+    The allowlist is matched against the FINAL hyphen-separated element, so
+    derived compounds inherit their base's classification ("bi-weekly",
+    "grafana-daily"). Matched EXACTLY, never by suffix: ``"totally".endswith(
+    "tally")`` would turn a real adverb into an allowed ender, which is the
+    direction this whole rule exists to prevent.
+    """
+    if not bare.endswith("ly"):
+        return False
+    return bare.rsplit("-", 1)[-1] not in LY_NOT_ADVERB
+
+
+def _word_can_end_title(word: str, *, was_cut: bool) -> bool:
     """Can this word be the LAST word of a title without reading mid-phrase?
 
-    Two classes cannot: the closed-class connectives already enumerated in
-    ``INCOMPLETE_ENDINGS`` (articles, prepositions, conjunctions, auxiliaries,
-    modals, determiners, pronouns), and manner adverbs, which modify a verb the
-    cut removed. Adverbs are detected morphologically rather than listed, so a
-    word the list never anticipated is still caught (#1098).
+    Three classes cannot: tokens carrying no letter or digit (a dash or an
+    arrow is punctuation, not a word, and stopping the walk-back on one leaves
+    a candidate ``is_title_valid`` then rejects); the closed-class connectives
+    enumerated in ``INCOMPLETE_ENDINGS`` (articles, prepositions, conjunctions,
+    auxiliaries, modals, determiners, pronouns); and — only when the title was
+    actually CUT — manner adverbs. Adverbs are detected morphologically rather
+    than listed, so one the list never anticipated is still caught (#1098).
+
+    ``was_cut`` is not a refinement, it is the adverb rule's precondition. The
+    rule exists because the adverb modifies a verb the cut removed; on input
+    that fit under the cap the verb is still there, and "Payments Api
+    Restarting Repeatedly" is an idiomatic incident title being shortened for a
+    reason that does not apply to it. The connective rule needs no such gate: a
+    title ending "…during the" reads broken however it got there, and the code
+    this replaced rejected such candidates outright, so trimming is strictly
+    better.
+
+    The vocabulary is ENGLISH-ONLY. A German or French problem statement cut
+    mid-phrase gets none of this protection — pre-existing scope rather than a
+    regression (nothing here ever handled it), and worth knowing before someone
+    reads the guard as language-neutral.
     """
-    bare = word.lower().strip(".,!?;:\"'()[]")
+    bare = word.lower().strip(_TITLE_EDGE_PUNCT)
     if not bare:
+        return False
+    if not any(c.isalnum() for c in bare):
         return False
     if bare in INCOMPLETE_ENDINGS:
         return False
-    if bare.endswith("ly") and bare not in LY_NOT_ADVERB:
+    if was_cut and _is_manner_adverb(bare):
         return False
     return True
 
@@ -468,11 +514,21 @@ def truncate_title_at_phrase_boundary(
     visible. Titles are understood to be short — the summary's own body carries
     the full problem statement.
     """
+    was_cut = len(words) > max_words
     kept = list(words[:max_words])
-    while kept and not _word_can_end_title(kept[-1]):
+    while kept and not _word_can_end_title(kept[-1], was_cut=was_cut):
         kept.pop()
     if len(kept) < min_words:
         return None
+    # Repair the boundary word: ``_word_can_end_title`` judges it with clinging
+    # punctuation stripped, but the caller keeps it verbatim — so a kept
+    # "Cluster," passed the boundary check and was then rejected by
+    # ``is_title_valid``, which requires an alphanumeric final character. Doing
+    # it here fixes all three call sites at once (only the two extractive ones
+    # stripped the joined string afterwards; the LLM path never re-stripped
+    # after its clip). The alphanumeric guard above means this cannot empty the
+    # word.
+    kept[-1] = kept[-1].rstrip(_TITLE_TRAILING_REPAIR)
     return kept
 
 
@@ -2358,6 +2414,17 @@ async def _generate_title_with_llm(
                     words, max_words, MIN_TITLE_WORDS
                 )
                 if not trimmed:
+                    # Logged, not silent: without this the branch is
+                    # indistinguishable from the TypeError that removing it
+                    # would raise (both land in the broad except below and
+                    # yield the same fallback), so the refusal has no
+                    # observable of its own to pin. Same shape as the sibling
+                    # guards in this block.
+                    logger.info(
+                        "Title generation: LLM output over the word cap with "
+                        "no usable phrase boundary under it",
+                        extra={"over_cap_title": generated_title},
+                    )
                     raise ValueError(
                         "LLM title exceeded the word cap with no usable "
                         "phrase boundary under it"
