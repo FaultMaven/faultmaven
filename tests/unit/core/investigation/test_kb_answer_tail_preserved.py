@@ -24,15 +24,19 @@ tool, and it binds it on 3 answers in 5.
 
 import logging
 import re
+from unittest.mock import patch
 
 import pytest
 
+from faultmaven.core.investigation import milestone_engine as me
 from faultmaven.core.investigation.milestone_engine import (
+    FENCE_REPAIR_RESERVE,
     KB_QA_ANSWER_TRUNCATED_MARKER,
     KB_QA_RELAY_PREFIX,
     KB_QA_RELAY_SUFFIX,
     PARAGRAPH_REALIGN_MAX_CHARS,
     MilestoneEngine,
+    _balance_code_fences,
     _elide_answer_middle,
 )
 from faultmaven.models.interfaces import ToolResult
@@ -505,6 +509,74 @@ def test_fence_repair_cannot_push_the_result_past_the_budget():
         f"(worst: {max(o[1] for o in over)} characters over) — its room is "
         f"being borrowed from the answer's budget instead of reserved"
     )
+
+
+def test_the_fence_reserve_costs_nothing_when_repair_cannot_fire():
+    """Reserved room is subtracted from the answer whether repair fires or not.
+
+    Most KB answers carry no fenced block, so holding it back unconditionally
+    spent up to 8 characters of answer on a repair that was never possible.
+    Pinned by comparison against a zeroed reserve rather than an absolute
+    length, because the other sources of slack (worst-case marker sizing,
+    paragraph realignment) dwarf 8 characters and would hide it.
+    """
+    # No fences, and no line breaks either: paragraph realignment would
+    # otherwise rewind both seams to the same boundary whatever the reserve
+    # did, absorbing the 8 characters and hiding the difference.
+    answer = "A" * (_answer_budget() + 3000)
+    assert "```" not in answer, "this test needs fence-free content"
+
+    with_reserve, dropped_with = _elide_answer_middle(answer, _answer_budget())
+    with patch.object(me, "FENCE_REPAIR_RESERVE", 0):
+        without_reserve, dropped_without = _elide_answer_middle(
+            answer, _answer_budget()
+        )
+
+    assert with_reserve == without_reserve, (
+        f"the fence reserve shortened an answer that contains no fence, so "
+        f"repair could never have fired on it: kept "
+        f"{len(with_reserve)} characters against {len(without_reserve)}"
+    )
+    assert dropped_with == dropped_without
+
+
+def test_the_fence_reserve_is_no_larger_than_the_repair_it_covers():
+    """Reserved room is answer text, so an over-generous reserve is pure loss.
+
+    Repair appends one closing fence to the head and prepends one opening
+    fence to the tail — four characters each, and never more, because the
+    balance test is a parity check that fires at most once per side. Bounded
+    against an independent number rather than against the expression itself,
+    which would restate the constant and assert nothing.
+    """
+    assert FENCE_REPAIR_RESERVE <= 16, (
+        f"{FENCE_REPAIR_RESERVE} characters held back for a repair that adds "
+        f"at most two four-character fences — the surplus is answer text that "
+        f"is discarded on every fenced answer"
+    )
+
+    # And it really is enough: repair never adds more than the reservation.
+    fenced = "```bash\nkubectl get pod -o yaml\n" * 300
+    head_raw = fenced[:3000]
+    tail_raw = fenced[-2000:]
+    added = len(_balance_code_fences(head_raw)) - len(head_raw)
+    if tail_raw.count("```") % 2:
+        added += len("```\n")
+    assert added <= FENCE_REPAIR_RESERVE
+
+
+def test_the_fence_reserve_still_applies_when_a_fence_is_present():
+    """The other direction: content that can be repaired must keep the room."""
+    unit = "```bash\nkubectl get pod checkout-api-0 -o yaml\n"
+    over = []
+
+    for n in range(7400, 9400, 7):
+        answer = ("## Diagnose\n\n" + unit * 300)[:n]
+        relayed = _relayed(answer)
+        if len(relayed) > MilestoneEngine.TOOL_RESULT_MAX_CHARS:
+            over.append(n)
+
+    assert not over, f"{len(over)} fenced answers exceeded the cap"
 
 
 def test_the_dropped_count_excludes_characters_repair_inserted():

@@ -3072,7 +3072,14 @@ def _elide_answer_middle(content: str, budget: int) -> tuple[str, int]:
     # Sized on a worst-case count so the marker cannot itself push the result
     # past the budget once the real number is substituted in.
     elided_len = len(KB_QA_ANSWER_ELIDED_TEMPLATE.format(dropped=len(content)))
-    available = budget - len(end_marker) - elided_len - FENCE_REPAIR_RESERVE
+    # Reserved only when repair could actually fire. An answer with no fence in
+    # it cannot come back with an odd fence count, so holding the room back
+    # unconditionally spent up to 8 characters of answer on a repair that was
+    # never possible -- on the majority of KB answers, which carry no fenced
+    # block at all. The test is exact rather than heuristic: no ``` in, no ```
+    # out, because both slices are substrings of the content.
+    fence_reserve = FENCE_REPAIR_RESERVE if "```" in content else 0
+    available = budget - len(end_marker) - elided_len - fence_reserve
 
     # Degenerate budget (a wrapper edit that leaves almost no room): fall back
     # to the plain head-first cut rather than emit markers with no answer
@@ -3151,6 +3158,11 @@ def _rewind_to_boundary(text: str, separators: tuple) -> str:
 # Room held back so fence repair cannot push the result past the budget.
 # One opening fence for the tail and one closing fence for the head, each with
 # its newline -- repair adds at most one of each.
+#
+# Applied only when the content actually contains a fence (see the call site).
+# The reservation is otherwise pure loss: it is subtracted from the answer's
+# room whether or not repair fires, and for a KB answer with no fenced block it
+# never can.
 FENCE_REPAIR_RESERVE = len("\n```") + len("```\n")
 
 
