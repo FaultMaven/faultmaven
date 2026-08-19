@@ -152,7 +152,7 @@ def test_row_causes_reads_the_json_string_shape():
 
 def test_row_causes_reads_the_decoded_dict_shape():
     """Handling only the string shape loses the record on every JSONB
-    deployment — the failure ``kb_init._decode_metadata`` was written for."""
+    deployment — the failure ``decode_json_blob`` was written for."""
     assert _row_causes({"causes": [_cause("A")]}) == [_cause("A")]
 
 

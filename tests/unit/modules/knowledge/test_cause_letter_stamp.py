@@ -352,3 +352,63 @@ async def test_the_stamp_is_recorded_only_after_the_vectors_are_written():
     service._index_document_in_vector_store = AsyncMock(return_value=3)
     assert await service.reindex_missing_vectors("doc-1") == 3
     service._record_chunk_stamp.assert_awaited_once_with("doc-1")
+
+
+# ---------------------------------------------------------------------------
+# Recording the stamp must not destroy metadata it could not read
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_metadata_blob_is_never_overwritten_by_the_stamp(caplog):
+    """Recording the stamp is read-modify-write, and the decoder answers ``{}``
+    for an unreadable value — so writing would replace a corrupt blob with
+    ``{"chunk_stamp": ...}``, destroying whatever causes record it held and
+    leaving the row looking healthy afterwards. It was already unusable to every
+    reader, but unrecoverable and unusable are different things.
+    """
+    service = KnowledgeService.__new__(KnowledgeService)
+    row = MagicMock()
+    row.knowledge_metadata = '{"causes": [{"cause_letter": "A"}'  # truncated
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = row
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(return_value=result)
+    session.commit = AsyncMock()
+    service._db_session_factory = MagicMock(return_value=session)
+
+    with caplog.at_level("ERROR"):
+        await service._record_chunk_stamp("doc-1")
+
+    session.commit.assert_not_awaited()
+    assert row.knowledge_metadata == '{"causes": [{"cause_letter": "A"}'
+    assert any(
+        "UNREADABLE KNOWLEDGE METADATA doc-1" in r.getMessage() for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_readable_row_still_gets_its_stamp_recorded():
+    """The converse, so the guard above cannot become a blanket refusal."""
+    import json as _json
+
+    service = KnowledgeService.__new__(KnowledgeService)
+    row = MagicMock()
+    row.knowledge_metadata = _json.dumps({"causes": [{"cause_letter": "A"}]})
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = row
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock(return_value=result)
+    session.commit = AsyncMock()
+    service._db_session_factory = MagicMock(return_value=session)
+
+    await service._record_chunk_stamp("doc-1")
+
+    session.commit.assert_awaited_once()
+    written = _json.loads(row.knowledge_metadata)
+    assert written["chunk_stamp"]
+    assert written["causes"] == [{"cause_letter": "A"}], "the record must survive"

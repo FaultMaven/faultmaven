@@ -52,7 +52,7 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
-from faultmaven.utils.serialization import to_json_compatible
+from faultmaven.utils.serialization import decode_json_blob, to_json_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -323,34 +323,52 @@ def _unrecorded_chunk_letters(
 
 
 def _row_metadata(knowledge_metadata: Any) -> Dict[str, Any]:
-    """Decode a raw ``knowledge_items.knowledge_metadata`` value to a dict.
+    """A ``knowledge_items`` metadata value as a ``.get``-safe dict.
 
-    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so the value
-    arrives as a JSON *string* or an already-decoded ``dict`` depending on
-    backend and writer — handling one shape loses the record silently on the
-    other (the bug ``kb_init._decode_metadata`` documents). Read-only: the dict
-    branch aliases its caller's attribute, so callers must not mutate it in
-    place; copy first.
+    Thin over :func:`decode_json_blob` (fm#1107) — this used to be one of three
+    near-copies of that decode. Two things are local to this caller:
 
-    Returns ``{}`` for absent/undecodable values so every caller's ``.get`` is
-    safe. A value that is present but undecodable warns on the way: it is the
-    one "no metadata" answer that is really "unread metadata".
+    * ``{}`` rather than ``None`` for "nothing usable", because every reader here
+      goes straight to ``.get``;
+    * the WARNING for a value that is present but UNUSABLE — undecodable, or
+      decoding to something that is not an object. That is the one "no metadata"
+      answer which is really "unread metadata", and it silently disables the KB
+      cause seeder's integrity check: the row reads as a prose runbook with
+      nothing to verify. (The bootstrap's restamp sweep reads the same column
+      but does NOT come through here — it warns for itself, because it knows
+      which row it is on and this function only ever sees a value.)
+
+    The value itself is deliberately NOT logged. It is author-supplied document
+    metadata of unbounded size, the branch fires per row inside sweeps, and the
+    only values that reach it are corrupt or truncated ones — so interpolating it
+    would put user KB content in the logs, repeatedly, to say something the shape
+    already says. The type and size identify the anomaly; the ROW is named by the
+    callers that know which row they are on.
+
+    Read-only — the dict branch is not copied, so callers must not mutate it in
+    place (copy first). The repository's ``_parse_json_dict`` is the copying
+    counterpart, for results that get handed out.
     """
-    if isinstance(knowledge_metadata, dict):
-        return knowledge_metadata
-    if not knowledge_metadata:
-        return {}
-    try:
-        decoded = json.loads(knowledge_metadata)
-    except (json.JSONDecodeError, TypeError) as decode_error:
+    decoded = decode_json_blob(knowledge_metadata)
+    if decoded is None and knowledge_metadata:
         logger.warning(
             "Unreadable knowledge_items metadata (%s): treating the row as "
             "carrying none, so its causes record and chunk stamp both read as "
-            "absent.",
-            decode_error,
+            "absent. The value is not logged — it is author-supplied content.",
+            _describe_unreadable(knowledge_metadata),
         )
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
+    return decoded or {}
+
+
+def _describe_unreadable(value: Any) -> str:
+    """Name the SHAPE of an unusable metadata value, never its content."""
+    kind = type(value).__name__
+    try:
+        size = len(value)
+    except TypeError:
+        return kind
+    unit = "chars" if isinstance(value, (str, bytes, bytearray)) else "items"
+    return f"{kind} of {size} {unit}"
 
 
 def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:
@@ -1882,7 +1900,36 @@ class KnowledgeService:
                 row = found.scalar_one_or_none()
                 if row is None:
                     return
-                metadata = dict(_row_metadata(row.knowledge_metadata))
+                # Refuse to rewrite metadata we could not READ. This is
+                # read-modify-write, and _row_metadata answers {} for an
+                # unreadable value — so writing here would replace a corrupt
+                # blob with {"chunk_stamp": ...}, destroying whatever causes
+                # record it held and leaving the row looking healthy afterwards.
+                # It was already unusable to every reader, but unrecoverable and
+                # unusable are different, and the second is not ours to choose.
+                # The row stays stale and the sweep skips it (with its id), which
+                # is a loud, repeatable state rather than a silent one-way loss.
+                #
+                # Scoped to a TRUTHY unreadable value on purpose. A falsy one
+                # (JSONB holding ``0``/``false``/``""``/``[]``) is overwritten as
+                # before — nothing recoverable is in it, so refusing would cost a
+                # permanently unconvergeable row to preserve nothing. The
+                # principle is "do not destroy what might still be read", not
+                # "never write".
+                decoded = decode_json_blob(row.knowledge_metadata)
+                if decoded is None and row.knowledge_metadata:
+                    logger.error(
+                        "UNREADABLE KNOWLEDGE METADATA %s: refusing to record a "
+                        "chunk stamp over it, because that would overwrite "
+                        "whatever it holds. The row keeps its vectors and stays "
+                        "retrievable, but NOTHING WILL RETRY THIS on its own — "
+                        "the restamp sweep skips unreadable rows for the same "
+                        "reason. Repair or clear that row's metadata by hand and "
+                        "it converges on the next boot.",
+                        item_id,
+                    )
+                    return
+                metadata = dict(decoded or {})
                 metadata["chunk_stamp"] = chunk_stamp_identity()
                 row.knowledge_metadata = json.dumps(metadata)
                 await session.commit()

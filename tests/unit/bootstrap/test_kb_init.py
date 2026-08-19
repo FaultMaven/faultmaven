@@ -388,22 +388,52 @@ async def test_bootstrap_re_ingests_on_causes_drift_in_either_metadata_shape(
     knowledge_service._vector_store.delete_documents_by_parent_id.assert_awaited()
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "value,expected",
+    "stored_metadata",
     [
-        ({"causes": CAUSES_RECORD}, {"causes": CAUSES_RECORD}),
-        (json.dumps({"causes": CAUSES_RECORD}), {"causes": CAUSES_RECORD}),
-        (None, {}),
-        ("", {}),
-        ("not json at all", {}),
-        ("[1, 2, 3]", {}),  # valid JSON, wrong container
-        (12345, {}),  # non-str, non-dict
+        pytest.param(None, id="absent"),
+        pytest.param("", id="empty-string"),
+        pytest.param('{"causes": [{"cause_letter": "A"}', id="truncated-json"),
+        pytest.param("[1, 2, 3]", id="valid-json-wrong-container"),
+        pytest.param(12345, id="non-str-non-dict"),
     ],
 )
-def test_decode_metadata_normalises_every_stored_shape(value, expected):
-    """``_decode_metadata`` always yields a dict, so the caller's ``.get`` is
-    safe for absent, malformed, and wrong-container values alike."""
-    assert kb_init._decode_metadata(value) == expected
+async def test_bootstrap_survives_every_unusable_metadata_shape_on_an_existing_row(
+    tmp_path: Path, stored_metadata
+):
+    """The bootstrap's ``.get`` must be safe for absent, malformed and
+    wrong-container values alike — asserted by RUNNING the bootstrap.
+
+    This replaces a test that evaluated ``decode_json_blob(v) or {}`` inside its
+    own body and so pinned nothing about ``kb_init``: deleting the ``or {}`` at
+    the call site left it green on every parameter. The decode is covered by the
+    shared-decode tests; what is local to the bootstrap is the ``or {}`` and the
+    two ``.get`` calls on top of it, and only invoking the real path exercises
+    those. An unusable value must leave the row looking unstamped — so it
+    re-ingests rather than raising.
+    """
+    pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+    knowledge_service = MagicMock()
+    knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+    knowledge_service._vector_store = MagicMock()
+    knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+    existing = MagicMock()
+    existing.content = RUNBOOK_MD  # content hash matches; only metadata is odd
+    existing.knowledge_metadata = stored_metadata
+    existing.is_published = True
+
+    result = await kb_init.bootstrap_kb(
+        knowledge_service=knowledge_service,
+        db_session_factory=_make_session_factory(existing_row=existing),
+        organization_id="org-test",
+        project_root=tmp_path,
+        pack_dir=pack_dir,
+    )
+
+    assert result.ingested == ["global/example.md"]
+    assert result.failed == []
 
 
 @pytest.mark.asyncio
@@ -1912,3 +1942,25 @@ async def test_an_unreadable_row_set_never_fails_startup():
             raise RuntimeError("db down")
 
     assert await kb_init._restamp_stale_rows(service, lambda: _Boom([])) == []
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_skips_and_names_a_row_whose_metadata_is_unreadable(caplog):
+    """It cannot judge whether such a row is stale, and restamping it would send
+    the stamp write at a blob it could not read. Naming the ROW is the diagnostic
+    that matters — the decoder only ever sees a value, and deliberately does not
+    log it."""
+    service = MagicMock()
+    service.restamp_document = AsyncMock(return_value=2)
+    rows = [
+        ("authored-bad", '{"causes": [{"cause_letter": "A"}', True),  # truncated
+        ("authored-ok", {}, True),
+    ]
+    with caplog.at_level("WARNING"):
+        done = await _restamp(rows, service)
+
+    assert done == ["authored-ok"]
+    service.restamp_document.assert_awaited_once_with("authored-ok")
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "authored-bad" in logged
+    assert "cause_letter" not in logged, "the blob itself must not be logged"

@@ -69,6 +69,7 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     KnowledgeItemType,
     KnowledgeScope,
 )
+from faultmaven.utils.serialization import decode_json_blob
 
 logger = logging.getLogger(__name__)
 
@@ -957,28 +958,16 @@ class DatabaseKnowledgeItemRepository(KnowledgeItemRepository):
             return []
 
     def _parse_json_dict(self, value: Any) -> Optional[Dict]:
-        """Parse a stored JSON value to a dict.
+        """Parse a stored ``JsonBlob`` value to a dict, as a FRESH object.
 
-        Robust to both representations of the ``JsonBlob`` column: a JSON
-        *string* (SQLite TEXT) and an already-decoded ``dict`` (PostgreSQL JSONB
-        returns the deserialized object — without a dict branch, ``json.loads``
-        on it raises ``TypeError`` and the value is silently lost).
-
-        Returns a FRESH copy in both branches: ``json.loads`` is naturally fresh,
-        and the dict branch ``deepcopy``s so a caller mutating the result cannot
-        alias/dirty the session-bound ORM attribute (PG-only aliasing bug). The
-        dict check precedes the falsy check so an empty ``{}`` round-trips to
-        ``{}`` (matching the string path), not ``None``.
+        Thin over :func:`decode_json_blob` (fm#1107) — this used to be one of
+        three near-copies of that decode. What is repository-specific is the
+        ``copy``: ``_to_domain`` hands the result out, so the dict branch must
+        not alias the session-bound ORM attribute (a caller mutating it would
+        dirty the row — PostgreSQL-only, invisible on SQLite). ``None`` for
+        absent/undecodable; ``{}`` survives as ``{}``.
         """
-        if isinstance(value, dict):
-            return deepcopy(value)
-        if not value:
-            return None
-        try:
-            result = json.loads(value)
-            return result if isinstance(result, dict) else None
-        except (json.JSONDecodeError, TypeError):
-            return None
+        return decode_json_blob(value, copy=True)
 
     def _ensure_tz_aware(self, dt: Optional[datetime]) -> Optional[datetime]:
         """Ensure datetime is timezone-aware (UTC if naive)."""

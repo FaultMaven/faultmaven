@@ -21,9 +21,80 @@ Usage:
 """
 
 import json
+from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, Optional
 from uuid import UUID
+
+
+def decode_json_blob(value: Any, *, copy: bool = False) -> Optional[Dict[str, Any]]:
+    """Decode a ``JsonBlob`` column value to a dict.
+
+    The single implementation for the ``knowledge_items.metadata`` read
+    (fm#1107). It is NOT yet the only reader of a ``JsonBlob`` column anywhere —
+    the case module has its own for ``case_metadata``, ``inquiry``,
+    ``working_conclusion`` and others — so treat this as the home to converge on,
+    not a claim that convergence is finished.
+
+    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so what comes
+    back depends on the backend AND on the writer:
+
+    * a **JSON string** — SQLite TEXT, and also PostgreSQL when the writer bound
+      an already-serialized ``json.dumps(...)`` value (which
+      ``KnowledgeItemRepository`` does: JSONB stores that as a JSON *string
+      scalar* and hands back the same ``str``);
+    * an **already-decoded dict** — the documented JSONB contract, and what any
+      writer binding a real object produces.
+
+    Handling one shape and not the other loses the value **silently**, and that
+    is not hypothetical: reading only the dict shape made the KB bootstrap's
+    causes comparison return ``None`` on every deployment, so ``causes_unchanged``
+    could never be true and every runbook re-ingested on every boot. Both
+    branches together make the read independent of who wrote the row.
+
+    Returns ``None`` when there is nothing usable — absent, empty, undecodable,
+    or decoding to a non-dict. Note the dict check precedes the falsy one, so an
+    empty ``{}`` round-trips to ``{}`` rather than collapsing to ``None``:
+    "stored an empty object" and "stored nothing" are different facts, and one
+    caller (the repository) distinguishes them. Callers that want a
+    ``.get``-safe dict either way write ``decode_json_blob(v) or {}``.
+
+    ``copy`` deep-copies the dict branch. Off by default because the read-only
+    callers walk one value per row at startup and a copy per row is waste; ON for
+    callers that hand the result out, because the dict branch would otherwise
+    ALIAS a session-bound ORM attribute and a caller mutating it would dirty the
+    row (a PostgreSQL-only bug that never reproduces on SQLite, where the value
+    is a string and every decode is naturally fresh).
+
+    One deliberate widening over the three implementations this replaced: they
+    caught ``(JSONDecodeError, TypeError)``, so a ``bytes`` value that is not
+    valid UTF-8 raised ``UnicodeDecodeError`` (a ``ValueError``) straight out of
+    them; here it returns ``None`` like any other unusable value. Unreachable
+    through the columns this reads — ``Text``/``JSONB`` hand back ``str`` or
+    ``dict``, never raw bytes — but a decoder for a value that "might be
+    anything" should not have one shape that escapes as an exception, so the
+    behaviour is stated rather than left to be discovered.
+
+    This was three near-copies of the ``knowledge_items.metadata`` read — in the
+    KB bootstrap, the knowledge service, and the item repository — each
+    duplicated to avoid a layering violation
+    (bootstrap and a domain service may not reach into a repository's private
+    helpers, and the repository, being infrastructure, may not import the domain
+    service: ``lint-imports`` contract 4). A neutral utility is the home that
+    breaks that stalemate. Three copies of a decode whose failure mode is SILENT
+    LOSS meant the next divergence had three places to hide, and one of them sat
+    under the KB cause seeder's integrity check — a divergence there reads as
+    "no causes record" and disables the check for the affected shape (fm#1107).
+    """
+    if isinstance(value, dict):
+        return deepcopy(value) if copy else value
+    if not value:
+        return None
+    try:
+        decoded = json.loads(value)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
 
 
 def to_json_compatible(obj: Any) -> Any:
