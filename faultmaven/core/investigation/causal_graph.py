@@ -24,6 +24,7 @@ emission-only.) Belief propagation (§6.1 / §9.4) is a follow-on.
 
 from __future__ import annotations
 
+import hashlib
 from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -1221,21 +1222,36 @@ def ingest_emitted_chain(
     def _add_edge(cause_id, effect_id, and_group, reasoning):
         if not cause_id or not effect_id or cause_id == effect_id:
             return
-        # An AND-set key is a GROUPING token; "" and whitespace name no group.
-        # The field is an unconstrained Optional[str] end to end, so a model
-        # emitting and_group:"" on independent alternatives would otherwise
-        # collapse them into one conjunction — silently strengthening the M7
-        # gate and, since #1096, publishing "the cause required these
-        # conditions too" about causes that are alternatives.
-        if isinstance(and_group, str) and not and_group.strip():
-            and_group = None
+        # An AND-set key is a GROUPING token — see _normalize_and_group for what
+        # is folded away and why.
+        and_group = _normalize_and_group(and_group)
         if cause_id not in case.causal_nodes or effect_id not in case.causal_nodes:
             return
-        if any(
-            e.cause_node_id == cause_id and e.effect_node_id == effect_id
-            for e in case.causal_edges
-        ):
-            return  # idempotent
+        existing = next(
+            (
+                e
+                for e in case.causal_edges
+                if e.cause_node_id == cause_id and e.effect_node_id == effect_id
+            ),
+            None,
+        )
+        if existing is not None:
+            # Idempotent on the EDGE — but an existing edge may still GAIN a
+            # group. Co-necessity is usually recognized after the fact: the
+            # model proposes A and B as independent candidates, and only later
+            # sees that the problem needed both. Expressing that means
+            # re-emitting the edges with a shared and_group, and a flat
+            # "already exists" drop left the AND-set half-formed (one member
+            # carrying the key), so no conjunction ever existed to render —
+            # the #1096 factor loss, through a second door. Monotone by design:
+            # an edge may go None -> group, never group -> other group (a
+            # silent regrouping of a standing conjunction) and never
+            # group -> None (a later ungrouped restatement is not a
+            # retraction; treating it as one would make the published
+            # conjunction flicker turn to turn).
+            if existing.and_group is None and and_group is not None:
+                existing.and_group = and_group
+            return
         case.causal_edges.append(
             CausalEdge(
                 cause_node_id=cause_id,
@@ -1810,6 +1826,46 @@ def _cluster_relations(case: Case, root_ids) -> tuple[list, dict]:
         rid: _live_descendant_ids(rid, adjacency, case.causal_nodes) for rid in members
     }
     return members, desc
+
+
+# ``causal_edges.and_group`` is String(64); the field is an unconstrained
+# Optional[str] at every application layer above it (CausalNodeToAdd,
+# CausalEdgeToAdd, CausalEdge). Since #1096 the prompt asks for a group key
+# whenever a cause needs two conditions, and it invites a DESCRIPTIVE one —
+# "memory-exhaustion-requires-unbounded-cache-and-reduced-limit" is already 60
+# characters. An over-long key inserts fine on SQLite and raises "value too
+# long for type character varying(64)" on PostgreSQL, i.e. it would fail the
+# case save in cloud only.
+_AND_GROUP_MAX_LEN = 64
+
+
+def _normalize_and_group(and_group: object) -> str | None:
+    """The ONE normalization of an AND-set key, applied where edges are written.
+
+    - A blank key ("" or whitespace) names no group. The field is unconstrained
+      end to end, so a model emitting ``and_group:""`` on independent
+      alternatives would otherwise collapse them into one conjunction —
+      silently strengthening the M7 gate and, since #1096, publishing "the
+      cause required these conditions too" about causes that are alternatives.
+    - An over-long key is folded to fit the column. A plain truncation would
+      make two distinct long keys sharing a 64-char prefix into ONE group —
+      the same silent M7 strengthening by another route — so the fold keeps a
+      prefix and appends a digest of the WHOLE key. It is a pure function of
+      that key, so the same logical group emitted on a later turn normalizes to
+      the same token and the AND-set still forms.
+
+    The key is an identity token, never rendered: ``validated_and_conjuncts``
+    publishes the member nodes' statements, not the group name.
+    """
+    if not isinstance(and_group, str):
+        return None
+    and_group = and_group.strip()
+    if not and_group:
+        return None
+    if len(and_group) <= _AND_GROUP_MAX_LEN:
+        return and_group
+    digest = hashlib.sha256(and_group.encode("utf-8")).hexdigest()[:8]
+    return f"{and_group[: _AND_GROUP_MAX_LEN - 9]}-{digest}"
 
 
 def _co_necessary_sets(edges: list[CausalEdge]) -> list[list[str]]:

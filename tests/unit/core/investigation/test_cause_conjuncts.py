@@ -18,6 +18,8 @@ import pytest
 
 from faultmaven.core.investigation.causal_graph import (
     conjuncts_for_chain,
+    incoming_and_groups,
+    ingest_emitted_chain,
     seed_problem_node,
     validated_and_conjuncts,
 )
@@ -578,3 +580,102 @@ def test_an_and_set_beside_an_independent_alternative_still_contests():
     assert distinct_cause_clusters(case, {_A, _B, rival_id}) == [{_A, _B}, {rival_id}]
     assert mece_contested_root_ids(case) == {_A, _B, rival_id}
     assert case.progress.cause_state != CauseState.IDENTIFIED
+
+
+# ---------------------------------------------------------------------------
+# Reaching the AND-set at all — the two doors that closed before the graph
+# could hold a conjunction (review of the arbitration fix).
+# ---------------------------------------------------------------------------
+
+
+class _EmittedEdge:
+    """An explicit ``edges_to_add`` entry, duck-typed as the ingest reads it."""
+
+    def __init__(self, cause: str, effect: str, and_group: str | None):
+        self.cause = cause
+        self.effect = effect
+        self.and_group = and_group
+        self.reasoning = "co-necessary"
+
+
+def test_an_existing_edge_can_gain_an_and_group():
+    """Co-necessity is usually recognized AFTER the fact: the model proposes
+    two independent candidates and only later sees the problem needed both.
+    Expressing that means re-emitting the edges with a shared group, and the
+    flat idempotence drop left the AND-set half-formed — so no conjunction ever
+    existed to render, the #1096 factor loss through a second door."""
+    case, _d = _conjunction_case(and_group=None)
+    assert incoming_and_groups(_M, case.causal_edges) == {None: [_A, _B]}
+
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[_EmittedEdge(_A, _M, "g1"), _EmittedEdge(_B, _M, "g1")],
+        node_evidence=[],
+        current_turn=6,
+    )
+
+    assert incoming_and_groups(_M, case.causal_edges) == {"g1": [_A, _B]}
+    _recompute_cause_state_from_chain(case)
+    assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+def test_regrouping_is_monotone():
+    """An edge may go None -> group, never group -> another group (a silent
+    regrouping of a standing conjunction) and never group -> None (a later
+    ungrouped restatement is not a retraction; treating it as one would make
+    the published conjunction flicker turn to turn)."""
+    case, _d = _conjunction_case()  # already grouped "g1"
+
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[_EmittedEdge(_A, _M, "g2"), _EmittedEdge(_B, _M, None)],
+        node_evidence=[],
+        current_turn=6,
+    )
+
+    assert incoming_and_groups(_M, case.causal_edges) == {"g1": [_A, _B]}
+
+
+def test_an_over_long_and_group_is_folded_to_fit_its_column():
+    """``causal_edges.and_group`` is String(64) while the field is unconstrained
+    at every layer above it, and the #1096 prompt invites a DESCRIPTIVE key. An
+    over-long one inserts fine on SQLite and raises on PostgreSQL — a
+    cloud-only failure of the case save."""
+    long_key = "memory-exhaustion-requires-unbounded-cache-and-reduced-memory-limit"
+    assert len(long_key) > 64
+
+    case, _d = _conjunction_case(and_group=None)
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[
+            _EmittedEdge(_A, _M, long_key),
+            _EmittedEdge(_B, _M, long_key),
+        ],
+        node_evidence=[],
+        current_turn=6,
+    )
+
+    groups = incoming_and_groups(_M, case.causal_edges)
+    (key,) = groups
+    assert len(key) <= 64
+    # Still ONE group: a fold that split the members would lose the AND-set.
+    assert sorted(groups[key]) == sorted([_A, _B])
+
+
+def test_the_fold_does_not_merge_distinct_long_keys():
+    """A plain truncation would make two long keys sharing a 64-char prefix one
+    group — the silent M7 strengthening the blank-key guard exists to prevent,
+    by another route. The fold is also a pure function of the key, so the same
+    logical group emitted a turn later normalizes to the same token."""
+    from faultmaven.core.investigation.causal_graph import _normalize_and_group
+
+    a = "memory-exhaustion-requires-unbounded-cache-and-reduced-memory-limit"
+    b = "memory-exhaustion-requires-unbounded-cache-and-reduced-cpu-quota-only"
+
+    assert _normalize_and_group(a) != _normalize_and_group(b)
+    assert _normalize_and_group(a) == _normalize_and_group(a)
+    assert _normalize_and_group("   ") is None
+    assert _normalize_and_group(None) is None
