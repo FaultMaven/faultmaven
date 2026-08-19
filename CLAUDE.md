@@ -404,7 +404,7 @@ pip install -e ".[dev]"           # Install dependencies
 
 **Image source:** `./faultmaven.sh start` runs pre-built images from GHCR (`ghcr.io/faultmaven/faultmaven`, `…/faultmaven-dashboard`), pinnable via `FM_IMAGE_TAG` / `FM_DASHBOARD_IMAGE_TAG` in `.env`. The build path layers `docker-compose.build.yml` (API) / `docker-compose.dashboard-build.yml` (Dashboard) on top of `docker-compose.yml`.
 
-**Config (`.env`) is shared by both run modes.** The Docker stack and the process runner (`faultmaven-dev.sh`) read the *same* `.env` with the *same* parser: compose mounts `.env` read-only at `/app/.env` (not `env_file:`), so values are interpreted identically and `./faultmaven.sh restart` re-reads edits. Container-only overrides live in `docker-compose.yml`'s `environment:` (e.g. `HOST=0.0.0.0`) and take precedence over the file (pydantic env-var > `.env`).
+**Config (`.env`) is shared by both run modes.** The Docker stack and the process runner (`faultmaven-dev.sh`) read the *same* `.env` with the *same* parser: compose mounts `.env` read-only at `/app/.env` (not `env_file:`), so values are interpreted identically and `./faultmaven.sh restart` re-reads edits (it recreates the containers via `up -d --force-recreate` rather than restarting them, because `docker compose restart` reuses the same container and would pick up neither a refreshed image nor a changed compose config). Container-only overrides live in `docker-compose.yml`'s `environment:` (e.g. `HOST=0.0.0.0`) and take precedence over the file (pydantic env-var > `.env`).
 
 **Auto-Initialization:** On first startup, FaultMaven automatically:
 - Creates `data/` directories (database, ChromaDB, evidence, knowledge)
@@ -435,7 +435,7 @@ Login via dev-login: `POST /api/v1/auth/dev-login` with `{"username": "admin"}`
 ./faultmaven.sh stop               # Stop services
 ./faultmaven.sh status             # Check health
 ./faultmaven.sh logs [service]     # View logs
-./faultmaven.sh restart            # Restart all
+./faultmaven.sh restart            # Recreate all (applies .env + local image changes)
 ./faultmaven.sh create-user        # Create user account
 ./faultmaven.sh test               # Run tests
 ./faultmaven.sh health             # Health checks

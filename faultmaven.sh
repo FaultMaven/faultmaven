@@ -94,6 +94,60 @@ image_digest() {
         | sed 's/.*@//' || true
 }
 
+# Report the build a container is ACTUALLY running.
+#
+# Resolves .Image (the concrete image ID), NOT .Config.Image (the reference the
+# container was requested with): a ':latest' that moved without the container
+# being recreated would otherwise report the NEW build while the old one serves
+# traffic — the exact divergence this line exists to expose. No `xargs -r`
+# either: it is GNU-only, and on BSD/macOS the error lands in /dev/null and
+# silently kills the whole report.
+report_running_build() {
+    local label="$1" service="$2" running_ref running_prov
+    running_ref="$(docker compose ps -q "$service" 2>/dev/null \
+        | head -1 \
+        | xargs docker inspect --format '{{.Image}}' 2>/dev/null || true)"
+    [ -z "$running_ref" ] && return 0
+    running_prov="$(image_provenance "$running_ref")"
+    [ -n "$running_prov" ] && print_info "$label build: ${running_prov}"
+    return 0
+}
+
+# Report what a refresh did to ONE image, given its digest before the refresh.
+#
+# Only a refresh that actually reached the registry may claim currency:
+# "already current" after a failed pull, or on a tag that was never checked,
+# restates the false-currency claim this whole path exists to remove — so those
+# cases say what they know instead.
+report_image_refresh() {
+    local label="$1" ref="$2" before="$3" after
+    after="$(image_digest "$ref")"
+
+    case "$REFRESH_RESULT" in
+        refreshed)
+            if [ -n "$before" ] && [ -n "$after" ]; then
+                if [ "$before" != "$after" ]; then
+                    print_success "$label image updated: ${before:7:12} -> ${after:7:12}"
+                else
+                    print_info "$label image already current (${after:7:12})"
+                fi
+            elif [ -n "$after" ]; then
+                # No prior local image (first run), or no RepoDigests to compare
+                # against — the fetch still happened, so say so.
+                print_info "$label image fetched (${after:7:12})"
+            fi
+            ;;
+        failed)
+            if [ -n "$after" ]; then
+                print_warning "$label image NOT verified against the registry (local: ${after:7:12})"
+            else
+                print_warning "$label image NOT verified against the registry"
+            fi
+            ;;
+    esac
+    return 0
+}
+
 # Short provenance of a local image, for the post-start report.
 image_provenance() {
     local ref="$1" rev built
@@ -120,20 +174,47 @@ image_provenance() {
 # So: retry once (registry blips are the common cause and a retry fixes them),
 # fail CLOSED when a refresh was explicitly requested, and when the refresh was
 # implicit make the warning name the consequence rather than the cause.
+#
+# The outcome is published in REFRESH_RESULT because the return code cannot
+# carry it: a soft failure deliberately returns 0 so the caller keeps going, and
+# the caller still has to know that what it is about to report was never
+# verified against the registry.
+#   skipped   — no refresh attempted (pinned, immutable tag)
+#   refreshed — registry contacted, pull succeeded
+#   failed    — pull failed; continuing on whatever the local cache holds
+REFRESH_RESULT=skipped
+
 refresh_images() {
     local required="$1"; shift
     local -a extra=("$@")
-    local attempt rc=0
+    local attempt rc=0 pull_log
+    pull_log="$(mktemp)"
 
     for attempt in 1 2; do
         rc=0
-        docker compose "${COMPOSE_FILES[@]}" "${extra[@]}" pull || rc=$?
+        # tee, so the failure can be classified without hiding docker's own
+        # live progress (same pattern as the `up` step below).
+        docker compose "${COMPOSE_FILES[@]}" "${extra[@]}" pull 2>&1 | tee "$pull_log"
+        rc=${PIPESTATUS[0]}
         [ "$rc" -eq 0 ] && break
+
+        # A retry only helps a transient blip. A tag that does not exist or a
+        # registry that refuses us fails identically the second time — a
+        # mistyped FM_IMAGE_TAG is the common case — so retrying just costs 3s
+        # and prints the registry's error twice ahead of the real diagnosis.
+        if grep -qiE "manifest unknown|manifest.*not found|not found: manifest|pull access denied|repository does not exist|denied: requested access|unauthorized" "$pull_log"; then
+            print_error "That image tag cannot be pulled — a retry would fail the same way"
+            echo "  • Verify FM_IMAGE_TAG / FM_DASHBOARD_IMAGE_TAG in .env name tags that exist"
+            echo "  • Or build from source instead: ./faultmaven.sh start --build"
+            break
+        fi
+
         if [ "$attempt" -eq 1 ]; then
             print_warning "Image refresh failed — retrying once"
             sleep 3
         fi
     done
+    rm -f "$pull_log"
 
     if [ "$rc" -ne 0 ]; then
         if [ "$required" = true ]; then
@@ -149,7 +230,10 @@ refresh_images() {
         echo "  A ':latest' tag that did not refresh runs old code while looking current."
         echo "  The image actually starting is reported below; check it before trusting a"
         echo "  deploy, or re-run with --pull once connectivity is back."
+        REFRESH_RESULT=failed
+        return 0
     fi
+    REFRESH_RESULT=refreshed
     return 0
 }
 
@@ -572,7 +656,8 @@ cmd_start() {
         echo ""
         echo "  • Health:  ./faultmaven.sh health"
         echo "  • Logs:    ./faultmaven.sh logs"
-        echo "  • Apply config/image changes: ./faultmaven.sh restart"
+        echo "  • Apply config changes:  ./faultmaven.sh restart  (recreates from local images)"
+        echo "  • Pick up a newer image: ./faultmaven.sh stop && ./faultmaven.sh start --pull"
         echo "  • Access:  Dashboard http://localhost:3333  |  API http://localhost:8090"
         exit 0
     fi
@@ -613,9 +698,15 @@ cmd_start() {
         # Refresh when asked (--pull), OR when tracking a mutable ':latest' tag so
         # `start` picks up newly published builds instead of a stale local cache.
         # Pinned (immutable) tags skip the registry round-trip.
+        # Both images are refreshed by the pull, so both are tracked: with
+        # FM_IMAGE_TAG pinned and FM_DASHBOARD_IMAGE_TAG on ':latest' the
+        # dashboard is the one moving, and it is subject to the same stale
+        # ':latest' failure.
         local api_ref="ghcr.io/faultmaven/faultmaven:${api_tag}"
-        local digest_before digest_after
-        digest_before="$(image_digest "$api_ref")"
+        local dash_ref="ghcr.io/faultmaven/faultmaven-dashboard:${dash_tag}"
+        local api_digest_before dash_digest_before
+        api_digest_before="$(image_digest "$api_ref")"
+        dash_digest_before="$(image_digest "$dash_ref")"
 
         if [ "$PULL_MODE" = true ]; then
             print_info "Refreshing pre-built images from registry..."
@@ -628,14 +719,8 @@ cmd_start() {
         # Say whether the refresh actually moved anything. "Already current" and
         # "silently did not refresh" are indistinguishable without this, and they
         # are the two cases a deploy check needs to tell apart.
-        digest_after="$(image_digest "$api_ref")"
-        if [ -n "$digest_before" ] && [ -n "$digest_after" ]; then
-            if [ "$digest_before" != "$digest_after" ]; then
-                print_success "API image updated: ${digest_before:7:12} -> ${digest_after:7:12}"
-            else
-                print_info "API image already current (${digest_after:7:12})"
-            fi
-        fi
+        report_image_refresh "API" "$api_ref" "$api_digest_before"
+        report_image_refresh "Dashboard" "$dash_ref" "$dash_digest_before"
 
         # Heads-up about the up step, using the ACTUAL configured tag.
         if docker image inspect "ghcr.io/faultmaven/faultmaven:${api_tag}" >/dev/null 2>&1; then
@@ -721,14 +806,8 @@ cmd_start() {
         # stack starts, reports healthy, and serves old code. Printing the
         # revision and build date turns "did my deploy take?" from an
         # investigation into a line of output.
-        local running_ref running_prov
-        running_ref="$(docker compose ps -q api 2>/dev/null \
-            | head -1 \
-            | xargs -r docker inspect --format '{{.Config.Image}}' 2>/dev/null || true)"
-        if [ -n "$running_ref" ]; then
-            running_prov="$(image_provenance "$running_ref")"
-            [ -n "$running_prov" ] && print_info "API build: ${running_prov}"
-        fi
+        report_running_build "API" api
+        report_running_build "Dashboard" dashboard
 
         echo ""
         echo "Next steps:"
@@ -910,23 +989,32 @@ cmd_restart() {
         return
     fi
 
+    # `up -d --force-recreate`, NOT `docker compose restart`: restart starts the
+    # SAME container again, so a refreshed image is never picked up — the stack
+    # comes back looking current while serving the old code, which is exactly
+    # the trap this script works to close. Recreating also re-reads the compose
+    # config, and --force-recreate keeps restart's semantics when nothing
+    # changed (bare `up -d` would no-op, leaving an edited .env unread).
     if [ -z "$service" ]; then
-        echo "Restarting all FaultMaven services..."
+        echo "Recreating all FaultMaven services..."
         echo ""
 
-        if docker compose restart; then
+        if docker compose up -d --force-recreate; then
             print_success "All services restarted"
             echo ""
+            report_running_build "API" api
+            report_running_build "Dashboard" dashboard
+            print_info "Recreated from the images already present locally — run './faultmaven.sh start --pull' to fetch newer ones"
             print_info "Run './faultmaven.sh health' to verify health"
         else
             print_error "Failed to restart services"
             exit 1
         fi
     else
-        echo "Restarting $service..."
+        echo "Recreating $service..."
         echo ""
 
-        if docker compose restart "$service"; then
+        if docker compose up -d --force-recreate "$service"; then
             print_success "$service restarted"
             echo ""
             print_info "Run './faultmaven.sh health' to verify health"
@@ -1332,7 +1420,7 @@ cmd_help() {
     echo "Service Management:"
     echo "  start [options]             Start all FaultMaven services (pulls pre-built GHCR images)"
     echo "  stop                        Stop all services (preserves data)"
-    echo "  restart [service]           Restart all or specific service"
+    echo "  restart [service]           Recreate all or a specific service (applies config/image changes)"
     echo "  health                      Run comprehensive health checks"
     echo "  logs [service] [--tail N]   Stream logs from services"
     echo "  ps                          Show running containers"
