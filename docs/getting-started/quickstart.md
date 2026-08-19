@@ -278,8 +278,8 @@ lsof -ti:8090 | xargs kill -9  # Linux/macOS
 
 **Solution**:
 ```bash
-# Ensure Pydantic 2.6+ is installed
-pip install --upgrade 'pydantic>=2.6,<2.10'
+# Ensure a supported Pydantic 2.x is installed
+pip install --upgrade 'pydantic>=2.10,<3'
 ```
 
 ### Issue: Database locked error

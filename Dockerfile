@@ -25,8 +25,14 @@ COPY requirements/cloud.txt requirements.txt
 # GPU code path, and neither local nor cloud requests a GPU — so those are dead
 # weight. Install the CPU torch wheel from the PyTorch CPU index, then the rest
 # of the locked deps with the GPU-only lines stripped (all are "via torch").
-RUN grep -vE '^(torch==|triton==|nvidia-|cuda-)' requirements.txt > /tmp/req-cpu.txt \
-    && pip install --no-cache-dir torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu \
+# The torch version is READ from the lockfile rather than repeated here: a
+# second copy of the pin drifts silently, and the copy is what the image
+# actually installs. An empty grep fails the RUN (the `&&` chain breaks on its
+# non-zero status), so a lockfile that stopped pinning torch cannot fall
+# through to an unpinned install.
+RUN TORCH_PIN="$(grep -E '^torch==' requirements.txt)" \
+    && grep -vE '^(torch==|triton==|nvidia-|cuda-)' requirements.txt > /tmp/req-cpu.txt \
+    && pip install --no-cache-dir "$TORCH_PIN" --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r /tmp/req-cpu.txt \
     && rm -f /tmp/req-cpu.txt
 

@@ -103,7 +103,7 @@ cuda-bindings==13.2.0
     # via torch
 cuda-pathfinder==1.5.3
     # via cuda-bindings
-cuda-toolkit==13.0.2
+cuda-toolkit==13.0.3.0
     # via torch
 cycler==0.12.1
     # via matplotlib
@@ -311,7 +311,7 @@ numpy==1.26.4
     #   scipy
     #   sentence-transformers
     #   transformers
-nvidia-cublas==13.1.0.3
+nvidia-cublas==13.1.1.3
     # via
     #   cuda-toolkit
     #   nvidia-cudnn-cu13
@@ -319,10 +319,12 @@ nvidia-cublas==13.1.0.3
 nvidia-cuda-cupti==13.0.85
     # via cuda-toolkit
 nvidia-cuda-nvrtc==13.0.88
-    # via cuda-toolkit
+    # via
+    #   cuda-toolkit
+    #   nvidia-cublas
 nvidia-cuda-runtime==13.0.96
     # via cuda-toolkit
-nvidia-cudnn-cu13==9.19.0.56
+nvidia-cudnn-cu13==9.20.0.48
     # via torch
 nvidia-cufft==12.0.0.61
     # via cuda-toolkit
@@ -336,9 +338,9 @@ nvidia-cusparse==12.6.3.3
     # via
     #   cuda-toolkit
     #   nvidia-cusolver
-nvidia-cusparselt-cu13==0.8.0
+nvidia-cusparselt-cu13==0.8.1
     # via torch
-nvidia-nccl-cu13==2.28.9
+nvidia-nccl-cu13==2.29.7
     # via torch
 nvidia-nvjitlink==13.0.88
     # via
@@ -434,7 +436,7 @@ pycodestyle==2.14.0
     # via flake8
 pycparser==3.0
     # via cffi
-pydantic==2.9.2
+pydantic==2.13.4
     # via
     #   faultmaven (pyproject.toml)
     #   anthropic
@@ -442,7 +444,7 @@ pydantic==2.9.2
     #   fastapi
     #   openai
     #   pydantic-settings
-pydantic-core==2.23.4
+pydantic-core==2.46.4
     # via pydantic
 pydantic-settings==2.14.2
     # via
@@ -591,8 +593,10 @@ scipy==1.17.1
     #   sentence-transformers
 sentence-transformers==5.4.1
     # via faultmaven (pyproject.toml)
-setuptools==81.0.0
-    # via torch
+setuptools==84.0.0
+    # via
+    #   faultmaven (pyproject.toml)
+    #   torch
 shellingham==1.5.4
     # via typer
 simple-websocket==1.1.0
@@ -647,8 +651,10 @@ tokenizers==0.22.2
     #   transformers
 tomli==2.4.1
     # via coverage
-torch==2.11.0
-    # via sentence-transformers
+torch==2.13.0
+    # via
+    #   faultmaven (pyproject.toml)
+    #   sentence-transformers
 tqdm==4.67.3
     # via
     #   chromadb
@@ -658,7 +664,7 @@ tqdm==4.67.3
     #   transformers
 transformers==5.5.4
     # via sentence-transformers
-triton==3.6.0
+triton==3.7.1
     # via torch
 typer==0.24.1
     # via
@@ -700,6 +706,7 @@ typing-extensions==4.15.0
 typing-inspection==0.4.2
     # via
     #   fastapi
+    #   pydantic
     #   pydantic-settings
 tzlocal==5.3.1
     # via apscheduler

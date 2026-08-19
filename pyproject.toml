@@ -51,7 +51,10 @@ dependencies = [
     "aiosqlite>=0.19.0",
 
     # Core utilities and validation
-    "pydantic>=2.6,<2.10",
+    # >=2.10: the floor every patched litellm release declares. The old
+    # <2.10 ceiling pinned litellm to 1.83.0 and held ten proxy-server
+    # advisories open (fm#904); <3 stays a deliberate major boundary.
+    "pydantic>=2.10,<3",
     "pydantic-settings>=2.3.0",
     "httpx>=0.28.1",
     # [speedups]: aiodns/c-ares keeps DNS resolution off the shared thread
@@ -62,11 +65,10 @@ dependencies = [
     "anyio>=4.3.0",
     "requests>=2.31.0",
     "PyJWT>=2.13.0",  # >=2.13.0: GHSA key-confusion (HS256 forgery) fix
-    # RS256 JWT keys; >=48.0.1 bundles patched OpenSSL. Floor stays below 50
-    # deliberately: the cloud extra's workos pins cryptography~=49.0, so >=50
-    # here makes `pip install faultmaven[cloud]` unresolvable. dev/test lock
-    # 50.0.0 anyway. Raise to >=50.0.0 when fm#980 closes.
-    "cryptography>=48.0.1",
+    # RS256 JWT keys; >=50.0.0: PKCS#7 EnvelopedData Bleichenbacher oracle
+    # (GHSA-g6cj-pr64-35w5). Reachable only once workos 10.1.1 relaxed its
+    # own cryptography~=49.0 pin — the two floors move together.
+    "cryptography>=50.0.0",
     "bcrypt>=4.0.0",
     "email-validator>=2.0.0",
     "python-dotenv>=1.0.1",
@@ -80,6 +82,14 @@ dependencies = [
     # Knowledge base and embeddings (ChromaDB + sentence transformers)
     "chromadb>=0.5.3",
     "sentence-transformers>=3.0.1",
+    # Transitive via sentence-transformers, floored here for two GHSAs it
+    # is the only lever on: torch <=2.12.1 is itself vulnerable
+    # (GHSA-rrmf-rvhw-rf47), and torch 2.11's `setuptools<82` pin held the
+    # graph below the patched setuptools 83.0.0 (GHSA-h35f-9h28-mq5c).
+    # 2.13.0 drops the cap to `setuptools>=77.0.3`. The Dockerfile installs
+    # the CPU wheel at whatever version the lockfile pins — it reads the pin
+    # rather than repeating it, so there is nothing here to keep in step.
+    "torch>=2.13.0",
     "pypdf>=6.15.0",  # >=6.14.2: inline-image infinite-loop GHSA fixes; >=6.15.0: CVE-2026-71852
     "python-docx>=1.1.2",
 
@@ -94,6 +104,10 @@ dependencies = [
     # deliberate major-version boundary (the locked consumers allow 6.x per
     # their metadata) — lift it deliberately when a 6.x need arises.
     "protobuf>=5.29.6,<6",
+    # Transitive (spacy / thinc / torch import it at runtime), floored here
+    # because nothing else in the graph moves it: >=83.0.0 patches
+    # GHSA-h35f-9h28-mq5c. torch 2.11's `setuptools<82` used to cap it.
+    "setuptools>=83.0.0",
 
     # Web utilities
     "beautifulsoup4>=4.12.3",
@@ -117,6 +131,11 @@ dependencies = [
 cloud = [
     # Observability (Opik tracing, Prometheus metrics)
     "opik>=1.11.13",
+    # Transitive via opik and never imported by FaultMaven; declared solely
+    # to floor it at the release that patches the ten LiteLLM Proxy
+    # advisories (critical GHSA-4xpc-pv4p-pm3w / GHSA-r75f-5x8p-qvmc among
+    # them). Held back for months by the pydantic ceiling lifted above.
+    "litellm>=1.84.0",
     "prometheus-client>=0.20.0",
 
     # Security (Presidio PII redaction)
@@ -133,7 +152,11 @@ cloud = [
     "azure-storage-blob>=12.0.0", # Azure Blob storage
 
     # Identity (WorkOS AuthKit cloud SSO — ADR-015; imported only in oauth mode)
-    "workos>=9,<10",
+    # >=10.1.1: the first release to declare cryptography~=50.0 rather than
+    # ~=49.0, which is what lets the cloud extra reach the patched
+    # cryptography. AuthKit call sites used here are unchanged across the
+    # 9→10 major (see modules/auth/infrastructure/sso/workos_provider.py).
+    "workos>=10.1.1,<11",
 ]
 
 # ============================================================================
