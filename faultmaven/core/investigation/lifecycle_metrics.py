@@ -803,3 +803,31 @@ causal_and_group_regroup_refused_total = Counter(
     "``attempt`` (regroup | ungroup).",
     ["attempt"],
 )
+
+
+# fm#1108 migration drain gauge, and the only thing that says when the last
+# read-time parse can be deleted.
+#
+# The seeder's join key is now STAMPED onto each chunk at index time
+# (``VectorMetadata.cause_letters``) instead of re-derived by re-parsing chunk
+# text on every retrieval. Chunks written before that change carry no stamp, so
+# retrieval still parses them — exactly the old behaviour, for old data only.
+#
+# Every such fallback increments this. It is not an alarm: a nonzero value is
+# the expected state immediately after the change, and it falls as content
+# re-ingests (a pack whose grammar identity or content moved, a verified
+# conversion, an edit, a boot repair). A STEADY ZERO is the signal that no live
+# retrieval depends on the derivation any more and the fallback — with it the
+# last read-time parse, and the last way a grammar change can retroactively
+# re-interpret stored chunks — can be removed.
+#
+# Watch it as a rate, not a total. A value that stops falling means some
+# population never re-ingests: authored runbooks are the expected long tail
+# (``kb_init`` re-ingests the pack, never authored rows), and that is what would
+# justify building a reindex sweep rather than waiting.
+kb_cause_letters_unstamped_total = Counter(
+    "faultmaven_kb_cause_letters_unstamped_total",
+    "A retrieval hit carried no ``cause_letters`` stamp, so its cause letters "
+    "were parsed from chunk text the old way (fm#1108). Falls to zero as "
+    "content re-ingests; a steady zero means the fallback can be deleted.",
+)

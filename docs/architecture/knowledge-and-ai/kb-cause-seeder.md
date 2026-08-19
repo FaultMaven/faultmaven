@@ -107,6 +107,59 @@ preserve it on the `case.kb_context` entries the prefetch stores. This is a plai
 correctness fix (it also stops the chunk-id-as-document-id mislabel) and runs
 regardless of the seeder flag.
 
+### 1b. Cause identity — a stored join key, not a read-time derivation
+
+`parent_document_id` says which runbook matched; `matched_cause_letters` says
+which of **its causes** did. That second key was originally derived the same way
+the first is *not*: by re-running `CAUSE_HEADING_RE` over the hit's chunk text on
+every retrieval.
+
+That made the join a function of the grammar **in force when the read happened**,
+and `runbook_grammar` is a manual mirror of kb-toolkit's that is *expected* to
+change (a cross-repo CI job requires it). Nothing re-ingests on a grammar change
+— `kb_init` compares the content hash and the causes fingerprint, and the grammar
+is in neither — so a code-only edit silently re-interpreted chunks already in the
+store while their SQL record stayed as the old grammar had extracted it.
+Reproduced on an authored runbook: under a grammar tightened to require a
+title-cased cause name, `['A','B']` becomes `['B']` with no data change, no
+re-ingest, and every guard quiet (the corpus tests see only the curated corpus,
+whose authors title-case; the retrieval-side counter needs a letter to disagree
+with, and a vanished heading yields none; both write-time counters ran before the
+change happened).
+
+So the letters are **stamped at index time** into
+`VectorMetadata.cause_letters` (comma-joined, `"A,B"`), by the same grammar pass
+that extracts the parent's `metadata["causes"]` record in the same operation, and
+retrieval reads them. The join is pinned to the moment both sides were written; a
+later grammar change cannot reach back, it only changes future ingests — where
+the write-time check runs.
+
+Three details carry the design:
+
+- **Every chunk is stamped**, including `""` for prose and non-runbook content.
+  Uniformity is what makes key-*absence* mean exactly one thing: written before
+  this change. `to_chroma_metadata` therefore emits `cause_letters` on
+  `is not None` rather than on truthiness — `""` ("stamped, no heading here") and
+  absent ("never stamped") are different facts, and only key-presence separates
+  them.
+- **Un-stamped hits still parse**, exactly as before, so old data is unaffected
+  and nothing regresses. Each fallback increments
+  `kb_cause_letters_unstamped_total`, a drain gauge: a steady zero is the signal
+  that the fallback — and with it the last read-time parse — can be deleted.
+- **The stamp identity is part of the pack's idempotency**, so the migration
+  actually happens. `metadata["chunk_stamp"]` is a digest of the stamp schema
+  *and the live grammar pattern*; `kb_init` compares it beside the content hash
+  and causes fingerprint. Editing the grammar therefore re-stamps the pack at the
+  next boot automatically, rather than relying on someone remembering. Pack
+  re-ingest is prechunked, so this costs seconds, not the minutes the pack exists
+  to avoid.
+
+**Known limit:** `kb_init` walks the pack only, so authored runbooks (verified
+conversions, edits) are never re-stamped by boot. They re-stamp when next
+verified, edited or repaired. `kb_cause_letters_unstamped_total` is what says
+whether that tail is draining or has stalled — a value that stops falling is the
+evidence that would justify building a reindex sweep.
+
 ### 1a. Retrieval scope and trust boundary
 
 The seeder can only seed from runbooks the prefetch surfaces, so two constraints
@@ -605,7 +658,7 @@ divergence.
 Seeding only retrieval-matched causes is a strictly narrower intake than the
 author-order fallback it replaced. That trade is deliberate (see §2–3), but its
 recall side is an empirical question, not an assumption, so it is counted rather
-than argued. Four counters in `lifecycle_metrics.py`:
+than argued. Five counters in `lifecycle_metrics.py`:
 
 | Counter | Reads as |
 |---|---|
@@ -613,6 +666,7 @@ than argued. Four counters in `lifecycle_metrics.py`:
 | `faultmaven_kb_cause_seed_letter_mismatch_total` | A matched chunk's `### Cause X:` heading named a letter absent from the runbook's causes record, so that runbook seeded nothing. **Zero is the healthy state** — nonzero means a runbook's causes are unseedable while looking well-formed from either side alone. |
 | `faultmaven_kb_cause_unseedable_at_ingest_total{chunker}` | The same defect caught at **write** time: a document was indexed with a causes record declaring letters that none of its own chunk texts can recover. Labeled `pack` / `runtime` by which chunker produced the disagreement. **Zero is the healthy state.** |
 | `faultmaven_kb_cause_ingest_check_failed_total` | The write-time check itself raised and was swallowed, so that document went **unchecked**. Nonzero invalidates the row above until it returns to zero. |
+| `faultmaven_kb_cause_letters_unstamped_total` | A hit carried no `cause_letters` stamp, so its letters were parsed from chunk text the old way (fm#1108). **Not an alarm** — a migration drain gauge. Falls as content re-ingests; a steady zero means the fallback can be deleted. |
 
 **`no_cause_chunk_matched` is the number that prices the trade.** It is the one
 outcome the old fallback covered: retrieval hit a runbook only through its
@@ -672,6 +726,20 @@ fail open with no witness, which is this section's own failure mode one level up
 A swallowed error therefore costs a WARNING with the traceback and an increment of
 `kb_cause_ingest_check_failed_total`, whose only job is to let a dashboard tell
 *"nothing was found"* apart from *"nothing looked"*.
+
+Both **directions** of the disagreement are now decided at write time, because
+both sides are built there: a record letter no chunk carries (fm#1103), and a
+chunk heading naming a letter the record does not declare — usually a
+`### Cause X:` outside the `## Causes` section the extractor reads. The latter is
+what `kb_cause_seed_letter_mismatch_total` reports from the far end, after a case
+has already been served without those seeds. That counter stays for now: with the
+stamp in place the read-time disagreement is deterministic rather than
+grammar-dependent, but un-stamped legacy chunks can still produce it, so it
+retires with the fallback, not before.
+
+The reverse check is silent when the record is absent. A document with cause
+headings and no record is the ordinary anonymous upload — never seedable by
+design rather than by defect — and alarming there would fire on healthy content.
 
 The alarm names **which side is wrong** when the letter itself proves it. A record
 declaring a letter the heading grammar cannot express (`cause_letter: "a"`) is

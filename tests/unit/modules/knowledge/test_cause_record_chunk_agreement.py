@@ -70,20 +70,34 @@ def _chunk(letter: str) -> str:
     return f"### Cause {letter}: Something broke\n**Statement:** it did"
 
 
+def _letters(*chunk_texts: str) -> list:
+    """Chunk texts → the per-chunk letter lists the predicates now take.
+
+    The stamp is parsed once at index time and both stored and checked, so the
+    predicates take parsed letters. Tests still SAY markdown — running it through
+    the real parse is what keeps them honest about the grammar.
+    """
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        _matched_cause_letters,
+    )
+
+    return [_matched_cause_letters(t) for t in chunk_texts]
+
+
 # ---------------------------------------------------------------------------
 # The predicate: which declared letters can no chunk recover
 # ---------------------------------------------------------------------------
 
 
 def test_every_declared_letter_present_is_clean():
-    chunks = ["## Causes\n\n" + _chunk("A"), _chunk("B")]
+    chunks = _letters("## Causes\n\n" + _chunk("A"), _chunk("B"))
     assert _unrecoverable_cause_letters(chunks, [_cause("A"), _cause("B")]) == []
 
 
 def test_a_letter_no_chunk_carries_is_reported():
     """The shape the retrieval-side counter is structurally blind to: the heading
     is missing everywhere, so retrieval produces no letter to disagree with."""
-    chunks = ["## Causes\n\n" + _chunk("A"), _chunk("B")]
+    chunks = _letters("## Causes\n\n" + _chunk("A"), _chunk("B"))
     missing = _unrecoverable_cause_letters(
         chunks, [_cause("A"), _cause("B"), _cause("C")]
     )
@@ -93,7 +107,7 @@ def test_a_letter_no_chunk_carries_is_reported():
 def test_a_drifted_heading_form_reports_every_letter():
     """A producer whose heading form left the shared grammar (``#### Cause A:``)
     recovers nothing — the record looks well-formed, the chunks join to nothing."""
-    chunks = ["#### Cause A: Something broke", "Cause B - Something else"]
+    chunks = _letters("#### Cause A: Something broke", "Cause B - Something else")
     assert _unrecoverable_cause_letters(chunks, [_cause("A"), _cause("B")]) == [
         "A",
         "B",
@@ -102,14 +116,14 @@ def test_a_drifted_heading_form_reports_every_letter():
 
 def test_missing_letters_keep_record_order_and_dedupe():
     causes = [_cause("D"), _cause("B"), _cause("D"), _cause("A")]
-    assert _unrecoverable_cause_letters([_chunk("B")], causes) == ["D", "A"]
+    assert _unrecoverable_cause_letters(_letters(_chunk("B")), causes) == ["D", "A"]
 
 
 def test_a_chunk_heading_absent_from_the_record_is_not_this_check():
     """The opposite direction is the seeder's own alarm
     (``kb_cause_seed_letter_mismatch_total``) and is not double-counted here: a
     stray heading costs no cause its seedability."""
-    chunks = [_chunk("A"), _chunk("Z")]
+    chunks = _letters(_chunk("A"), _chunk("Z"))
     assert _unrecoverable_cause_letters(chunks, [_cause("A")]) == []
 
 
@@ -573,7 +587,9 @@ def test_runtime_chunker_recovers_every_cause_letter_of_every_shipped_runbook():
         if not causes:
             continue
         checked += 1
-        missing = _unrecoverable_cause_letters(chunker.split(content), causes)
+        missing = _unrecoverable_cause_letters(
+            _letters(*chunker.split(content)), causes
+        )
         assert not missing, (
             f"{Path(source).name}: the runtime chunker leaves cause(s) "
             f"{missing} with no chunk carrying their heading — unseedable"

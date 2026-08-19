@@ -50,6 +50,10 @@ from typing import Any, Awaitable, Callable, Optional
 
 from sqlalchemy import select
 
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    chunk_stamp_identity,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -258,16 +262,28 @@ async def _ingest_pack_runbook(
         # edits ONLY causes (markdown byte-identical) would hash-match and be
         # skipped — leaving the live consumer (the KB cause seeder) reading stale
         # structure. Compare the persisted causes too and re-ingest on drift.
-        existing_causes = _decode_metadata(existing_row.knowledge_metadata).get(
-            "causes"
-        )
+        existing_metadata = _decode_metadata(existing_row.knowledge_metadata)
+        existing_causes = existing_metadata.get("causes")
         causes_unchanged = _causes_fingerprint(existing_causes) == _causes_fingerprint(
             runbook.causes
         )
-        if content_unchanged and causes_unchanged:
+        # Third axis (fm#1108): the chunks carry a stamp of the cause letters the
+        # seeder joins on, and that stamp is only as good as the schema+grammar
+        # that produced it. Neither is in the content hash — the grammar lives in
+        # code — so before this a grammar change left every stored stamp meaning
+        # something it no longer meant, with nothing to notice. Comparing the
+        # identity makes the re-stamp automatic: edit the grammar, and the next
+        # boot re-ingests the pack. Cheap, because pack re-ingest is prechunked.
+        stamp_unchanged = existing_metadata.get("chunk_stamp") == chunk_stamp_identity()
+        if content_unchanged and causes_unchanged and stamp_unchanged:
             logger.debug(f"Skipping {runbook.relpath}: unchanged")
             return "skipped"
-        if content_unchanged:
+        if content_unchanged and causes_unchanged:
+            logger.info(
+                f"{runbook.relpath}: chunk stamp identity changed (content and "
+                "causes unchanged) — re-ingesting to re-stamp"
+            )
+        elif content_unchanged:
             logger.info(
                 f"{runbook.relpath}: causes changed (markdown unchanged) — "
                 "re-ingesting"

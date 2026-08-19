@@ -138,51 +138,181 @@ def _letter_can_head_a_cause(letter: str) -> bool:
     return bool(match and match.group(1) == letter)
 
 
-def _unrecoverable_cause_letters(
-    chunks: List[str], causes: Optional[List[Dict[str, Any]]]
+# Bumped when the meaning of a chunk stamp changes in a way that makes already
+# written stamps wrong (a new stamped field, a different join key, a changed
+# encoding) — NOT for unrelated ``VectorMetadata`` additions.
+CHUNK_STAMP_SCHEMA = 1
+
+
+def chunk_stamp_identity() -> str:
+    """A short digest of everything a chunk's cause stamp depends on.
+
+    Stored on the runbook row (``metadata["chunk_stamp"]``) and compared by the
+    KB bootstrap's idempotency gate, so a change here forces a re-ingest of the
+    shipped pack instead of leaving stamps that no longer mean what they say.
+
+    It covers the grammar as well as the schema, and that is the load-bearing
+    half. ``CAUSE_HEADING_RE`` is a MANUAL MIRROR of kb-toolkit's, expected to
+    change (a cross-repo CI job requires it) — and before fm#1108 nothing about
+    such a change re-ingested anything, so a code-only edit silently
+    re-interpreted chunks already in the store. Deriving the identity from the
+    live pattern makes that automatic rather than a discipline someone has to
+    remember: edit the grammar, and the next boot re-stamps the pack.
+
+    Pack re-ingest is prechunked — no embedding model, no re-chunking — so
+    forcing it is seconds of boot, not the minutes the pack exists to avoid.
+    It does NOT reach authored runbooks; ``kb_init`` only ever walks the pack.
+    Those re-stamp when they are next verified, edited or repaired, and
+    ``kb_cause_letters_unstamped_total`` is what says how much of live retrieval
+    is still waiting on that.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
+        CAUSE_HEADING_RE,
+    )
+
+    payload = (
+        f"{CHUNK_STAMP_SCHEMA}|{CAUSE_HEADING_RE.pattern}|{CAUSE_HEADING_RE.flags}"
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _read_stamped_cause_letters(
+    chunk_metadata: Optional[Dict[str, Any]], chunk_text: str
 ) -> List[str]:
-    """Cause letters the record declares that NO chunk's text can recover.
+    """The hit's cause letters: read the stamp, or parse if it predates one.
 
-    The write-time form of the seeder's read-time join (fm#1103). Retrieval hands
-    the seeder a chunk; the seeder decides which of the parent runbook's
-    ``metadata["causes"]`` records that hit names by parsing ``### Cause X:`` out
-    of the chunk's own text (:func:`_matched_cause_letters`) and matching it
-    against ``cause_letter``. So a cause whose letter appears in no chunk is
-    structurally unseedable — permanently, silently, and no matter how often the
-    runbook is retrieved.
+    The stamp (``VectorMetadata.cause_letters``) is written at index time by the
+    same grammar pass that extracts the parent's ``metadata["causes"]`` record,
+    so reading it makes the seeder's join a stored fact rather than a read-time
+    re-derivation. That is the whole of fm#1108: a derivation is a function of
+    the code in force when it RUNS, and this one ran on every retrieval against
+    a grammar that is a manual mirror of kb-toolkit's and expected to change.
+    Nothing re-ingests on a grammar change, so an edit silently re-interpreted
+    chunks already in the store while their record stayed as the old grammar
+    left it.
 
-    Nothing enforced that agreement where the two are written. The shipped pack
-    is pinned by a corpus test, but a case->runbook conversion, an edit to a
-    published runbook, a boot-time re-index and an out-of-tree ``KB_PACK_DIR``
-    pack are not — and the retrieval-side counter
-    (``kb_cause_seed_letter_mismatch_total``) sees only the wrong-letter shape,
-    only after a case has already lost its seeds. Here both sides are in hand,
-    so the check is exact and costs a regex pass.
+    KEY-ABSENCE, not emptiness, selects the fallback. ``""`` is a real stamp
+    meaning "no cause heading in this chunk" and is stored as such; a chunk
+    written before fm#1108 has no key at all. Only the latter is re-parsed —
+    which reproduces exactly the old behaviour for old data, so this is strictly
+    better than before for everything and worse than before for nothing.
+
+    Each fallback increments ``kb_cause_letters_unstamped_total``. It is a
+    DRAIN GAUGE: it tells you how much of live retrieval still depends on the
+    derivation, and its arrival at a steady zero is the signal that this
+    fallback — and with it the last read-time parse — can be deleted.
+    """
+    if chunk_metadata is not None and "cause_letters" in chunk_metadata:
+        raw = chunk_metadata.get("cause_letters")
+        return [letter for letter in str(raw or "").split(",") if letter]
+
+    letters = _matched_cause_letters(chunk_text)
+    try:
+        from faultmaven.core.investigation.lifecycle_metrics import (
+            kb_cause_letters_unstamped_total,
+        )
+
+        kb_cause_letters_unstamped_total.inc()
+    except Exception:  # pragma: no cover - metrics must never break retrieval
+        pass
+    return letters
+
+
+def _carried_cause_letters(letters_per_chunk: List[List[str]]) -> set:
+    """Flatten per-chunk letter lists, refusing the one wrong shape that is silent.
+
+    Handed ``List[str]`` (chunk TEXTS) instead of ``List[List[str]]`` (parsed
+    letters), ``set.update`` would iterate each string into its CHARACTERS — and
+    since cause letters are single uppercase characters that appear in ordinary
+    prose, the result looks plausible and the callers report nothing. A wrong
+    answer that passes for a right one is precisely what this module exists to
+    prevent, so the shape is checked rather than trusted. The callers already
+    swallow-and-report, so this surfaces as a loud check failure.
+    """
+    carried: set = set()
+    for letters in letters_per_chunk:
+        if isinstance(letters, str):
+            raise TypeError(
+                "letters_per_chunk holds chunk text, not parsed letters — "
+                "iterating it would silently match individual characters"
+            )
+        carried.update(letters)
+    return carried
+
+
+def _declared_cause_letters(causes: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """The letters a ``metadata["causes"]`` record declares, in record order.
 
     Scope is deliberately the letters the record DECLARES. An entry carrying no
     usable ``cause_letter`` is also unseedable, but it is a malformed record
     rather than a record/chunk disagreement — the extractor and the runbook
-    validator own that, and folding it in here would fire this alarm for a defect
-    it cannot describe.
-
-    Returns the missing letters in record order (deduped), or [] when the record
-    is empty/absent — the overwhelmingly common case, and the healthy one.
+    validator own that, and folding it in here would fire the callers' alarms
+    for a defect their messages cannot describe.
     """
-    if not causes:
-        return []
     declared: List[str] = []
-    for cause in causes:
+    for cause in causes or []:
         if not isinstance(cause, dict):
             continue
         letter = str(cause.get("cause_letter") or "")
         if letter and letter not in declared:
             declared.append(letter)
+    return declared
+
+
+def _unrecoverable_cause_letters(
+    letters_per_chunk: List[List[str]], causes: Optional[List[Dict[str, Any]]]
+) -> List[str]:
+    """Cause letters the record declares that NO chunk carries (fm#1103).
+
+    The seeder names which of a runbook's ``metadata["causes"]`` records a hit
+    matched by joining the hit chunk's ``### Cause X:`` letters against
+    ``cause_letter``. A cause whose letter appears in no chunk is therefore
+    structurally unseedable — permanently, silently, and no matter how often the
+    runbook is retrieved.
+
+    Takes the letters ALREADY PARSED for the stamp rather than re-parsing the
+    chunk texts (fm#1108): what is checked is then literally what retrieval will
+    read, and the two cannot disagree about what a cause heading is.
+
+    Returns the missing letters in record order, or [] when the record is
+    empty/absent — the overwhelmingly common case, and the healthy one.
+    """
+    declared = _declared_cause_letters(causes)
     if not declared:
         return []
-    recoverable: set = set()
-    for chunk in chunks:
-        recoverable.update(_matched_cause_letters(chunk))
-    return [letter for letter in declared if letter not in recoverable]
+    carried = _carried_cause_letters(letters_per_chunk)
+    return [letter for letter in declared if letter not in carried]
+
+
+def _unrecorded_chunk_letters(
+    letters_per_chunk: List[List[str]], causes: Optional[List[Dict[str, Any]]]
+) -> List[str]:
+    """The reverse disagreement: letters the CHUNKS carry that the record lacks.
+
+    Same defect from the other end, and until fm#1108 it was visible only from
+    retrieval — ``kb_cause_seed_letter_mismatch_total`` fires when a matched
+    chunk's heading names a letter the record has no entry for, by which point a
+    case has already been served without those seeds. Both directions are
+    decidable at write time, because both sides are built here.
+
+    Usually means a ``### Cause X:`` heading outside the ``## Causes`` section
+    the extractor reads (the extractor scans that section; the stamp scans the
+    whole chunk), so retrieval can match a heading that names nothing.
+
+    Silent when the record is absent: a document with cause headings and no
+    record is the ordinary anonymous-upload runbook, which is never seedable by
+    design rather than by defect (``upload_document`` passes no ``causes``, and
+    ``get_runbook_causes`` refuses EXPERIMENTAL rows). Alarming there would fire
+    on healthy content.
+    """
+    declared = set(_declared_cause_letters(causes))
+    if not declared:
+        return []
+    seen: List[str] = []
+    for letter in sorted(_carried_cause_letters(letters_per_chunk)):
+        if letter not in declared:
+            seen.append(letter)
+    return seen
 
 
 def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:
@@ -524,16 +654,15 @@ class KnowledgeService:
                         parent_document_id = result_meta.get(
                             "parent_document_id"
                         ) or _strip_chunk_suffix(result.get("id"))
-                        # Which CAUSES of that runbook this hit matched. Derived
-                        # here, from the full chunk text, for the same reason
-                        # parent_document_id is: it is structural identity the
-                        # seeder needs and only the raw hit carries. Deliberately
-                        # NOT read off `snippet` downstream — that is a 200-char
-                        # display truncation, and a cause heading sitting past the
-                        # cut (1 of 638 chunks in the shipped pack) would silently
-                        # mis-attribute rather than fail.
-                        matched_cause_letters = _matched_cause_letters(
-                            result.get("content") or ""
+                        # Which CAUSES of that runbook this hit matched — the
+                        # seeder's join key, READ rather than re-derived
+                        # (fm#1108). It was stamped at index time by the same
+                        # grammar pass that extracted the parent's causes record,
+                        # so the two are pinned to one another and a later change
+                        # to ``CAUSE_HEADING_RE`` cannot reach back and silently
+                        # re-interpret chunks already in the store.
+                        matched_cause_letters = _read_stamped_cause_letters(
+                            result_meta, result.get("content") or ""
                         )
                         search_result = SearchResult(
                             document_id=result.get(
@@ -975,9 +1104,14 @@ class KnowledgeService:
             # alarm is true either way and a retry at worst counts it twice.
             # Checking after the write instead would trade that for missing the
             # report entirely whenever indexing fails.
+            #
+            # The letters are parsed ONCE here and then both stamped onto every
+            # chunk and handed to the check — the stamp is what retrieval will
+            # read, so the thing checked is literally the thing stored (fm#1108).
+            letters_per_chunk = [_matched_cause_letters(chunk) for chunk in chunks]
             self._report_unseedable_causes(
                 document.document_id,
-                chunks,
+                letters_per_chunk,
                 causes,
                 chunker=("pack" if prechunked is not None else "runtime"),
             )
@@ -1013,6 +1147,15 @@ class KnowledgeService:
                     chunk_index=i,
                     total_chunks=len(chunks),
                     parent_document_id=document.document_id,
+                    # Stamped on EVERY chunk, including the empty stamp for a
+                    # chunk with no cause heading and for non-runbook content.
+                    # Uniformity is what makes key-absence mean exactly one
+                    # thing at read time — "indexed before fm#1108" — so the
+                    # legacy-parse fallback can be counted and eventually
+                    # retired. Stamping only cause-bearing chunks would make the
+                    # fallback fire forever on ordinary prose and tell us
+                    # nothing.
+                    cause_letters=",".join(letters_per_chunk[i]),
                 )
                 doc_dicts.append(
                     {
@@ -1068,7 +1211,7 @@ class KnowledgeService:
     @staticmethod
     def _report_unseedable_causes(
         document_id: str,
-        chunks: List[str],
+        letters_per_chunk: List[List[str]],
         causes: Optional[List[Dict[str, Any]]],
         *,
         chunker: str,
@@ -1099,8 +1242,9 @@ class KnowledgeService:
         an increment of ``kb_cause_ingest_check_failed_total``.
         """
         try:
-            missing = _unrecoverable_cause_letters(chunks, causes)
-            if not missing:
+            missing = _unrecoverable_cause_letters(letters_per_chunk, causes)
+            unrecorded = _unrecorded_chunk_letters(letters_per_chunk, causes)
+            if not missing and not unrecorded:
                 return
             from faultmaven.core.investigation.lifecycle_metrics import (
                 kb_cause_unseedable_at_ingest_total,
@@ -1129,7 +1273,20 @@ class KnowledgeService:
                     "and re-ingest.",
                     document_id,
                     ", ".join(absent),
-                    len(chunks),
+                    len(letters_per_chunk),
+                    chunker,
+                )
+            if unrecorded:
+                logger.warning(
+                    "UNSEEDABLE RUNBOOK CAUSES %s: chunk(s) carry a "
+                    "'### Cause X:' heading for letter(s) %s that the causes "
+                    "record does not declare (%s chunker), so a hit on them "
+                    "names nothing and seeds nothing. Usually a cause heading "
+                    "outside the '## Causes' section the extractor reads. This "
+                    "is what kb_cause_seed_letter_mismatch_total reports from "
+                    "the far end, after a case has already lost the seeds.",
+                    document_id,
+                    ", ".join(unrecorded),
                     chunker,
                 )
             if ungrammatical:
@@ -1466,7 +1623,16 @@ class KnowledgeService:
             # so the orphan-prune removes them with it, and re-ingested on a
             # causes drift even when the markdown is byte-identical (kb_init
             # compares the persisted causes, not just the content hash).
-            metadata={"causes": causes} if causes else None,
+            # ``causes`` verbatim, plus the identity of the chunk stamp
+            # written alongside it (fm#1108). The stamp identity is recorded
+            # even for a runbook with no causes record, because it describes the
+            # CHUNKS, not the record — and the bootstrap's idempotency gate
+            # compares it to decide whether stored stamps still mean what they
+            # say.
+            metadata={
+                **({"causes": causes} if causes else {}),
+                "chunk_stamp": chunk_stamp_identity(),
+            },
         )
         async with self._db_session_factory() as session:
             repo = DatabaseKnowledgeItemRepository(session)
