@@ -20,6 +20,7 @@ from faultmaven.bootstrap import kb_init
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     chunk_stamp_identity,
 )
+from faultmaven.utils.serialization import decode_json_blob
 
 RUNBOOK_MD = """---
 id: example-runbook
@@ -400,10 +401,16 @@ async def test_bootstrap_re_ingests_on_causes_drift_in_either_metadata_shape(
         (12345, {}),  # non-str, non-dict
     ],
 )
-def test_decode_metadata_normalises_every_stored_shape(value, expected):
-    """``_decode_metadata`` always yields a dict, so the caller's ``.get`` is
-    safe for absent, malformed, and wrong-container values alike."""
-    assert kb_init._decode_metadata(value) == expected
+def test_bootstrap_reads_every_stored_metadata_shape_as_a_dict(value, expected):
+    """The bootstrap's ``.get`` must be safe for absent, malformed and
+    wrong-container values alike.
+
+    Kept at THIS call site after fm#1107 folded the decode itself into
+    ``decode_json_blob``: what the bootstrap relies on is not just the shared
+    decode but its own ``or {}`` on top, and that is the half a shared-function
+    test would not cover.
+    """
+    assert (decode_json_blob(value) or {}) == expected
 
 
 @pytest.mark.asyncio

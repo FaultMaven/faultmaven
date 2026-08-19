@@ -52,7 +52,7 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
-from faultmaven.utils.serialization import to_json_compatible
+from faultmaven.utils.serialization import decode_json_blob, to_json_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -323,34 +323,32 @@ def _unrecorded_chunk_letters(
 
 
 def _row_metadata(knowledge_metadata: Any) -> Dict[str, Any]:
-    """Decode a raw ``knowledge_items.knowledge_metadata`` value to a dict.
+    """A ``knowledge_items`` metadata value as a ``.get``-safe dict.
 
-    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so the value
-    arrives as a JSON *string* or an already-decoded ``dict`` depending on
-    backend and writer — handling one shape loses the record silently on the
-    other (the bug ``kb_init._decode_metadata`` documents). Read-only: the dict
-    branch aliases its caller's attribute, so callers must not mutate it in
-    place; copy first.
+    Thin over :func:`decode_json_blob` (fm#1107) — this used to be one of three
+    near-copies of that decode. Two things are local to this caller:
 
-    Returns ``{}`` for absent/undecodable values so every caller's ``.get`` is
-    safe. A value that is present but undecodable warns on the way: it is the
-    one "no metadata" answer that is really "unread metadata".
+    * ``{}`` rather than ``None`` for "nothing usable", because every reader here
+      goes straight to ``.get``;
+    * the WARNING for a value that is present but unreadable. That is the one
+      "no metadata" answer which is really "unread metadata", and it matters more
+      here than anywhere else: this feeds the causes record the KB cause seeder
+      joins on AND the chunk stamp the restamp sweep keys on, so a silent None
+      would read as "prose runbook, nothing to check" and disable both.
+
+    Read-only — the dict branch is not copied, so callers must not mutate it in
+    place (copy first). The repository's ``_parse_json_dict`` is the copying
+    counterpart, for results that get handed out.
     """
-    if isinstance(knowledge_metadata, dict):
-        return knowledge_metadata
-    if not knowledge_metadata:
-        return {}
-    try:
-        decoded = json.loads(knowledge_metadata)
-    except (json.JSONDecodeError, TypeError) as decode_error:
+    decoded = decode_json_blob(knowledge_metadata)
+    if decoded is None and knowledge_metadata:
         logger.warning(
-            "Unreadable knowledge_items metadata (%s): treating the row as "
+            "Unreadable knowledge_items metadata (%r): treating the row as "
             "carrying none, so its causes record and chunk stamp both read as "
             "absent.",
-            decode_error,
+            knowledge_metadata,
         )
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
+    return decoded or {}
 
 
 def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:

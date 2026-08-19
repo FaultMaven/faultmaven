@@ -53,6 +53,7 @@ from sqlalchemy import select
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     chunk_stamp_identity,
 )
+from faultmaven.utils.serialization import decode_json_blob
 
 logger = logging.getLogger(__name__)
 
@@ -278,7 +279,7 @@ async def _ingest_pack_runbook(
         # edits ONLY causes (markdown byte-identical) would hash-match and be
         # skipped — leaving the live consumer (the KB cause seeder) reading stale
         # structure. Compare the persisted causes too and re-ingest on drift.
-        existing_metadata = _decode_metadata(existing_row.knowledge_metadata)
+        existing_metadata = decode_json_blob(existing_row.knowledge_metadata) or {}
         existing_causes = existing_metadata.get("causes")
         causes_unchanged = _causes_fingerprint(existing_causes) == _causes_fingerprint(
             runbook.causes
@@ -610,9 +611,6 @@ async def _restamp_stale_rows(
     Returns the item_ids restamped this boot.
     """
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
-    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
-        _row_metadata,
-    )
 
     current = chunk_stamp_identity()
     try:
@@ -633,7 +631,7 @@ async def _restamp_stale_rows(
             for item_id, metadata, is_published in rows
             if is_published
             and not _BUILTIN_ITEM_ID_RE.match(item_id or "")
-            and _row_metadata(metadata).get("chunk_stamp") != current
+            and (decode_json_blob(metadata) or {}).get("chunk_stamp") != current
         ]
     except Exception as e:
         logger.warning(f"KB restamp skipped: could not select stale rows: {e}")
@@ -793,44 +791,6 @@ def _causes_fingerprint(causes: Optional[list]) -> str:
     ``sort_keys`` lets a semantically-identical re-serialization compare equal.
     """
     return json.dumps(causes or [], sort_keys=True, ensure_ascii=False)
-
-
-def _decode_metadata(value: Any) -> dict:
-    """Decode a ``knowledge_items.metadata`` value to a dict.
-
-    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so the column
-    type differs by backend — but rows written through
-    ``KnowledgeItemRepository`` come back as a **``str`` on both**, because that
-    writer binds an already-serialized ``json.dumps(...)`` value: SQLite stores it
-    verbatim in TEXT, and JSONB stores it as a JSON *string scalar* which
-    deserializes back to the same ``str`` (verified against
-    ``JSONB.bind_processor`` — binding a ``str`` yields ``"{\\"causes\\": …}"``,
-    not an object). Handling only the dict shape therefore made the causes
-    comparison read ``None`` on **every** deployment, so ``causes_unchanged``
-    could never be true and every runbook re-ingested on every boot.
-
-    The dict branch is kept because it is the shape any writer binding a real
-    object would produce, and because it is the documented JSONB contract — the
-    two branches together make this independent of who wrote the row.
-    Returns ``{}`` for absent/undecodable values so the caller's ``.get`` is
-    always safe.
-
-    Same intent as ``KnowledgeItemRepository._parse_json_dict``, duplicated (not
-    imported) to keep bootstrap off a module's infrastructure layer — but
-    deliberately NOT its copy semantics: that one ``deepcopy``s the dict branch
-    because its callers hand the result out. **The result here is read-only**; the
-    dict branch aliases the session-bound ORM attribute, so a caller that mutates
-    it would dirty the row. Copy before mutating.
-    """
-    if isinstance(value, dict):
-        return value
-    if not value:
-        return {}
-    try:
-        decoded = json.loads(value)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
 
 
 async def _delete_existing(
