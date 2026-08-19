@@ -4196,6 +4196,74 @@ def mechanism_for_display(stored: Optional[str]) -> Optional[str]:
     return stored
 
 
+# The resolution summary's own rendered labels. Anchoring on them keeps the
+# rewrite below scoped to the two lines the generator produced, so nothing in a
+# user's evidence or an LLM's prose can be caught by it. They are LOAD-BEARING:
+# changing the wording in ``report_generation_service`` silently stops
+# normalizing rows written before it (there is a matching note at the generator).
+_REPORT_ESTABLISHED_PREFIX = "_Established by: "
+_REPORT_ESTABLISHED_SUFFIX = "._"
+_REPORT_MECHANISM_PREFIX = "**How it produced the symptom:** "
+
+
+def normalize_stored_report_content(content: Optional[str]) -> Optional[str]:
+    """Rewrite the two pre-#1097 lines in a STORED report, or return it as-is.
+
+    A resolution summary is not rendered on read — it is generated once at the
+    terminal transition and persisted as markdown — so fixing the producers left
+    every case resolved before #1097 serving the engine notation forever. This
+    is the same normalization the two conclusion FIELDS get, applied to the
+    materialized document, and it reuses those very functions rather than
+    re-deriving the detection so the two can never drift apart.
+
+    Called where a stored report BECOMES a ``CaseReport`` (the repositories'
+    ``_row_to_report``), not at each presentation site. That placement is the
+    point: applied per-reader it is a discipline every future consumer has to
+    opt into, and the PR that introduced it had already missed one — the report
+    download endpoint, in a different module, served the raw column. Applied at
+    the boundary it is a property of any report loaded from storage.
+
+    Line-scoped and label-anchored: only a line the generator itself wrote as
+    the provenance or the mechanism is considered, and only its VALUE is passed
+    to the field normalizer that owns it. A line either normalizer leaves
+    unchanged is left byte-identical, so a current report round-trips exactly
+    and the rewrite is self-limiting — a report generated after #1097 can never
+    match.
+
+    Deliberately not a backfill: regenerating a stored summary would rewrite a
+    historical record with everything the generator has learned since. One
+    consequence worth knowing — a report EDIT reads then writes, so an edited
+    legacy row is persisted normalized. That is a strict improvement, not a
+    second rendering path.
+    """
+    if not content:
+        return content
+
+    lines = content.split("\n")
+    changed = False
+    for i, line in enumerate(lines):
+        if line.startswith(_REPORT_ESTABLISHED_PREFIX) and line.endswith(
+            _REPORT_ESTABLISHED_SUFFIX
+        ):
+            value = line[
+                len(_REPORT_ESTABLISHED_PREFIX) : -len(_REPORT_ESTABLISHED_SUFFIX)
+            ]
+            fixed = established_by_for_display(value)
+            if fixed != value:
+                lines[i] = (
+                    f"{_REPORT_ESTABLISHED_PREFIX}{fixed}{_REPORT_ESTABLISHED_SUFFIX}"
+                )
+                changed = True
+        elif line.startswith(_REPORT_MECHANISM_PREFIX):
+            value = line[len(_REPORT_MECHANISM_PREFIX) :]
+            fixed = mechanism_for_display(value)
+            if fixed != value:
+                lines[i] = f"{_REPORT_MECHANISM_PREFIX}{fixed}"
+                changed = True
+
+    return "\n".join(lines) if changed else content
+
+
 class RootCauseConclusion(BaseModel):
     """
     Final determination of root cause.

@@ -65,6 +65,7 @@ from faultmaven.modules.case.domain.models import (
     UploadedFile,
     ValidationMethod,
     WorkingConclusion,
+    normalize_stored_report_content,
 )
 from faultmaven.modules.case.domain.owned_models.checkpoint import CaseCheckpoint
 
@@ -3470,7 +3471,16 @@ class PostgreSQLHybridCaseRepository(CaseRepository):
             is_current=row.is_current,
             linked_to_closure=row.linked_to_closure,
             title=row.title,
-            content=row.content,
+            # Normalized where a stored report BECOMES a CaseReport
+            # (#1097): a summary is generated once at the terminal
+            # transition and never re-rendered, so rows written before
+            # the audit/prose split still carry the engine notation.
+            # Here rather than at each presentation site — applied
+            # per-reader it is a discipline every future consumer must
+            # opt into, and the download endpoint had already been
+            # missed that way; here it is a property of any report
+            # loaded from storage.
+            content=normalize_stored_report_content(row.content),
             format=row.format,
             generation_status=ReportStatus(row.generation_status),
             generation_time_ms=row.generation_time_ms,
