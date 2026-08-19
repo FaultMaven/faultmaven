@@ -110,12 +110,23 @@ class TestCoreObservability:
 class TestObservabilityIntegration:
     """Test that observability is properly integrated into key components."""
 
-    def test_llm_router_has_tracing(self):
-        """Verify LLM router methods have trace decorators."""
+    def test_llm_router_route_tracing_matches_gate(self):
+        """LLMRouter.route is wrapped by @opik.track exactly when the
+        import-time gate allowed it (opik installed AND OPIK_ENABLED=true).
+
+        Since #1121 the decorator fails closed: with tracing disabled, route
+        is the RAW function — asserting an unconditional wrapper here would
+        re-encode the fail-open behavior. The directional guarantees (disabled
+        ⇒ passthrough + no client; enabled ⇒ tracked) are proven in
+        tests/unit/infrastructure/observability/test_opik_fail_closed.py with
+        subprocess-controlled environments; this test pins the residual
+        in-process invariant: the only wrapper on route is Opik's, present
+        exactly when the SDK marked it tracked."""
         from faultmaven.infrastructure.llm.router import LLMRouter
 
-        # Check that key methods have been wrapped with @trace
-        assert hasattr(LLMRouter.route, "__wrapped__")
+        wrapped = hasattr(LLMRouter.route, "__wrapped__")
+        tracked = bool(getattr(LLMRouter.route, "opik_tracked", False))
+        assert wrapped == tracked
 
     def test_agent_has_tracing(self):
         """Verify agent service methods have trace decorators."""

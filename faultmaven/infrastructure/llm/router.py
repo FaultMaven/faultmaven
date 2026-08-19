@@ -9,7 +9,6 @@ Inherits from BaseExternalClient for unified logging, retry logic, and
 circuit breaker patterns for external LLM provider calls.
 """
 
-import functools
 import logging
 import os
 import time
@@ -43,20 +42,36 @@ except ImportError:
 TELEMETRY_PAYLOAD_MAX_CHARS = 8000
 
 
+def _opik_tracing_enabled() -> bool:
+    """FaultMaven-level gate for the @opik.track decorators (OPIK_ENABLED).
+
+    Fail closed: any error reading settings means no tracing. Without this
+    gate the decorators are live even when OPIK_ENABLED=false and the SDK
+    lazily builds a client pointed at its default (Comet Cloud), producing
+    continuous outbound requests from a self-hosted deployment (#1121).
+    """
+    try:
+        return get_settings().observability.opik_enabled
+    except Exception:
+        return False
+
+
 def _opik_track_llm(name: str):
-    """Decorator: wraps function with @opik.track(type='llm') when Opik is available."""
-    if OPIK_AVAILABLE:
+    """Decorator: wraps function with @opik.track(type='llm') when Opik is
+    installed AND enabled (OPIK_ENABLED=true).
+
+    Decided at import time; when disabled the function is returned unchanged,
+    so a disabled deployment never constructs an Opik client at these call
+    sites.
+    """
+    if OPIK_AVAILABLE and _opik_tracing_enabled():
         return opik.track(
             name=name, type="llm", capture_input=False, capture_output=False
         )
 
-    # No-op passthrough when Opik is not installed
+    # Fail-closed passthrough: Opik not installed, or tracing not enabled.
     def identity(func):
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            return await func(*args, **kwargs)
-
-        return wrapper
+        return func
 
     return identity
 
@@ -393,6 +408,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         """
         if not OPIK_AVAILABLE:
             self.logger.warning("Opik SDK not available — skipping span update")
+            return
+        if not _opik_tracing_enabled():
+            # Tracing disabled: there is no span to update, and calling
+            # update_current_span with no span raises (then logs) per call.
             return
 
         try:

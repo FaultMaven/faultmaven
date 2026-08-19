@@ -281,6 +281,32 @@ class OpikTracer(BaseExternalClient, ITracer):
                 self.logger.warning(f"Failed to record fallback metrics: {e}")
 
 
+def _disable_sdk_tracing() -> None:
+    """Flip the Opik SDK's own kill switches so disabled means disabled.
+
+    The @opik.track call sites (llm/router.py, preprocessing/classifier.py)
+    are already import-time passthroughs when OPIK_ENABLED=false, but any
+    other tracked code path would still lazily build an SDK client pointed at
+    the SDK's default backend (Comet Cloud) — outbound requests and 401s from
+    a self-hosted deployment (#1121). Two switches, belt and braces:
+
+    - ``set_tracing_active(False)`` makes ``is_tracing_active()`` False
+      process-wide, overriding any True the SDK may already have cached.
+      Every @opik.track wrapper and ``opik_context.update_current_span``
+      consults it per call and returns before any client is constructed.
+    - ``OPIK_TRACK_DISABLE=true`` covers anything that re-reads OpikConfig
+      from the environment (the SDK owns this env var; it is deliberately
+      not a settings field).
+    """
+    os.environ["OPIK_TRACK_DISABLE"] = "true"
+    try:
+        import opik as _opik
+
+        _opik.set_tracing_active(False)
+    except Exception as e:
+        logging.debug(f"Could not flip Opik SDK tracing switch: {e}")
+
+
 def init_opik_tracing(
     api_key: Optional[str] = None,
     project_name: str = "FaultMaven Development",
@@ -316,6 +342,7 @@ def init_opik_tracing(
         settings = get_settings()
 
     if not settings.observability.opik_enabled:
+        _disable_sdk_tracing()
         logging.info("Opik tracing disabled (OPIK_ENABLED=false)")
         return
 
@@ -333,6 +360,10 @@ def init_opik_tracing(
             url = obs.opik_url_override.rstrip("/") + "/"
             logging.info(f"Configuring Opik for cloud instance: {url}")
         else:
+            # Without this the warning below would be a lie: the @opik.track
+            # call sites are live (opik_enabled=True) and the SDK would fall
+            # back to its Comet Cloud default instead of being disabled.
+            _disable_sdk_tracing()
             logging.warning(
                 "Opik enabled but no URL configured. "
                 "Set OPIK_USE_LOCAL=true or OPIK_URL_OVERRIDE. Tracing will be disabled."
