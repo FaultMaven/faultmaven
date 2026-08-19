@@ -605,12 +605,14 @@ divergence.
 Seeding only retrieval-matched causes is a strictly narrower intake than the
 author-order fallback it replaced. That trade is deliberate (see §2–3), but its
 recall side is an empirical question, not an assumption, so it is counted rather
-than argued. Two counters in `lifecycle_metrics.py`:
+than argued. Four counters in `lifecycle_metrics.py`:
 
 | Counter | Reads as |
 |---|---|
 | `faultmaven_kb_cause_seed_attempt_total{outcome}` | One increment per seeding **attempt** (retrieval returned hits, flag on), labeled `seeded` / `all_causes_skipped` / `no_cause_chunk_matched` / `no_seedable_cause` / `crashed`. The labels are mutually exclusive and sum to attempts, so `seeded`/total is the seeding **yield** and its complement the zero-seed rate. |
 | `faultmaven_kb_cause_seed_letter_mismatch_total` | A matched chunk's `### Cause X:` heading named a letter absent from the runbook's causes record, so that runbook seeded nothing. **Zero is the healthy state** — nonzero means a runbook's causes are unseedable while looking well-formed from either side alone. |
+| `faultmaven_kb_cause_unseedable_at_ingest_total{chunker}` | The same defect caught at **write** time: a document was indexed with a causes record declaring letters that none of its own chunk texts can recover. Labeled `pack` / `runtime` by which chunker produced the disagreement. **Zero is the healthy state.** |
+| `faultmaven_kb_cause_ingest_check_failed_total` | The write-time check itself raised and was swallowed, so that document went **unchecked**. Nonzero invalidates the row above until it returns to zero. |
 
 **`no_cause_chunk_matched` is the number that prices the trade.** It is the one
 outcome the old fallback covered: retrieval hit a runbook only through its
@@ -627,14 +629,63 @@ A turn where retrieval returned **no hits at all** is not counted: that is a KB
 miss, not a seeding outcome, and folding it in would dilute the zero-seed rate
 with retrieval misses.
 
-The mismatch counter is an alarm rather than a rate because the shipped pack is
-pinned against it by a corpus test (§Verification) while **generated and uploaded
-runbooks are not** — the case→runbook conversion path and user uploads also
-acquire causes records, and if their heading form drifts from the shared
-`CAUSE_HEADING_RE` those causes become silently unseedable, with no fallback left
-to mask it. In production this counter is the only sighting of that drift; an
-ingest-time assertion (each `cause_letter` recoverable from at least one of the
-document's own chunk texts) is the durable fix and is tracked separately.
+Both integrity counters are alarms rather than rates: any nonzero value is
+actionable on its own, and the paired WARNING names the runbook, which is the unit
+a producer acts on.
+
+They watch the same disagreement from opposite ends, and the **write-time** one is
+the load-bearing half (fm#1103). The retrieval-side counter can only fire after a
+case has already lost its seeds, only once the runbook is retrieved, and only for
+the heading-present-but-*wrong*-letter shape — a cause whose heading is missing
+from every chunk yields no letter to disagree with, so it contributes
+`no_cause_chunk_matched` and never trips that alarm. The ingest-side counter fires
+where the document **acquires** its record, when the chunk texts and the record
+are both in hand for the only time, and covers both shapes.
+
+That check runs at the single indexing seam
+(`KnowledgeService._index_document_in_vector_store`), so it covers every surface
+that pairs a record with chunks:
+
+| Surface | Chunks from | Record from | Label |
+|---|---|---|---|
+| KB pack ingest (`kb_init`) | kb-toolkit, build time | the pack | `pack` |
+| Verified case→runbook conversion (`verify_draft`) | runtime `ContentChunker` | `extract_causes` | `runtime` |
+| Editing a published runbook (`update_document_metadata`) | runtime `ContentChunker` | the row's **unchanged** record | `runtime` |
+| Boot-time re-index of an orphaned row | runtime `ContentChunker` | the row's stored record | `runtime` |
+
+The *vendored* pack is pinned by a corpus test (§Verification), so a `pack` fire
+means an out-of-tree pack (`KB_PACK_DIR`) built by a drifted kb-toolkit. The
+`runtime` rows were covered by no test and no signal until this landed — and the
+edit row is the most reachable of them, because an edit re-chunks the content
+while leaving `metadata["causes"]` exactly as it was: rewriting a verified
+runbook's Causes section is the everyday way for the two to stop agreeing.
+
+It is **observed, never enforced** — the document is indexed as asked. Refusing
+the write would convert a recall loss into a failed ingest, which on the pack path
+is a failed KB bootstrap: a produce-side data bug must not take a deployment down.
+The check swallows its own errors for the same reason.
+
+**The swallow is reported, not hidden**, and that is load-bearing rather than
+tidy. `kb_cause_unseedable_at_ingest_total` reads zero when healthy, so a check
+that died quietly would be indistinguishable from a clean corpus — the guard would
+fail open with no witness, which is this section's own failure mode one level up.
+A swallowed error therefore costs a WARNING with the traceback and an increment of
+`kb_cause_ingest_check_failed_total`, whose only job is to let a dashboard tell
+*"nothing was found"* apart from *"nothing looked"*.
+
+The alarm names **which side is wrong** when the letter itself proves it. A record
+declaring a letter the heading grammar cannot express (`cause_letter: "a"`) is
+genuinely unseedable — the seeder's join is case-sensitive — so it is still
+reported, but under wording that blames the record rather than sending a producer
+to read markdown that is fine. Normalising case instead would be worse than
+imprecise: it would call a cause recoverable that retrieval cannot join.
+Expressibility is asked of `CAUSE_HEADING_RE` itself rather than by restating its
+`[A-Z]` class, so the two cannot drift.
+
+Anonymous/experimental `upload_document` is deliberately absent from that table:
+it never passes a `causes` record (extraction happens at the human-verification
+gate, and `get_runbook_causes` refuses EXPERIMENTAL rows besides), so an uploaded
+document cannot become unseedable — it was never seedable.
 
 A runbook dropped for a letter mismatch **keeps** the `MAX_SEEDED_RUNBOOKS` slot
 it occupied — it is not offered to the next ranked runbook. This is a deliberate
@@ -702,6 +753,15 @@ Pass/fail is **mechanical engine-state assertions**, LLM-agnostic:
   flattened/linearized; a well-formed linear chain that terminates at `D` via the
   problem ref still seeds.
 - **Freshness:** a causes-only pack change re-ingests.
+- **Record ↔ chunk agreement (corpus + unit):** over the 91 shipped runbooks, the
+  cause letters recoverable from the chunk texts are exactly the letters of the
+  causes record — asserted for the pack's *build-time* chunks and, separately, for
+  the *runtime* `ContentChunker` fed the same markdown through `extract_causes`
+  (the authored-runbook pipeline end to end). At the unit level, a record whose
+  letters no chunk carries warns and increments
+  `kb_cause_unseedable_at_ingest_total` under the right `chunker` label, while
+  still indexing the document; a stray chunk heading absent from the record does
+  **not** fire it (that is the retrieval-side alarm's job).
 - **Flag off:** the seeder is a no-op; the flat KB-resolution prompt path is
   unchanged.
 - **Observable skip (unit):** a fallback → `intentional` skip (no alarm); a
