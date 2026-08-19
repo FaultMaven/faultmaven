@@ -600,6 +600,48 @@ reader this is now load-bearing: the skip branch additionally compares the
 persisted `metadata["causes"]` against the pack's causes and re-ingests on
 divergence.
 
+## Observability — the recall trade, measured
+
+Seeding only retrieval-matched causes is a strictly narrower intake than the
+author-order fallback it replaced. That trade is deliberate (see §2–3), but its
+recall side is an empirical question, not an assumption, so it is counted rather
+than argued. Two counters in `lifecycle_metrics.py`:
+
+| Counter | Reads as |
+|---|---|
+| `faultmaven_kb_cause_seed_attempt_total{outcome}` | One increment per seeding **attempt** (retrieval returned hits, flag on), labeled `seeded` / `all_causes_skipped` / `no_cause_chunk_matched` / `no_seedable_cause` / `crashed`. The labels are mutually exclusive and sum to attempts, so `seeded`/total is the seeding **yield** and its complement the zero-seed rate. |
+| `faultmaven_kb_cause_seed_letter_mismatch_total` | A matched chunk's `### Cause X:` heading named a letter absent from the runbook's causes record, so that runbook seeded nothing. **Zero is the healthy state** — nonzero means a runbook's causes are unseedable while looking well-formed from either side alone. |
+
+**`no_cause_chunk_matched` is the number that prices the trade.** It is the one
+outcome the old fallback covered: retrieval hit a runbook only through its
+Symptom Recognition / Diagnostic Steps / Prevention prose, so no cause chunk
+matched and nothing seeds — where before, the right cause might have ridden
+along in author order (as, far more often, might three wrong ones). The live
+evidence that an on-target query also surfaces the cause chunk is `n=1`
+(reproduction 2 matched Cause D), which is why this is instrumented rather than
+asserted. A rising share is the signal to improve the **retrieval ranker** — the
+documented home for cause relevance — and is the number to weigh before anyone
+proposes reinstating a fallback.
+
+A turn where retrieval returned **no hits at all** is not counted: that is a KB
+miss, not a seeding outcome, and folding it in would dilute the zero-seed rate
+with retrieval misses.
+
+The mismatch counter is an alarm rather than a rate because the shipped pack is
+pinned against it by a corpus test (§Verification) while **generated and uploaded
+runbooks are not** — the case→runbook conversion path and user uploads also
+acquire causes records, and if their heading form drifts from the shared
+`CAUSE_HEADING_RE` those causes become silently unseedable, with no fallback left
+to mask it. In production this counter is the only sighting of that drift; an
+ingest-time assertion (each `cause_letter` recoverable from at least one of the
+document's own chunk texts) is the durable fix and is tracked separately.
+
+A runbook dropped for a letter mismatch **keeps** the `MAX_SEEDED_RUNBOOKS` slot
+it occupied — it is not offered to the next ranked runbook. This is a deliberate
+simplicity call, not an oversight: promoting a runbook on the strength of a *data
+bug* in a higher-ranked one would make the seeded set depend on corruption, and
+the counter says how often the micro recall loss is even in play.
+
 ## Configuration
 
 | Knob | Kind | Default | Effect |

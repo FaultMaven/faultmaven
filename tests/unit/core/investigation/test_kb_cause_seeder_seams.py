@@ -19,7 +19,7 @@ DB) so the tests stay fast and deterministic.
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import DEFAULT, AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -170,7 +170,11 @@ def seed_spy(monkeypatch):
                 kwargs=kwargs,
             )
         )
-        return SimpleNamespace(seeded_hypothesis_ids=[])
+        # Mirror the real SeedReport surface the wrapper reads — including
+        # ``seeded_anything``, which the outcome counter branches on. A spy that
+        # omitted it would raise into the crash handler and quietly turn every
+        # spy test into a "crashed" path.
+        return SimpleNamespace(seeded_hypothesis_ids=[], seeded_anything=False)
 
     monkeypatch.setattr(
         "faultmaven.core.investigation.kb_cause_seeder.seed_candidate_causes", _spy
@@ -374,6 +378,106 @@ async def test_wrapper_letter_naming_no_cause_in_record_is_dropped(
 
     assert ks.calls == ["rb1"]
     assert seed_spy == []
+
+
+# ---------------------------------------------------------------------------
+# Wrapper: outcome telemetry (#1092) — the labels are exclusive and sum to
+# attempts, so `seeded`/total is a yield and its complement the zero-seed rate
+# ---------------------------------------------------------------------------
+
+
+def _counters():
+    return patch.multiple(
+        "faultmaven.core.investigation.milestone_engine",
+        kb_cause_seed_attempt_total=DEFAULT,
+        kb_cause_seed_letter_mismatch_total=DEFAULT,
+    )
+
+
+def _outcomes(m):
+    """The ``outcome=`` labels recorded on the attempt counter, in call order."""
+    return [
+        c.kwargs["outcome"]
+        for c in m["kb_cause_seed_attempt_total"].labels.call_args_list
+    ]
+
+
+async def test_outcome_counter_records_seeded(enable_seeder):
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    with _counters() as m:
+        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+    assert _outcomes(m) == ["seeded"]
+
+
+async def test_outcome_counter_records_the_recall_trade(enable_seeder):
+    """A hit on a non-cause chunk is the ONE outcome the author-order fallback
+    used to cover. It is labeled distinctly so the recall side of removing that
+    fallback is measurable in telemetry rather than assumed."""
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    with _counters() as m:
+        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ())])
+    assert _outcomes(m) == ["no_cause_chunk_matched"]
+
+
+async def test_outcome_counter_records_no_seedable_cause(enable_seeder):
+    ks = _KnowledgeStub({"rb1": None})
+    engine = _engine(ks)
+    with _counters() as m:
+        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+    assert _outcomes(m) == ["no_seedable_cause"]
+
+
+async def test_outcome_counter_records_all_causes_skipped(enable_seeder):
+    # The fallback cause is an INTENTIONAL skip, so the seeder is handed a cause
+    # and creates nothing — a zero-seed that is NOT a retrieval problem.
+    fallback = _good_cause("Z")
+    fallback["is_fallback_cause"] = True
+    ks = _KnowledgeStub({"rb1": [fallback]})
+    engine = _engine(ks)
+    with _counters() as m:
+        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("Z",))])
+    assert _outcomes(m) == ["all_causes_skipped"]
+
+
+async def test_outcome_counter_records_crash_and_only_crash(enable_seeder, monkeypatch):
+    """A seeder crash must land on ``crashed`` ALONE. Counting the success label
+    before the call would double-count the attempt and inflate the yield."""
+
+    def _boom(*a, **k):
+        raise RuntimeError("seeder bug")
+
+    monkeypatch.setattr(
+        "faultmaven.core.investigation.kb_cause_seeder.seed_candidate_causes", _boom
+    )
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    with _counters() as m:
+        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+    assert _outcomes(m) == ["crashed"]
+
+
+async def test_no_attempt_counted_when_retrieval_returned_nothing(enable_seeder):
+    """The attempt counter measures what SEEDING did with hits. A turn with no
+    hits at all is a KB miss, not a seeding outcome — counting it would dilute
+    the zero-seed rate with retrieval misses."""
+    engine = _engine(_KnowledgeStub())
+    with _counters() as m:
+        await engine._seed_candidate_causes_from_kb(_case(), [])
+    assert _outcomes(m) == []
+
+
+async def test_letter_mismatch_is_counted_not_just_logged(enable_seeder):
+    """The produce-side integrity alarm. The shipped pack is pinned by a corpus
+    test; generated/uploaded runbooks are not, so this counter is the only
+    sighting of that drift in production."""
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    with _counters() as m:
+        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("E",))])
+    assert m["kb_cause_seed_letter_mismatch_total"].inc.call_count == 1
+    assert _outcomes(m) == ["no_seedable_cause"]
 
 
 # ---------------------------------------------------------------------------

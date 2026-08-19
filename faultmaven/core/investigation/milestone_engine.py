@@ -83,6 +83,8 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     hypothesis_root_adoption_refused_total,
     inquiry_handshake_deferred_total,
     inquiry_handshake_recovered_total,
+    kb_cause_seed_attempt_total,
+    kb_cause_seed_letter_mismatch_total,
     narration_overclaim_total,
     pending_action_superseded_stale_total,
     prompt_context_recovery_total,
@@ -10282,6 +10284,9 @@ class MilestoneEngine:
                         per_cause[letter] = hit.score
 
             if not best_score_by_cause:
+                kb_cause_seed_attempt_total.labels(
+                    outcome="no_cause_chunk_matched"
+                ).inc()
                 logger.debug(
                     "KB cause seeder: no retrieved chunk mapped to a runbook "
                     "cause for case %s — nothing to seed (the runbook prose "
@@ -10329,7 +10334,17 @@ class MilestoneEngine:
                 if not matched:
                     # The chunk's heading letter names no cause in the record —
                     # a produce-side inconsistency (heading vs extracted causes),
-                    # not a normal outcome. Visible, never silent.
+                    # not a normal outcome. Visible, never silent. Counted as
+                    # well as logged: the shipped pack is pinned against this by
+                    # a corpus test, but generated/uploaded runbooks are not, so
+                    # in production this counter is the only sighting of the
+                    # drift. This runbook keeps the MAX_SEEDED_RUNBOOKS slot it
+                    # occupied rather than yielding it to the next ranked one —
+                    # a deliberate simplicity call: promoting a runbook on the
+                    # strength of a DATA BUG in a higher-ranked one would make
+                    # the seeded set depend on corruption, and the counter says
+                    # how often the micro recall loss is even in play.
+                    kb_cause_seed_letter_mismatch_total.inc()
                     logger.warning(
                         "KB cause seeder: runbook %s matched cause letter(s) %s "
                         "but its causes record holds none of them (case %s)",
@@ -10346,6 +10361,7 @@ class MilestoneEngine:
                     )
                 )
             if not runbooks:
+                kb_cause_seed_attempt_total.labels(outcome="no_seedable_cause").inc()
                 # None of the runbooks LOOKED UP yielded a seedable cause — either
                 # it carried no causes record (flat prose) or its record held none
                 # of the matched letters (warned individually just above). Counts
@@ -10362,13 +10378,20 @@ class MilestoneEngine:
                 )
                 return
 
-            seed_candidate_causes(
+            report = seed_candidate_causes(
                 case,
                 runbooks,
                 case.current_turn,
                 hypothesis_manager=self.hypothesis_manager,
             )
+            # Counted AFTER the call, so a crash inside the seeder lands on the
+            # ``crashed`` label alone — the outcome labels stay exclusive and sum
+            # to attempts, which is what makes ``seeded``/total a yield.
+            kb_cause_seed_attempt_total.labels(
+                outcome=("seeded" if report.seeded_anything else "all_causes_skipped")
+            ).inc()
         except Exception:
+            kb_cause_seed_attempt_total.labels(outcome="crashed").inc()
             # A crash here is a SEEDER BUG, not a legitimate no-match. Log at ERROR
             # with an explicit marker so that, once the flag is on, "investigation
             # proceeded with zero seeds" from a broken seeder is distinguishable
