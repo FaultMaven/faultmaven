@@ -62,6 +62,53 @@ SYNTHESIS_MAX_TOKENS = 2000
 # answer. Doubling once buys the answer its normal room back; it does not
 # license routinely writing twice the relay allowance.
 SYNTHESIS_MAX_TOKENS_CEILING = SYNTHESIS_MAX_TOKENS * 2
+# Left at 2x deliberately, against the obvious objection (#1088 review).
+#
+# The objection is sound as far as it goes: 4000 tokens is ~16.4K characters
+# against a ~7.4K relay budget, so a retry that runs to the ceiling bills
+# roughly 2K tokens the elide will certainly discard. The tempting fix is to
+# clamp this to what the relay can carry -- about
+# ``KB_ANSWER_RELAY_CHARS / 3.9`` ~= 1790 tokens.
+#
+# That fix does not do what it looks like. ``generate_with_truncation_retry``
+# computes ``retry_cap = min(max_tokens * 2, ceiling)`` and returns the partial
+# response untouched when ``retry_cap <= max_tokens``. Any ceiling at or below
+# SYNTHESIS_MAX_TOKENS therefore does not shrink the retry -- it removes it,
+# silently, restoring the #1094 failure this constant exists to recover from
+# (an answer starved to 54 visible tokens by hidden reasoning). Trading a
+# bounded waste on a rare path for no recovery at all on that same path is a
+# bad exchange, and an invisible one.
+#
+# The waste is also self-limiting from the other side now: the synthesis prompt
+# states its allowance (``KB_ANSWER_RELAY_CHARS``), so answers that would have
+# run to the cap increasingly stop before it, and a retry fires less often.
+# ``test_kb_synthesis_budget.py`` pins that this ceiling still permits a retry.
+
+# Character allowance the answer is TOLD it has, so it can spend it deliberately.
+#
+# The token budget above is sized to the relay ceiling, but the synthesizer was
+# never told about that ceiling -- it is instructed to "preserve procedural
+# detail ... rather than summarizing" and to "compress only background context,
+# never actionable steps", with no length target at all. So it writes to
+# whatever the material wants, and ``MilestoneEngine._format_tool_result`` then
+# removes the overflow. Measured over one full simulation run (#1088, phase 2):
+# 3 of 5 KB answers overflowed, by 540-1249 characters. The system was asking
+# for maximum detail and discarding the surplus.
+#
+# Stating the allowance turns that into a choice the model makes -- drop
+# background, keep remediation -- instead of a cut the pipeline makes blind.
+# It is the "prioritise remediation over background" half of #1088; the other
+# half is that the cut, when it still fires, now removes the answer's MIDDLE
+# rather than its tail (``KB_QA_ANSWER_TAIL_SHARE``).
+#
+# 7,000 rather than the relay budget itself (7,410 = TOOL_RESULT_MAX_CHARS minus
+# the relay wrapper), because ``format_response`` appends the "Sources:" line to
+# this answer before it is wrapped, and that line is not free. The headroom
+# covers it plus ordinary overshoot. Deliberately NOT imported from the engine:
+# ``milestone_engine`` imports this package's tools, so the dependency only runs
+# one way. ``test_kb_synthesis_budget.py`` pins this against the engine's cap in
+# both directions, the same way it already pins SYNTHESIS_MAX_TOKENS.
+KB_ANSWER_RELAY_CHARS = 7000
 
 
 class DocumentQATool:
@@ -253,7 +300,22 @@ class DocumentQATool:
         # Step 3: Build context using config (KB-specific metadata formatting)
         context = self._build_context_from_chunks(chunks)
 
-        # Step 4: Build synthesis prompt using config
+        # Step 4: Build synthesis prompt using config.
+        #
+        # The length rule is per-KB, not universal: only a KB whose answers are
+        # relayed through a bounded channel has an allowance to state, and
+        # stating someone else's number would misdescribe that KB's own
+        # pipeline. See ``KBConfig.answer_char_allowance`` (#1088).
+        allowance = self._kb_config.answer_char_allowance
+        length_instruction = (
+            f"\n- Fit the answer within {allowance:,} characters. Anything past "
+            f"that is elided before the answer is read, so if the material does "
+            f"not fit, cut background and explanation — never diagnostic "
+            f"commands or remediation steps"
+            if allowance
+            else ""
+        )
+
         synthesis_prompt = f"""Answer the following question using ONLY the provided context.
 
 Question: {question}
@@ -266,7 +328,7 @@ Instructions:
 - Preserve procedural detail — include full diagnostic steps, commands, and resolution procedures rather than summarizing them
 - Cite sources accurately with {self._kb_config.get_citation_format()}
 - If information is missing, state that clearly
-- Compress only background context, never actionable steps
+- Compress only background context, never actionable steps{length_instruction}
 
 Answer:"""
 
