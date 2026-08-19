@@ -2965,6 +2965,105 @@ KB_QA_RELAY_SUFFIX = (
 )
 
 
+# Fraction of the answer allowance reserved for the answer's TAIL when a kb_qa
+# answer overflows it.
+#
+# The head-first cut this replaces was wrong for this one payload, for two
+# reasons that are properties of the payload rather than of the cap:
+#
+# 1. The synthesis prompt is written to load the tail. It asks the model to
+#    "preserve procedural detail -- include full diagnostic steps, commands,
+#    and resolution procedures" and to "compress only background context,
+#    never actionable steps". The tail of a procedure is its remediation, so a
+#    head-keeping cut deletes exactly what the prompt was written to protect
+#    and keeps the background it was told to compress.
+# 2. ``UnifiedKBConfig.format_response`` appends the source list to the very
+#    end of the answer, and ``KB_QA_RELAY_SUFFIX`` then instructs the model to
+#    cite "the primary source title(s) from the content above". A head-keeping
+#    cut removes that line before the model reads the instruction depending on
+#    it, so on a trimmed answer the citation requirement is unsatisfiable from
+#    the content it names.
+#
+# 0.35 rather than a smaller share because the tail has to hold a whole
+# remediation section plus the source line, not just the last paragraph.
+# Measured against the run that produced #1088's numbers: answers overflowed
+# the allowance by 540-1249 characters (7-17% of the answer), so a 35% tail
+# reservation puts every observed elision strictly inside the middle -- the
+# preserved tail is real answer text in every case seen, not padding.
+KB_QA_ANSWER_TAIL_SHARE = 0.35
+
+# Marks where content was removed. Carries the count because the model is asked
+# to relay this answer onward and "some of the middle is missing" is a different
+# instruction from "the answer ends here" -- which is what the end-anchored
+# KB_QA_ANSWER_TRUNCATED_MARKER alone used to imply.
+KB_QA_ANSWER_ELIDED_TEMPLATE = (
+    "\n\n[... {dropped:,} characters elided from the middle of this answer to "
+    "fit the relay budget. The text below is the END of the answer, including "
+    "its closing steps and source line. ...]\n\n"
+)
+
+
+def _elide_answer_middle(content: str, budget: int) -> str:
+    """Fit *content* into *budget* characters by removing its MIDDLE.
+
+    Keeps the opening (framing and the first diagnostic steps) and the closing
+    (remediation and the ``Sources:`` line), which is the opposite of the
+    head-first cut every other tool result gets -- see
+    ``KB_QA_ANSWER_TAIL_SHARE`` for why kb_qa is the exception.
+
+    Both markers are inside the returned budget. The end-anchored
+    ``KB_QA_ANSWER_TRUNCATED_MARKER`` is retained deliberately: the tool loop
+    reads it back to know this cut already fed the truncation metrics, so one
+    relayed result yields exactly one observation (#1090). It reads as an
+    overall "this answer was trimmed" flag; the inline marker says where.
+    """
+    end_marker = KB_QA_ANSWER_TRUNCATED_MARKER
+    # Sized on a worst-case count so the marker cannot itself push the result
+    # past the budget once the real number is substituted in.
+    elided_len = len(KB_QA_ANSWER_ELIDED_TEMPLATE.format(dropped=len(content)))
+    available = budget - len(end_marker) - elided_len
+
+    # Degenerate budget (a wrapper edit that leaves almost no room): fall back
+    # to the plain head-first cut rather than emit markers with no answer
+    # between them.
+    if available < 2:
+        return content[: budget - len(end_marker)] + end_marker
+
+    tail_chars = int(available * KB_QA_ANSWER_TAIL_SHARE)
+    head_chars = available - tail_chars
+
+    head = _trim_head_to_paragraph(content[:head_chars])
+    tail = _trim_tail_to_paragraph(content[len(content) - tail_chars :])
+
+    dropped = len(content) - len(head) - len(tail)
+    elided = KB_QA_ANSWER_ELIDED_TEMPLATE.format(dropped=dropped)
+    return head + elided + tail + end_marker
+
+
+def _trim_head_to_paragraph(head: str) -> str:
+    """Back the head up to a paragraph boundary, if one is close enough.
+
+    Only when it costs less than a third of the head -- a long final paragraph
+    is worth keeping mid-sentence rather than dropping whole.
+    """
+    cut = head.rfind("\n\n")
+    if cut > len(head) * 2 // 3:
+        return head[:cut].rstrip()
+    return head.rstrip()
+
+
+def _trim_tail_to_paragraph(tail: str) -> str:
+    """Advance the tail to a paragraph boundary, if one is close enough.
+
+    Same bound from the other end: drop a leading partial paragraph only when
+    it costs less than a third of the tail.
+    """
+    cut = tail.find("\n\n")
+    if 0 <= cut < len(tail) // 3:
+        return tail[cut:].lstrip()
+    return tail.lstrip()
+
+
 class MilestoneEngine:
     """
     Data-Driven and Opportunistic Investigation Engine.
@@ -7402,17 +7501,18 @@ class MilestoneEngine:
             logger.info(f"kb_qa result: {len(content)} chars")
             prefix = KB_QA_RELAY_PREFIX
             suffix = KB_QA_RELAY_SUFFIX
-            # Reserve the wrapper before the generic cap can reach it. The
-            # truncation below keeps the HEAD of the result, so an oversized
-            # answer loses the TAIL — and the tail here is not prose, it is the
+            # Reserve the wrapper before the generic cap can reach it. That
+            # cap keeps the HEAD of whatever it is given, so an oversized
+            # result loses its TAIL — and the tail here is not prose, it is the
             # citation format plus "return via the schema tool, do not reply
             # with plain text". A long KB answer would therefore silently strip
             # the instructions that tell the model how to answer at all, which
-            # is the opposite of the intended failure. Trimming the ANSWER keeps
-            # both instructions intact and marks what was dropped.
+            # is the opposite of the intended failure. Reserving the wrapper
+            # and trimming the ANSWER keeps both instructions intact. How the
+            # answer itself is trimmed is a separate question, answered by
+            # _elide_answer_middle below: not head-first either.
             budget = MilestoneEngine.TOOL_RESULT_MAX_CHARS - len(prefix) - len(suffix)
             if len(content) > budget:
-                marker = KB_QA_ANSWER_TRUNCATED_MARKER
                 logger.info(
                     "kb_qa answer trimmed to fit the tool-result budget",
                     extra={
@@ -7442,7 +7542,11 @@ class MilestoneEngine:
                         "at": "formatter",
                     },
                 )
-                content = content[: budget - len(marker)] + marker
+                # Remove the MIDDLE, not the tail. The answer's tail is its
+                # remediation steps and its source line, and both are named by
+                # instructions the model is about to read (#1088) -- see
+                # ``KB_QA_ANSWER_TAIL_SHARE``.
+                content = _elide_answer_middle(content, budget)
             return prefix + content + suffix
 
         # search_file results: append citation guidance so the LLM cites

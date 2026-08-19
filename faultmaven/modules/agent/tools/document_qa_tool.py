@@ -63,6 +63,32 @@ SYNTHESIS_MAX_TOKENS = 2000
 # license routinely writing twice the relay allowance.
 SYNTHESIS_MAX_TOKENS_CEILING = SYNTHESIS_MAX_TOKENS * 2
 
+# Character allowance the answer is TOLD it has, so it can spend it deliberately.
+#
+# The token budget above is sized to the relay ceiling, but the synthesizer was
+# never told about that ceiling -- it is instructed to "preserve procedural
+# detail ... rather than summarizing" and to "compress only background context,
+# never actionable steps", with no length target at all. So it writes to
+# whatever the material wants, and ``MilestoneEngine._format_tool_result`` then
+# removes the overflow. Measured over one full simulation run (#1088, phase 2):
+# 3 of 5 KB answers overflowed, by 540-1249 characters. The system was asking
+# for maximum detail and discarding the surplus.
+#
+# Stating the allowance turns that into a choice the model makes -- drop
+# background, keep remediation -- instead of a cut the pipeline makes blind.
+# It is the "prioritise remediation over background" half of #1088; the other
+# half is that the cut, when it still fires, now removes the answer's MIDDLE
+# rather than its tail (``KB_QA_ANSWER_TAIL_SHARE``).
+#
+# 7,000 rather than the relay budget itself (7,410 = TOOL_RESULT_MAX_CHARS minus
+# the relay wrapper), because ``format_response`` appends the "Sources:" line to
+# this answer before it is wrapped, and that line is not free. The headroom
+# covers it plus ordinary overshoot. Deliberately NOT imported from the engine:
+# ``milestone_engine`` imports this package's tools, so the dependency only runs
+# one way. ``test_kb_synthesis_budget.py`` pins this against the engine's cap in
+# both directions, the same way it already pins SYNTHESIS_MAX_TOKENS.
+KB_ANSWER_RELAY_CHARS = 7000
+
 
 class DocumentQATool:
     """
@@ -267,6 +293,7 @@ Instructions:
 - Cite sources accurately with {self._kb_config.get_citation_format()}
 - If information is missing, state that clearly
 - Compress only background context, never actionable steps
+- Fit the answer within {KB_ANSWER_RELAY_CHARS:,} characters. Anything past that is elided before the answer is read, so if the material does not fit, cut background and explanation — never diagnostic commands or remediation steps
 
 Answer:"""
 

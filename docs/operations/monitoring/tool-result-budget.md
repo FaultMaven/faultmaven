@@ -171,3 +171,60 @@ neither.
 The options on the table, and their trade-offs, are recorded in
 [#1088](https://github.com/FaultMaven/faultmaven/issues/1088). The intended
 sequence is instrument → observe one run → then decide with data.
+
+## The run that was observed, and what it decided
+
+One full standalone simulation, on the image built from the instrumentation
+commit. Small, and deliberately reported as such — but unambiguous on the
+question the instrumentation was added to answer.
+
+| | relayed | truncated | clip rate | dropped |
+|---|---|---|---|---|
+| `kb_qa` | 5 | 3 | **60%** | 540, 655, 1249 chars |
+| `search_file` | 3 | 0 | 0% | — |
+
+Two things follow.
+
+**The global cap binds one tool.** Every clip in the run was `kb_qa`, and every
+one fired at the *formatter* rather than at the loop's cut site. `search_file`
+never came close, which is what its defensive `DEFAULT_CONTEXT_LINES` and
+compact result format were for. So the "one global constant shared by tools
+that are not alike" concern is real, but in the direction of the cap being
+sized for the tools that already work around it and binding only the one that
+does not.
+
+**The measurement gap above closed, and it closed against the cost argument.**
+The recurring half — `agent_response` length and its share of persisted
+history — is measurable directly from a real case. Over the 8 assistant turns
+of the observed case:
+
+| raw `agent_response` | 705 | 1199 | 1367 | 1828 | 2165 | 2485 | 2932 | 4739 |
+|---|---|---|---|---|---|---|---|---|
+| **as replayed in history** | 738 | 762 | 826 | 632 | 406 | 413 | 725 | 182 |
+
+`_smart_truncate_agent_response` collapses every one of them into a
+182–826-character band, and the output is **uncorrelated with the input**: a
+4739-character response costs 182 characters of history, a 705-character one
+costs 738. The copy-through cost of a KB answer is therefore *invariant to how
+large the KB answer was*, and raising the relay ceiling would not move it. The
+recurring-cost objection does not survive being measured — the cost of a bigger
+relay is one turn's tool message, intra-turn, already bounded twice.
+
+**What was changed, and what was not.** Neither constant moved. The clip is not
+principally a ceiling problem: the synthesizer was never told the ceiling
+existed. It is instructed to preserve full procedural detail, given 2000 tokens
+(up to 4000 since #1094's retry), and the relay then removes the overflow
+**head-first** — deleting the remediation steps the prompt exists to protect,
+and the `Sources:` line that `KB_QA_RELAY_SUFFIX` instructs the model to cite
+"from the content above". So #1088's options 3 and 4 shipped and option 2 did
+not:
+
+- the synthesis prompt now states its allowance (`KB_ANSWER_RELAY_CHARS`), so
+  the model drops background deliberately rather than having its tail removed;
+- when the answer still overflows, the cut removes the **middle**
+  (`KB_QA_ANSWER_TAIL_SHARE`), so the procedure's ending and its source line
+  survive.
+
+Because no constant moved, the paired-constant guard stays green and the
+context budget is unchanged. Re-read the clip rate from this dashboard after a
+run on the new prompt before considering the ceiling itself again.

@@ -239,6 +239,31 @@ Agent calls: answer_from_kb(question)
 
 **The synthesis answer ceiling.** `DocumentQATool.SYNTHESIS_MAX_TOKENS` (2000) is not the limit that actually binds a KB answer. Whatever the synthesizer writes is wrapped by `MilestoneEngine._format_tool_result()` — about 590 characters of relay instruction and citation guidance — and the combined string is then truncated to `MilestoneEngine.TOOL_RESULT_MAX_CHARS` (8000) before it re-enters the model's context. That leaves roughly 7,410 characters for the answer itself, about 1,850 tokens at the 3.9–4.1 characters per token measured on real KB answers. The token budget therefore already exceeds what the pipeline will accept, and raising it on its own is inert: the surplus is generated, billed, and then discarded. Because the two constants live in different modules with nothing structural holding them together, `tests/unit/modules/agent/tools/test_kb_synthesis_budget.py` pins their agreement in both directions — the budget must be able to fill the character cap, and must not reach far past it. Change them together or not at all.
 
+**The answer is told its allowance.** Sizing the two constants against each
+other keeps them consistent; it does not make the *model* aware of either. The
+synthesis prompt asks for full diagnostic steps and resolution procedures and
+says to compress background rather than actionable steps — with no length
+target to apply that rule against — so the answer was written to whatever the
+material wanted and the surplus removed downstream. Measured over one
+simulation run, 3 KB answers in 5 overflowed the relay allowance, by 540–1249
+characters. `DocumentQATool.KB_ANSWER_RELAY_CHARS` (7,000) is that missing
+target, stated in the prompt so the model spends the budget deliberately. It
+sits below the 7,410-character relay budget because `format_response` appends
+the `Sources:` line to the answer before it is wrapped. It is deliberately
+**not** imported from `milestone_engine` — the engine imports this package's
+tools, so the dependency runs one way only — and is pinned against the engine's
+cap by the same cross-module test.
+
+**When it still overflows, the cut takes the middle.** The relay trim keeps the
+head, which for this payload deletes the remediation steps the prompt exists to
+preserve and the `Sources:` line the relay suffix instructs the model to cite
+"from the content above". `MilestoneEngine.KB_QA_ANSWER_TAIL_SHARE` (0.35)
+reserves the answer's ending instead, so an oversized answer loses background
+from its middle — marked with a count — rather than its procedure's conclusion.
+This is scoped to `kb_qa`; every other tool result keeps the plain head-first
+cut, because their content is data rather than a procedure and their tools
+already budget themselves against the cap.
+
 Answers do reach this ceiling in practice. Observed synthesis answers run 5,261–7,729 characters, and the longest of those was truncated by the engine rather than by the token budget. Whether 8,000 characters is the right allowance for a runbook procedure inside the investigation context is a separate question from the budget's internal coherence, and remains open.
 
 **The relevance gate, and how its threshold is set.** `UnifiedKBConfig.relevance_threshold` (0.5, cosine) refuses synthesis when no retrieved chunk clears it, so the synthesizer is never asked to ground an answer in chunks that merely share vocabulary — the canonical case being a ZooKeeper query landing on Kafka chunks via "leader election". Evidence retrieval opts out (`CaseEvidenceConfig` returns `None`): for forensic analysis the closest available content is always worth returning.
