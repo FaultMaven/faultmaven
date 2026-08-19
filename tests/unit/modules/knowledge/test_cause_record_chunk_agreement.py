@@ -191,6 +191,13 @@ def _document(content: str) -> KnowledgeBaseDocument:
     )
 
 
+_RUNBOOK_ONE_CAUSE = (
+    "# Node drain stalls\n\n"
+    "## Causes\n\n"
+    "### Cause A: Pod disruption budget blocks eviction\n"
+    "**Statement:** the PDB has no spare replica\n"
+)
+
 _RUNBOOK = (
     "# Node drain stalls\n\n"
     "## Causes\n\n"
@@ -218,7 +225,9 @@ async def test_runtime_chunked_record_that_outruns_its_chunks_is_counted():
             _document(_RUNBOOK),
             causes=[_cause("A"), _cause("B"), _cause("C")],
         )
-    counter.labels.assert_called_once_with(chunker="runtime")
+    counter.labels.assert_called_once_with(
+        chunker="runtime", direction="record_letter_unchunked"
+    )
     assert counter.labels.return_value.inc.call_count == 1
 
 
@@ -235,7 +244,9 @@ async def test_pack_chunks_are_labeled_as_the_pack_chunker():
             prechunked=[("## Causes\n\n" + _chunk("A"), [0.0, 1.0])],
             causes=[_cause("A"), _cause("B")],
         )
-    counter.labels.assert_called_once_with(chunker="pack")
+    counter.labels.assert_called_once_with(
+        chunker="pack", direction="record_letter_unchunked"
+    )
 
 
 @pytest.mark.asyncio
@@ -377,8 +388,13 @@ async def test_a_lowercase_record_letter_is_still_reported_as_unseedable():
     retrieval cannot deliver."""
     service = _service()
     with patch(_COUNTER) as counter:
-        await _index(service, _document(_RUNBOOK), causes=[_cause("a")])
-    counter.labels.assert_called_once_with(chunker="runtime")
+        await _index(service, _document(_RUNBOOK_ONE_CAUSE), causes=[_cause("a")])
+    # Exactly ONE direction: a mis-cased record letter is a malformed record,
+    # not a chunk carrying an undeclared heading. Counting it both ways would
+    # double-report one defect and blame the markdown for half of it.
+    counter.labels.assert_called_once_with(
+        chunker="runtime", direction="record_letter_unchunked"
+    )
 
 
 @pytest.mark.asyncio
@@ -388,7 +404,7 @@ async def test_an_inexpressible_letter_blames_the_record_not_the_markdown(caplog
     service = _service()
     with patch(_COUNTER):
         with caplog.at_level("WARNING"):
-            await _index(service, _document(_RUNBOOK), causes=[_cause("a")])
+            await _index(service, _document(_RUNBOOK_ONE_CAUSE), causes=[_cause("a")])
     reported = "\n".join(
         r.getMessage() for r in caplog.records if r.levelname == "WARNING"
     )
@@ -402,12 +418,16 @@ async def test_the_two_shapes_are_reported_separately_when_both_occur(caplog):
     with patch(_COUNTER) as counter:
         with caplog.at_level("WARNING"):
             await _index(
-                service, _document(_RUNBOOK), causes=[_cause("C"), _cause("a")]
+                service,
+                _document(_RUNBOOK_ONE_CAUSE),
+                causes=[_cause("C"), _cause("a")],
             )
     reported = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert any("Fix the runbook's Causes section" in m for m in reported)
     assert any("the RECORD is malformed" in m for m in reported)
-    # One document, one increment — the counter counts documents, not letters.
+    # Still ONE increment: both messages describe the same direction (letters the
+    # record declares that no chunk carries), split only by which side is at
+    # fault. The counter counts documents per direction, not letters.
     assert counter.labels.return_value.inc.call_count == 1
 
 

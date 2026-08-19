@@ -738,13 +738,26 @@ kb_cause_seed_letter_mismatch_total = Counter(
 # names the document and the missing letters, which is the unit an operator acts
 # on. Never raises — an unseedable cause is a recall loss, and turning it into a
 # failed ingest would take the KB bootstrap down for a produce-side data bug.
+# ``direction`` names WHICH disagreement, because the two have opposite fixes:
+#
+#   record_letter_unchunked  — the record declares a letter no chunk carries a
+#                              heading for. The cause can never be seeded; fix
+#                              the Causes section or the record's producer.
+#   chunk_letter_unrecorded  — a chunk carries a heading for a letter the record
+#                              does not declare. A hit on it names nothing;
+#                              usually a ``### Cause X:`` outside the
+#                              ``## Causes`` section the extractor reads. This
+#                              is what ``kb_cause_seed_letter_mismatch_total``
+#                              reports from the far end, after a case has
+#                              already been served without those seeds.
 kb_cause_unseedable_at_ingest_total = Counter(
     "faultmaven_kb_cause_unseedable_at_ingest_total",
-    "A document was indexed with a ``causes`` record holding letters that none "
-    "of its own chunk texts can recover, so those causes can never be seeded "
-    "(fm#1103). One increment per document, labeled by ``chunker`` (pack | "
-    "runtime). Zero is the healthy state.",
-    ["chunker"],
+    "A document was indexed with a ``causes`` record and chunk headings that "
+    "disagree, so causes cannot be seeded (fm#1103). One increment per document "
+    "per direction, labeled by ``chunker`` (pack | runtime) and ``direction`` "
+    "(record_letter_unchunked | chunk_letter_unrecorded). Zero is the healthy "
+    "state.",
+    ["chunker", "direction"],
 )
 
 

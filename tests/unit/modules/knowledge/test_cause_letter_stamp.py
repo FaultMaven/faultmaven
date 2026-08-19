@@ -236,6 +236,21 @@ def test_a_chunk_letter_the_record_lacks_is_reported():
     assert _unrecorded_chunk_letters([["A"], ["Z"]], [_cause("A")]) == ["Z"]
 
 
+def test_a_miscased_record_letter_is_not_also_blamed_on_the_markdown():
+    """One defect, one message. A record declaring ``"a"`` against a
+    ``### Cause A:`` heading is a MIS-CASED RECORD — already reported, with
+    wording that names the record as the thing to fix. Reporting ``A`` here too
+    would say the markdown carries a letter the record lacks, sending a producer
+    to inspect healthy markdown: the exact misdirection the caller's
+    ungrammatical branch exists to prevent."""
+    assert _unrecorded_chunk_letters([["A"]], [{"cause_letter": "a"}]) == []
+
+
+def test_a_genuinely_undeclared_letter_survives_the_case_fold():
+    """The guard above must not swallow the real thing it sits next to."""
+    assert _unrecorded_chunk_letters([["A"], ["Z"]], [{"cause_letter": "a"}]) == ["Z"]
+
+
 def test_a_document_with_no_record_is_not_alarmed():
     """An anonymous upload has cause headings and no record by design — it is
     never seedable for a reason that is not a defect. Alarming would fire on

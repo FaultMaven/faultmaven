@@ -154,6 +154,17 @@ Three details carry the design:
   re-ingest is prechunked, so this costs seconds, not the minutes the pack exists
   to avoid.
 
+A **stamp-only re-ingest skips an unpublished runbook.** Re-ingest is
+delete-then-create and the created row is published by default, so re-stamping
+one would put a deliberately retired built-in back into retrieval on the strength
+of a code edit — `delete_document` retires a built-in by dropping its *vectors*
+(retrieval ignores `is_published`), and its contract is that the retirement
+survives restart until the runbook's **content** changes. A stamp change is not a
+content change. Skipping is also correct on its own terms: an unpublished
+built-in has no vectors, so it carries no stamps to refresh, and it is
+re-vectorised by stamping code if it is ever republished. A content change still
+re-ingests it, which is the documented "intentional new version".
+
 **Known limit:** `kb_init` walks the pack only, so authored runbooks (verified
 conversions, edits) are never re-stamped by boot. They re-stamp when next
 verified, edited or repaired. `kb_cause_letters_unstamped_total` is what says
@@ -664,7 +675,7 @@ than argued. Five counters in `lifecycle_metrics.py`:
 |---|---|
 | `faultmaven_kb_cause_seed_attempt_total{outcome}` | One increment per seeding **attempt** (retrieval returned hits, flag on), labeled `seeded` / `all_causes_skipped` / `no_cause_chunk_matched` / `no_seedable_cause` / `crashed`. The labels are mutually exclusive and sum to attempts, so `seeded`/total is the seeding **yield** and its complement the zero-seed rate. |
 | `faultmaven_kb_cause_seed_letter_mismatch_total` | A matched chunk's `### Cause X:` heading named a letter absent from the runbook's causes record, so that runbook seeded nothing. **Zero is the healthy state** — nonzero means a runbook's causes are unseedable while looking well-formed from either side alone. |
-| `faultmaven_kb_cause_unseedable_at_ingest_total{chunker}` | The same defect caught at **write** time: a document was indexed with a causes record declaring letters that none of its own chunk texts can recover. Labeled `pack` / `runtime` by which chunker produced the disagreement. **Zero is the healthy state.** |
+| `faultmaven_kb_cause_unseedable_at_ingest_total{chunker,direction}` | The same defect caught at **write** time: a document was indexed with a causes record and chunk headings that disagree. `chunker` is `pack`/`runtime`; `direction` is `record_letter_unchunked` (a declared letter no chunk carries) or `chunk_letter_unrecorded` (a heading the record does not declare). The two have opposite fixes, so one counter that could not tell them apart would misdirect. **Zero is the healthy state.** |
 | `faultmaven_kb_cause_ingest_check_failed_total` | The write-time check itself raised and was swallowed, so that document went **unchecked**. Nonzero invalidates the row above until it returns to zero. |
 | `faultmaven_kb_cause_letters_unstamped_total` | A hit carried no `cause_letters` stamp, so its letters were parsed from chunk text the old way (fm#1108). **Not an alarm** — a migration drain gauge. Falls as content re-ingests; a steady zero means the fallback can be deleted. |
 

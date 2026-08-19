@@ -1672,3 +1672,78 @@ def test_the_stamp_identity_tracks_the_cause_heading_grammar():
     finally:
         g.CAUSE_HEADING_RE = saved
     assert chunk_stamp_identity() == before, "identity must be stable otherwise"
+
+
+@pytest.mark.asyncio
+async def test_a_stamp_change_does_not_republish_an_unpublished_runbook():
+    """The stamp axis must not undo an operator's unpublish.
+
+    ``delete_document`` retires a built-in by dropping its VECTORS — retrieval
+    ignores ``is_published``, so that is what actually removes it from
+    investigations — and its contract is that the retirement survives restart
+    until the runbook's CONTENT changes. Re-ingest is delete-then-create and the
+    created row is published by default, so re-ingesting for a stamp change
+    would put a deliberately retired runbook back into retrieval on the strength
+    of a code edit. Skipping is also right on its own terms: an unpublished
+    built-in has no vectors, so it carries no stamps to refresh.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+        knowledge_service = MagicMock()
+        knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+        knowledge_service._vector_store = MagicMock()
+        knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+        existing = MagicMock()
+        existing.content = RUNBOOK_MD  # content unchanged
+        existing.knowledge_metadata = {"causes": CAUSES_RECORD}  # no stamp
+        existing.is_published = False  # ...but retired by an operator
+
+        result = await kb_init.bootstrap_kb(
+            knowledge_service=knowledge_service,
+            db_session_factory=_make_session_factory(existing_row=existing),
+            organization_id="org-test",
+            project_root=tmp_path,
+            pack_dir=pack_dir,
+        )
+
+        assert result.ingested == []
+        assert result.skipped_unchanged == ["global/example.md"]
+        knowledge_service.ingest_runbook.assert_not_awaited()
+        knowledge_service._vector_store.delete_documents_by_parent_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_content_change_still_re_ingests_an_unpublished_runbook():
+    """The converse, so the guard above cannot become a blanket exemption.
+
+    A content change IS an intentional new version — the documented behaviour
+    the unpublish contract carves out — and must still re-ingest.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        pack_dir = _write_pack(tmp_path, causes=CAUSES_RECORD)
+        knowledge_service = MagicMock()
+        knowledge_service.ingest_runbook = AsyncMock(return_value=2)
+        knowledge_service._vector_store = MagicMock()
+        knowledge_service._vector_store.delete_documents_by_parent_id = AsyncMock()
+
+        existing = MagicMock()
+        existing.content = "# Something else entirely\n"  # content MOVED
+        existing.knowledge_metadata = {"causes": CAUSES_RECORD}
+        existing.is_published = False
+
+        result = await kb_init.bootstrap_kb(
+            knowledge_service=knowledge_service,
+            db_session_factory=_make_session_factory(existing_row=existing),
+            organization_id="org-test",
+            project_root=tmp_path,
+            pack_dir=pack_dir,
+        )
+
+        assert result.ingested == ["global/example.md"]

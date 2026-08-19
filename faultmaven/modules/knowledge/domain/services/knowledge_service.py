@@ -308,9 +308,16 @@ def _unrecorded_chunk_letters(
     declared = set(_declared_cause_letters(causes))
     if not declared:
         return []
+    # Case-insensitively, because a record declaring ``"a"`` against a
+    # ``### Cause A:`` heading is a MIS-CASED record, not an undeclared heading.
+    # Reporting it here too would say the markdown carries a letter the record
+    # lacks — sending a producer to inspect healthy markdown, which is the exact
+    # misdirection the ungrammatical branch of the caller exists to prevent. It
+    # is one defect and it already has a message that names the right side.
+    declared_folded = {letter.upper() for letter in declared}
     seen: List[str] = []
     for letter in sorted(_carried_cause_letters(letters_per_chunk)):
-        if letter not in declared:
+        if letter not in declared and letter.upper() not in declared_folded:
             seen.append(letter)
     return seen
 
@@ -1250,7 +1257,18 @@ class KnowledgeService:
                 kb_cause_unseedable_at_ingest_total,
             )
 
-            kb_cause_unseedable_at_ingest_total.labels(chunker=chunker).inc()
+            # Labeled by DIRECTION as well as chunker: the two are opposite
+            # defects with opposite fixes, and one counter that cannot tell them
+            # apart sends an operator looking for a declared letter with no
+            # heading when the truth is a heading with no record entry.
+            if missing:
+                kb_cause_unseedable_at_ingest_total.labels(
+                    chunker=chunker, direction="record_letter_unchunked"
+                ).inc()
+            if unrecorded:
+                kb_cause_unseedable_at_ingest_total.labels(
+                    chunker=chunker, direction="chunk_letter_unrecorded"
+                ).inc()
             # Say which SIDE is wrong when the letter itself proves it. A letter
             # the heading grammar cannot express (``cause_letter: "a"``) is
             # unseedable — the seeder's join is case-sensitive, so reporting it

@@ -279,6 +279,25 @@ async def _ingest_pack_runbook(
             logger.debug(f"Skipping {runbook.relpath}: unchanged")
             return "skipped"
         if content_unchanged and causes_unchanged:
+            # Re-ingest is delete-then-create, and the created row is published
+            # (``KnowledgeItem.is_published`` defaults True). For a runbook an
+            # operator UNPUBLISHED that would silently put it back into
+            # retrieval — ``delete_document`` unpublishes a built-in by dropping
+            # its vectors precisely because retrieval ignores the flag, and its
+            # contract is that the skip survives restart until the CONTENT
+            # changes. A stamp change is not a content change: nothing about the
+            # runbook moved, only our code did.
+            #
+            # Skipping is also the correct answer on its own terms — an
+            # unpublished built-in has no vectors, so there are no stamps on it
+            # to refresh. If it is ever republished it is re-vectorised then,
+            # by code that stamps.
+            if not existing_row.is_published:
+                logger.debug(
+                    f"Skipping {runbook.relpath}: stamp identity changed but the "
+                    "runbook is unpublished (no vectors to re-stamp)"
+                )
+                return "skipped"
             logger.info(
                 f"{runbook.relpath}: chunk stamp identity changed (content and "
                 "causes unchanged) — re-ingesting to re-stamp"
