@@ -212,3 +212,168 @@ def test_a_conjunct_validating_later_refreshes_a_standing_mirror():
 
     assert case.causal_nodes[_B].node_state == NodeState.VALIDATED
     assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+# ---------------------------------------------------------------------------
+# Hardening the derivation's edges (review of the first cut)
+# ---------------------------------------------------------------------------
+
+
+def test_conjuncts_do_not_depend_on_edge_row_order():
+    """Neither repository loads ``causal_edges`` with an ORDER BY, so a
+    row-order-derived list would vary per fetch on PostgreSQL — re-minting the
+    conclusion every recompute and flipping the report's bullets."""
+    case, _d = _conjunction_case()
+    third = _node(
+        "cn_0000000000dd", "a third co-necessary condition", supports=["c1", "c2"]
+    )
+    case.causal_nodes[third.node_id] = third
+    case.evidence += [_evidence("c1"), _evidence("c2")]
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=third.node_id, effect_node_id=_M, and_group="g1")
+    )
+    _recompute_cause_state_from_chain(case)
+    first = list(case.root_cause_conclusion.contributing_factors)
+    assert len(first) == 2
+
+    case.causal_edges.reverse()
+    case.root_cause_conclusion = None
+    _recompute_cause_state_from_chain(case)
+    assert list(case.root_cause_conclusion.contributing_factors) == first
+
+
+def test_a_blank_and_group_is_not_a_conjunction():
+    """``and_group`` is an unconstrained Optional[str] end to end. A model
+    emitting "" on independent alternatives must not have them published as
+    conditions the cause required."""
+    from faultmaven.core.investigation.causal_graph import ingest_emitted_chain
+
+    case, d = _conjunction_case(and_group=None)
+    case.causal_edges = [e for e in case.causal_edges if e.cause_node_id != _B]
+
+    class _Spec:
+        statement = "an independent alternative cause"
+        node_type = "root"
+        produces = _M
+        and_group = "   "
+
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[_Spec()],
+        edges_to_add=[],
+        node_evidence=[],
+        current_turn=6,
+    )
+    added = [e for e in case.causal_edges if e.effect_node_id == _M]
+    assert added and all(e.and_group is None for e in added)
+
+
+def test_a_path_less_hypothesis_still_sees_the_and_set_on_the_problem():
+    """The canonical two-factor shape points both conjuncts straight at D, so
+    reading the root's incoming edges alone would report none."""
+    case, d = _conjunction_case()
+    case.causal_edges = [
+        CausalEdge(cause_node_id=_A, effect_node_id=d.node_id, and_group="g1"),
+        CausalEdge(cause_node_id=_B, effect_node_id=d.node_id, and_group="g1"),
+    ]
+    hyp = case.hypotheses["hyp_0000000000aa"]
+    hyp.path = []
+    _recompute_cause_state_from_chain(case)
+
+    assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+def _confirm_root(case, node_id: str, label: str) -> None:
+    """Stamp a counterfactual (gone=>gone) confirmation on a root. The engine is
+    the only live producer of such a link; the fixture writes it directly."""
+    case.evidence.append(
+        Evidence(
+            evidence_id=_eid(label),
+            summary=f"the cause is absent after the fix ({label})",
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="engine",
+            collected_at_turn=7,
+            collected_at=datetime.now(timezone.utc),
+        )
+    )
+    case.causal_nodes[node_id].evidence_links.append(
+        NodeEvidenceLink(
+            evidence_id=_eid(label),
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="removing the cause removed the problem",
+            linked_at_turn=7,
+        )
+    )
+
+
+def test_a_conjunct_refresh_does_not_swap_the_published_cause():
+    """Two counterfactually CONFIRMED roots settle the MECE contest, so both
+    stand. A conjunct-driven re-mint is a refresh for a reason unrelated to the
+    cause: it must keep the cause the standing mirror already names, or the
+    published root_cause changes because a conjunct validated."""
+    from faultmaven.core.investigation.causal_graph import (
+        synthesize_rcc_from_validated_root,
+    )
+
+    case, _d = _conjunction_case()
+    d_id = _d_id(case)
+    _confirm_root(case, _A, "abs_a")
+    _recompute_cause_state_from_chain(case)
+    named = case.root_cause_conclusion.root_cause
+    assert named == _CACHE
+
+    # A second confirmed cause arrives, ordered FIRST in the standing-hypothesis
+    # iteration — so confirmed_hyps[0] is NOT the prior mirror's own root.
+    rival = _node("cn_0000000000ee", "a rival standing cause", supports=["r1", "r2"])
+    case.causal_nodes["cn_0000000000ee"] = rival
+    case.evidence += [_evidence("r1"), _evidence("r2")]
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=rival.node_id, effect_node_id=d_id)
+    )
+    rival_hyp = Hypothesis(
+        hypothesis_id="hyp_0000000000cc",
+        statement="a rival standing cause",
+        category=HypothesisCategory.CODE,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="rival",
+        root_node_id=rival.node_id,
+        path=[rival.node_id, d_id],
+        generated_at_turn=1,
+    )
+    case.hypotheses = {rival_hyp.hypothesis_id: rival_hyp, **case.hypotheses}
+    _confirm_root(case, rival.node_id, "abs_r")
+    # Derive the rival's node state. The mirror short-circuits here (root and
+    # grade still agree, conjuncts unchanged), so the cache root stays named.
+    _recompute_cause_state_from_chain(case)
+    assert case.root_cause_conclusion.root_cause == named
+
+    # Invalidate ONLY the conjunct set, so nothing else can drive the re-mint.
+    case.root_cause_conclusion.contributing_factors = ["stale"]
+    synthesize_rcc_from_validated_root(case)
+
+    assert case.root_cause_conclusion.root_cause == named
+
+
+def _d_id(case) -> str:
+    return next(
+        n.node_id for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM
+    )
+
+
+def test_the_confirm_stamp_degrades_when_the_graph_hook_is_missing():
+    """The stamp runs on the unguarded RESOLVED-execution path, so reading the
+    conjunct hook must degrade to naming none — never a KeyError that 500s the
+    transition (same discipline as the arbitration hook beside it)."""
+    from unittest.mock import patch
+
+    from faultmaven.core.investigation import cause_assurance
+
+    case, _d = _conjunction_case()
+    _recompute_cause_state_from_chain(case)
+    root = case.causal_nodes[_A]
+    hyp = case.hypotheses["hyp_0000000000aa"]
+    with patch.dict(cause_assurance._GRAPH_HOOKS, {}, clear=True):
+        assert cause_assurance._conjuncts_for_root(case, root, hyp) == []

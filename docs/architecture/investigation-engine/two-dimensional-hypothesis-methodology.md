@@ -1029,8 +1029,17 @@ conclusion is the one place that must never assert more than the graph proves.
 The conjunct set joins the root and the M2 grade in the mirror's faithfulness
 check, because a conjunct typically validates AFTER the root — omitted from that
 check, the mirror would freeze at the single-factor text it was first minted
-with. The LLM gets no schema field for this by design: the way to say "the
-problem needed both" is the AND-set, and the engine reads it.
+with. Because that makes the mirror re-mint for a reason unrelated to the cause,
+root selection now prefers the prior mirror's own root within the confirmed set:
+a refresh must not silently swap the published cause. The list is SORTED, not
+edge-ordered — neither repository loads `causal_edges` with an `ORDER BY`, so
+row order would make both the text and that equality check vary with fetch order
+on PostgreSQL. The same conjuncts travel to the runbook boundary
+(`CaseConversionRequest.root_cause_conditions`), because a runbook recording
+half a cause outlives the case it came from. The LLM gets no schema field for
+any of this by design: the way to say "the problem needed both" is the AND-set,
+and the engine reads it — a blank `and_group` is normalized to `None` at ingest
+so an empty grouping token cannot be published as co-necessity.
 Grade labeling needs nothing new and already covers the fallback — the assurance
 grade and the over-claim flag are recomputed from the graph at every surface (turn
 response, resolved payload, report note), so a fallback conclusion standing at

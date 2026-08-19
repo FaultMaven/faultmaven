@@ -150,12 +150,17 @@ def validated_and_conjuncts(case: "Case", chain_node_ids: list[str]) -> list[str
     the rest of the engine lane keeps.
 
     Chain nodes themselves are excluded (they are already the conclusion's root
-    and mechanism), and the result is de-duplicated in chain order so the text is
-    a stable function of the graph rows across regenerations.
+    and mechanism). The result is de-duplicated and SORTED: conjuncts of one
+    effect are co-equal (an AND-set is unordered by construction) and neither
+        repository loads ``causal_edges`` with an ``ORDER BY``, so deriving order
+    from row order would make the list — and the equality check the mirror's
+    faithfulness short-circuit runs on it — vary with fetch order on PostgreSQL,
+    re-minting the conclusion every recompute and flipping the report's bullets
+    between regenerations. Sorted, the output is a function of the graph's
+    CONTENT rather than of its storage.
     """
     on_chain = set(chain_node_ids)
-    statements: list[str] = []
-    seen: set[str] = set()
+    statements: set[str] = set()
     for node_id in chain_node_ids:
         for and_group, cause_ids in incoming_and_groups(
             node_id, case.causal_edges
@@ -163,21 +168,32 @@ def validated_and_conjuncts(case: "Case", chain_node_ids: list[str]) -> list[str
             if and_group is None:
                 continue  # OR alternatives: each is its own sufficient cause
             for cause_id in cause_ids:
-                if cause_id in on_chain or cause_id in seen:
+                if cause_id in on_chain:
                     continue
                 node = case.causal_nodes.get(cause_id)
                 if node is None or node.node_state != NodeState.VALIDATED:
                     continue
-                seen.add(cause_id)
-                statements.append(node.statement)
-    return statements
+                statements.add(node.statement)
+    return sorted(statements)
 
 
 def _conjuncts_for_hypothesis(case: "Case", hyp: "Hypothesis") -> list[str]:
-    """``validated_and_conjuncts`` over the chain a conclusion would mirror. The
-    path is the chain when the hypothesis carries one; a path-less hypothesis
-    still has its root (M3 requires it before validation)."""
-    chain = list(hyp.path or []) or [hyp.root_node_id or ""]
+    """``validated_and_conjuncts`` over the chain a conclusion would mirror.
+
+    The path is the chain when the hypothesis carries one. A path-less
+    hypothesis still has its root (M3 requires it before validation), and the
+    fallback adds the PROBLEM node: the canonical two-factor shape is both
+    conjuncts pointing straight at D, so an AND-set there is the common case
+    and reading the root's incoming edges alone would report none."""
+    chain = list(hyp.path or [])
+    if not chain:
+        problem = next(
+            (n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM),
+            None,
+        )
+        chain = [
+            x for x in (hyp.root_node_id, problem.node_id if problem else None) if x
+        ]
     return validated_and_conjuncts(case, chain)
 
 
@@ -1186,6 +1202,14 @@ def ingest_emitted_chain(
     def _add_edge(cause_id, effect_id, and_group, reasoning):
         if not cause_id or not effect_id or cause_id == effect_id:
             return
+        # An AND-set key is a GROUPING token; "" and whitespace name no group.
+        # The field is an unconstrained Optional[str] end to end, so a model
+        # emitting and_group:"" on independent alternatives would otherwise
+        # collapse them into one conjunction — silently strengthening the M7
+        # gate and, since #1096, publishing "the cause required these
+        # conditions too" about causes that are alternatives.
+        if isinstance(and_group, str) and not and_group.strip():
+            and_group = None
         if cause_id not in case.causal_nodes or effect_id not in case.causal_nodes:
             return
         if any(
@@ -2068,7 +2092,14 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     # grade must be what the conclusion asserts), then the prior mirror's own
     # root (a level-only correction must not silently swap the named cause),
     # then the first standing validated chain.
-    hyp = confirmed_hyps[0] if confirmed_hyps else None
+    # Within the confirmed set, the prior mirror's own root wins: this function
+    # now also re-mints for reasons unrelated to the cause (a conjunct that
+    # validated this turn), and taking confirmed_hyps[0] blindly would swap the
+    # published cause on such a refresh — the swap the "keep the named root"
+    # rule below exists to prevent, one tier up.
+    hyp = None
+    if confirmed_hyps:
+        hyp = prior if prior in confirmed_hyps else confirmed_hyps[0]
     if hyp is None and prior is not None and prior in validated_hyps:
         hyp = prior
     if hyp is None:

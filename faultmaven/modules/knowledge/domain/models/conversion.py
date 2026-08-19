@@ -279,6 +279,7 @@ class CaseConversionRequest(BaseModel):
     - description: Case.problem_verification.symptom_statement
     - root_cause: Case.root_cause_conclusion.root_cause
     - root_cause_mechanism: Case.root_cause_conclusion.mechanism
+    - root_cause_conditions: Case.root_cause_conclusion.contributing_factors
     - solutions: Structured text from Case.solutions[] (title, steps, commands, risks)
     - hypotheses_summary: Validated hypothesis statements from Case.hypotheses
     - evidence_summary: Case.working_conclusion.statement + evidence summaries
@@ -291,6 +292,10 @@ class CaseConversionRequest(BaseModel):
     description: str
     root_cause: Optional[str] = None
     root_cause_mechanism: Optional[str] = None
+    # The cause's co-necessary conditions (#1096). A cause the investigation
+    # established as a conjunction reaches the runbook whole or the runbook
+    # records half a cause — the same defect the resolution summary carried.
+    root_cause_conditions: List[str] = Field(default_factory=list)
     solutions: List[str] = Field(default_factory=list)
     hypotheses_summary: str = ""
     evidence_summary: str = ""
@@ -311,6 +316,9 @@ class CaseConversionRequest(BaseModel):
         rc_obj = getattr(case, "root_cause_conclusion", None)
         root_cause = getattr(rc_obj, "root_cause", None) if rc_obj else None
         rc_mechanism = getattr(rc_obj, "mechanism", None) if rc_obj else None
+        rc_conditions = (
+            list(getattr(rc_obj, "contributing_factors", None) or []) if rc_obj else []
+        )
 
         # Problem description
         pv = getattr(case, "problem_verification", None)
@@ -419,6 +427,7 @@ class CaseConversionRequest(BaseModel):
             description=symptom,
             root_cause=root_cause,
             root_cause_mechanism=rc_mechanism,
+            root_cause_conditions=rc_conditions,
             solutions=solutions,
             hypotheses_summary=hyp_summary,
             evidence_summary=ev_summary,

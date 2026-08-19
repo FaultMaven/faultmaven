@@ -999,9 +999,24 @@ def _conjuncts_for_root(case: "Case", root: "CausalNode", hyp) -> list[str]:
     """The VALIDATED causes co-necessary with the chain a conclusion mirrors
     (#1096), via the graph hook — ``causal_graph`` owns the AND-set reading and
     this module cannot import it (see the module docstring). The chain is the
-    hypothesis's path when it has one, else the root alone."""
+    hypothesis's path when it has one, else the root and the problem node (the
+    canonical two-factor shape puts the AND-set on D).
+
+    The hook is read defensively (``.get``, like every other hook consumer
+    here): this runs on the unguarded RESOLVED-execution path, so a missing
+    registration degrades to naming no conjuncts — the pre-#1096 conclusion —
+    never a KeyError that 500s the transition."""
+    fn = _graph_hooks().get("and_conjuncts")
+    if fn is None:
+        return []
     chain = list(getattr(hyp, "path", None) or []) if hyp is not None else []
-    return _graph_hooks()["and_conjuncts"](case, chain or [root.node_id])
+    if not chain:
+        problem = next(
+            (n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM),
+            None,
+        )
+        chain = [x for x in (root.node_id, problem.node_id if problem else None) if x]
+    return fn(case, chain)
 
 
 def _mint_confirmed_mirror(case: "Case", root: "CausalNode", provenance: str) -> None:
