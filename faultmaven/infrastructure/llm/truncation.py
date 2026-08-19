@@ -22,12 +22,25 @@ engine-only, where the case context that drives it lives.
 Deciding what to do when the retry is ALSO cut is the caller's job, and the
 answer differs per consumer — a read path returns the partial with a notice
 attached, a write path refuses to persist at all. This helper therefore never
-raises on truncation; it returns the response and lets the caller read
-``is_truncated``.
+raises on ordinary truncation; it returns the response and lets the caller
+read ``is_truncated``.
+
+The one exception is a caller-declared output floor (#1117). A call carrying
+``min_output_tokens`` makes the router RAISE ``LLMOutputFloorError`` on a
+starved MAX_TOKENS stop instead of returning it — the same failure this
+helper's retry rung exists to recover, just surfaced as an exception because
+the caller pre-declared the body unusable. So the first attempt's floor
+violation is treated exactly like a first truncation: retry once at the
+bigger cap. Only when the RETRY also starves (or there is no headroom left to
+retry into) does the error propagate — at that point "fail loudly" is the
+floor's whole contract, and returning a partial would hand the caller the
+body it said it cannot use.
 """
 
 import logging
 from typing import Awaitable, Callable, Optional
+
+from faultmaven.exceptions import LLMOutputFloorError
 
 from .providers import LLMResponse
 
@@ -108,13 +121,45 @@ async def generate_with_truncation_retry(
     is not evidence of a cut, and retrying every such call at double the cap
     would double the bill for the majority of traffic on providers that simply
     do not tell us.
+
+    Raises:
+        LLMOutputFloorError: only for a floor-carrying call whose RETRY was
+            also starved below the floor, or that had no cap headroom left to
+            retry into. A floor violation on the first attempt is recovered
+            here like any other truncation — one retry at the bigger cap.
     """
-    response = await call(max_tokens)
+    limit = ceiling if ceiling is not None else max_tokens * 2
+    retry_cap = min(max_tokens * 2, limit)
+
+    try:
+        response = await call(max_tokens)
+    except LLMOutputFloorError:
+        # Starved below the caller's declared floor (#1117) — the exception
+        # form of exactly the MAX_TOKENS cut this helper recovers. Same
+        # remedy, same single rung: once more, with more room. A second
+        # violation at the bigger cap propagates — the floor's fail-loudly
+        # contract takes over where recovery has been spent.
+        if retry_cap <= max_tokens:
+            logger.warning(
+                "%s starved below its output floor at max_tokens=%s, already "
+                "at the ceiling (%s) — no headroom to retry into, re-raising",
+                label,
+                max_tokens,
+                limit,
+            )
+            raise
+        logger.warning(
+            "%s starved below its output floor at max_tokens=%s; retrying "
+            "once at %s",
+            label,
+            max_tokens,
+            retry_cap,
+        )
+        return await call(retry_cap)
+
     if not response.is_truncated:
         return response
 
-    limit = ceiling if ceiling is not None else max_tokens * 2
-    retry_cap = min(max_tokens * 2, limit)
     if retry_cap <= max_tokens:
         logger.warning(
             "%s truncated at max_tokens=%s, already at the ceiling (%s) — "

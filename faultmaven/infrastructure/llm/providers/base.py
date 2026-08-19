@@ -509,11 +509,15 @@ class BaseLLMProvider(ABC):
         kwargs.pop("min_output_tokens", None)
         if intent is not None:
             intent_value = getattr(intent, "value", intent)
+            # Worded as "does not act on", not "has no reasoning control":
+            # a provider may well have a reasoning mechanism (or grow one)
+            # that simply is not driven by the intent yet — the log records
+            # that the DECLARED intent was not translated, nothing more.
             self.logger.info(
                 f"reasoning_intent='{intent_value}' declared, but "
-                f"{self.provider_name} has no reasoning control on this call "
-                f"path (model: {model or self.config.default_model}) — "
-                f"proceeding with the model's native behavior"
+                f"{self.provider_name} does not act on reasoning intent on "
+                f"this call path (model: {model or self.config.default_model}) "
+                f"— proceeding with the provider's configured behavior"
             )
 
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:

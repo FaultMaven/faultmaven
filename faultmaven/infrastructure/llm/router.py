@@ -169,7 +169,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             Gemini ``thinkingLevel``), hard model constraints override it, and
             an intent that cannot be honoured is logged by the provider, never
             silently dropped. ``None`` (default) preserves the shape-based
-            per-provider defaults exactly.
+            per-provider defaults exactly. INVARIANT: ``INFERENCE`` must be
+            paired with ``min_output_tokens`` — it lifts provider starvation
+            guards, and the floor is what makes that safe; the pairing is
+            enforced here with a ``ValueError``, not left as a convention.
 
         min_output_tokens: the minimum VISIBLE output this call needs (#1117).
             Reasoning models bill hidden reasoning against the same token
@@ -206,6 +209,20 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             reasoning_intent, ReasoningIntent
         ):
             reasoning_intent = ReasoningIntent(reasoning_intent)
+        if reasoning_intent is ReasoningIntent.INFERENCE and min_output_tokens is None:
+            # Enforced as a mechanism, not a convention: INFERENCE asks the
+            # provider to lift its starvation guards (Gemini's structured
+            # thinkingLevel cap among them), and reasoning bills against the
+            # same budget the answer is drawn from — an inference call with no
+            # declared floor re-arms exactly the silent starvation fm#1094
+            # closed. The floor is what makes lifting the guard safe.
+            raise ValueError(
+                "reasoning_intent=INFERENCE requires min_output_tokens: "
+                "reasoning shares one token budget with the visible answer, so "
+                "an inference call without an output floor can starve silently "
+                "(fm#1094). Declare the minimum visible output the call needs "
+                "alongside the intent."
+            )
         if min_output_tokens is not None:
             if min_output_tokens < 1:
                 raise ValueError(
@@ -236,7 +253,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         cache_model = model  # Use the requested model for cache lookup
         if cache_model and not messages and sanitized_prompt and not bypass_cache:
             cached_response = self.cache.check(
-                sanitized_prompt, cache_model, case_id=case_id
+                sanitized_prompt,
+                cache_model,
+                case_id=case_id,
+                reasoning_intent=reasoning_intent,
             )
             if cached_response:
                 self.logger.info("✅ Using cached response")
@@ -359,7 +379,13 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 and response.confidence >= self.confidence_threshold
                 and not response.is_truncated
             ):
-                self.cache.store(sanitized_prompt, model, response, case_id=case_id)
+                self.cache.store(
+                    sanitized_prompt,
+                    model,
+                    response,
+                    case_id=case_id,
+                    reasoning_intent=reasoning_intent,
+                )
 
             # Attach prompt data for telemetry
             response.sanitized_prompt = sanitized_prompt
@@ -414,7 +440,26 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             # starvation guard, not a precision instrument — a genuinely
             # starved body misses it by an order of magnitude.
             if min_output_tokens is not None and response.is_truncated:
-                visible_output_tokens = len(response.content or "") // 4
+                # Tool-call responses can carry their whole payload in
+                # ``tool_calls`` with EMPTY content — counting content alone
+                # would read every floored tools call as fully starved. Count
+                # both. (The OpenAI provider copies the first call's arguments
+                # into content, so there the arguments count twice; that
+                # overstates visible output, which errs toward NOT raising —
+                # the safe direction for a guard whose false positive would
+                # kill an otherwise-usable turn.)
+                visible_chars = len(response.content or "")
+                for tool_call in response.tool_calls or []:
+                    visible_chars += len(str(tool_call.function or ""))
+                # The ~4 chars/token divisor is deliberately coarse, and its
+                # known bias is documented: token-dense output (minified JSON,
+                # CJK) runs nearer 1-3 chars/token, so chars//4 OVERSTATES
+                # visible tokens there and the guard under-triggers near the
+                # boundary. Accepted — this is a starvation guard, not a
+                # precision instrument; a genuinely starved body (fm#1094:
+                # 215 chars against a 500-token floor) misses the floor by an
+                # order of magnitude under any tokenizer.
+                visible_output_tokens = visible_chars // 4
                 if visible_output_tokens < min_output_tokens:
                     llm_requests.labels(
                         provider=response.provider,
@@ -424,7 +469,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                     raise LLMOutputFloorError(
                         f"LLM response starved below the declared output floor: "
                         f"~{visible_output_tokens} visible output tokens "
-                        f"(estimated from {len(response.content or '')} chars) "
+                        f"(estimated from {visible_chars} chars of content + "
+                        f"tool calls) "
                         f"< min_output_tokens={min_output_tokens}, with "
                         f"stop_reason=MAX_TOKENS at max_tokens={max_tokens} "
                         f"(provider={response.provider} model={response.model})"

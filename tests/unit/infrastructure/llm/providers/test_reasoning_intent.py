@@ -331,17 +331,43 @@ class TestGeminiIntentTranslation:
         assert "min_output_tokens" not in flat
 
 
-# --- Providers with no reasoning control -------------------------------------
+# --- Providers that do not act on the intent ---------------------------------
+
+
+_ANTHROPIC_RESP = {
+    "content": [{"type": "text", "text": "ok"}],
+    "stop_reason": "end_turn",
+    "usage": {"input_tokens": 5, "output_tokens": 5},
+}
+
+_COHERE_RESP = {
+    "message": {"content": "ok"},
+    "finish_reason": "COMPLETE",
+    "usage": {"tokens": {"input_tokens": 5, "output_tokens": 5}},
+}
+
+_HF_RESP = [{"generated_text": "ok"}]
+
+
+def _body_has_no_router_knobs(body) -> bool:
+    """The knobs must appear NOWHERE in the outgoing body — not as top-level
+    keys, not nested (HuggingFace tucks kwargs under ``parameters``, the local
+    Ollama path under ``options``)."""
+    flat = str(body)
+    return "reasoning_intent" not in flat and "min_output_tokens" not in flat
 
 
 @pytest.mark.unit
 @pytest.mark.llm
 @pytest.mark.asyncio
 class TestNoMechanismProviders:
+    """Exhaustive over the providers that discard the knobs — not one
+    representative. Deleting a single provider's ``_discard_reasoning_kwargs``
+    call must fail THAT provider's test here, because several of them merge
+    leftover kwargs straight into the request body and would 400 (or silently
+    send garbage) in production."""
+
     async def test_fireworks_pops_knobs_and_logs_intent(self, caplog):
-        """Representative of the pop-and-log pattern every no-mechanism
-        provider uses (Fireworks merges leftover kwargs straight into the
-        request body, so an unpopped knob would be sent to the API)."""
         provider = FireworksProvider(
             _config(
                 "fireworks",
@@ -356,6 +382,92 @@ class TestNoMechanismProviders:
                 reasoning_intent=ReasoningIntent.INFERENCE,
                 min_output_tokens=500,
             )
-        assert "reasoning_intent" not in body
-        assert "min_output_tokens" not in body
-        assert any("no reasoning control" in r.message for r in caplog.records)
+        assert _body_has_no_router_knobs(body)
+        assert any(
+            "does not act on reasoning intent" in r.message for r in caplog.records
+        )
+
+    async def test_groq_pops_knobs(self):
+        from faultmaven.infrastructure.llm.providers.groq_provider import GroqProvider
+
+        provider = GroqProvider(
+            _config("groq", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1")
+        )
+        body = await _sent_body(
+            provider,
+            _OPENAI_RESP,
+            reasoning_intent=ReasoningIntent.INFERENCE,
+            min_output_tokens=500,
+        )
+        assert _body_has_no_router_knobs(body)
+
+    async def test_cohere_pops_knobs(self):
+        from faultmaven.infrastructure.llm.providers.cohere_provider import (
+            CohereProvider,
+        )
+
+        provider = CohereProvider(
+            _config("cohere", "command-r-plus", "https://api.cohere.ai/v2")
+        )
+        body = await _sent_body(
+            provider,
+            _COHERE_RESP,
+            reasoning_intent=ReasoningIntent.INFERENCE,
+            min_output_tokens=500,
+        )
+        assert _body_has_no_router_knobs(body)
+
+    async def test_huggingface_pops_knobs(self):
+        from faultmaven.infrastructure.llm.providers.huggingface import (
+            HuggingFaceProvider,
+        )
+
+        provider = HuggingFaceProvider(
+            _config(
+                "huggingface",
+                "mistralai/Mistral-Large-Instruct-2411",
+                "https://api-inference.huggingface.co/models",
+            )
+        )
+        body = await _sent_body(
+            provider,
+            _HF_RESP,
+            reasoning_intent=ReasoningIntent.INFERENCE,
+            min_output_tokens=500,
+        )
+        assert _body_has_no_router_knobs(body)
+
+    async def test_local_pops_knobs(self):
+        """The local provider pops in generate() BEFORE transport dispatch —
+        its Ollama path merges raw kwargs into payload['options']."""
+        from faultmaven.infrastructure.llm.providers.local_provider import (
+            LocalProvider,
+        )
+
+        provider = LocalProvider(_config("local", "llama3", "http://localhost:5000"))
+        body = await _sent_body(
+            provider,
+            _OPENAI_RESP,
+            reasoning_intent=ReasoningIntent.INFERENCE,
+            min_output_tokens=500,
+        )
+        assert _body_has_no_router_knobs(body)
+
+    async def test_anthropic_pops_knobs(self):
+        """Anthropic discards via the shared seam for now (the concurrent
+        extended-thinking work replaces that call with a real translation) —
+        until then the knobs must not reach the Messages API body."""
+        from faultmaven.infrastructure.llm.providers.anthropic import (
+            AnthropicProvider,
+        )
+
+        provider = AnthropicProvider(
+            _config("anthropic", "claude-sonnet-4-6", "https://api.anthropic.com/v1")
+        )
+        body = await _sent_body(
+            provider,
+            _ANTHROPIC_RESP,
+            reasoning_intent=ReasoningIntent.INFERENCE,
+            min_output_tokens=500,
+        )
+        assert _body_has_no_router_knobs(body)
