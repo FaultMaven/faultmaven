@@ -191,12 +191,23 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             if cached_response:
                 self.logger.info("✅ Using cached response")
                 if cached_response.is_truncated:
-                    # The entry survived a store, so a one-time cut is now the
-                    # permanent answer for this key: there is no TTL and no
-                    # eviction API, and only a `bypass_cache` retry ever
-                    # overwrites an entry. Consumers still see `is_truncated`
-                    # and act on it, but the replay itself is worth saying out
-                    # loud (#1094).
+                    # UNREACHABLE while the store guard below holds — that
+                    # guard declines to write a response the provider reported
+                    # as cut, this cache is a per-process dict so nothing
+                    # survives a restart, and the store site 100 lines down is
+                    # the only writer. Kept anyway, as a backstop rather than a
+                    # live path, and this comment says which it is because the
+                    # earlier version claimed the opposite and contradicted the
+                    # store site.
+                    #
+                    # It earns its place on cost: relaxing that guard, or adding
+                    # a second writer (``store`` is public), reintroduces a
+                    # failure that is both silent and permanent — a cut body
+                    # served as an answer for the life of the process, with no
+                    # TTL and no eviction API to clear it. One branch is a cheap
+                    # price for that not being silent (#1094). Exercised by
+                    # storing a truncated entry directly, which is exactly the
+                    # shape a future writer would take.
                     self.logger.warning(
                         f"⚠️ Serving a TRUNCATED response from cache "
                         f"(provider={cached_response.provider} "

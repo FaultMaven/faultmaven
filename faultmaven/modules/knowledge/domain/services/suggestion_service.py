@@ -222,7 +222,17 @@ Format as Markdown with these sections:
                 # left as a trap for whoever wires the provider up, and a
                 # truncated draft falls through to the template below rather
                 # than being persisted half-written (#1094).
-                if response is None or response.is_truncated:
+                if response is None:
+                    # Not truncation — the contract says ``generate`` returns an
+                    # LLMResponse, so this means a provider broke it. Reported
+                    # as itself rather than folded into the truncation warning
+                    # below, which would send a reader looking for an output cap
+                    # that was never involved.
+                    self.logger.warning(
+                        "Suggestion generation returned no response; "
+                        "falling back to the template"
+                    )
+                elif response.is_truncated:
                     self.logger.warning(
                         "Suggestion generation truncated at the output cap; "
                         "falling back to the template"

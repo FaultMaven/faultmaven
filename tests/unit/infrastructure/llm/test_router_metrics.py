@@ -317,6 +317,42 @@ class TestTruncatedResponsesAreNotCached:
         router.cache.store.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_replaying_a_truncated_entry_is_not_silent(self, router, caplog):
+        """The backstop, exercised the way it would actually be reintroduced.
+
+        With the store guard in place this branch is unreachable from the
+        router itself. It is kept because the failure it catches is silent and
+        permanent — a cut body served as an answer for the life of the process,
+        with no TTL and no eviction — and because ``LLMResponseCache.store`` is
+        public, so a second writer or a relaxed guard puts it back.
+
+        Storing directly is exactly that shape, which makes this a test of the
+        backstop rather than of a fiction.
+        """
+        import logging
+
+        from faultmaven.infrastructure.llm.cache import LLMResponseCache
+        from faultmaven.infrastructure.llm.providers import StopReason
+
+        router.cache = LLMResponseCache()
+        router.cache.store(
+            "test",
+            "gpt-4",
+            _make_response(content="cut", stop_reason=StopReason.MAX_TOKENS),
+            case_id=None,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = await router.route(prompt="test", model="gpt-4")
+
+        assert result.content == "cut"
+        assert result.is_truncated is True, "the rehydration must survive"
+        assert any(
+            "TRUNCATED" in r.getMessage() and "cache" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
     async def test_a_retry_at_a_bigger_cap_reaches_the_provider(self, router):
         """End to end, through a REAL cache — the failure the rule prevents.
 
