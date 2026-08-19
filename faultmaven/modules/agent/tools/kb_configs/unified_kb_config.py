@@ -119,6 +119,21 @@ class UnifiedKBConfig(KBConfig):
         return False
 
     @property
+    def answer_char_allowance(self) -> Optional[int]:
+        """This KB's answer is relayed through the engine's ``kb_qa`` branch.
+
+        That branch wraps the answer in relay instructions and elides its
+        middle to fit ``MilestoneEngine.TOOL_RESULT_MAX_CHARS``, so the number
+        is real and worth stating. See ``KB_ANSWER_RELAY_CHARS`` for how it is
+        derived and what was measured without it (#1088).
+        """
+        from faultmaven.modules.agent.tools.document_qa_tool import (
+            KB_ANSWER_RELAY_CHARS,
+        )
+
+        return KB_ANSWER_RELAY_CHARS
+
+    @property
     def search_mode(self) -> str:
         """Use hybrid search (vector + keyword with RRF merge)."""
         return "hybrid"
