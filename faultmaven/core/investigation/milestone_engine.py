@@ -2965,6 +2965,222 @@ KB_QA_RELAY_SUFFIX = (
 )
 
 
+# Fraction of the answer allowance reserved for the answer's TAIL when a kb_qa
+# answer overflows it.
+#
+# The head-first cut this replaces was wrong for this one payload, for two
+# reasons that are properties of the payload rather than of the cap:
+#
+# 1. The synthesis prompt is written to load the tail. It asks the model to
+#    "preserve procedural detail -- include full diagnostic steps, commands,
+#    and resolution procedures" and to "compress only background context,
+#    never actionable steps". The tail of a procedure is its remediation, so a
+#    head-keeping cut deletes exactly what the prompt was written to protect
+#    and keeps the background it was told to compress.
+# 2. ``UnifiedKBConfig.format_response`` appends the source list to the very
+#    end of the answer, and ``KB_QA_RELAY_SUFFIX`` then instructs the model to
+#    cite "the primary source title(s) from the content above". A head-keeping
+#    cut removes that line before the model reads the instruction depending on
+#    it, so on a trimmed answer the citation requirement is unsatisfiable from
+#    the content it names.
+#
+# 0.35 rather than a smaller share because the tail has to hold a whole
+# remediation section plus the source line, not just the last paragraph.
+# Measured against the run that produced #1088's numbers: answers overflowed
+# the allowance by 540-1249 characters (7-17% of the answer), so a 35% tail
+# reservation puts every observed elision strictly inside the middle -- the
+# preserved tail is real answer text in every case seen, not padding.
+#
+# Those overflows are CENSORED LOWER BOUNDS, not a demand distribution. The run
+# predates #1094: synthesis was capped at 2000 tokens with no retry, and three
+# of the five answers sit within a few percent of what 2000 tokens can write.
+# So what was measured is how far past the budget a capped answer reached, not
+# how long the answer wanted to be, and a post-#1094 run should be expected to
+# show a wider band. The mechanism does not depend on the number -- the elide
+# fires whatever the overflow, and the budget is hard-bounded either way -- but
+# do not treat 0.35 as tuned without re-measuring. See
+# docs/operations/monitoring/tool-result-budget.md.
+KB_QA_ANSWER_TAIL_SHARE = 0.35
+
+# Marks where content was removed. Carries the count because the model is asked
+# to relay this answer onward and "some of the middle is missing" is a different
+# instruction from "the answer ends here" -- which is what the end-anchored
+# KB_QA_ANSWER_TRUNCATED_MARKER alone used to imply.
+KB_QA_ANSWER_ELIDED_TEMPLATE = (
+    "\n\n[... {dropped:,} characters elided from the middle of this answer to "
+    "fit the relay budget. What follows is the TAIL of the answer as it was "
+    "received — its closing steps and source line, where it reached them. "
+    "...]\n\n"
+)
+# "as it was received", not "the end of the answer", and that hedge is
+# load-bearing rather than cautious phrasing. An answer can arrive already
+# incomplete: when a #1094 retry still comes back ``finish_reason=length``,
+# ``truncation.TRUNCATION_NOTICE`` is prepended saying the text "stops
+# mid-answer". A marker asserting the tail below IS the end would then
+# contradict it, in the same string, with nothing to tell the model which to
+# believe. Both are now true at once -- the notice says the answer was cut
+# short, this says what follows is the end of what arrived.
+
+
+def _elide_answer_middle(content: str, budget: int) -> tuple[str, int]:
+    """Fit *content* into *budget* characters by removing its MIDDLE.
+
+    Returns the fitted text and the number of *content* characters destroyed.
+    That count is returned rather than derived by the caller because the two
+    are not the same number: the result carries inserted markers, so a
+    before/after length difference nets those off and under-reports what was
+    actually lost by roughly their combined length. ``dropped_chars`` is the
+    field the ceiling gets sized from (#1090), so it has to mean one thing.
+
+    Keeps the opening (framing and the first diagnostic steps) and the closing
+    (remediation and the ``Sources:`` line), which is the opposite of the
+    head-first cut every other tool result gets -- see
+    ``KB_QA_ANSWER_TAIL_SHARE`` for why kb_qa is the exception.
+
+    Both markers are inside the returned budget. On every path reachable from
+    the two production callers the result ENDS on
+    ``KB_QA_ANSWER_TRUNCATED_MARKER``, which is load-bearing rather than
+    decorative: the tool loop reads that anchor back to know this cut already
+    fed the truncation metrics, so one relayed result yields exactly one
+    observation (#1090). It reads as an overall "this answer was trimmed" flag;
+    the inline marker says where. Content arriving already marked keeps the
+    marker it has rather than gaining a second one -- the anchor holds either
+    way, since slicing the tail carries the existing marker along with it.
+
+    "Reachable" is the honest qualifier, not a hedge. The degenerate-budget
+    branch below slices to ``budget - len(end_marker)``, and on
+    already-marked content that slice can land inside the marker it was meant
+    to preserve. Both callers pass a budget three orders of magnitude larger,
+    so the corner is unreachable today; it is called out rather than asserted
+    away because a wrapper edit is exactly what would open it.
+    """
+    # Nothing to do. Both production callers already gate on the overflow, so
+    # this is defensive rather than load-bearing -- but without it the head and
+    # tail slices OVERLAP when the budget exceeds the content, duplicating text
+    # into the result and returning a negative dropped count. A helper that
+    # reports a nonsense number on an easy input is a trap for the next caller.
+    if len(content) <= budget:
+        return content, 0
+
+    # Already marked means this is the SECOND cut on one answer: the formatter
+    # trimmed it, then redaction expanded it back past the cap. One marker
+    # still says the true thing; two in a row just read as noise to the model
+    # that has to relay this.
+    already_marked = content.endswith(KB_QA_ANSWER_TRUNCATED_MARKER)
+    end_marker = "" if already_marked else KB_QA_ANSWER_TRUNCATED_MARKER
+
+    # Sized on a worst-case count so the marker cannot itself push the result
+    # past the budget once the real number is substituted in.
+    elided_len = len(KB_QA_ANSWER_ELIDED_TEMPLATE.format(dropped=len(content)))
+    # Reserved only when repair could actually fire. An answer with no fence in
+    # it cannot come back with an odd fence count, so holding the room back
+    # unconditionally spent up to 8 characters of answer on a repair that was
+    # never possible -- on the majority of KB answers, which carry no fenced
+    # block at all. The test is exact rather than heuristic: no ``` in, no ```
+    # out, because both slices are substrings of the content.
+    fence_reserve = FENCE_REPAIR_RESERVE if "```" in content else 0
+    available = budget - len(end_marker) - elided_len - fence_reserve
+
+    # Degenerate budget (a wrapper edit that leaves almost no room): fall back
+    # to the plain head-first cut rather than emit markers with no answer
+    # between them.
+    if available < 2:
+        kept = max(0, budget - len(end_marker))
+        return content[:kept] + end_marker, len(content) - min(kept, len(content))
+
+    tail_chars = int(available * KB_QA_ANSWER_TAIL_SHARE)
+    head_chars = available - tail_chars
+
+    head = _trim_head_to_paragraph(content[:head_chars])
+    # Sliced from the end, so an existing marker rides along on the tail and
+    # the result still ends on the anchor the tool loop looks for.
+    tail = _trim_tail_to_paragraph(content[len(content) - tail_chars :])
+
+    # Counted BEFORE fence repair. Repair inserts characters that were never in
+    # the answer, so measuring the kept slices afterwards would credit them as
+    # retained content and under-report the loss -- the same netting error the
+    # returned count exists to avoid.
+    dropped = len(content) - len(head) - len(tail)
+
+    # Balanced independently, and only after the budget has been reserved for
+    # it (FENCE_REPAIR_RESERVE): an unbalanced fence in either piece makes
+    # everything after it render, and read, as code.
+    head = _balance_code_fences(head)
+    if tail.count("```") % 2:
+        tail = "```\n" + tail
+
+    elided = KB_QA_ANSWER_ELIDED_TEMPLATE.format(dropped=dropped)
+    return head + elided + tail + end_marker, dropped
+
+
+# Most a paragraph realignment may spend to land on a clean boundary.
+#
+# Bounded in absolute characters rather than as a share of the slice, because
+# the cost being traded is answer text and the benefit is cosmetic. A share --
+# "up to a third" -- scales the cosmetic allowance with the budget, so on the
+# standard 7,410 it could discard ~2,400 characters to tidy two seams, on
+# answers whose measured overflow was 540-1,249. A paragraph that does not
+# begin within this many characters is left cut mid-sentence, which the
+# markers on either side already explain.
+PARAGRAPH_REALIGN_MAX_CHARS = 400
+
+
+def _trim_head_to_paragraph(head: str) -> str:
+    """Back the head up to a line boundary, if one is cheaply reachable.
+
+    Paragraph first, then any line break. A runbook answer's most valuable
+    region is a fenced block or a numbered command list, and neither contains a
+    blank line -- so a paragraph-only search walks straight past the whole
+    block and leaves the seam mid-command (``kubectl get pod pod-01``, verb
+    intact, target truncated). A single newline is a real boundary there.
+    """
+    return _rewind_to_boundary(head, ("\n\n", "\n")).rstrip()
+
+
+def _trim_tail_to_paragraph(tail: str) -> str:
+    """Advance the tail to a line boundary, if one is cheaply reachable."""
+    for sep in ("\n\n", "\n"):
+        cut = tail.find(sep)
+        if 0 <= cut <= PARAGRAPH_REALIGN_MAX_CHARS:
+            return tail[cut:].lstrip()
+    return tail.lstrip()
+
+
+def _rewind_to_boundary(text: str, separators: tuple) -> str:
+    """Back *text* up to the nearest of *separators* within the realign bound."""
+    for sep in separators:
+        cut = text.rfind(sep)
+        if cut >= 0 and len(text) - cut <= PARAGRAPH_REALIGN_MAX_CHARS:
+            return text[:cut]
+    return text
+
+
+# Room held back so fence repair cannot push the result past the budget.
+# One opening fence for the tail and one closing fence for the head, each with
+# its newline -- repair adds at most one of each.
+#
+# Applied only when the content actually contains a fence (see the call site).
+# The reservation is otherwise pure loss: it is subtracted from the answer's
+# room whether or not repair fires, and for a KB answer with no fenced block it
+# never can.
+FENCE_REPAIR_RESERVE = len("\n```") + len("```\n")
+
+
+def _balance_code_fences(text: str) -> str:
+    """Close a fenced block the elide cut open.
+
+    The drop zone can contain the closing ``\u0060\u0060\u0060`` of a block whose opening
+    survived in the head, or the opening of one whose close survived in the
+    tail. Either way the relayed answer carries an unbalanced fence, and every
+    downstream reader -- the model asked to relay it, and the Dashboard
+    rendering the transcript as markdown -- then treats the rest of the answer
+    as code. Cheaper to close it than to reason about which side is short.
+    """
+    if text.count("```") % 2 == 0:
+        return text
+    return text + "\n```"
+
+
 class MilestoneEngine:
     """
     Data-Driven and Opportunistic Investigation Engine.
@@ -6229,6 +6445,15 @@ class MilestoneEngine:
                     # second increment -- the clip rate must stay a rate.
                     if not formatter_trimmed:
                         tool_result_truncated_total.labels(tool=metric_tool).inc()
+                    # Cut FIRST, then report, so the count is what the cut
+                    # actually destroyed rather than the overflow it started
+                    # from. Those diverged once kb_qa began eliding: the elide
+                    # spends markers and paragraph realignment on top of the
+                    # overflow. Both sites now report the same thing -- source
+                    # characters destroyed -- so the two can be summed.
+                    result_text, dropped_chars = self._truncate_tool_result(
+                        result_text, func_name
+                    )
                     # WARNING, not INFO: this discards content the model was
                     # meant to reason over, and the counters are no-ops unless
                     # ENABLE_METRICS -- which a standalone run does not set. The
@@ -6239,13 +6464,17 @@ class MilestoneEngine:
                             "tool": metric_tool,
                             "original_chars": original_chars,
                             "cap_chars": self.TOOL_RESULT_MAX_CHARS,
-                            "dropped_chars": (
-                                original_chars - self.TOOL_RESULT_MAX_CHARS
-                            ),
+                            "dropped_chars": dropped_chars,
+                            "at": "tool_loop",
+                            # True means this result was ALREADY cut and counted
+                            # at the formatter, and redaction pushed it back
+                            # over the cap. One physical clip, two records: any
+                            # aggregation that counts clips must drop these or
+                            # it double-counts exactly the tool the ceiling
+                            # question is about (#1088).
                             "after_formatter_trim": formatter_trimmed,
                         },
                     )
-                    result_text = self._truncate_tool_result(result_text, func_name)
 
                 # Append tool result message
                 messages.append(
@@ -7355,8 +7584,12 @@ class MilestoneEngine:
         return msg
 
     @classmethod
-    def _truncate_tool_result(cls, text: str, tool_name: str) -> str:
+    def _truncate_tool_result(cls, text: str, tool_name: str) -> tuple[str, int]:
         """Cut an oversized tool result to the cap, protecting a tail if it has one.
+
+        Returns the cut text and the number of *text* characters destroyed --
+        the same meaning the formatter's cut reports, so the two sites can be
+        aggregated into one number (#1088).
 
         This runs AFTER PII redaction, and that ordering is why the protection
         cannot live in the formatter alone. Redaction *expands* text: every
@@ -7372,16 +7605,40 @@ class MilestoneEngine:
         characters are preserved verbatim: that block is static instruction text
         containing no entity the redactor rewrites, so its length survives
         sanitisation and the slice still lands on the suffix.
+
+        Preserving the suffix is necessary and not sufficient. Everything
+        between the head and that suffix is the ANSWER, and cutting it
+        head-first here would undo the whole point of eliding its middle in the
+        formatter: the remediation steps and the ``Sources:`` line would go,
+        leaving a suffix that instructs the model to cite "the primary source
+        title(s) from the content above" with the source line gone -- the exact
+        failure #1088 fixed one step earlier. This path is not hypothetical: the
+        formatter sizes the answer to a budget that redaction then invalidates by
+        expanding it. So the answer between the wrapper is elided in the middle
+        here too, by the same helper, and only genuinely tail-less results (every
+        other tool) take the plain head-first cut.
         """
         cap = cls.TOOL_RESULT_MAX_CHARS
         marker = "\n[truncated]"
 
         protected = len(KB_QA_RELAY_SUFFIX) if tool_name == "kb_qa" else 0
         if protected and len(text) > protected + len(marker):
-            head = text[: cap - protected - len(marker)]
-            return head + marker + text[-protected:]
+            body = text[:-protected]
+            suffix = text[-protected:]
+            elided, dropped = _elide_answer_middle(body, cap - protected)
+            return elided + suffix, dropped
 
-        return text[:cap] + marker
+        # NOTE: this branch returns cap + len(marker) characters, i.e. 12 over
+        # the cap, while the kb_qa branch above fits inside it. That asymmetry
+        # is real and pre-dates this change -- ``test_milestone_engine_tool_loop``
+        # pins the looser bound explicitly, and #1090 pins this string
+        # byte-identical as its behaviour-unchanged guarantee. Tightening it
+        # would change what the model sees for every non-kb_qa tool, which is
+        # a behaviour change to paths this issue never measured; kb_qa is
+        # stricter because its formatter has to reserve the relay wrapper, not
+        # because the cap means something different here. Left alone
+        # deliberately (#1088).
+        return text[:cap] + marker, max(0, len(text) - cap)
 
     @staticmethod
     def _format_tool_result(result: Any, tool_name: str = "") -> str:
@@ -7402,23 +7659,35 @@ class MilestoneEngine:
             logger.info(f"kb_qa result: {len(content)} chars")
             prefix = KB_QA_RELAY_PREFIX
             suffix = KB_QA_RELAY_SUFFIX
-            # Reserve the wrapper before the generic cap can reach it. The
-            # truncation below keeps the HEAD of the result, so an oversized
-            # answer loses the TAIL — and the tail here is not prose, it is the
+            # Reserve the wrapper before the generic cap can reach it. That
+            # cap keeps the HEAD of whatever it is given, so an oversized
+            # result loses its TAIL — and the tail here is not prose, it is the
             # citation format plus "return via the schema tool, do not reply
             # with plain text". A long KB answer would therefore silently strip
             # the instructions that tell the model how to answer at all, which
-            # is the opposite of the intended failure. Trimming the ANSWER keeps
-            # both instructions intact and marks what was dropped.
+            # is the opposite of the intended failure. Reserving the wrapper
+            # and trimming the ANSWER keeps both instructions intact. How the
+            # answer itself is trimmed is a separate question, answered by
+            # _elide_answer_middle below: not head-first either.
             budget = MilestoneEngine.TOOL_RESULT_MAX_CHARS - len(prefix) - len(suffix)
             if len(content) > budget:
-                marker = KB_QA_ANSWER_TRUNCATED_MARKER
+                # Elide FIRST, then report. ``len(content) - budget`` was the
+                # true drop while the cut was a plain slice to the budget; the
+                # middle-elide also spends its two markers and its paragraph
+                # realignment, so that expression under-reports. So does a
+                # before/after length difference, which nets the inserted
+                # markers off the loss. The helper returns the count instead:
+                # ANSWER characters destroyed, the same meaning the loop's cut
+                # site reports, because ``dropped_chars`` is what the ceiling
+                # gets sized from (#1090) and it has to mean one thing.
+                original_chars_answer = len(content)
+                content, dropped_chars = _elide_answer_middle(content, budget)
                 logger.info(
                     "kb_qa answer trimmed to fit the tool-result budget",
                     extra={
-                        "original_chars": len(content),
+                        "original_chars": original_chars_answer,
                         "budget_chars": budget,
-                        "dropped_chars": len(content) - budget,
+                        "dropped_chars": dropped_chars,
                     },
                 )
                 # Feed this cut into the SAME counters the tool loop uses
@@ -7429,7 +7698,7 @@ class MilestoneEngine:
                 # the tool the ceiling question is about. Sized on the WRAPPED
                 # string, so the number is comparable with every other tool's,
                 # which is also measured wrapped and pre-cut.
-                wrapped_chars = len(prefix) + len(content) + len(suffix)
+                wrapped_chars = len(prefix) + original_chars_answer + len(suffix)
                 tool_result_chars.labels(tool="kb_qa").observe(wrapped_chars)
                 tool_result_truncated_total.labels(tool="kb_qa").inc()
                 logger.warning(
@@ -7438,11 +7707,10 @@ class MilestoneEngine:
                         "tool": "kb_qa",
                         "original_chars": wrapped_chars,
                         "cap_chars": MilestoneEngine.TOOL_RESULT_MAX_CHARS,
-                        "dropped_chars": len(content) - budget,
+                        "dropped_chars": dropped_chars,
                         "at": "formatter",
                     },
                 )
-                content = content[: budget - len(marker)] + marker
             return prefix + content + suffix
 
         # search_file results: append citation guidance so the LLM cites
