@@ -63,8 +63,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Distinct runbooks seeded per retrieval (top by rerank score). Retrieval has
-# already done the semantic case↔runbook alignment; this bounds fan-out.
+# Distinct runbooks seeded per retrieval (top by best matched-cause score).
+# Retrieval has already done the semantic case↔cause alignment; this bounds
+# fan-out.
 MAX_SEEDED_RUNBOOKS = 2
 
 # Total causes seeded per turn. Derived from the anchoring condition-1 threshold
@@ -109,7 +110,14 @@ _STEP_REF_PREFIX_RE = re.compile(r"^\s*\[Step\s+\d+\]\s*")
 
 @dataclass
 class SeededRunbook:
-    """A retrieved runbook with its loaded causes, ranked by retrieval score."""
+    """A retrieved runbook with the causes retrieval matched, best-scoring first.
+
+    ``causes`` is NOT the runbook's whole ``metadata["causes"]`` record: the
+    caller filters it to the causes whose chunk retrieval actually surfaced and
+    orders it by that retrieval score (``score`` is the best of them). Seeding
+    the full record in author order is the #1092 defect — it asserts causes the
+    query never matched.
+    """
 
     item_id: str
     score: float
@@ -384,8 +392,9 @@ def seed_candidate_causes(
     """Instantiate ranked runbook Cause chains as candidate graph nodes/hypotheses.
 
     ``runbooks`` are already ranked (best first) and their ``causes`` are the
-    verbatim ``metadata["causes"]`` records. Causes within a runbook are consumed
-    in author order (authored most-likely-first) — no bespoke re-scoring. Seeds
+    verbatim ``metadata["causes"]`` records the caller kept — the ones retrieval
+    matched — already ordered by that retrieval score. Causes are consumed in the
+    order given; this module applies no scoring of its own. Seeds
     at most ``max_runbooks`` runbooks and ``max_causes`` total causes. Idempotent
     against the existing graph: an identical-statement cause reuses its node
     (``ingest_emitted_chain`` dedup) and never double-seeds a root that already
