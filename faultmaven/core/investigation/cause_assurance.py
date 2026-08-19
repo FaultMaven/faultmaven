@@ -780,9 +780,10 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
       disproof must not veto the user's confirmation of the standing cause.
     - Otherwise all validated roots (the weak-model chain-without-hypothesis
       shape). Several candidate nodes either way are first collapsed to
-      DISTINCT causes (§7.1.2 ``distinct_cause_clusters``: duplicate emissions
-      and same-causal-line roots are ONE cause — the ancestor-most member is
-      the cited origin); with several distinct causes remaining (an
+      DISTINCT causes (§7.1.2 ``distinct_cause_clusters``: duplicate emissions,
+      same-causal-line roots and co-necessary M7 conjuncts are ONE cause — the
+      ancestor-most member is the cited origin); with several distinct causes
+      remaining (an
       unarbitrated MECE violation) the engine never guesses which cause the
       fix removed — the case stays MECHANISTIC pending arbitration.
     - With NO validated root at all: the COUNT-HELD roots (§7.1/INV-29 —

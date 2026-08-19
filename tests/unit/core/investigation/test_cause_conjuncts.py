@@ -30,6 +30,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CausalEdge,
     CausalNode,
+    CauseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -416,3 +417,164 @@ def test_both_mint_sites_build_the_same_chain():
     assert cause_assurance._conjuncts_for_root(case, root, hyp) == conjuncts_for_chain(
         case, hyp
     )
+
+
+# ---------------------------------------------------------------------------
+# §7.1.2 arbitration — a conjunction is not a differential (#1096, second half)
+#
+# #1102 taught the prompt to model a two-condition cause as an AND-set, and the
+# renderer to name the whole conjunction. The arbitration lane still read S2
+# literally — "roots are mutually-exclusive origins, at most one can be the
+# cause" — so two VALIDATED conjuncts registered as a MECE contest: no
+# cause_state=IDENTIFIED (hence no M5 solution license), no conclusion minted at
+# all, and a refused resolution confirm-stamp. Modelling the cause correctly was
+# worse than compressing it into one node, which is what the reported case did.
+# ---------------------------------------------------------------------------
+
+
+def _hypothesis_for(case, d, node_id: str, statement: str, hyp_id: str) -> None:
+    """Give a conjunct its own standing hypothesis — the shape that arises when
+    the investigation tests each condition as its own theory. Only a STANDING
+    hypothesis's root can enter the contest, so this is what exposes it."""
+    case.hypotheses[hyp_id] = Hypothesis(
+        hypothesis_id=hyp_id,
+        statement=statement,
+        category=HypothesisCategory.CONFIG,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="tested as its own theory",
+        root_node_id=node_id,
+        path=[node_id, _M, d.node_id],
+        generated_at_turn=1,
+    )
+
+
+def test_co_necessary_conjuncts_are_not_a_mece_contest():
+    """Both conditions proven is the CORRECT end state for a conjunction, not
+    the "several simultaneously-proven exclusive causes" a hold exists to catch.
+    Without this the engine held identification on the very shape it asks for."""
+    from faultmaven.core.investigation.causal_graph import (
+        distinct_cause_clusters,
+        mece_contested_root_ids,
+    )
+
+    case, d = _conjunction_case()
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+
+    assert case.causal_nodes[_A].node_state == NodeState.VALIDATED
+    assert case.causal_nodes[_B].node_state == NodeState.VALIDATED
+    assert distinct_cause_clusters(case, {_A, _B}) == [{_A, _B}]
+    assert mece_contested_root_ids(case) == set()
+    # ...and the consequences that hung off the hold: identification stands and
+    # the conclusion is minted, naming the whole conjunction.
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.root_cause_conclusion is not None
+    assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+def test_a_conjunction_does_not_refuse_the_resolution_confirm_stamp():
+    """The stamp arbitrates before citing a root: two conjuncts read as two
+    distinct causes made it refuse, so a correctly-modelled two-factor cause
+    could never reach the CONFIRMED grade (and harvest stayed blocked)."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+        evidence_category_map,
+        root_counterfactually_confirmed,
+    )
+
+    case, d = _conjunction_case()
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+
+    case.evidence.append(
+        Evidence(
+            evidence_id=_eid("resolution_absence"),
+            summary=(
+                "after the fix the cache is bounded and the limit restored; "
+                "the OOM crash-loop signature is gone"
+            ),
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="llm",
+            collected_at_turn=8,
+            collected_at=datetime.now(timezone.utc),
+        )
+    )
+    case.current_turn = 8
+
+    assert confirm_root_from_resolution_absence(case) is True
+    cat_by_id = evidence_category_map(case)
+    # ONE member of the conjunction carries the citation (the stamp cites a
+    # single origin by design); cluster-wide idempotence makes that the
+    # CAUSE's confirmation, and the conjunct is still named on the conclusion.
+    assert root_counterfactually_confirmed(case.causal_nodes[_A], cat_by_id)
+    assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+def test_independent_alternatives_still_contest():
+    """The guard this must not blunt: without ``and_group`` the two roots are
+    competing explanations, and two of them simultaneously validated is exactly
+    the coherence violation §7.1.2 holds identification on."""
+    from faultmaven.core.investigation.causal_graph import mece_contested_root_ids
+
+    case, d = _conjunction_case(and_group=None)
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+
+    assert mece_contested_root_ids(case) == {_A, _B}
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+
+
+def test_a_blank_and_group_does_not_fuse_competing_causes():
+    """Legacy rows carry ``and_group=""`` (unreachable by the ingest guard). A
+    blank key names no group, so it must not merge a real differential into one
+    cluster and silently retire the hold."""
+    from faultmaven.core.investigation.causal_graph import mece_contested_root_ids
+
+    case, d = _conjunction_case(and_group=None)
+    for edge in case.causal_edges:
+        if edge.effect_node_id == _M:
+            edge.and_group = ""
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+
+    assert mece_contested_root_ids(case) == {_A, _B}
+
+
+def test_an_and_set_beside_an_independent_alternative_still_contests():
+    """The merge is of the CONJUNCTS only. "A and B together" versus "C" is a
+    genuine differential, and the engine must still refuse to pick."""
+    from faultmaven.core.investigation.causal_graph import (
+        distinct_cause_clusters,
+        mece_contested_root_ids,
+    )
+
+    case, d = _conjunction_case()
+    rival_id = "cn_0000000000ff"
+    rival = _node(
+        rival_id, "an unrelated broker outage drops the orders", supports=["c1", "c2"]
+    )
+    case.causal_nodes[rival_id] = rival
+    case.evidence += [_evidence("c1"), _evidence("c2")]
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=rival_id, effect_node_id=d.node_id)
+    )
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    case.hypotheses["hyp_0000000000cc"] = Hypothesis(
+        hypothesis_id="hyp_0000000000cc",
+        statement=rival.statement,
+        category=HypothesisCategory.EXTERNAL,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="rival",
+        root_node_id=rival_id,
+        path=[rival_id, d.node_id],
+        generated_at_turn=1,
+    )
+    _recompute_cause_state_from_chain(case)
+
+    assert distinct_cause_clusters(case, {_A, _B, rival_id}) == [{_A, _B}, {rival_id}]
+    assert mece_contested_root_ids(case) == {_A, _B, rival_id}
+    assert case.progress.cause_state != CauseState.IDENTIFIED

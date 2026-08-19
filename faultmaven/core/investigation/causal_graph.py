@@ -1812,6 +1812,26 @@ def _cluster_relations(case: Case, root_ids) -> tuple[list, dict]:
     return members, desc
 
 
+def _co_necessary_sets(edges: list[CausalEdge]) -> list[list[str]]:
+    """The graph's AND-sets: each is the list of causes sharing one
+    ``(effect_node_id, and_group)`` — co-necessary for that effect (M7).
+
+    Only genuine sets (>1 member) are returned; a lone member names a
+    conjunction of one, which is just an ordinary cause. Read through
+    ``incoming_and_groups`` so the blank-key normalization ("" is not a group)
+    keeps its single home — a legacy row with ``and_group=""`` must not fuse
+    independent alternatives into one cause here any more than it may satisfy
+    the M7 gate.
+    """
+    effects = {e.effect_node_id for e in edges or [] if e.and_group is not None}
+    sets: list[list[str]] = []
+    for effect_id in sorted(effects):
+        for key, cause_ids in incoming_and_groups(effect_id, edges).items():
+            if key is not None and len(cause_ids) > 1:
+                sets.append(cause_ids)
+    return sets
+
+
 def _distinct_cause_partition(case: Case, root_ids) -> tuple[list, dict]:
     """One relations pass behind §7.1.2: (clusters, live-descendant map).
     Shared by ``distinct_cause_clusters`` and ``sole_cluster_origin`` so the
@@ -1841,6 +1861,23 @@ def _distinct_cause_partition(case: Case, root_ids) -> tuple[list, dict]:
             lo, hi = (ra, rb) if ra < rb else (rb, ra)
             parent[hi] = lo
 
+    # CO-NECESSITY (M7) — an AND-set is a CONJUNCTION, not a differential.
+    # S2's "at most one root can be the cause" holds between OR-alternatives;
+    # co-necessary causes are the explicit counterexample, and their
+    # simultaneous validation is the correct end state rather than a coherence
+    # violation. Without this the engine punished exactly the shape the prompt
+    # asks for on a two-condition cause (#1096): two validated conjuncts read as
+    # a MECE contest, which holds identification (no cause_state=IDENTIFIED, so
+    # no M5 solution license), asserts no conclusion at all, and refuses the
+    # resolution confirm-stamp — leaving the case unable to reach CONFIRMED. The
+    # exclusion lane already draws this line (``_survivor_or_sets`` builds its
+    # differential from ``and_group is None`` edges only); §7.1.2 was the lane
+    # that missed it.
+    for and_set in _co_necessary_sets(case.causal_edges):
+        in_scope = sorted(rid for rid in and_set if rid in parent)
+        for other in in_scope[1:]:
+            _union(in_scope[0], other)
+
     for i, a in enumerate(members):
         for b in members[i + 1 :]:
             if (
@@ -1868,9 +1905,16 @@ def distinct_cause_clusters(case: Case, root_ids) -> list[set[str]]:
       full" is one line of explanation at two depths, not a differential (S2
       competition is between ORIGINS, not between a cause and its own
       consequence). A path through a REFUTED rung does NOT connect: the link
-      is disproven, so the endpoints are genuine competitors.
+      is disproven, so the endpoints are genuine competitors; or
+    - they are CO-NECESSARY — members of one AND-set (M7), sharing an
+      ``(effect, and_group)``. A conjunction is ONE cause carrying two
+      conditions, so both conjuncts standing validated is the correct end
+      state, not the "several simultaneously-proven exclusive causes" a MECE
+      hold exists to catch (#1096). Strictly a merge of the CONJUNCTS: an
+      AND-set beside an independent alternative is still a real differential,
+      and union-find keeps those in separate clusters.
 
-    Grouping is the transitive closure (connected components) of those two
+    Grouping is the transitive closure (connected components) of those
     relations, iterated in sorted-id order so the result is order-invariant
     across dict/DB orderings. A root whose statement yields no content tokens
     merges with nothing on the mirror relation — conservative by design: an
@@ -1926,10 +1970,12 @@ def mece_contested_root_ids(case: Case) -> set:
       grounds ``cause_state=IDENTIFIED`` (``any_chain_root_validated``) and the
       same standing preference the confirm-stamp applies: an orphan validated
       node whose hypothesis decayed never contests the standing cause.
-    - Duplicates and same-LIVE-causal-line roots collapse first
-      (``distinct_cause_clusters``): a duplicate emission is not a
-      differential, and holding on one would deadlock — no evidence can ever
-      discriminate a statement from its own restatement (NO-COLLAPSE).
+    - Duplicates, same-LIVE-causal-line roots and CO-NECESSARY conjuncts
+      collapse first (``distinct_cause_clusters``): a duplicate emission is not
+      a differential, and holding on one would deadlock — no evidence can ever
+      discriminate a statement from its own restatement (NO-COLLAPSE); an M7
+      AND-set is one cause carrying two conditions, and no evidence can
+      discriminate between conditions the graph holds as both required.
     - A counterfactually CONFIRMED root (M2 top grade, engine-only producer)
       settles the contest outright: the gone⇒gone confirmation IS the
       discrimination, so validated siblings never hold a proven cause hostage.

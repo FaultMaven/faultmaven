@@ -661,6 +661,18 @@ counting):
   broken chain are genuine competitors. (This is deliberately stricter than
   the INV-30 bearing-frame walk, which renders a chain's *recorded*
   mechanism refuted rungs and all.)
+- **A CONJUNCTION** — two roots co-necessary for the same effect (one M7
+  AND-set, sharing an `(effect, and_group)`) are ONE cause carrying two
+  conditions, not a differential. S2's "at most one root can be the cause"
+  ranges over OR-alternatives; an AND-set is the explicit counterexample, so
+  both conjuncts standing VALIDATED is the correct end state rather than a
+  failure to discriminate. The exclusion lane already draws this line
+  (`_survivor_or_sets` builds its differential from `and_group is None` edges
+  only). Only the conjuncts merge: an AND-set beside an independent
+  alternative is still a real contest. Without this the engine punished the
+  very shape §5 asks for on a two-condition cause — holding identification
+  (so no M5 solution license), asserting no conclusion, and refusing the
+  resolution confirm-stamp (#1096).
 - **A counterfactually confirmed root** (§7.2 top grade, engine-only
   producer) settles the contest outright: the gone⇒gone confirmation IS the
   discrimination, so validated siblings never hold a proven cause hostage.
