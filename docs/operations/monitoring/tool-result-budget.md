@@ -86,10 +86,28 @@ the wrapped string. The example above is the 7,729-character answer observed in
 grep tool_result_truncated api.log
 
 # Per-tool clip count and total characters discarded.
+#
+# Deduplicated, and that filter is load-bearing in two ways.
+# A kb_qa answer the formatter trimmed can be re-inflated past the cap by
+# redaction and cut again, emitting a SECOND record for one physical clip:
+# unfiltered, this over-counts those answers in both columns. (The Prometheus
+# counters are protected from that by the marker anchor; this log aggregation
+# is not.)
+#
+# `dropped_chars` means the same thing at both sites -- SOURCE characters
+# destroyed by the cut, not the overflow that preceded it and not the
+# before/after length difference, which would net the inserted markers off the
+# loss. It is comparable across tools and summable.
 grep -h tool_result_truncated api.log \
-  | jq -r '[.tool, .dropped_chars] | @tsv' \
+  | jq -r 'select(.after_formatter_trim != true) | [.tool, .dropped_chars] | @tsv' \
   | awk '{n[$1]++; d[$1]+=$2} END {for (t in n) print t, n[t], d[t]}'
 ```
+
+> The filter keys on `after_formatter_trim`, not on `at`. `at` says *which site
+> cut* (`formatter` or `tool_loop`) and both are real cuts worth seeing;
+> `after_formatter_trim` says *this result was already counted at the other
+> site*, which is the property that makes a record a duplicate. Drop the filter
+> to see second cuts deliberately.
 
 `WARNING` rather than `INFO`: the event discards content the model was meant to
 reason over. It is also the only surface available on a run without
@@ -183,6 +201,17 @@ question the instrumentation was added to answer.
 | `kb_qa` | 5 | 3 | **60%** | 540, 655, 1249 chars |
 | `search_file` | 3 | 0 | 0% | — |
 
+> **These overflows are censored lower bounds, not a demand distribution.**
+> The run predates #1094: synthesis was capped at `SYNTHESIS_MAX_TOKENS` (2000)
+> with no retry, and three of the five answers sit within a few percent of what
+> 2000 tokens can write. What was measured is therefore *how far past the relay
+> budget a 2000-token-capped answer reached*, not how long the answer wanted to
+> be. The true overflow is **at least** 540–1249 characters and may be
+> materially larger — #1094 now retries once at up to 4000 tokens, so a
+> post-#1094 run should be expected to show a wider band. `KB_QA_ANSWER_TAIL_SHARE`
+> was sized against these numbers and inherits the caveat; the mechanism does not
+> depend on the number being right, but anything that *does* must re-measure.
+
 Two things follow.
 
 **The global cap binds one tool.** Every clip in the run was `kb_qa`, and every
@@ -193,22 +222,42 @@ that are not alike" concern is real, but in the direction of the cap being
 sized for the tools that already work around it and binding only the one that
 does not.
 
-**The measurement gap above closed, and it closed against the cost argument.**
-The recurring half — `agent_response` length and its share of persisted
-history — is measurable directly from a real case. Over the 8 assistant turns
-of the observed case:
+**The measurement gap above narrowed. It did not close the way a first pass
+suggested.** The recurring half — `agent_response` length and its share of
+persisted history — has three regimes, not one, and only the third is bounded:
+
+| when | path | copy-through cost |
+|---|---|---|
+| case has ≤ `HISTORY_VERBATIM_TURNS` (3) turns | `_build_verbatim_history` | **full length, no truncation call at all** |
+| response ≤ `HISTORY_AGENT_TRUNCATE_THRESHOLD` (600) | `_smart_truncate_agent_response` returns it unchanged | **identity** |
+| response > 600 on the graduated path | first + marker + last, trimmed | **bounded, ~≤900** |
+
+`_build_verbatim_history` (`context_builder.py:2039-2057`) appends
+`f"{role}: {content}\n"` with no truncation of any kind, so a KB answer relayed
+on turn 1 is replayed at full length in the prompts for turns 2, 3 and 4. KB
+lookups concentrate in exactly those early turns — all five in the observed run
+fell in turns 1–5 — so for the first three prompts of a case the cost scales
+**1:1 with what the model copied through**.
+
+Measured on the graduated path only, over the 8 assistant turns of the observed
+case:
 
 | raw `agent_response` | 705 | 1199 | 1367 | 1828 | 2165 | 2485 | 2932 | 4739 |
 |---|---|---|---|---|---|---|---|---|
-| **as replayed in history** | 738 | 762 | 826 | 632 | 406 | 413 | 725 | 182 |
+| **`_smart_truncate_agent_response`** | 738 | 762 | 826 | 632 | 406 | 413 | 725 | 182 |
 
-`_smart_truncate_agent_response` collapses every one of them into a
-182–826-character band, and the output is **uncorrelated with the input**: a
-4739-character response costs 182 characters of history, a 705-character one
-costs 738. The copy-through cost of a KB answer is therefore *invariant to how
-large the KB answer was*, and raising the relay ceiling would not move it. The
-recurring-cost objection does not survive being measured — the cost of a bigger
-relay is one turn's tool message, intra-turn, already bounded twice.
+That is the third regime and it is genuinely bounded — the bound, ~≤900, is
+what the argument needs. It is *not* evidence of being uncorrelated with input,
+which was an extrapolation from a function measured outside the path that calls
+it.
+
+So the honest statement is narrower than "the objection does not survive". What
+survives: the tool message itself is intra-turn and bounded twice, and the
+copy-through is bounded above by what the **model** chooses to write, which in
+the observed run compressed 5.2–8.7 KB answers into 1.2–2.9 KB responses. What
+does not survive: any claim that the copy-through is invariant to the answer's
+size. It is replayed whole for three prompts before any banding starts. Size
+that regime before moving the ceiling.
 
 **What was changed, and what was not.** Neither constant moved. The clip is not
 principally a ceiling problem: the synthesizer was never told the ceiling

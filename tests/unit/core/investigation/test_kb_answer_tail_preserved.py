@@ -23,6 +23,7 @@ tool, and it binds it on 3 answers in 5.
 """
 
 import logging
+import re
 
 import pytest
 
@@ -77,6 +78,26 @@ def _runbook_answer(total_chars: int) -> str:
     return head + filler + tail
 
 
+def _split_retained(relayed: str) -> tuple:
+    """The surviving head and tail of the answer, markers stripped."""
+    body = relayed[len(KB_QA_RELAY_PREFIX) : -len(KB_QA_RELAY_SUFFIX)]
+    if body.endswith(KB_QA_ANSWER_TRUNCATED_MARKER):
+        body = body[: -len(KB_QA_ANSWER_TRUNCATED_MARKER)]
+    head, _, tail = body.partition("[...")
+    tail = tail.split("...]", 1)[1] if "...]" in tail else ""
+    return head.rstrip(), tail.lstrip()
+
+
+def _retained_answer_chars(relayed: str, answer: str) -> int:
+    """Characters of *answer* still present in *relayed*, markers excluded."""
+    body = relayed[len(KB_QA_RELAY_PREFIX) : -len(KB_QA_RELAY_SUFFIX)]
+    if body.endswith(KB_QA_ANSWER_TRUNCATED_MARKER):
+        body = body[: -len(KB_QA_ANSWER_TRUNCATED_MARKER)]
+    head, _, tail = body.partition("[...")
+    tail = tail.split("...]", 1)[1] if "...]" in tail else ""
+    return len(head.rstrip()) + len(tail.lstrip())
+
+
 def _relayed(answer: str) -> str:
     return MilestoneEngine._format_tool_result(
         ToolResult(success=True, data=answer), tool_name="kb_qa"
@@ -129,6 +150,12 @@ def test_the_marker_tells_the_model_the_middle_is_missing():
 
     assert "elided from the middle" in relayed
     assert "characters elided" in relayed
+    # Deliberately hedged: an answer can arrive already cut by the provider
+    # (#1094), and ``truncation.TRUNCATION_NOTICE`` then says it "stops
+    # mid-answer". A marker asserting this IS the end would contradict that
+    # notice inside the same string.
+    assert "the END of the answer" not in relayed
+    assert "as it was received" in relayed
 
 
 def test_trimmed_result_still_fits_the_engine_cap():
@@ -186,7 +213,7 @@ def test_the_post_redaction_cut_also_keeps_the_tail():
         len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
     ), "test setup must actually push the result past the cap"
 
-    out = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+    out, _ = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
 
     assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS
     assert out.endswith(KB_QA_RELAY_SUFFIX), "the relay instructions were cut"
@@ -203,9 +230,11 @@ def test_the_post_redaction_cut_also_keeps_the_tail():
 def test_reported_dropped_chars_is_what_was_actually_removed(caplog):
     """The dashboard aggregates this field to size the ceiling.
 
-    While the cut was a plain slice to the budget, ``len(content) - budget`` was
-    exactly what went. The middle-elide also spends its two markers and its
-    paragraph realignment, so the old expression under-reports.
+    Two wrong answers are available and both look plausible.
+    ``len(content) - budget`` is the overflow, not the loss -- the elide also
+    spends its markers and its realignment. A before/after length difference is
+    closer but nets the INSERTED markers off the loss, under-reporting by their
+    combined length. The number has to be source characters destroyed.
     """
     answer = _runbook_answer(OVERSIZED)
 
@@ -216,26 +245,205 @@ def test_reported_dropped_chars_is_what_was_actually_removed(caplog):
     assert records, "the truncation was not reported at all"
     reported = records[-1].dropped_chars
 
-    actual = len(answer) - (
-        len(relayed) - len(KB_QA_RELAY_PREFIX) - len(KB_QA_RELAY_SUFFIX)
+    # Recover the surviving head and tail by splitting on the inline marker.
+    body = relayed[len(KB_QA_RELAY_PREFIX) : -len(KB_QA_RELAY_SUFFIX)]
+    body = body[: -len(KB_QA_ANSWER_TRUNCATED_MARKER)]
+    head, _, tail = body.partition("[...")
+    tail = tail.split("...]", 1)[1]
+    retained = len(head.rstrip()) + len(tail.lstrip())
+
+    assert reported == len(answer) - retained, (
+        f"reported {reported} dropped characters; {len(answer) - retained} "
+        f"characters of the answer are absent from the relayed result"
     )
-    assert (
-        reported == actual
-    ), f"reported {reported} dropped characters but {actual} were removed"
+    assert reported > len(answer) - (
+        len(relayed) - len(KB_QA_RELAY_PREFIX) - len(KB_QA_RELAY_SUFFIX)
+    ), "the count still nets the inserted markers off the loss"
 
 
-def test_the_trim_does_not_spend_the_budget_on_tidy_seams():
-    """Paragraph realignment is cosmetic; the characters it costs are answer.
+def test_the_inline_marker_states_the_same_number_that_is_logged():
+    """The model reads this number and the dashboard aggregates the other.
 
-    Bounding the realignment in absolute characters rather than as a share of
-    the slice keeps that cost from scaling with the budget.
+    Nothing structural keeps them equal, and a wrong one is invisible: the
+    marker is prose to every reader downstream.
+    """
+    answer = _runbook_answer(OVERSIZED)
+
+    relayed = _relayed(answer)
+
+    stated = int(
+        re.search(r"\[\.\.\. ([\d,]+) characters elided", relayed)
+        .group(1)
+        .replace(",", "")
+    )
+    assert stated > 0, "the marker claims nothing was elided"
+    assert stated == len(answer) - _retained_answer_chars(relayed, answer)
+
+
+def test_the_opening_gets_at_least_as_much_room_as_the_closing():
+    """The docstring promises the opening survives; nothing pinned it.
+
+    ``KB_QA_ANSWER_TAIL_SHARE`` reserves the tail, so raising it silently eats
+    the head — at 0.9 the framing and the first diagnostic steps are gone while
+    every other assertion here still passes. Stated as an ordering rather than
+    a number so it constrains the share without restating it.
+    """
+    answer = _runbook_answer(OVERSIZED)
+
+    relayed = _relayed(answer)
+    head, tail = _split_retained(relayed)
+
+    assert len(head) >= len(tail), (
+        f"the surviving head is {len(head)} characters against a {len(tail)} "
+        f"character tail — the answer's opening is being spent on its closing"
+    )
+    assert answer[:60] in relayed, "the answer's first line did not survive"
+
+
+def test_the_reserved_tail_can_hold_a_whole_remediation_section():
+    """A tail share can be too small as easily as too large.
+
+    ``KB_QA_ANSWER_TAIL_SHARE`` exists to hold a remediation section AND the
+    source line, not just the last paragraph — at 0.05 the ordering assertion
+    above still holds while the reserved tail shrinks to a few hundred
+    characters, too small for the procedure's conclusion on a real answer.
     """
     relayed = _relayed(_runbook_answer(OVERSIZED))
+    _, tail = _split_retained(relayed)
+
+    assert len(tail) >= 1200, (
+        f"only {len(tail)} characters of the answer's ending survive — too "
+        f"little for a remediation section plus its source line"
+    )
+
+
+def test_a_seam_inside_a_command_list_lands_on_a_line_boundary():
+    """Command lists and fenced blocks contain no blank line.
+
+    A realignment that searches only for a paragraph break therefore walks
+    straight past the whole block and leaves the seam mid-command — the verb
+    kept, its target truncated — which reads as a real, wrong instruction
+    rather than as a visible cut.
+
+    Unfenced deliberately: inside a fence the balancing pass appends a closing
+    ``\u0060\u0060\u0060``, which would make the last line look clean whatever the seam did.
+    """
+    step = "1. Run `kubectl set resources deploy/checkout-api --limits=memory=1536Mi`"
+    answer = (
+        "## Diagnose\n\nThe container was OOMKilled.\n\n"
+        + "Background filler paragraph about cache retention.\n\n" * 40
+        + (step + "\n") * 100  # the head seam falls inside this list
+        + "\nMore background.\n\n" * 40
+        + "## Remediation\n\n1. `"
+        + REMEDIATION_COMMAND
+        + "`\n\n"
+        + SOURCE_LINE
+    )
+    assert len(answer) > _answer_budget(), "test setup must overflow"
+
+    relayed = _relayed(answer)
+    head, _ = _split_retained(relayed)
+    last_line = head.rstrip().rsplit("\n", 1)[-1]
+
+    assert last_line == step or last_line.endswith("."), (
+        f"the head seam landed mid-line on {last_line!r} — a truncated command "
+        f"reads as an instruction, not as a cut"
+    )
+
+
+def test_the_tail_seam_also_resumes_on_a_line_boundary():
+    """Both seams cut through the answer; both need the same boundary search.
+
+    The tail's is the one that matters more — it resumes immediately before the
+    remediation steps, so a mid-line start there hands the model a fragment of
+    a command as the first thing it reads after the elision marker.
+    """
+    step = "3. Apply `kubectl set resources deploy/checkout-api --limits=memory=2Gi`"
+    answer = (
+        "## Diagnose\n\nThe container was OOMKilled.\n\n"
+        + "Background filler paragraph about cache retention.\n\n" * 60
+        + (step + "\n") * 60  # the tail seam falls inside this list
+        + "\n## Remediation\n\n1. `"
+        + REMEDIATION_COMMAND
+        + "`\n\n"
+        + SOURCE_LINE
+    )
+    assert len(answer) > _answer_budget(), "test setup must overflow"
+
+    relayed = _relayed(answer)
+    _, tail = _split_retained(relayed)
+    first_line = tail.lstrip().split("\n", 1)[0]
+
+    assert first_line == step or first_line.startswith(("#", "1.", "Sources:")), (
+        f"the tail seam resumed mid-line on {first_line!r} — the first thing "
+        f"the model reads after the elision is a command fragment"
+    )
+
+
+def test_realignment_does_not_rewind_through_a_long_unbroken_run():
+    """The seam bound is what stops realignment eating answer text.
+
+    Written against an absolute number rather than against
+    ``PARAGRAPH_REALIGN_MAX_CHARS``, because a test phrased in terms of the
+    constant it guards cannot detect that constant changing — at 4000 the
+    original form of this assertion still passed.
+
+    The seams are placed inside long runs with no line breaks at all, which is
+    what a realignment search actually walks back through; densely paragraphed
+    filler hides the cost because a boundary is always a few characters away.
+    """
+    budget = _answer_budget()
+    run = "unbroken diagnostic prose without any line break at all. " * 60
+    answer = (
+        "## Diagnose\n\nFirst line of the answer.\n\n"
+        + run  # swallows the head seam
+        + "\n\n"
+        + "Background filler paragraph.\n\n" * 20
+        + run  # swallows the tail seam
+        + "\n\n## Remediation\n\n1. `"
+        + REMEDIATION_COMMAND
+        + "`\n\n"
+        + SOURCE_LINE
+    )
+    assert len(answer) > budget, "test setup must overflow"
+
+    relayed = _relayed(answer)
 
     unused = MilestoneEngine.TOOL_RESULT_MAX_CHARS - len(relayed)
-    assert unused <= 2 * PARAGRAPH_REALIGN_MAX_CHARS, (
-        f"{unused} characters of the cap went unused after trimming — the "
-        f"realignment is discarding answer text to tidy two seams"
+    assert unused <= 800, (
+        f"{unused} characters of the cap went unused — realignment rewound "
+        f"through a long unbroken run, discarding answer text to tidy a seam"
+    )
+
+
+def test_an_elide_through_a_fenced_block_leaves_the_fences_balanced():
+    """An unbalanced fence makes everything after it read, and render, as code.
+
+    The drop zone can hold the close of a block opened in the head, or the open
+    of one closed in the tail. Both leave the relayed answer with an odd fence
+    count, which the model asked to relay it and the Dashboard rendering the
+    transcript both take literally.
+    """
+    budget = _answer_budget()
+    answer = (
+        "## Diagnose\n\n```bash\n"
+        + "kubectl get pod checkout-api-0 -o yaml\n" * 200  # fence opens, closes late
+        + "```\n\n"
+        + "Background filler paragraph.\n\n" * 60
+        + "```bash\n"
+        + "kubectl set resources deploy/checkout-api --limits=memory=1536Mi\n" * 80
+        + "```\n\n## Remediation\n\n1. `"
+        + REMEDIATION_COMMAND
+        + "`\n\n"
+        + SOURCE_LINE
+    )
+    assert len(answer) > budget, "test setup must overflow"
+
+    relayed = _relayed(answer)
+
+    assert relayed.count("```") % 2 == 0, (
+        "the elide left an unbalanced code fence; everything after it reads as "
+        "code to the model and renders as code in the transcript"
     )
 
 
@@ -248,7 +456,7 @@ def test_a_degenerate_budget_still_produces_something_that_fits(budget):
     characters, thousands over the cap rather than under it. Reachable by the
     wrapper edit the branch exists to survive.
     """
-    out = _elide_answer_middle("A" * 9000, budget)
+    out, _ = _elide_answer_middle("A" * 9000, budget)
 
     assert len(out) <= max(
         budget, len(KB_QA_ANSWER_TRUNCATED_MARKER)
@@ -267,7 +475,64 @@ def test_a_twice_cut_answer_carries_one_marker_not_two():
         len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
     ), "setup must re-cross the cap"
 
-    out = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+    out, _ = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
 
     assert out.count(KB_QA_ANSWER_TRUNCATED_MARKER) == 1
     assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS
+
+
+def test_fence_repair_cannot_push_the_result_past_the_budget():
+    """Repair inserts characters, so its room has to be reserved, not borrowed.
+
+    Found by property testing rather than inspection, and pinned the same way,
+    because a single hand-picked answer does not hit it: repair adds at most 8
+    characters and paragraph realignment usually leaves more slack than that.
+    Only answers whose seams both land inside fenced blocks AND whose
+    realignment happens to land tight overflow the cap — 8 sizes in this
+    2000-wide sweep, by 1–2 characters each.
+    """
+    unit = "```bash\nkubectl get pod checkout-api-0 -o yaml\n"
+    over = []
+
+    for n in range(7400, 9400, 7):
+        answer = ("## Diagnose\n\n" + unit * 300)[:n]
+        relayed = _relayed(answer)
+        if len(relayed) > MilestoneEngine.TOOL_RESULT_MAX_CHARS:
+            over.append((n, len(relayed) - MilestoneEngine.TOOL_RESULT_MAX_CHARS))
+
+    assert not over, (
+        f"fence repair pushed {len(over)} of these answers past the cap "
+        f"(worst: {max(o[1] for o in over)} characters over) — its room is "
+        f"being borrowed from the answer's budget instead of reserved"
+    )
+
+
+def test_the_dropped_count_excludes_characters_repair_inserted():
+    """Repair adds text that was never in the answer.
+
+    Counting the kept slices after repair credits those inserted characters as
+    retained content, under-reporting the loss — the same netting error the
+    returned count exists to avoid, reintroduced by a later step.
+    """
+    fenced = "```bash\nkubectl get pod checkout-api-0 -o yaml\n" * 400
+    answer = "## Diagnose\n\n" + fenced + "\n\n" + SOURCE_LINE
+
+    _, dropped = _elide_answer_middle(answer, _answer_budget())
+
+    assert 0 < dropped <= len(answer)
+    assert dropped >= len(answer) - _answer_budget()
+
+
+@pytest.mark.parametrize("slack", [0, 1, 500])
+def test_content_that_already_fits_is_returned_untouched(slack):
+    """The helper must be total: both callers gate on overflow, the next may not.
+
+    With a budget above the content the head and tail slices overlap, so the
+    result duplicated text and the dropped count went negative.
+    """
+    content = "A" * 1000
+
+    out, dropped = _elide_answer_middle(content, len(content) + slack)
+
+    assert out == content
+    assert dropped == 0

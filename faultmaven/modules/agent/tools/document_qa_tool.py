@@ -62,6 +62,27 @@ SYNTHESIS_MAX_TOKENS = 2000
 # answer. Doubling once buys the answer its normal room back; it does not
 # license routinely writing twice the relay allowance.
 SYNTHESIS_MAX_TOKENS_CEILING = SYNTHESIS_MAX_TOKENS * 2
+# Left at 2x deliberately, against the obvious objection (#1088 review).
+#
+# The objection is sound as far as it goes: 4000 tokens is ~16.4K characters
+# against a ~7.4K relay budget, so a retry that runs to the ceiling bills
+# roughly 2K tokens the elide will certainly discard. The tempting fix is to
+# clamp this to what the relay can carry -- about
+# ``KB_ANSWER_RELAY_CHARS / 3.9`` ~= 1790 tokens.
+#
+# That fix does not do what it looks like. ``generate_with_truncation_retry``
+# computes ``retry_cap = min(max_tokens * 2, ceiling)`` and returns the partial
+# response untouched when ``retry_cap <= max_tokens``. Any ceiling at or below
+# SYNTHESIS_MAX_TOKENS therefore does not shrink the retry -- it removes it,
+# silently, restoring the #1094 failure this constant exists to recover from
+# (an answer starved to 54 visible tokens by hidden reasoning). Trading a
+# bounded waste on a rare path for no recovery at all on that same path is a
+# bad exchange, and an invisible one.
+#
+# The waste is also self-limiting from the other side now: the synthesis prompt
+# states its allowance (``KB_ANSWER_RELAY_CHARS``), so answers that would have
+# run to the cap increasingly stop before it, and a retry fires less often.
+# ``test_kb_synthesis_budget.py`` pins that this ceiling still permits a retry.
 
 # Character allowance the answer is TOLD it has, so it can spend it deliberately.
 #

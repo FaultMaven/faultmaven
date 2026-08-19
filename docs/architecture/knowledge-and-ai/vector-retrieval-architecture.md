@@ -278,6 +278,23 @@ a plain cut at the full cap — so `KBConfig.answer_char_allowance` returns
 `None` there and the length rule is simply not stated. A KB states a number
 only when it has one.
 
+**Open, and deliberately not answered here:** a case-evidence answer that
+overflows the cap still loses its conclusion to a head-first cut. The stated
+reason for leaving it that way is that evidence answers are forensic extracts
+rather than procedures, so their tail is not privileged the way a runbook's
+remediation is — but that is a rationale, not a measurement. Nothing has
+observed the case-evidence clip rate or checked answer quality either side of
+the cut, which is what was done for `kb_qa` before changing it. The
+per-tool metrics from #1090 would answer the first half.
+
+**The tail share is sized against censored data.** `KB_QA_ANSWER_TAIL_SHARE`
+was chosen so the observed 540–1249-character overflows fell inside the middle.
+Those observations predate #1094: synthesis was capped at 2000 tokens with no
+retry, and three of the five answers sit within a few percent of what 2000
+tokens can write, so the overflows are lower bounds on demand rather than
+measurements of it. The mechanism does not depend on the number — the elide
+fires whatever the overflow — but re-measure before treating 0.35 as tuned.
+
 Answers do reach this ceiling in practice. Observed synthesis answers run 5,261–7,729 characters, and the longest of those was truncated by the engine rather than by the token budget. Whether 8,000 characters is the right allowance for a runbook procedure inside the investigation context is a separate question from the budget's internal coherence, and remains open.
 
 **The relevance gate, and how its threshold is set.** `UnifiedKBConfig.relevance_threshold` (0.5, cosine) refuses synthesis when no retrieved chunk clears it, so the synthesizer is never asked to ground an answer in chunks that merely share vocabulary — the canonical case being a ZooKeeper query landing on Kafka chunks via "leader election". Evidence retrieval opts out (`CaseEvidenceConfig` returns `None`): for forensic analysis the closest available content is always worth returning.

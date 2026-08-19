@@ -149,7 +149,7 @@ def test_relay_tail_survives_redaction_growth_past_the_cap():
         len(grown) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
     ), "test setup must actually push the result past the cap"
 
-    out = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
+    out, _ = MilestoneEngine._truncate_tool_result(grown, "kb_qa")
 
     assert len(out) <= MilestoneEngine.TOOL_RESULT_MAX_CHARS
     assert out.endswith(
@@ -165,10 +165,15 @@ def test_other_tools_keep_plain_head_truncation():
     tools already budget themselves against this cap; silently relocating their
     cut would change what the model sees for reasons unrelated to this fix.
     """
-    out = MilestoneEngine._truncate_tool_result("X" * 9000, "search_file")
+    out, dropped = MilestoneEngine._truncate_tool_result("X" * 9000, "search_file")
 
     assert out.startswith("X" * 100)
     assert out.endswith("[truncated]")
+    # cap + marker, not cap: this branch appends the marker on top of a
+    # cap-length slice. Pre-existing and pinned byte-identical by #1090; kb_qa
+    # is stricter only because its formatter reserves the relay wrapper.
+    assert len(out) == MilestoneEngine.TOOL_RESULT_MAX_CHARS + len("\n[truncated]")
+    assert dropped == 9000 - MilestoneEngine.TOOL_RESULT_MAX_CHARS
     assert KB_QA_RELAY_SUFFIX not in out
 
 
@@ -305,3 +310,43 @@ async def test_case_evidence_answers_are_not_told_the_kb_relay_allowance():
         "the case-evidence answer was given a length allowance derived from a "
         "relay wrapper its results never pass through"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_retry_ceiling_still_permits_a_retry():
+    """A ceiling at or below the budget removes the retry rather than shrinking it.
+
+    ``generate_with_truncation_retry`` returns the partial untouched when
+    ``min(max_tokens * 2, ceiling) <= max_tokens``. So the natural-looking fix
+    for "the retry generates tokens the relay discards" — clamp the ceiling to
+    what the relay can carry, about ``KB_ANSWER_RELAY_CHARS / 3.9`` ≈ 1790 —
+    silently reinstates the #1094 starvation failure instead of bounding it.
+    Pinned because the failure mode is invisible: nothing errors, the answer is
+    just quietly short.
+    """
+    from faultmaven.infrastructure.llm.truncation import (
+        generate_with_truncation_retry,
+    )
+    from faultmaven.modules.agent.tools.document_qa_tool import (
+        SYNTHESIS_MAX_TOKENS_CEILING,
+    )
+
+    caps: list = []
+
+    async def call(max_tokens: int):
+        caps.append(max_tokens)
+        return SimpleNamespace(content="partial", is_truncated=len(caps) == 1)
+
+    await generate_with_truncation_retry(
+        call,
+        max_tokens=SYNTHESIS_MAX_TOKENS,
+        ceiling=SYNTHESIS_MAX_TOKENS_CEILING,
+        label="test",
+    )
+
+    assert len(caps) == 2, (
+        f"a truncated synthesis was not retried: ceiling "
+        f"{SYNTHESIS_MAX_TOKENS_CEILING} against budget {SYNTHESIS_MAX_TOKENS} "
+        f"leaves no room, so the helper returns the partial instead"
+    )
+    assert caps[1] > caps[0]
