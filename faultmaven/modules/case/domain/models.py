@@ -21,6 +21,7 @@ Architecture:
 """
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
@@ -4130,6 +4131,71 @@ class WorkingConclusion(BaseModel):
     )
 
 
+# =============================================================================
+# RootCauseConclusion display contract (#1097)
+#
+# Two of the conclusion's fields are rendered VERBATIM to users — by the
+# resolution summary, and (for the mechanism) into any runbook harvested from
+# the case. Before #1097 both carried engine-internal notation: ``established_by``
+# held the id-bearing audit line the confirm-stamp writes onto its node link,
+# and ``mechanism`` ended with the graph's synthetic PROBLEM terminal.
+#
+# The producers are fixed at the source, but terminal cases NEVER recompute, so
+# every case resolved before that keeps the internal form in the stored row.
+# These normalize at the read, and live here — beside the model whose fields
+# they describe — so the report and the runbook conversion share one definition
+# without either taking a dependency on the investigation engine.
+# =============================================================================
+
+CONFIRMED_ESTABLISHED_BY = (
+    "confirmation that the problem was resolved, together with evidence "
+    "that this cause was no longer present"
+)
+"""The prose provenance of a counterfactually confirmed cause — the two legs of
+the promotion (the user's handshake, and evidence the cause was gone with the
+problem) without the evidence/node ids or the M2 grade shorthand, which mean
+nothing outside the engine. The engine's confirm-stamp writes this; its
+id-bearing audit twin goes on the node's evidence-link reasoning."""
+
+# Engine ids are a fixed prefix plus 12 hex and cannot occur in the prose form,
+# so this identifies a pre-#1097 row exactly rather than by heuristic.
+_ENGINE_ID_IN_PROSE = re.compile(r"\b(?:ev|cn)_[0-9a-f]{12}\b")
+
+_MECHANISM_PROBLEM_TAIL = " → the problem"
+
+
+def established_by_for_display(stored: Optional[str]) -> Optional[str]:
+    """What a reader should see for ``RootCauseConclusion.established_by``.
+
+    A stored value carrying engine ids is, by construction, the old
+    confirm-stamp provenance — that path was the field's ONLY writer — so it is
+    replaced with the prose form of the SAME fact rather than suppressed: the
+    provenance is real and worth stating, only its rendering was wrong.
+
+    Anything else, including an empty value, passes through untouched.
+    """
+    if stored and _ENGINE_ID_IN_PROSE.search(stored):
+        return CONFIRMED_ESTABLISHED_BY
+    return stored
+
+
+def mechanism_for_display(stored: Optional[str]) -> Optional[str]:
+    """What a reader should see for ``RootCauseConclusion.mechanism``.
+
+    Strips the trailing synthetic PROBLEM node. The arrows BETWEEN rungs are
+    real content — they are the chain — so only the dangling terminal goes: it
+    restated the surrounding heading ("How it produced the symptom") in the
+    graph's own notation.
+
+    Narrow on purpose: an exact suffix match, not an arrow-splitting rewrite, so
+    a mechanism whose last rung legitimately ends in those words is the only
+    false positive available, and losing it costs nothing.
+    """
+    if stored and stored.endswith(_MECHANISM_PROBLEM_TAIL):
+        return stored[: -len(_MECHANISM_PROBLEM_TAIL)]
+    return stored
+
+
 class RootCauseConclusion(BaseModel):
     """
     Final determination of root cause.
@@ -4209,8 +4275,14 @@ class RootCauseConclusion(BaseModel):
         max_length=500,
         description=(
             "PROVENANCE (#987): how this conclusion came to be established, in "
-            "human-readable form — e.g. 'user-confirmed resolution at turn 11; "
-            "causal-absence ev_47b2f3337ffc bears on root cn_29ff828f55b3'. "
+            "USER-FACING prose — e.g. 'confirmation that the problem was "
+            "resolved, together with evidence that this cause was no longer "
+            "present'. The resolution summary renders this verbatim, so it "
+            "carries NO evidence/node ids and no milestone shorthand; the "
+            "id-bearing audit form of the same promotion lives on the node's "
+            "evidence-link reasoning (#1097 — this description said "
+            "'human-readable' from the start and its own example did not obey "
+            "it, which is how the ids reached the user). "
             "Set when the engine PROMOTES a cause from confirmation plus "
             "evidence rather than from chain validation alone, so the "
             "structured record carries how it was established instead of a "

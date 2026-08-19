@@ -35,6 +35,7 @@ from faultmaven.core.investigation.causal_graph import (
 )
 from faultmaven.core.investigation.cause_assurance import ENGINE_EVIDENCE_AUTHOR
 from faultmaven.modules.case.contracts import (
+    CONFIRMED_ESTABLISHED_BY,
     Case,
     CaseSeverity,
     CaseState,
@@ -722,10 +723,25 @@ def test_resolved_case_truth_surfaces_agree_with_the_confirmed_cause():
     assert case.progress.cause_assurance == CauseAssuranceGrade.CONFIRMED
     assert case.root_cause_conclusion is not None
     assert case.root_cause_conclusion.root_cause == _TRUE_ROOT
-    # ...and the record carries HOW it was established, not a bare assertion.
+    # ...and the record carries HOW it was established, not a bare assertion —
+    # on BOTH surfaces, in the form each audience needs (#1097). The conclusion
+    # is rendered to a user, so it carries prose; the durable node link is the
+    # audit trail, so it keeps the turn and the ids that make the promotion
+    # reconstructible.
     established = case.root_cause_conclusion.established_by
-    assert established and "user-confirmed resolution at turn 11" in established
-    assert "ev_47b2f3337ffc" in established
+    assert established == CONFIRMED_ESTABLISHED_BY
+    audit = [
+        link.reasoning
+        for link in root.evidence_links
+        if link.stance == EvidenceStance.SUPPORTS
+    ]
+    assert any(
+        r and "user-confirmed resolution at turn 11" in r and "cn_" in r
+        # The CITED row is named there too — that is what makes the promotion
+        # reconstructible, and it is why the ids belong on this surface.
+        and "ev_47b2f3337ffc" in r
+        for r in audit
+    )
 
 
 # ---------------------------------------------------------------------------

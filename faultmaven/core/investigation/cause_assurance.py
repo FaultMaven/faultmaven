@@ -33,6 +33,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     absence_row_link_refused_total,
 )
 from faultmaven.modules.case.contracts import (
+    CONFIRMED_ESTABLISHED_BY,
     CauseAssuranceGrade,
     ConfidenceLevel,
     EvidenceCategory,
@@ -711,16 +712,40 @@ def _confirmation_provenance(case: "Case", root: "CausalNode", evidence_id: str)
     provenance; destructive transitions require established preconditions.* The
     confirm-stamp is constructive — it promotes a cause the user explicitly
     confirmed — so what it owes is not a stricter gate but an honest record of
-    WHY the promotion happened. Written onto both the durable node link
-    (``reasoning``) and the conclusion (``established_by``), so a reader of
-    either surface can see that the cause rests on the user's handshake plus a
-    named causal-absence row rather than on a bare engine assertion.
+    WHY the promotion happened.
+
+    This is the AUDIT form, written onto the durable node link (``reasoning``).
+    It names the row and the node so the promotion can be reconstructed from
+    the record; those ids are the point of it.
+
+    It is NOT what the user reads. ``RootCauseConclusion.established_by`` is
+    rendered verbatim into the resolution summary, so it takes the prose form
+    from ``_confirmation_established_by`` below. One string cannot serve both:
+    #987 wrote this one onto both surfaces, and the ids and the "M2 gone⇒gone"
+    shorthand reached the user as debug output (#1097).
     """
     return (
         f"engine: user-confirmed resolution at turn {case.current_turn} — "
         f"causal-absence {evidence_id} bears on root {root.node_id} "
         f"(M2 gone⇒gone)"
     )[:500]
+
+
+def _confirmation_established_by() -> str:
+    """The same provenance as above, for the surface a USER reads (#1097).
+
+    Says what the two legs of the promotion were — the user's confirmation that
+    the problem was resolved, and evidence that the cause was gone with it —
+    without the evidence/node ids or the M2 grade shorthand, which mean nothing
+    outside the engine and read as a broken product in a report.
+
+    Takes no arguments deliberately: everything that varies between cases here
+    is an internal identifier, so there is nothing case-specific left to say
+    once those are gone. The report renders it as
+    "_Established by: {…}._", and the assurance note above it is suppressed for
+    a CONFIRMED cause, so this is the one line carrying how the cause was held.
+    """
+    return CONFIRMED_ESTABLISHED_BY
 
 
 # Graph hooks — inversion seam. ``causal_graph`` (the higher layer: it imports
@@ -735,6 +760,7 @@ def register_graph_hooks(
     support_count_held_root_ids,
     derive_node_states,
     sole_cluster_origin,
+    mechanism_for_chain,
     project_hypothesis_states_from_roots,
     conjuncts_for_chain,
 ) -> None:
@@ -742,6 +768,7 @@ def register_graph_hooks(
     _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
     _GRAPH_HOOKS["derive"] = derive_node_states
     _GRAPH_HOOKS["sole_cluster_origin"] = sole_cluster_origin
+    _GRAPH_HOOKS["mechanism"] = mechanism_for_chain
     _GRAPH_HOOKS["project_hyp_states"] = project_hypothesis_states_from_roots
     _GRAPH_HOOKS["and_conjuncts"] = conjuncts_for_chain
 
@@ -944,6 +971,9 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         return False
 
     provenance = _confirmation_provenance(case, root, absence_row.evidence_id)
+    # The node link carries the AUDIT form (ids); the conclusion carries the
+    # prose form, because the report renders it to the user verbatim (#1097).
+    established_by = _confirmation_established_by()
     root.evidence_links.append(
         NodeEvidenceLink(
             evidence_id=absence_row.evidence_id,
@@ -974,7 +1004,7 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         # the report/harvest layers to read. Mint the minimal faithful
         # mirror for the root the user just confirmed; an LLM-authored
         # conclusion, had one existed, is never touched.
-        _mint_confirmed_mirror(case, root, provenance)
+        _mint_confirmed_mirror(case, root, established_by)
     elif (
         getattr(rcc, "determined_by", None) == ENGINE_RCC_AUTHOR
         and prior_hyp is not None
@@ -990,9 +1020,9 @@ def confirm_root_from_resolution_absence(case: "Case") -> bool:
         # mirror shape the upgrade exists to prevent). LLM-authored
         # conclusions are never touched.
         case.root_cause_conclusion = None
-        _mint_confirmed_mirror(case, root, provenance)
+        _mint_confirmed_mirror(case, root, established_by)
     else:
-        _upgrade_engine_mirror(case, root, absence_row.evidence_id, provenance)
+        _upgrade_engine_mirror(case, root, absence_row.evidence_id, established_by)
     return True
 
 
@@ -1015,7 +1045,9 @@ def _conjuncts_for_root(case: "Case", root: "CausalNode", hyp) -> list[str]:
     return fn(case, hyp, root)
 
 
-def _mint_confirmed_mirror(case: "Case", root: "CausalNode", provenance: str) -> None:
+def _mint_confirmed_mirror(
+    case: "Case", root: "CausalNode", established_by: str
+) -> None:
     """Mint the engine conclusion mirror for a just-confirmed root when NO
     conclusion exists (the count-held-at-RESOLVED shape). Mechanism text
     follows the standing hypothesis's chain when one names this root (same
@@ -1023,10 +1055,12 @@ def _mint_confirmed_mirror(case: "Case", root: "CausalNode", provenance: str) ->
     degenerate mechanism. Confidence is grade-derived: the root is
     counterfactually CONFIRMED, so VERIFIED at the floor.
 
-    ``provenance`` records HOW the cause was established (#987) — this mint is
-    a promotion from the user's confirmation plus the cited absence row, not a
-    chain validation, and the conclusion must say so rather than assert the
-    cause bare."""
+    ``established_by`` records HOW the cause was established (#987) — this mint
+    is a promotion from the user's confirmation plus the cited absence row, not
+    a chain validation, and the conclusion must say so rather than assert the
+    cause bare. It is the PROSE form (``_confirmation_established_by``), not
+    the id-bearing audit line: the report renders this field verbatim (#1097).
+    """
     hyp = next(
         (
             h
@@ -1037,18 +1071,17 @@ def _mint_confirmed_mirror(case: "Case", root: "CausalNode", provenance: str) ->
         ),
         None,
     )
-    inter: list[str] = []
-    if hyp is not None:
-        inter = [
-            case.causal_nodes[nid].statement
-            for nid in (hyp.path or [])[1:-1]
-            if nid in case.causal_nodes
-        ]
+    # ONE mechanism builder, shared with the per-turn mirror via the graph hook
+    # (#1097) — two copies of this rule is what let the rendered field drift.
+    # Read defensively like every hook here: this sits on the unguarded
+    # RESOLVED-execution path, so a missing registration degrades to the
+    # degenerate mechanism rather than a KeyError that 500s the transition.
+    mechanism_fn = _graph_hooks().get("mechanism")
     mechanism = (
-        " → ".join(inter + ["the problem"])
-        if inter
+        mechanism_fn(case, hyp)
+        if mechanism_fn is not None and hyp is not None
         else "Directly produces the observed problem."
-    )[:2000]
+    )
     # The cause's co-necessary conjuncts (#1096), derived from the graph by the
     # same function the per-turn mirror uses — a conclusion minted HERE must
     # carry the whole conjunction for the same reason one minted there does.
@@ -1067,12 +1100,12 @@ def _mint_confirmed_mirror(case: "Case", root: "CausalNode", provenance: str) ->
         ],
         contributing_factors=conjuncts,
         determined_by=ENGINE_RCC_AUTHOR,
-        established_by=provenance,
+        established_by=established_by,
     )
 
 
 def _upgrade_engine_mirror(
-    case: "Case", root: "CausalNode", absence_evidence_id: str, provenance: str
+    case: "Case", root: "CausalNode", absence_evidence_id: str, established_by: str
 ) -> None:
     """Scoped re-mint at the stamp site: terminal cases never run the per-turn
     recompute (and ``terminal_transitions`` cannot import ``causal_graph``'s
@@ -1083,9 +1116,10 @@ def _upgrade_engine_mirror(
     fields. LLM-authored conclusions are never touched (their retraction and
     refresh lifecycle is a separate correction tracked on #656).
 
-    ``provenance`` (#987) records that the upgrade to VERIFIED rests on the
+    ``established_by`` (#987) records that the upgrade to VERIFIED rests on the
     user's confirmation plus the cited gone⇒gone row — the grade jump is a
-    promotion from confirmation, and the record says so."""
+    promotion from confirmation, and the record says so. Prose form: the report
+    renders this field verbatim to the user (#1097)."""
     rcc = case.root_cause_conclusion
     if rcc is None or getattr(rcc, "determined_by", None) != ENGINE_RCC_AUTHOR:
         return
@@ -1109,7 +1143,7 @@ def _upgrade_engine_mirror(
         # conclusion the report will ever read.
         contributing_factors=_conjuncts_for_root(case, root, hyp),
         determined_by=ENGINE_RCC_AUTHOR,
-        established_by=provenance,
+        established_by=established_by,
     )
 
 

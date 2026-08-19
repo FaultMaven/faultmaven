@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 import pytest
 
 from faultmaven.modules.case.domain.models import (
+    CONFIRMED_ESTABLISHED_BY,
     Case,
     CaseState,
     CausalNode,
@@ -226,6 +227,11 @@ async def test_established_by_provenance_is_rendered_under_root_cause():
     a cited absence row rather than from chain validation alone, the report says
     so. The assurance note grades how strongly the cause is held; this says how
     it came to be held — and a provenance field nothing reads is not provenance.
+
+    #1097 changed WHAT is rendered, not whether: this test used to assert the
+    id-bearing audit line reached the summary, which is the leak the issue was
+    filed on. The provenance is still rendered — restated in prose — and the
+    ids now live only on the node link, where they are the point.
     """
     case = _resolved_case(with_root=True, confirmed=True)
     # object.__setattr__: the fixture stamps closure_reason on a RESOLVED case,
@@ -247,8 +253,11 @@ async def test_established_by_provenance_is_rendered_under_root_cause():
     service = ReportGenerationService()
     summary = await service._generate_resolution_summary(case, {"duration": "2h"})
     assert "Established by:" in summary
-    assert "user-confirmed resolution at turn 11" in summary
-    assert "ev_47b2f3337ffc" in summary
+    assert CONFIRMED_ESTABLISHED_BY in summary
+    # The audit notation must not reach the reader (#1097).
+    assert "ev_47b2f3337ffc" not in summary
+    assert "cn_aaaaaaaaaaaa" not in summary
+    assert "gone⇒gone" not in summary
 
 
 @pytest.mark.asyncio

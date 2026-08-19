@@ -367,7 +367,12 @@ def test_flag_off_leaves_every_llm_shape_as_written(monkeypatch, shape):
 
 def test_mirror_renders_mechanism_from_the_chains_rung_statements():
     """The mirror's mechanism is the chain itself, joined rung by rung — the text
-    is a render of the graph, not prose carried over from the conclusion."""
+    is a render of the graph, not prose carried over from the conclusion.
+
+    The synthetic PROBLEM terminal is NOT part of it (#1097): it is the engine's
+    anchor rather than a mechanism step, and the report prints this under "How
+    it produced the symptom", so appending it restated the heading in the
+    graph's own arrow notation."""
     root = _node("cn_00000000000a", _ROOT_STATEMENT, support_labels=["ev_a1", "ev_a2"])
     rung = _node(
         "cn_00000000000e",
@@ -398,7 +403,7 @@ def test_mirror_renders_mechanism_from_the_chains_rung_statements():
 
     rcc = case.root_cause_conclusion
     assert rcc.determined_by == ENGINE_RCC_AUTHOR
-    assert rcc.mechanism == f"{rung.statement} → the problem"
+    assert rcc.mechanism == rung.statement
 
 
 def test_replacement_drops_llm_only_fields_rather_than_blending_them():

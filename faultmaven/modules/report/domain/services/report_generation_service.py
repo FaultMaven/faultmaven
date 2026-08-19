@@ -45,6 +45,8 @@ from faultmaven.modules.case.contracts import (
     ReportType,
     SolutionOutcome,
     classify_solution_outcome,
+    established_by_for_display,
+    mechanism_for_display,
 )
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -663,11 +665,18 @@ class ReportGenerationService:
             # how strongly the cause is held; this says how it came to be held.
             # Recorded and rendered together — a provenance field nothing reads
             # is not provenance, it is a comment in a database column.
-            established_by = getattr(rcc, "established_by", None)
+            # Normalized for display (#1097): terminal cases never recompute,
+            # so a case resolved before the audit/prose split still carries the
+            # id-bearing audit line in this field. Function-local import, the
+            # same report -> core.investigation precedent as _assurance_note.
+            established_by = established_by_for_display(
+                getattr(rcc, "established_by", None)
+            )
             if established_by:
                 parts.append(f"_Established by: {established_by}._\n")
-            if getattr(rcc, "mechanism", None):
-                parts.append(f"**How it produced the symptom:** {rcc.mechanism}\n")
+            mechanism = mechanism_for_display(getattr(rcc, "mechanism", None))
+            if mechanism:
+                parts.append(f"**How it produced the symptom:** {mechanism}\n")
             if getattr(rcc, "contributing_factors", None):
                 # The cause's co-necessary conjuncts (#1096) — engine-derived
                 # from the graph's AND-sets, so the heading states co-necessity
