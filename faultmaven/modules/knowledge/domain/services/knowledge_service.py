@@ -364,9 +364,11 @@ def _describe_unreadable(value: Any) -> str:
     """Name the SHAPE of an unusable metadata value, never its content."""
     kind = type(value).__name__
     try:
-        return f"{kind} of {len(value)} chars"
+        size = len(value)
     except TypeError:
         return kind
+    unit = "chars" if isinstance(value, (str, bytes, bytearray)) else "items"
+    return f"{kind} of {size} {unit}"
 
 
 def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:
@@ -1907,14 +1909,23 @@ class KnowledgeService:
                 # unusable are different, and the second is not ours to choose.
                 # The row stays stale and the sweep skips it (with its id), which
                 # is a loud, repeatable state rather than a silent one-way loss.
+                #
+                # Scoped to a TRUTHY unreadable value on purpose. A falsy one
+                # (JSONB holding ``0``/``false``/``""``/``[]``) is overwritten as
+                # before — nothing recoverable is in it, so refusing would cost a
+                # permanently unconvergeable row to preserve nothing. The
+                # principle is "do not destroy what might still be read", not
+                # "never write".
                 decoded = decode_json_blob(row.knowledge_metadata)
                 if decoded is None and row.knowledge_metadata:
                     logger.error(
                         "UNREADABLE KNOWLEDGE METADATA %s: refusing to record a "
                         "chunk stamp over it, because that would overwrite "
                         "whatever it holds. The row keeps its vectors and stays "
-                        "a restamp candidate; repair or clear its metadata by "
-                        "hand.",
+                        "retrievable, but NOTHING WILL RETRY THIS on its own — "
+                        "the restamp sweep skips unreadable rows for the same "
+                        "reason. Repair or clear that row's metadata by hand and "
+                        "it converges on the next boot.",
                         item_id,
                     )
                     return

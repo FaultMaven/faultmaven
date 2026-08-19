@@ -23,12 +23,18 @@ Usage:
 import json
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional
 from uuid import UUID
 
 
 def decode_json_blob(value: Any, *, copy: bool = False) -> Optional[Dict[str, Any]]:
-    """Decode a ``JsonBlob`` column value to a dict — the one implementation.
+    """Decode a ``JsonBlob`` column value to a dict.
+
+    The single implementation for the ``knowledge_items.metadata`` read
+    (fm#1107). It is NOT yet the only reader of a ``JsonBlob`` column anywhere —
+    the case module has its own for ``case_metadata``, ``inquiry``,
+    ``working_conclusion`` and others — so treat this as the home to converge on,
+    not a claim that convergence is finished.
 
     ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so what comes
     back depends on the backend AND on the writer:
@@ -60,8 +66,18 @@ def decode_json_blob(value: Any, *, copy: bool = False) -> Optional[Dict[str, An
     row (a PostgreSQL-only bug that never reproduces on SQLite, where the value
     is a string and every decode is naturally fresh).
 
-    This was three near-copies — in the KB bootstrap, the knowledge service, and
-    the item repository — each duplicated to avoid a layering violation
+    One deliberate widening over the three implementations this replaced: they
+    caught ``(JSONDecodeError, TypeError)``, so a ``bytes`` value that is not
+    valid UTF-8 raised ``UnicodeDecodeError`` (a ``ValueError``) straight out of
+    them; here it returns ``None`` like any other unusable value. Unreachable
+    through the columns this reads — ``Text``/``JSONB`` hand back ``str`` or
+    ``dict``, never raw bytes — but a decoder for a value that "might be
+    anything" should not have one shape that escapes as an exception, so the
+    behaviour is stated rather than left to be discovered.
+
+    This was three near-copies of the ``knowledge_items.metadata`` read — in the
+    KB bootstrap, the knowledge service, and the item repository — each
+    duplicated to avoid a layering violation
     (bootstrap and a domain service may not reach into a repository's private
     helpers, and the repository, being infrastructure, may not import the domain
     service: ``lint-imports`` contract 4). A neutral utility is the home that
