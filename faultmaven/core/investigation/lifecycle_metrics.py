@@ -767,3 +767,39 @@ kb_cause_ingest_check_failed_total = Counter(
     "that document went unchecked (fm#1103). Nonzero invalidates "
     "``kb_cause_unseedable_at_ingest_total`` until it returns to zero.",
 )
+
+
+# #1096 trust-grant observability. Since a conjunction is no longer a MECE
+# contest (§7.1.2), an ``and_group`` the model emits over two ALREADY-VALIDATED
+# rivals dissolves an arbitration hold: identification is granted, the
+# conjunction is published, and the resolution confirm-stamp unblocks. That is
+# the intended mechanism — the model authors causal structure everywhere else,
+# and demanding M7 proof before honoring the grouping would recreate the
+# deadlock the fix removes — but a stuck contest is exactly the state a model
+# has an incentive to escape, and the merge is MONOTONE, so there is no
+# take-back and no later turn at which the grant is re-examined.
+#
+# This counts the suspicious SEQUENCE specifically: the grouping arrived AFTER
+# both members were validated, rather than being emitted with the causes. A
+# conjunction modeled up front (the shape the prompt asks for) never increments
+# it. Non-zero is not proof of a hallucinated group — a genuine late
+# recognition looks identical from here — it is the population to audit.
+causal_and_set_late_grouping_total = Counter(
+    "faultmaven_causal_and_set_late_grouping_total",
+    "An ``and_group`` was added to an EXISTING edge and thereby joined two or "
+    "more already-VALIDATED causes of one effect (#1096) — the sequence that "
+    "can dissolve a standing MECE hold. One increment per completed AND-set.",
+)
+
+# The refusal twin of the above: a re-emission tried to move an edge to a
+# DIFFERENT group or clear its group, and was dropped (the merge is monotone).
+# The model then reasons over a graph shape it does not have, so the refusal
+# must leave a witness even though it never reaches the transcript
+# (``ingest_emitted_chain`` is pure and takes no metadata channel).
+causal_and_group_regroup_refused_total = Counter(
+    "faultmaven_causal_and_group_regroup_refused_total",
+    "A re-emitted edge tried to change or clear a standing ``and_group`` and "
+    "was refused (#1096; the grouping merge is monotone), labeled by "
+    "``attempt`` (regroup | ungroup).",
+    ["attempt"],
+)

@@ -18,6 +18,8 @@ import pytest
 
 from faultmaven.core.investigation.causal_graph import (
     conjuncts_for_chain,
+    incoming_and_groups,
+    ingest_emitted_chain,
     seed_problem_node,
     validated_and_conjuncts,
 )
@@ -30,6 +32,7 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CausalEdge,
     CausalNode,
+    CauseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
@@ -416,3 +419,381 @@ def test_both_mint_sites_build_the_same_chain():
     assert cause_assurance._conjuncts_for_root(case, root, hyp) == conjuncts_for_chain(
         case, hyp
     )
+
+
+# ---------------------------------------------------------------------------
+# §7.1.2 arbitration — a conjunction is not a differential (#1096, second half)
+#
+# #1102 taught the prompt to model a two-condition cause as an AND-set, and the
+# renderer to name the whole conjunction. The arbitration lane still read S2
+# literally — "roots are mutually-exclusive origins, at most one can be the
+# cause" — so two VALIDATED conjuncts registered as a MECE contest: no
+# cause_state=IDENTIFIED (hence no M5 solution license), no conclusion minted at
+# all, and a refused resolution confirm-stamp. Modelling the cause correctly was
+# worse than compressing it into one node, which is what the reported case did.
+# ---------------------------------------------------------------------------
+
+
+def _hypothesis_for(case, d, node_id: str, statement: str, hyp_id: str) -> None:
+    """Give a conjunct its own standing hypothesis — the shape that arises when
+    the investigation tests each condition as its own theory. Only a STANDING
+    hypothesis's root can enter the contest, so this is what exposes it."""
+    case.hypotheses[hyp_id] = Hypothesis(
+        hypothesis_id=hyp_id,
+        statement=statement,
+        category=HypothesisCategory.CONFIG,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="tested as its own theory",
+        root_node_id=node_id,
+        path=[node_id, _M, d.node_id],
+        generated_at_turn=1,
+    )
+
+
+def test_co_necessary_conjuncts_are_not_a_mece_contest():
+    """Both conditions proven is the CORRECT end state for a conjunction, not
+    the "several simultaneously-proven exclusive causes" a hold exists to catch.
+    Without this the engine held identification on the very shape it asks for."""
+    from faultmaven.core.investigation.causal_graph import (
+        distinct_cause_clusters,
+        mece_contested_root_ids,
+    )
+
+    case, d = _conjunction_case()
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+
+    assert case.causal_nodes[_A].node_state == NodeState.VALIDATED
+    assert case.causal_nodes[_B].node_state == NodeState.VALIDATED
+    assert distinct_cause_clusters(case, {_A, _B}) == [{_A, _B}]
+    assert mece_contested_root_ids(case) == set()
+    # ...and the consequences that hung off the hold: identification stands and
+    # the conclusion is minted, naming the whole conjunction.
+    assert case.progress.cause_state == CauseState.IDENTIFIED
+    assert case.root_cause_conclusion is not None
+    assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+def test_a_conjunction_does_not_refuse_the_resolution_confirm_stamp():
+    """The stamp arbitrates before citing a root: two conjuncts read as two
+    distinct causes made it refuse, so a correctly-modelled two-factor cause
+    could never reach the CONFIRMED grade (and harvest stayed blocked)."""
+    from faultmaven.core.investigation.cause_assurance import (
+        confirm_root_from_resolution_absence,
+        evidence_category_map,
+        root_counterfactually_confirmed,
+    )
+
+    case, d = _conjunction_case()
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+
+    case.evidence.append(
+        Evidence(
+            evidence_id=_eid("resolution_absence"),
+            summary=(
+                "after the fix the cache is bounded and the limit restored; "
+                "the OOM crash-loop signature is gone"
+            ),
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="llm",
+            collected_at_turn=8,
+            collected_at=datetime.now(timezone.utc),
+        )
+    )
+    case.current_turn = 8
+
+    assert confirm_root_from_resolution_absence(case) is True
+    cat_by_id = evidence_category_map(case)
+    # ONE member of the conjunction carries the citation (the stamp cites a
+    # single origin by design); cluster-wide idempotence makes that the
+    # CAUSE's confirmation, and the conjunct is still named on the conclusion.
+    assert root_counterfactually_confirmed(case.causal_nodes[_A], cat_by_id)
+    assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+def test_independent_alternatives_still_contest():
+    """The guard this must not blunt: without ``and_group`` the two roots are
+    competing explanations, and two of them simultaneously validated is exactly
+    the coherence violation §7.1.2 holds identification on."""
+    from faultmaven.core.investigation.causal_graph import mece_contested_root_ids
+
+    case, d = _conjunction_case(and_group=None)
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+
+    assert mece_contested_root_ids(case) == {_A, _B}
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+
+
+def test_a_blank_and_group_does_not_fuse_competing_causes():
+    """Legacy rows carry ``and_group=""`` (unreachable by the ingest guard). A
+    blank key names no group, so it must not merge a real differential into one
+    cluster and silently retire the hold."""
+    from faultmaven.core.investigation.causal_graph import mece_contested_root_ids
+
+    case, d = _conjunction_case(and_group=None)
+    for edge in case.causal_edges:
+        if edge.effect_node_id == _M:
+            edge.and_group = ""
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+
+    assert mece_contested_root_ids(case) == {_A, _B}
+
+
+def test_an_and_set_beside_an_independent_alternative_still_contests():
+    """The merge is of the CONJUNCTS only. "A and B together" versus "C" is a
+    genuine differential, and the engine must still refuse to pick."""
+    from faultmaven.core.investigation.causal_graph import (
+        distinct_cause_clusters,
+        mece_contested_root_ids,
+    )
+
+    case, d = _conjunction_case()
+    rival_id = "cn_0000000000ff"
+    rival = _node(
+        rival_id, "an unrelated broker outage drops the orders", supports=["c1", "c2"]
+    )
+    case.causal_nodes[rival_id] = rival
+    case.evidence += [_evidence("c1"), _evidence("c2")]
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=rival_id, effect_node_id=d.node_id)
+    )
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    case.hypotheses["hyp_0000000000cc"] = Hypothesis(
+        hypothesis_id="hyp_0000000000cc",
+        statement=rival.statement,
+        category=HypothesisCategory.EXTERNAL,
+        state=HypothesisState.ACTIVE,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="rival",
+        root_node_id=rival_id,
+        path=[rival_id, d.node_id],
+        generated_at_turn=1,
+    )
+    _recompute_cause_state_from_chain(case)
+
+    assert distinct_cause_clusters(case, {_A, _B, rival_id}) == [{_A, _B}, {rival_id}]
+    assert mece_contested_root_ids(case) == {_A, _B, rival_id}
+    assert case.progress.cause_state != CauseState.IDENTIFIED
+
+
+# ---------------------------------------------------------------------------
+# Reaching the AND-set at all — the two doors that closed before the graph
+# could hold a conjunction (review of the arbitration fix).
+# ---------------------------------------------------------------------------
+
+
+class _EmittedEdge:
+    """An explicit ``edges_to_add`` entry, duck-typed as the ingest reads it."""
+
+    def __init__(self, cause: str, effect: str, and_group: str | None):
+        self.cause = cause
+        self.effect = effect
+        self.and_group = and_group
+        self.reasoning = "co-necessary"
+
+
+def test_an_existing_edge_can_gain_an_and_group():
+    """Co-necessity is usually recognized AFTER the fact: the model proposes
+    two independent candidates and only later sees the problem needed both.
+    Expressing that means re-emitting the edges with a shared group, and the
+    flat idempotence drop left the AND-set half-formed — so no conjunction ever
+    existed to render, the #1096 factor loss through a second door."""
+    case, _d = _conjunction_case(and_group=None)
+    assert incoming_and_groups(_M, case.causal_edges) == {None: [_A, _B]}
+
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[_EmittedEdge(_A, _M, "g1"), _EmittedEdge(_B, _M, "g1")],
+        node_evidence=[],
+        current_turn=6,
+    )
+
+    assert incoming_and_groups(_M, case.causal_edges) == {"g1": [_A, _B]}
+    _recompute_cause_state_from_chain(case)
+    assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+def test_regrouping_is_monotone():
+    """An edge may go None -> group, never group -> another group (a silent
+    regrouping of a standing conjunction) and never group -> None (a later
+    ungrouped restatement is not a retraction; treating it as one would make
+    the published conjunction flicker turn to turn)."""
+    case, _d = _conjunction_case()  # already grouped "g1"
+
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[_EmittedEdge(_A, _M, "g2"), _EmittedEdge(_B, _M, None)],
+        node_evidence=[],
+        current_turn=6,
+    )
+
+    assert incoming_and_groups(_M, case.causal_edges) == {"g1": [_A, _B]}
+
+
+def test_an_over_long_and_group_is_folded_to_fit_its_column():
+    """``causal_edges.and_group`` is String(64) while the field is unconstrained
+    at every layer above it, and the #1096 prompt invites a DESCRIPTIVE key. An
+    over-long one inserts fine on SQLite and raises on PostgreSQL — a
+    cloud-only failure of the case save."""
+    long_key = "memory-exhaustion-requires-unbounded-cache-and-reduced-memory-limit"
+    assert len(long_key) > 64
+
+    case, _d = _conjunction_case(and_group=None)
+    ingest_emitted_chain(
+        case,
+        nodes_to_add=[],
+        edges_to_add=[
+            _EmittedEdge(_A, _M, long_key),
+            _EmittedEdge(_B, _M, long_key),
+        ],
+        node_evidence=[],
+        current_turn=6,
+    )
+
+    groups = incoming_and_groups(_M, case.causal_edges)
+    (key,) = groups
+    assert len(key) <= 64
+    # Still ONE group: a fold that split the members would lose the AND-set.
+    assert sorted(groups[key]) == sorted([_A, _B])
+
+
+def test_the_fold_does_not_merge_distinct_long_keys():
+    """A plain truncation would make two long keys sharing a 64-char prefix one
+    group — the silent M7 strengthening the blank-key guard exists to prevent,
+    by another route. The fold is also a pure function of the key, so the same
+    logical group emitted a turn later normalizes to the same token."""
+    from faultmaven.core.investigation.causal_graph import _normalize_and_group
+
+    a = "memory-exhaustion-requires-unbounded-cache-and-reduced-memory-limit"
+    b = "memory-exhaustion-requires-unbounded-cache-and-reduced-cpu-quota-only"
+
+    assert _normalize_and_group(a) != _normalize_and_group(b)
+    assert _normalize_and_group(a) == _normalize_and_group(a)
+    assert _normalize_and_group("   ") is None
+    assert _normalize_and_group(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Observability of the trust grant (adversarial review of the arbitration fix).
+#
+# Since a conjunction is no longer a contest, an `and_group` emitted over two
+# ALREADY-VALIDATED rivals dissolves an arbitration hold — permanently, because
+# the merge is monotone. Honoring it is the intended design (the model authors
+# causal structure everywhere else), but the sequence must leave a trace.
+# ---------------------------------------------------------------------------
+
+
+def test_a_late_grouping_over_validated_rivals_is_counted():
+    """The suspicious sequence: both causes validate as rivals, and only THEN
+    does a grouping token arrive that makes them one conjunctive cause."""
+    from unittest.mock import patch
+
+    from faultmaven.core.investigation import causal_graph
+    from faultmaven.core.investigation.causal_graph import mece_contested_root_ids
+
+    case, d = _conjunction_case(and_group=None)
+    _hypothesis_for(case, d, _B, _LIMIT, "hyp_0000000000bb")
+    _recompute_cause_state_from_chain(case)
+    # They are rivals, and the engine is holding identification.
+    assert mece_contested_root_ids(case) == {_A, _B}
+
+    with patch.object(causal_graph, "causal_and_set_late_grouping_total") as ctr:
+        ingest_emitted_chain(
+            case,
+            nodes_to_add=[],
+            edges_to_add=[_EmittedEdge(_A, _M, "g1"), _EmittedEdge(_B, _M, "g1")],
+            node_evidence=[],
+            current_turn=6,
+        )
+        ctr.inc.assert_called_once()
+    # ...and the grant is real: the hold is gone.
+    _recompute_cause_state_from_chain(case)
+    assert mece_contested_root_ids(case) == set()
+
+
+def test_a_conjunction_modelled_up_front_is_not_counted():
+    """The counter must measure the SEQUENCE, not conjunctions. A cause modelled
+    as an AND-set when its nodes are emitted — the shape the prompt asks for —
+    has CANDIDATE members at edge time and never reaches the observer, so the
+    signal stays readable."""
+    from unittest.mock import patch
+
+    from faultmaven.core.investigation import causal_graph
+
+    with patch.object(causal_graph, "causal_and_set_late_grouping_total") as ctr:
+        case, _d = _conjunction_case()  # grouped at construction
+        _recompute_cause_state_from_chain(case)
+        ctr.inc.assert_not_called()
+
+    assert case.root_cause_conclusion.contributing_factors == [_LIMIT]
+
+
+def test_a_late_grouping_of_unvalidated_causes_is_not_counted():
+    """Nothing was dissolved: an AND-set completed over causes that had not
+    validated grants no identification, so it is not the audited population."""
+    from unittest.mock import patch
+
+    from faultmaven.core.investigation import causal_graph
+
+    case, _d = _conjunction_case(and_group=None, second_supports=("b1",))
+    case.causal_nodes[_A].evidence_links = []  # neither cause is established
+    _recompute_cause_state_from_chain(case)
+    assert case.causal_nodes[_A].node_state != NodeState.VALIDATED
+
+    with patch.object(causal_graph, "causal_and_set_late_grouping_total") as ctr:
+        ingest_emitted_chain(
+            case,
+            nodes_to_add=[],
+            edges_to_add=[_EmittedEdge(_A, _M, "g1"), _EmittedEdge(_B, _M, "g1")],
+            node_evidence=[],
+            current_turn=6,
+        )
+        ctr.inc.assert_not_called()
+
+
+def test_a_refused_regroup_leaves_a_witness():
+    """The refusal never reaches the transcript (ingest is pure and has no
+    system_feedback channel), so the model goes on reasoning over a grouping the
+    graph does not have. That divergence has to be visible somewhere."""
+    from unittest.mock import call, patch
+
+    from faultmaven.core.investigation import causal_graph
+
+    case, _d = _conjunction_case()  # standing group "g1"
+    with patch.object(causal_graph, "causal_and_group_regroup_refused_total") as ctr:
+        ingest_emitted_chain(
+            case,
+            nodes_to_add=[],
+            edges_to_add=[_EmittedEdge(_A, _M, "g2"), _EmittedEdge(_B, _M, None)],
+            node_evidence=[],
+            current_turn=6,
+        )
+        # Both refusal shapes are distinguishable in the metric.
+        assert ctr.labels.call_args_list == [
+            call(attempt="regroup"),
+            call(attempt="ungroup"),
+        ]
+    # The refusal stands — the graph is unchanged.
+    assert incoming_and_groups(_M, case.causal_edges) == {"g1": [_A, _B]}
+
+
+def test_a_numeric_and_group_is_honored_and_a_boolean_is_not():
+    """``and_group: 1`` is plausible JSON from a model numbering its groups, and
+    the key is an opaque identity token — discarding it loses a conjunction and
+    gains nothing. ``and_group: true`` is the field mistaken for a flag, and
+    honoring it would group everything that made the same mistake."""
+    from faultmaven.core.investigation.causal_graph import _normalize_and_group
+
+    assert _normalize_and_group(1) == "1"
+    assert _normalize_and_group(2) != _normalize_and_group(1)
+    assert _normalize_and_group(True) is None
+    assert _normalize_and_group(["g1"]) is None
+    assert _normalize_and_group({"k": "v"}) is None
