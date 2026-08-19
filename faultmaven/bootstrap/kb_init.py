@@ -610,9 +610,6 @@ async def _restamp_stale_rows(
     Returns the item_ids restamped this boot.
     """
     from faultmaven.infrastructure.persistence.models import KnowledgeItemModel
-    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
-        _row_metadata,
-    )
 
     current = chunk_stamp_identity()
     try:
@@ -633,7 +630,7 @@ async def _restamp_stale_rows(
             for item_id, metadata, is_published in rows
             if is_published
             and not _BUILTIN_ITEM_ID_RE.match(item_id or "")
-            and _row_metadata(metadata).get("chunk_stamp") != current
+            and _decode_metadata(metadata).get("chunk_stamp") != current
         ]
     except Exception as e:
         logger.warning(f"KB restamp skipped: could not select stale rows: {e}")
