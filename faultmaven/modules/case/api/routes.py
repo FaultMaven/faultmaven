@@ -346,7 +346,135 @@ INCOMPLETE_ENDINGS = {
     "if",
     "when",
     "while",
+    # Subordinating conjunctions and the remaining common prepositions. The set
+    # above was already reaching for the whole closed class; these are the
+    # members it had not needed until the cut started being MOVED to a boundary
+    # rather than merely tested at one (#1098) — "…OOM Killed Since" and
+    # "…Degraded Because" read exactly as broken as "…Has Been".
+    "since",
+    "until",
+    "unless",
+    "although",
+    "though",
+    "because",
+    "than",
+    "as",
+    "whether",
+    "where",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "nor",
+    "per",
+    "via",
+    "onto",
+    "toward",
+    "towards",
+    "beyond",
+    "behind",
+    "below",
+    "above",
+    "among",
+    "around",
+    "along",
+    "beside",
+    "besides",
+    "despite",
+    "except",
+    "inside",
+    "outside",
+    "near",
+    "throughout",
+    "versus",
 }
+
+# Words ending in "ly" that are NOT manner adverbs, so they may legitimately end
+# a title ("Latency Anomaly", "Log Supply"). Everything else ending in "ly" is
+# treated as an adverb modifying a verb that the cut removed — "…Has Been
+# Repeatedly" (#1098). The allowlist is the safe direction to be wrong in: a
+# noun wrongly classed as an adverb costs one word off the title, because the
+# walk-back simply continues to the next boundary; an adverb wrongly kept
+# persists a title that reads broken in the report's most prominent line.
+LY_NOT_ADVERB = {
+    "anomaly",
+    "assembly",
+    "apply",
+    "ally",
+    "supply",
+    "reply",
+    "family",
+    "only",
+    "early",
+    "daily",
+    "hourly",
+    "weekly",
+    "monthly",
+    "quarterly",
+    "yearly",
+    "friendly",
+    "likely",
+    "costly",
+    "deadly",
+    "timely",
+    "orderly",
+    "ugly",
+    "holy",
+    "poly",
+    "rally",
+    "tally",
+    "policy",
+}
+
+
+def _word_can_end_title(word: str) -> bool:
+    """Can this word be the LAST word of a title without reading mid-phrase?
+
+    Two classes cannot: the closed-class connectives already enumerated in
+    ``INCOMPLETE_ENDINGS`` (articles, prepositions, conjunctions, auxiliaries,
+    modals, determiners, pronouns), and manner adverbs, which modify a verb the
+    cut removed. Adverbs are detected morphologically rather than listed, so a
+    word the list never anticipated is still caught (#1098).
+    """
+    bare = word.lower().strip(".,!?;:\"'()[]")
+    if not bare:
+        return False
+    if bare in INCOMPLETE_ENDINGS:
+        return False
+    if bare.endswith("ly") and bare not in LY_NOT_ADVERB:
+        return False
+    return True
+
+
+def truncate_title_at_phrase_boundary(
+    words: List[str], max_words: int, min_words: int
+) -> Optional[List[str]]:
+    """Cut a title to ``max_words``, then back up to a phrase boundary (#1098).
+
+    A fixed word cap lands wherever the count runs out, which is routinely
+    mid-phrase — the reported titles ended "…Has Been Repeatedly" and
+    "…Degraded After Release", cut at exactly eight words. The cap stays (a
+    title is meant to be short); what changes is that the cut is moved back to
+    the last word that can actually END a phrase, so the result reads as a
+    title rather than as a sentence someone stopped typing.
+
+    Returns ``None`` when backing up leaves fewer than ``min_words`` — the
+    caller then falls through to its next title source, which is the behavior
+    the single-word ``INCOMPLETE_ENDINGS`` check already had; this generalizes
+    it from "reject the whole candidate" to "use the good prefix of it".
+
+    No ellipsis is appended: after the walk-back the title reads as a complete
+    phrase, and marking it as truncated would advertise a cut that is no longer
+    visible. Titles are understood to be short — the summary's own body carries
+    the full problem statement.
+    """
+    kept = list(words[:max_words])
+    while kept and not _word_can_end_title(kept[-1]):
+        kept.pop()
+    if len(kept) < min_words:
+        return None
+    return kept
+
 
 # Conversational filler patterns (ordered longest-first for greedy matching)
 # Only strip COMPLETE conversational phrases, not single words that might be part of content
@@ -522,15 +650,17 @@ def get_extractive_fallback_title(
 
     def _clean_fallback_candidate(text: str) -> Optional[str]:
         """Clean and validate a fallback title candidate."""
-        words = text.strip().split()[:max_words]
+        # Cut to the cap, then back up to a phrase boundary (#1098) — the
+        # shared rule, so this path cannot drift from the smart-extractive one
+        # beside it or from the LLM over-length clip.
+        words = truncate_title_at_phrase_boundary(
+            text.strip().split(), max_words, MIN_TITLE_WORDS
+        )
+        if not words:
+            return None
         candidate = " ".join(words)
         # Strip trailing punctuation (consistent with smart extractive path)
         candidate = candidate.strip(".,!?;:")
-        # Strip punctuation from last word before checking incomplete endings
-        if words:
-            last_word = words[-1].lower().strip(".,!?;:")
-            if last_word in INCOMPLETE_ENDINGS:
-                return None
         if is_title_valid(candidate, check_banned_words=False):
             return apply_title_case(candidate)
         return None
@@ -2029,23 +2159,21 @@ def _generate_smart_extractive_title(
     # Tokenize the cleaned content
     words = content.split()
 
-    # Extract meaningful words (up to max_words)
-    meaningful_words = words[:max_words]
-
-    # Extractive path requires more words (3) than general validation (2)
-    # This is intentional - extractive titles from longer content are more reliable
-    if len(meaningful_words) < MIN_EXTRACTIVE_WORDS:
+    # Cut to the cap, then back up to a phrase boundary (#1098). The extractive
+    # path requires more words (3) than general validation (2) — intentional:
+    # extractive titles from longer content are more reliable. Falling under
+    # that bar returns None and falls through to the LLM, which is what the
+    # narrower single-word check did too; the difference is that a good prefix
+    # is now kept instead of the whole candidate being thrown away.
+    meaningful_words = truncate_title_at_phrase_boundary(
+        words, max_words, MIN_EXTRACTIVE_WORDS
+    )
+    if not meaningful_words:
         return None
 
     # Join and clean up
     title = " ".join(meaningful_words)
     title = title.strip(".,!?;:")
-
-    # Check for incomplete endings - reject if title ends mid-sentence
-    last_word = meaningful_words[-1].lower().strip(".,!?;:")
-    if last_word in INCOMPLETE_ENDINGS:
-        # Title ends with incomplete phrase, reject it and fall through to LLM
-        return None
 
     # Apply title casing and return
     return apply_title_case(title)
@@ -2218,8 +2346,24 @@ async def _generate_title_with_llm(
             # Lightweight guards: length ≤ max_words, ≥3 words, no banned generics, basic validation
             words = generated_title.split()
             if len(words) > max_words:
-                generated_title = " ".join(words[:max_words])
-                words = words[:max_words]  # Update words array to match truncated title
+                # The model ignored the length instruction. Clipping to the cap
+                # silently persisted a mid-phrase title — this path had no
+                # completeness check at all, unlike the two extractive ones
+                # (#1098). Back up to a phrase boundary instead; if nothing
+                # usable survives, treat it like the other constraint
+                # violations here and fall through rather than persist a
+                # broken title (the same call the truncated-at-cap branch above
+                # makes, for the same reason).
+                trimmed = truncate_title_at_phrase_boundary(
+                    words, max_words, MIN_TITLE_WORDS
+                )
+                if not trimmed:
+                    raise ValueError(
+                        "LLM title exceeded the word cap with no usable "
+                        "phrase boundary under it"
+                    )
+                words = trimmed
+                generated_title = " ".join(words)
 
             # Run lightweight validation guards
             if not is_title_valid(generated_title):
