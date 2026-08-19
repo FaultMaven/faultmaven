@@ -1012,9 +1012,44 @@ on); off restores conclusion-wins precedence exactly.
 *Accepted costs of chain-rendered text.* The mirror renders mechanism by joining
 the chain's rung statements (" → "), so it reads flatter than the LLM's prose —
 the fix is better rung-statement elicitation, not a second conclusion namespace.
-`contributing_factors` is an LLM-only field, so the key-insights list the case UI
-derives from it empties when the mirror replaces a conclusion: single authority
-means the engine does not blend LLM prose into text it renders from the graph.
+An LLM-authored `contributing_factors` is likewise dropped on replacement rather
+than blended in: single authority means the engine does not carry LLM prose into
+text it renders from the graph.
+
+*The conclusion carries the whole conjunction.* `contributing_factors` is not
+empty, though — the mirror populates it from the graph, with the statements of
+the VALIDATED nodes that share an M7 AND-set with the chain it renders and are
+not themselves on it (`causal_graph.validated_and_conjuncts`). A conclusion
+mirrors ONE chain — root as the cause, rungs as the mechanism — so a
+co-necessary cause sits off that chain, and without this a cause the
+investigation established as a conjunction reached the report, and any runbook
+harvested from it, as its first conjunct alone (#1096). Only VALIDATED conjuncts
+are named: an AND-member still a candidate is not established, and the
+conclusion is the one place that must never assert more than the graph proves.
+The conjunct set joins the root and the M2 grade in the mirror's faithfulness
+check, because a conjunct typically validates AFTER the root — omitted from that
+check, the mirror would freeze at the single-factor text it was first minted
+with. Because that makes the mirror re-mint for a reason unrelated to the cause,
+root selection now prefers the prior mirror's own root within the confirmed set:
+a refresh must not silently swap the published cause. The list is SORTED, not
+edge-ordered — neither repository loads `causal_edges` with an `ORDER BY`, so
+row order would make both the text and that equality check vary with fetch order
+on PostgreSQL. The same conjuncts travel to the runbook boundary
+(`CaseConversionRequest.root_cause_conditions`), because a runbook recording
+half a cause outlives the case it came from. One chain-builder
+(`conjuncts_for_chain`) serves both mint sites, the per-turn mirror and the
+terminal confirm-stamp — the stamp can only cross that module boundary by hook,
+and a second copy of the rule would let the two conclusions one case passes
+through name different conjuncts.
+
+The report heading attributes the requirement to **producing the problem**, not
+to the root cause: an AND-set can sit on any rung of the mirrored chain, and a
+conjunct co-necessary with an intermediate is a condition of that mechanism step
+rather than of the cause. The LLM gets no schema field for any of this by
+design: the way to say "the problem needed both" is the AND-set, and the engine
+reads it — a blank `and_group` names no group and normalizes to `None` at the
+READ site (`incoming_and_groups`), not only at ingest, because rows persisted
+before that guard cannot be reached by it and are exactly the rows at risk.
 Grade labeling needs nothing new and already covers the fallback — the assurance
 grade and the over-claim flag are recomputed from the graph at every surface (turn
 response, resolved payload, report note), so a fallback conclusion standing at

@@ -151,27 +151,60 @@ Left unbounded, seeding would flood the graph and trip anchoring detection (≥4
 active hypotheses in one category reads as fixation). The bounds:
 
 - **Cap runbooks:** dedup hits by `parent_document_id`, take the top-N distinct
-  runbooks by retrieval score (`MAX_SEEDED_RUNBOOKS`, default 2). Retrieval has
-  already done the semantic alignment at runbook granularity. Retrieval results are
-  **chunk-level**, so a single long runbook can occupy several of the top-ranked
-  slots and starve the parent-runbook dedup of a second distinct runbook. The
-  prefetch therefore fetches deeper than the prompt surface —
-  `KB_PREFETCH_FETCH_LIMIT` (10) chunks feed the seeder's parent-dedup, while only
-  the top `KB_CONTEXT_MAX_ENTRIES` (3) are rendered into `case.kb_context`
-  (`milestone_engine._prefetch_kb_context`). Because results are score-ranked, the
-  rendered top-3 slice is byte-identical to the prior limit-3 fetch, so the LLM's
-  prompt surface is unchanged; only the seeder sees the deeper list.
+  runbooks by their **best matched-cause** score (`MAX_SEEDED_RUNBOOKS`, default 2)
+  — a runbook is worth entering only for the causes retrieval surfaced in it, so
+  that is the score that orders them. Retrieval results are **chunk-level**, so a
+  single long runbook can occupy several of the top-ranked slots and starve the
+  parent-runbook dedup of a second distinct runbook. The prefetch therefore fetches
+  deeper than the prompt surface — `KB_PREFETCH_FETCH_LIMIT` (10) chunks feed the
+  seeder's parent-dedup, while only the top `KB_CONTEXT_MAX_ENTRIES` (3) are
+  rendered into `case.kb_context` (`milestone_engine._prefetch_kb_context`). Because
+  results are score-ranked, the rendered top-3 slice is byte-identical to the prior
+  limit-3 fetch, so the LLM's prompt surface is unchanged; only the seeder sees the
+  deeper list.
 - **Skip fallback causes:** a `is_fallback_cause: true` Cause (`### Cause Z:
   Unidentified`) has an empty chain — nothing to instantiate.
-- **Order causes by the ranking that already exists — no bespoke scorer.** Each
-  `### Cause` is its own retrieval chunk, so retrieval already ranked the causes;
-  where a hit maps back to a specific Cause, seed in that score order. Otherwise
-  fall back to the runbook author's own cause order (causes are authored
-  most-likely-first). A second token-overlap pass re-scoring causes against the
-  symptom would be a weaker re-match of what retrieval already ranked — precisely
-  the matcher-shaped code the #658 NO-GO retired — and would re-import a matcher's
-  eval burden. If per-case cause relevance ever needs improving, the home for it
-  is the retrieval ranker, not the seeder.
+- **Seed only the causes retrieval matched, in its score order — no bespoke
+  scorer.** Each `### Cause` is its own retrieval chunk, so retrieval already
+  ranked the causes. A hit therefore names not just *which runbook* matched but
+  *which of its causes* did: `SearchResult.matched_cause_letters` carries the
+  letters of the `### Cause X:` headings present in that chunk's own text, parsed
+  with the shared `CAUSE_HEADING_RE` (`runbook_grammar`) — the same pattern that
+  minted `cause_letter` — so the letter is by construction the one the causes
+  record is keyed on. The engine keeps only those causes and orders them by that
+  retrieval score. The sort is **stable**, so causes tied on score (one chunk
+  carrying two headings) fall back to the author's own most-likely-first order.
+
+  This is a *provenance join* onto the ranking retrieval already produced, not a
+  re-score: no token-overlap pass, no matcher, no new eval burden — the #658 NO-GO
+  still holds, and per-case cause relevance still lives in the retrieval ranker.
+
+  **A cause retrieval did not surface is not seeded** — there is no author-order
+  fallback. A hit on a runbook's non-cause chunk (Symptom Recognition, Diagnostic
+  Steps, Prevention) contributes no letter, and a runbook with no matched cause
+  contributes nothing at all; the flat-prose path serves it, exactly as a runbook
+  carrying no causes record is already served. Seeding is deliberately
+  precision-weighted here: a seeded cause is asserted to the user as a candidate
+  root and can become the working conclusion, so a missing prior costs far less
+  than a wrong-domain one.
+
+  > **#1092 — why the fallback was removed.** The engine used to collapse hits to
+  > `parent_document_id`, discard *which chunk* matched, re-fetch the runbook's
+  > **full** causes record and seed its first `MAX_SEEDED_CAUSES` in **author
+  > order** — the "otherwise" branch was in practice the *only* branch, because
+  > the chunk→cause mapping was never built. The premise that author order
+  > approximates relevance is false: runbooks order causes by narrative grouping,
+  > not by fit to *this* case. Two live reproductions, both the first three causes
+  > of one runbook verbatim: a Kubernetes container OOMKilled/exit-137 case seeded
+  > `GKE Workloads Not Running`'s causes A/B/C (cluster capacity, machine type too
+  > small, nodeSelector/taint mismatch — all *unschedulable* causes, and the pod
+  > scheduled fine) while its Cause D, "Container OOMKilled because memory limit is
+  > below working-set demand", sat one slot past the cap; and a `GitHub Actions
+  > Workflow Failure` runbook that matched on "exit code 137" seeded its causes
+  > A/B/C — runner RAM, runner disk full, missing `${{ secrets.X }}` — into a
+  > Kubernetes investigation, one of which became the case's displayed working
+  > conclusion. Under the join, the first seeds Cause D and the second seeds at
+  > most the single cause whose chunk actually matched.
 - **Cap total seeded causes:** across all runbooks, seed at most
   `MAX_SEEDED_CAUSES`. This is **derived from** the anchoring condition-1
   threshold (`< N_same_category`), not a hardcoded 3, so a future change to the
@@ -566,6 +599,48 @@ live consumer would read stale structure. With the seeder as a real runtime
 reader this is now load-bearing: the skip branch additionally compares the
 persisted `metadata["causes"]` against the pack's causes and re-ingests on
 divergence.
+
+## Observability — the recall trade, measured
+
+Seeding only retrieval-matched causes is a strictly narrower intake than the
+author-order fallback it replaced. That trade is deliberate (see §2–3), but its
+recall side is an empirical question, not an assumption, so it is counted rather
+than argued. Two counters in `lifecycle_metrics.py`:
+
+| Counter | Reads as |
+|---|---|
+| `faultmaven_kb_cause_seed_attempt_total{outcome}` | One increment per seeding **attempt** (retrieval returned hits, flag on), labeled `seeded` / `all_causes_skipped` / `no_cause_chunk_matched` / `no_seedable_cause` / `crashed`. The labels are mutually exclusive and sum to attempts, so `seeded`/total is the seeding **yield** and its complement the zero-seed rate. |
+| `faultmaven_kb_cause_seed_letter_mismatch_total` | A matched chunk's `### Cause X:` heading named a letter absent from the runbook's causes record, so that runbook seeded nothing. **Zero is the healthy state** — nonzero means a runbook's causes are unseedable while looking well-formed from either side alone. |
+
+**`no_cause_chunk_matched` is the number that prices the trade.** It is the one
+outcome the old fallback covered: retrieval hit a runbook only through its
+Symptom Recognition / Diagnostic Steps / Prevention prose, so no cause chunk
+matched and nothing seeds — where before, the right cause might have ridden
+along in author order (as, far more often, might three wrong ones). The live
+evidence that an on-target query also surfaces the cause chunk is `n=1`
+(reproduction 2 matched Cause D), which is why this is instrumented rather than
+asserted. A rising share is the signal to improve the **retrieval ranker** — the
+documented home for cause relevance — and is the number to weigh before anyone
+proposes reinstating a fallback.
+
+A turn where retrieval returned **no hits at all** is not counted: that is a KB
+miss, not a seeding outcome, and folding it in would dilute the zero-seed rate
+with retrieval misses.
+
+The mismatch counter is an alarm rather than a rate because the shipped pack is
+pinned against it by a corpus test (§Verification) while **generated and uploaded
+runbooks are not** — the case→runbook conversion path and user uploads also
+acquire causes records, and if their heading form drifts from the shared
+`CAUSE_HEADING_RE` those causes become silently unseedable, with no fallback left
+to mask it. In production this counter is the only sighting of that drift; an
+ingest-time assertion (each `cause_letter` recoverable from at least one of the
+document's own chunk texts) is the durable fix and is tracked separately.
+
+A runbook dropped for a letter mismatch **keeps** the `MAX_SEEDED_RUNBOOKS` slot
+it occupied — it is not offered to the next ranked runbook. This is a deliberate
+simplicity call, not an oversight: promoting a runbook on the strength of a *data
+bug* in a higher-ranked one would make the seeded set depend on corruption, and
+the counter says how often the micro recall loss is even in play.
 
 ## Configuration
 

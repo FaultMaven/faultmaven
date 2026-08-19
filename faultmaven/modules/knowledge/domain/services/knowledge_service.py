@@ -76,6 +76,45 @@ def _strip_chunk_suffix(chunk_id: Optional[str]) -> Optional[str]:
     return stripped or None
 
 
+def _matched_cause_letters(chunk_text: str) -> List[str]:
+    """Cause letters whose ``### Cause X:`` heading appears in this chunk's text.
+
+    The join key the KB cause seeder needs: retrieval is chunk-level and a
+    runbook's ``## Causes`` section chunks one-Cause-per-chunk, so the headings
+    inside a matched chunk say WHICH of the parent runbook's
+    ``metadata["causes"]`` records the query actually matched. Without it the
+    seeder can only name the parent runbook, and falls back to seeding its first
+    N causes in author order — the #1092 defect, where a k8s OOM case seeded a
+    GKE runbook's three *unschedulable* causes (A/B/C) while the OOMKilled cause
+    that matched (D) sat one slot past the cap.
+
+    Uses the SHARED ``CAUSE_HEADING_RE`` (``runbook_grammar``) — the same pattern
+    the extractor and pack builder use to mint ``cause_letter`` — so the letter
+    parsed here is by construction the letter the seeder joins on.
+
+    Searches the whole chunk rather than anchoring at its start: a runbook's
+    first Cause commonly shares a chunk with the ``## Causes`` section header
+    (60 of 91 shipped runbooks), so an anchored match would drop Cause A on
+    two-thirds of the corpus. Returns every letter found, in appearance order —
+    a chunk spanning two headings was embedded as one text, so a hit on it is
+    evidence for both causes and attributing to only one would be arbitrary.
+
+    Returns [] for a non-cause chunk or a non-runbook document; the seeder reads
+    that as "retrieval surfaced no cause here", not as an error.
+    """
+    if not chunk_text:
+        return []
+    from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
+        CAUSE_HEADING_RE,
+    )
+
+    seen: List[str] = []
+    for letter, _name in CAUSE_HEADING_RE.findall(chunk_text):
+        if letter not in seen:
+            seen.append(letter)
+    return seen
+
+
 def build_kb_scope_filter(
     owner_id: Optional[str], shared_ids: Optional[List[str]] = None
 ) -> Dict[str, Any]:
@@ -366,6 +405,17 @@ class KnowledgeService:
                         parent_document_id = result_meta.get(
                             "parent_document_id"
                         ) or _strip_chunk_suffix(result.get("id"))
+                        # Which CAUSES of that runbook this hit matched. Derived
+                        # here, from the full chunk text, for the same reason
+                        # parent_document_id is: it is structural identity the
+                        # seeder needs and only the raw hit carries. Deliberately
+                        # NOT read off `snippet` downstream — that is a 200-char
+                        # display truncation, and a cause heading sitting past the
+                        # cut (1 of 638 chunks in the shipped pack) would silently
+                        # mis-attribute rather than fail.
+                        matched_cause_letters = _matched_cause_letters(
+                            result.get("content") or ""
+                        )
                         search_result = SearchResult(
                             document_id=result.get(
                                 "document_id", result.get("id", "unknown")
@@ -379,6 +429,7 @@ class KnowledgeService:
                             ]
                             + "...",
                             parent_document_id=parent_document_id,
+                            matched_cause_letters=matched_cause_letters,
                         )
                         search_results.append(search_result)
 

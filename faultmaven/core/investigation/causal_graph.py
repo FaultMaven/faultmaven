@@ -119,17 +119,101 @@ def incoming_and_groups(
     ``(effect_node_id, and_group)`` are co-necessary (an AND-set, M7). A
     ``None`` key collects the independent (OR-alternative) direct causes — each
     is its own sufficient cause, not part of a conjunction.
+
+    A blank key ("" or whitespace) names no group and normalizes to ``None``.
+    ``_add_edge`` normalizes on the way in, but ``and_group`` is an
+    unconstrained ``Optional[str]`` at every layer and rows persisted before
+    that guard cannot be reached by it — so the normalization lives HERE, where
+    every reader is healed at once: the M7 prover would otherwise keep a
+    silently-strengthened gate on legacy data, and ``validated_and_conjuncts``
+    would publish "the cause required these conditions too" over causes the
+    graph holds as independent alternatives.
     """
     groups: dict[str | None, list[str]] = {}
     for e in edges:
         if e.effect_node_id == node_id:
-            groups.setdefault(e.and_group, []).append(e.cause_node_id)
+            key = e.and_group
+            if isinstance(key, str) and not key.strip():
+                key = None
+            groups.setdefault(key, []).append(e.cause_node_id)
     return groups
 
 
 def _state(node_id: str, nodes: dict[str, CausalNode]) -> NodeState | None:
     n = nodes.get(node_id)
     return n.node_state if n else None
+
+
+def validated_and_conjuncts(case: "Case", chain_node_ids: list[str]) -> list[str]:
+    """The VALIDATED causes co-necessary (M7 AND-set) with a chain, as statements.
+
+    An AND-set is the graph's only representation of "the problem needed BOTH of
+    these" — edges sharing ``(effect_node_id, and_group)`` are co-necessary. The
+    conclusion mirror renders ONE chain (root -> ... -> D): its root becomes the
+    cause text and its intermediate rungs the mechanism. A conjunct that is not
+    itself on that chain is therefore established by the investigation and absent
+    from the conclusion, which is how a genuinely two-factor cause reaches the
+    report as a single clause (#1096). This is what the conclusion's
+    ``contributing_factors`` carries.
+
+    Only VALIDATED conjuncts are named. An AND-member still standing as a
+    candidate is not established, and a conclusion is the one place that must
+    never assert more than the graph proves — the same one-directional guarantee
+    the rest of the engine lane keeps.
+
+    Chain nodes themselves are excluded (they are already the conclusion's root
+    and mechanism). The result is de-duplicated and SORTED: conjuncts of one
+    effect are co-equal (an AND-set is unordered by construction) and neither
+        repository loads ``causal_edges`` with an ``ORDER BY``, so deriving order
+    from row order would make the list — and the equality check the mirror's
+    faithfulness short-circuit runs on it — vary with fetch order on PostgreSQL,
+    re-minting the conclusion every recompute and flipping the report's bullets
+    between regenerations. Sorted, the output is a function of the graph's
+    CONTENT rather than of its storage.
+    """
+    on_chain = set(chain_node_ids)
+    statements: set[str] = set()
+    for node_id in chain_node_ids:
+        for and_group, cause_ids in incoming_and_groups(
+            node_id, case.causal_edges
+        ).items():
+            if and_group is None:
+                continue  # OR alternatives: each is its own sufficient cause
+            for cause_id in cause_ids:
+                if cause_id in on_chain:
+                    continue
+                node = case.causal_nodes.get(cause_id)
+                if node is None or node.node_state != NodeState.VALIDATED:
+                    continue
+                statements.add(node.statement)
+    return sorted(statements)
+
+
+def conjuncts_for_chain(case: "Case", hyp=None, root=None) -> list[str]:
+    """``validated_and_conjuncts`` over the chain a conclusion would mirror.
+
+    The ONE chain-builder, shared by the per-turn mirror here and the terminal
+    confirm-stamp in ``cause_assurance`` (which reaches it through the graph
+    hook). Both must name the same conjuncts for the same case; implementing
+    the rule twice across that module boundary would let the two conclusions a
+    single case passes through disagree, with nothing watching.
+
+    The path is the chain when the hypothesis carries one — ``chain_path_to_problem``
+    builds it as ``[root, ..., D]``, so an AND-set at any depth including D is
+    covered. A path-less hypothesis still has its root (M3 requires it before
+    validation), and the fallback adds the PROBLEM node: the canonical
+    two-factor shape is both conjuncts pointing straight at D, so reading the
+    root's incoming edges alone would report none.
+    """
+    chain = list(getattr(hyp, "path", None) or []) if hyp is not None else []
+    if not chain:
+        root_id = getattr(root, "node_id", None) or getattr(hyp, "root_node_id", None)
+        problem = next(
+            (n for n in case.causal_nodes.values() if n.node_type == NodeType.PROBLEM),
+            None,
+        )
+        chain = [x for x in (root_id, problem.node_id if problem else None) if x]
+    return validated_and_conjuncts(case, chain)
 
 
 # ---------------------------------------------------------------------------
@@ -1137,6 +1221,14 @@ def ingest_emitted_chain(
     def _add_edge(cause_id, effect_id, and_group, reasoning):
         if not cause_id or not effect_id or cause_id == effect_id:
             return
+        # An AND-set key is a GROUPING token; "" and whitespace name no group.
+        # The field is an unconstrained Optional[str] end to end, so a model
+        # emitting and_group:"" on independent alternatives would otherwise
+        # collapse them into one conjunction — silently strengthening the M7
+        # gate and, since #1096, publishing "the cause required these
+        # conditions too" about causes that are alternatives.
+        if isinstance(and_group, str) and not and_group.strip():
+            and_group = None
         if cause_id not in case.causal_nodes or effect_id not in case.causal_nodes:
             return
         if any(
@@ -1999,10 +2091,13 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
                 if prior_confirmed
                 else MECHANISTIC_RCC_LIKELIHOOD
             )
-            if rcc.confidence_level == expected_level and (
-                prior_confirmed or not confirmed_hyps
+            if (
+                rcc.confidence_level == expected_level
+                and (prior_confirmed or not confirmed_hyps)
+                and list(rcc.contributing_factors or [])
+                == conjuncts_for_chain(case, prior)
             ):
-                return False  # faithful mirror: grounding root AND grade agree
+                return False  # faithful mirror: root, grade AND conjuncts agree
         # else: stale/misgraded engine mirror — refresh from the current
         # validated root.
     # No restatement check here BY DESIGN: the §7.1 guard is an ENTRY bar on
@@ -2016,7 +2111,14 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
     # grade must be what the conclusion asserts), then the prior mirror's own
     # root (a level-only correction must not silently swap the named cause),
     # then the first standing validated chain.
-    hyp = confirmed_hyps[0] if confirmed_hyps else None
+    # Within the confirmed set, the prior mirror's own root wins: this function
+    # now also re-mints for reasons unrelated to the cause (a conjunct that
+    # validated this turn), and taking confirmed_hyps[0] blindly would swap the
+    # published cause on such a refresh — the swap the "keep the named root"
+    # rule below exists to prevent, one tier up.
+    hyp = None
+    if confirmed_hyps:
+        hyp = prior if prior in confirmed_hyps else confirmed_hyps[0]
     if hyp is None and prior is not None and prior in validated_hyps:
         hyp = prior
     if hyp is None:
@@ -2063,6 +2165,12 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
             for link in root.evidence_links
             if link.stance == EvidenceStance.SUPPORTS
         ],
+        # The cause's co-necessary conjuncts (#1096). Derived from the graph like
+        # every other field here — the mirror renders one chain, so without this
+        # a cause the investigation established as a conjunction would reach the
+        # report as its first conjunct alone. NOT the LLM's own factor prose:
+        # single authority is unchanged, this is the graph speaking.
+        contributing_factors=conjuncts_for_chain(case, hyp),
         determined_by=_ENGINE_RCC_AUTHOR,
     )
     if llm_authored:
@@ -2841,4 +2949,5 @@ register_graph_hooks(
     derive_node_states=derive_node_states,
     sole_cluster_origin=sole_cluster_origin,
     project_hypothesis_states_from_roots=project_hypothesis_states_from_roots,
+    conjuncts_for_chain=conjuncts_for_chain,
 )

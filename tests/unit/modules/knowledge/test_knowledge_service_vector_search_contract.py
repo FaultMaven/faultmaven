@@ -205,6 +205,138 @@ async def test_search_result_parent_id_falls_back_to_chunk_suffix_strip():
     assert results[0].parent_document_id == "kb_def456"
 
 
+@pytest.mark.asyncio
+async def test_search_result_surfaces_matched_cause_letters():
+    """The chunk's own ``### Cause X:`` headings survive to ``SearchResult``.
+
+    This is the #1092 join key. ``parent_document_id`` says which runbook holds
+    the ``metadata['causes']`` record; this says which of those causes retrieval
+    actually matched. Without it the KB cause seeder can only name the runbook,
+    and seeds its first N causes in author order — which is how a Kubernetes
+    OOMKilled case ended up with a GKE runbook's three *unschedulable* causes.
+    """
+    service = _service_with_hits(
+        [
+            {
+                "id": "kb_abc_chunk_6",
+                "content": (
+                    "### Cause D: Container OOMKilled because memory limit is "
+                    "below working-set demand\n\n**Statement**: ...\n"
+                ),
+                "metadata": {"parent_document_id": "kb_abc"},
+                "score": 0.8,
+            }
+        ]
+    )
+    results = await service.search_knowledge("q", limit=5)
+    assert results[0].matched_cause_letters == ["D"]
+
+
+@pytest.mark.asyncio
+async def test_matched_cause_letters_empty_for_a_non_cause_chunk():
+    """A hit on Symptom Recognition / Diagnostic Steps / Prevention names no
+    cause. The seeder reads [] as "retrieval surfaced no cause here" and seeds
+    nothing from it — topical relevance is not evidence for any one cause."""
+    service = _service_with_hits(
+        [
+            {
+                "id": "kb_abc_chunk_0",
+                "content": "## Symptom Recognition\n\n- Pods restart repeatedly\n",
+                "metadata": {"parent_document_id": "kb_abc"},
+                "score": 0.9,
+            }
+        ]
+    )
+    results = await service.search_knowledge("q", limit=5)
+    assert results[0].matched_cause_letters == []
+
+
+@pytest.mark.asyncio
+async def test_matched_cause_letters_read_the_full_chunk_not_the_snippet():
+    """Derived from the raw chunk ``content``, never from ``snippet``.
+
+    ``snippet`` is a 200-char display truncation. A cause heading past that cut
+    would silently attribute the hit to no cause (or, with more than one heading,
+    to the wrong subset) rather than fail — so the derivation must not depend on
+    it. Here the heading sits well past 200 chars.
+    """
+    filler = "x" * 400
+    service = _service_with_hits(
+        [
+            {
+                "id": "kb_abc_chunk_6",
+                "content": f"## Causes\n\n{filler}\n\n### Cause A: something\n",
+                "metadata": {"parent_document_id": "kb_abc"},
+                "score": 0.8,
+            }
+        ]
+    )
+    results = await service.search_knowledge("q", limit=5)
+    assert len(results[0].snippet) < 400  # the display field really is truncated
+    assert results[0].matched_cause_letters == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_matched_cause_letters_reports_every_heading_in_the_chunk():
+    """A chunk spanning two headings was embedded as ONE text, so a hit on it is
+    evidence for both causes — attributing to only one would be arbitrary.
+    Reported in appearance order; the seeder's stable sort then keeps that
+    (author) order for the score tie."""
+    service = _service_with_hits(
+        [
+            {
+                "id": "kb_abc_chunk_6",
+                "content": ("### Cause A: first\n\ntext\n\n### Cause B: second\n"),
+                "metadata": {"parent_document_id": "kb_abc"},
+                "score": 0.8,
+            }
+        ]
+    )
+    results = await service.search_knowledge("q", limit=5)
+    assert results[0].matched_cause_letters == ["A", "B"]
+
+
+def test_shipped_pack_chunks_recover_every_cause_letter():
+    """Corpus guard: on the real KB pack, the cause letters recoverable from the
+    chunk texts are EXACTLY the letters of each runbook's causes record.
+
+    The seeder's #1092 join is only as good as this. If chunking ever changes so
+    a cause block no longer carries its heading (or the heading form drifts from
+    the shared grammar), causes silently stop being seedable — the same class of
+    quiet degradation the seeder's skip taxonomy exists to prevent, but upstream
+    of it. A runbook's first Cause commonly shares a chunk with the ``## Causes``
+    section header, which is why the derivation searches the whole chunk rather
+    than anchoring at its start.
+    """
+    import json
+    from pathlib import Path
+
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        _matched_cause_letters,
+    )
+
+    pack = Path(__file__).resolve().parents[4] / "resources/knowledge/pack/pack.json"
+    if not pack.exists():  # pragma: no cover - pack always vendored
+        pytest.skip("KB pack not vendored in this checkout")
+    runbooks = json.loads(pack.read_text())["runbooks"]
+
+    checked = 0
+    for rb in runbooks:
+        causes = rb.get("causes") or []
+        if not causes:
+            continue
+        checked += 1
+        expected = {c["cause_letter"] for c in causes}
+        recovered = set()
+        for chunk in rb["chunks"]:
+            recovered.update(_matched_cause_letters(chunk["text"]))
+        assert recovered == expected, (
+            f"{rb['item_id']} ({rb['title']}): chunk texts recover {sorted(recovered)} "
+            f"but the causes record holds {sorted(expected)}"
+        )
+    assert checked > 0, "pack carried no runbook with a causes record"
+
+
 def test_knowledge_vector_store_search_signature_unchanged():
     """If KnowledgeVectorStore.search signature ever changes, this test
     breaks loudly. Any future refactor must update both callers AND this
