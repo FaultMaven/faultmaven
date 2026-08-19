@@ -132,6 +132,55 @@ def _state(node_id: str, nodes: dict[str, CausalNode]) -> NodeState | None:
     return n.node_state if n else None
 
 
+def validated_and_conjuncts(case: "Case", chain_node_ids: list[str]) -> list[str]:
+    """The VALIDATED causes co-necessary (M7 AND-set) with a chain, as statements.
+
+    An AND-set is the graph's only representation of "the problem needed BOTH of
+    these" — edges sharing ``(effect_node_id, and_group)`` are co-necessary. The
+    conclusion mirror renders ONE chain (root -> ... -> D): its root becomes the
+    cause text and its intermediate rungs the mechanism. A conjunct that is not
+    itself on that chain is therefore established by the investigation and absent
+    from the conclusion, which is how a genuinely two-factor cause reaches the
+    report as a single clause (#1096). This is what the conclusion's
+    ``contributing_factors`` carries.
+
+    Only VALIDATED conjuncts are named. An AND-member still standing as a
+    candidate is not established, and a conclusion is the one place that must
+    never assert more than the graph proves — the same one-directional guarantee
+    the rest of the engine lane keeps.
+
+    Chain nodes themselves are excluded (they are already the conclusion's root
+    and mechanism), and the result is de-duplicated in chain order so the text is
+    a stable function of the graph rows across regenerations.
+    """
+    on_chain = set(chain_node_ids)
+    statements: list[str] = []
+    seen: set[str] = set()
+    for node_id in chain_node_ids:
+        for and_group, cause_ids in incoming_and_groups(
+            node_id, case.causal_edges
+        ).items():
+            if and_group is None:
+                continue  # OR alternatives: each is its own sufficient cause
+            for cause_id in cause_ids:
+                if cause_id in on_chain or cause_id in seen:
+                    continue
+                node = case.causal_nodes.get(cause_id)
+                if node is None or node.node_state != NodeState.VALIDATED:
+                    continue
+                seen.add(cause_id)
+                statements.append(node.statement)
+    return statements
+
+
+def _conjuncts_for_hypothesis(case: "Case", hyp: "Hypothesis") -> list[str]:
+    """``validated_and_conjuncts`` over the chain a conclusion would mirror. The
+    path is the chain when the hypothesis carries one; a path-less hypothesis
+    still has its root (M3 requires it before validation)."""
+    chain = list(hyp.path or []) or [hyp.root_node_id or ""]
+    return validated_and_conjuncts(case, chain)
+
+
 # ---------------------------------------------------------------------------
 # M7 — AND-gate proof (symmetric: strict to prove, asymmetric to refute)
 # ---------------------------------------------------------------------------
@@ -1999,10 +2048,13 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
                 if prior_confirmed
                 else MECHANISTIC_RCC_LIKELIHOOD
             )
-            if rcc.confidence_level == expected_level and (
-                prior_confirmed or not confirmed_hyps
+            if (
+                rcc.confidence_level == expected_level
+                and (prior_confirmed or not confirmed_hyps)
+                and list(rcc.contributing_factors or [])
+                == _conjuncts_for_hypothesis(case, prior)
             ):
-                return False  # faithful mirror: grounding root AND grade agree
+                return False  # faithful mirror: root, grade AND conjuncts agree
         # else: stale/misgraded engine mirror — refresh from the current
         # validated root.
     # No restatement check here BY DESIGN: the §7.1 guard is an ENTRY bar on
@@ -2063,6 +2115,12 @@ def synthesize_rcc_from_validated_root(case: Case) -> bool:
             for link in root.evidence_links
             if link.stance == EvidenceStance.SUPPORTS
         ],
+        # The cause's co-necessary conjuncts (#1096). Derived from the graph like
+        # every other field here — the mirror renders one chain, so without this
+        # a cause the investigation established as a conjunction would reach the
+        # report as its first conjunct alone. NOT the LLM's own factor prose:
+        # single authority is unchanged, this is the graph speaking.
+        contributing_factors=_conjuncts_for_hypothesis(case, hyp),
         determined_by=_ENGINE_RCC_AUTHOR,
     )
     if llm_authored:
@@ -2841,4 +2899,5 @@ register_graph_hooks(
     derive_node_states=derive_node_states,
     sole_cluster_origin=sole_cluster_origin,
     project_hypothesis_states_from_roots=project_hypothesis_states_from_roots,
+    validated_and_conjuncts=validated_and_conjuncts,
 )

@@ -1482,6 +1482,14 @@ node: that splits one cause across duplicate roots and prevents it from validati
 4. Co-necessary causes (BOTH needed to produce the effect) = an AND-set: give each
    the SAME `produces` target AND the same `and_group`. Independent alternatives
    omit `and_group`.
+   Reach for this whenever the problem needed two conditions TOGETHER — most
+   often when one change carried both (a release that added an unbounded cache
+   AND halved the memory limit; a config edit that widened a timeout AND dropped
+   a retry). Emit each condition as its own node in one `and_group`; do NOT
+   compress them into a single node's statement. The Root Cause the report and
+   any harvested runbook carry is rendered from these nodes, so a factor you fold
+   into prose instead of modelling is a factor the record loses — and a fix that
+   addressed two conditions will read as a fix for one.
 
 Example (TLS handshake failures):
   causal_nodes_to_add:

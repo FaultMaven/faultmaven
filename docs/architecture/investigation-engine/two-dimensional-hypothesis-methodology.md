@@ -1012,9 +1012,25 @@ on); off restores conclusion-wins precedence exactly.
 *Accepted costs of chain-rendered text.* The mirror renders mechanism by joining
 the chain's rung statements (" → "), so it reads flatter than the LLM's prose —
 the fix is better rung-statement elicitation, not a second conclusion namespace.
-`contributing_factors` is an LLM-only field, so the key-insights list the case UI
-derives from it empties when the mirror replaces a conclusion: single authority
-means the engine does not blend LLM prose into text it renders from the graph.
+An LLM-authored `contributing_factors` is likewise dropped on replacement rather
+than blended in: single authority means the engine does not carry LLM prose into
+text it renders from the graph.
+
+*The conclusion carries the whole conjunction.* `contributing_factors` is not
+empty, though — the mirror populates it from the graph, with the statements of
+the VALIDATED nodes that share an M7 AND-set with the chain it renders and are
+not themselves on it (`causal_graph.validated_and_conjuncts`). A conclusion
+mirrors ONE chain — root as the cause, rungs as the mechanism — so a
+co-necessary cause sits off that chain, and without this a cause the
+investigation established as a conjunction reached the report, and any runbook
+harvested from it, as its first conjunct alone (#1096). Only VALIDATED conjuncts
+are named: an AND-member still a candidate is not established, and the
+conclusion is the one place that must never assert more than the graph proves.
+The conjunct set joins the root and the M2 grade in the mirror's faithfulness
+check, because a conjunct typically validates AFTER the root — omitted from that
+check, the mirror would freeze at the single-factor text it was first minted
+with. The LLM gets no schema field for this by design: the way to say "the
+problem needed both" is the AND-set, and the engine reads it.
 Grade labeling needs nothing new and already covers the fallback — the assurance
 grade and the over-claim flag are recomputed from the graph at every surface (turn
 response, resolved payload, report note), so a fallback conclusion standing at
