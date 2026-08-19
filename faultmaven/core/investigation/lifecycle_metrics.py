@@ -746,3 +746,24 @@ kb_cause_unseedable_at_ingest_total = Counter(
     "runtime). Zero is the healthy state.",
     ["chunker"],
 )
+
+
+# fm#1103 liveness for the counter above — the guard's own guard.
+#
+# ``_report_unseedable_causes`` swallows its errors on purpose: a diagnostic must
+# never fail the write it observes. But a swallow with no witness means a broken
+# check reads exactly like a clean corpus — the counter above sits at zero, and
+# "zero is the healthy state" becomes a lie told by the very metric that exists to
+# prevent silent failure. That is this PR's own thesis one level up, so the
+# swallow is reported rather than hidden: a WARNING with the traceback, and this.
+#
+# Nonzero means the record/chunk agreement is NOT being checked for some or all
+# ingests, and the alarm above cannot be trusted until this returns to zero. It is
+# the numerator of nothing — it exists so a dashboard can tell "no drift found"
+# apart from "nothing looked".
+kb_cause_ingest_check_failed_total = Counter(
+    "faultmaven_kb_cause_ingest_check_failed_total",
+    "The ingest-time causes/chunk agreement check raised and was swallowed, so "
+    "that document went unchecked (fm#1103). Nonzero invalidates "
+    "``kb_cause_unseedable_at_ingest_total`` until it returns to zero.",
+)

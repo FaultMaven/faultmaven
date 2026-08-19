@@ -605,13 +605,14 @@ divergence.
 Seeding only retrieval-matched causes is a strictly narrower intake than the
 author-order fallback it replaced. That trade is deliberate (see §2–3), but its
 recall side is an empirical question, not an assumption, so it is counted rather
-than argued. Three counters in `lifecycle_metrics.py`:
+than argued. Four counters in `lifecycle_metrics.py`:
 
 | Counter | Reads as |
 |---|---|
 | `faultmaven_kb_cause_seed_attempt_total{outcome}` | One increment per seeding **attempt** (retrieval returned hits, flag on), labeled `seeded` / `all_causes_skipped` / `no_cause_chunk_matched` / `no_seedable_cause` / `crashed`. The labels are mutually exclusive and sum to attempts, so `seeded`/total is the seeding **yield** and its complement the zero-seed rate. |
 | `faultmaven_kb_cause_seed_letter_mismatch_total` | A matched chunk's `### Cause X:` heading named a letter absent from the runbook's causes record, so that runbook seeded nothing. **Zero is the healthy state** — nonzero means a runbook's causes are unseedable while looking well-formed from either side alone. |
 | `faultmaven_kb_cause_unseedable_at_ingest_total{chunker}` | The same defect caught at **write** time: a document was indexed with a causes record declaring letters that none of its own chunk texts can recover. Labeled `pack` / `runtime` by which chunker produced the disagreement. **Zero is the healthy state.** |
+| `faultmaven_kb_cause_ingest_check_failed_total` | The write-time check itself raised and was swallowed, so that document went **unchecked**. Nonzero invalidates the row above until it returns to zero. |
 
 **`no_cause_chunk_matched` is the number that prices the trade.** It is the one
 outcome the old fallback covered: retrieval hit a runbook only through its
@@ -662,6 +663,24 @@ runbook's Causes section is the everyday way for the two to stop agreeing.
 It is **observed, never enforced** — the document is indexed as asked. Refusing
 the write would convert a recall loss into a failed ingest, which on the pack path
 is a failed KB bootstrap: a produce-side data bug must not take a deployment down.
+The check swallows its own errors for the same reason.
+
+**The swallow is reported, not hidden**, and that is load-bearing rather than
+tidy. `kb_cause_unseedable_at_ingest_total` reads zero when healthy, so a check
+that died quietly would be indistinguishable from a clean corpus — the guard would
+fail open with no witness, which is this section's own failure mode one level up.
+A swallowed error therefore costs a WARNING with the traceback and an increment of
+`kb_cause_ingest_check_failed_total`, whose only job is to let a dashboard tell
+*"nothing was found"* apart from *"nothing looked"*.
+
+The alarm names **which side is wrong** when the letter itself proves it. A record
+declaring a letter the heading grammar cannot express (`cause_letter: "a"`) is
+genuinely unseedable — the seeder's join is case-sensitive — so it is still
+reported, but under wording that blames the record rather than sending a producer
+to read markdown that is fine. Normalising case instead would be worse than
+imprecise: it would call a cause recoverable that retrieval cannot join.
+Expressibility is asked of `CAUSE_HEADING_RE` itself rather than by restating its
+`[A-Z]` class, so the two cannot drift.
 
 Anonymous/experimental `upload_document` is deliberately absent from that table:
 it never passes a `causes` record (extraction happens at the human-verification

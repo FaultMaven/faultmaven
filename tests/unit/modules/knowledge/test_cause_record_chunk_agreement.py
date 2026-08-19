@@ -41,6 +41,7 @@ from faultmaven.models import KnowledgeBaseDocument
 from faultmaven.modules.knowledge.domain.services.content_chunker import ContentChunker
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
+    _letter_can_head_a_cause,
     _row_causes,
     _unrecoverable_cause_letters,
 )
@@ -53,6 +54,10 @@ pytestmark = [pytest.mark.unit]
 _COUNTER = (
     "faultmaven.core.investigation.lifecycle_metrics."
     "kb_cause_unseedable_at_ingest_total"
+)
+_CHECK_FAILED = (
+    "faultmaven.core.investigation.lifecycle_metrics."
+    "kb_cause_ingest_check_failed_total"
 )
 _EMBED_GUARD = "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise"
 
@@ -277,6 +282,132 @@ async def test_the_warning_names_the_document_and_the_missing_letters(caplog):
     )
     assert "doc-1" in warning
     assert "C" in warning
+
+
+# ---------------------------------------------------------------------------
+# The guard's own failure must be as visible as the drift it watches for
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_broken_check_is_reported_not_merely_survived(caplog):
+    """The sibling of the test above, and the one that matters more.
+
+    A swallow at DEBUG would let a broken check disappear under a production
+    INFO threshold, leaving ``kb_cause_unseedable_at_ingest_total`` at zero —
+    which is its HEALTHY state. A guard that fails open with no witness is
+    indistinguishable from a clean corpus: the exact silent failure this whole
+    check exists to close, one level up.
+    """
+    service = _service()
+    with patch(
+        "faultmaven.modules.knowledge.domain.services.knowledge_service."
+        "_unrecoverable_cause_letters",
+        side_effect=RuntimeError("boom"),
+    ):
+        with patch(_CHECK_FAILED) as failed:
+            with caplog.at_level("WARNING"):
+                await _index(service, _document(_RUNBOOK), causes=[_cause("A")])
+
+    assert failed.inc.call_count == 1
+    reported = "\n".join(
+        r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+    )
+    assert "doc-1" in reported
+    assert "boom" in reported
+
+
+@pytest.mark.asyncio
+async def test_a_broken_check_survives_even_when_its_own_counter_is_gone():
+    """Nothing in the failure path may raise into the write — including the
+    deferred metrics import, which is among the likelier things to be broken
+    when we are already in this handler."""
+    service = _service()
+    with patch(
+        "faultmaven.modules.knowledge.domain.services.knowledge_service."
+        "_unrecoverable_cause_letters",
+        side_effect=RuntimeError("boom"),
+    ):
+        with patch(_CHECK_FAILED, new_callable=MagicMock) as failed:
+            failed.inc.side_effect = RuntimeError("metrics gone")
+            chunks_created = await _index(
+                service, _document(_RUNBOOK), causes=[_cause("A")]
+            )
+    assert chunks_created > 0
+
+
+# ---------------------------------------------------------------------------
+# Naming the side that is actually wrong
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("letter,expected", [("A", True), ("Z", True), ("a", False)])
+def test_which_letters_a_heading_can_express_comes_from_the_shared_grammar(
+    letter, expected
+):
+    """Asked of ``CAUSE_HEADING_RE`` itself rather than by restating ``[A-Z]``,
+    so a grammar that widens tomorrow widens this the same day."""
+    assert _letter_can_head_a_cause(letter) is expected
+
+
+def test_a_letter_shaped_like_a_heading_prefix_is_not_expressible():
+    """``"A: x"`` builds a heading the pattern matches — capturing only ``A``,
+    which is not the letter declared."""
+    assert _letter_can_head_a_cause("A: x") is False
+
+
+@pytest.mark.asyncio
+async def test_a_lowercase_record_letter_is_still_reported_as_unseedable():
+    """Normalising case would be worse than imprecise: the seeder's join is
+    case-sensitive, so calling ``"a"`` recoverable would promise a seed
+    retrieval cannot deliver."""
+    service = _service()
+    with patch(_COUNTER) as counter:
+        await _index(service, _document(_RUNBOOK), causes=[_cause("a")])
+    counter.labels.assert_called_once_with(chunker="runtime")
+
+
+@pytest.mark.asyncio
+async def test_an_inexpressible_letter_blames_the_record_not_the_markdown(caplog):
+    """The Causes section is fine; the record is malformed. Advice pointing at
+    the markdown would send a producer to read healthy text."""
+    service = _service()
+    with patch(_COUNTER):
+        with caplog.at_level("WARNING"):
+            await _index(service, _document(_RUNBOOK), causes=[_cause("a")])
+    reported = "\n".join(
+        r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+    )
+    assert "the RECORD is malformed" in reported
+    assert "Fix the runbook's Causes section" not in reported
+
+
+@pytest.mark.asyncio
+async def test_the_two_shapes_are_reported_separately_when_both_occur(caplog):
+    service = _service()
+    with patch(_COUNTER) as counter:
+        with caplog.at_level("WARNING"):
+            await _index(
+                service, _document(_RUNBOOK), causes=[_cause("C"), _cause("a")]
+            )
+    reported = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Fix the runbook's Causes section" in m for m in reported)
+    assert any("the RECORD is malformed" in m for m in reported)
+    # One document, one increment — the counter counts documents, not letters.
+    assert counter.labels.return_value.inc.call_count == 1
+
+
+def test_unreadable_metadata_says_so_instead_of_reading_as_no_record(caplog):
+    """The one ``None`` that is not "prose runbook" but "record we could not
+    read" — and it silently disables the check for the row whose metadata is
+    already suspect."""
+    with caplog.at_level("WARNING"):
+        assert _row_causes("{not json") is None
+    assert any(
+        "Unreadable knowledge_items metadata" in r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING"
+    )
 
 
 # ---------------------------------------------------------------------------

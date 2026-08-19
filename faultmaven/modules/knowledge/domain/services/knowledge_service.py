@@ -116,6 +116,28 @@ def _matched_cause_letters(chunk_text: str) -> List[str]:
     return seen
 
 
+def _letter_can_head_a_cause(letter: str) -> bool:
+    """Could a ``### Cause X:`` heading for this letter exist at all?
+
+    Asked OF the shared grammar rather than by restating its ``[A-Z]`` character
+    class here, so the two cannot drift: a letter the grammar widens to admit
+    tomorrow is admitted here the same day.
+
+    Used only to word the alarm. A record declaring ``cause_letter: "a"`` is
+    genuinely unseedable — the seeder's join is case-sensitive — so it is still
+    reported; this just keeps the report from blaming markdown that is fine.
+    """
+    from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
+        CAUSE_HEADING_RE,
+    )
+
+    match = CAUSE_HEADING_RE.match(f"### Cause {letter}: name")
+    # The capture must be the whole letter, not a prefix of it: a record value
+    # like "A: x" builds a heading the pattern happily matches, capturing just
+    # "A" — a letter retrieval would never recover under the name declared.
+    return bool(match and match.group(1) == letter)
+
+
 def _unrecoverable_cause_letters(
     chunks: List[str], causes: Optional[List[Dict[str, Any]]]
 ) -> List[str]:
@@ -182,13 +204,27 @@ def _row_causes(knowledge_metadata: Any) -> Optional[List[Dict[str, Any]]]:
 
     Returns None unless the value decodes to a dict whose ``causes`` is a list —
     the same tolerance :meth:`get_runbook_causes` applies to the domain shape.
+    A value that is present but undecodable warns on the way to that None: it is
+    the one "no record" answer that is really "unread record", and it silently
+    disables the caller's check.
     """
     if isinstance(knowledge_metadata, dict):
         decoded: Any = knowledge_metadata
     elif knowledge_metadata:
         try:
             decoded = json.loads(knowledge_metadata)
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError) as decode_error:
+            # An undecodable value is NOT "no record" — it is a record we could
+            # not read, and returning None quietly makes it indistinguishable
+            # from a prose runbook. That matters here more than it looks: the
+            # caller reads this to CHECK the record, so a silent miss disables
+            # the check for exactly the row whose metadata is already suspect.
+            logger.warning(
+                "Unreadable knowledge_items metadata (%s): treating the row as "
+                "carrying no causes record, so its causes/chunk agreement goes "
+                "unchecked.",
+                decode_error,
+            )
             return None
     else:
         return None
@@ -1053,8 +1089,14 @@ class KnowledgeService:
         acts on) plus ``kb_cause_unseedable_at_ingest_total`` labeled by which
         chunker produced the disagreement.
 
-        Swallows its own errors. This is a diagnostic on the ingest path; a bug
-        in the check must not be able to fail the write it is observing.
+        Swallows its own errors — a diagnostic on the ingest path must not be
+        able to fail the write it is observing — but reports the swallow LOUDLY,
+        which is the part that is easy to get wrong. A check that dies quietly
+        leaves ``kb_cause_unseedable_at_ingest_total`` reading zero, and zero is
+        this alarm's healthy state: a broken guard would be indistinguishable
+        from a clean corpus, which is the exact silent-failure shape the guard
+        exists to close. So the swallow costs a WARNING with the traceback and
+        an increment of ``kb_cause_ingest_check_failed_total``.
         """
         try:
             missing = _unrecoverable_cause_letters(chunks, causes)
@@ -1065,22 +1107,68 @@ class KnowledgeService:
             )
 
             kb_cause_unseedable_at_ingest_total.labels(chunker=chunker).inc()
-            logger.warning(
-                "UNSEEDABLE RUNBOOK CAUSES %s: the causes record declares "
-                "letter(s) %s that no chunk of this document carries a "
-                "'### Cause X:' heading for (%d chunks, %s chunker). Those "
-                "causes can never be seeded into an investigation — retrieval "
-                "has no way to name them. Fix the runbook's Causes section (or "
-                "the producer that emitted the record) and re-ingest.",
-                document_id,
-                ", ".join(missing),
-                len(chunks),
-                chunker,
-            )
+            # Say which SIDE is wrong when the letter itself proves it. A letter
+            # the heading grammar cannot express (``cause_letter: "a"``) is
+            # unseedable — the seeder's join is case-sensitive, so reporting it
+            # is correct — but the Causes section is not what needs fixing, and
+            # advice pointing there would send a producer looking at healthy
+            # markdown. Normalising case instead would be worse than imprecise:
+            # it would call a cause recoverable that retrieval cannot join.
+            ungrammatical = [
+                letter for letter in missing if not _letter_can_head_a_cause(letter)
+            ]
+            absent = [letter for letter in missing if letter not in ungrammatical]
+            if absent:
+                logger.warning(
+                    "UNSEEDABLE RUNBOOK CAUSES %s: the causes record declares "
+                    "letter(s) %s that no chunk of this document carries a "
+                    "'### Cause X:' heading for (%d chunks, %s chunker). Those "
+                    "causes can never be seeded into an investigation — "
+                    "retrieval has no way to name them. Fix the runbook's "
+                    "Causes section (or the producer that emitted the record) "
+                    "and re-ingest.",
+                    document_id,
+                    ", ".join(absent),
+                    len(chunks),
+                    chunker,
+                )
+            if ungrammatical:
+                logger.warning(
+                    "UNSEEDABLE RUNBOOK CAUSES %s: the causes record declares "
+                    "letter(s) %s that no '### Cause X:' heading can express, "
+                    "so no chunk could ever carry them (%s chunker). The "
+                    "markdown is not what is wrong here — the RECORD is "
+                    "malformed, and whichever producer emitted it is what to "
+                    "fix.",
+                    document_id,
+                    ", ".join(ungrammatical),
+                    chunker,
+                )
         except Exception as check_error:
-            logger.debug(
-                "Unseedable-causes check failed for %s: %s", document_id, check_error
+            # Loud, not debug. Production runs at INFO, so a DEBUG line here
+            # would let a broken check disappear while its counter kept
+            # reporting a clean corpus — see the docstring.
+            logger.warning(
+                "UNSEEDABLE-CAUSES CHECK FAILED for %s (%s chunker): %s. That "
+                "document went unchecked, and kb_cause_unseedable_at_ingest_"
+                "total cannot be read as a clean bill of health until this "
+                "stops.",
+                document_id,
+                chunker,
+                check_error,
+                exc_info=True,
             )
+            try:
+                from faultmaven.core.investigation.lifecycle_metrics import (
+                    kb_cause_ingest_check_failed_total,
+                )
+
+                kb_cause_ingest_check_failed_total.inc()
+            except Exception:
+                # The deferred import is among the likelier things to have
+                # failed above; the WARNING already carries the report, and
+                # nothing here may raise into the write.
+                pass
 
     async def _discard_vectors_for_vanished_row(self, document_id: str) -> None:
         """Drop vectors written for a row that was deleted mid-update (#952).
