@@ -592,95 +592,63 @@ jobs:
       # docs/operations/security/vulnerability-exceptions.md or a tracking
       # issue; an ignore without a documented anchor should be rejected in
       # review. Remove the ignore when its entry's escalation trigger fires.
-      # An ignore is also scoped to the narrowest set of lockfiles it is
-      # actually needed for (see CLOUD_IGNORES) — a global ignore for a
-      # finding that only one lockfile is stuck on would hide a regression
-      # in the others.
+      #
+      # One invocation over every lockfile. The three files pin identical
+      # versions for every package they share, so nothing needs a per-file
+      # exception and pip-audit's single merged resolution is exact. If a
+      # future lockfile has to sit on a vulnerable pin the others have moved
+      # off, split the run back out per scope rather than widening an ignore
+      # to all three — a global ignore would hide the regression elsewhere.
       - name: Audit locked dependencies (pip-audit)
         run: |
-          # Apply to every lockfile.
-          COMMON_IGNORES=(
+          IGNORES=(
             # chromadb pre-auth code injection — no patched release exists;
-            # unreachable in standalone, contained in cloud.
+            # unreachable in standalone, contained in cloud. pip-audit prints
+            # this one under its PYSEC alias (PYSEC-2026-311); it matches
+            # aliases, so the GHSA id below is what suppresses it — do not
+            # "correct" the id to whatever the log shows.
             # → vulnerability-exceptions.md "chromadb" (fm#902)
             --ignore-vuln GHSA-f4j7-r4q5-qw2c
-            # lupa sandbox escape — no upstream fix; Lua bodies are module
-            # string constants, no user input reaches them. Staged: OSV's
-            # range stops at 2.6 today, but the doc records the bug observed
-            # in 2.8 ("advisory range may trail releases") — when the range
-            # extends, this must not red the gate for an accepted risk.
+            # lupa sandbox escape — no upstream fix (2.7 and 2.8 are build
+            # and packaging releases); Lua bodies are module string constants,
+            # no user input reaches them. PRE-ARMED, NOT LOAD-BEARING: the
+            # advisory range stops at 2.6 while we pin 2.8, so pip-audit has
+            # nothing to report and this flag currently suppresses nothing.
+            # Keep it anyway — if the range is corrected to cover 2.8, this
+            # must not red the gate on a risk already accepted. Do not delete
+            # it for being inert; see the doc section on why the scanners are
+            # quiet (which is also why lupa has no Dependabot alert to watch).
             # → vulnerability-exceptions.md "lupa"
             --ignore-vuln GHSA-69v7-xpr6-6gjm
-            # litellm proxy-server advisories — every patched release is
-            # blocked by our pydantic<2.10 ceiling; the proxy never runs here.
-            # → vulnerability-exceptions.md "litellm" (all 10 ids listed there)
-            --ignore-vuln GHSA-4xpc-pv4p-pm3w
-            --ignore-vuln GHSA-r75f-5x8p-qvmc
-            --ignore-vuln GHSA-7488-6r32-c95q
-            --ignore-vuln GHSA-qrc4-49gv-mv9m
-            --ignore-vuln GHSA-wpfp-gwwc-vwq6
-            --ignore-vuln GHSA-wxxx-gvqv-xp7p
-            --ignore-vuln GHSA-v4p8-mg3p-g94g
-            --ignore-vuln GHSA-xqmj-j6mv-4862
-            --ignore-vuln GHSA-5jmr-gcrj-2c9q
-            --ignore-vuln GHSA-4g5m-c9r5-49xf
-            # setuptools (medium): fix is 83.0.0, blocked by torch==2.11's
-            # setuptools<82 pin — tracked on fm#904.
-            --ignore-vuln GHSA-h35f-9h28-mq5c
-            # torch (low): fixed in 2.13.0; heavy runtime bump — fm#904.
-            --ignore-vuln GHSA-rrmf-rvhw-rf47
-          )
-          # Applies to requirements/cloud.txt ONLY.
-          CLOUD_IGNORES=(
-            # cryptography PKCS#7 EnvelopedData Bleichenbacher oracle, fixed
-            # in 50.0.0. dev.txt/test.txt are already on 50.0.0; cloud.txt is
-            # pinned to 49.0.0 by workos's cryptography~=49.0, which every
-            # workos release through 10.1.0 declares. We never decrypt PKCS#7
-            # — the only cryptography surface here is RS256 JWT keygen.
-            # Scoped to cloud so a regression of dev/test back below 50 still
-            # reds the gate. pip-audit prints the CVE alias (CVE-2026-69247);
-            # it matches aliases, so the GHSA id below suppresses it.
-            # → vulnerability-exceptions.md "cryptography" (fm#980)
-            --ignore-vuln GHSA-g6cj-pr64-35w5
           )
           # Glob-built so a future lockfile cannot silently escape the audit.
-          # Partitioned by ignore scope, with STRICT as the default: a new
-          # requirements file is audited with no per-file exception unless it
-          # is explicitly moved into the cloud group here.
-          STRICT_REQS=()
-          CLOUD_REQS=()
+          REQS=()
           for f in requirements/*.txt; do
-            case "$f" in
-              requirements/cloud.txt) CLOUD_REQS+=(-r "$f") ;;
-              *)                      STRICT_REQS+=(-r "$f") ;;
-            esac
+            # An unmatched glob leaves the literal pattern as one iteration.
+            # With a single list that would make REQS non-empty and the guard
+            # below silent, so the -f test is what keeps it able to fire. (The
+            # two-list version this replaced happened to survive that case for
+            # an unrelated reason: the literal fell into the non-cloud arm, so
+            # the CLOUD side was empty and its guard tripped. Neither version
+            # was ever fail-open — this one just does not depend on the
+            # accident.)
+            [ -f "$f" ] || continue
+            REQS+=(-r "$f")
           done
-          # Fail closed if the partition no longer matches the lockfile
-          # layout: pip-audit with no -r audits the runner's venv and would
-          # report a cheerful green having checked nothing.
-          if [ ${#STRICT_REQS[@]} -eq 0 ] || [ ${#CLOUD_REQS[@]} -eq 0 ]; then
-            echo "::error::lockfile partition is empty on one side (cloud=$(( ${#CLOUD_REQS[@]} / 2 )) files, strict=$(( ${#STRICT_REQS[@]} / 2 )) files) — update this step to match requirements/"
+          # Fail closed on an empty list: pip-audit with no -r audits the
+          # runner's venv and would report a cheerful green having checked
+          # nothing.
+          if [ ${#REQS[@]} -eq 0 ]; then
+            echo "::error::no lockfiles matched requirements/*.txt — pip-audit would audit the runner venv instead"
             exit 1
           fi
-          # One bounded retry per group: a transient OSV/PyPI error is
-          # otherwise indistinguishable from a finding. Real findings fail
-          # twice. Both groups always run and both always report — a red group
-          # must not mask the other's findings — and the step fails if either
-          # is red.
-          rc=0
-          audit() {
-            local label=$1; shift
-            echo "::group::pip-audit — ${label}"
-            pip-audit --no-deps "$@" || {
-              echo "pip-audit (${label}) failed — retrying once in case of transient service error"
-              sleep 30
-              pip-audit --no-deps "$@" || rc=1
-            }
-            echo "::endgroup::"
+          # One bounded retry: a transient OSV/PyPI error is otherwise
+          # indistinguishable from a finding. Real findings fail twice.
+          pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}" || {
+            echo "pip-audit failed — retrying once in case of transient service error"
+            sleep 30
+            pip-audit --no-deps "${REQS[@]}" "${IGNORES[@]}"
           }
-          audit "dev+test (no cryptography exception)" "${STRICT_REQS[@]}" "${COMMON_IGNORES[@]}"
-          audit "cloud" "${CLOUD_REQS[@]}" "${COMMON_IGNORES[@]}" "${CLOUD_IGNORES[@]}"
-          exit "$rc"
 
       - name: Run security linter (bandit)
         # Gate on bandit's own exit code at HIGH severity + HIGH confidence —

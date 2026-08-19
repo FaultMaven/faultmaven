@@ -62,9 +62,6 @@
           "view": {
             "const": "full",
             "default": "full",
-            "enum": [
-              "full"
-            ],
             "title": "View",
             "type": "string"
           }
@@ -255,9 +252,6 @@
           "view": {
             "const": "metadata",
             "default": "metadata",
-            "enum": [
-              "metadata"
-            ],
             "title": "View",
             "type": "string"
           }
@@ -521,6 +515,7 @@
           "metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -679,9 +674,6 @@
             "anyOf": [
               {
                 "const": "S256",
-                "enum": [
-                  "S256"
-                ],
                 "type": "string"
               },
               {
@@ -1569,9 +1561,6 @@
             "const": "markdown",
             "default": "markdown",
             "description": "Report format",
-            "enum": [
-              "markdown"
-            ],
             "title": "Format",
             "type": "string"
           },
@@ -1928,9 +1917,6 @@
             "const": "inquiry",
             "default": "inquiry",
             "description": "Always 'inquiry' for this response type",
-            "enum": [
-              "inquiry"
-            ],
             "title": "State",
             "type": "string"
           },
@@ -2081,9 +2067,6 @@
             "const": "investigating",
             "default": "investigating",
             "description": "Always 'investigating' for this response type",
-            "enum": [
-              "investigating"
-            ],
             "title": "State",
             "type": "string"
           },
@@ -2925,6 +2908,7 @@
           "problem_confirmation": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3173,6 +3157,7 @@
           "metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3719,6 +3704,7 @@
           "metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -3873,6 +3859,7 @@
           "details": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4362,6 +4349,7 @@
           "metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4826,6 +4814,7 @@
           "case_context": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -4963,6 +4952,7 @@
           "filters": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5037,6 +5027,7 @@
           "metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5104,6 +5095,7 @@
           "metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5115,9 +5107,6 @@
           "schema_version": {
             "const": "3.1.0",
             "default": "3.1.0",
-            "enum": [
-              "3.1.0"
-            ],
             "title": "Schema Version",
             "type": "string"
           },
@@ -5208,6 +5197,7 @@
           "metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5367,6 +5357,7 @@
           "intent": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -5886,6 +5877,7 @@
           "source_metadata": {
             "anyOf": [
               {
+                "additionalProperties": true,
                 "type": "object"
               },
               {
@@ -6008,6 +6000,7 @@
             "title": "Last Login At"
           },
           "metadata": {
+            "additionalProperties": true,
             "title": "Metadata",
             "type": "object"
           },
@@ -6805,6 +6798,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Llm Routing Health Api V1 Admin Debug Llm Routing Get",
                   "type": "object"
                 }
@@ -8023,6 +8017,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Revoke Api V1 Auth Oauth Revoke Post",
                   "type": "object"
                 }
@@ -8344,6 +8339,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response List Users Api V1 Auth Users Get",
                   "type": "object"
                 }
@@ -8431,6 +8427,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Delete User Api V1 Auth Users  Username  Delete",
                   "type": "object"
                 }
@@ -8663,6 +8660,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Case Service Health Api V1 Cases Health Get",
                   "type": "object"
                 }
@@ -8778,6 +8776,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Create Case For Session Api V1 Cases Sessions  Session Id  Case Post",
                   "type": "object"
                 }
@@ -8831,6 +8830,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Resume Case In Session Api V1 Cases Sessions  Session Id  Resume  Case Id  Post",
                   "type": "object"
                 }
@@ -9029,6 +9029,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Case Analytics Api V1 Cases  Case Id  Analytics Get",
                   "type": "object"
                 }
@@ -9079,6 +9080,7 @@
               "schema": {
                 "anyOf": [
                   {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   {
@@ -9318,6 +9320,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Case Data Api V1 Cases  Case Id  Data  Data Id  Get",
                   "type": "object"
                 }
@@ -9486,6 +9489,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "description": "Request body: {'data_type': '<DataType value>'}. The data_type must be one of the enum values in faultmaven.models.api.DataType (e.g. 'logs_and_errors', 'structured_config').",
                 "title": "Body",
                 "type": "object"
@@ -9548,6 +9552,7 @@
               "schema": {
                 "anyOf": [
                   {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   {
@@ -9564,6 +9569,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Extract Knowledge From Case Api V1 Cases  Case Id  Extract Knowledge Post",
                   "type": "object"
                 }
@@ -9856,6 +9862,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Request Body",
                 "type": "object"
               }
@@ -10610,6 +10617,7 @@
               "schema": {
                 "anyOf": [
                   {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   {
@@ -10949,6 +10957,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Search Analytics Api V1 Knowledge Analytics Search Get",
                   "type": "object"
                 }
@@ -11411,6 +11420,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response List Documents Api V1 Knowledge Documents Get",
                   "type": "object"
                 }
@@ -11452,6 +11462,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Upload Document Api V1 Knowledge Documents Post",
                   "type": "object"
                 }
@@ -11507,6 +11518,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Bulk Delete Documents Api V1 Knowledge Documents Bulk Delete Post",
                   "type": "object"
                 }
@@ -11544,6 +11556,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Payload",
                 "type": "object"
               }
@@ -11556,6 +11569,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Bulk Update Documents Api V1 Knowledge Documents Bulk Update Post",
                   "type": "object"
                 }
@@ -11604,6 +11618,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Fulltext Search Documents Api V1 Knowledge Documents Search Post",
                   "type": "object"
                 }
@@ -11732,6 +11747,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Update Data",
                 "type": "object"
               }
@@ -11744,6 +11760,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Document Api V1 Knowledge Documents  Document Id  Put",
                   "type": "object"
                 }
@@ -12044,6 +12061,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Search Documents Api V1 Knowledge Search Post",
                   "type": "object"
                 }
@@ -12077,6 +12095,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Knowledge Stats Api V1 Knowledge Stats Get",
                   "type": "object"
                 }
@@ -12152,6 +12171,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response List Suggestions Api V1 Knowledge Suggestions Get",
                   "type": "object"
                 }
@@ -12201,6 +12221,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Get Suggestion Api V1 Knowledge Suggestions  Suggestion Id  Get",
                   "type": "object"
                 }
@@ -12247,6 +12268,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Update Data",
                 "type": "object"
               }
@@ -12259,6 +12281,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Update Suggestion Api V1 Knowledge Suggestions  Suggestion Id  Put",
                   "type": "object"
                 }
@@ -12309,6 +12332,7 @@
               "schema": {
                 "anyOf": [
                   {
+                    "additionalProperties": true,
                     "type": "object"
                   },
                   {
@@ -12325,6 +12349,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Approve Suggestion Api V1 Knowledge Suggestions  Suggestion Id  Approve Post",
                   "type": "object"
                 }
@@ -12373,6 +12398,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Request Body",
                 "type": "object"
               }
@@ -12385,6 +12411,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Reject Suggestion Api V1 Knowledge Suggestions  Suggestion Id  Reject Post",
                   "type": "object"
                 }
@@ -12434,6 +12461,7 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "additionalProperties": true,
                   "title": "Response Remediate Pii Api V1 Knowledge Suggestions  Suggestion Id  Remediate Pii Post",
                   "type": "object"
                 }
@@ -13107,6 +13135,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Search Params",
                 "type": "object"
               }
@@ -13239,6 +13268,7 @@
           "content": {
             "application/json": {
               "schema": {
+                "additionalProperties": true,
                 "title": "Updates",
                 "type": "object"
               }
