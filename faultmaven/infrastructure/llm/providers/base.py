@@ -149,6 +149,24 @@ class ReasoningIntent(str, Enum):
     # to answer. This member exists so that experiment is expressible.
     INFERENCE = "inference"
 
+    @classmethod
+    def coerce(cls, value: Any) -> Optional["ReasoningIntent"]:
+        """Normalise ``None`` / a member / the string spelling to a member.
+
+        Every consumer compares with ``is`` against a member, so a raw string
+        that reaches a comparison evaluates ``False`` and the intent is
+        silently ignored — no exception, no log, the declaration simply lost.
+        The router normalises, but providers are reached directly too
+        (``milestone_engine`` binds a concrete provider; ``admin_config``
+        tests connections), so each entry point coerces through here rather
+        than re-implementing the check. ``cls(member) is member`` for a
+        str-enum, so this is idempotent, and an unknown spelling raises
+        ``ValueError`` at the boundary that introduced it.
+        """
+        if value is None:
+            return None
+        return cls(value)
+
 
 @dataclass
 class ToolCall:
@@ -505,20 +523,64 @@ class BaseLLMProvider(ABC):
         (pre-call budget bump + post-call floor check), so a provider with no
         reasoning partition to size loses nothing by dropping it.
         """
-        intent = kwargs.pop("reasoning_intent", None)
+        intent = ReasoningIntent.coerce(kwargs.pop("reasoning_intent", None))
         kwargs.pop("min_output_tokens", None)
-        if intent is not None:
-            intent_value = getattr(intent, "value", intent)
-            # Worded as "does not act on", not "has no reasoning control":
-            # a provider may well have a reasoning mechanism (or grow one)
-            # that simply is not driven by the intent yet — the log records
-            # that the DECLARED intent was not translated, nothing more.
-            self.logger.info(
-                f"reasoning_intent='{intent_value}' declared, but "
-                f"{self.provider_name} does not act on reasoning intent on "
-                f"this call path (model: {model or self.config.default_model}) "
-                f"— proceeding with the provider's configured behavior"
-            )
+        if intent is None:
+            return
+        # Worded as "does not act on", not "has no reasoning control": a
+        # provider may well have a reasoning mechanism (or grow one) that
+        # simply is not driven by the intent yet — the log records that the
+        # DECLARED intent was not translated, nothing more.
+        message = (
+            f"reasoning_intent='{intent.value}' declared, but "
+            f"{self.provider_name} does not act on reasoning intent on this "
+            f"call path (model: {model or self.config.default_model}) — "
+            f"proceeding with the provider's configured behavior"
+        )
+        # INFERENCE warns, EXTRACTION informs. An unhonoured INFERENCE is the
+        # caller asking for reasoning and not getting it — the case an
+        # operator needs to see, and a fallback chain can land it on any of
+        # these providers. Logging it at INFO made diagnosability a function
+        # of which provider answered, because the runbook prescribes
+        # ``LOG_LEVEL=WARNING`` as the log-volume remedy
+        # (docs/operations/monitoring/operations-runbook.md) and OpenAI warns
+        # for the identical condition. EXTRACTION stays INFO: the intent asks
+        # for LESS reasoning, so not applying it risks spend, not silence.
+        if intent is ReasoningIntent.INFERENCE:
+            self.logger.warning(message)
+        else:
+            self.logger.info(message)
+
+    def _merge_extra_kwargs(
+        self,
+        payload: Dict[str, Any],
+        kwargs: Dict[str, Any],
+        model: Optional[str] = None,
+    ) -> None:
+        """Discard the router-level knobs, then merge what remains into *payload*.
+
+        Six providers repeat ``payload.update({k: v for k, v in kwargs.items()
+        if v is not None})`` verbatim, which sends every unconsumed kwarg to
+        the provider API as a body field. That makes "remember to pop the
+        router's knobs first" a convention rather than a mechanism — and the
+        convention already has holes for the older ``cache_prompt`` knob. A
+        provider written from the checklist in ``CLAUDE.md`` with the copied
+        merge idiom would send ``reasoning_intent`` and ``min_output_tokens``
+        on every routed call and be dead on arrival against any
+        OpenAI-compatible endpoint.
+
+        Routing the merge through here makes the discard automatic: a provider
+        that consumes a knob pops it before calling this, and one that does not
+        cannot leak it. ``None`` values are still filtered, so a caller passing
+        ``tools=None`` cannot overwrite a constructed payload field.
+
+        NOTE: ``registry.route_request`` is deliberately NOT the chokepoint —
+        ``milestone_engine`` and ``admin_config`` call ``provider.generate()``
+        directly, so a registry-level pop would miss them.
+        """
+        self._discard_reasoning_kwargs(kwargs, model=model)
+        kwargs.pop("cache_prompt", None)
+        payload.update({k: v for k, v in kwargs.items() if v is not None})
 
     def supports_tool_calling(self, model: Optional[str] = None) -> bool:
         """Whether this provider/model supports function calling (tools API).

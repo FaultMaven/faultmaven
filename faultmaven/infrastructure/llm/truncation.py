@@ -91,6 +91,7 @@ async def generate_with_truncation_retry(
     max_tokens: int,
     ceiling: Optional[int] = None,
     label: str = "llm call",
+    min_output_tokens: Optional[int] = None,
 ) -> LLMResponse:
     """Run *call*, and retry once with a bigger cap if the body was cut.
 
@@ -108,10 +109,21 @@ async def generate_with_truncation_retry(
             temperature) so this helper stays agnostic to how the call is made
             — router ``route``, provider ``generate``, both work.
         max_tokens: The cap for the first attempt.
-        ceiling: Highest cap the retry may use. Defaults to ``2 * max_tokens``,
-            i.e. exactly one doubling. Bounds what a single logical call may
-            spend chasing an answer that keeps overrunning.
+        ceiling: Highest cap the retry may use. Defaults to ``2 *`` the
+            EFFECTIVE first cap (see ``min_output_tokens``), i.e. exactly one
+            doubling. Bounds what a single logical call may spend chasing an
+            answer that keeps overrunning.
         label: Short description used in the log lines.
+        min_output_tokens: The floor the wrapped call declares, when it
+            declares one. Required for the retry to be a real retry:
+            ``route()`` raises any cap below the floor UP to the floor, so a
+            helper reasoning from the nominal ``max_tokens`` computes a retry
+            cap the router then bumps back to the same effective value —
+            whenever ``floor >= 2 * max_tokens`` both attempts run at an
+            identical effective cap, byte-identical requests billed twice for
+            a guaranteed second failure. Passing the floor here makes the
+            helper's arithmetic match the router's: the doubling is applied to
+            what the first attempt ACTUALLY ran at.
 
     Returns:
         The response from the last attempt — which MAY still be truncated. Read
@@ -128,55 +140,59 @@ async def generate_with_truncation_retry(
             retry into. A floor violation on the first attempt is recovered
             here like any other truncation — one retry at the bigger cap.
     """
-    limit = ceiling if ceiling is not None else max_tokens * 2
-    retry_cap = min(max_tokens * 2, limit)
+    # The cap the first attempt ACTUALLY runs at — the router raises anything
+    # below the declared floor up to it, so this is what the doubling must be
+    # measured from (see ``min_output_tokens``).
+    effective_max = max(max_tokens, min_output_tokens or 0)
+    limit = ceiling if ceiling is not None else effective_max * 2
+    retry_cap = min(effective_max * 2, limit)
+    has_headroom = retry_cap > effective_max
 
+    # One rung, two ways in: a response the provider marked cut, or the floor
+    # error the router raises for a starved floored call. They are the same
+    # failure — the answer did not fit — so they share one retry decision
+    # rather than two near-identical blocks that can drift apart.
+    first_error: Optional[LLMOutputFloorError] = None
     try:
-        response = await call(max_tokens)
-    except LLMOutputFloorError:
-        # Starved below the caller's declared floor (#1117) — the exception
-        # form of exactly the MAX_TOKENS cut this helper recovers. Same
-        # remedy, same single rung: once more, with more room. A second
-        # violation at the bigger cap propagates — the floor's fail-loudly
-        # contract takes over where recovery has been spent.
-        if retry_cap <= max_tokens:
-            logger.warning(
-                "%s starved below its output floor at max_tokens=%s, already "
-                "at the ceiling (%s) — no headroom to retry into, re-raising",
-                label,
-                max_tokens,
-                limit,
-            )
-            raise
-        logger.warning(
-            "%s starved below its output floor at max_tokens=%s; retrying "
-            "once at %s",
-            label,
-            max_tokens,
-            retry_cap,
-        )
-        return await call(retry_cap)
+        response = await call(effective_max)
+        if not response.is_truncated:
+            return response
+        reason = "truncated"
+    except LLMOutputFloorError as exc:
+        first_error = exc
+        response = None
+        reason = "starved below its output floor"
 
-    if not response.is_truncated:
-        return response
-
-    if retry_cap <= max_tokens:
+    if not has_headroom:
         logger.warning(
-            "%s truncated at max_tokens=%s, already at the ceiling (%s) — "
-            "returning the partial response",
+            "%s %s at max_tokens=%s, already at the ceiling (%s) — %s",
             label,
-            max_tokens,
+            reason,
+            effective_max,
             limit,
+            (
+                "no headroom to retry into, re-raising"
+                if first_error is not None
+                else "returning the partial response"
+            ),
         )
+        if first_error is not None:
+            raise first_error
         return response
 
     logger.warning(
-        "%s truncated at max_tokens=%s; retrying once at %s",
+        "%s %s at max_tokens=%s; retrying once at %s",
         label,
-        max_tokens,
+        reason,
+        effective_max,
         retry_cap,
     )
     retried = await call(retry_cap)
+    # The retry can end either way regardless of how the first attempt failed:
+    # a floored call whose retry merely truncates (floor met) returns the
+    # partial like any other, and the labelled retry-also-failed signal is
+    # emitted for both — it was previously lost on exactly the calls that
+    # opted into stricter guarantees.
     if retried.is_truncated:
         logger.warning(
             "%s truncated again at max_tokens=%s — returning the partial "

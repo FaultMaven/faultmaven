@@ -258,10 +258,8 @@ class LocalProvider(BaseLLMProvider):
         if "response_format" in kwargs:
             payload["response_format"] = kwargs.pop("response_format")
 
-        # Anthropic-only caching hint; drop before payload.update(kwargs).
-        kwargs.pop("cache_prompt", None)
-
-        payload.update({k: v for k, v in kwargs.items() if v is not None})
+        # Discards the router-level knobs, then merges the rest (see base).
+        self._merge_extra_kwargs(payload, kwargs, model=model)
 
         self.logger.debug(f"Request payload: {payload}")
 
@@ -392,9 +390,9 @@ class LocalProvider(BaseLLMProvider):
             "stream": False,
         }
 
-        # Add any additional options, filtering out None values
+        # Add any additional options (knobs discarded, None values filtered).
         if kwargs:
-            payload.update({k: v for k, v in kwargs.items() if v is not None})
+            self._merge_extra_kwargs(payload, kwargs, model=model)
 
         async with aiohttp.ClientSession() as session:
             async with session.post(

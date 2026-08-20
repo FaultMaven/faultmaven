@@ -28,6 +28,7 @@ These tests exercise the REAL ``route()`` signature on a real ``LLMRouter``
 behind a Mock that accepts anything.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -285,6 +286,49 @@ class TestFloorComposesWithTruncationRetry:
     the floor's contract.
     """
 
+    async def test_retry_runs_at_a_bigger_EFFECTIVE_cap_through_the_real_router(
+        self, router, mock_registry
+    ):
+        """The defect this pins could not be seen through a stub.
+
+        ``route()`` raises any cap below the floor UP to the floor, so a
+        helper reasoning from the caller's NOMINAL max_tokens computes a retry
+        cap the router then bumps straight back to the same effective value.
+        With max_tokens=800 and a 2000 floor, both attempts ran at an
+        effective 2000 — byte-identical requests, billed twice, for a
+        guaranteed second failure.
+
+        This drives the REAL router and records the cap the registry actually
+        received, so the assertion is about what went to the provider rather
+        than what the helper believed it asked for.
+        """
+        effective_caps = []
+        starved = _response("x" * 215, StopReason.MAX_TOKENS)
+        good = _response("word " * 4000, StopReason.STOP)
+
+        async def fake_route_request(*args, **kwargs):
+            effective_caps.append(kwargs["max_tokens"])
+            return starved if len(effective_caps) == 1 else good
+
+        mock_registry.route_request = AsyncMock(side_effect=fake_route_request)
+
+        async def call(cap: int):
+            return await router.route(
+                prompt="test",
+                max_tokens=cap,
+                min_output_tokens=2000,
+                bypass_cache=True,
+            )
+
+        result = await generate_with_truncation_retry(
+            call, max_tokens=800, min_output_tokens=2000, label="floored call"
+        )
+        assert result is good
+        assert effective_caps == [2000, 4000], (
+            "the retry must reach the provider at a genuinely bigger cap; "
+            f"got {effective_caps}"
+        )
+
     async def test_starved_first_attempt_recovered_by_bigger_retry(self):
         """The composition the fix exists for: floor-starved first attempt →
         one retry at 2x cap → caller gets the good response, no exception."""
@@ -408,3 +452,234 @@ class TestCacheIntentKey:
             cache.check("prompt", "gpt-5.4-mini", reasoning_intent="extraction").content
             == "answer"
         )
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestFloorMeasuresWithTheRealTokenizer:
+    """The visible-output estimate is measured, not guessed.
+
+    ``len(text)//4`` is not a conservative approximation in either direction —
+    it is shape-dependent. Measured against tiktoken: English prose runs ~6.5
+    chars/token (the heuristic overstates, guard under-fires) while id-dense
+    JSON, base64 and CJK run 0.9-2.1 chars/token (it understates, and the
+    guard fires on a body that MET the floor). The false positive is the
+    unsafe direction — it kills an otherwise-usable turn — and dense
+    structured output is exactly the shape this feature targets.
+    """
+
+    async def test_dense_json_above_the_floor_is_not_raised_on(
+        self, router, mock_registry
+    ):
+        """Regression for the estimator direction. This id-dense JSON body is
+        ~1000 real tokens against a 600-token floor — comfortably clear — but
+        `len//4` scores it ~460 and would raise."""
+        import json
+        import uuid
+
+        body = json.dumps(
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "ts": "2026-08-19T22:14:03.221Z",
+                    "v": i * 1.37,
+                }
+                for i in range(20)
+            ],
+            separators=(",", ":"),
+        )
+        assert len(body) // 4 < 600, "sample must be one the old heuristic failed"
+        mock_registry.route_request = AsyncMock(
+            return_value=_response(body, StopReason.MAX_TOKENS)
+        )
+        response = await router.route(
+            prompt="test", max_tokens=2000, min_output_tokens=600, bypass_cache=True
+        )
+        assert response.is_truncated
+
+    async def test_genuinely_starved_body_still_raises(self, router, mock_registry):
+        """The guard must still fire on the failure it exists for — the
+        fm#1094 stub misses the floor by an order of magnitude under any
+        tokenizer."""
+        mock_registry.route_request = AsyncMock(
+            return_value=_response("x" * 215, StopReason.MAX_TOKENS)
+        )
+        with pytest.raises(LLMOutputFloorError):
+            await router.route(
+                prompt="test",
+                max_tokens=2000,
+                min_output_tokens=500,
+                bypass_cache=True,
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestFloorOnNoStopSignal:
+    """Supplement A: the gate is three-valued, and UNKNOWN is the value where
+    a reader would want to be told the guard is off.
+
+    ``normalize_stop_reason`` maps everything outside its alias table to
+    UNKNOWN, so this is not a HuggingFace footnote: any finish reason a
+    provider API adds later disables the floor on that provider. Raising on
+    no-signal is NOT the fix — that would treat "we don't know" as "it was
+    cut" and buy false positives on short answers — so a starved-looking
+    no-signal body is warned about and returned.
+    """
+
+    async def test_no_signal_starved_body_warns_and_returns(
+        self, router, mock_registry, caplog
+    ):
+        mock_registry.route_request = AsyncMock(
+            return_value=_response("x" * 215, StopReason.UNKNOWN)
+        )
+        with caplog.at_level(logging.WARNING):
+            response = await router.route(
+                prompt="test",
+                max_tokens=2000,
+                min_output_tokens=500,
+                bypass_cache=True,
+            )
+        assert response.content == "x" * 215
+        assert any("NOT ENFORCEABLE" in r.message for r in caplog.records)
+
+    async def test_no_signal_body_above_the_floor_is_silent(
+        self, router, mock_registry, caplog
+    ):
+        mock_registry.route_request = AsyncMock(
+            return_value=_response("word " * 4000, StopReason.UNKNOWN)
+        )
+        with caplog.at_level(logging.WARNING):
+            await router.route(
+                prompt="test",
+                max_tokens=2000,
+                min_output_tokens=500,
+                bypass_cache=True,
+            )
+        assert not any("NOT ENFORCEABLE" in r.message for r in caplog.records)
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestFloorFailureAccounting:
+    """A floor-starved call left via neither the success block nor the generic
+    failure handler, so it appeared in no latency, token or SLA series: cost
+    dashboards under-reported real spend and SLA availability dropped starved
+    calls from both numerator and denominator — overstating provider health
+    during exactly the incident the tracker exists to surface. The provider
+    did answer and the tokens were billed; only the ANSWER is unusable."""
+
+    async def test_starved_call_is_recorded_before_raising(self, router, mock_registry):
+        mock_registry.route_request = AsyncMock(
+            return_value=_response("x" * 215, StopReason.MAX_TOKENS)
+        )
+        with (
+            patch("faultmaven.infrastructure.llm.router.sla_tracker") as mock_sla,
+            patch("faultmaven.infrastructure.llm.router.llm_tokens") as mock_tokens,
+            patch("faultmaven.infrastructure.llm.router.llm_latency") as mock_latency,
+        ):
+            with pytest.raises(LLMOutputFloorError):
+                await router.route(
+                    prompt="test",
+                    max_tokens=2000,
+                    min_output_tokens=500,
+                    bypass_cache=True,
+                )
+        mock_sla.record_request_metrics.assert_called_once()
+        assert mock_sla.record_request_metrics.call_args.kwargs["success"] is False
+        mock_latency.labels.return_value.observe.assert_called_once()
+        mock_tokens.labels.return_value.inc.assert_called_once_with(2000)
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestFloorValidation:
+    """The error text promises a positive INTEGER. Without a type test a
+    float floor (config arithmetic, or a JSON value parsed as a float) passes
+    the comparison, is assigned into max_tokens, and reaches the provider as
+    ``{"max_completion_tokens": 1500.5}`` — every provider 400s and it
+    surfaces as the misleading "All providers failed"."""
+
+    @pytest.mark.parametrize("bad", [1500.5, 500.0, True, False])
+    async def test_non_integer_floor_rejected(self, router, bad):
+        with pytest.raises(ValueError, match="positive integer"):
+            await router.route(prompt="test", min_output_tokens=bad)
+
+    async def test_integer_floor_accepted(self, router, mock_registry):
+        await router.route(prompt="test", min_output_tokens=500, bypass_cache=True)
+        assert mock_registry.route_request.call_args.kwargs["min_output_tokens"] == 500
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestInferenceHeadroomWarning:
+    """The bump raises max_tokens only TO the floor, leaving zero room for
+    hidden reasoning billed from the same budget — so on INFERENCE every
+    MAX_TOKENS stop at that cap raises by construction. What headroom a model
+    needs is a property of that model's reasoning, which this layer cannot
+    know, so it warns rather than inventing an undocumented multiplier."""
+
+    async def test_warns_when_inference_has_no_headroom(
+        self, router, mock_registry, caplog
+    ):
+        with caplog.at_level(logging.WARNING):
+            await router.route(
+                prompt="test",
+                max_tokens=500,
+                reasoning_intent=ReasoningIntent.INFERENCE,
+                min_output_tokens=500,
+                bypass_cache=True,
+            )
+        assert any(
+            "size max_tokens above the floor" in r.message for r in caplog.records
+        )
+
+    async def test_silent_when_headroom_exists(self, router, mock_registry, caplog):
+        with caplog.at_level(logging.WARNING):
+            await router.route(
+                prompt="test",
+                max_tokens=4000,
+                reasoning_intent=ReasoningIntent.INFERENCE,
+                min_output_tokens=500,
+                bypass_cache=True,
+            )
+        assert not any(
+            "size max_tokens above the floor" in r.message for r in caplog.records
+        )
+
+    async def test_floored_retry_that_merely_truncates_gets_the_warning(self, caplog):
+        """#12: the floor path used to end in a bare return, so a retry that
+        came back truncated-but-floor-meeting skipped the helper's labelled
+        retry-also-failed signal — lost on exactly the calls that opted into
+        stricter guarantees. One rung now, so both entries emit it."""
+        cut = _response("word " * 4000, StopReason.MAX_TOKENS)
+
+        async def call(cap: int):
+            if cap == 2000:
+                raise LLMOutputFloorError("starved below floor")
+            return cut
+
+        with caplog.at_level(logging.WARNING):
+            result = await generate_with_truncation_retry(
+                call, max_tokens=2000, label="floored call"
+            )
+        assert result is cut
+        assert any("truncated again" in r.message for r in caplog.records)
+
+    async def test_floor_does_not_change_the_unfloored_doubling(self):
+        """Guard on the shared rung: with no floor declared the arithmetic is
+        exactly what it was before #1117 — nominal cap, one doubling."""
+        caps_seen = []
+        cut = _response("x" * 100, StopReason.MAX_TOKENS)
+
+        async def call(cap: int):
+            caps_seen.append(cap)
+            return cut
+
+        await generate_with_truncation_retry(call, max_tokens=1500, label="plain")
+        assert caps_seen == [1500, 3000]
