@@ -475,8 +475,20 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
         # This repository is stateless and creates sessions per operation
         # Following Principle 5: No shared session state
         repository = SessionlessCaseRepository()
-        db_type = "SQLite" if "sqlite" in database_url.lower() else "PostgreSQL"
-        deployment_type = "Local" if "sqlite" in database_url.lower() else "Cloud"
+        url_lower = database_url.lower()
+        if "sqlite" in url_lower:
+            db_type, deployment_type = "SQLite", "Local"
+        elif "postgresql" in url_lower:
+            db_type, deployment_type = "PostgreSQL", "Cloud"
+        else:
+            # Unsupported dialects still count as configured (see the
+            # predicate's docstring). Label with the DSN's own scheme instead
+            # of guessing "Cloud: PostgreSQL" — this log is what an operator
+            # reads while diagnosing the fail-loudly-at-first-use path, and it
+            # must not lie about the backend (same three-way labeling as
+            # create_user_store below).
+            db_type = database_url.split(":", 1)[0] or "unknown"
+            deployment_type = "Unrecognized dialect"
         logger.info(
             f"✅ Case repository initialized ({deployment_type}: {db_type}, sessionless)"
         )

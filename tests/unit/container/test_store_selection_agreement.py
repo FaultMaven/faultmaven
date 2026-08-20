@@ -50,6 +50,14 @@ REPRESENTATIVE_DSNS = [
     ("", False),
     ("   ", False),
     (":memory:", False),
+    # SQLAlchemy's real in-memory spellings, not just the bare sentinel: the
+    # engine pools SQLite with NullPool, so a sessionless repository over an
+    # in-memory DSN opens a brand-new empty database per operation — that must
+    # classify as ephemeral, never as a configured persistent database.
+    ("sqlite+aiosqlite:///:memory:", False),
+    ("sqlite:///:memory:", False),
+    ("sqlite://", False),
+    ("sqlite:///file:case.db?mode=memory&cache=shared&uri=true", False),
     ("sqlite+aiosqlite:///./data/faultmaven.db", True),
     ("sqlite:///relative.db", True),
     ("postgresql+asyncpg://fm:pw@db:5432/faultmaven", True),

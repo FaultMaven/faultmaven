@@ -624,18 +624,34 @@ def persistent_database_configured(database_url: Optional[str]) -> bool:
     login wrote accounts to one store while ``GET /auth/me`` read an
     always-empty other, silently reproducing #1120 with green tests.
 
-    The rule: persistent iff ``database_url`` is non-empty (after stripping)
-    and not the ``:memory:`` sentinel. An *unsupported* dialect therefore
-    still counts as configured — both sides then point at the same database
-    and fail loudly together at first use, instead of one of them quietly
-    falling back to a store the other never reads.
+    The rule: persistent iff ``database_url`` is non-empty (after stripping),
+    not the ``:memory:`` sentinel, and not a SQLite in-memory spelling
+    (``sqlite+aiosqlite:///:memory:``, ``sqlite://`` with an empty path, or a
+    ``mode=memory`` URI). Those are ephemeral by construction — worse, the
+    engine pools SQLite with ``NullPool``, so each per-operation session of a
+    sessionless repository would open a brand-new empty in-memory database
+    and every write would vanish before the next read. An *unsupported*
+    dialect, by contrast, still counts as configured — both sides then point
+    at the same database and fail loudly together at first use, instead of
+    one of them quietly falling back to a store the other never reads.
 
     A free function taking the URL, not a ``DatabaseSettings`` method: the DI
     factories are exercised with duck-typed settings stubs, and the rule
     should be callable on any URL string without constructing settings.
     """
     url = (database_url or "").strip()
-    return bool(url) and url != ":memory:"
+    if not url or url == ":memory:":
+        return False
+    lower = url.lower()
+    if lower.startswith("sqlite"):
+        # SQLAlchemy's real in-memory spellings, not just the bare sentinel.
+        if ":memory:" in lower or "mode=memory" in lower:
+            return False
+        _, _, path = lower.partition("://")
+        if path.strip("/") == "":
+            # sqlite:// / sqlite+aiosqlite:/// — empty path means in-memory.
+            return False
+    return True
 
 
 class DatabaseSettings(BaseSettings):
