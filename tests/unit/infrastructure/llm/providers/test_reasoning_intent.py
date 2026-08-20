@@ -272,8 +272,12 @@ class TestOpenAIIntentTranslation:
     async def test_tools_on_non_reasoning_model_does_not_cite_responses_api(
         self, mock_aiohttp_session, caplog
     ):
-        """gpt-4o has no reasoning mode to enable. Sending an operator after
-        a /v1/responses migration would send them nowhere."""
+        """gpt-4o + tools must not be sent after a /v1/responses migration —
+        that endpoint would not help a model with no reasoning mode.
+
+        The message states the mechanism (the parameter is not accepted)
+        without asserting whether the model reasons: the same arm serves
+        OpenRouter, whose models all DO reason (B3)."""
         provider = _openai_provider("gpt-4o")
         with caplog.at_level(logging.WARNING):
             await _sent_body(
@@ -284,8 +288,11 @@ class TestOpenAIIntentTranslation:
                 reasoning_intent=ReasoningIntent.INFERENCE,
             )
         messages = " ".join(r.message for r in caplog.records)
-        assert "no reasoning mode to enable" in messages
+        assert "does not accept reasoning_effort" in messages
         assert "/v1/responses" not in messages
+        # Must not assert the model HAS no reasoning mode — the same arm is
+        # reached by OpenRouter routes that reason natively.
+        assert "no reasoning mode to enable" not in messages
 
     async def test_tools_on_reasoning_family_says_effort_is_absent(
         self, mock_aiohttp_session, caplog
@@ -642,8 +649,8 @@ class TestNoMechanismProviders:
         assert _body_has_no_router_knobs(body)
 
     async def test_local_pops_knobs(self, mock_aiohttp_session):
-        """The local provider pops in generate() BEFORE transport dispatch —
-        its Ollama path merges raw kwargs into payload['options']."""
+        """Covers the OpenAI-compatible transport, which this base_url selects.
+        The Ollama path is covered separately below."""
         from faultmaven.infrastructure.llm.providers.local_provider import (
             LocalProvider,
         )
@@ -700,9 +707,7 @@ class TestShapeDefaultEffortIsOnePolicy:
             (False, False, None),  # plain chat elsewhere: no default at all
         ],
     )
-    def test_policy_table(
-        self, mock_aiohttp_session, defaults_reasoning, has_response_format, expected
-    ):
+    def test_policy_table(self, defaults_reasoning, has_response_format, expected):
         assert (
             OpenAIProvider._shape_default_effort(
                 defaults_reasoning, has_response_format
@@ -819,3 +824,219 @@ class TestEveryRegisteredProviderHandlesTheKnobs:
             f"{missing} — they will send reasoning_intent/min_output_tokens "
             f"as API body fields"
         )
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestRefusedInferenceRestoresTheShapeDefault:
+    """B2: refusing an intent must restore the SHAPE DEFAULT, never impose a
+    restriction the default did not apply.
+
+    Failing closed on a STRUCTURED call keeps a cap that genuinely exists. On
+    a PLAIN call there was never a cap — so capping it on refusal meant
+    declaring INFERENCE bought LESS thinking than declaring nothing, which is
+    the opposite of what the caller asked for.
+    """
+
+    async def test_plain_call_refusal_leaves_no_thinking_config(
+        self, mock_aiohttp_session, caplog
+    ):
+        provider = _gemini_provider("gemini-3.5-flash")
+        with caplog.at_level(logging.WARNING):
+            body = await _sent_body(
+                mock_aiohttp_session,
+                provider,
+                _GEMINI_RESP,
+                reasoning_intent=ReasoningIntent.INFERENCE,
+            )
+        assert "thinkingConfig" not in body["generationConfig"]
+        # …and the warning must not claim a cap was kept on a shape that never
+        # had one.
+        refusal = " ".join(r.message for r in caplog.records if "REFUSED" in r.message)
+        assert refusal, "refusal must still be reported"
+        assert "keeping the cap" not in refusal
+
+    async def test_structured_call_refusal_still_keeps_the_cap(
+        self, mock_aiohttp_session, caplog
+    ):
+        provider = _gemini_provider("gemini-3.5-flash")
+        with caplog.at_level(logging.WARNING):
+            body = await _sent_body(
+                mock_aiohttp_session,
+                provider,
+                _GEMINI_RESP,
+                response_format=_RESPONSE_FORMAT,
+                reasoning_intent=ReasoningIntent.INFERENCE,
+            )
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+        assert any("keeping the cap" in r.message for r in caplog.records)
+
+    async def test_declaring_inference_never_buys_less_than_declaring_nothing(
+        self, mock_aiohttp_session
+    ):
+        """The property behind B2, stated directly: on every shape, a refused
+        INFERENCE must land on exactly the config the same call would have got
+        with no intent at all."""
+        for kwargs in ({}, {"response_format": _RESPONSE_FORMAT}):
+            provider = _gemini_provider("gemini-3.5-flash")
+            no_intent = await _sent_body(
+                mock_aiohttp_session, provider, _GEMINI_RESP, **kwargs
+            )
+            refused = await _sent_body(
+                mock_aiohttp_session,
+                provider,
+                _GEMINI_RESP,
+                reasoning_intent=ReasoningIntent.INFERENCE,
+                **kwargs,
+            )
+            assert no_intent["generationConfig"].get("thinkingConfig") == refused[
+                "generationConfig"
+            ].get("thinkingConfig")
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestFalsyFloorIsNotADeclaredFloor:
+    """R2: the fail-closed guard exists for the door that BYPASSES route()
+    (``milestone_engine`` binds a concrete provider), so it cannot borrow the
+    router's validation. ``0``/``False``/``""`` are not declared floors —
+    accepting them lifts the cap and then logs that a floor will catch the
+    starved body it can no longer catch."""
+
+    @pytest.mark.parametrize("falsy_floor", [0, False, ""])
+    async def test_falsy_floor_does_not_lift_the_cap(
+        self, mock_aiohttp_session, falsy_floor
+    ):
+        provider = _gemini_provider("gemini-3.5-flash")
+        body = await _sent_body(
+            mock_aiohttp_session,
+            provider,
+            _GEMINI_RESP,
+            response_format=_RESPONSE_FORMAT,
+            reasoning_intent=ReasoningIntent.INFERENCE,
+            min_output_tokens=falsy_floor,
+        )
+        assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+
+    async def test_real_floor_still_lifts_the_cap(self, mock_aiohttp_session):
+        provider = _gemini_provider("gemini-3.5-flash")
+        body = await _sent_body(
+            mock_aiohttp_session,
+            provider,
+            _GEMINI_RESP,
+            response_format=_RESPONSE_FORMAT,
+            reasoning_intent=ReasoningIntent.INFERENCE,
+            min_output_tokens=500,
+        )
+        assert "thinkingConfig" not in body["generationConfig"]
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestToolsBranchStatesTheRealMechanism:
+    """B3: the has_tools branch had one arm for two populations.
+
+    ``_caps_reasoning_effort`` False means "does not take this parameter", NOT
+    "does not reason". OpenRouter overrides it to False unconditionally — and
+    tools are its NORMAL shape — so every gateway route was being told it had
+    no reasoning mode, on models that all reason.
+    """
+
+    async def test_openrouter_with_tools_is_not_told_it_cannot_reason(
+        self, mock_aiohttp_session, caplog
+    ):
+        provider = OpenRouterProvider(
+            _config(
+                "openrouter",
+                "anthropic/claude-sonnet-4-6",
+                "https://openrouter.ai/api/v1",
+            )
+        )
+        with caplog.at_level(logging.WARNING):
+            body = await _sent_body(
+                mock_aiohttp_session,
+                provider,
+                _OPENAI_RESP,
+                tools=_TOOLS,
+                reasoning_intent=ReasoningIntent.INFERENCE,
+            )
+        assert "reasoning_effort" not in body
+        messages = " ".join(r.message for r in caplog.records)
+        assert "no reasoning mode to enable" not in messages
+        assert "does not accept reasoning_effort" in messages
+
+    @pytest.mark.parametrize(
+        "provider_factory,model",
+        [
+            (_openai_provider, "gpt-4o"),
+            (_openai_provider, "o1-mini"),
+        ],
+    )
+    async def test_extraction_with_tools_and_no_param_support_is_logged(
+        self, mock_aiohttp_session, caplog, provider_factory, model
+    ):
+        """#3 on the has_tools path: EXTRACTION matched no arm and returned
+        with no log at all, which made the docstring and CLAUDE.md false."""
+        provider = provider_factory(model)
+        with caplog.at_level(logging.INFO):
+            await _sent_body(
+                mock_aiohttp_session,
+                provider,
+                _OPENAI_RESP,
+                tools=_TOOLS,
+                reasoning_intent=ReasoningIntent.EXTRACTION,
+            )
+        assert any(
+            "extraction" in r.message and "not applied" in r.message
+            for r in caplog.records
+        ), "EXTRACTION was dropped with no log on the tools path"
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestDiscardPathIsTolerant:
+    """R1: ``_discard_reasoning_kwargs`` is a pure LOGGING path in providers
+    with no reasoning mechanism. Coercing (and so raising) there turned an
+    unrecognised intent into a hard failure from a provider that was never
+    going to act on it — and behind the fallback chain every provider raises
+    the same thing, surfacing as "All providers failed". Validation belongs at
+    ``route()``, which rejects the same value loudly at the call site."""
+
+    async def test_unknown_intent_string_does_not_raise_from_a_logging_path(
+        self, mock_aiohttp_session
+    ):
+        from faultmaven.infrastructure.llm.providers.groq_provider import GroqProvider
+
+        provider = GroqProvider(
+            _config("groq", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1")
+        )
+        body = await _sent_body(
+            mock_aiohttp_session,
+            provider,
+            _OPENAI_RESP,
+            reasoning_intent="thinking-hard",
+        )
+        assert "reasoning_intent" not in body
+
+    async def test_uncoerced_inference_string_still_warns(
+        self, mock_aiohttp_session, caplog
+    ):
+        """Tolerance must not silently demote the INFERENCE warning to INFO —
+        the level is classified on the VALUE, not on member identity."""
+        from faultmaven.infrastructure.llm.providers.groq_provider import GroqProvider
+
+        provider = GroqProvider(
+            _config("groq", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1")
+        )
+        with caplog.at_level(logging.WARNING):
+            await _sent_body(
+                mock_aiohttp_session,
+                provider,
+                _OPENAI_RESP,
+                reasoning_intent="inference",
+            )
+        assert any(r.levelno == logging.WARNING for r in caplog.records)

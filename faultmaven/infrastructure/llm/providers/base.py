@@ -523,16 +523,25 @@ class BaseLLMProvider(ABC):
         (pre-call budget bump + post-call floor check), so a provider with no
         reasoning partition to size loses nothing by dropping it.
         """
-        intent = ReasoningIntent.coerce(kwargs.pop("reasoning_intent", None))
+        intent = kwargs.pop("reasoning_intent", None)
         kwargs.pop("min_output_tokens", None)
         if intent is None:
             return
+        # TOLERANT on purpose — deliberately not ``ReasoningIntent.coerce``.
+        # This is a pure logging path in providers that have no reasoning
+        # mechanism at all; raising here would turn an unrecognised intent
+        # into a hard failure from a provider that was never going to act on
+        # it, and behind the fallback chain every provider would raise the
+        # same thing and surface it as "All providers failed". Validation
+        # belongs at the boundary that ACCEPTS the intent (``route()``), where
+        # it fails loudly at the call site that got it wrong.
+        intent_value = getattr(intent, "value", intent)
         # Worded as "does not act on", not "has no reasoning control": a
         # provider may well have a reasoning mechanism (or grow one) that
         # simply is not driven by the intent yet — the log records that the
         # DECLARED intent was not translated, nothing more.
         message = (
-            f"reasoning_intent='{intent.value}' declared, but "
+            f"reasoning_intent='{intent_value}' declared, but "
             f"{self.provider_name} does not act on reasoning intent on this "
             f"call path (model: {model or self.config.default_model}) — "
             f"proceeding with the provider's configured behavior"
@@ -546,7 +555,10 @@ class BaseLLMProvider(ABC):
         # (docs/operations/monitoring/operations-runbook.md) and OpenAI warns
         # for the identical condition. EXTRACTION stays INFO: the intent asks
         # for LESS reasoning, so not applying it risks spend, not silence.
-        if intent is ReasoningIntent.INFERENCE:
+        # Compares on the VALUE so an uncoerced string spelling is classified
+        # the same as the member — the tolerance above must not silently
+        # demote an INFERENCE warning to INFO.
+        if intent_value == ReasoningIntent.INFERENCE.value:
             self.logger.warning(message)
         else:
             self.logger.info(message)

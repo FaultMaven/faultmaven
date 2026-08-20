@@ -292,7 +292,7 @@ modules/auth/
 | Provider | Environment Variable | Models | Structured output | Notes |
 |----------|---------------------|--------|-------------------|-------|
 | Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema enforced via forced tool use; recommended for logic |
-| OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | **STRICT** (gpt-4o+) | Reasoning model; `reasoning_effort` capped to `low` on structured calls (starvation guard) unless the call declares a reasoning intent; recommended default |
+| OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | **STRICT** (gpt-4o+) | Reasoning model; `reasoning_effort` capped to `low` on structured calls (starvation guard); only a declared `INFERENCE` intent raises it; recommended default |
 | Google Gemini | `GEMINI_API_KEY` | gemini-3.5-flash | **STRICT** (1.5+) | Fast multimodal; baseline |
 | Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v4-flash | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
 | Groq | `GROQ_API_KEY` | llama-3.3-70b-versatile | BEST_EFFORT (STRICT on gpt-oss) | Ultra-fast inference |
@@ -380,7 +380,8 @@ than a response, the helper spends its one retry on it exactly as it would on
 a cut body, and a twice-starved call raises instead of returning a partial —
 the caller pre-declared that partial unusable. Pass `min_output_tokens` to the
 helper as well as to `route()`, or its doubling is computed from a cap the
-router has already raised and the "retry" repeats the first attempt verbatim. The reason is logged and counted at the router
+router has already raised and the "retry" repeats the first attempt
+verbatim. The reason is logged and counted at the router
 (`llm_stop_reasons_total`), and a response reported as cut is never written to
 the response cache — the key omits `max_tokens`, so a stored cut body is what a
 retry at a bigger cap would be served instead of reaching the provider.
@@ -411,15 +412,21 @@ neither, so the shape-based provider defaults above are what runs:
   knowing which provider answered. Each provider translates it; **hard model
   constraints override it** (gpt-5.6 keeps its forced `reasoning_effort: "none"`
   alongside tools); an intent that cannot be applied is **logged, never silently
-  dropped** — WARNING for `INFERENCE`, INFO for `EXTRACTION`.
+  dropped** — WARNING for `INFERENCE`, INFO for `EXTRACTION`. (An intent that
+  *was* delivered is not reported as a failure: on gpt-5.6 with tools the
+  forced `"none"` is exactly what `EXTRACTION` asked for.)
 - `min_output_tokens` — the minimum *visible* output the call needs. Reasoning
   bills against the same budget as the answer on every provider (no second pool
   exists), so this is a floor, not a new budget. Pre-call it raises `max_tokens`
   to at least the floor; post-call a `MAX_TOKENS` stop measuring below it raises
   `LLMOutputFloorError` rather than returning a body the caller pre-declared
-  unusable. Visible output is measured with `utils/token_estimation.estimate_tokens`
-  (a raw `len//4` is shape-dependent — it understates dense JSON/CJK by 2-4x and
-  would fire on bodies that met the floor).
+  unusable. Visible output is measured with the provider's real tokenizer where
+  one exists (`utils/token_estimation.estimate_tokens` covers openai, openrouter,
+  anthropic and fireworks) and **deliberately over-estimated at one token per
+  character** on the five providers it cannot tokenize (gemini, groq, cohere,
+  local, huggingface). A raw `len//4` is used for neither: it is shape-dependent,
+  understating dense JSON/CJK by 2-4x, and would fire the guard on bodies that
+  met their floor — the failure direction that kills an otherwise-usable turn.
 
 Two invariants worth knowing before adopting them: **`INFERENCE` requires
 `min_output_tokens`** (it lifts starvation guards, and the floor is what makes

@@ -245,6 +245,20 @@ class OpenAIProvider(BaseLLMProvider):
             return cls._DEFAULT_REASONING_PLAIN_EFFORT
         return None
 
+    def _log_unhonoured_intent(self, intent: ReasoningIntent, message: str) -> None:
+        """Report an intent this call could not apply.
+
+        INFERENCE warns, EXTRACTION informs — the caller asking for reasoning
+        and not getting it is what an operator must see under the runbook's
+        ``LOG_LEVEL=WARNING``, while an unapplied EXTRACTION risks spend rather
+        than silence. Routing every arm through one helper is what stops a new
+        branch being added with a level, or with no log at all.
+        """
+        if intent is ReasoningIntent.INFERENCE:
+            self.logger.warning(message)
+        else:
+            self.logger.info(message)
+
     def _apply_reasoning_intent(
         self,
         payload: Dict[str, Any],
@@ -307,24 +321,34 @@ class OpenAIProvider(BaseLLMProvider):
                 # A reasoning family that accepts the param, but not next to
                 # function tools — no effort parameter is sent at all and the
                 # model reasons at its server-side default.
-                level = (
-                    self.logger.warning
-                    if intent is ReasoningIntent.INFERENCE
-                    else self.logger.info
-                )
-                level(
+                self._log_unhonoured_intent(
+                    intent,
                     f"reasoning_intent='{intent.value}' not applied on {model} "
                     f"with function tools: this model 400s on reasoning_effort "
                     f"alongside tools, so no effort parameter is sent and the "
                     f"model reasons at its own default — hidden reasoning "
-                    f"still bills against the output budget"
+                    f"still bills against the output budget",
                 )
-            elif intent is ReasoningIntent.INFERENCE:
-                # Non-reasoning model (gpt-4o/gpt-4.1): there is no reasoning
-                # to enable, with or without tools.
-                self.logger.warning(
-                    f"reasoning_intent='inference' cannot be honoured on "
-                    f"{model}: this model has no reasoning mode to enable"
+            else:
+                # Same two populations as the no-tools branch below, and the
+                # same reason not to conflate them: ``_caps_reasoning_effort``
+                # False means "this provider/model does not take the
+                # parameter", NOT "this model does not reason".
+                # ``OpenRouterProvider`` overrides it to False unconditionally
+                # because it drives reasoning through its own gateway object,
+                # so every gateway route lands here —
+                # ``anthropic/claude-sonnet-4-6``, ``openai/gpt-5``,
+                # ``google/gemini-3.5-flash`` all reason, and tools are the
+                # NORMAL OpenRouter shape. Telling an operator they have no
+                # reasoning mode would rule out the true cause of starvation.
+                self._log_unhonoured_intent(
+                    intent,
+                    f"reasoning_intent='{intent.value}' not applied on {model} "
+                    f"with function tools: this provider/model does not accept "
+                    f"reasoning_effort, so the model's own default reasoning "
+                    f"behavior stands — if it reasons natively, hidden "
+                    f"reasoning still bills against the output budget and this "
+                    f"intent does not change that",
                 )
             return
 
@@ -334,17 +358,13 @@ class OpenAIProvider(BaseLLMProvider):
             # reject THIS parameter (o1-mini/o1-preview; OpenRouter, which
             # opts out because it drives reasoning through its own gateway
             # object). Only the first is "no reasoning happens".
-            level = (
-                self.logger.warning
-                if intent is ReasoningIntent.INFERENCE
-                else self.logger.info
-            )
-            level(
+            self._log_unhonoured_intent(
+                intent,
                 f"reasoning_intent='{intent.value}' not applied on {model}: "
                 f"this provider/model does not accept reasoning_effort, so the "
                 f"model's own default reasoning behavior stands — if it "
                 f"reasons natively, hidden reasoning still bills against the "
-                f"output budget and this intent does not change that"
+                f"output budget and this intent does not change that",
             )
             return
 

@@ -44,6 +44,83 @@ except ImportError:
 
 TELEMETRY_PAYLOAD_MAX_CHARS = 8000
 
+# Providers ``utils.token_estimation.estimate_tokens`` actually tokenizes.
+# Everything else falls through to its ``len // 4`` character heuristic, which
+# is NOT a safe measure for the output floor (see below). Mirrors the dispatch
+# in that module; kept here rather than changing the shared helper, because its
+# fallback is load-bearing for other callers (prompt budgeting) that want a
+# middle-of-the-road estimate rather than this one's deliberate bias.
+_TOKENIZER_BACKED_PROVIDERS = frozenset(
+    {"openai", "openrouter", "anthropic", "fireworks"}
+)
+
+# Chars handed to tiktoken before switching to prefix-and-scale.
+#
+# tiktoken's BPE merge loop is super-linear on a long unbroken run of ONE
+# character — precisely the degenerate "model looped until it hit MAX_TOKENS"
+# body this branch selects for. Measured on this venv: 8k chars 91 ms, 16k
+# 385 ms, 32k 1316 ms of BLOCKING CPU, against 1-4 ms for prose or dense JSON
+# of the same length. The floor check runs on the event loop, so an unbounded
+# call would hand a starved-and-looping response a second failure mode. At 4k
+# the same worst case measures ~24 ms; a 4k prefix is far more than enough to
+# characterise a body whose density we only need to within a factor.
+_TOKENIZER_SAMPLE_CHARS = 4000
+
+# Conservative chars-per-token divisor for providers with no tokenizer.
+#
+# Derived from measurement, not chosen for roundness. Real cl100k density by
+# shape: CJK 0.92, base64 1.41, id-dense JSON 1.98, log lines 2.07, escaped
+# JSON 2.55, English-valued JSON 4.58, English prose 6.53 chars/token. A
+# divisor of 4 sits in the MIDDLE of that range, so it understates the dense
+# shapes by 2-4x — and understating makes the guard fire on a body that met
+# its floor, killing an otherwise-usable turn. That false positive is the
+# unsafe direction; a missed starvation merely leaves the pre-#1117 behaviour.
+#
+# So where we cannot measure, we assume the densest plausible packing: one
+# token per character. That is an upper bound on the token count for every
+# Latin-script shape measured (the densest, base64, still needs 1.41 chars per
+# token), which makes the estimate err toward NOT raising exactly as intended.
+# CJK is the one measured shape that can exceed it, by ~8% — nowhere near the
+# order of magnitude that separates a starved body from a healthy one.
+#
+# It keeps both ends of the contract:
+#   fm#1094 starved body — 215 chars vs a 500-token floor -> 215 < 500, RAISES;
+#   dense-JSON false positive — 3143 chars vs a 1000-token floor -> 3143 >= 1000,
+#   PASSES (it scored 785 under ``len // 4`` and wrongly raised).
+_CONSERVATIVE_CHARS_PER_TOKEN = 1
+
+
+def _estimate_visible_output_tokens(
+    text: str, provider: Optional[str], model: Optional[str]
+) -> int:
+    """Visible output tokens, measured where possible and over-estimated where not.
+
+    Two deliberate asymmetries, both in the direction of NOT raising: an
+    unknown provider is treated as untokenizable rather than guessed at, and an
+    untokenizable body is scored at one token per character (see
+    ``_CONSERVATIVE_CHARS_PER_TOKEN``).
+    """
+    if not text:
+        return 0
+
+    # ``LLMResponse.provider`` is an unvalidated field, and the registry itself
+    # rewrites it ("openai (low-confidence)") — so normalise, and never let a
+    # ``None`` reach ``provider.lower()``. An AttributeError here would be
+    # swallowed by the generic handler and reported as "All providers failed".
+    provider_name = (provider or "unknown").strip().lower()
+    if provider_name not in _TOKENIZER_BACKED_PROVIDERS:
+        return len(text) // _CONSERVATIVE_CHARS_PER_TOKEN
+
+    if len(text) <= _TOKENIZER_SAMPLE_CHARS:
+        return estimate_tokens(text, provider=provider_name, model=model)
+
+    # Measure a prefix and scale by length. Bounds the worst-case CPU while
+    # staying accurate for the uniform bodies that trigger it.
+    sample_tokens = estimate_tokens(
+        text[:_TOKENIZER_SAMPLE_CHARS], provider=provider_name, model=model
+    )
+    return int(sample_tokens * (len(text) / _TOKENIZER_SAMPLE_CHARS))
+
 
 def _opik_track_llm(name: str):
     """Decorator: wraps function with @opik.track(type='llm') when Opik is available."""
@@ -506,18 +583,14 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 visible_text = response.content or ""
                 for tool_call in response.tool_calls or []:
                     visible_text += str(tool_call.function or "")
-                # Measured with the provider's real tokenizer where one is
-                # available (tiktoken for the OpenAI/Anthropic/Fireworks
-                # families), falling back to the ~4 chars/token heuristic
-                # elsewhere. A raw ``len//4`` is not a conservative
-                # approximation in either direction — it is shape-dependent:
-                # English prose runs ~6.5 chars/token (the heuristic
-                # OVERSTATES, guard under-fires) while id-dense JSON, base64
-                # and CJK run 0.9-2.1 (it UNDERSTATES, guard over-fires on a
-                # body that MET the floor). The false positive is the unsafe
-                # direction here — it kills an otherwise-usable turn — and
-                # structured output is exactly the dense shape this feature
-                # targets, so the guess is replaced with a measurement.
+                # Measured with the provider's real tokenizer where one exists,
+                # and deliberately OVER-estimated where none does — never the
+                # middle-of-the-range ``len//4``, which is not a conservative
+                # approximation in either direction but shape-dependent:
+                # English prose runs 6.5 chars/token (it OVERSTATES, guard
+                # under-fires) while id-dense JSON, base64 and CJK run 0.9-2.1
+                # (it UNDERSTATES by 2-4x, and the guard fires on a body that
+                # MET its floor). See ``_estimate_visible_output_tokens``.
                 #
                 # NOT read from ``output_tokens``: OpenAI's
                 # ``completion_tokens`` and Anthropic's ``output_tokens``
@@ -525,7 +598,7 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 # exists to catch (fm#1094: ~1,946 reasoning tokens inside a
                 # 2,000 count, 215 chars of answer) the reported number reads
                 # as ample and the check would fail open.
-                visible_output_tokens = estimate_tokens(
+                visible_output_tokens = _estimate_visible_output_tokens(
                     visible_text,
                     provider=response.provider,
                     model=response.model,

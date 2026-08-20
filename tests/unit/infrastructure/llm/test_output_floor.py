@@ -17,11 +17,12 @@ cleanly (STOP) below the floor is a short answer and is returned as-is.
 Default is absent — callers that do not set a floor keep the existing
 behavior of receiving truncated responses to inspect.
 
-Visible output is estimated from content length (~4 chars/token), not read
-from ``output_tokens``: OpenAI's ``completion_tokens`` and Anthropic's
-``output_tokens`` INCLUDE hidden reasoning, so on exactly the starved call
-this guard exists to catch, the reported count reads as ample and a check
-built on it would fail open.
+Visible output is measured with the provider's tokenizer where one exists and
+deliberately over-estimated (one token per character) where none does — never
+read from ``output_tokens``, because OpenAI's ``completion_tokens`` and
+Anthropic's ``output_tokens`` INCLUDE hidden reasoning, so on exactly the
+starved call this guard exists to catch the reported count reads as ample and
+a check built on it would fail open.
 
 These tests exercise the REAL ``route()`` signature on a real ``LLMRouter``
 (only the registry behind it is mocked), so a signature drift cannot hide
@@ -44,12 +45,18 @@ from faultmaven.infrastructure.llm.providers.base import ToolCall
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
 
 
-def _response(content: str, stop_reason: StopReason, output_tokens: int = 0):
+def _response(
+    content: str,
+    stop_reason: StopReason,
+    output_tokens: int = 0,
+    provider: str = "openai",
+    model: str = "gpt-5.4-mini",
+):
     return LLMResponse(
         content=content,
         confidence=0.9,
-        provider="openai",
-        model="gpt-5.4-mini",
+        provider=provider,
+        model=model,
         tokens_used=2000,
         response_time_ms=100,
         output_tokens=output_tokens,
@@ -683,3 +690,124 @@ class TestInferenceHeadroomWarning:
 
         await generate_with_truncation_retry(call, max_tokens=1500, label="plain")
         assert caps_seen == [1500, 3000]
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestFloorOnProvidersWithoutATokenizer:
+    """B1: the floor must not be *guessed* on the five providers
+    ``estimate_tokens`` cannot tokenize.
+
+    ``estimate_tokens`` dispatches to tiktoken only for openai, openrouter,
+    anthropic and fireworks; gemini, groq, cohere, local and huggingface fall
+    through to ``len // 4`` — a middle-of-the-range divisor that understates
+    dense output by 2-4x and so fires the guard on bodies that MET the floor.
+    That matters most on Gemini, the one provider where declaring INFERENCE
+    LIFTS a starvation guard and makes the floor load-bearing.
+
+    Where no tokenizer exists the estimate is now one token per character: an
+    upper bound for every Latin-script shape measured (densest, base64, needs
+    1.41 chars/token), so it errs toward NOT raising.
+    """
+
+    # Every provider in the registry, tokenizer-backed or not. Parametrised
+    # rather than hardcoded to "openai" — that hardcoding is exactly why the
+    # fallback branch went untested.
+    _ALL_PROVIDERS = [
+        "openai",
+        "openrouter",
+        "anthropic",
+        "fireworks",
+        "gemini",
+        "groq",
+        "cohere",
+        "local",
+        "huggingface",
+    ]
+
+    @pytest.mark.parametrize("provider", _ALL_PROVIDERS)
+    async def test_dense_body_above_the_floor_never_raises(
+        self, router, mock_registry, provider
+    ):
+        """The reviewer's B1 case, run on EVERY provider. 3143+ chars of
+        id-dense JSON against a 1000-token floor: ~1622 real tokens, but 785
+        under ``len // 4`` — which raised on five of nine providers."""
+        import json
+        import uuid
+
+        body = json.dumps(
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "ts": "2026-08-19T22:14:03.221Z",
+                    "v": i * 1.37,
+                    "src": "pool-exhaustion",
+                }
+                for i in range(34)
+            ],
+            separators=(",", ":"),
+        )
+        assert len(body) >= 3143
+        assert len(body) // 4 < 1000, "sample must be one the old divisor failed"
+        mock_registry.route_request = AsyncMock(
+            return_value=_response(body, StopReason.MAX_TOKENS, provider=provider)
+        )
+        response = await router.route(
+            prompt="test", max_tokens=4000, min_output_tokens=1000, bypass_cache=True
+        )
+        assert response.is_truncated
+
+    @pytest.mark.parametrize("provider", _ALL_PROVIDERS)
+    async def test_genuinely_starved_body_still_raises_everywhere(
+        self, router, mock_registry, provider
+    ):
+        """The other end of the contract: the conservative fallback must not
+        blunt the guard. The fm#1094 body — 215 chars, ~53 real tokens — is an
+        order of magnitude under a 500-token floor on any tokenizer."""
+        mock_registry.route_request = AsyncMock(
+            return_value=_response("x" * 215, StopReason.MAX_TOKENS, provider=provider)
+        )
+        with pytest.raises(LLMOutputFloorError):
+            await router.route(
+                prompt="test",
+                max_tokens=2000,
+                min_output_tokens=500,
+                bypass_cache=True,
+            )
+
+    async def test_unknown_provider_does_not_crash_the_floor_check(
+        self, router, mock_registry
+    ):
+        """``LLMResponse.provider`` is unvalidated and downstream repos build
+        their own responses; ``estimate_tokens`` calls ``provider.lower()``.
+        An AttributeError here is swallowed and reported as "All providers
+        failed" — a floor bug wearing a routing bug's clothes."""
+        mock_registry.route_request = AsyncMock(
+            return_value=_response("word " * 2000, StopReason.MAX_TOKENS, provider=None)
+        )
+        response = await router.route(
+            prompt="test", max_tokens=4000, min_output_tokens=500, bypass_cache=True
+        )
+        assert response.is_truncated
+
+    async def test_degenerate_long_run_is_bounded(self, router, mock_registry):
+        """tiktoken's merge loop is super-linear on a long unbroken run of one
+        character — the "model looped until MAX_TOKENS" body this branch
+        selects for. Measured unbounded: 32k chars = ~1.3 s of BLOCKING CPU on
+        the event loop, against 1-4 ms for prose. Bounded by prefix-and-scale.
+        """
+        import time
+
+        mock_registry.route_request = AsyncMock(
+            return_value=_response("x" * 32000, StopReason.MAX_TOKENS)
+        )
+        started = time.perf_counter()
+        await router.route(
+            prompt="test", max_tokens=40000, min_output_tokens=500, bypass_cache=True
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        assert elapsed_ms < 250, (
+            f"floor check took {elapsed_ms:.0f} ms on a degenerate body — the "
+            f"tokenizer input is meant to be bounded"
+        )

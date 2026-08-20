@@ -217,20 +217,32 @@ class GeminiProvider(BaseLLMProvider):
                         f"floor is what will catch a starved body"
                     )
                 return None
+            # Refusing the intent must restore the SHAPE DEFAULT, not impose a
+            # restriction the default never applied. A structured call has a
+            # cap to keep; a plain call never had one, so capping it here would
+            # mean declaring INFERENCE bought LESS thinking than declaring
+            # nothing — the opposite of what the caller asked for.
             self.logger.warning(
                 f"reasoning_intent='inference' REFUSED on {model}: no output "
                 f"floor was declared (min_output_tokens), and lifting the "
                 f"thinkingLevel cap without one re-arms silent starvation "
-                f"(fm#1094) — keeping the cap. Declare a floor alongside the "
-                f"intent to reason here."
+                f"(fm#1094) — "
+                + (
+                    "keeping the cap"
+                    if is_structured
+                    else "leaving this plain call at the shape default (no "
+                    "thinkingConfig), which is what it would have had anyway"
+                )
+                + ". Declare a floor alongside the intent to reason here."
             )
-            # Fall through to the capped return below.
+            # Fall through to the shape-default return below.
+            intent = None
 
         # Everything that still wants the cap, in one construction site (so a
         # companion key such as ``includeThoughts`` is added once, not to two
         # dicts six lines apart). Reaching here means one of:
         #   - EXTRACTION            → cap on every shape;
-        #   - INFERENCE, no floor   → refused above, cap retained;
+        #   - INFERENCE, no floor   → refused above, demoted to the shape default;
         #   - no intent             → the shape decides, as before #1118.
         if intent is not None or is_structured:
             # 3.x+ uses the string thinkingLevel; the 2.5-era integer
@@ -323,7 +335,19 @@ class GeminiProvider(BaseLLMProvider):
         # The floor itself is enforced at the router, but whether one was
         # DECLARED decides here whether INFERENCE may lift the thinking cap —
         # so this provider reads it rather than discarding it blind (#1117).
-        has_output_floor = kwargs.pop("min_output_tokens", None) is not None
+        #
+        # Applies the ROUTER'S OWN validity test rather than ``is not None``:
+        # this guard exists precisely for the door that bypasses ``route()``
+        # (``milestone_engine`` binds a concrete provider), so it cannot borrow
+        # the router's validation. ``0``, ``False`` and ``""`` are not declared
+        # floors — accepting them would lift the cap and then log that a floor
+        # will catch the starved body it can no longer catch.
+        declared_floor = kwargs.pop("min_output_tokens", None)
+        has_output_floor = (
+            isinstance(declared_floor, int)
+            and not isinstance(declared_floor, bool)
+            and declared_floor >= 1
+        )
 
         # Prepare request body for Gemini API format
         if messages:
