@@ -63,6 +63,7 @@ __all__ = [
     "content_tokens",
     "counterfactual_link_decisive",
     "evidence_category_map",
+    "evidence_datum_key",
     "grade_cause_assurance",
     "has_actionable_solution",
     "has_problem_definition",
@@ -217,6 +218,36 @@ def evidence_category_map(case: "Case") -> dict:
     key change reach some readers and not others, silently splitting the M2
     grade from node-state derivation."""
     return {e.evidence_id: getattr(e, "category", None) for e in case.evidence}
+
+
+def evidence_datum_key(row) -> tuple:
+    """The identity of the OBSERVATION a row carries: ``(source, normalised
+    extract)``. Two rows sharing a key are the same datum recorded twice.
+
+    Owned here — the contracts-only leaf — because two unrelated readers need the
+    same notion and must not drift: the work gate's evidence count
+    (``verification_status.work_gate_passed``, where duplicates would spuriously
+    satisfy ``WORK_GATE_MIN_EVIDENCE`` and flip a case out of
+    ``NOT_YET_PRODUCTIVE`` on one datum) and the progress signal
+    (``milestone_engine._restates_standing_evidence``). This is the same hazard
+    INV-36 names for hypotheses — "duplicates spuriously re-satisfy the ≥2-active
+    work gate, corrupting the axis" — on the evidence dimension of the same gate.
+
+    Source identity is part of the key on purpose: the same text observed in two
+    different files is two independent observations, which is precisely the
+    corroboration signal the grading layer counts. Only the SAME text from the
+    SAME source is one datum.
+
+    A row with no extract gets a key unique to itself, so unquoted rows are never
+    collapsed into each other — absence of a quote is not evidence of sameness.
+    """
+    extract = getattr(row, "extract", None)
+    if not extract:
+        return ("\x00unique", getattr(row, "evidence_id", id(row)))
+    return (
+        getattr(row, "source_file_id", None),
+        " ".join(extract.split()).lower(),
+    )
 
 
 # ---------------------------------------------------------------------------

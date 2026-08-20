@@ -72,9 +72,9 @@ def determine_turn_outcome(
         logger.debug(f"Turn outcome: DATA_PROVIDED (evidence: {evidence_added})")
         return TurnOutcome.DATA_PROVIDED
 
-    # Agent requested data
-    # Check if agent's last response contains data requests
-    if _agent_requested_data_this_turn(case):
+    # Agent requested data — keyed to a NEW outstanding evidence need, not to
+    # the prose that described it (see _new_data_request_raised).
+    if _new_data_request_raised(case):
         logger.debug("Turn outcome: DATA_REQUESTED")
         return TurnOutcome.DATA_REQUESTED
 
@@ -83,39 +83,47 @@ def determine_turn_outcome(
     return TurnOutcome.CONVERSATION
 
 
-def _agent_requested_data_this_turn(case: Case) -> bool:
-    """
-    Check if agent requested data from user this turn.
+def _new_data_request_raised(case: Case) -> bool:
+    """Whether a **new** outstanding data ask was raised this turn.
 
-    Implementation: Check last turn for data request indicators.
-    """
-    if not case.turn_history:
-        return False
+    ``DATA_REQUESTED`` is one of the arms ``_check_if_progress_made`` treats as
+    progress, so every false positive here resets ``turns_without_progress`` and
+    disarms the stall net. The former implementation (#1136) produced them two
+    ways at once, and both fired on turns where nothing was asked:
 
-    last_turn = case.turn_history[-1]
-    # TurnProgress stores summary, not full response
-    agent_response = (
-        last_turn.agent_response_summary.lower()
-        if last_turn.agent_response_summary
-        else ""
+    - it read ``case.turn_history[-1]``, which at call time is the **previous**
+      turn's record — the current turn is appended much later in ``process_turn``
+      — so an ask made on turn N-1 scored turn N as a data request; and
+    - its keyword list contained a bare ``"?"``, so any question-shaped reply
+      matched ("Is that consistent with what you are seeing?").
+
+    Both are the measurement-by-token-collision class: the outcome was inferred
+    from prose rather than from what the turn actually did. The demand side is
+    already first-class — an ask the engine intends to track is an
+    ``EvidenceNeed`` — so this reads that artifact instead.
+
+    NEW is the load-bearing word, and it is what keeps this from over-correcting
+    into the opposite failure (#1136 trap 1: an impatient user must not be pushed
+    toward the insufficient-evidence ramp). Raising a genuinely new ask is
+    investigative progress and resets the counter; repeating a standing ask is
+    not. The need layer already draws that line for us — a re-ask matches an
+    outstanding need and is recorded as a second mention rather than minting a
+    new row (``evidence_need_linking.link_evidence_suggestions_to_needs``), so a
+    case that keeps asking for the same thing now reads as the stall it is.
+
+    SCOPE: this runs inside ``_apply_investigation_updates``, so it sees needs the
+    model **declared** (``_apply_evidence_need_updates``) but not the engine's
+    backfill of asks that appeared only in an EVIDENCE suggestion — that sweep
+    runs later in ``process_turn``, after the counter has been updated. The gap is
+    small (14 of 446 needs on the reference corpus are ``engine_inferred``) and it
+    errs toward *under*-reporting progress, which is the conservative direction
+    here: it can only make the net arm sooner, and arming still requires the turn
+    floor, five consecutive such turns, and the work gate.
+    """
+    return any(
+        need.created_at_turn == case.current_turn and need.is_outstanding
+        for need in case.evidence_needs
     )
-
-    # Data request indicators
-    request_keywords = [
-        "can you share",
-        "could you provide",
-        "please provide",
-        "can you check",
-        "could you check",
-        "what do the logs",
-        "what does",
-        "show me",
-        "upload",
-        "attach",
-        "?",  # Questions are often data requests
-    ]
-
-    return any(keyword in agent_response for keyword in request_keywords)
 
 
 def _milestone_completed_this_turn(case: Case) -> bool:

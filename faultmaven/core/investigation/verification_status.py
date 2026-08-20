@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
+    evidence_datum_key,
     grade_cause_assurance,
 )
 
@@ -68,35 +69,56 @@ def work_gate_passed(case: "Case") -> bool:
     Also the **observability primitive** for the per-provider gate-crossing
     metric — a configured model that never crosses this is mis-provisioned, a
     provider-health fact rather than a per-case verdict.
+
+    The evidence dimension counts DISTINCT observations (``evidence_datum_key``),
+    not rows (#1136). The same datum recorded twice — a user re-submitting a
+    snapshot, a model re-extracting the same lines — is one thing the
+    investigation knows, and letting it satisfy ``WORK_GATE_MIN_EVIDENCE`` would
+    move a case out of ``NOT_YET_PRODUCTIVE`` on no new work, blaming the case for
+    what the reasoner did not gather. That is the §5.2 line this gate exists to
+    draw, and it is the evidence-side twin of the hypothesis dedup INV-36 added
+    for the same reason. Hypotheses need no such treatment here — duplicates are
+    already refused at mint.
     """
     categories = {h.category for h in case.hypotheses.values()}
+    distinct_evidence = {evidence_datum_key(e) for e in case.evidence}
     return (
         len(case.hypotheses) >= WORK_GATE_MIN_HYPOTHESES
         and len(categories) >= WORK_GATE_MIN_CATEGORIES
-        and len(case.evidence) >= WORK_GATE_MIN_EVIDENCE
+        and len(distinct_evidence) >= WORK_GATE_MIN_EVIDENCE
     )
 
 
 def _is_grounded(case: "Case", grade: "CauseAssuranceGrade | None" = None) -> bool:
-    """Grounding axis for the disposition join: an authority-grounded root
-    (§7 ``CONFIRMED`` — counterfactual confirmation, the top M2 grade)
-    **anchored on a verified symptom**. ``grade`` lets the per-turn recompute
-    pass the grade it just persisted, so both persisted signals derive from
-    one graph snapshot; when omitted the grade is computed fresh.
+    """Grounding axis for the disposition join: a **validated root**
+    (``grade_cause_assurance`` at or above ``MECHANISTIC``) **anchored on a
+    verified symptom**. ``grade`` lets the per-turn recompute pass the grade it
+    just persisted, so both persisted signals derive from one graph snapshot;
+    when omitted the grade is computed fresh.
 
-    ``CONFIRMED`` is the direct successor of the pre-M2-alignment ``GROUNDED``
-    grade as the axis value (the top assurance grade either way). KNOWN
-    REACHABILITY CONSEQUENCE: the only live producer of ``CONFIRMED`` is the
-    resolution confirm-stamp, which fires AFTER the last per-turn recompute —
-    so on live INVESTIGATING turns this axis is effectively never true and
-    ``HEALTHY``/``TREATMENT_BLOCKED`` are engine-unreachable (pre-M2, the rare
-    deductive arm could reach the top grade mid-investigation). The material
-    shift: a stalled case holding a validated root now disposes
-    ``INSUFFICIENT_EVIDENCE`` instead of ``TREATMENT_BLOCKED``. Whether the
-    axis should instead read "any validated root" (restoring a live grounded
-    arm) is an open calibration question deliberately NOT decided here — see
-    insufficient-evidence-handling.md §5.1; it belongs to the
-    verification-status calibration eval, not the M2 grade alignment.
+    THE BAR IS "ANY VALIDATED ROOT", NOT ``CONFIRMED`` (#1136, resolving the
+    calibration question §3.5 left open). The axis previously read the top M2
+    grade, which made the entire grounded ROW of the §5.1 grid dead code
+    in-flight: the only producer of ``CONFIRMED`` is the resolution
+    confirm-stamp (``confirm_root_from_resolution_absence``, reached only from
+    ``terminal_transitions._execute_resolved_transition``), which fires AFTER the
+    last per-turn recompute — deliberately, so a premature "it's stable now"
+    absence row cannot self-confirm. So on every live INVESTIGATING turn the axis
+    was false by construction, ``HEALTHY`` and ``TREATMENT_BLOCKED`` were
+    unreachable, and a stalled case holding a validated root disposed
+    ``INSUFFICIENT_EVIDENCE`` — asserting "no cause could be grounded" over a case
+    that holds one, to consumers (the handoff, ``closed_insufficient_evidence``,
+    the Data Boundary report block) that take the claim at face value.
+
+    That reachability collapse is why the bar moved. It is a *disposition* read,
+    not a harvest read: the question this axis answers is "does the case have a
+    cause to act on?", and a mechanistically validated root is one. Whether the
+    fix has been counterfactually borne out is the question the PROGRESS axis
+    answers alongside it — which is exactly the ``TREATMENT_BLOCKED`` cell ("have
+    a cause but can't reach a verified fix"). Requiring the counterfactual on the
+    grounding axis collapsed those two questions into one and lost the cell.
+
+    The harvest bar is untouched at ``CONFIRMED`` — see COUPLING below.
 
     The symptom-verified anchor closes the composition seam (§4 limitation 1):
     the §7 grade walks the causal graph and can read ``CONFIRMED`` off a
@@ -117,25 +139,40 @@ def _is_grounded(case: "Case", grade: "CauseAssuranceGrade | None" = None) -> bo
     silenced — ``_log_grounding_assessment``'s ``seam_divergence`` still surfaces
     it for monitoring.
 
-    COUPLING (keep in sync): this makes the join's grounding axis intentionally
-    diverge from the raw ``grade_cause_assurance`` readers —
-    ``terminal_transitions.assess_runbook_readiness`` (KB harvest gate) and
-    ``cause_assurance.runbook_conversion_ready`` (the canonical case→runbook
-    offer/enforcement predicate) — for the
-    ``CONFIRMED × symptom_verified=False`` state. That divergence is safe **only**
-    because both of those readers are gated behind RESOLVED, which requires
-    ``_cause_identified`` → ``symptom_verified`` (so the divergent state is
-    unreachable there). If a **pre-resolution** harvest/convert path is ever
-    added, it must apply this same symptom anchor — otherwise it would harvest a
-    cause the disposition layer calls ungrounded (mirrors the note in
-    ``_cause_identified``: "if a non-terminal RCC harvest is ever added, enforce
-    the anchor at RCC production").
+    COUPLING (keep in sync): this axis intentionally diverges from the raw
+    ``grade_cause_assurance`` readers — ``terminal_transitions.assess_runbook_readiness``
+    (KB harvest gate) and ``cause_assurance.runbook_conversion_ready`` (the
+    canonical case→runbook offer/enforcement predicate). Since #1136 the
+    divergence runs in BOTH directions, and the safety argument differs per
+    direction:
+
+    - **Looser** on the grade: this accepts ``MECHANISTIC``, harvest requires
+      ``CONFIRMED``. Safe *structurally*, not by gating — those readers call
+      ``grade_cause_assurance`` directly and never call this function, so no
+      change to the disposition bar can reach them. A mechanistically validated
+      cause disposes ``TREATMENT_BLOCKED`` here and remains un-harvestable there.
+      That asymmetry is the intended design: acting on a cause and publishing it
+      as reusable knowledge warrant different bars.
+    - **Stricter** on the symptom anchor: this additionally requires
+      ``symptom_verified``, which the raw grade does not. Safe because both
+      readers are gated behind RESOLVED, which requires ``_cause_identified`` →
+      ``symptom_verified``, so the divergent state is unreachable there. If a
+      **pre-resolution** harvest/convert path is ever added it must apply this
+      same anchor — otherwise it would harvest a cause the disposition layer
+      calls ungrounded (mirrors the note in ``_cause_identified``: "if a
+      non-terminal RCC harvest is ever added, enforce the anchor at RCC
+      production").
     """
     if not (case.progress and case.progress.symptom_verified):
         return False
     if grade is None:
         grade = grade_cause_assurance(case)
-    return grade == CauseAssuranceGrade.CONFIRMED
+    # Any validated root clears the bar. Written as "not NO_ROOT" rather than an
+    # explicit MECHANISTIC/CONFIRMED set so a future grade inserted ABOVE
+    # NO_ROOT is grounded by default — the failure that matters here is a
+    # grounded case reading ungrounded (it loses the whole grid row), and this
+    # spelling cannot produce it.
+    return grade != CauseAssuranceGrade.NO_ROOT
 
 
 def is_stalled(case: "Case") -> bool:

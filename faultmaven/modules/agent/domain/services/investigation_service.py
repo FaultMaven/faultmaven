@@ -1676,10 +1676,19 @@ class InvestigationService:
                 cause_assurance = case.progress.cause_assurance.value
 
         transparent = bool(metadata.get("progress_transparent"))
-        surface_insufficient = (
-            verification_status == VerificationStatus.INSUFFICIENT_EVIDENCE.value
+        # Both engine-driven honest-partial readings are surfaced independently of
+        # transparent mode, for the same reason: each can be reached on a turn
+        # that never activates it, and gating on the flag would hide the outcome
+        # the frontend exists to show. ``INSUFFICIENT_EVIDENCE`` via the declared
+        # data wall (which fires before the time thresholds); ``TREATMENT_BLOCKED``
+        # (#1136) because a case parked on an unapplied fix is conversational —
+        # transparent mode counts investigative turns, so a fix-blocked stall can
+        # sit in that cell for turns on end without ever tripping it.
+        surface_honest_partial = verification_status in (
+            VerificationStatus.INSUFFICIENT_EVIDENCE.value,
+            VerificationStatus.TREATMENT_BLOCKED.value,
         )
-        if not transparent and not surface_insufficient:
+        if not transparent and not surface_honest_partial:
             return None
 
         return ProgressTransparencyInfo(

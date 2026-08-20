@@ -233,8 +233,9 @@ class HypothesisManager:
         turn: int,
         reasoning: str = "Linked by agent",
         stance_confidence: float = 1.0,
-    ) -> None:
-        """Link evidence to hypothesis.
+    ) -> bool:
+        """Link evidence to hypothesis. Returns whether the link was NEW or
+        MATERIALLY CHANGED.
 
         Args:
             hypothesis: Hypothesis to link evidence to
@@ -245,6 +246,29 @@ class HypothesisManager:
             turn: Current turn number
             reasoning: Explanation of why evidence is linked
             stance_confidence: Confidence in the stance (0.0-1.0)
+
+        Returns:
+            ``True`` when this call added a link or changed what an existing one
+            asserts; ``False`` when it merely restated a standing link.
+
+        The return exists because linking is one of the arms that writes
+        ``turns_without_progress`` (#1136). Storage here is an **upsert by
+        evidence_id**, so a model re-emitting the same link every turn leaves the
+        link set unchanged — yet the caller counted every call, and a parked case
+        whose model re-links the same evidence never stalled. Reporting novelty
+        from the one place that can actually tell (it holds both the old link and
+        the new one) keeps that judgement out of the caller.
+
+        MATERIAL is deliberately not "new link only". A **changed stance** is real
+        diagnostic work — the model revised its read of what the evidence means,
+        which is what hypothesis testing looks like. So is **crossing the hedge
+        bar** (``CAUSAL_STANCE_CONFIDENCE_MIN``) at an unchanged stance: below it a
+        link is a self-hedge that grounds nothing, above it the link counts for
+        chain grounding and lifts the evidence-free cap, so the crossing changes
+        what the case knows even though the stance reads the same. Re-asserting
+        the same stance on the same side of that bar is restatement, however the
+        ``reasoning`` prose is worded — rewording is the LLM behaviour this whole
+        change exists to stop counting.
         """
         link = HypothesisEvidenceLink(
             hypothesis_id=hypothesis.hypothesis_id,
@@ -265,8 +289,24 @@ class HypothesisManager:
             None,
         )
         if existing_idx is not None:
+            prior = hypothesis.evidence_links[existing_idx]
+            # Compare BEFORE the overwrite, or the old assertion is gone.
+            material = prior.stance != stance or (
+                (prior.stance_confidence or 0.0) >= CAUSAL_STANCE_CONFIDENCE_MIN
+            ) != (stance_confidence >= CAUSAL_STANCE_CONFIDENCE_MIN)
             hypothesis.evidence_links[existing_idx] = link
+            if material:
+                logger.info(
+                    f"Revised {stance.value} evidence link on hypothesis: {evidence_id}",
+                    extra={
+                        "hypothesis_id": hypothesis.hypothesis_id,
+                        "hypothesis": hypothesis.statement[:50],
+                        "prior_stance": prior.stance.value,
+                        "prior_confidence": prior.stance_confidence,
+                    },
+                )
         else:
+            material = True
             hypothesis.evidence_links.append(link)
 
             stance_label = stance.value
@@ -281,6 +321,7 @@ class HypothesisManager:
         # Update likelihood after linking evidence
         # NEUTRAL links are stored for audit trail but do not affect confidence
         self.update_likelihood_from_evidence(hypothesis, turn)
+        return material
 
     def update_likelihood_from_evidence(
         self,

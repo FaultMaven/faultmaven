@@ -48,11 +48,18 @@ class TestBroadenedProgressDefinition:
 
         assert engine._check_if_progress_made(empty_metadata) is True
 
-    def test_data_provided_counts_as_progress(self, engine, empty_metadata):
-        """DATA_PROVIDED outcome should count as progress."""
+    def test_data_provided_alone_does_not_count(self, engine, empty_metadata):
+        """DATA_PROVIDED is NOT a standalone progress arm (#1136).
+
+        It is set from ``evidence_added`` in ``determine_turn_outcome``, so honouring
+        it here would readmit through the outcome label exactly the duplicate rows
+        ``novel_evidence_added`` exists to exclude — a user re-submitting a snapshot
+        they already sent would keep resetting ``turns_without_progress``.
+        Genuinely new evidence still counts, via the novel key (below).
+        """
         empty_metadata["outcome"] = TurnOutcome.DATA_PROVIDED
 
-        assert engine._check_if_progress_made(empty_metadata) is True
+        assert engine._check_if_progress_made(empty_metadata) is False
 
     def test_conversation_only_does_not_count(self, engine, empty_metadata):
         """Pure CONVERSATION outcome without structural progress should NOT count."""
@@ -61,16 +68,43 @@ class TestBroadenedProgressDefinition:
         assert engine._check_if_progress_made(empty_metadata) is False
 
     def test_evidence_links_count_as_progress(self, engine, empty_metadata):
-        """Hypothesis-evidence linking should count as progress even without new artifacts."""
+        """A NEW or materially revised evidence link counts as progress even
+        without new artifacts.
+
+        Post-#1136 the caller gates this counter on what ``link_evidence``
+        reports: storage upserts by ``evidence_id``, so re-emitting a standing
+        link leaves the link set unchanged and no longer increments. See
+        ``test_stall_net_arming_1136.py`` for the restatement cases.
+        """
         empty_metadata["hypothesis_evidence_links_applied"] = 2
 
         assert engine._check_if_progress_made(empty_metadata) is True
 
     def test_structural_progress_still_counts(self, engine, empty_metadata):
-        """Structural artifacts (evidence, milestones, etc.) should still count as progress."""
+        """A NEW structural artifact still counts as progress.
+
+        Post-#1136 the arm reads ``novel_evidence_added`` rather than
+        ``evidence_added``: the raw list keeps every minted id for positional
+        ``new_index_N`` resolution and milestone attribution, while the progress
+        reading narrows to rows carrying a datum the case did not already hold.
+        """
         empty_metadata["evidence_added"] = ["ev_000000000001"]
+        empty_metadata["novel_evidence_added"] = ["ev_000000000001"]
 
         assert engine._check_if_progress_made(empty_metadata) is True
+
+    def test_duplicate_structural_artifacts_do_not_count(self, engine, empty_metadata):
+        """A minted row that only RESTATES what the case holds is not progress (#1136).
+
+        This is the arm that disarmed every stall net: the LLM restates constantly
+        while it waits on the user — re-quoting the same log lines, re-proposing the
+        standing fix — and each restatement minted a row that reset the counter.
+        """
+        empty_metadata["evidence_added"] = ["ev_000000000001"]
+        empty_metadata["solutions_proposed"] = ["sol_000000000001"]
+        empty_metadata["files_uploaded"] = ["file_000000000001"]
+
+        assert engine._check_if_progress_made(empty_metadata) is False
 
     def test_status_transition_still_counts(self, engine, empty_metadata):
         """Status transitions should still count as progress."""
