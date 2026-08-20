@@ -11,6 +11,7 @@ docs/architecture/investigation-engine/investigation-flow-redesign.md §1.1:
    is forward-only (sticky).
 """
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -21,12 +22,17 @@ from faultmaven.core.investigation.milestone_engine import (
 )
 from faultmaven.core.investigation.schemas import InternalReasoning, MilestoneUpdates
 from faultmaven.modules.case.contracts import (
+    Case,
     CaseState,
     CauseState,
+    Evidence,
     EvidenceCategory,
+    EvidenceSourceType,
     InvestigationProgress,
+    Solution,
     SolutionFeasible,
     SolutionState,
+    SolutionType,
 )
 
 
@@ -140,6 +146,16 @@ class TestSolutionStateDerivation:
         assert case.progress.solution_proposed is False
 
 
+def _solution(title: str = "Correct the OIDC provider client ID"):
+    """A real ``Solution`` — the model rejects duck-typed stand-ins on assignment."""
+    return Solution(
+        solution_type=SolutionType.CONFIG_CHANGE,
+        title=title,
+        # A Solution must carry actionable content (model validator).
+        longterm_fix="Set the provider ClientIDList to sts.amazonaws.com.",
+    )
+
+
 class TestDeferredImplementationClose:
     """Follow-on A: solution_feasible=DEFERRED proposes CLOSE-with-documented-solution.
 
@@ -157,22 +173,71 @@ class TestDeferredImplementationClose:
         pending=None,
         terminal=False,
         cause_identified=True,
+        causal_absence=False,
+        inquiry=False,
     ):
-        progress = InvestigationProgress()
-        progress.solution_feasible = feasible
-        progress.solution_proposed = solution_proposed
-        if cause_identified:
-            progress.cause_state = CauseState.IDENTIFIED
-        case = SimpleNamespace(
-            progress=progress,
-            solutions=[],
-            pending_transition=pending,
-            is_terminal=terminal,
-            state=CaseState.INVESTIGATING,
-            case_id="case_test",
-            root_cause_conclusion=None,
-            working_conclusion=None,
+        """A REAL ``Case`` — not a SimpleNamespace.
+
+        ``_maybe_propose_deferred_close`` now consults ``assess_closure_readiness``
+        for the resolve-preservation pivot, which walks ``case.evidence`` and
+        ``case.progress.completed_milestones``. A duck-typed stand-in silently
+        lacks those and turns a genuine behavioural test into an AttributeError,
+        so the fixture uses the real type and the real readiness predicate.
+        """
+        # ``description`` is required before INVESTIGATING (Case validator) —
+        # one of the real constraints the SimpleNamespace stand-in hid.
+        case = Case(
+            organization_id="org_test",
+            title="deferred fix",
+            description="Cross-account AssumeRole fails for the data-processor pods.",
         )
+        # Inquiry readiness must be satisfied BEFORE the state assignment —
+        # validate_assignment runs the INVESTIGATING gate on every __setattr__.
+        case.inquiry.problem_statement_confirmed = True
+        case.inquiry.decided_to_investigate = True
+        # NB: the state is chosen here but every other field is set BELOW, so
+        # an early return would leave solution_feasible unset and the proposer
+        # would bail at its FIRST guard — the test would pass while proving
+        # nothing about the state guard.
+        if terminal:
+            # CLOSED and closed_at each require the other, so neither can be
+            # assigned first — they have to arrive together, after created_at.
+            # The old fixture set state alone and RAISED, which is why this
+            # parameter was dead and the is_terminal guard untested.
+            case = Case(
+                organization_id="org_test",
+                title="deferred fix",
+                description=case.description,
+                state=CaseState.CLOSED,
+                closed_at=case.created_at + timedelta(seconds=1),
+                closure_reason="solution_deferred",
+            )
+        elif not inquiry:
+            case.state = CaseState.INVESTIGATING
+        # inquiry=True leaves the case in INQUIRY — the state the NEW guard
+        # adds. A terminal case was ALREADY rejected by the `is_terminal`
+        # check this replaced, so a CLOSED-only test cannot tell the old
+        # guard from the new one.
+        case.progress.solution_feasible = feasible
+        case.progress.solution_proposed = solution_proposed
+        if cause_identified:
+            case.progress.cause_state = CauseState.IDENTIFIED
+        case.pending_transition = pending
+        if causal_absence:
+            # A qualifying gone=>gone confirmation: user-authored (not the
+            # engine's M6 failed-fix disconfirmation) causal_absence row. This
+            # is what actually flips assess_closure_readiness to SUGGEST_RESOLVE.
+            case.evidence.append(
+                Evidence(
+                    category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                    primary_purpose="confirm the cause was eliminated",
+                    summary="After the provider client-ID correction the pods "
+                    "obtained credentials and the AssumeRole failures stopped.",
+                    source_type=EvidenceSourceType.USER_DESCRIPTION,
+                    collected_by="user",
+                    collected_at_turn=9,
+                )
+            )
         return case
 
     def test_no_proposal_when_cause_license_fell(self):
@@ -187,7 +252,7 @@ class TestDeferredImplementationClose:
             solution_proposed=False,
             cause_identified=False,
         )
-        case.solutions = [SimpleNamespace(solution_id="sol_x")]
+        case.solutions = [_solution()]
         meta = {}
         _maybe_propose_deferred_close(case, meta)
         assert "transition_proposed_this_turn" not in meta
@@ -242,6 +307,183 @@ class TestDeferredImplementationClose:
         # existing pending transition must not be clobbered
         assert case.pending_transition == {"to_state": "resolved"}
         assert "transition_proposed_this_turn" not in meta
+
+    def test_pivots_to_resolve_when_a_confirmation_stands(self):
+        """Resolve preservation: a deferred fix on a case carrying a gone=>gone
+        confirmation is offered RESOLVED, not close-without-resolution.
+
+        This proposer is one of three disposition paths; the LLM-proposal path
+        and the confirm-time INV-37 guard both pivot on SUGGEST_RESOLVE. Before
+        this it called propose_transition("closed") directly, so the engine
+        could offer to discard an attribution its own eligibility scored
+        resolvable.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            ClosureReadiness,
+            assess_closure_readiness,
+        )
+
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED,
+            solution_proposed=True,
+            causal_absence=True,
+        )
+        case.solutions = [_solution()]
+        # Precondition asserted through the REAL predicate, not assumed: if the
+        # pivot's trigger ever moves, this fails here rather than passing
+        # vacuously below.
+        assert (
+            assess_closure_readiness(case).verdict == ClosureReadiness.SUGGEST_RESOLVE
+        )
+
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+
+        assert case.pending_transition["to_state"] == "resolved"
+        labels = [s["label"] for s in meta["override_suggestions"]]
+        assert "Yes, mark as resolved" in labels
+        assert "Yes, close this case" not in labels
+
+    def test_close_branch_survives_without_a_confirmation(self):
+        """The pivot must not swallow the ordinary deferred close: with no
+        gone=>gone row the case is NOT resolution-grade and CLOSE is correct."""
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+
+        assert case.pending_transition["to_state"] == "closed"
+        labels = [s["label"] for s in meta["override_suggestions"]]
+        assert "Yes, close this case" in labels
+
+    @pytest.mark.parametrize("causal_absence", [False, True])
+    def test_publishes_a_rationale_for_the_composer(self, causal_absence):
+        """The engine-proposed disposition publishes its reason.
+
+        The old key (``deferred_solution_closure_message``) was written and read
+        NOWHERE, so the user saw a bare confirm/decline pair with no stated
+        reason. The message must be non-empty and must match what the handshake
+        is actually proposing.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED,
+            solution_proposed=True,
+            causal_absence=causal_absence,
+        )
+        case.solutions = [_solution()]
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+
+        message = meta.get("deferred_solution_gate_message")
+        assert message, "the proposal must publish its rationale for rendering"
+        assert message == case.pending_transition["summary"]
+        assert "deferred_solution_closure_message" not in meta
+
+    def test_resolve_branch_does_not_reuse_the_pivot_from_close_prose(self):
+        """The resolve branch needs its OWN sentence.
+
+        `assess_closure_readiness().message` is a pivot-FROM-a-close text
+        ("Closing would record it as unresolved..."), coherent only where a
+        close was actually requested. This proposer offers the disposition
+        unprompted, so reusing it would presuppose a close the user never made
+        and never state the deferred-implementation reason — reintroducing, on
+        the resolve branch, the prose/affordance incoherence this function was
+        fixed to stop producing.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            assess_closure_readiness,
+        )
+
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED,
+            solution_proposed=True,
+            causal_absence=True,
+        )
+        case.solutions = [_solution()]
+        borrowed = assess_closure_readiness(case).message
+
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        message = meta["deferred_solution_gate_message"]
+
+        assert message != borrowed
+        assert (
+            "Closing would" not in message
+        ), "the resolve branch presupposes a close the user never requested"
+        # It must state the reason the engine is proposing anything at all.
+        assert "out-of-band" in message
+        assert "resolved" in message.lower()
+
+    def test_no_proposal_from_inquiry(self):
+        """INQUIRY is the state the new guard actually adds.
+
+        "closed" was a legal edge from any state; "resolved" is not one from
+        INQUIRY, and a proposal that cannot execute leaves pending_transition
+        standing so every later confirm turn fails identically. The terminal
+        case below does NOT pin this — `is_terminal` already rejected it — so
+        without this case the guard is asserted by its sibling and tested by
+        neither.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED,
+            solution_proposed=True,
+            causal_absence=True,
+            inquiry=True,
+        )
+        case.solutions = [_solution()]
+        assert case.state == CaseState.INQUIRY
+        assert (
+            case.progress.solution_feasible == SolutionFeasible.DEFERRED
+        ), "the fixture must arm the trigger, or this passes at the wrong guard"
+
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+
+        assert case.pending_transition is None
+        assert meta == {}
+
+    def test_no_proposal_outside_investigating(self):
+        """The proposal target is state-dependent now, so the state is guarded.
+
+        "closed" was a legal edge from any state; "resolved" is not one from
+        INQUIRY, and a proposal that cannot execute leaves `pending_transition`
+        standing so every later confirm turn fails identically. Exercises the
+        previously-dead ``terminal=True`` fixture path.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED,
+            solution_proposed=True,
+            terminal=True,
+        )
+        case.solutions = [_solution()]
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+
+        assert case.pending_transition is None
+        assert "transition_proposed_this_turn" not in meta
+        assert "deferred_solution_gate_message" not in meta
 
 
 class TestStructuredOutputDegradation:
