@@ -56,8 +56,9 @@ class TestProseComposition:
 class TestOverrideBranchesUseComposer:
     """Static-source guards on the inline override branches.
 
-    The four gate branches (ready-for-confirmation, suggest-close,
-    needs-info first pass, rca-infeasible closure) must feed their prose
+    The five gate branches (ready-for-confirmation, suggest-close,
+    needs-info first pass, rca-infeasible closure, deferred-solution
+    disposition) must feed their prose
     through ``_prose_with_gate_notice``; a refactor that reverts any of
     them to bare assignment silently reintroduces the #656 analysis-hiding
     bug.
@@ -75,9 +76,10 @@ class TestOverrideBranchesUseComposer:
             'metadata["resolution_readiness_message"],',
             'metadata["resolution_needs_info_message"],',
             'metadata["rca_infeasible_closure_message"],',
+            'metadata["deferred_solution_gate_message"],',
         ):
             assert anchor in src, f"gate branch anchor missing: {anchor}"
-        assert src.count("_prose_with_gate_notice(") >= 4, (
+        assert src.count("_prose_with_gate_notice(") >= 5, (
             "an override branch stopped composing prose with the LLM reply "
             "— that re-hides the model's analysis on gate turns (#656)"
         )
