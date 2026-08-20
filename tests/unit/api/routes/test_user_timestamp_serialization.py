@@ -151,3 +151,44 @@ def test_absent_last_login_stays_null_through_both_admin_surfaces():
         .json()["last_login_at"]
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# The third surface: GET /api/v1/auth/users (platform-admin listing in the
+# auth module) fed raw .isoformat() into its response dict — found in review
+# of this fix; "everywhere" has to include it.
+# ---------------------------------------------------------------------------
+
+
+class _UserStore:
+    def __init__(self, user: RepositoryUser):
+        self._user = user
+
+    async def list_users(self, limit: int = 1000):
+        return [self._user]
+
+    async def count_users(self) -> int:
+        return 1
+
+
+def _auth_client(user: RepositoryUser) -> TestClient:
+    from faultmaven.api.v1.auth_dependencies import (
+        require_platform_admin as auth_require_platform_admin,
+    )
+    from faultmaven.modules.auth.api.auth import router as auth_router
+
+    app = FastAPI()
+    app.include_router(auth_router, prefix="/api/v1")
+    app.dependency_overrides[auth_require_platform_admin] = _operator
+    app.state.user_store = _UserStore(user)
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("dt", [NAIVE, AWARE], ids=["sqlite-naive", "postgres-aware"])
+def test_auth_users_listing_emits_the_auth_me_timestamp_format(dt: datetime):
+    """GET /auth/users returns a plain dict (no response model), so nothing
+    re-parses what the route emits — the string must be canonical at source."""
+    response = _auth_client(_stored_user(dt)).get("/api/v1/auth/users")
+
+    assert response.status_code == 200
+    assert response.json()["users"][0]["created_at"] == CANONICAL

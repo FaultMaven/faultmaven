@@ -786,11 +786,12 @@ async def list_users(
                 "display_name": user.display_name,
                 "roles": user.roles if user.roles else [],
                 "is_active": user.is_active,
-                "created_at": (
-                    user.created_at.isoformat()
-                    if hasattr(user.created_at, "isoformat")
-                    else str(user.created_at)
-                ),
+                # Through to_json_compatible (fm#1129): raw .isoformat() emits
+                # a suffix-less naive string under the default SQLite backend
+                # while /auth/me and /admin/users emit 'Z' for the same row.
+                # Non-datetime values (a store that round-trips strings) pass
+                # through unchanged, preserving the old hasattr fallback.
+                "created_at": to_json_compatible(user.created_at),
             }
             for user in users
         ]
