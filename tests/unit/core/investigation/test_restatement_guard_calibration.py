@@ -208,3 +208,72 @@ def test_dilution_fp_bounded_under_realistic_sibling_frames():
     assert (
         blocked / checked <= 0.02
     ), f"dilution FP regressed: {blocked}/{checked} ({blocked/checked:.1%})"
+
+
+# ---------------------------------------------------------------------------
+# fm#1137 — the guard's known limit, and the #656 TP that bounds any fix
+# ---------------------------------------------------------------------------
+
+
+def test_known_limit_unattached_duplicate_frames_its_own_root():
+    """KNOWN LIMIT (documented, not endorsed — fm#1137). A hypothesis that
+    DUPLICATES this root's own hypothesis, left standing and unattached, enters
+    the root's frame and holds it. In the live incident that cost nine turns on
+    a root carrying three confident independent causal supports: novelty 1/9
+    against a 0.30 bar, permanently, because a true duplicate is never refuted
+    or retired.
+
+    Pinned as CURRENT behaviour rather than fixed, because every lexical
+    separator tried releases the #656 shape too (next test). The recovery is
+    elicited from the model instead — see the restatement recovery note in
+    context_builder and ``restatement_held_root_ids``."""
+    case = _case(
+        "The production payment-processor deployment in the `payments` "
+        "namespace is currently unavailable or unstable because its v2.1.4 "
+        "pods enter CrashLoopBackOff after 2-3 minutes, causing customer "
+        "payment failures.",
+        hyp_statements=[
+            "The v2.1.4 JVM configuration sets a 512MB maximum heap inside a "
+            "400Mi container, leaving insufficient headroom for JVM "
+            "native/non-heap memory; total RSS reaches the cgroup limit, the "
+            "kernel kills the process with SIGKILL/exit 137, and Kubernetes "
+            "restarts it into CrashLoopBackOff."
+        ],
+    )
+    root = _root(
+        "JVM heap and native/non-heap memory exceed the 400Mi container " "cgroup limit"
+    )
+    assert root_restates_case_frame(root, case) is True  # the limit
+
+
+def test_656_disjunction_root_stays_blocked_against_verbose_siblings():
+    """REGRESSION PIN — the bound on any fm#1137 fix. The #656 TP must survive
+    siblings written at the length real hypotheses are written at. A
+    disjunction root is CONTAINED IN each verbose sibling (0.667 here) exactly
+    as each terse sibling is contained in the root, so a one-way-containment
+    ownership arm in EITHER direction releases the incident shape. An earlier
+    cut of fm#1137 shipped one and this fixture is what caught it."""
+    case = _case(
+        "Intermittent 502 errors under load",
+        hyp_statements=[
+            "Transient network congestion between the ingress controller and "
+            "the backend pods causes intermittent 502 errors whenever request "
+            "volume rises under load",
+            "Resource contention on the backend host - CPU and memory pressure "
+            "from co-tenant workloads - causes intermittent 502 errors under "
+            "load",
+        ],
+    )
+    root = _root(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors"
+    )
+    from faultmaven.core.investigation.causal_graph import _content_tokens
+
+    st = _content_tokens(root.statement)
+    covers = [
+        len(st & _content_tokens(h.statement)) / len(st)
+        for h in case.hypotheses.values()
+    ]
+    assert max(covers) >= 0.6, f"fixture no longer exercises containment: {covers}"
+    assert root_restates_case_frame(root, case) is True

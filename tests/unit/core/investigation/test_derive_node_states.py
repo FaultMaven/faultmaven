@@ -1250,3 +1250,308 @@ def test_hedged_counterfactual_does_not_evict_root_from_block_classifier():
     # Raise the refute to decisive: the root leaves the classifier entirely.
     root.evidence_links[2] = _link("ev_ch_abs", EvidenceStance.REFUTES)
     assert root_support_block_reasons(case) == {}
+
+
+# ---------------------------------------------------------------------------
+# fm#1137 — an unattached duplicate hypothesis must not hold its own root
+# ---------------------------------------------------------------------------
+
+
+def _fm1137_case() -> tuple[Case, CausalNode]:
+    """The live incident graph (case_a3d354f08765), reduced to what the §7.1
+    bars read: a ROOT with two independent confident causal supports, its own
+    hypothesis ATTACHED, and a near-duplicate hypothesis standing UNATTACHED
+    because the fm#1091 one-cause-one-chain guard refused it the same root."""
+    root = CausalNode(
+        node_id=_nid(0x1137),
+        statement=(
+            "JVM heap and native/non-heap memory exceed the 400Mi container "
+            "cgroup limit"
+        ),
+        node_type=NodeType.ROOT,
+        node_state=NodeState.INCONCLUSIVE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=False,
+        generated_at_turn=5,
+        evidence_links=[
+            _link("heap-cap-vs-limit", EvidenceStance.SUPPORTS, 0.99),
+            _link("rss-at-limit-pre-kill", EvidenceStance.SUPPORTS, 0.90),
+        ],
+    )
+    problem = CausalNode(
+        node_id=_nid(0x1138),
+        statement=(
+            "The production payment-processor deployment enters "
+            "CrashLoopBackOff after 2-3 minutes, causing payment failures."
+        ),
+        node_type=NodeType.PROBLEM,
+        node_state=NodeState.CANDIDATE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=False,
+        generated_at_turn=4,
+    )
+
+    def _hyp(statement, root_node_id):
+        return Hypothesis(
+            statement=statement,
+            category=HypothesisCategory.CONFIG,
+            state=HypothesisState.ACTIVE,
+            generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+            rationale="posited",
+            generated_at_turn=5,
+            root_node_id=root_node_id,
+        )
+
+    owner = _hyp(
+        "The payment-processor v2.1.4 pods use a JVM maximum heap of 512m "
+        "under a 400Mi Kubernetes memory limit; heap plus JVM native/non-heap "
+        "memory exceeds the cgroup limit, causing OOMKilled termination and "
+        "CrashLoopBackOff.",
+        root.node_id,
+    )
+    # Emitted four turns later; it pointed its root_node_ref at `root` and the
+    # fm#1091 guard refused the attachment, so it keeps root_node_id=None while
+    # saying exactly what `root` says — and therefore frames it (fm#1137).
+    duplicate = _hyp(
+        "The v2.1.4 JVM configuration sets a 512MB maximum heap inside a "
+        "400Mi container, leaving insufficient headroom for JVM "
+        "native/non-heap memory; total RSS reaches the cgroup limit, the "
+        "kernel kills the process with SIGKILL/exit 137, and Kubernetes "
+        "restarts it into CrashLoopBackOff.",
+        None,
+    )
+    case = _case(
+        [root, problem],
+        edges=[
+            CausalEdge(
+                cause_node_id=root.node_id,
+                effect_node_id=problem.node_id,
+                created_at_turn=5,
+            )
+        ],
+        evidence=[
+            _evidence("heap-cap-vs-limit", EvidenceCategory.CAUSAL_EVIDENCE),
+            _evidence("rss-at-limit-pre-kill", EvidenceCategory.CAUSAL_EVIDENCE),
+        ],
+        hyps=[owner, duplicate],
+    )
+    return case, root
+
+
+def test_fm1137_hold_is_reported_as_a_standing_signal():
+    """The incident: every evidence bar is met, the guard holds it anyway, and
+    that hold must be NAMEABLE while it is held. The block counter fires on
+    state TRANSITIONS, so a root already INCONCLUSIVE when the guard took over
+    is never counted — fm#1137 read 0.0 on it live throughout the nine turns,
+    which is what sent the investigation after the wrong bar."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    derive_node_states(case)
+    assert root.node_state is NodeState.INCONCLUSIVE
+    assert restatement_held_root_ids(case) == {root.node_id}
+
+
+def test_restatement_held_root_is_not_count_held():
+    """The standing restatement signal must never leak into the count-held set
+    — that set feeds the resolution confirm-stamp and the anti-anchoring
+    exemption, and a confirmation does not supply a missing mechanism."""
+    from faultmaven.core.investigation.causal_graph import (
+        support_count_held_root_ids,
+    )
+
+    case, root = _fm1137_case()
+    derive_node_states(case)
+    assert support_count_held_root_ids(case) == set()
+
+
+# Boundary pins for restatement_held_root_ids. It mirrors the would-validate-
+# but-for-the-guard branch of derive_node_states; each condition below is a
+# separate way to be held, and the note must NOT claim "more evidence will not
+# validate it" for any of them. Without these, four wrong implementations pass
+# the suite (mutation-checked).
+
+
+def test_and_gate_blocked_root_is_not_reported_as_restatement_held():
+    """Held by the M7 AND-gate, not by the guard — more evidence (validating
+    the AND-member) IS the recovery, so the note would be actively wrong."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    member = _node(_nid(0x1139), node_type=NodeType.INTERMEDIATE)
+    case.causal_nodes[member.node_id] = member
+    case.causal_edges.append(
+        CausalEdge(
+            cause_node_id=member.node_id,
+            effect_node_id=root.node_id,
+            and_group="g1",
+            created_at_turn=5,
+        )
+    )
+    derive_node_states(case)
+    assert restatement_held_root_ids(case) == set()
+
+
+def test_net_refuted_and_tied_roots_are_not_reported_as_restatement_held():
+    """Refuted territory, and the support/refute TIE that derive_node_states
+    treats as INCONCLUSIVE rather than validation-eligible."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    for extra in (2, 3):  # tie (2 supports vs 2 refutes), then net-refuted
+        case, root = _fm1137_case()
+        root.statement = (
+            "The production payment-processor deployment enters "
+            "CrashLoopBackOff after 2-3 minutes, causing payment failures."
+        )
+        for n in range(extra):
+            label = f"refute-{n}"
+            root.evidence_links.append(_link(label, EvidenceStance.REFUTES))
+            case.evidence.append(_evidence(label, EvidenceCategory.SYMPTOM_EVIDENCE))
+        derive_node_states(case)
+        assert restatement_held_root_ids(case) == set()
+
+
+def test_settled_roots_are_not_reported_as_restatement_held():
+    """A VALIDATED (grandfathered) or REFUTED root is settled — no live hold."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.EMPIRICAL
+    root.actionable = True
+    # A second, UNSETTLED root so the eligibility pre-scan does not short out
+    # and mask the settled-root skip itself.
+    live = _node(_nid(0x113A), node_type=NodeType.ROOT)
+    case.causal_nodes[live.node_id] = live
+    assert restatement_held_root_ids(case) == set()
+
+    root.node_state = NodeState.REFUTED
+    root.validation_method = ValidationMethod.NONE
+    root.actionable = False
+    root.refutation_reason = "refuted by rung evidence"
+    assert restatement_held_root_ids(case) == set()
+
+
+def test_ungrounded_root_is_not_reported_as_restatement_held():
+    """Held by the §7.1 grounding bar as well — that arm owns it, and its
+    recovery IS another observation. The two annotations must not collide."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    root.evidence_links = root.evidence_links[:1]  # one support: below the bar
+    derive_node_states(case)
+    assert restatement_held_root_ids(case) == set()
+
+
+def test_counterfactually_confirmed_restating_root_is_still_reported():
+    """A counterfactually CONFIRMED root (engine-stamped gone⇒gone) satisfies
+    the ROOT grounding bar outright on ONE support, so if it is then held by
+    the restatement guard the hold is real and must be reported. Mirrors the
+    same disjunct in derive_node_states — dropping it there silently drops this
+    population from the annotation."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    # One ordinary support (below the count bar) plus the engine's absence stamp.
+    root.evidence_links = root.evidence_links[:1] + [
+        _link("gone-when-cause-removed", EvidenceStance.SUPPORTS)
+    ]
+    case.evidence.append(
+        _evidence("gone-when-cause-removed", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    )
+    derive_node_states(case)
+    assert root.node_state is NodeState.INCONCLUSIVE
+    assert restatement_held_root_ids(case) == {root.node_id}
+
+
+def test_a_settled_root_elsewhere_does_not_suppress_a_live_hold():
+    """The eligibility pre-scan must bail only when NOTHING is live. Inverting
+    it (bail when any settled root exists) silently recreates the fm#1137
+    bare-line stall for every case where a settled root coexists with a held
+    one — and passed the whole suite until this pin."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    # Genuinely settled THROUGH derive — a hand-stamped VALIDATED root with no
+    # bearing evidence is demoted to CANDIDATE on the next pass, which would
+    # leave this fixture with nothing settled and the pin asserting nothing.
+    settled = _node(
+        _nid(0x113B),
+        node_type=NodeType.ROOT,
+        links=[_link("settled-refute", EvidenceStance.REFUTES)],
+    )
+    case.causal_nodes[settled.node_id] = settled
+    case.evidence.append(_evidence("settled-refute", EvidenceCategory.SYMPTOM_EVIDENCE))
+    derive_node_states(case)
+    assert settled.node_state is NodeState.REFUTED, "fixture no longer settles"
+    assert restatement_held_root_ids(case) == {root.node_id}
+
+
+def test_every_held_root_is_reported_not_just_one():
+    """Two roots restating the same frame are two separate stalls; annotating
+    only one leaves the other rendering as a bare line."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    frame_echo = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    root.statement = frame_echo
+    twin = CausalNode(
+        node_id=_nid(0x113C),
+        statement=frame_echo + " in production",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.INCONCLUSIVE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=False,
+        generated_at_turn=6,
+        evidence_links=list(root.evidence_links),
+    )
+    case.causal_nodes[twin.node_id] = twin
+    derive_node_states(case)
+    assert restatement_held_root_ids(case) == {root.node_id, twin.node_id}
+
+
+def test_mirror_collapsed_supports_are_not_reported_as_restatement_held():
+    """Grounding is the INDEPENDENT count, not the raw one. Two supports that
+    mutually mirror are ONE observation, so such a root is held by the
+    grounding bar too — its recovery is a second independent observation, and
+    claiming supporting evidence cannot help it would be false."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    # Identical summaries -> the independence mirror collapses them to one.
+    for e in case.evidence:
+        if e.category is EvidenceCategory.CAUSAL_EVIDENCE:
+            e.summary = "the very same observation recorded twice over"
+            e.extract = None
+    derive_node_states(case)
+    assert restatement_held_root_ids(case) == set()

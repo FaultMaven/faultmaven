@@ -33,7 +33,9 @@ from faultmaven.core.investigation.causal_graph import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
     BLOCK_REASON_MIRROR,
+    BLOCK_REASON_RESTATEMENT,
     mece_contested_root_ids,
+    restatement_held_root_ids,
     root_support_block_reasons,
 )
 from faultmaven.core.investigation.evidence_need_surfacing import (
@@ -2812,6 +2814,45 @@ def _build_causal_graph_block(case: Case) -> str:
             " — its causal support is self-hedged (stance_confidence below "
             "0.6); record a CONFIDENT causal observation to ground it"
         ),
+        # §7.1 restatement guard. Its own arm because its recovery is the
+        # OPPOSITE of the grounding arms': this root's evidence bar is already
+        # met, so more SUPPORTING observations move nothing. Without the note
+        # the model sees a bare [root/inconclusive] beside confident causal
+        # supports and keeps collecting (fm#1137: nine turns of it).
+        #
+        # BOTH recoveries are named because the held population is not one
+        # shape. A root held by a true duplicate of its own hypothesis needs a
+        # new MECHANISM statement; a root held by frame DILUTION — a different
+        # cause's hypothesis whose verbose statement happens to cover this one,
+        # the documented <=2% FP class — validates the moment that alternative
+        # is refuted or retired. The engine cannot tell the two apart (that is
+        # the fm#1137 known limit), so telling the model only the surgery half
+        # would be categorically false for the dilution slice and would repeat,
+        # in a new place, the wrong-recovery-advice failure this note exists to
+        # fix.
+        #
+        # Spelled as ADD-and-relink, not "restate this node", because
+        # state_updates carries no node-update field — causal_nodes_to_add /
+        # causal_edges_to_add / node_evidence_links only, and
+        # ingest_emitted_chain reuses a node solely on an exact normalised
+        # statement match. A model told to "restate" either no-ops (the hold
+        # persists) or mints a root carrying none of the held node's evidence
+        # links, landing at CANDIDATE with zero supports. The produces edge is
+        # named explicitly because ``_attach`` DECLINES a re-root whose new
+        # chain does not reach D — omit it and the re-root is silently refused,
+        # the hold persists, and the relinked evidence strands on a validated,
+        # hypothesis-less orphan root.
+        BLOCK_REASON_RESTATEMENT: (
+            " — fully supported, but its statement adds no content beyond what "
+            "the problem and the other hypotheses already say, so MORE "
+            "SUPPORTING EVIDENCE WILL NOT VALIDATE IT. Two recoveries: if an "
+            "overlapping ALTERNATIVE hypothesis is what this restates, REFUTE "
+            "or RETIRE that alternative; if this node is the symptom restated, "
+            "add a NEW root naming the specific MECHANISM (what is "
+            "misconfigured/exhausted/failing), give it a produces edge so its "
+            "chain reaches D, point this hypothesis's root_node_ref at it, and "
+            "re-link this node's ev_ ids to it via node_evidence_links"
+        ),
     }
 
     # §7.1.2 MECE arbitration: contested roots (several simultaneously-
@@ -2828,8 +2869,13 @@ def _build_causal_graph_block(case: Case) -> str:
         "cause identification is HELD until discriminating evidence refutes "
         "the alternatives (at most one can be the real cause)"
     )
+    # The two hold populations are disjoint by construction —
+    # root_support_block_reasons excludes restating roots, and
+    # restatement_held_root_ids requires the grounding bar already MET — so
+    # the merge order below cannot silently reclassify a root.
     node_reasons = {
         **block_reasons,
+        **dict.fromkeys(restatement_held_root_ids(case), BLOCK_REASON_RESTATEMENT),
         **dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
     }
 
