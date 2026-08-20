@@ -1983,11 +1983,23 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     case should be CLOSED with the solution documented rather than held open
     waiting indefinitely (the failure mode observed in validation run 2).
 
-    The engine proposes the close DETERMINISTICALLY: the LLM does not reliably
-    drive to close on its own when implementation is deferred. The user still
-    confirms via the standard disposition handshake, and the documented
-    root cause + solution are preserved on the closed case
-    (``closure_reason=solution_deferred``).
+    The engine proposes the disposition DETERMINISTICALLY: the LLM does not
+    reliably drive to a disposition on its own when implementation is deferred.
+    The user still confirms via the standard disposition handshake, and the
+    documented root cause + solution are preserved either way
+    (``closure_reason=solution_deferred`` on the close branch).
+
+    Which disposition is proposed follows ``assess_closure_readiness``, the same
+    resolve-preservation pivot the LLM-proposal path and the confirm-time INV-37
+    guard apply: a case carrying a root cause AND a solution is RESOLVABLE, so
+    it is offered RESOLVED rather than close-without-resolution. Deferred
+    implementation is a statement about WHEN the fix lands, not about whether
+    the cause was found, and it must not cost the case its attribution.
+
+    The proposal's rationale is published on
+    ``metadata["deferred_solution_gate_message"]`` for the response composer to
+    render below the LLM's reply — an engine-proposed disposition has to say why
+    it is on the table.
     """
     p = case.progress
     if p.solution_feasible != SolutionFeasible.DEFERRED:
@@ -2008,24 +2020,58 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     if getattr(case, "pending_transition", None) or case.is_terminal:
         return
 
-    closure_message = (
-        "The root cause and fix are documented, but the fix can't be applied "
-        "or verified during this session — it needs out-of-band implementation "
-        "(a change request, maintenance window, or another team). Shall I close "
-        "this case with the solution documented for your team to apply?"
+    from faultmaven.core.investigation.terminal_transitions import (
+        assess_closure_readiness,
+        propose_transition,
     )
-    from faultmaven.core.investigation.terminal_transitions import propose_transition
 
-    propose_transition(case=case, to_state="closed", summary=closure_message)
+    # Resolve preservation (INV-37), the SAME choice the other two disposition
+    # paths already make: the LLM-proposal path pivots CLOSED->RESOLVED on
+    # SUGGEST_RESOLVE, and the confirm-time guard pivots a pending CLOSE the
+    # same way. This proposer used to call propose_transition("closed")
+    # directly, so it was the one path that could offer "close this case
+    # without resolution" on a case its OWN eligibility scored resolvable.
+    # Deferred implementation says WHEN the fix lands, not that the cause went
+    # unfound, so it must not cost an attributable case its resolution.
+    #
+    # Scope of the evidence, stated precisely: case_fa29e0023b85 ended with
+    # disposition_eligibility {resolved: ready, closed: suggests_alternative},
+    # but that column is recomputed at every save, so it describes the FINAL
+    # turn — after the user reported applying the fix — not the five earlier
+    # turns on which this function offered the close pair. The defect this
+    # fixes is therefore path INCONSISTENCY (one proposer disagreeing with the
+    # other two), not a reconstructed history of that case. What kept those
+    # five turns going is the re-proposal loop, which is a separate concern.
+    closure = assess_closure_readiness(case)
+    if closure.verdict == closure.SUGGEST_RESOLVE:
+        to_state = "resolved"
+        gate_message = closure.message
+        suggestions = _resolution_confirmation_suggestions()
+    else:
+        to_state = "closed"
+        gate_message = (
+            "The root cause and fix are documented, but the fix can't be applied "
+            "or verified during this session — it needs out-of-band implementation "
+            "(a change request, maintenance window, or another team). Shall I close "
+            "this case with the solution documented for your team to apply?"
+        )
+        suggestions = _close_confirmation_suggestions()
+
+    propose_transition(case=case, to_state=to_state, summary=gate_message)
     # Unified same-turn proposal flag: keeps step 0 of
-    # _check_automatic_transitions from confirming this close with the very
-    # message that produced it (#722 same-turn-confirmation guard).
+    # _check_automatic_transitions from confirming this disposition with the
+    # very message that produced it (#722 same-turn-confirmation guard).
     metadata["transition_proposed_this_turn"] = True
-    metadata["override_suggestions"] = _close_confirmation_suggestions()
-    metadata["deferred_solution_closure_message"] = closure_message
+    metadata["override_suggestions"] = suggestions
+    # Rendered by the response composer, the same way the rca_infeasible
+    # sibling's message is. Before this the key was written and read NOWHERE,
+    # so the engine proposed a disposition the user saw only as a bare
+    # confirm/decline pair with no stated reason.
+    metadata["deferred_solution_gate_message"] = gate_message
     logger.info(
-        f"Proposed CLOSED transition for case {case.case_id} "
-        f"(solution_feasible=DEFERRED; closure preserves the documented solution)"
+        f"Proposed {to_state.upper()} transition for case {case.case_id} "
+        f"(solution_feasible=DEFERRED; closure_verdict={closure.verdict}; "
+        f"the documented root cause and solution are preserved either way)"
     )
 
 
@@ -5416,6 +5462,22 @@ class MilestoneEngine:
                 agent_response_text = _prose_with_gate_notice(
                     response_obj.agent_response,
                     metadata["rca_infeasible_closure_message"],
+                )
+                follow_ups = metadata["override_suggestions"]
+                gate_prose_appended = True
+            elif metadata.get("deferred_solution_gate_message"):
+                # Deferred-implementation disposition: the ENGINE proposed this
+                # one, so its rationale has to be rendered the same way the
+                # rca_infeasible sibling's is. Without this the key was written
+                # and never read, and the user got a bare confirm/decline pair
+                # with no stated reason — on the close branch, a "without
+                # resolution" affordance sitting directly under LLM prose that
+                # had just said it would not propose closure (case_fa29e0023b85
+                # turns 11-15). Must precede the generic override_suggestions
+                # branch below, which swaps suggestions but appends NO prose.
+                agent_response_text = _prose_with_gate_notice(
+                    response_obj.agent_response,
+                    metadata["deferred_solution_gate_message"],
                 )
                 follow_ups = metadata["override_suggestions"]
                 gate_prose_appended = True
