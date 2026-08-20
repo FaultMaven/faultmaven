@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from faultmaven.config.settings import get_settings
 from faultmaven.models.interfaces_user import AuditEventType
+from faultmaven.utils.serialization import to_json_compatible
 
 # Interface imports for clean architecture compliance
 # Redis type is for DI signatures only — the actual client is injected at runtime
@@ -952,11 +953,14 @@ class UserService(BaseService):
             "permissions": sorted(permissions),
             "is_active": user.is_active,
             "is_verified": user.is_email_verified,
-            "last_login_at": (
-                user.last_login_at.isoformat() if user.last_login_at else None
-            ),
-            "created_at": user.created_at.isoformat() if user.created_at else None,
-            "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+            # Through to_json_compatible, the single serialization source of
+            # truth — NOT raw .isoformat() (fm#1129). Under the default SQLite
+            # backend DateTime(timezone=True) round-trips tzinfo=None, so
+            # .isoformat() emitted a suffix-less naive string here while
+            # /auth/me emitted 'Z' for the same row.
+            "last_login_at": to_json_compatible(user.last_login_at),
+            "created_at": to_json_compatible(user.created_at),
+            "updated_at": to_json_compatible(user.updated_at),
             "metadata": {
                 "login_count": 0,  # TODO: Track in repository
                 "failed_login_attempts": 0,  # TODO: Track in repository
