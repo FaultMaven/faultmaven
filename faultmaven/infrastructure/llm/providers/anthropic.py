@@ -23,9 +23,95 @@ from .base import BaseLLMProvider, LLMResponse, ProviderConfig, normalize_stop_r
 class AnthropicProvider(BaseLLMProvider):
     """Anthropic Claude LLM provider implementation"""
 
+    # --- Extended thinking (#1116) ------------------------------------------
+    # Anthropic's API rejects `budget_tokens` below this value.
+    _THINKING_MIN_BUDGET_TOKENS = 1024
+    # Floor reserved for the VISIBLE answer. Anthropic bills thinking inside
+    # `max_tokens`, so an unguarded budget can starve the structured JSON
+    # output — the exact fm#1094 failure (starved answers of 101–215 chars,
+    # roughly 30–60 tokens). The structured tool loop calls with
+    # max_tokens=8000 (milestone_engine.STRUCTURED_OUTPUT_MAX_TOKENS), so a
+    # 1024-token floor is ~15–30x the observed starvation region while
+    # leaving the default 4096 budget viable. A call that cannot satisfy the
+    # floor is downgraded to no-thinking with a warning, never issued.
+    _THINKING_MIN_ANSWER_TOKENS = 1024
+    # Fallback budget for "enabled" mode when ProviderConfig carries none.
+    _THINKING_DEFAULT_BUDGET_TOKENS = 4096
+
     @property
     def provider_name(self) -> str:
         return "anthropic"
+
+    def _resolve_thinking(self, max_tokens: int) -> Optional[dict]:
+        """Thinking parameter for this call, or None to send none at all.
+
+        Modes (from ProviderConfig.thinking_mode, default None → off):
+        - "off"/None: no `thinking` key ever — the request is byte-identical
+          to pre-#1116 behavior. This is the shipped default.
+        - "adaptive": ``{"type": "adaptive"}`` — the mechanism on Claude 4.6+
+          (``budget_tokens`` is deprecated on 4.6 and a 400 on 4.7+; the
+          model decides how much to think).
+        - "enabled": ``{"type": "enabled", "budget_tokens": N}`` — pre-4.6
+          models only.
+
+        Starvation guard (fm#1094): thinking is billed INSIDE ``max_tokens``.
+        A configuration that cannot leave ``_THINKING_MIN_ANSWER_TOKENS`` for
+        the visible answer is downgraded to no-thinking with a warning — a
+        starvable call is never issued.
+        """
+        mode = (self.config.thinking_mode or "off").strip().lower()
+        if mode in ("", "off"):
+            return None
+
+        if mode == "adaptive":
+            # No caller-controlled partition exists in adaptive mode, but the
+            # pool is still shared: require room for at least the minimum
+            # thinking grain Anthropic would bill plus the answer floor.
+            floor = self._THINKING_MIN_BUDGET_TOKENS + self._THINKING_MIN_ANSWER_TOKENS
+            if max_tokens < floor:
+                self.logger.warning(
+                    "Anthropic adaptive thinking disabled for this call: "
+                    "max_tokens=%d < %d (thinking shares the max_tokens pool "
+                    "and would risk starving the visible answer — fm#1094)",
+                    max_tokens,
+                    floor,
+                )
+                return None
+            return {"type": "adaptive"}
+
+        if mode == "enabled":
+            # `is None` (not `or`): an explicit budget of 0 must reach the
+            # below-minimum refuse path, not silently take the default.
+            budget = self.config.thinking_budget_tokens
+            if budget is None:
+                budget = self._THINKING_DEFAULT_BUDGET_TOKENS
+            if budget < self._THINKING_MIN_BUDGET_TOKENS:
+                self.logger.warning(
+                    "Anthropic thinking disabled for this call: "
+                    "budget_tokens=%d is below the API minimum of %d",
+                    budget,
+                    self._THINKING_MIN_BUDGET_TOKENS,
+                )
+                return None
+            # budget_tokens must be strictly less than max_tokens AND leave
+            # the answer floor; the second condition subsumes the first.
+            if max_tokens - budget < self._THINKING_MIN_ANSWER_TOKENS:
+                self.logger.warning(
+                    "Anthropic thinking disabled for this call: "
+                    "budget_tokens=%d + answer floor %d exceeds max_tokens=%d "
+                    "(thinking bills inside max_tokens; issuing this call "
+                    "would starve the visible answer — fm#1094)",
+                    budget,
+                    self._THINKING_MIN_ANSWER_TOKENS,
+                    max_tokens,
+                )
+                return None
+            return {"type": "enabled", "budget_tokens": budget}
+
+        self.logger.warning(
+            "Unknown ANTHROPIC_THINKING_MODE %r — thinking stays off", mode
+        )
+        return None
 
     def is_available(self) -> bool:
         """Check if Anthropic provider is properly configured"""
@@ -178,6 +264,64 @@ class AnthropicProvider(BaseLLMProvider):
                     # Already in Anthropic format
                     request_body["tool_choice"] = tool_choice
 
+        # Extended thinking (#1116) — applied ONLY to tool-calling
+        # (structured-output) requests, mirroring Gemini's structured-only
+        # thinkingConfig scope, and only when explicitly configured
+        # (ANTHROPIC_THINKING_MODE, default "off": no `thinking` key and a
+        # request byte-identical to pre-#1116 behavior).
+        if request_body.get("tools"):
+            thinking_param = self._resolve_thinking(max_tokens)
+            # Thinking supports only tool_choice auto/none — forced tool use
+            # ({"type": "any"} / {"type": "tool"}) is rejected with a 400. We
+            # FAIL CLOSED here: the caller's forcing is left exactly as it set
+            # it and thinking is refused for this call.
+            #
+            # The alternative — silently downgrading the forcing to "auto" —
+            # trades a soundness property for an experiment knob, in two ways:
+            #   1. On the SINGLE-SHOT structured path (milestone_engine
+            #      ~:8163 sets tool_choice="required" for FUNCTION_CALLING
+            #      providers, which is every Anthropic call) there is NO
+            #      prose→schema recovery: an "auto" answer in prose leaves
+            #      tool_calls empty, model_validate_json raises, with_retry
+            #      exhausts and the turn fails. The nudge-retry loop is
+            #      tool-loop-only.
+            #   2. On DA turns, force_tool_use exists to enforce "gather
+            #      evidence before concluding". Dropping it re-opens the
+            #      premature-conclusion failure mode the startup tool-calling
+            #      gate is built to prevent.
+            # Consequence, stated deliberately: forced-schema turns on
+            # Anthropic cannot carry thinking at all under this PR. Making
+            # them able to would require prose→schema recovery on the
+            # single-shot path — an engine-wide change affecting every
+            # provider, and an owner decision (#1116).
+            forced_choice = request_body.get("tool_choice")
+            forced = isinstance(forced_choice, dict) and forced_choice.get("type") in (
+                "any",
+                "tool",
+            )
+            if thinking_param is not None and forced:
+                self.logger.warning(
+                    "Anthropic thinking refused for this call: the caller "
+                    "forced tool use (tool_choice=%s) and Anthropic rejects "
+                    "forced tool use with thinking enabled. Keeping the "
+                    "forcing — dropping it would disarm schema forcing on the "
+                    "single-shot structured path (no prose recovery there) "
+                    "and the evidence-before-conclusion guarantee on DA turns.",
+                    forced_choice,
+                )
+                thinking_param = None
+            if thinking_param is not None:
+                request_body["thinking"] = thinking_param
+                # Thinking is incompatible with temperature modification —
+                # only the default (1) is accepted when thinking is on.
+                if "temperature" in request_body:
+                    self.logger.debug(
+                        "Dropping temperature=%s: Anthropic rejects a "
+                        "modified temperature when thinking is enabled",
+                        request_body["temperature"],
+                    )
+                    del request_body["temperature"]
+
         # Make API request
         url = f"{self.config.base_url.rstrip('/')}/messages"
 
@@ -219,6 +363,23 @@ class AnthropicProvider(BaseLLMProvider):
         # Extract content from Anthropic response format
         content = ""
         tool_calls = None
+
+        # Thinking blocks (including redacted_thinking) must be echoed back
+        # VERBATIM on the next assistant turn or the model loses its chain —
+        # Anthropic validates block signatures and rejects tampered or
+        # missing blocks. Same discipline as Gemini's thoughtSignature
+        # round-trip (gemini.py assistant_parts): when the response carries
+        # thinking, preserve the ENTIRE raw content array as the source of
+        # truth for the next turn, rather than rebuilding it from
+        # content + tool_calls (which would drop the thinking blocks).
+        raw_content_blocks = response_data.get("content") or []
+        has_thinking_blocks = any(
+            block.get("type") in ("thinking", "redacted_thinking")
+            for block in raw_content_blocks
+        )
+        provider_metadata = (
+            {"assistant_content": raw_content_blocks} if has_thinking_blocks else None
+        )
 
         if "content" in response_data and response_data["content"]:
             # Anthropic returns content as a list of blocks
@@ -277,6 +438,7 @@ class AnthropicProvider(BaseLLMProvider):
             response_time_ms=response_time_ms,
             cached=False,
             tool_calls=tool_calls,  # Add tool_calls for function calling support
+            provider_metadata=provider_metadata,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cache_write_tokens=cache_write_tokens,
@@ -386,6 +548,22 @@ class AnthropicProvider(BaseLLMProvider):
                 anthropic_messages.append({"role": "user", "content": content})
 
             elif role == "assistant":
+                # When the original response carried thinking blocks, the
+                # raw content array was captured verbatim (see
+                # provider_metadata.assistant_content in generate()). Echo it
+                # as-is: Anthropic validates thinking/redacted_thinking block
+                # signatures and rejects the request if any block is missing
+                # or altered. Rebuilding from `content` + `tool_calls` would
+                # drop the thinking blocks and break the model's chain —
+                # same discipline as Gemini's assistant_parts round-trip.
+                msg_pmeta = msg.get("provider_metadata") or {}
+                saved_blocks = msg_pmeta.get("assistant_content")
+                if saved_blocks:
+                    anthropic_messages.append(
+                        {"role": "assistant", "content": saved_blocks}
+                    )
+                    continue
+
                 content_blocks = []
                 if content:
                     content_blocks.append({"type": "text", "text": content})

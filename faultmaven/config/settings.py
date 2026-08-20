@@ -16,7 +16,7 @@ import os
 import secrets
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Type, Union
+from typing import Any, Dict, List, Literal, Optional, Set, Type, Union
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -148,6 +148,13 @@ class ServerSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+# Accepted values for ANTHROPIC_THINKING_MODE (#1116). Module-level, not a
+# class attribute: a leading-underscore name on a BaseSettings subclass is
+# captured by pydantic as a ModelPrivateAttr and is not the tuple by the time
+# a validator reads it.
+ANTHROPIC_THINKING_MODES = ("off", "adaptive", "enabled")
+
+
 class LLMSettings(BaseSettings):
     """LLM provider configuration with flexible multi-model support"""
 
@@ -246,6 +253,37 @@ class LLMSettings(BaseSettings):
     anthropic_code_model: Optional[str] = Field(default=None)
     anthropic_da_model: Optional[str] = Field(default=None)
     anthropic_knowledge_model: Optional[str] = Field(default=None)
+
+    # Anthropic extended thinking on structured-output (tool-calling) calls
+    # (#1116). DEFAULT OFF — "off" sends no `thinking` parameter and the
+    # request payload is byte-identical to pre-#1116 behavior. Modes:
+    #   - "adaptive": `{"type": "adaptive"}` — the current mechanism on
+    #     Claude 4.6+ (the model decides how much to think). `budget_tokens`
+    #     is deprecated on 4.6 and a 400 on 4.7+, so this is the mode to use
+    #     with the shipped default model (claude-sonnet-4-6).
+    #   - "enabled": `{"type": "enabled", "budget_tokens": N}` — pre-4.6
+    #     models only. N comes from anthropic_thinking_budget_tokens and is
+    #     validated against max_tokens at call time (thinking bills INSIDE
+    #     max_tokens; a starvable call is downgraded to no-thinking with a
+    #     warning rather than issued — see AnthropicProvider._resolve_thinking).
+    # Scope: the provider applies thinking only to tool-calling (structured
+    # output) requests, mirroring Gemini's structured-only thinking config.
+    # Declared `str`, not Literal: pydantic-settings' case-insensitivity
+    # applies to env var NAMES, not values, so a Literal would raise a
+    # ValidationError — and take the whole API down at boot — for
+    # ANTHROPIC_THINKING_MODE=OFF, i.e. an operator trying to turn this
+    # experiment knob OFF. The validator below normalizes case/whitespace and
+    # fails closed to "off" with a WARNING for anything unrecognized: a
+    # default-off experiment knob must never be able to down the server.
+    anthropic_thinking_mode: str = Field(
+        default="off", validation_alias="ANTHROPIC_THINKING_MODE"
+    )
+    # Thinking budget for "enabled" mode (ignored in other modes). Anthropic's
+    # API minimum is 1024; must leave room for the visible answer under
+    # max_tokens or the call is downgraded to no-thinking.
+    anthropic_thinking_budget_tokens: int = Field(
+        default=4096, validation_alias="ANTHROPIC_THINKING_BUDGET_TOKENS"
+    )
 
     # Fireworks
     fireworks_chat_model: Optional[str] = Field(default=None)
@@ -405,6 +443,30 @@ class LLMSettings(BaseSettings):
         le=4096,
         description="Maximum tokens for phase handler and tool responses",
     )
+
+    @field_validator("anthropic_thinking_mode")
+    @classmethod
+    def normalize_anthropic_thinking_mode(cls, v):
+        """Normalize case/whitespace; fail closed to "off" on anything else.
+
+        Rejecting an unrecognized value would abort settings construction and
+        refuse to boot the API — an unacceptable outcome for a default-off
+        experiment knob, and one that fires on the most likely typo of all
+        (``ANTHROPIC_THINKING_MODE=OFF``). The warning is mandatory: a silent
+        fallback would leave an operator believing thinking is on when it is
+        not, and the provider layer's own fail-closed branch is unreachable
+        once this validator normalizes.
+        """
+        normalized = str(v).strip().lower()
+        if normalized in ANTHROPIC_THINKING_MODES:
+            return normalized
+        logging.getLogger(__name__).warning(
+            "Unrecognized ANTHROPIC_THINKING_MODE %r — falling back to 'off' "
+            "(valid values: %s). Extended thinking is DISABLED.",
+            v,
+            ", ".join(ANTHROPIC_THINKING_MODES),
+        )
+        return "off"
 
     @field_validator("max_tokens")
     @classmethod
