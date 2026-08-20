@@ -1980,8 +1980,9 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     When the cause + fix are known but the fix cannot be applied or verified
     this session (``solution_feasible == DEFERRED`` — e.g. it needs an
     out-of-band change request, a maintenance window, or another team), the
-    case should be CLOSED with the solution documented rather than held open
-    waiting indefinitely (the failure mode observed in validation run 2).
+    case should reach a DISPOSITION with the solution documented rather than
+    be held open waiting indefinitely (the failure mode observed in validation
+    run 2). Which disposition depends on the case; see the pivot below.
 
     The engine proposes the disposition DETERMINISTICALLY: the LLM does not
     reliably drive to a disposition on its own when implementation is deferred.
@@ -1991,10 +1992,14 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
 
     Which disposition is proposed follows ``assess_closure_readiness``, the same
     resolve-preservation pivot the LLM-proposal path and the confirm-time INV-37
-    guard apply: a case carrying a root cause AND a solution is RESOLVABLE, so
-    it is offered RESOLVED rather than close-without-resolution. Deferred
-    implementation is a statement about WHEN the fix lands, not about whether
-    the cause was found, and it must not cost the case its attribution.
+    guard apply. Its trigger is a QUALIFYING COUNTERFACTUAL CONFIRMATION —
+    ``_has_causal_absence``, a gone=>gone row, the same bar
+    ``assess_resolution_readiness`` uses for READY — NOT merely "a root cause
+    and a solution are on record" (that phrasing survives in
+    ``assess_closure_readiness``'s own summary line and is stale there too).
+    Deferred implementation is a statement about WHEN the remaining work lands,
+    not about whether the cause was found, so it must not cost a confirmed case
+    its attribution.
 
     The proposal's rationale is published on
     ``metadata["deferred_solution_gate_message"]`` for the response composer to
@@ -2016,8 +2021,18 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # proposed for closure citing the disconfirmed cause in the same breath.
     if not _solution_cause_validated(case):
         return
-    # Don't clobber an in-flight handshake, and never on a terminal case.
-    if getattr(case, "pending_transition", None) or case.is_terminal:
+    # Don't clobber an in-flight handshake.
+    if getattr(case, "pending_transition", None):
+        return
+    # Defense in depth, and stricter than the `is_terminal` check it replaces:
+    # the proposal target is now STATE-DEPENDENT. "closed" was a legal edge
+    # from any state, so hardcoding it made this guard free; "resolved" is NOT
+    # a legal edge from INQUIRY (ALLOWED_ACTIONS — resolution requires
+    # investigation work). A proposal that cannot execute leaves
+    # `pending_transition` standing, so every later confirm turn would fail the
+    # same way. Only the INVESTIGATING pipeline calls this today; the guard
+    # keeps that assumption true if another caller is ever added.
+    if case.state != CaseState.INVESTIGATING:
         return
 
     from faultmaven.core.investigation.terminal_transitions import (
@@ -2045,7 +2060,23 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     closure = assess_closure_readiness(case)
     if closure.verdict == closure.SUGGEST_RESOLVE:
         to_state = "resolved"
-        gate_message = closure.message
+        # Purpose-written, NOT `closure.message`. That text is a pivot-FROM-a-
+        # close ("Closing would record it as unresolved and discard the
+        # resolution"), which is coherent on the LLM path — where a close was
+        # actually requested — and incoherent here, where the engine proposed
+        # this turn's disposition unprompted. Reusing it would presuppose a
+        # close the user never asked for and would never state the deferred-
+        # implementation reason: the same prose/affordance incoherence this
+        # function is being fixed to stop producing.
+        gate_message = (
+            "The fix on this case is confirmed to have eliminated the root "
+            "cause — the cause was removed and the problem went with it — so "
+            "it qualifies for **resolved**. The implementation work you "
+            "flagged as out-of-band (a change request, maintenance window, or "
+            "another team) is follow-up: it stays documented on the resolved "
+            "case and does not need the incident held open. Shall I mark this "
+            "case resolved?"
+        )
         suggestions = _resolution_confirmation_suggestions()
     else:
         to_state = "closed"
