@@ -197,7 +197,7 @@ def test_dilution_fp_bounded_under_realistic_sibling_frames():
             if not st:
                 continue
             siblings = [
-                (None, f"hyp_{j:012d}", _content_tokens(o["cause_statement"]))
+                (None, _content_tokens(o["cause_statement"]))
                 for j, o in enumerate(causes)
                 if j != i
             ]
@@ -211,38 +211,22 @@ def test_dilution_fp_bounded_under_realistic_sibling_frames():
 
 
 # ---------------------------------------------------------------------------
-# fm#1137 — a refused root CLAIM still excludes that hypothesis from the frame
+# fm#1137 — the guard's known limit, and the #656 TP that bounds any fix
 # ---------------------------------------------------------------------------
-#
-# Live incident (case_a3d354f08765): a ROOT carrying THREE independent causal
-# supports at stance_confidence 0.90/0.95/0.99 sat at INCONCLUSIVE for nine
-# turns. Its own hypothesis was attached and correctly excluded from the frame;
-# a near-duplicate hypothesis the model emitted at turn 11 pointed its
-# root_node_ref at that SAME root and was refused by the fm#1091
-# one-cause-one-chain guard, so it stood UNATTACHED — and, being a longer
-# narrative of the same cause, it covered 8 of the root's 9 content tokens.
-# Novelty 1/9 = 0.11 against a 0.30 bar, permanently: a true duplicate is never
-# refuted or retired, so the frame never shrinks.
-#
-# The engine already knew the two were about the same cause — it said so in its
-# own refusal message. ``record_contested_root_claim`` keeps that, and the
-# guard reads it. Note what is NOT used: lexical containment. A #656
-# disjunction root is CONTAINED IN each verbose sibling it OR-s (measured 0.667
-# against a realistically-worded sibling), so a containment arm would excuse
-# the incident shape — pinned below.
 
 
-def _claimed(root, hypothesis_id: str):
-    from faultmaven.core.investigation.causal_graph import (
-        record_contested_root_claim,
-    )
+def test_known_limit_unattached_duplicate_frames_its_own_root():
+    """KNOWN LIMIT (documented, not endorsed — fm#1137). A hypothesis that
+    DUPLICATES this root's own hypothesis, left standing and unattached, enters
+    the root's frame and holds it. In the live incident that cost nine turns on
+    a root carrying three confident independent causal supports: novelty 1/9
+    against a 0.30 bar, permanently, because a true duplicate is never refuted
+    or retired.
 
-    record_contested_root_claim(root, hypothesis_id)
-    return root
-
-
-def test_refused_claimant_is_not_its_own_root_s_frame():
-    """The fm#1137 shape, verbatim from the incident."""
+    Pinned as CURRENT behaviour rather than fixed, because every lexical
+    separator tried releases the #656 shape too (next test). The recovery is
+    elicited from the model instead — see the restatement recovery note in
+    context_builder and ``restatement_held_root_ids``."""
     case = _case(
         "The production payment-processor deployment in the `payments` "
         "namespace is currently unavailable or unstable because its v2.1.4 "
@@ -259,42 +243,16 @@ def test_refused_claimant_is_not_its_own_root_s_frame():
     root = _root(
         "JVM heap and native/non-heap memory exceed the 400Mi container " "cgroup limit"
     )
-    duplicate = next(iter(case.hypotheses.values()))
-    # Without the claim the duplicate frames the root and it reads as a
-    # restatement — this is the live incident.
-    assert root_restates_case_frame(root, case) is True
-    # With the refused claim recorded, it is recognised as this root's own.
-    _claimed(root, duplicate.hypothesis_id)
-    assert root_restates_case_frame(root, case) is False
-
-
-def test_claim_excludes_only_the_claimant_and_only_while_unattached():
-    """The exclusion is per (node, hypothesis) and lapses once the hypothesis
-    has a chain root of its own — a claim is not a standing licence."""
-    case = _case(
-        "Checkout requests fail",
-        hyp_statements=[
-            "The connection pool max_size was lowered to 5 during the "
-            "release, so checkout requests queue and fail"
-        ],
-    )
-    root = _root("connection pool max_size lowered to 5")
-    other = _root("an unrelated DNS resolution failure in the mesh sidecar")
-    hyp = next(iter(case.hypotheses.values()))
-    _claimed(root, hyp.hypothesis_id)
-    assert root_restates_case_frame(root, case) is False
-    # A DIFFERENT node carries no claim, so the hypothesis still frames it.
-    assert "hyp" not in (other.metadata or {}).get("contested_root_claims", [])
-    # Once the claimant is anchored elsewhere, the claim no longer applies.
-    hyp.root_node_id = other.node_id
-    assert root_restates_case_frame(root, case) is True
+    assert root_restates_case_frame(root, case) is True  # the limit
 
 
 def test_656_disjunction_root_stays_blocked_against_verbose_siblings():
-    """REGRESSION PIN. The #656 TP must survive siblings written at the length
-    real hypotheses are written at. A disjunction root is CONTAINED IN each
-    verbose sibling (0.667 here), so any one-way-containment ownership arm
-    releases the incident shape; the guard must not use one."""
+    """REGRESSION PIN — the bound on any fm#1137 fix. The #656 TP must survive
+    siblings written at the length real hypotheses are written at. A
+    disjunction root is CONTAINED IN each verbose sibling (0.667 here) exactly
+    as each terse sibling is contained in the root, so a one-way-containment
+    ownership arm in EITHER direction releases the incident shape. An earlier
+    cut of fm#1137 shipped one and this fixture is what caught it."""
     case = _case(
         "Intermittent 502 errors under load",
         hyp_statements=[

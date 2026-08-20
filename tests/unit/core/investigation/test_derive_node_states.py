@@ -15,7 +15,6 @@ import pytest
 from faultmaven.core.investigation.causal_graph import (
     derive_node_states,
     is_chain_root_validated,
-    record_contested_root_claim,
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
@@ -1314,8 +1313,7 @@ def _fm1137_case() -> tuple[Case, CausalNode]:
     )
     # Emitted four turns later; it pointed its root_node_ref at `root` and the
     # fm#1091 guard refused the attachment, so it keeps root_node_id=None while
-    # saying exactly what `root` says. The refused CLAIM is what stops it from
-    # framing the very node it claimed (fm#1137).
+    # saying exactly what `root` says — and therefore frames it (fm#1137).
     duplicate = _hyp(
         "The v2.1.4 JVM configuration sets a 512MB maximum heap inside a "
         "400Mi container, leaving insufficient headroom for JVM "
@@ -1324,7 +1322,6 @@ def _fm1137_case() -> tuple[Case, CausalNode]:
         "restarts it into CrashLoopBackOff.",
         None,
     )
-    record_contested_root_claim(root, duplicate.hypothesis_id)
     case = _case(
         [root, problem],
         edges=[
@@ -1343,32 +1340,15 @@ def _fm1137_case() -> tuple[Case, CausalNode]:
     return case, root
 
 
-def test_refused_claimant_does_not_hold_the_root_it_claimed():
-    """The incident end to end: the root's evidence bars are all met, so it
-    must VALIDATE. Before the refused claim was kept, the unattached duplicate
-    framed it and it sat at INCONCLUSIVE indefinitely — nine turns and fourteen
-    evidence rows in the live case."""
-    case, root = _fm1137_case()
-    derive_node_states(case)
-    assert root.node_state is NodeState.VALIDATED
-    assert root.validation_method is ValidationMethod.EMPIRICAL
-    assert root.actionable is True
-    assert grade_cause_assurance(case) is not CauseAssuranceGrade.NO_ROOT
-
-
-def test_restatement_hold_is_reported_as_a_standing_signal():
-    """A root held ONLY by the restatement guard must be nameable while it is
-    held. The block counter fires on state TRANSITIONS, so a root that was
-    already INCONCLUSIVE when the guard took over is never counted — fm#1137
-    read 0 on that counter throughout the nine-turn hold."""
+def test_fm1137_hold_is_reported_as_a_standing_signal():
+    """The incident: every evidence bar is met, the guard holds it anyway, and
+    that hold must be NAMEABLE while it is held. The block counter fires on
+    state TRANSITIONS, so a root already INCONCLUSIVE when the guard took over
+    is never counted — fm#1137 read 0.0 on it live throughout the nine turns,
+    which is what sent the investigation after the wrong bar."""
     from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
 
     case, root = _fm1137_case()
-    # Restate the root AS the problem: fully supported, zero novelty.
-    root.statement = (
-        "The production payment-processor deployment enters CrashLoopBackOff "
-        "after 2-3 minutes, causing payment failures."
-    )
     derive_node_states(case)
     assert root.node_state is NodeState.INCONCLUSIVE
     assert restatement_held_root_ids(case) == {root.node_id}
@@ -1383,9 +1363,120 @@ def test_restatement_held_root_is_not_count_held():
     )
 
     case, root = _fm1137_case()
+    derive_node_states(case)
+    assert support_count_held_root_ids(case) == set()
+
+
+# Boundary pins for restatement_held_root_ids. It mirrors the would-validate-
+# but-for-the-guard branch of derive_node_states; each condition below is a
+# separate way to be held, and the note must NOT claim "more evidence will not
+# validate it" for any of them. Without these, four wrong implementations pass
+# the suite (mutation-checked).
+
+
+def test_and_gate_blocked_root_is_not_reported_as_restatement_held():
+    """Held by the M7 AND-gate, not by the guard — more evidence (validating
+    the AND-member) IS the recovery, so the note would be actively wrong."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
     root.statement = (
         "The production payment-processor deployment enters CrashLoopBackOff "
         "after 2-3 minutes, causing payment failures."
     )
+    member = _node(_nid(0x1139), node_type=NodeType.INTERMEDIATE)
+    case.causal_nodes[member.node_id] = member
+    case.causal_edges.append(
+        CausalEdge(
+            cause_node_id=member.node_id,
+            effect_node_id=root.node_id,
+            and_group="g1",
+            created_at_turn=5,
+        )
+    )
     derive_node_states(case)
-    assert support_count_held_root_ids(case) == set()
+    assert restatement_held_root_ids(case) == set()
+
+
+def test_net_refuted_and_tied_roots_are_not_reported_as_restatement_held():
+    """Refuted territory, and the support/refute TIE that derive_node_states
+    treats as INCONCLUSIVE rather than validation-eligible."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    for extra in (2, 3):  # tie (2 supports vs 2 refutes), then net-refuted
+        case, root = _fm1137_case()
+        root.statement = (
+            "The production payment-processor deployment enters "
+            "CrashLoopBackOff after 2-3 minutes, causing payment failures."
+        )
+        for n in range(extra):
+            label = f"refute-{n}"
+            root.evidence_links.append(_link(label, EvidenceStance.REFUTES))
+            case.evidence.append(_evidence(label, EvidenceCategory.SYMPTOM_EVIDENCE))
+        derive_node_states(case)
+        assert restatement_held_root_ids(case) == set()
+
+
+def test_settled_roots_are_not_reported_as_restatement_held():
+    """A VALIDATED (grandfathered) or REFUTED root is settled — no live hold."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    root.node_state = NodeState.VALIDATED
+    root.validation_method = ValidationMethod.EMPIRICAL
+    root.actionable = True
+    # A second, UNSETTLED root so the eligibility pre-scan does not short out
+    # and mask the settled-root skip itself.
+    live = _node(_nid(0x113A), node_type=NodeType.ROOT)
+    case.causal_nodes[live.node_id] = live
+    assert restatement_held_root_ids(case) == set()
+
+    root.node_state = NodeState.REFUTED
+    root.validation_method = ValidationMethod.NONE
+    root.actionable = False
+    root.refutation_reason = "refuted by rung evidence"
+    assert restatement_held_root_ids(case) == set()
+
+
+def test_ungrounded_root_is_not_reported_as_restatement_held():
+    """Held by the §7.1 grounding bar as well — that arm owns it, and its
+    recovery IS another observation. The two annotations must not collide."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    root.evidence_links = root.evidence_links[:1]  # one support: below the bar
+    derive_node_states(case)
+    assert restatement_held_root_ids(case) == set()
+
+
+def test_counterfactually_confirmed_restating_root_is_still_reported():
+    """A counterfactually CONFIRMED root (engine-stamped gone⇒gone) satisfies
+    the ROOT grounding bar outright on ONE support, so if it is then held by
+    the restatement guard the hold is real and must be reported. Mirrors the
+    same disjunct in derive_node_states — dropping it there silently drops this
+    population from the annotation."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    # One ordinary support (below the count bar) plus the engine's absence stamp.
+    root.evidence_links = root.evidence_links[:1] + [
+        _link("gone-when-cause-removed", EvidenceStance.SUPPORTS)
+    ]
+    case.evidence.append(
+        _evidence("gone-when-cause-removed", EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE)
+    )
+    derive_node_states(case)
+    assert root.node_state is NodeState.INCONCLUSIVE
+    assert restatement_held_root_ids(case) == {root.node_id}

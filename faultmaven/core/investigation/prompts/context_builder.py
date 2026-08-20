@@ -2827,15 +2827,19 @@ def _build_causal_graph_block(case: Case) -> str:
         # ingest_emitted_chain reuses a node solely on an exact normalised
         # statement match. A model told to "restate" either no-ops (the hold
         # persists) or mints a root carrying none of the held node's evidence
-        # links, landing at CANDIDATE with zero supports. Same completeness as
-        # the fm#1091 refusal feedback in milestone_engine.
+        # links, landing at CANDIDATE with zero supports. The produces edge is
+        # named explicitly because ``_attach`` DECLINES a re-root whose new
+        # chain does not reach D — omit it and the re-root is silently refused,
+        # the hold persists, and the relinked evidence strands on a validated,
+        # hypothesis-less orphan root.
         BLOCK_REASON_RESTATEMENT: (
             " — fully supported, but its statement adds no content beyond what "
             "the problem and the other hypotheses already say; MORE EVIDENCE "
             "WILL NOT VALIDATE IT. Add a NEW root node naming the specific "
-            "MECHANISM (what is misconfigured/exhausted/failing, and how that "
-            "produces D), point this hypothesis's root_node_ref at it, and "
-            "re-link this node's ev_ ids to it via node_evidence_links"
+            "MECHANISM (what is misconfigured/exhausted/failing), give it a "
+            "produces edge so its chain reaches D, point this hypothesis's "
+            "root_node_ref at it, and re-link this node's ev_ ids to it via "
+            "node_evidence_links"
         ),
     }
 

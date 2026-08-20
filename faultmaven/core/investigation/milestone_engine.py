@@ -49,7 +49,6 @@ from faultmaven.core.investigation.causal_graph import (
     mirror_hypothesis_support_to_root_nodes,
     project_hypothesis_states_from_roots,
     prune_abandoned_nodes,
-    record_contested_root_claim,
     resolve_orphan_chains,
     retract_disconfirmed_rcc,
     retract_stale_engine_rcc,
@@ -9434,14 +9433,6 @@ class MilestoneEngine:
                     abandoned.append(freed)
                 continue
             hypothesis_root_adoption_refused_total.inc()
-            # The refusal denies the ATTACHMENT, not the claim. Keep the claim
-            # on the node: without it the §7.1 restatement guard reads this
-            # hypothesis as an unrelated standing cause and puts it into the
-            # frame of the very node it just claimed, holding a fully-grounded
-            # root at INCONCLUSIVE indefinitely (fm#1137).
-            claimed_node = case.causal_nodes.get(root_id)
-            if claimed_node is not None:
-                record_contested_root_claim(claimed_node, hyp_id)
             _add_system_feedback(
                 metadata,
                 f"Hypothesis {hyp_id} was NOT anchored to node {root_id}: "

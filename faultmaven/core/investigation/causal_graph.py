@@ -667,6 +667,16 @@ def restatement_held_root_ids(case: Case) -> set[str]:
     nodes = case.causal_nodes
     if not nodes:
         return set()
+    # Same cheap eligibility pre-scan as ``root_support_block_reasons``, for the
+    # same reason: the common late-investigation state (every ROOT already
+    # settled) must not pay a tokenization sweep per prompt build for an empty
+    # answer. Without it this cost ~15x on a settled 40-root graph.
+    if not any(
+        n.node_type == NodeType.ROOT
+        and n.node_state not in (NodeState.VALIDATED, NodeState.REFUTED)
+        for n in nodes.values()
+    ):
+        return set()
     restating = _restating_root_ids(case)
     if not restating:
         return set()
@@ -696,44 +706,6 @@ def restatement_held_root_ids(case: Case) -> set[str]:
     return held
 
 
-# Node-metadata key holding the ids of hypotheses that emitted a
-# ``root_node_ref`` naming THIS node and were refused the attachment by the
-# fm#1091 one-cause-one-chain guard. Metadata, not a column: ``causal_nodes``
-# already carries a JSONB ``metadata`` that round-trips on both repositories,
-# so this needs no migration.
-CONTESTED_ROOT_CLAIMS_KEY = "contested_root_claims"
-
-
-def record_contested_root_claim(node: "CausalNode", hypothesis_id: str) -> bool:
-    """Record that ``hypothesis_id`` claimed ``node`` as its chain root and was
-    refused (fm#1091). Returns True if this is a new claim.
-
-    The refusal is CORRECT — one cause, one chain — but it denies the
-    ATTACHMENT, not the claim. Without this record the engine forgets that the
-    hypothesis is about this node's cause, and the §7.1 restatement guard then
-    reads it as an unrelated standing cause and puts it into that very node's
-    frame. In fm#1137 the duplicate hypothesis covered 8 of the root's 9
-    content tokens, so a root carrying three confident independent causal
-    supports sat at INCONCLUSIVE for nine turns with novelty 1/9. Keeping the
-    claim is the exact fix: the engine already knew, in its own refusal
-    message, that the two were about the same cause.
-    """
-    claims = node.metadata.setdefault(CONTESTED_ROOT_CLAIMS_KEY, [])
-    if hypothesis_id in claims:
-        return False
-    claims.append(hypothesis_id)
-    return True
-
-
-def contested_root_claimants(node: "CausalNode") -> frozenset[str]:
-    """Hypothesis ids that claimed ``node`` and were refused. Tolerant of a
-    reloaded row whose metadata carries anything else under the key."""
-    claims = (getattr(node, "metadata", None) or {}).get(CONTESTED_ROOT_CLAIMS_KEY)
-    if not isinstance(claims, list):
-        return frozenset()
-    return frozenset(c for c in claims if isinstance(c, str))
-
-
 def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
     """§7.1 restatement guard predicate (single-node form; ``_restating_root_ids``
     is the batch form — keep their semantics identical): a ROOT whose statement
@@ -744,23 +716,21 @@ def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
 
     The frame = problem anchors + OTHER standing hypotheses' statements. A
     hypothesis is excluded from a node's frame — it is not "other", it is that
-    node's OWN cause — on any of three signals, in descending order of strength:
+    node's OWN cause — when it is ATTACHED to the node (``root_node_id`` match),
+    or when it is unattached and MUTUALLY mirrors the node (Jaccard ≥
+    ``_FRAME_OWNER_JACCARD``) — the attachment lag. Deliberately mutual:
+    one-way containment does NOT make an owner in EITHER direction. A #656
+    disjunction root is contained in each VERBOSE sibling it OR-s, and each
+    TERSE sibling is contained in the root; both readings would excuse the
+    incident shape, so neither is used (fm#1137 review).
 
-    1. It is ATTACHED to the node (``root_node_id`` match).
-    2. It CLAIMED the node and was refused (``contested_root_claimants``): the
-       model emitted this hypothesis's ``root_node_ref`` pointing at this exact
-       node and the fm#1091 one-cause-one-chain guard refused the attachment
-       because another hypothesis already owned it. The refusal denies the
-       ATTACHMENT; it does not make the claim untrue, and the claim is the
-       engine's own record that this hypothesis is about this cause. Exact, not
-       lexical — see fm#1137.
-    3. It is unattached and MUTUALLY mirrors the node (Jaccard ≥
-       ``_FRAME_OWNER_JACCARD``) — the plain attachment lag, before any chain
-       ref has been emitted. Weak by construction, and deliberately mutual:
-       one-way containment does NOT make an owner in EITHER direction. A #656
-       disjunction root is contained in each verbose sibling it OR-s, and each
-       terse sibling is contained in the root; both readings would excuse the
-       incident shape, so neither is used.
+    KNOWN LIMIT (fm#1137, unfixed by design): the frame cannot tell a
+    hypothesis that DUPLICATES this root's own hypothesis from one stating a
+    genuinely different cause, so a duplicate the model leaves standing and
+    unattached frames its own root and can hold it at INCONCLUSIVE
+    indefinitely. Every lexical separator tried releases the #656 shape as
+    well; the recovery is elicited from the model instead — see
+    ``restatement_held_root_ids`` and its context annotation.
 
     ROOT-only by design (rungs adjacent to ``D`` legitimately paraphrase).
     Known limits (§7.1): the check is lexical — synonym paraphrases and
@@ -773,18 +743,12 @@ def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
     if not statement_tokens:
         return False
     anchors, hyp_token_sets = _frame_components(case)
-    return _node_restates(
-        statement_tokens,
-        node.node_id,
-        anchors,
-        hyp_token_sets,
-        contested_root_claimants(node),
-    )
+    return _node_restates(statement_tokens, node.node_id, anchors, hyp_token_sets)
 
 
 def _frame_components(case: Case) -> tuple:
     """Tokenize the frame's raw material ONCE: (anchor-token union,
-    [(root_node_id, hypothesis_id, hypothesis-statement tokens), ...])."""
+    [(root_node_id, hypothesis-statement tokens), ...])."""
     anchors: set = set()
     for anchor in _problem_anchor_statements(case):
         anchors |= _content_tokens(anchor)
@@ -794,31 +758,18 @@ def _frame_components(case: Case) -> tuple:
             if h.statement:
                 tokens = _content_tokens(h.statement)
                 if tokens:
-                    hyp_token_sets.append(
-                        (
-                            getattr(h, "root_node_id", None),
-                            getattr(h, "hypothesis_id", None),
-                            tokens,
-                        )
-                    )
+                    hyp_token_sets.append((getattr(h, "root_node_id", None), tokens))
     return anchors, hyp_token_sets
 
 
 def _node_restates(
-    statement_tokens: set,
-    node_id: str,
-    anchors: set,
-    hyp_token_sets: list,
-    claimants: frozenset[str] = frozenset(),
+    statement_tokens: set, node_id: str, anchors: set, hyp_token_sets: list
 ) -> bool:
-    """Novelty core shared by the single-node and batch forms. ``claimants`` is
-    THIS node's refused-claim set (``contested_root_claimants``)."""
+    """Novelty core shared by the single-node and batch forms."""
     frame = set(anchors)
-    for rid, hyp_id, tokens in hyp_token_sets:
+    for rid, tokens in hyp_token_sets:
         if rid == node_id:
             continue  # attached own hypothesis
-        if rid is None and hyp_id in claimants:
-            continue  # claimed this node, refused attachment (fm#1091/fm#1137)
         if rid is None and _mutual_mirror(
             statement_tokens, tokens, _FRAME_OWNER_JACCARD
         ):
@@ -855,13 +806,7 @@ def _restating_root_ids(case: Case) -> set:
         statement_tokens = _content_tokens(node.statement)
         if not statement_tokens:
             continue
-        if _node_restates(
-            statement_tokens,
-            node.node_id,
-            anchors,
-            hyp_token_sets,
-            contested_root_claimants(node),
-        ):
+        if _node_restates(statement_tokens, node.node_id, anchors, hyp_token_sets):
             restating.add(node.node_id)
     return restating
 
@@ -2984,8 +2929,8 @@ ROOT_NOVELTY_MIN_FRACTION = 0.3
 # Jaccard at or above which an UNATTACHED hypothesis is treated as a node's
 # presumptive OWNER (excluded from that node's frame): both statements are
 # mutually ~the same claim, the normal chain-emission shape during the
-# attachment lag. Lexical and therefore weak — see ``_node_restates`` for the
-# EXACT ownership signal that carries the load.
+# attachment lag. Lexical and therefore weak; see the KNOWN LIMIT on
+# ``root_restates_case_frame``.
 _FRAME_OWNER_JACCARD = 0.6
 
 
