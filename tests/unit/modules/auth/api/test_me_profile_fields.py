@@ -12,7 +12,10 @@ profile request.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime, timezone
+from unittest.mock import create_autospec
 
 import pytest
 from fastapi import FastAPI
@@ -20,14 +23,28 @@ from fastapi.testclient import TestClient
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
 from faultmaven.infrastructure.persistence.user_repository import User
+from faultmaven.modules.auth.api import auth as auth_api
 from faultmaven.modules.auth.api.auth import (
     _resolve_profile_timestamps,
     get_current_user_profile,
     router,
 )
 from faultmaven.modules.auth.domain.models.auth import DevUser
+from faultmaven.modules.auth.domain.services.user_service import UserService
 
 pytestmark = [pytest.mark.unit]
+
+_AUTH_LOGGER = "faultmaven.modules.auth.api.auth"
+
+
+@pytest.fixture(autouse=True)
+def _reset_degrade_latch():
+    """The once-per-process degrade-warning latch is process state; tests
+    must each see a fresh process's behavior."""
+    auth_api._PROFILE_DEGRADE_WARNED.clear()
+    yield
+    auth_api._PROFILE_DEGRADE_WARNED.clear()
+
 
 _USER_ID = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -207,3 +224,90 @@ class TestRealDependencyChain:
         assert body["last_login"] == "2026-08-17T21:04:31Z"
         # The principal's request-time timestamp did NOT leak through.
         assert body["created_at"] != "2026-08-19T21:04:10Z"
+
+
+class TestDegradeObservability:
+    """Every unchanging degrade cause must land in the logs exactly once per
+    process. Silent, and #1120's symptom (a fabricated created_at) returns
+    with nothing to grep for; unlatched, and /auth/me polling turns one
+    boot-time fact into request-rate log spam."""
+
+    async def test_missing_row_warns_once_then_latches(self, caplog):
+        service = _UserService(row=None)
+
+        with caplog.at_level(logging.WARNING, logger=_AUTH_LOGGER):
+            await _resolve_profile_timestamps(_principal(), service)
+            await _resolve_profile_timestamps(_principal(), service)
+
+        warnings = [r for r in caplog.records if "no stored user row" in r.getMessage()]
+        assert len(warnings) == 1
+        assert warnings[0].user_id == _USER_ID
+
+    async def test_unwired_service_warns_once_then_latches(self, caplog):
+        with caplog.at_level(logging.WARNING, logger=_AUTH_LOGGER):
+            await _resolve_profile_timestamps(_principal(), None)
+            await _resolve_profile_timestamps(_principal(), None)
+
+        warnings = [
+            r for r in caplog.records if "UserService unavailable" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+
+    async def test_transient_errors_warn_every_time(self, caplog):
+        """Errors are NOT latched — their rate is the signal."""
+        with caplog.at_level(logging.WARNING, logger=_AUTH_LOGGER):
+            await _resolve_profile_timestamps(
+                _principal(), _UserService(error=RuntimeError("db down"))
+            )
+            await _resolve_profile_timestamps(
+                _principal(), _UserService(error=RuntimeError("db down"))
+            )
+
+        warnings = [
+            r
+            for r in caplog.records
+            if "Could not resolve persisted profile timestamps" in r.getMessage()
+        ]
+        assert len(warnings) == 2
+
+
+class TestHotPathBounds:
+    """/auth/me is the token-validation hot path: a stalled store must become
+    a fast fallback, not a 30s pool-timeout stall that the proxy converts into
+    a failed request and the client into a sign-out."""
+
+    async def test_stalled_store_degrades_within_the_timeout(self, monkeypatch):
+        monkeypatch.setattr(auth_api, "_PROFILE_READ_TIMEOUT_SECONDS", 0.01)
+
+        class _StalledService:
+            async def get_user(self, user_id: str) -> User | None:
+                await asyncio.sleep(5)
+                return None
+
+        request_time = datetime(2026, 8, 19, 21, 4, 10, tzinfo=timezone.utc)
+
+        created_at, last_login = await _resolve_profile_timestamps(
+            _principal(created_at=request_time), _StalledService()
+        )
+
+        assert created_at == "2026-08-19T21:04:10Z"
+        assert last_login is None
+
+
+class TestContractBinding:
+    """Bind the helper's one call to the real ``UserService`` signature. Every
+    other test injects a hand-rolled stand-in, so a renamed or de-async'd
+    ``get_user`` would land in the blanket except and quietly restore #1120
+    with green tests; autospec makes that a failure here instead."""
+
+    async def test_get_user_matches_the_real_service_signature(self):
+        service = create_autospec(UserService, instance=True)
+        service.get_user.return_value = _row(_ROW_LAST_LOGIN)
+
+        created_at, last_login = await _resolve_profile_timestamps(
+            _principal(), service
+        )
+
+        assert created_at == "2026-02-14T22:45:53Z"
+        assert last_login == "2026-08-17T21:04:31Z"
+        service.get_user.assert_awaited_once_with(_USER_ID)

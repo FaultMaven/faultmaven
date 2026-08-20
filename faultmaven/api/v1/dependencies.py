@@ -30,6 +30,7 @@ from ...models import SessionContext
 from ...models.interfaces import IJobService
 from ...models.interfaces_case import ICaseService
 from ...models.interfaces_user import IOrganizationRepository
+from ...modules.auth.contracts import IUserQuery
 
 # Lazy import to avoid circular dependency - DataService, SessionService imported in functions or TYPE_CHECKING
 # OLD: from ...services.agentic.orchestration.agent_service import AgentService (ARCHIVED)
@@ -61,15 +62,19 @@ async def get_organization_repository(
     return getattr(request.app.state, "organization_repository", None)
 
 
-async def get_user_service(request: Request) -> Optional[Any]:
+async def get_user_service_optional(request: Request) -> Optional[IUserQuery]:
     """Get the UserService from app.state (Composition Root).
 
     Optional rather than 503 on absence, for the same reason as
     ``get_organization_repository``: the core read path is the persisted
     profile timestamps on ``/auth/me``, which degrade to the token
     principal's view rather than failing a profile request over display
-    fields. Admin routes, which cannot work without the service, carry
-    their own stricter dependency (``api/routes/admin.py``).
+    fields. Named ``_optional`` because ``api/routes/admin.py`` has a
+    ``get_user_service`` reading the same slot with the opposite absence
+    semantics (raise) — admin routes cannot work without the service, and
+    a shared name would let an auto-import swap hard-fail for silent
+    degrade (or leave a ``dependency_overrides`` entry binding the wrong
+    symbol) without anything noticing.
     """
     return getattr(request.app.state, "user_service", None)
 

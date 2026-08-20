@@ -22,6 +22,7 @@ Security Notes:
 - Structured error responses per RFC 6749
 """
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -44,7 +45,7 @@ from faultmaven.api.v1.auth_dependencies import (
 from faultmaven.api.v1.dependencies import (
     get_organization_repository,
     get_session_service,
-    get_user_service,
+    get_user_service_optional,
 )
 from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.config.tenant_context import usable_tenant_id
@@ -52,6 +53,7 @@ from faultmaven.container import container
 from faultmaven.exceptions import FaultMavenException
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.interfaces_user import IOrganizationRepository
+from faultmaven.modules.auth.contracts import IUserQuery
 from faultmaven.modules.auth.domain.models.api_auth import (
     AuthenticationRequiredError,
     AuthError,
@@ -1073,9 +1075,34 @@ async def _resolve_organization_summary(
         return None
 
 
+#: Ceiling on the stored-row read backing /auth/me's display timestamps.
+#: /auth/me is the token-validation hot path (clients hit it on every
+#: load/refocus), and the read degrades on failure anyway — so a stalled
+#: store (pool exhaustion waits ``database_pool_timeout``, default 30s)
+#: must become a fast fallback, not a proxy timeout that a client reads
+#: as "not authenticated" and turns into a sign-out.
+_PROFILE_READ_TIMEOUT_SECONDS = 5.0
+
+#: Latch for degrade warnings that restate an unchanging fact: an unwired
+#: service is boot-time state, and a principal without a stored row stays
+#: rowless. Warn once per process per key so /auth/me polling cannot turn
+#: one condition into request-rate log spam, while keeping every degrade
+#: cause greppable (a silent branch here is how #1120's symptom would
+#: return unobserved). The transient-error branch is NOT latched — errors
+#: vary and their rate is the signal.
+_PROFILE_DEGRADE_WARNED: set = set()
+
+
+def _warn_profile_degrade_once(key: str, message: str, **fields: Any) -> None:
+    if key in _PROFILE_DEGRADE_WARNED:
+        return
+    _PROFILE_DEGRADE_WARNED.add(key)
+    logger.warning(message, extra=fields)
+
+
 async def _resolve_profile_timestamps(
     current_user: DevUser,
-    user_service: Optional[Any],
+    user_service: Optional[IUserQuery],
 ) -> tuple[str, Optional[str]]:
     """``(created_at, last_login)`` from the stored user row, ISO strings.
 
@@ -1103,25 +1130,35 @@ async def _resolve_profile_timestamps(
     if user_service is None:
         # Observable on purpose: a silent degrade here is how a renamed
         # ``app.state.user_service`` would reproduce #1120 with green tests.
-        logger.warning(
+        _warn_profile_degrade_once(
+            "unwired",
             "UserService unavailable; /auth/me profile timestamps degrade "
             "to the token principal's view",
-            extra={"user_id": current_user.user_id},
+            user_id=current_user.user_id,
         )
         return fallback
 
     try:
-        stored = await user_service.get_user(current_user.user_id)
+        stored = await asyncio.wait_for(
+            user_service.get_user(current_user.user_id),
+            timeout=_PROFILE_READ_TIMEOUT_SECONDS,
+        )
         if stored is None:
+            # Equally observable: this is the *likelier* production route
+            # back to #1120's symptom (store divergence, a hard-deleted
+            # account with a live token, token-sub drift) — a fabricated
+            # created_at that no grep could distinguish from working.
+            _warn_profile_degrade_once(
+                f"missing-row:{current_user.user_id}",
+                "/auth/me principal has no stored user row; profile "
+                "timestamps degrade to the token principal's view",
+                user_id=current_user.user_id,
+            )
             return fallback
 
         return (
             to_json_compatible(stored.created_at),
-            (
-                to_json_compatible(stored.last_login_at)
-                if stored.last_login_at
-                else None
-            ),
+            to_json_compatible(stored.last_login_at),
         )
     except Exception as e:  # noqa: BLE001 — see docstring: display fields only
         logger.warning(
@@ -1138,7 +1175,7 @@ async def get_current_user_profile(
     organization_repository: Optional[IOrganizationRepository] = Depends(
         get_organization_repository
     ),
-    user_service: Optional[Any] = Depends(get_user_service),
+    user_service: Optional[IUserQuery] = Depends(get_user_service_optional),
 ) -> UserInfoResponse:
     """Get current user profile
 
@@ -1147,8 +1184,12 @@ async def get_current_user_profile(
     correlation_id = str(uuid.uuid4())
 
     try:
-        created_at, last_login = await _resolve_profile_timestamps(
-            current_user, user_service
+        # The two stored-row reads are independent; run them concurrently
+        # rather than serially on the token-validation hot path. Neither
+        # raises — both degrade internally.
+        (created_at, last_login), organization = await asyncio.gather(
+            _resolve_profile_timestamps(current_user, user_service),
+            _resolve_organization_summary(current_user, organization_repository),
         )
 
         # Build extended user profile
@@ -1163,9 +1204,7 @@ async def get_current_user_profile(
                 current_user.roles if current_user.roles else ["user"]
             ),  # Ensure roles are included; least privilege when absent
             last_login=last_login,
-            organization=await _resolve_organization_summary(
-                current_user, organization_repository
-            ),
+            organization=organization,
         )
 
         logger.debug(
