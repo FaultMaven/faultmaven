@@ -402,14 +402,14 @@ Both placeholder paths produce real `PreprocessingResult` objects so the downstr
 
 ## Telemetry
 
-`DataClassifier.classify()` is decorated with `@_opik_track_classifier` (classifier.py). When Opik is installed, every call produces a span tagged with:
+`DataClassifier.classify()` is decorated with `@_opik_track_classifier` (classifier.py). When Opik is installed **and** tracing is enabled (`OPIK_ENABLED=true`), every call produces a span tagged with:
 
 - `source:<source>` — user_override / agent_hint / source_url / browser_context / rule_based / rule_based_best_effort
 - `data_type:<detailed_value>` — e.g., `logs_and_errors`, `command_output`
 - `confidence:<bucket>` — `high` (≥0.85), `medium` (0.50–0.85), `low` (<0.50)
 - `classification_failed:<bool>`
 
-This lets us query classification distributions (e.g., "what fraction of turns hit `rule_based_best_effort` last week?") and detect pattern drift without touching logs. When Opik is not installed, the decorator degrades to a no-op.
+This lets us query classification distributions (e.g., "what fraction of turns hit `rule_based_best_effort` last week?") and detect pattern drift without touching logs. When Opik is not installed the decorator is not applied at all, and when tracing is disabled the wrapper re-checks the flag on every call and runs the undecorated function — so no Opik client is constructed either way.
 
 ---
 
