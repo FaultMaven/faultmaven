@@ -74,11 +74,41 @@ The `gpt-5.x` and o-series models bill **hidden reasoning tokens against the sam
 | Carries `response_format`, no tools | `"low"` | Hidden reasoning must not starve the schema JSON and truncate it |
 | Plain chat — neither of the above | `"none"`, and only for families that reason by **default** | Nothing else caps these; server-side default reasoning otherwise competes with the answer for one budget |
 
+The two **no-tools** rows are the shape defaults, resolved through one helper (`_shape_default_effort`) so that policy has a single home. The tools row is not: `"none"` is a hard API constraint for the `gpt-5.6` family and is set inside the `if tools:` block, before the helper is reached — extending `_shape_default_effort` will not change what tool calls send. A caller can refine the no-tools defaults per call with a **reasoning intent** — see below.
+
 The plain-chat cap is scoped to `_DEFAULT_REASONING_MODEL_FAMILIES` (currently `gpt-5.6`), the families that reason without being asked. Models that accept the parameter but stay silent unless asked — `gpt-5`, `gpt-5.4-mini`, `o1`, `o3-mini` — are deliberately left alone, since forcing the parameter there would change behaviour on models that never had the problem. In all three cases an explicit `reasoning_effort` from the caller still wins: the provider sets its value before merging caller kwargs.
 
 Adding a new default-reasoning family is a deliberate act. Extend `_DEFAULT_REASONING_MODEL_FAMILIES` only after probing the model, because the constraints that define the family — rejecting non-default `temperature`, rejecting tools without `reasoning_effort: "none"` — are verified per family rather than inferred from the version number.
 
 > Note for grounded-generation paths (KB synthesis, document conversion, intent classification): these supply their own context and ask the model to answer strictly from it, so hidden reasoning buys little and competes directly with the answer for the token budget. That is why the plain-chat default is `"none"` rather than `"low"`.
+
+#### Caller-declared reasoning intent (#1118)
+
+A call site can state *what it needs from reasoning* rather than leaving the provider to infer it from call shape, by passing `reasoning_intent` to `LLMRouter.route()`:
+
+| Intent | Meaning | OpenAI | Gemini |
+|--------|---------|--------|--------|
+| `EXTRACTION` | Grounded transformation of supplied context | the shape's own minimum (`"none"` on plain gpt-5.6, else `"low"`) | `thinkingLevel: "low"` on 3.x, **every** shape |
+| `INFERENCE` | Reasoning over candidates | `"medium"` | no `thinkingConfig` — native dynamic thinking **is** the honoured translation |
+| *(absent — every call today)* | — | the shape defaults above, unchanged | the shape default, unchanged |
+
+Three rules govern it, and a new provider must honour all three:
+
+1. **Hard model constraints override caller intent.** The forced `"none"` for tools on gpt-5.6 stays exactly as it is; intent never produces a request the API would reject.
+2. **An intent that cannot be applied is logged, never silently dropped** — WARNING for `INFERENCE`, INFO for `EXTRACTION`. Say what actually happened: `_caps_reasoning_effort` returning False means *this provider/model does not take the parameter*, **not** *this model does not reason* (OpenRouter returns False for models that all reason). An intent that *was* delivered is not reported as a failure.
+3. **`INFERENCE` requires `min_output_tokens`** (#1117). It lifts starvation guards, and the output floor is what makes that safe. `route()` raises `ValueError` without it — and a provider whose guard is being lifted must **refuse on its own** too, because `milestone_engine` binds a concrete provider and calls `generate()` directly, bypassing the router. Refusal restores the *shape default*; it must never impose a restriction the default did not apply.
+
+#### Merging caller kwargs — use the base helper
+
+Providers that build an OpenAI-style payload must merge leftover kwargs with:
+
+```python
+self._merge_extra_kwargs(payload, kwargs, model=effective_model)
+```
+
+**Never** hand-roll `payload.update({k: v for k, v in kwargs.items() if v is not None})`. Routing-level knobs — `reasoning_intent`, `min_output_tokens`, `cache_prompt` — are not API fields; a provider that merges them raw sends them as body fields on every routed call and is rejected by any OpenAI-compatible endpoint. The helper discards them (logging any intent it cannot act on) and then merges what remains. Pop a knob yourself only if your provider genuinely translates it.
+
+`tests/unit/infrastructure/llm/providers/test_reasoning_intent.py` derives its coverage from `PROVIDER_SCHEMA`, so a newly registered provider is checked for this automatically.
 
 ### 3. Anthropic (Claude)
 

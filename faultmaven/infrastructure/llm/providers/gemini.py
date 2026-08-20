@@ -23,6 +23,7 @@ from .base import (
     BaseLLMProvider,
     LLMResponse,
     ProviderConfig,
+    ReasoningIntent,
     StopReason,
     ToolCall,
     normalize_stop_reason,
@@ -148,15 +149,19 @@ class GeminiProvider(BaseLLMProvider):
         return int(m.group(1)) if m else None
 
     def _structured_thinking_config(
-        self, model: str, is_structured: bool
+        self,
+        model: str,
+        is_structured: bool,
+        intent: Optional[ReasoningIntent] = None,
+        has_output_floor: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """``thinkingConfig`` payload for a structured-output call, or None to
-        leave it unset.
+        """``thinkingConfig`` payload for this call, or None to leave it unset.
 
-        Caps thinking ONLY on Gemini 3.x+ models, where dynamic thinking
-        starved the structured JSON output and truncated to a MAX_TOKENS 500
-        (observed on gemini-3.5-flash, the shipped Gemini default). Returns
-        ``{"thinkingLevel": "low"}`` there.
+        With no caller intent (the default), preserves the shape-based rule:
+        caps thinking ONLY on Gemini 3.x+ structured calls, where dynamic
+        thinking starved the structured JSON output and truncated to a
+        MAX_TOKENS 500 (observed on gemini-3.5-flash, the shipped Gemini
+        default). Returns ``{"thinkingLevel": "low"}`` there.
 
         Returns None everywhere else:
         - non-structured calls (partial text is still usable, so starvation is
@@ -165,17 +170,120 @@ class GeminiProvider(BaseLLMProvider):
         - Gemini 2.5 — bills thinking against maxOutputTokens too, but was not
           observed to starve; left at native dynamic thinking rather than
           changing a working, reasoning-heavy path without evidence.
+
+        A caller-declared :class:`ReasoningIntent` (#1118) refines the rule on
+        3.x+ only — ``thinkingLevel`` is 3.x vocabulary, and pre-3.x models
+        have no knob this provider can turn (1.5/2.0 reject ``thinkingConfig``;
+        2.5 takes the integer ``thinkingBudget`` this provider no longer
+        sends), so there the intent is logged and the model's native behavior
+        stands. On 3.x+:
+
+        - EXTRACTION → ``{"thinkingLevel": "low"}`` on every shape, plain
+          calls included (grounded generation does not need the reasoning
+          loop, and it bills against the same budget as the answer);
+        - INFERENCE → None. Native dynamic thinking IS the model reasoning at
+          its own discretion, so the honoured translation is to not cap it.
+
+          On a STRUCTURED call that lifts a real starvation guard, and the
+          output floor is what makes lifting it safe — so without a declared
+          floor the structured shape FAILS CLOSED: the cap stays and a warning
+          says the intent was refused.
+
+          On a PLAIN call there is no cap to lift (the shape default is no
+          ``thinkingConfig`` at all), so there is nothing to fail closed about:
+          the result is ``None`` with or without a floor, which is exactly what
+          INFERENCE asked for. Refusal must never impose a restriction the
+          shape default did not apply, or declaring the intent would buy LESS
+          thinking than declaring nothing.
+
+          The router raises on INFERENCE-without-floor, but the router is not
+          the only door: ``milestone_engine`` binds a concrete provider and
+          calls ``generate()`` on it directly, bypassing that check entirely.
+          An invariant enforced at one of two entry points is not enforced, so
+          the mechanism it guards refuses on its own here.
         """
-        if not is_structured:
+        major = self._gemini_major_version(model)
+        if major is None or major < 3:
+            if intent is not None:
+                self._log_unhonoured(
+                    intent,
+                    f"reasoning_intent='{intent.value}' cannot be expressed on "
+                    f"{model} (thinkingLevel is 3.x vocabulary; earlier models "
+                    f"have no supported thinking knob here) — proceeding with "
+                    f"the model's native behavior",
+                )
             return None
 
-        major = self._gemini_major_version(model)
-        if major is not None and major >= 3:
+        if intent is ReasoningIntent.INFERENCE:
+            if has_output_floor:
+                if is_structured:
+                    self.logger.info(
+                        f"reasoning_intent='inference' on a structured call to "
+                        f"{model}: lifting the thinkingLevel starvation cap at "
+                        f"the caller's request — native dynamic thinking bills "
+                        f"against maxOutputTokens, and the declared output "
+                        f"floor is what will catch a starved body"
+                    )
+                return None
+            # Refusing the intent must restore the SHAPE DEFAULT, not impose a
+            # restriction the default never applied. A structured call has a
+            # cap to keep; a plain call never had one, so capping it here would
+            # mean declaring INFERENCE bought LESS thinking than declaring
+            # nothing — the opposite of what the caller asked for.
+            #
+            # The two shapes therefore get different reports, because different
+            # things happened. Only the structured shape actually refuses
+            # anything; on a plain call the outcome is identical to a floored
+            # INFERENCE, so announcing a REFUSAL — at WARNING, which the
+            # runbook's LOG_LEVEL leaves visible — would alert an operator to a
+            # call that got precisely what it asked for, and advise a floor
+            # that would change nothing.
+            if is_structured:
+                self.logger.warning(
+                    f"reasoning_intent='inference' REFUSED on {model}: no "
+                    f"output floor was declared (min_output_tokens), and "
+                    f"lifting the thinkingLevel cap without one re-arms silent "
+                    f"starvation (fm#1094) — keeping the cap. Declare a floor "
+                    f"alongside the intent to reason here."
+                )
+            else:
+                self.logger.info(
+                    f"reasoning_intent='inference' on a plain call to {model}: "
+                    f"no thinkingLevel cap applies to this shape, so nothing is "
+                    f"lifted and the model's native dynamic thinking stands — "
+                    f"the intent is satisfied by the shape default. Hidden "
+                    f"reasoning still bills against maxOutputTokens; declare "
+                    f"min_output_tokens if a starved body must be caught."
+                )
+            # Fall through to the shape-default return below.
+            intent = None
+
+        # Everything that still wants the cap, in one construction site (so a
+        # companion key such as ``includeThoughts`` is added once, not to two
+        # dicts six lines apart). Reaching here means one of:
+        #   - EXTRACTION            → cap on every shape;
+        #   - INFERENCE, no floor   → refused above, demoted to the shape default;
+        #   - no intent             → the shape decides, as before #1118.
+        if intent is not None or is_structured:
             # 3.x+ uses the string thinkingLevel; the 2.5-era integer
             # thinkingBudget 400s on these models.
             return {"thinkingLevel": self._GEMINI_3X_STRUCTURED_THINKING_LEVEL}
-
         return None
+
+    def _log_unhonoured(self, intent: ReasoningIntent, message: str) -> None:
+        """Log an intent this provider could not apply.
+
+        INFERENCE warns, EXTRACTION informs — the same split the OpenAI
+        provider and the base discard helper use. An unhonoured INFERENCE is
+        the case an operator must see under the runbook's ``LOG_LEVEL=WARNING``
+        (docs/operations/monitoring/operations-runbook.md); at INFO it was
+        invisible there, making diagnosability a function of which provider
+        answered.
+        """
+        if intent is ReasoningIntent.INFERENCE:
+            self.logger.warning(message)
+        else:
+            self.logger.info(message)
 
     async def generate(
         self,
@@ -239,6 +347,28 @@ class GeminiProvider(BaseLLMProvider):
         tools_param = kwargs.pop("tools", None)
         tool_choice = kwargs.pop("tool_choice", None)
 
+        # Caller-declared reasoning intent (#1118), translated into
+        # thinkingConfig below. ``min_output_tokens`` (#1117) is enforced at
+        # the router (budget bump + floor check); Gemini 3.x has no integer
+        # thinking allocation to size from it (thinkingLevel only).
+        reasoning_intent = ReasoningIntent.coerce(kwargs.pop("reasoning_intent", None))
+        # The floor itself is enforced at the router, but whether one was
+        # DECLARED decides here whether INFERENCE may lift the thinking cap —
+        # so this provider reads it rather than discarding it blind (#1117).
+        #
+        # Applies the ROUTER'S OWN validity test rather than ``is not None``:
+        # this guard exists precisely for the door that bypasses ``route()``
+        # (``milestone_engine`` binds a concrete provider), so it cannot borrow
+        # the router's validation. ``0``, ``False`` and ``""`` are not declared
+        # floors — accepting them would lift the cap and then log that a floor
+        # will catch the starved body it can no longer catch.
+        declared_floor = kwargs.pop("min_output_tokens", None)
+        has_output_floor = (
+            isinstance(declared_floor, int)
+            and not isinstance(declared_floor, bool)
+            and declared_floor >= 1
+        )
+
         # Prepare request body for Gemini API format
         if messages:
             converted = self._convert_messages_to_gemini(messages)
@@ -292,7 +422,10 @@ class GeminiProvider(BaseLLMProvider):
         # is the same object referenced by request_body["generationConfig"], so
         # mutating it here is sufficient.
         thinking_config = self._structured_thinking_config(
-            selected_model, is_structured=bool(rf) or bool(tools_param)
+            selected_model,
+            is_structured=bool(rf) or bool(tools_param),
+            intent=reasoning_intent,
+            has_output_floor=has_output_floor,
         )
         if thinking_config is not None:
             generation_config["thinkingConfig"] = thinking_config

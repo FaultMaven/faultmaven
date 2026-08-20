@@ -292,7 +292,7 @@ modules/auth/
 | Provider | Environment Variable | Models | Structured output | Notes |
 |----------|---------------------|--------|-------------------|-------|
 | Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema enforced via forced tool use; recommended for logic |
-| OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | **STRICT** (gpt-4o+) | Reasoning model; `reasoning_effort` capped to `low` on structured calls (starvation guard); recommended default |
+| OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | **STRICT** (gpt-4o+) | Reasoning model; `reasoning_effort` capped to `low` on structured calls (starvation guard); only a declared `INFERENCE` intent raises it; recommended default |
 | Google Gemini | `GEMINI_API_KEY` | gemini-3.5-flash | **STRICT** (1.5+) | Fast multimodal; baseline |
 | Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v4-flash | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
 | Groq | `GROQ_API_KEY` | llama-3.3-70b-versatile | BEST_EFFORT (STRICT on gpt-oss) | Ultra-fast inference |
@@ -353,6 +353,14 @@ observed (gemini-3.5-flash, the default); Gemini 2.5 is left at native dynamic
 thinking — it ran clean, and capping it would change a working reasoning path
 without evidence.
 
+That shape-based rule is the **default**, and a caller can now refine it per
+call with a **reasoning intent** (`#1118`, below): `EXTRACTION` extends the cap
+to plain 3.x calls as well, and `INFERENCE` *lifts* it on structured calls —
+but only when the same call also declares an output floor, without which the
+provider refuses the lift and warns. So "3.x structured calls are capped" holds
+for every call that does not declare an intent, which is every call shipped
+today.
+
 **Every response carries a normalised stop reason.** `LLMResponse.stop_reason`
 (`STOP | MAX_TOKENS | CONTENT_FILTER | TOOL_CALLS | UNKNOWN`, with a derived
 `is_truncated`) is populated by all nine providers from whatever their API
@@ -366,7 +374,14 @@ fails open. Consumers recover via
 `infrastructure/llm/truncation.generate_with_truncation_retry` (double the cap
 once); what happens if the retry is also cut is per-consumer — read paths
 (KB/evidence QA, tier-2) annotate and return the partial, write paths (runbook
-conversion) refuse to persist. The reason is logged and counted at the router
+conversion) refuse to persist. The one exception is a call carrying an output
+floor (below): there a starved first attempt arrives as an exception rather
+than a response, the helper spends its one retry on it exactly as it would on
+a cut body, and a twice-starved call raises instead of returning a partial —
+the caller pre-declared that partial unusable. Pass `min_output_tokens` to the
+helper as well as to `route()`, or its doubling is computed from a cap the
+router has already raised and the "retry" repeats the first attempt
+verbatim. The reason is logged and counted at the router
 (`llm_stop_reasons_total`), and a response reported as cut is never written to
 the response cache — the key omits `max_tokens`, so a stored cut body is what a
 retry at a bigger cap would be served instead of reaching the provider.
@@ -384,6 +399,54 @@ runtime fallback in `milestone_engine` still covers transient tool failures on a
 otherwise-capable model. Capability is per-provider/model via
 `supports_tool_calling()` (HuggingFace: always False; Fireworks: a denylist for
 models that accept tools but time out on forced `tool_choice=required`).
+
+**A caller can declare what a call needs from reasoning, and the minimum
+output it can use.** Two optional, per-call-site knobs on `LLMRouter.route()`
+(#1118 / #1117), both absent by default — every call shipped today passes
+neither, so the shape-based provider defaults above are what runs:
+
+- `reasoning_intent` — `EXTRACTION` (grounded transformation of supplied
+  context: ask for the provider's minimum reasoning) or `INFERENCE` (reasoning
+  over candidates: ask for its default). Semantic on purpose — `reasoning_effort`
+  is OpenAI's word, `thinkingLevel` is Gemini's, and a call site has no business
+  knowing which provider answered. Each provider translates it; **hard model
+  constraints override it** (gpt-5.6 keeps its forced `reasoning_effort: "none"`
+  alongside tools); an intent that cannot be applied is **logged, never silently
+  dropped** — WARNING for `INFERENCE`, INFO for `EXTRACTION`. (An intent that
+  *was* delivered is not reported as a failure: on gpt-5.6 with tools the
+  forced `"none"` is exactly what `EXTRACTION` asked for.)
+- `min_output_tokens` — the minimum *visible* output the call needs. Reasoning
+  bills against the same budget as the answer on every provider (no second pool
+  exists), so this is a floor, not a new budget. Pre-call it raises `max_tokens`
+  to at least the floor; post-call a `MAX_TOKENS` stop measuring below it raises
+  `LLMOutputFloorError` rather than returning a body the caller pre-declared
+  unusable. Visible output is measured with the provider's real tokenizer when
+  the provider has one (`utils/token_estimation.estimate_tokens` covers openai,
+  openrouter, anthropic and fireworks) **and** the body is at or under
+  `_TOKENIZER_EXACT_MAX_CHARS` (4000 — tiktoken is super-linear on the degenerate
+  looped-output shape, 1.3 s of blocking CPU at 32k chars). Everything else —
+  the five providers it cannot tokenize, and any longer body — is **deliberately
+  bounded above by its **UTF-8 byte count**. The governing invariant is that the
+  estimate must never UNDER-state: under-stating fires the guard on a body that
+  met its floor and kills an otherwise-usable turn, while over-stating only wastes
+  a guard. Bytes are what make that *provable* rather than merely measured — a
+  byte-level BPE token consumes at least one byte, so N bytes cannot exceed N
+  tokens for any script. (Counting *characters* is only the ASCII corollary and
+  breaks outside it: `'🔥🚀💡'*100` is 300 characters but 800 tokens.) That is also
+  why neither a raw `len//4` (shape-dependent, understates dense JSON/CJK by 2-4x)
+  nor a scaled prefix sample (sound only under uniform density) is used. The cost
+  is guard reach on long bodies, which is affordable because starvation produces
+  short ones — and short bodies are tokenized exactly.
+
+Two invariants worth knowing before adopting them: **`INFERENCE` requires
+`min_output_tokens`** (it lifts starvation guards, and the floor is what makes
+that safe — the router raises `ValueError`, and the Gemini provider independently
+refuses the lift, because `milestone_engine` reaches providers without going
+through the router); and the **floor is unenforceable on a provider reporting no
+stop reason** (`UNKNOWN`) — a starved-looking body is warned about and returned,
+since "cut" and "short" are indistinguishable there. The pre-call bump raises
+`max_tokens` only *to* the floor, leaving no room for hidden reasoning: on a
+reasoning path the caller sizes `max_tokens` above the floor itself.
 
 ### Capability Overrides
 
@@ -922,10 +985,12 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 
 1. Implement provider in `infrastructure/llm/providers/`
 2. Inherit from `BaseLLMProvider` in `base.py`
-3. Register in `infrastructure/llm/providers/registry.py`
-4. Add config in `config/settings.py`
-5. Document in `.env.example`
-6. Add tests in `tests/unit/infrastructure/`
+3. Merge leftover kwargs into the request body with **`self._merge_extra_kwargs(payload, kwargs, model=...)`**, never a hand-rolled `payload.update(kwargs)` — routing-level knobs (`reasoning_intent`, `min_output_tokens`, `cache_prompt`) are not API fields, and a provider that merges them raw sends them as body fields on every call and is rejected by any OpenAI-compatible endpoint. Consume a knob (pop it) only if the provider actually translates it.
+4. Populate `stop_reason` via `normalize_stop_reason()` (see the stop-reason section) — `UNKNOWN` is the honest default, not `STOP`
+5. Register in `infrastructure/llm/providers/registry.py`
+6. Add config in `config/settings.py`
+7. Document in `.env.example`
+8. Add tests in `tests/unit/infrastructure/` — `tests/unit/infrastructure/llm/providers/test_reasoning_intent.py` derives its coverage from `PROVIDER_SCHEMA`, so a newly registered provider is checked for knob handling automatically
 
 ### Modifying Database Schema
 

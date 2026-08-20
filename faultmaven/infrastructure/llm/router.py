@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from faultmaven.config.settings import get_settings
+from faultmaven.exceptions import LLMOutputFloorError
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.infrastructure.health.sla_tracker import sla_tracker
 from faultmaven.infrastructure.security.redaction import DataSanitizer
@@ -27,9 +28,10 @@ from faultmaven.infrastructure.shims import (
 )
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.utils.token_estimation import estimate_tokens
 
 from .cache import LLMResponseCache
-from .providers import LLMResponse, get_registry
+from .providers import LLMResponse, ReasoningIntent, StopReason, get_registry
 
 # Opik native tracing for LLM calls
 try:
@@ -41,6 +43,126 @@ except ImportError:
     OPIK_AVAILABLE = False
 
 TELEMETRY_PAYLOAD_MAX_CHARS = 8000
+
+# Providers ``utils.token_estimation.estimate_tokens`` actually tokenizes.
+# Everything else falls through to its ``len // 4`` character heuristic, which
+# is NOT a safe measure for the output floor (see below). Mirrors the dispatch
+# in that module; kept here rather than changing the shared helper, because its
+# fallback is load-bearing for other callers (prompt budgeting) that want a
+# middle-of-the-road estimate rather than this one's deliberate bias.
+_TOKENIZER_BACKED_PROVIDERS = frozenset(
+    {"openai", "openrouter", "anthropic", "fireworks"}
+)
+
+# Longest body handed to a real tokenizer. Above this we do not sample it —
+# we stop measuring and fall back to the conservative rule below.
+#
+# tiktoken's BPE merge loop is super-linear on a long unbroken run of ONE
+# character — precisely the degenerate "model looped until it hit MAX_TOKENS"
+# body this branch selects for. Measured on this venv: 8k chars 91 ms, 16k
+# 385 ms, 32k 1316 ms of BLOCKING CPU, against 1-4 ms for prose or dense JSON
+# of the same length. The floor check runs on the event loop, so an unbounded
+# call would hand a starved-and-looping response a second failure mode. At 4k
+# the same worst case measures ~24 ms.
+#
+# WHY NOT SAMPLE-AND-SCALE. The obvious bound — tokenize a 4k prefix and scale
+# by ``len(text)/4000`` — is sound only if density is uniform, which the block
+# below argues at length it is not. Measured on a 16,000-char body of 4k prose
+# followed by 12k id-dense JSON: 7,180 real tokens, scored 2,448 (0.34x). That
+# is the SAME false positive as B1 — a body that met its floor being killed —
+# reintroduced on the four providers we promise measurement for. Sampling more
+# slices and taking the densest improves the average (1.23x on that body) but
+# still cannot GUARANTEE the direction: any dense region the slices miss brings
+# the estimate back under.
+#
+# The invariant is what matters, not the accuracy: the estimate must never
+# UNDER-state, because under-stating kills a turn that met its floor while
+# over-stating only wastes a guard. Only a bound that stops guessing satisfies
+# that, so above this length we use the conservative rule — the same one the
+# off-tokenizer providers already use, which makes it one policy rather than
+# two. What it costs is guard REACH on long bodies, and that is affordable
+# precisely because starvation produces SHORT bodies: fm#1094's was 215 chars,
+# and every body at or under this bound is still tokenized EXACTLY.
+_TOKENIZER_EXACT_MAX_CHARS = 4000
+
+# Conservative ceiling, in BYTES per token: used for providers with no
+# tokenizer, and for any body too long to tokenize exactly (see above). One
+# rule for both — they are the same question ("we cannot measure this; what
+# can we still prove?") and must not drift into two answers.
+#
+# WHY A DIVISOR OF 4 IS WRONG, and why the fix is not a better divisor. Real
+# cl100k density by shape: CJK 0.92, base64 1.41, id-dense JSON 1.98, log
+# lines 2.07, escaped JSON 2.55, English-valued JSON 4.58, English prose 6.53
+# chars/token. A divisor of 4 sits in the MIDDLE of that spread, so it
+# understates the dense shapes by 2-4x — and understating makes the guard fire
+# on a body that MET its floor, killing an otherwise-usable turn. That false
+# positive is the unsafe direction; a missed starvation merely leaves the
+# pre-#1117 behaviour. But no divisor drawn from that table is safe either: it
+# would be an average masquerading as a bound.
+#
+# THE BOUND IS PROVED, NOT MEASURED. A byte-level BPE token maps to a
+# non-empty byte string, so a body of N UTF-8 bytes cannot tokenize to more
+# than N tokens, whatever its script or content. That is why the unit here is
+# bytes and not characters: ``tokens <= chars`` is only the ASCII COROLLARY of
+# this bound, and it fails outside ASCII — measured, ``'🔥🚀💡' * 100`` is 300
+# characters but 800 tokens (2.67 tokens per character), and a 4,000-string
+# mixed-script fuzz put 3,912 strings over the character rule (worst 3.00) and
+# ZERO over the byte count.
+#
+# Both ends of the contract are unchanged by the switch, because both boundary
+# bodies are pure ASCII, where bytes and characters are identical:
+#   fm#1094 starved body — 215 bytes vs a 500-token floor -> 215 < 500, RAISES;
+#   dense-JSON false positive — 3143 bytes vs a 1000-token floor -> 3143 >= 1000,
+#   PASSES (it scored 785 under ``len // 4`` and wrongly raised).
+_CONSERVATIVE_BYTES_PER_TOKEN = 1
+
+
+def _estimate_visible_output_tokens(
+    text: str, provider: Optional[str], model: Optional[str]
+) -> int:
+    """Visible output tokens: exact where cheap, bounded from above elsewhere.
+
+    INVARIANT — this must never UNDER-state the token count. Under-stating
+    makes the floor fire on a body that met it, killing an otherwise-usable
+    turn; over-stating only wastes a guard. Every branch below is chosen for
+    that direction rather than for accuracy:
+
+    - exact tokenization for a body short enough to measure cheaply, which is
+      every body in the regime the guard exists for (starvation is short);
+    - otherwise its UTF-8 byte count — an unknown or untokenizable provider,
+      or a body too long to tokenize inside the CPU bound.
+
+    Nothing is extrapolated from a sample: a scaled sample is an assumption
+    about the part it did not read, and there is no sampling scheme that
+    cannot be defeated by a body whose sparse part comes first.
+
+    The byte ceiling holds for any tokenizer whose vocabulary is made of
+    NON-EMPTY byte strings — byte-level BPE (the OpenAI/Anthropic families
+    here) and SentencePiece with byte fallback both qualify, since every token
+    consumes at least one byte of input. Two things it does not promise: a
+    tokenizer that prepends BOS or a word-prefix marker can add a small O(1)
+    number of tokens beyond the input's own bytes, and a vocabulary admitting
+    zero-width tokens would break it outright. Neither is material against
+    floors in the hundreds of tokens, but the claim is stated at exactly its
+    real strength rather than as an absolute.
+    """
+    if not text:
+        return 0
+
+    # ``LLMResponse.provider`` is an unvalidated field, and the registry itself
+    # rewrites it ("openai (low-confidence)") — so normalise, and never let a
+    # ``None`` reach ``provider.lower()``. An AttributeError here would be
+    # swallowed by the generic handler and reported as "All providers failed".
+    provider_name = (provider or "unknown").strip().lower()
+    if (
+        provider_name in _TOKENIZER_BACKED_PROVIDERS
+        and len(text) <= _TOKENIZER_EXACT_MAX_CHARS
+    ):
+        return estimate_tokens(text, provider=provider_name, model=model)
+
+    # ONE rule serves both untokenizable cases — no tokenizer for this
+    # provider, and no CPU budget for a body this long.
+    return len(text.encode("utf-8")) // _CONSERVATIVE_BYTES_PER_TOKEN
 
 
 def _opik_tracing_enabled() -> bool:
@@ -176,6 +298,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         provider_override: Optional[str] = None,
         cache_prompt: bool = False,
         bypass_cache: bool = False,
+        reasoning_intent: Optional[ReasoningIntent] = None,
+        min_output_tokens: Optional[int] = None,
     ) -> LLMResponse:
         """
         Route request through the centralized provider registry
@@ -192,6 +316,45 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             reached, and it needs the good response to replace the bad entry,
             because nothing else ever will.
 
+        reasoning_intent: what this call needs from hidden reasoning (#1118),
+            declared per call site — ``ReasoningIntent.EXTRACTION`` for
+            grounded transformation of supplied context, ``INFERENCE`` for
+            reasoning over candidates. Semantic on purpose: each provider
+            translates it into its own mechanism (OpenAI ``reasoning_effort``,
+            Gemini ``thinkingLevel``), hard model constraints override it, and
+            an intent that cannot be honoured is logged by the provider, never
+            silently dropped. ``None`` (default) preserves the shape-based
+            per-provider defaults exactly. INVARIANT: ``INFERENCE`` must be
+            paired with ``min_output_tokens`` — it lifts provider starvation
+            guards, and the floor is what makes that safe; the pairing is
+            enforced here with a ``ValueError``, not left as a convention.
+
+        min_output_tokens: the minimum VISIBLE output this call needs (#1117).
+            Reasoning models bill hidden reasoning against the same token
+            budget the answer is drawn from, so a nominally-large ``max_tokens``
+            can still yield a starved stub. The floor is enforced twice: before
+            the call, ``max_tokens`` is raised to at least the floor (a total
+            budget below it can never satisfy it); after the call, a response
+            cut at the cap with less visible output than the floor raises
+            :class:`~faultmaven.exceptions.LLMOutputFloorError` instead of
+            returning a body the caller pre-declared unusable. ``None``
+            (default) keeps the existing behavior — truncated responses are
+            returned for the caller to inspect. A floor bounds STARVATION, not
+            verbosity: a response the model finished cleanly below the floor is
+            returned as-is.
+
+            Two limits worth knowing. The floor is UNENFORCEABLE on a provider
+            that reports no stop reason (HuggingFace as called, or any finish
+            value newer than ``_STOP_REASON_ALIASES``): "cut" and "short" are
+            indistinguishable there, so a starved-looking body is warned about
+            and returned rather than raised on. And the pre-call bump raises
+            ``max_tokens`` only TO the floor, which leaves no room for hidden
+            reasoning to be billed from the same budget — on a reasoning path
+            the caller must size ``max_tokens`` above the floor itself; a call
+            declaring INFERENCE with ``max_tokens <= min_output_tokens`` is
+            warned about here rather than silently given headroom this layer
+            cannot correctly guess.
+
         Args:
             prompt: Input prompt (optional if messages is provided)
             model: Specific model to use (optional)
@@ -205,6 +368,78 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         # Validate prompt or messages
         if prompt is None and not messages:
             raise TypeError("Either prompt or messages must be provided")
+
+        # Normalize the reasoning knobs up front, loudly — a typo'd intent or a
+        # nonsensical floor is a caller bug and must fail at the call site, not
+        # mutate into silent provider behavior.
+        reasoning_intent = ReasoningIntent.coerce(reasoning_intent)
+        if reasoning_intent is ReasoningIntent.INFERENCE and min_output_tokens is None:
+            # Enforced as a mechanism, not a convention: INFERENCE asks the
+            # provider to lift its starvation guards (Gemini's structured
+            # thinkingLevel cap among them), and reasoning bills against the
+            # same budget the answer is drawn from — an inference call with no
+            # declared floor re-arms exactly the silent starvation fm#1094
+            # closed. The floor is what makes lifting the guard safe.
+            raise ValueError(
+                "reasoning_intent=INFERENCE requires min_output_tokens: "
+                "reasoning shares one token budget with the visible answer, so "
+                "an inference call without an output floor can starve silently "
+                "(fm#1094). Declare the minimum visible output the call needs "
+                "alongside the intent."
+            )
+        if min_output_tokens is not None:
+            # ``bool`` is an ``int`` subclass and must be rejected explicitly.
+            # Without the type test a float floor (config arithmetic like
+            # ``max_tokens * 0.25``, or a JSON value parsed as a float) passes
+            # the comparison, is assigned into ``max_tokens`` below, and
+            # reaches the provider as ``{"max_completion_tokens": 1500.5}`` —
+            # every provider in the chain 400s and it surfaces as the
+            # misleading "All providers failed" instead of this ValueError.
+            if isinstance(min_output_tokens, bool) or not isinstance(
+                min_output_tokens, int
+            ):
+                raise ValueError(
+                    f"min_output_tokens must be a positive integer, "
+                    f"got {type(min_output_tokens).__name__} "
+                    f"{min_output_tokens!r}"
+                )
+            if min_output_tokens < 1:
+                raise ValueError(
+                    f"min_output_tokens must be a positive integer, "
+                    f"got {min_output_tokens!r}"
+                )
+            if max_tokens < min_output_tokens:
+                # A total budget below the floor can never satisfy it — the
+                # "larger total" translation from #1117. Logged so budget
+                # arithmetic stays visible in traces.
+                self.logger.info(
+                    f"⬆️ Raising max_tokens {max_tokens} → {min_output_tokens} "
+                    f"to honour the declared output floor"
+                )
+                max_tokens = min_output_tokens
+            if (
+                reasoning_intent is ReasoningIntent.INFERENCE
+                and max_tokens <= min_output_tokens
+            ):
+                # No headroom above the floor, on the one intent that invites
+                # hidden reasoning into the same budget. Every MAX_TOKENS stop
+                # at this cap then has visible <= floor - reasoning < floor and
+                # raises by construction; the only success is a clean STOP
+                # under the cap.
+                #
+                # Deliberately a warning rather than a silent multiplier: what
+                # headroom a model needs is a property of that model's
+                # reasoning, which this layer cannot know, and inventing a
+                # factor here would be an undocumented budget change applied to
+                # every caller. The caller sizes max_tokens; this says so.
+                self.logger.warning(
+                    f"⚠️ reasoning_intent=INFERENCE with max_tokens "
+                    f"({max_tokens}) <= min_output_tokens ({min_output_tokens}): "
+                    f"hidden reasoning bills against the SAME budget as the "
+                    f"answer, so this call can only satisfy its floor by "
+                    f"finishing early — size max_tokens above the floor to "
+                    f"leave room for reasoning"
+                )
 
         # Sanitize before sending to external providers (conditional).
         # Off the event loop via the sanitizer's async boundary (#654).
@@ -220,7 +455,10 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         cache_model = model  # Use the requested model for cache lookup
         if cache_model and not messages and sanitized_prompt and not bypass_cache:
             cached_response = self.cache.check(
-                sanitized_prompt, cache_model, case_id=case_id
+                sanitized_prompt,
+                cache_model,
+                case_id=case_id,
+                reasoning_intent=reasoning_intent,
             )
             if cached_response:
                 self.logger.info("✅ Using cached response")
@@ -287,6 +525,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 confidence_threshold=self.confidence_threshold,
                 provider_override=provider_override,
                 cache_prompt=cache_prompt,
+                reasoning_intent=reasoning_intent,
+                min_output_tokens=min_output_tokens,
                 timeout=self._resolve_timeout(),  # Provider-aware ceiling
                 retries=0,  # Retries handled inside each provider (rate-limit backoff) and via fallback chain
                 retry_delay=1.0,
@@ -341,7 +581,13 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 and response.confidence >= self.confidence_threshold
                 and not response.is_truncated
             ):
-                self.cache.store(sanitized_prompt, model, response, case_id=case_id)
+                self.cache.store(
+                    sanitized_prompt,
+                    model,
+                    response,
+                    case_id=case_id,
+                    reasoning_intent=reasoning_intent,
+                )
 
             # Attach prompt data for telemetry
             response.sanitized_prompt = sanitized_prompt
@@ -378,6 +624,111 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 stop_reason=response.stop_reason.value,
             ).inc()
 
+            # Output floor (#1117): a response cut at the cap with less visible
+            # output than the caller's declared floor is a starved answer —
+            # hidden reasoning consumed the budget the answer needed — and the
+            # caller pre-declared it unusable, so fail loudly instead of
+            # returning it.
+            #
+            # The gate is ``is_truncated``, which is THREE-valued underneath,
+            # and the distinction matters:
+            #   MAX_TOKENS → the provider says it cut the body: enforce.
+            #   STOP       → the model finished; a short answer, not a starved
+            #                one. Correctly exempt.
+            #   UNKNOWN    → NO SIGNAL. ``is_truncated`` reads False (its
+            #                documented contract, base.py), so the floor does
+            #                NOT run. That is a real gap, not just a
+            #                HuggingFace footnote: ``normalize_stop_reason``
+            #                maps every unrecognised value to UNKNOWN, so any
+            #                finish reason a provider API adds after that table
+            #                was written disables the floor on that provider.
+            #                Below, a starved-looking no-signal body is warned
+            #                about rather than raised on — raising would mean
+            #                treating "we don't know" as "it was cut", which
+            #                buys false positives on short answers.
+            if min_output_tokens is not None and (
+                response.is_truncated or response.stop_reason is StopReason.UNKNOWN
+            ):
+                # Tool-call responses can carry their whole payload in
+                # ``tool_calls`` with EMPTY content — counting content alone
+                # would read every floored tools call as fully starved. Count
+                # both. (The OpenAI provider copies the first call's arguments
+                # into content, so there the arguments count twice; that
+                # overstates visible output, which errs toward NOT raising —
+                # the safe direction for a guard whose false positive would
+                # kill an otherwise-usable turn.)
+                visible_text = response.content or ""
+                for tool_call in response.tool_calls or []:
+                    visible_text += str(tool_call.function or "")
+                # Measured with the provider's real tokenizer where one exists,
+                # and deliberately OVER-estimated where none does — never the
+                # middle-of-the-range ``len//4``, which is not a conservative
+                # approximation in either direction but shape-dependent:
+                # English prose runs 6.5 chars/token (it OVERSTATES, guard
+                # under-fires) while id-dense JSON, base64 and CJK run 0.9-2.1
+                # (it UNDERSTATES by 2-4x, and the guard fires on a body that
+                # MET its floor). See ``_estimate_visible_output_tokens``.
+                #
+                # NOT read from ``output_tokens``: OpenAI's
+                # ``completion_tokens`` and Anthropic's ``output_tokens``
+                # INCLUDE hidden reasoning, so on exactly the starved call this
+                # exists to catch (fm#1094: ~1,946 reasoning tokens inside a
+                # 2,000 count, 215 chars of answer) the reported number reads
+                # as ample and the check would fail open.
+                visible_output_tokens = _estimate_visible_output_tokens(
+                    visible_text,
+                    provider=response.provider,
+                    model=response.model,
+                )
+                below_floor = visible_output_tokens < min_output_tokens
+                if below_floor and not response.is_truncated:
+                    # No stop signal: the floor cannot be enforced honestly,
+                    # but silently returning a body that looks starved is how
+                    # the gap stays invisible. Say so.
+                    self.logger.warning(
+                        f"⚠️ Output floor NOT ENFORCEABLE: ~"
+                        f"{visible_output_tokens} visible output tokens < "
+                        f"min_output_tokens={min_output_tokens}, but "
+                        f"{response.provider}/{response.model} reported NO "
+                        f"stop reason — cannot tell a cut body from a short "
+                        f"answer, so the response is being returned unchecked"
+                    )
+                elif below_floor:
+                    # Failure accounting BEFORE the raise. This path leaves via
+                    # neither the success block below nor the generic handler
+                    # (which would mislabel it "all providers failed"), so
+                    # without this the call appears in no latency, token or SLA
+                    # series at all: cost dashboards under-report real spend,
+                    # and SLA availability drops starved calls from both
+                    # numerator and denominator — overstating provider health
+                    # during exactly the incident the tracker exists to
+                    # surface. The provider did answer and the tokens were
+                    # billed; only the ANSWER is unusable.
+                    llm_requests.labels(
+                        provider=response.provider,
+                        model=response.model,
+                        status="output_floor_starved",
+                    ).inc()
+                    llm_latency.labels(
+                        provider=response.provider, model=response.model
+                    ).observe(response.response_time_ms / 1000.0)
+                    if response.tokens_used:
+                        llm_tokens.labels(
+                            provider=response.provider, model=response.model
+                        ).inc(response.tokens_used)
+                    sla_tracker.record_request_metrics(
+                        "llm_provider", response.response_time_ms, success=False
+                    )
+                    raise LLMOutputFloorError(
+                        f"LLM response starved below the declared output floor: "
+                        f"~{visible_output_tokens} visible output tokens "
+                        f"(measured over {len(visible_text)} chars of content + "
+                        f"tool calls) "
+                        f"< min_output_tokens={min_output_tokens}, with "
+                        f"stop_reason=MAX_TOKENS at max_tokens={max_tokens} "
+                        f"(provider={response.provider} model={response.model})"
+                    )
+
             # Prometheus + SLA accounting (no-ops when metrics are disabled)
             llm_requests.labels(
                 provider=response.provider, model=response.model, status="success"
@@ -395,6 +746,12 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
 
             return response
 
+        except LLMOutputFloorError:
+            # Not a provider failure — the provider answered; the answer is one
+            # the caller pre-declared unusable. Its dedicated metric was
+            # recorded at the raise site; re-raise without the misleading
+            # "all providers failed" framing below.
+            raise
         except Exception as e:
             # Provider unknown on failure (the whole fallback chain failed)
             llm_requests.labels(
@@ -498,6 +855,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
                 - response_format: Structured output format (optional)
                 - tools: Tool/function definitions (optional)
                 - tool_choice: Tool choice strategy (optional)
+                - reasoning_intent: Caller-declared reasoning need (#1118, optional)
+                - min_output_tokens: Visible-output floor (#1117, optional)
 
         Returns:
             LLMResponse with generated content
@@ -519,6 +878,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         provider_override = kwargs.get("provider_override")
         cache_prompt = kwargs.get("cache_prompt", False)
         bypass_cache = kwargs.get("bypass_cache", False)
+        reasoning_intent = kwargs.get("reasoning_intent")
+        min_output_tokens = kwargs.get("min_output_tokens")
 
         # Call existing route method with all the robust functionality
         response = await self.route(
@@ -535,6 +896,8 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
             provider_override=provider_override,
             cache_prompt=cache_prompt,
             bypass_cache=bypass_cache,
+            reasoning_intent=reasoning_intent,
+            min_output_tokens=min_output_tokens,
         )
 
         # Return the full LLMResponse (milestone_engine expects this)

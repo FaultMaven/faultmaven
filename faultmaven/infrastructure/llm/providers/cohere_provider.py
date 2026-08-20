@@ -105,8 +105,6 @@ class CohereProvider(BaseLLMProvider):
 
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)
-        # Anthropic-only caching hint; drop before payload.update(kwargs).
-        kwargs.pop("cache_prompt", None)
 
         # Prepare request payload in Cohere v2 format
         payload = {
@@ -145,7 +143,8 @@ class CohereProvider(BaseLLMProvider):
             payload["response_format"] = kwargs.pop("response_format")
 
         # Add any additional kwargs, filtering out None values
-        payload.update({k: v for k, v in kwargs.items() if v is not None})
+        # Discards the router-level knobs, then merges the rest (see base).
+        self._merge_extra_kwargs(payload, kwargs, model=model)
 
         # Make request to Cohere API
         try:

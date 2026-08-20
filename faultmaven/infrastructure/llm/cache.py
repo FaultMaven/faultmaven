@@ -1,8 +1,9 @@
 """
 Exact-key response cache for LLM responses.
 
-Caches a provider response under the exact ``(case, prompt, model)`` triple, so
-a repeated identical call inside one case is served without a second API call.
+Caches a provider response under the exact ``(case, prompt, model,
+reasoning_intent)`` tuple, so a repeated identical call inside one case is
+served without a second API call.
 
 This used to also do semantic matching: embed the prompt with BGE-M3, and serve
 any cached entry within cosine 0.85 of it. That branch was removed (#940) for
@@ -43,9 +44,19 @@ class LLMResponseCache:
         self.cache: Dict[str, Dict[str, Any]] = {}
 
     def _get_cache_key(
-        self, prompt: str, model: str, case_id: Optional[str] = None
+        self,
+        prompt: str,
+        model: str,
+        case_id: Optional[str] = None,
+        reasoning_intent: Optional[str] = None,
     ) -> str:
-        """Generate cache key scoped to case, prompt, and model.
+        """Generate cache key scoped to case, prompt, model, and reasoning intent.
+
+        ``reasoning_intent`` (#1118) is part of the key because it changes what
+        the provider is asked to do with an identical prompt — an extraction
+        answer served to an inference caller (or vice versa) is one call's
+        answer standing in for a different call's, the thing this cache must
+        never do. ``None`` keys separately from either declared intent.
 
         The fields are length-prefixed rather than joined on a delimiter (#940
         review). ``':'`` is legal inside every one of them — Ollama models are
@@ -62,7 +73,10 @@ class LLMResponseCache:
         namespaces, and only one of them may serve the other's entries.
         """
         digest = hashlib.sha256()
-        for field in (case_id, prompt, model):
+        # ReasoningIntent is a str-enum; take .value explicitly so the key
+        # never depends on enum str()/repr() formatting differences.
+        intent_value = getattr(reasoning_intent, "value", reasoning_intent)
+        for field in (case_id, prompt, model, intent_value):
             if field is None:
                 digest.update(b"\x00")
                 continue
@@ -74,17 +88,23 @@ class LLMResponseCache:
         return digest.hexdigest()
 
     def check(
-        self, prompt: str, model: str, case_id: Optional[str] = None
+        self,
+        prompt: str,
+        model: str,
+        case_id: Optional[str] = None,
+        reasoning_intent: Optional[str] = None,
     ) -> Optional[LLMResponse]:
-        """Return the response cached for this exact prompt/model/case, if any.
+        """Return the response cached for this exact prompt/model/case/intent.
 
         Exact match only — a prompt that differs by one character is a miss.
-        The key carries ``case_id``, so a response is never served across cases.
+        The key carries ``case_id``, so a response is never served across
+        cases, and ``reasoning_intent``, so an extraction answer is never
+        served to an inference caller.
 
         Synchronous by design and safe to call from the event loop: no embedding,
         no I/O, no similarity scan (#940).
         """
-        cache_key = self._get_cache_key(prompt, model, case_id)
+        cache_key = self._get_cache_key(prompt, model, case_id, reasoning_intent)
         cache_entry = self.cache.get(cache_key)
         if cache_entry is None:
             return None
@@ -111,8 +131,9 @@ class LLMResponseCache:
         model: str,
         response: LLMResponse,
         case_id: Optional[str] = None,
+        reasoning_intent: Optional[str] = None,
     ):
-        """Store response under its exact prompt/model/case key.
+        """Store response under its exact prompt/model/case/intent key.
 
         An existing entry under the key is replaced. That happens only on the
         bypass-cache path: a caller that skipped the lookup because it had
@@ -121,7 +142,7 @@ class LLMResponseCache:
         eviction API, so this overwrite is the sole way a bad entry stops being
         served.
         """
-        cache_key = self._get_cache_key(prompt, model, case_id)
+        cache_key = self._get_cache_key(prompt, model, case_id, reasoning_intent)
 
         self.cache[cache_key] = {
             "content": response.content,

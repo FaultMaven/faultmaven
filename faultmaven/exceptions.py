@@ -265,6 +265,25 @@ class LLMException(FaultMavenException):
         super().__init__(message, **kwargs)
 
 
+class LLMOutputFloorError(LLMException):
+    """A response was cut at the output cap with less visible output than the
+    caller's declared floor (``min_output_tokens``, #1117).
+
+    Raised by the router instead of returning the starved body: the caller
+    pre-declared the minimum visible output it can use, so handing back less
+    would be handing back exactly what it said is unusable. The typical cause
+    is hidden reasoning consuming the shared token budget the answer needed
+    (the fm#1094 starvation shape). Only raised when a caller opted in by
+    setting the floor — calls without one keep the existing behavior of
+    returning the truncated response for the caller to inspect.
+
+    Non-retryable by derivation (no status code): an identical retry starves
+    identically. A caller that wants recovery should retry with a larger
+    ``max_tokens`` or a lower reasoning intent — a decision this layer cannot
+    make for it.
+    """
+
+
 class ModelLoadingException(LLMException):
     """Raised when an LLM model is still loading (e.g., HuggingFace 503).
 

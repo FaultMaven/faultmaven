@@ -123,6 +123,12 @@ class LocalProvider(BaseLLMProvider):
         # Get effective model
         effective_model = self.get_effective_model(model)
 
+        # Router-level reasoning knobs (#1117/#1118) this provider has no
+        # mechanism for. Popped HERE, before transport dispatch, because the
+        # Ollama path merges raw kwargs into payload["options"] — the keys
+        # must never reach a request body. Logs any intent it cannot act on.
+        self._discard_reasoning_kwargs(kwargs, model=effective_model)
+
         # Intelligently detect API format for optimal compatibility
         # Priority order: Ollama -> OpenAI-compatible -> Raw llama.cpp
 
@@ -252,10 +258,8 @@ class LocalProvider(BaseLLMProvider):
         if "response_format" in kwargs:
             payload["response_format"] = kwargs.pop("response_format")
 
-        # Anthropic-only caching hint; drop before payload.update(kwargs).
-        kwargs.pop("cache_prompt", None)
-
-        payload.update({k: v for k, v in kwargs.items() if v is not None})
+        # Discards the router-level knobs, then merges the rest (see base).
+        self._merge_extra_kwargs(payload, kwargs, model=model)
 
         self.logger.debug(f"Request payload: {payload}")
 
@@ -386,9 +390,26 @@ class LocalProvider(BaseLLMProvider):
             "stream": False,
         }
 
-        # Add any additional options, filtering out None values
+        # ``cache_prompt`` is a REAL llama.cpp body field (it reuses the KV
+        # cache for a shared prompt prefix), so this transport genuinely
+        # consumes the knob rather than discarding it — the one condition the
+        # merge seam sets for popping something yourself.
+        #
+        # It has to be lifted out BEFORE the merge, because
+        # ``_merge_extra_kwargs`` drops it for everyone: it is Anthropic's
+        # caching hint, and the providers that do not implement it reject
+        # unknown body fields. Routing this transport through that seam without
+        # this line silently dropped the field that had reached the wire at
+        # merge-base, costing llama.cpp-fallback deployments their prompt-prefix
+        # caching on the DA tool loop (``milestone_engine`` passes
+        # ``cache_prompt=True`` there on every iteration).
+        cache_prompt = kwargs.pop("cache_prompt", None)
+        if cache_prompt is not None:
+            payload["cache_prompt"] = cache_prompt
+
+        # Add any additional options (knobs discarded, None values filtered).
         if kwargs:
-            payload.update({k: v for k, v in kwargs.items() if v is not None})
+            self._merge_extra_kwargs(payload, kwargs, model=model)
 
         async with aiohttp.ClientSession() as session:
             async with session.post(

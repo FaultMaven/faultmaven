@@ -115,8 +115,6 @@ class GroqProvider(BaseLLMProvider):
 
         # Handle messages for multi-turn conversations
         messages = kwargs.pop("messages", None)
-        # Anthropic-only caching hint; drop before payload.update(kwargs).
-        kwargs.pop("cache_prompt", None)
 
         payload = {
             "model": effective_model,
@@ -155,7 +153,8 @@ class GroqProvider(BaseLLMProvider):
             payload["response_format"] = response_format
 
         # Add any additional kwargs, filtering out None values
-        payload.update({k: v for k, v in kwargs.items() if v is not None})
+        # Discards the router-level knobs, then merges the rest (see base).
+        self._merge_extra_kwargs(payload, kwargs, model=model)
 
         # Make request to Groq API
         _MAX_RATE_LIMIT_RETRIES = 2

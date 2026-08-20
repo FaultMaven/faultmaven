@@ -140,12 +140,11 @@ class FireworksProvider(BaseLLMProvider):
         # Extract routing-level timeout override before payload update so it
         # is not forwarded to the Fireworks API as an unknown request field.
         effective_timeout = kwargs.pop("timeout", None) or self.config.timeout
-        # Anthropic-only caching hint; drop before payload.update(kwargs).
-        kwargs.pop("cache_prompt", None)
 
         # Add any additional kwargs, filtering out None values to avoid
         # overwriting constructed payload fields
-        payload.update({k: v for k, v in kwargs.items() if v is not None})
+        # Discards the router-level knobs, then merges the rest (see base).
+        self._merge_extra_kwargs(payload, kwargs, model=model)
 
         # Make request
         try:
