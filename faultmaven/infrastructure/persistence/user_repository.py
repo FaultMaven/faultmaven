@@ -176,6 +176,21 @@ class UserRepository(ABC):
         pass
 
     @abstractmethod
+    async def touch_last_login(self, user_id: str, at: datetime) -> bool:
+        """Stamp ``last_login_at`` on one user row; True if the row existed.
+
+        The single write-path for login stamps (#1127 review): a targeted
+        single-column write, NOT a read-modify-write through ``update()`` —
+        that shape upserts every column and can silently revert a concurrent
+        deactivation, role change or password reset on the login hot path.
+
+        Deliberately leaves ``updated_at`` alone: a login does not modify the
+        account, and stamping it here would turn the admin-visible "last
+        modified" into a shadow of ``last_login_at``.
+        """
+        pass
+
+    @abstractmethod
     async def create(self, user: User) -> User:
         """Create a new user."""
         pass
@@ -236,6 +251,14 @@ class InMemoryUserRepository(UserRepository):
             if user.sso_provider == provider and user.sso_provider_id == provider_id:
                 return user
         return None
+
+    async def touch_last_login(self, user_id: str, at: datetime) -> bool:
+        """Stamp last_login_at on the stored row; nothing else moves."""
+        user = self._users.get(user_id)
+        if user is None:
+            return False
+        user.last_login_at = at
+        return True
 
     async def list(self, limit: int = 50, offset: int = 0) -> tuple[List[User], int]:
         """List users with pagination."""
@@ -582,6 +605,33 @@ class PostgreSQLUserRepository(UserRepository):
 
         return await self.save(user)
 
+    async def touch_last_login(self, user_id: str, at: datetime) -> bool:
+        """Stamp ``last_login_at`` with a targeted single-column UPDATE.
+
+        NOT ``get()`` + ``save()``: that pair spans two statements with no
+        version check, and ``save()`` upserts every column — a login racing an
+        admin's deactivation or a password reset would write the stale snapshot
+        back over it. One UPDATE statement cannot revert anything else.
+
+        ``updated_at`` is deliberately not touched (see the interface
+        docstring) — and that takes the explicit self-assignment below, not
+        just omission: the column carries ``onupdate=func.now()``, which fires
+        on any UPDATE that doesn't set the column itself. Naming it in SET as
+        its own current value suppresses the default while writing nothing.
+        """
+        from sqlalchemy import update
+
+        from faultmaven.infrastructure.persistence.models import UserModel
+
+        stmt = (
+            update(UserModel)
+            .where(UserModel.user_id == user_id)
+            .values(last_login_at=at, updated_at=UserModel.updated_at)
+        )
+        result = await self.db.execute(stmt)
+        await self.db.commit()
+        return result.rowcount > 0
+
     async def delete(self, user_id: str) -> bool:
         """Delete user."""
         from sqlalchemy import delete
@@ -675,6 +725,12 @@ class SessionlessUserRepository(UserRepository):
 
         async with get_db_session() as session:
             return await PostgreSQLUserRepository(session).update(user)
+
+    async def touch_last_login(self, user_id: str, at: datetime) -> bool:
+        from faultmaven.infrastructure.persistence.database import get_db_session
+
+        async with get_db_session() as session:
+            return await PostgreSQLUserRepository(session).touch_last_login(user_id, at)
 
     async def create(self, user: User) -> User:
         from faultmaven.infrastructure.persistence.database import get_db_session
