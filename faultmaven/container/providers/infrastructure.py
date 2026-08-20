@@ -449,10 +449,13 @@ def create_case_repository(settings: FaultMavenSettings) -> Any | None:
     Returns None if initialization fails.
     """
     try:
+        from faultmaven.config.settings import persistent_database_configured
+
         database_url = settings.database.database_url or ""
 
-        # Check if database is configured
-        if not database_url or database_url == ":memory:":
+        # Persistence decided by the shared predicate (fm#1128) — this was the
+        # third inline copy of the DATABASE_URL rule.
+        if not persistent_database_configured(database_url):
             # Ephemeral storage (testing, no database available)
             from faultmaven.modules.case.infrastructure.case_repository import (
                 InMemoryCaseRepository,
@@ -498,11 +501,16 @@ def create_user_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
     Returns:
         User store instance (DatabaseUserStore or RedisUserStore)
     """
-    # Priority 1: Check if database is available (SQLite for local, PostgreSQL for cloud)
-    database_url = settings.database.database_url or ""
-    if database_url and (
-        "sqlite" in database_url.lower() or "postgresql" in database_url.lower()
-    ):
+    from faultmaven.config.settings import persistent_database_configured
+
+    # Persistence is decided by the ONE shared predicate (fm#1128), not a
+    # local reading of DATABASE_URL. This factory used to require a
+    # sqlite/postgresql substring while create_user_service accepted any
+    # non-empty URL — under a DSN only one of them recognized, login wrote
+    # accounts to this store while UserService (the /auth/me read path)
+    # queried an always-empty other.
+    if persistent_database_configured(settings.database.database_url):
+        database_url = settings.database.database_url or ""
         try:
             from faultmaven.infrastructure.auth.database_user_store import (
                 DatabaseUserStore,
@@ -525,16 +533,33 @@ def create_user_store(redis_client: Any, settings: FaultMavenSettings) -> Any:
             # each repository call is self-contained, so there is nothing to
             # release at shutdown.
             store = DatabaseUserStore(user_repository)
-            db_type = "SQLite" if "sqlite" in database_url.lower() else "PostgreSQL"
+            if "sqlite" in database_url.lower():
+                db_type = "SQLite"
+            elif "postgresql" in database_url.lower():
+                db_type = "PostgreSQL"
+            else:
+                # Unsupported dialects still count as configured (see the
+                # predicate's docstring): both this store and UserService then
+                # point at the same database and fail loudly together, rather
+                # than this side quietly splitting off to Redis.
+                db_type = database_url.split(":", 1)[0] or "unknown"
             logger.info(
                 f"✅ User store: Database ({db_type}) - persistent across restarts"
             )
             return store
         except Exception as e:
-            logger.warning(
-                f"Failed to create database user store: {e}, falling back to in-memory"
+            # ERROR, not a shrug: UserService selects its repository with the
+            # same predicate and does NOT fall back, so from here on logins
+            # write to Redis while /auth/me reads database rows — a split that
+            # is invisible at request time (#1128).
+            logger.error(
+                "Failed to create database user store (%s); falling back to "
+                "Redis while UserService still reads the database — user rows "
+                "written from now on will not be visible to /auth/me",
+                e,
+                exc_info=True,
             )
-            # Fall through to in-memory
+            # Fall through to Redis
 
     # Priority 2: Fall back to Redis-backed user store
     # redis_client is always available (real or FakeRedis)

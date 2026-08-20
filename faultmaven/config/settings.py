@@ -613,6 +613,31 @@ class LLMSettings(BaseSettings):
     }
 
 
+def persistent_database_configured(database_url: Optional[str]) -> bool:
+    """One rule for "is a persistent database configured?" (fm#1128).
+
+    Every factory that chooses between a database-backed and an ephemeral
+    implementation MUST call this rather than re-derive the answer from
+    ``database_url``. The factories used to disagree: the user *store*
+    required a ``sqlite``/``postgresql`` substring while the user *service*
+    accepted any non-empty URL — so under a DSN only one of them recognized,
+    login wrote accounts to one store while ``GET /auth/me`` read an
+    always-empty other, silently reproducing #1120 with green tests.
+
+    The rule: persistent iff ``database_url`` is non-empty (after stripping)
+    and not the ``:memory:`` sentinel. An *unsupported* dialect therefore
+    still counts as configured — both sides then point at the same database
+    and fail loudly together at first use, instead of one of them quietly
+    falling back to a store the other never reads.
+
+    A free function taking the URL, not a ``DatabaseSettings`` method: the DI
+    factories are exercised with duck-typed settings stubs, and the rule
+    should be callable on any URL string without constructing settings.
+    """
+    url = (database_url or "").strip()
+    return bool(url) and url != ":memory:"
+
+
 class DatabaseSettings(BaseSettings):
     """Unified database and persistence configuration"""
 
@@ -621,8 +646,10 @@ class DatabaseSettings(BaseSettings):
     # ============================================
     database_url: str = Field(
         default="sqlite+aiosqlite:///./data/faultmaven.db",
-        description="Primary database URL (SQLite for dev, PostgreSQL for prod)",
+        description="Primary database URL (SQLite for dev, PostgreSQL for prod). "
+        "Persistence selection is derived by persistent_database_configured().",
     )
+
     database_echo: bool = Field(default=False, description="Echo SQL statements to log")
     database_pool_size: int = Field(default=5)
     database_max_overflow: int = Field(default=10)
