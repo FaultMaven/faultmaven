@@ -353,6 +353,11 @@ class ProviderRegistry:
         api_key = None
         model = None
         base_url = None
+        # Extended-thinking knobs — only the Anthropic branch sets these
+        # (#1116); every other provider leaves them None (= no thinking
+        # configuration sent, identical to pre-#1116 requests).
+        thinking_mode = None
+        thinking_budget_tokens = None
 
         # Settings is required - use settings-based configuration
         llm_settings = self.settings.llm
@@ -385,6 +390,8 @@ class ProviderRegistry:
             )
             model = llm_settings.anthropic_model or schema["default_model"]
             base_url = llm_settings.anthropic_base_url or schema["default_base_url"]
+            thinking_mode = llm_settings.anthropic_thinking_mode
+            thinking_budget_tokens = llm_settings.anthropic_thinking_budget_tokens
         elif provider_name == "gemini":
             api_key = (
                 llm_settings.gemini_api_key.get_secret_value()
@@ -470,6 +477,8 @@ class ProviderRegistry:
             max_retries=max_retries,
             timeout=timeout,
             confidence_score=schema["confidence_score"],
+            thinking_mode=thinking_mode,
+            thinking_budget_tokens=thinking_budget_tokens,
         )
 
     def _initialize_provider(self, name: str, config: ProviderConfig):

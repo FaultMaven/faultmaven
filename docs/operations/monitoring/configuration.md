@@ -275,34 +275,43 @@ export LOG_INCLUDE_CALLER_INFO=true
 
 Tracing is all-or-nothing. The two variables act at different layers:
 
-- `OPIK_ENABLED` is FaultMaven's own switch. With it false, `init_opik_tracing()`
-  returns early and no backend (URL, project, workspace, API key) is configured.
+- `OPIK_ENABLED` is FaultMaven's own switch, and it is sufficient on its own.
+  With it false, `init_opik_tracing()` configures no backend (URL, project,
+  workspace, API key) **and** tracing is actively shut off: every `@opik.track`
+  call site re-checks the flag per call and dispatches straight to the
+  undecorated function, and startup additionally flips the SDK's own kill
+  switch (`OPIK_TRACK_DISABLE=true` plus `set_tracing_active(False)`). No Opik
+  client is constructed, so nothing is sent anywhere.
 - `OPIK_TRACK_DISABLE` is read by the **Opik SDK itself**, straight from the
-  environment — it is not a `settings.py` field. The SDK derives
-  `is_tracing_active()` from it, and that is what makes each `@opik.track`
-  decorator a no-op. `main.py` calls `load_dotenv()` before the SDK is imported,
-  so a value in `.env` reaches it.
+  environment — it is not a `settings.py` field. It is an independent "off"
+  switch, and FaultMaven never overrides a value you set: the disabled path
+  sets it, and the enabled path restores exactly the value it found (including
+  no value at all) before letting the SDK re-derive `is_tracing_active()` from
+  the environment. So `OPIK_TRACK_DISABLE=true` suppresses spans even with
+  `OPIK_ENABLED=true`. `main.py` calls `load_dotenv()` before the SDK is
+  imported, so a value in `.env` reaches it.
 
-Note that `OPIK_ENABLED=false` alone stops FaultMaven configuring a backend, but
-it does **not** make the decorators inert. `OPIK_ENABLED` is FaultMaven's own
-variable and the SDK never reads it; each `@opik.track` wrapper calls
-`is_tracing_active()` on every invocation, and that derives solely from
-`OPIK_TRACK_DISABLE`, whose SDK default leaves tracing active. So disabling only
-`OPIK_ENABLED` leaves every span still being built, against an unconfigured
-default backend.
+Setting `OPIK_ENABLED=false` is therefore enough to stop tracing completely,
+including any outbound request to Comet Cloud (the SDK's default backend when
+no URL is configured). This was **not** true before FaultMaven 1121: `OPIK_ENABLED`
+then meant only "do not configure a backend", the decorators stayed live, and a
+self-hosted deployment with tracing "off" shipped span batches to Comet and got
+a stream of `401` rejections. If you are running an older build, set both
+variables.
 
-To actually stop tracing, set **both** — `OPIK_TRACK_DISABLE` short-circuits the
-decorators, `OPIK_ENABLED` stops the backend being configured. Both are read at
-startup and the SDK memoises the result, so a change requires a restart.
+`OPIK_TRACK_DISABLE` remains useful to suppress spans while leaving a backend
+configured (`OPIK_ENABLED=true`). Both are read at startup, so a change requires
+a restart.
 
 **Examples:**
 
 ```bash
-# Stop emitting spans but keep the backend configured
+# Stop emitting spans but keep the backend configured.
+# Honoured even though OPIK_ENABLED is true — FaultMaven does not override it.
+OPIK_ENABLED=true
 OPIK_TRACK_DISABLE=true
 
-# Turn Opik off entirely — BOTH are required
-OPIK_TRACK_DISABLE=true
+# Turn Opik off entirely — this alone is sufficient
 OPIK_ENABLED=false
 ```
 

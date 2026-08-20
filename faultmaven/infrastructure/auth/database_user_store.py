@@ -290,6 +290,36 @@ class DatabaseUserStore:
             logger.error(f"Failed to update user {user.user_id}: {e}")
             raise
 
+    async def record_login(self, user_id: str) -> None:
+        """Stamp ``last_login_at`` on the stored user row.
+
+        A separate method rather than a field on ``update_user``: DevUser has
+        no last-login concept, and ``update_user`` deliberately leaves login
+        timestamps alone. This is the local-mode counterpart of the stamp the
+        SSO login path writes (``sso_login_service``), and the row it writes is
+        the one ``GET /auth/me`` (#1123) and the admin listing report from.
+
+        Delegates to ``touch_last_login`` — a targeted single-column UPDATE,
+        never a read-modify-write, so a login racing an admin's deactivation
+        or a password reset cannot write a stale snapshot back over it.
+        ``updated_at`` is left alone: a login does not modify the account.
+
+        NOT called by ``create_user``: account creation (CLI, bootstrap admin)
+        is not a login. Login handlers call this on successful authentication.
+
+        Raises:
+            NotFoundError: If user not found.
+        """
+        stamped = await self.user_repository.touch_last_login(
+            user_id, datetime.now(timezone.utc)
+        )
+        if not stamped:
+            raise NotFoundError(
+                resource_type="user",
+                resource_id=user_id,
+                message=f"User {user_id} not found",
+            )
+
     async def delete_user(self, user_id: str) -> bool:
         """Delete user by ID
 

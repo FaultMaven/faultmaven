@@ -59,10 +59,11 @@ class User:
             plain_password.encode("utf-8"), self.hashed_password.encode("utf-8")
         )
 
-    def update_last_login(self) -> None:
-        """Update last login timestamp."""
-        self.last_login_at = datetime.now(timezone.utc)
-        self.updated_at = datetime.now(timezone.utc)
+    # NOTE: there is deliberately no update_last_login helper here. Login
+    # stamps go through UserRepository.touch_last_login (a targeted UPDATE),
+    # because a read-modify-write of this object racing an admin action can
+    # revert it (#1127 review). A helper on this model had zero callers and
+    # advertised exactly that unsafe shape.
 
     def deactivate(self) -> None:
         """Deactivate user account (soft delete)."""
