@@ -9,6 +9,7 @@ Inherits from BaseExternalClient for unified logging, retry logic, and
 circuit breaker patterns for external LLM provider calls.
 """
 
+import functools
 import logging
 import os
 import time
@@ -49,6 +50,13 @@ def _opik_tracing_enabled() -> bool:
     gate the decorators are live even when OPIK_ENABLED=false and the SDK
     lazily builds a client pointed at its default (Comet Cloud), producing
     continuous outbound requests from a self-hosted deployment (#1121).
+
+    Read LAZILY, at call time. Reading it at import time would bootstrap the
+    settings singleton merely by importing this module — get_settings() runs
+    load_dotenv(), applies presets that mutate os.environ, and writes
+    data/.jwt_secret via ensure_local_jwt_secret_env() — so any script or
+    test that imports the router would write a secret into its cwd and freeze
+    settings ahead of the test fixtures that exist to clear ambient env.
     """
     try:
         return get_settings().observability.opik_enabled
@@ -57,23 +65,34 @@ def _opik_tracing_enabled() -> bool:
 
 
 def _opik_track_llm(name: str):
-    """Decorator: wraps function with @opik.track(type='llm') when Opik is
-    installed AND enabled (OPIK_ENABLED=true).
+    """Decorator: routes through @opik.track(type='llm') only when Opik is
+    installed AND tracing is enabled at CALL time (OPIK_ENABLED=true).
 
-    Decided at import time; when disabled the function is returned unchanged,
-    so a disabled deployment never constructs an Opik client at these call
-    sites.
+    The tracked wrapper is built at import time (decoration alone constructs
+    no client — the SDK builds one lazily on first traced call), but every
+    call re-checks the gate and dispatches to the RAW function when tracing
+    is off. So a disabled deployment never reaches the SDK at all: no client,
+    no batch senders, no is-alive ping.
     """
-    if OPIK_AVAILABLE and _opik_tracing_enabled():
-        return opik.track(
+
+    def decorator(func):
+        if not OPIK_AVAILABLE:
+            # Fail-closed passthrough: Opik not installed.
+            return func
+
+        tracked = opik.track(
             name=name, type="llm", capture_input=False, capture_output=False
-        )
+        )(func)
 
-    # Fail-closed passthrough: Opik not installed, or tracing not enabled.
-    def identity(func):
-        return func
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            if not _opik_tracing_enabled():
+                return await func(*args, **kwargs)
+            return await tracked(*args, **kwargs)
 
-    return identity
+        return wrapper
+
+    return decorator
 
 
 class LLMRouter(BaseExternalClient, ILLMProvider):
@@ -406,12 +425,18 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         This works whether the span was created by @opik.track on this function
         or by a parent caller.
         """
+        # Gate FIRST, warn second. Tracing being off is the configured state,
+        # not a problem to report: with tracing disabled there is no span to
+        # update, and update_current_span would raise (then log) once per LLM
+        # call. Ordering this after the OPIK_AVAILABLE warning would silence
+        # that per-call spam only for opik-installed-but-disabled, leaving the
+        # far more common standalone install (opik is not in
+        # requirements/dev.txt) still logging on every call — the same
+        # log-spam defect #1121 is about.
+        if not _opik_tracing_enabled():
+            return
         if not OPIK_AVAILABLE:
             self.logger.warning("Opik SDK not available — skipping span update")
-            return
-        if not _opik_tracing_enabled():
-            # Tracing disabled: there is no span to update, and calling
-            # update_current_span with no span raises (then logs) per call.
             return
 
         try:

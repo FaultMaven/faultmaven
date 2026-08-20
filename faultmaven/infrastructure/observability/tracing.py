@@ -307,6 +307,26 @@ def _disable_sdk_tracing() -> None:
         logging.debug(f"Could not flip Opik SDK tracing switch: {e}")
 
 
+def _enable_sdk_tracing() -> None:
+    """Assert the SDK tracing state the enabled path depends on.
+
+    The mirror of _disable_sdk_tracing. Both switches are process-global with
+    no restore path, so a disabled init leaves the SDK off for everything that
+    runs afterwards in the same process. Without this, an enabled init that
+    follows a disabled one (or an OPIK_TRACK_DISABLE inherited from the
+    environment) would silently trace nothing while logging that tracing was
+    initialized. Configuration should state its own preconditions rather than
+    inherit whatever the last caller left behind.
+    """
+    os.environ.pop("OPIK_TRACK_DISABLE", None)
+    try:
+        import opik as _opik
+
+        _opik.set_tracing_active(True)
+    except Exception as e:
+        logging.debug(f"Could not flip Opik SDK tracing switch: {e}")
+
+
 def init_opik_tracing(
     api_key: Optional[str] = None,
     project_name: str = "FaultMaven Development",
@@ -377,6 +397,10 @@ def init_opik_tracing(
 
         # Resolve workspace (FaultMaven uses COMET_WORKSPACE; Opik SDK reads OPIK_WORKSPACE)
         workspace = obs.comet_workspace or "default"
+
+        # Assert the SDK is actually tracing before configuring where to.
+        # (Mirror of the disabled path's kill switch — see _enable_sdk_tracing.)
+        _enable_sdk_tracing()
 
         # Set the env vars that OpikConfig reads (env_prefix="opik_")
         os.environ["OPIK_URL_OVERRIDE"] = url
