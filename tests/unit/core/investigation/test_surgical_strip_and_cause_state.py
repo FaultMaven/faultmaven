@@ -174,6 +174,7 @@ class TestDeferredImplementationClose:
         terminal=False,
         cause_identified=True,
         causal_absence=False,
+        inquiry=False,
     ):
         """A REAL ``Case`` — not a SimpleNamespace.
 
@@ -194,6 +195,10 @@ class TestDeferredImplementationClose:
         # validate_assignment runs the INVESTIGATING gate on every __setattr__.
         case.inquiry.problem_statement_confirmed = True
         case.inquiry.decided_to_investigate = True
+        # NB: the state is chosen here but every other field is set BELOW, so
+        # an early return would leave solution_feasible unset and the proposer
+        # would bail at its FIRST guard — the test would pass while proving
+        # nothing about the state guard.
         if terminal:
             # CLOSED and closed_at each require the other, so neither can be
             # assigned first — they have to arrive together, after created_at.
@@ -207,8 +212,12 @@ class TestDeferredImplementationClose:
                 closed_at=case.created_at + timedelta(seconds=1),
                 closure_reason="solution_deferred",
             )
-        else:
+        elif not inquiry:
             case.state = CaseState.INVESTIGATING
+        # inquiry=True leaves the case in INQUIRY — the state the NEW guard
+        # adds. A terminal case was ALREADY rejected by the `is_terminal`
+        # check this replaced, so a CLOSED-only test cannot tell the old
+        # guard from the new one.
         case.progress.solution_feasible = feasible
         case.progress.solution_proposed = solution_proposed
         if cause_identified:
@@ -418,6 +427,38 @@ class TestDeferredImplementationClose:
         # It must state the reason the engine is proposing anything at all.
         assert "out-of-band" in message
         assert "resolved" in message.lower()
+
+    def test_no_proposal_from_inquiry(self):
+        """INQUIRY is the state the new guard actually adds.
+
+        "closed" was a legal edge from any state; "resolved" is not one from
+        INQUIRY, and a proposal that cannot execute leaves pending_transition
+        standing so every later confirm turn fails identically. The terminal
+        case below does NOT pin this — `is_terminal` already rejected it — so
+        without this case the guard is asserted by its sibling and tested by
+        neither.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+        )
+
+        case = self._case(
+            feasible=SolutionFeasible.DEFERRED,
+            solution_proposed=True,
+            causal_absence=True,
+            inquiry=True,
+        )
+        case.solutions = [_solution()]
+        assert case.state == CaseState.INQUIRY
+        assert (
+            case.progress.solution_feasible == SolutionFeasible.DEFERRED
+        ), "the fixture must arm the trigger, or this passes at the wrong guard"
+
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+
+        assert case.pending_transition is None
+        assert meta == {}
 
     def test_no_proposal_outside_investigating(self):
         """The proposal target is state-dependent now, so the state is guarded.

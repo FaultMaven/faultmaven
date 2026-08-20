@@ -1373,7 +1373,7 @@ to RCA"; that was only row 1 of the old Gate-3 assumption):
 |---|---|---|---|
 | **(1)** cause unknown / multiple candidates needing different fixes | UNKNOWN / CANDIDATES | UNKNOWN | **RCA** — hypothesis formulation + evidence-needs |
 | **(2)** cause known, solution unclear / multiple complex options | IDENTIFIED | CANDIDATES (reserved) | **Solution deliberation** (follow-on; reuses hypothesis machinery) |
-| **(3)** cause + solution known, implementation takes time | IDENTIFIED | SELECTED, `solution_feasible=DEFERRED` | **Handoff / schedule** — CLOSE-with-documented-solution |
+| **(3)** cause + solution known, implementation takes time | IDENTIFIED | SELECTED, `solution_feasible=DEFERRED` | **Handoff / schedule** — CLOSE-with-documented-solution, unless a gone⇒gone confirmation stands (then RESOLVED; see §Decision 2) |
 
 If **no** Axis-B gap exists (cause known, solution known, implementable now), the
 flow is **direct**: verify → propose solution → accept → verify → RESOLVED. No
@@ -1449,7 +1449,9 @@ Cases closed via this path use the existing terminal state:
 The unified flow was ratified with the following decisions (resolved 2026-06-05):
 
 1. **Solution-space deliberation reuses the hypothesis / evidence-needs machinery.** Candidate solutions are enumerated, compared, and selected through the same propose/evidence/converge loop that drives causal hypotheses, rather than a parallel structure — a dedicated structure is introduced only if a clear advantage emerges. This is the genuinely under-built surface today: the current SOLUTION stage assumes a *single obvious fix* to propose-and-verify and has no notion of deliberating across a solution space (trade-offs, workaround-vs-permanent, design choices). `solution_state = CANDIDATES` is the reserved hook for this; the deliberation-loop design (what "evidence" means for a solution choice, and how `solution_state` advances UNKNOWN→CANDIDATES→SELECTED) is the highest-value follow-on work.
-2. **Deferred-implementation disposition is CLOSE-with-documented-solution** (forwarding row 3 in §2.3) — no third terminal state unless analytics genuinely need to separate "resolved-pending-impl" from "abandoned." The documented root cause + selected fix are preserved on the closed case (`closure_reason = solution_deferred`).
+2. **Deferred-implementation disposition is CLOSE-with-documented-solution — unless the cause is already counterfactually confirmed** (forwarding row 3 in §2.3) — no third terminal state unless analytics genuinely need to separate "resolved-pending-impl" from "abandoned." The documented root cause + selected fix are preserved on the closed case (`closure_reason = solution_deferred`).
+
+   The exception is **resolve preservation** (INV-37). `solution_feasible` is only ever written by the LLM and is never reset by the engine, so the DEFERRED flag outlives the deferral: a case can carry it while a qualifying `causal_absence` row (gone⇒gone) arrives on a later turn. That case is resolution-grade, and closing it would record it unresolved and discard the attribution. The engine-side proposer therefore consults `assess_closure_readiness` and proposes **RESOLVED** on `SUGGEST_RESOLVE`, exactly as the LLM-proposal path and the confirm-time guard already did — deferred implementation says *when* the remaining work lands, not whether the cause was found. Trigger is `_has_causal_absence`, the same bar `assess_resolution_readiness` uses for READY; a merely stabilized case has `symptom_absence` and correctly does not pivot.
 3. **One mitigation record for now** (forward-only), but the flow must stay open to user-led action so a non-mitigating insert is never a dead-end (§2.3; INV-24). Multiple structured mitigation records are a possible future extension.
 4. **`cause_state = CANDIDATES` is derived** from the active-hypothesis count (≥2 ACTIVE hypotheses), not a second stored field — coupled to the prompt change that forces hypothesis emission under uncertainty (they ship together; see §1.4.1 and INV-22). A derived signal over an unreliable producer is worse than the boolean it replaced, so the derivation and the prompt mandate are not separable.
 5. **Resolution-gate interaction** (`solution_verified` ↔ the absence-evidence end-state) is revisited *after* this redesign rather than folded in — see the resolution-gate notes and the `resolution_suggest_close` guard in §1.2.
@@ -1775,7 +1777,7 @@ This is the common case: cause known or discoverable, solution implementable now
 A mitigation is an **insert** into the same unified flow, not a separate path
 (§2.3). After it verifies, forwarding depends on what is still unresolved (§2.3
 forwarding table): cause uncertain → RCA; cause known / solution unclear →
-solution deliberation; cause + solution known but deferred → CLOSE-with-documented-solution.
+solution deliberation; cause + solution known but deferred → CLOSE-with-documented-solution (or RESOLVED when a gone⇒gone confirmation already stands — §Decision 2).
 
 #### Mitigated → RESOLVED
 

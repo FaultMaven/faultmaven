@@ -2595,7 +2595,7 @@ def _narration_overclaim_notice(
     Reconciles the ``_COMPLETION_PHRASES`` scan against engine truth: the notice
     fires only when the LLM asserted an unqualified resolved/closed claim AND the
     engine's state contradicts it — the case is **not** terminal and **no**
-    prose gate notice was already composed this turn (one of the five
+    prose gate notice was already composed this turn (any of the
     ``_prose_with_gate_notice`` override branches, which already frame the
     not-yet-terminal state; ``gate_prose_appended`` is the caller's signal that
     one fired). Critically it does **not** suppress on a bare ``pending_transition``:
@@ -5437,10 +5437,11 @@ class MilestoneEngine:
             # asked for. Gate SUGGESTIONS stay engine-owned replacements.
             # After a needs_info turn, check whether requirements are now met.
             #
-            # ``gate_prose_appended`` records whether one of the FIVE prose
+            # ``gate_prose_appended`` records whether one of the PROSE
             # branches fired: each frames the not-yet-terminal state below the
-            # LLM's reply, so the INV-40 guard suppresses on it. The sixth branch
-            # (override_suggestions) appends NO prose, so the guard must still
+            # LLM's reply, so the INV-40 guard suppresses on it. The
+            # suggestions-only branch (override_suggestions) appends NO prose,
+            # so the guard must still
             # fire there (INV-40 — a proposed transition alone does not
             # contradict a "Case resolved." narration).
             gate_prose_appended = False
@@ -5648,7 +5649,7 @@ class MilestoneEngine:
             # lesson). This runs after the summary append above, so a genuine
             # terminal transition (state now RESOLVED/CLOSED) is excluded by
             # construction; the guard fires only on the truth-split.
-            # ``gate_prose_appended`` suppresses the guard on the five branches
+            # ``gate_prose_appended`` suppresses the guard on the branches
             # that already appended a state-framing gate notice — but NOT on the
             # suggestions-only override branch, whose bare proposed_transition
             # leaves an over-claim uncontradicted (the guard's likeliest shape).
