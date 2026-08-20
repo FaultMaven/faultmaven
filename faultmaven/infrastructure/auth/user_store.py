@@ -317,6 +317,20 @@ class RedisUserStore:
             logger.error(f"Failed to update user {user.user_id}: {e}")
             raise Exception(f"User update failed: {str(e)}")
 
+    async def record_login(self, user_id: str) -> None:
+        """Accept a login stamp without persisting one.
+
+        Kept in step with ``DatabaseUserStore``: the container picks between
+        the two at runtime, so a login handler cannot know which one it holds.
+        DevUser (this store's stored shape) has no last-login field, and no
+        reader sources ``last_login`` from Redis — ``GET /auth/me`` reads the
+        database user row and degrades to null when there is none. A stamp
+        here would be write-only state, so this is deliberately a no-op.
+        """
+        logger.debug(
+            f"record_login({user_id}): RedisUserStore persists no last-login; no-op"
+        )
+
     async def delete_user(self, user_id: str) -> bool:
         """Delete user account
 

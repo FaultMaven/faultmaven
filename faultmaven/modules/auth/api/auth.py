@@ -143,6 +143,28 @@ def _build_local_jwt_generator(revocation_store):
         ) from e
 
 
+async def _record_login_best_effort(user_store: Any, user_id: str) -> None:
+    """Stamp ``last_login_at`` on the stored user row — never fail the login.
+
+    #1127: the SSO path stamps this column on every login, but local mode never
+    did, so ``GET /auth/me`` (which reads the stored row since #1123) reported
+    ``last_login: null`` forever under ``AUTH_MODE=local``. Both local handlers
+    that mint tokens (login and register — registration IS a first login, the
+    SSO JIT-create stamps it too) call this after minting.
+
+    Best-effort on the same grounds as the profile read's degrade (#1123):
+    ``last_login_at`` is display metadata, and failing an authentication over
+    it would be worse than the stale label. The failure is logged, not raised.
+    """
+    try:
+        await user_store.record_login(user_id)
+    except Exception as e:  # noqa: BLE001 — see docstring: display metadata only
+        logger.warning(
+            "Could not stamp last_login_at; /auth/me will report a stale value",
+            extra={"user_id": user_id, "error": str(e)},
+        )
+
+
 # =============================================================================
 # Auth Configuration Discovery (per iam-design.md)
 # =============================================================================
@@ -396,6 +418,9 @@ async def local_login(
             user, state_read_at=state_read_at
         )
 
+        # Authentication has succeeded — stamp the row /auth/me reports from.
+        await _record_login_best_effort(user_store, user.user_id)
+
         # Create session for multi-turn conversations
         session = await session_service.create_session(
             user_id=user.user_id,
@@ -547,6 +572,10 @@ async def local_register(
         refresh_token = await jwt_generator.generate_refresh_token(
             user, state_read_at=state_read_at
         )
+
+        # Registration mints tokens, so it is the account's first login —
+        # stamp it, as the SSO JIT-create does.
+        await _record_login_best_effort(user_store, user.user_id)
 
         # Create session for multi-turn conversations
         session = await session_service.create_session(
@@ -1121,9 +1150,9 @@ async def _resolve_profile_timestamps(
     under ``AUTH_MODE=local`` dev tokens), or the read fails, the fallback is
     the principal's own view: its synthesized ``created_at`` (prior behavior,
     honest only in being present — the schema requires the field) and a null
-    ``last_login``. A null from a *found* row is not a fallback: local
-    passwordless login does not stamp ``last_login_at``, so null there
-    faithfully reports the row.
+    ``last_login``. A null from a *found* row is not a fallback: it faithfully
+    reports an account that has not logged in since the column gained local
+    writers (#1127 — before that, only SSO logins stamped it).
     """
     fallback = (to_json_compatible(current_user.created_at), None)
 
