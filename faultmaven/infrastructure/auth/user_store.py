@@ -69,6 +69,9 @@ class RedisUserStore:
         # Allow both email addresses and traditional usernames
         self.username_pattern = re.compile(r"^([^@]+@[^@]+\.[^@]+|[a-zA-Z0-9._-]+)$")
 
+        # Latched by record_login's first-use warning (see its docstring).
+        self._record_login_warned = False
+
     async def get_user(self, user_id: str) -> Optional[DevUser]:
         """Get user by ID
 
@@ -326,7 +329,22 @@ class RedisUserStore:
         reader sources ``last_login`` from Redis — ``GET /auth/me`` reads the
         database user row and degrades to null when there is none. A stamp
         here would be write-only state, so this is deliberately a no-op.
+
+        First use logs at WARNING, once: the container also falls back to this
+        store when ``DatabaseUserStore`` construction fails, and in that state
+        database user rows may still exist for ``/auth/me`` to read — logins
+        would then flow through this no-op while the profile reports
+        ``last_login: null`` forever, indistinguishable at request time from a
+        never-logged-in account. The startup fallback's own warning rolls out
+        of pod logs; this one recurs per process at first login.
         """
+        if not self._record_login_warned:
+            self._record_login_warned = True
+            logger.warning(
+                "record_login is a no-op on RedisUserStore (no last-login "
+                "field); if database user rows exist, /auth/me will report "
+                "last_login: null despite successful logins"
+            )
         logger.debug(
             f"record_login({user_id}): RedisUserStore persists no last-login; no-op"
         )

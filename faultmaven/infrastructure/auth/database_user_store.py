@@ -299,24 +299,26 @@ class DatabaseUserStore:
         SSO login path writes (``sso_login_service``), and the row it writes is
         the one ``GET /auth/me`` (#1123) and the admin listing report from.
 
+        Delegates to ``touch_last_login`` — a targeted single-column UPDATE,
+        never a read-modify-write, so a login racing an admin's deactivation
+        or a password reset cannot write a stale snapshot back over it.
+        ``updated_at`` is left alone: a login does not modify the account.
+
         NOT called by ``create_user``: account creation (CLI, bootstrap admin)
         is not a login. Login handlers call this on successful authentication.
 
         Raises:
             NotFoundError: If user not found.
         """
-        existing_user = await self.user_repository.get(user_id)
-        if not existing_user:
+        stamped = await self.user_repository.touch_last_login(
+            user_id, datetime.now(timezone.utc)
+        )
+        if not stamped:
             raise NotFoundError(
                 resource_type="user",
                 resource_id=user_id,
                 message=f"User {user_id} not found",
             )
-
-        now = datetime.now(timezone.utc)
-        existing_user.last_login_at = now
-        existing_user.updated_at = now
-        await self.user_repository.update(existing_user)
 
     async def delete_user(self, user_id: str) -> bool:
         """Delete user by ID

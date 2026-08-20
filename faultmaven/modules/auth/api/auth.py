@@ -155,13 +155,29 @@ async def _record_login_best_effort(user_store: Any, user_id: str) -> None:
     Best-effort on the same grounds as the profile read's degrade (#1123):
     ``last_login_at`` is display metadata, and failing an authentication over
     it would be worse than the stale label. The failure is logged, not raised.
+
+    A store *without* the method is handled apart from a stamp that failed:
+    the store is duck-typed (no shared Protocol), so a store that never grew
+    ``record_login`` would otherwise vanish into the blanket except as one
+    warning per login and reproduce #1127's symptom permanently. That is a
+    wiring defect, logged as an ERROR — but still not worth failing logins
+    over, for the same display-metadata reason.
     """
+    record_login = getattr(user_store, "record_login", None)
+    if record_login is None:
+        logger.error(
+            "User store %s has no record_login; last_login_at will never "
+            "advance and /auth/me will report last_login: null (fm#1127)",
+            type(user_store).__name__,
+        )
+        return
     try:
-        await user_store.record_login(user_id)
+        await record_login(user_id)
     except Exception as e:  # noqa: BLE001 — see docstring: display metadata only
         logger.warning(
             "Could not stamp last_login_at; /auth/me will report a stale value",
-            extra={"user_id": user_id, "error": str(e)},
+            extra={"user_id": user_id, "error": f"{type(e).__name__}: {e}"},
+            exc_info=True,
         )
 
 
@@ -394,11 +410,15 @@ async def local_login(
         #
         # Gated on the account still being usable: this decides whether the
         # user's OTHER outstanding tokens revive, so a deactivated or deleted
-        # account must not reach it.
-        if (
+        # account must not reach it. The same gate covers the last_login stamp
+        # below — a deactivated account's login attempt must not write fresh
+        # audit metadata (an admin reading "last login: just now" on a disabled
+        # account would conclude the deactivation isn't holding).
+        account_usable = (
             getattr(user, "is_active", True)
             and getattr(user, "deleted_at", None) is None
-        ):
+        )
+        if account_usable:
             await revocation_store.clear_user_revocation_if_before(
                 user.user_id, state_read_at.timestamp()
             )
@@ -419,7 +439,10 @@ async def local_login(
         )
 
         # Authentication has succeeded — stamp the row /auth/me reports from.
-        await _record_login_best_effort(user_store, user.user_id)
+        # Same gate as the watermark clear above: a deactivated or deleted
+        # account must not gain fresh login metadata.
+        if account_usable:
+            await _record_login_best_effort(user_store, user.user_id)
 
         # Create session for multi-turn conversations
         session = await session_service.create_session(
@@ -1151,8 +1174,17 @@ async def _resolve_profile_timestamps(
     the principal's own view: its synthesized ``created_at`` (prior behavior,
     honest only in being present — the schema requires the field) and a null
     ``last_login``. A null from a *found* row is not a fallback: it faithfully
-    reports an account that has not logged in since the column gained local
+    reports an account with no INTERACTIVE login since the column gained local
     writers (#1127 — before that, only SSO logins stamped it).
+
+    "Last login" means interactive authentication — a credential presented by
+    a person: SSO callback, local ``/login``, local ``/register`` (which mints
+    tokens, so it is the first login). Token *refresh* and the OAuth exchange
+    legs deliberately do not stamp, matching the SSO paths: they extend a
+    session rather than start one. Consequence worth knowing: an account that
+    lives exclusively on rotated refresh tokens — a service account minted by
+    ``fm-provision-service-account`` — reads ``last_login: null`` here forever
+    by design, however active it is.
     """
     fallback = (to_json_compatible(current_user.created_at), None)
 
