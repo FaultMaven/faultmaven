@@ -1974,6 +1974,30 @@ def _log_grounding_assessment(case: "Case") -> None:
         logger.debug("grounding-assessment trace failed", exc_info=True)
 
 
+def _deferred_disposition_signature(case: "Case", closure_verdict: str) -> str:
+    """The state that JUSTIFIES the deferred-implementation offer, as a
+    comparable string.
+
+    A decline is recorded against this, so the offer returns exactly when one
+    of its premises moves — a new or withdrawn solution, a change in which
+    disposition is warranted (e.g. a gone=>gone row arriving flips the verdict
+    to SUGGEST_RESOLVE), or the cause being re-established on a different leg.
+    Deliberately NOT turn-based: a cooldown would re-nag on a case where
+    nothing changed, which is the behaviour being fixed.
+    """
+    from faultmaven.core.investigation.terminal_transitions import (
+        cause_identification_leg,
+    )
+
+    return "|".join(
+        (
+            str(closure_verdict),
+            str(len(case.solutions or [])),
+            str(cause_identification_leg(case)),
+        )
+    )
+
+
 def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     """Deferred-implementation disposition (redesign §3.1 row 3 / §6 Q2).
 
@@ -2058,6 +2082,18 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # other two), not a reconstructed history of that case. What kept those
     # five turns going is the re-proposal loop, which is a separate concern.
     closure = assess_closure_readiness(case)
+    # A decline POSTPONES the offer until the case changes underneath it.
+    # Re-proposing every turn regardless is what produced five identical
+    # offers against five explicit declines (fm#1122): the decline clears
+    # `pending_transition`, which is the only state the guards above read, so
+    # nothing carried the refusal forward. Keyed on the JUSTIFYING state, not
+    # on a decline count: counting declines and giving up would be the engine
+    # steering toward abandonment (D4 soft-collapse), and it would also strand
+    # a case whose situation later genuinely warrants the offer again.
+    signature = _deferred_disposition_signature(case, closure.verdict)
+    if p.deferred_disposition_declined_signature == signature:
+        return
+
     if closure.verdict == closure.SUGGEST_RESOLVE:
         to_state = "resolved"
         # Purpose-written, NOT `closure.message`. That text is a pivot-FROM-a-
@@ -2089,6 +2125,12 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
         suggestions = _close_confirmation_suggestions()
 
     propose_transition(case=case, to_state=to_state, summary=gate_message)
+    # Provenance AND payload in one key: this proposer is the only writer of
+    # `justifying_signature`, so its presence identifies the offer and its
+    # value is what a decline is recorded against. A separate `proposed_by`
+    # tag was redundant — it duplicated a check the missing signature already
+    # covers, and no test could tell the two guards apart.
+    case.pending_transition["justifying_signature"] = signature
     # Unified same-turn proposal flag: keeps step 0 of
     # _check_automatic_transitions from confirming this disposition with the
     # very message that produced it (#722 same-turn-confirmation guard).
@@ -2494,6 +2536,27 @@ def engine_owned_affordances(
         return ("not_yet_productive", _hypothesis_vacuum_suggestions())
 
     return None
+
+
+def _record_deferred_disposition_decline(case: "Case") -> None:
+    """Persist that the user declined THIS proposer's offer, against the state
+    that justified it. No-op for any other pending transition — a decline of an
+    LLM-initiated or user-initiated disposition says nothing about the
+    engine-initiated one."""
+    pending = getattr(case, "pending_transition", None) or {}
+    # Only THIS proposer writes `justifying_signature`, so its absence means
+    # the standing offer came from the LLM or the user — declining that says
+    # nothing about the engine-initiated one and must not suppress it.
+    signature = pending.get("justifying_signature")
+    if not signature or not getattr(case, "progress", None):
+        return
+    case.progress.deferred_disposition_declined_signature = signature
+    logger.info(
+        "Deferred-implementation disposition declined for case %s; not "
+        "re-proposing until the justifying state changes (signature=%s)",
+        case.case_id,
+        signature,
+    )
 
 
 def _prose_with_gate_notice(llm_text: str | None, gate_text: str) -> str:
@@ -4489,6 +4552,9 @@ class MilestoneEngine:
                             },
                         }
                     elif user_declines:
+                        # Record the refusal BEFORE cancelling: the cancel is
+                        # what erases the provenance this reads (fm#1122).
+                        _record_deferred_disposition_decline(case)
                         cancel_pending_transition(case)
 
                         if message_is_substantive:

@@ -687,6 +687,23 @@ class InvestigationProgress(BaseModel):
         ),
     )
 
+    deferred_disposition_declined_signature: str | None = Field(
+        default=None,
+        description=(
+            "The justifying-state signature in force when the user last "
+            "DECLINED the engine's deferred-implementation disposition offer "
+            "(None = never declined). The offer is re-proposed only when the "
+            "current signature differs, so a decline POSTPONES it until "
+            "something about the case actually changes — it never permanently "
+            "disarms it. A decline counter would instead teach the engine to "
+            "abandon, which is soft-collapse (D4). Persisted in the progress "
+            "blob so the decline survives the turn that cleared "
+            "``pending_transition``; before this, nothing recorded the decline "
+            "and the proposal re-fired every single turn (fm#1122: five "
+            "identical offers against five explicit declines)."
+        ),
+    )
+
     last_anti_anchoring_turn: int = Field(
         default=0,
         ge=0,

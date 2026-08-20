@@ -428,6 +428,95 @@ class TestDeferredImplementationClose:
         assert "out-of-band" in message
         assert "resolved" in message.lower()
 
+    def test_decline_stops_the_re_proposal_loop(self):
+        """A decline POSTPONES the offer instead of being forgotten.
+
+        fm#1122: the proposer re-fired every turn while solution_feasible was
+        DEFERRED. A decline clears pending_transition, the only state the
+        guards read, so nothing carried the refusal forward — five identical
+        offers against five explicit declines.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            cancel_pending_transition,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+
+        offers = 0
+        for _ in range(10):
+            meta = {}
+            _maybe_propose_deferred_close(case, meta)
+            if meta.get("transition_proposed_this_turn"):
+                offers += 1
+                _record_deferred_disposition_decline(case)
+                cancel_pending_transition(case)
+
+        assert offers == 1, f"offered {offers}x across 10 declined turns"
+
+    def test_offer_returns_when_the_justifying_state_changes(self):
+        """A decline must never permanently disarm the offer.
+
+        Suppressing it for good would be engine-steered abandonment (D4): the
+        case would carry a documented cause and fix with no route to a
+        disposition. When a premise moves the offer is legitimate again.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            cancel_pending_transition,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert meta.get("transition_proposed_this_turn") is True
+        _record_deferred_disposition_decline(case)
+        cancel_pending_transition(case)
+
+        # Silent while nothing has changed.
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert "transition_proposed_this_turn" not in meta
+
+        # A second solution lands — a premise moved, so the offer is live again.
+        case.solutions = [_solution(), _solution("Raise the container limit")]
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert meta.get("transition_proposed_this_turn") is True
+
+    def test_decline_of_another_proposers_offer_is_not_recorded(self):
+        """A decline of an LLM- or user-initiated disposition says nothing
+        about the engine-initiated one, so it must not suppress it."""
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _record_deferred_disposition_decline,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+        # An LLM- or user-initiated disposition: no `justifying_signature`,
+        # because this proposer is its only writer. That absence is the whole
+        # discriminator, so the fixture must not smuggle one in.
+        case.pending_transition = {"to_state": "closed", "summary": "LLM proposed"}
+        assert "justifying_signature" not in case.pending_transition
+
+        _record_deferred_disposition_decline(case)
+        assert case.progress.deferred_disposition_declined_signature is None
+
+        case.pending_transition = None
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert meta.get("transition_proposed_this_turn") is True
+
     def test_no_proposal_from_inquiry(self):
         """INQUIRY is the state the new guard actually adds.
 

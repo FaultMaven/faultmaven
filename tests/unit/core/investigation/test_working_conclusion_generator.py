@@ -222,10 +222,15 @@ class TestProgressMetricsCalculation:
 
 
 class TestEvidenceCompleteness:
-    """Test evidence completeness calculation."""
+    """Test the supporting-link density calculation."""
 
-    def test_calculates_completeness_from_evidence(self, base_case):
-        """Should calculate completeness from supporting evidence count."""
+    def test_density_is_links_over_the_editorial_band(self, base_case):
+        """Density is a LINK COUNT over `_WELL_SUPPORTED_LINK_COUNT`.
+
+        Renamed from "completeness": the old name implied a fraction of what
+        the case required, which the engine never knew. Nothing may render
+        this as a percentage of required evidence (fm#1122).
+        """
         base_case.hypotheses = {
             "hyp_000000000001": create_hypothesis(
                 "hyp_000000000001",
@@ -238,8 +243,33 @@ class TestEvidenceCompleteness:
 
         metrics = calculate_progress_metrics(base_case, current_turn=1)
 
-        # 2/3 = 0.67 completeness
-        assert 0.6 <= metrics.evidence_completeness <= 0.7
+        # 2 links over the band of 3 — a density, not a completeness claim.
+        assert 0.6 <= metrics.support_density <= 0.7
+
+    def test_no_visible_string_states_a_completeness_percentage(self, base_case):
+        """The renderers must state COUNTS, never a fabricated fraction.
+
+        The reasoning string goes into the LLM prompt every turn. With the old
+        hardcoded denominator a 2-link hypothesis read "67% evidence
+        completeness" and a 14-link one read "100%", so the model was handed an
+        engine-voiced number that measured nothing (fm#1122).
+        """
+        base_case.hypotheses = {
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
+                "Heap exceeds the container limit",
+                HypothesisState.ACTIVE,
+                0.8,
+                supporting_evidence=["ev_1", "ev_2"],
+            ),
+        }
+
+        conclusion = generate_working_conclusion(base_case, current_turn=4)
+        rendered = conclusion.reasoning + " " + " ".join(conclusion.caveats)
+
+        assert "%" not in rendered, f"a fabricated percentage survives: {rendered!r}"
+        assert "completeness" not in rendered.lower()
+        assert "2 supporting evidence items" in conclusion.reasoning
 
 
 class TestNextStepsGeneration:
