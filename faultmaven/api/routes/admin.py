@@ -37,6 +37,7 @@ from faultmaven.exceptions import (
     ValidationException,
 )
 from faultmaven.modules.auth.domain.models.auth import AuthenticatedUser
+from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +118,15 @@ async def list_users(
                     if hasattr(user, "is_email_verified")
                     else False
                 ),
-                last_login_at=(
-                    user.last_login_at.isoformat() if user.last_login_at else None
-                ),
-                created_at=user.created_at,
-                updated_at=(
+                # Through to_json_compatible (fm#1129): under SQLite these
+                # datetimes come back naive, and a naive datetime in a pydantic
+                # field serializes suffix-less while /auth/me emits 'Z' for the
+                # same row. to_json_compatible stamps 'Z' (naive = UTC here);
+                # pydantic round-trips that string to an aware datetime and
+                # re-emits it as 'Z', so the two endpoints agree on the wire.
+                last_login_at=to_json_compatible(user.last_login_at),
+                created_at=to_json_compatible(user.created_at),
+                updated_at=to_json_compatible(
                     user.updated_at if hasattr(user, "updated_at") else user.created_at
                 ),
             )
