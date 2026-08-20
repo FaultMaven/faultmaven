@@ -12,7 +12,8 @@ Covered behaviors:
   transcript on success and on failure (best-effort, never raises)
 - Reachability: any affordance label a turn names must be present in that
   turn's own ``suggested_follow_ups`` (prose and the suggestion list are built
-  a few lines apart and drift silently), and the completion notifications —
+  a few lines apart and drift silently), over all eight user-visible outcomes
+  of ``_handle_runbook_creation``; and the three completion notifications —
   which carry no suggestion list at all and are read in the Dashboard, where
   no chip UI exists — must name no affordance
 - The kickoff turn promises only what every client delivers: no in-chat
@@ -27,8 +28,9 @@ Covered behaviors:
 
 import inspect
 import re
+from contextlib import nullcontext
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -441,49 +443,106 @@ class TestRunbookCreationFollowUps:
 # =============================================================================
 
 
-def _creation_turn_engine(
-    mock_llm,
-    mock_repo,
-    *,
-    ready: bool = True,
-    service: bool = True,
-    existing_draft: bool = False,
-):
-    """Build a (case, engine) pair for one ``_handle_runbook_creation`` branch.
+_EMBED_QUERY = "faultmaven.infrastructure.model_cache.model_cache.aembed_query"
+_SEED_ORIGIN = (
+    "faultmaven.core.investigation.kb_cause_seeder.confirmed_root_seed_origin"
+)
+_FROM_CASE = (
+    "faultmaven.modules.knowledge.domain.models.conversion."
+    "CaseConversionRequest.from_case"
+)
 
-    ``knowledge_service`` is always spec-empty, so dedup is skipped and the
-    verdict carries the SUGGEST_WITH_CAVEATS prefix — the composed turn, not
-    the bare line, which is what the user reads.
+
+def _raise_from_case(cls, case, scope="personal"):
+    raise RuntimeError("conversion request could not be built")
+
+
+def _dedup_kb(matches=None):
+    """A real ``RunbookKnowledgeBase`` with only its search stubbed.
+
+    Mocking at the KB boundary rather than patching
+    ``_find_similar_runbooks_for_case`` keeps the dedup path itself — the code
+    that turns matches into a verdict — under test.
     """
+    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookKnowledgeBase
+
+    kb = RunbookKnowledgeBase(vector_store=MagicMock())
+    kb.search_runbooks = AsyncMock(return_value=matches or [])
+    return kb
+
+
+async def _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario: str) -> dict:
+    """Drive one user-visible outcome of ``_handle_runbook_creation``.
+
+    Returns the turn dict, so callers can judge prose and suggestions together.
+    """
+    from faultmaven.infrastructure.knowledge.runbook_kb import RunbookMatch
+
     case = _make_resolved_case()
-    if ready:
+    if scenario != "not-ready":
         _make_runbook_ready(case)
 
     engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
     engine.knowledge_service = MagicMock(spec=[])
 
-    if not service:
-        engine.conversion_service = None
-        return case, engine
-
     conversion_service = MagicMock()
     conversion_service.convert_from_case = AsyncMock(return_value=MagicMock(drafts=[]))
-    if existing_draft:
+    conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+    engine.conversion_service = conversion_service
+
+    # The provenance short-circuit fires before everything else, so every other
+    # scenario has to hold it off explicitly.
+    monkeypatch.setattr(_SEED_ORIGIN, lambda case: None)
+
+    # `runbook_kb=None` means dedup is skipped, not clean — the honest "could
+    # not check" caveat. Scenarios that need a real verdict install a KB.
+    embed_patch = nullcontext()
+
+    if scenario == "seed-origin":
+        monkeypatch.setattr(_SEED_ORIGIN, lambda case: "rb_seed00000001")
+    elif scenario == "already-exists":
         existing = MagicMock()
         existing.has_live_draft.return_value = True
         conversion_service.get_conversion_by_case = AsyncMock(return_value=existing)
-    else:
-        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-    engine.conversion_service = conversion_service
-    return case, engine
+    elif scenario == "service-unavailable":
+        engine.conversion_service = None
+    elif scenario == "start-failure":
+        monkeypatch.setattr(_FROM_CASE, classmethod(_raise_from_case))
+    elif scenario == "similar-found":
+        engine.runbook_kb = _dedup_kb(
+            [
+                RunbookMatch(
+                    item_id="kb-1",
+                    title="Pool timeout recovery",
+                    scope="global",
+                    similarity_score=0.91,
+                )
+            ]
+        )
+        embed_patch = patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024))
+    elif scenario == "kickoff-clean-dedup":
+        engine.runbook_kb = _dedup_kb([])
+        embed_patch = patch(_EMBED_QUERY, new=AsyncMock(return_value=[0.1] * 1024))
+
+    with embed_patch:
+        return await engine._handle_runbook_creation(case, metadata={})
 
 
-# Every branch of `_handle_runbook_creation` that produces a user-visible turn.
+# Every user-visible outcome of `_handle_runbook_creation`. The function has
+# six `return` statements; the last one carries three distinct texts (plain
+# SUGGEST, the SUGGEST_WITH_CAVEATS prefix, and the "failed to start" except
+# arm), so eight outcomes reach a reader. All eight are driven here — none had
+# to be left out, which is what lets the reachability property below claim the
+# whole surface rather than a sample of it.
 _CREATION_TURN_SCENARIOS = [
-    pytest.param({}, id="kickoff"),
-    pytest.param({"existing_draft": True}, id="already-exists"),
-    pytest.param({"service": False}, id="service-unavailable"),
-    pytest.param({"ready": False}, id="not-ready"),
+    pytest.param("seed-origin", id="seed-origin"),
+    pytest.param("not-ready", id="not-ready"),
+    pytest.param("similar-found", id="similar-found"),
+    pytest.param("service-unavailable", id="service-unavailable"),
+    pytest.param("already-exists", id="already-exists"),
+    pytest.param("kickoff-clean-dedup", id="kickoff-clean-dedup"),
+    pytest.param("kickoff", id="kickoff-with-caveats"),
+    pytest.param("start-failure", id="start-failure"),
 ]
 
 _NOTIFICATION_OUTCOMES = ["success", "no-drafts", "exception"]
@@ -564,13 +623,11 @@ class TestNamedAffordancesAreReachableOnTheirOwnTurn:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kwargs", _CREATION_TURN_SCENARIOS)
+    @pytest.mark.parametrize("scenario", _CREATION_TURN_SCENARIOS)
     async def test_every_named_label_is_offered_on_that_turn(
-        self, kwargs, mock_llm, mock_repo
+        self, scenario, mock_llm, mock_repo, monkeypatch
     ):
-        case, engine = _creation_turn_engine(mock_llm, mock_repo, **kwargs)
-
-        result = await engine._handle_runbook_creation(case, metadata={})
+        result = await _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario)
         response = result["agent_response"]
         offered = {s["label"] for s in result["suggested_follow_ups"]}
 
@@ -624,13 +681,12 @@ class TestDashboardSectionIsNamedAsTheReaderSeesIt:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kwargs", _CREATION_TURN_SCENARIOS)
-    async def test_turn_text_uses_the_real_nav_label(self, kwargs, mock_llm, mock_repo):
-        case, engine = _creation_turn_engine(mock_llm, mock_repo, **kwargs)
-
-        response = (await engine._handle_runbook_creation(case, metadata={}))[
-            "agent_response"
-        ]
+    @pytest.mark.parametrize("scenario", _CREATION_TURN_SCENARIOS)
+    async def test_turn_text_uses_the_real_nav_label(
+        self, scenario, mock_llm, mock_repo, monkeypatch
+    ):
+        result = await _run_creation_turn(mock_llm, mock_repo, monkeypatch, scenario)
+        response = result["agent_response"]
 
         assert not _WRONG_NAV_LABEL_RE.search(response), (
             f"turn names a Dashboard section called 'Knowledge'; the nav item "
@@ -696,18 +752,15 @@ _ABSENCE_AS_FAILURE_CONDITIONALS = (
 class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
     @pytest.mark.asyncio
     async def test_initiating_turn_makes_no_in_chat_notification_claim(
-        self, mock_llm, mock_repo
+        self, mock_llm, mock_repo, monkeypatch
     ):
         """The kickoff turn must not tell the user to wait for word in chat.
 
         Pins the invariant, not the prose: any rewording is free as long as
         it does not reintroduce a delivery promise the transport cannot keep.
         """
-        case, engine = _creation_turn_engine(mock_llm, mock_repo)
-
-        response = (await engine._handle_runbook_creation(case, metadata={}))[
-            "agent_response"
-        ]
+        result = await _run_creation_turn(mock_llm, mock_repo, monkeypatch, "kickoff")
+        response = result["agent_response"]
         lowered = response.lower()
 
         offenders = [c for c in _IN_CHAT_DELIVERY_CLAIMS if c in lowered]
@@ -719,14 +772,11 @@ class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
 
     @pytest.mark.asyncio
     async def test_initiating_turn_names_the_dashboard_location(
-        self, mock_llm, mock_repo
+        self, mock_llm, mock_repo, monkeypatch
     ):
         """The one true destination must be named, or the draft is unfindable."""
-        case, engine = _creation_turn_engine(mock_llm, mock_repo)
-
-        response = (await engine._handle_runbook_creation(case, metadata={}))[
-            "agent_response"
-        ]
+        result = await _run_creation_turn(mock_llm, mock_repo, monkeypatch, "kickoff")
+        response = result["agent_response"]
 
         assert "Dashboard" in response
         # "Knowledge Base" is the Dashboard's actual nav label; the section is
@@ -736,7 +786,7 @@ class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
 
     @pytest.mark.asyncio
     async def test_initiating_turn_offers_a_way_forward_that_outlives_the_turn(
-        self, mock_llm, mock_repo
+        self, mock_llm, mock_repo, monkeypatch
     ):
         """Silent failure needs an exit the reader keeps after this turn ends.
 
@@ -746,11 +796,8 @@ class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
         notification, or on the user first deducing that something broke —
         the Dashboard's own runbook creation path.
         """
-        case, engine = _creation_turn_engine(mock_llm, mock_repo)
-
-        response = (await engine._handle_runbook_creation(case, metadata={}))[
-            "agent_response"
-        ]
+        result = await _run_creation_turn(mock_llm, mock_repo, monkeypatch, "kickoff")
+        response = result["agent_response"]
 
         assert "Dashboard" in response
         assert "create" in response.lower(), (
@@ -761,14 +808,11 @@ class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
 
     @pytest.mark.asyncio
     async def test_initiating_turn_does_not_read_failure_out_of_absence(
-        self, mock_llm, mock_repo
+        self, mock_llm, mock_repo, monkeypatch
     ):
         """Recovery advice must not fire while the conversion is still running."""
-        case, engine = _creation_turn_engine(mock_llm, mock_repo)
-
-        response = (await engine._handle_runbook_creation(case, metadata={}))[
-            "agent_response"
-        ]
+        result = await _run_creation_turn(mock_llm, mock_repo, monkeypatch, "kickoff")
+        response = result["agent_response"]
         lowered = response.lower()
 
         offenders = [c for c in _ABSENCE_AS_FAILURE_CONDITIONALS if c in lowered]
