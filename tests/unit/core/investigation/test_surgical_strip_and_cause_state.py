@@ -495,6 +495,65 @@ class TestDeferredImplementationClose:
         _maybe_propose_deferred_close(case, meta)
         assert meta.get("transition_proposed_this_turn") is True
 
+    def test_withdrawal_suppresses_the_offer_for_the_rest_of_the_turn(self):
+        """Withdrawing the offer must not be undone later in the SAME turn.
+
+        The withdrawing branches fall through to normal processing, which
+        reaches this proposer again on that turn. Without a turn-scoped guard
+        it re-proposes and re-takes the affordances the user just acted on
+        (fm#1122) — and for a QUESTION, which is deliberately not recorded as
+        a refusal, this flag is the ONLY thing standing between the user and
+        that takeover.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _note_engine_disposition_withdrawn,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            cancel_pending_transition,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+
+        # Turn N: the engine offers, the user asks a question, the gate
+        # withdraws the offer and the turn continues.
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert meta.get("transition_proposed_this_turn") is True
+        _note_engine_disposition_withdrawn(case, meta)
+        cancel_pending_transition(case)
+
+        # Same turn, same metadata: the fall-through must not re-propose.
+        _maybe_propose_deferred_close(case, meta)
+        assert case.pending_transition is None
+
+        # Next turn (fresh metadata, nothing recorded as refused): the offer
+        # is live again, because a question is not a refusal.
+        next_meta = {}
+        _maybe_propose_deferred_close(case, next_meta)
+        assert next_meta.get("transition_proposed_this_turn") is True
+        assert case.progress.deferred_disposition_declined_signatures == []
+
+    def test_withdrawal_of_another_proposers_offer_is_not_noted(self):
+        """The turn guard is keyed to THIS proposer's offer: withdrawing an
+        LLM- or user-initiated disposition must not suppress it."""
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _note_engine_disposition_withdrawn,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+        case.pending_transition = {"to_state": "closed", "summary": "LLM proposed"}
+
+        meta = {}
+        _note_engine_disposition_withdrawn(case, meta)
+        case.pending_transition = None
+        _maybe_propose_deferred_close(case, meta)
+
+        assert meta.get("transition_proposed_this_turn") is True
+
     def test_oscillating_justifying_state_does_not_re_arm_the_offer(self):
         """A signature the user already refused must stay refused when the
         case flips back into it.

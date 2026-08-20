@@ -232,22 +232,48 @@ class TestWithdrawalRecordsTheEngineOffer:
         return case
 
     @pytest.mark.asyncio
-    async def test_deflection_records_the_refusal(self):
-        """ "We'll apply it in Friday's window — can you list the steps?" is
-        not a "no", but it is unmistakably not an acceptance either."""
+    async def test_long_non_question_deflection_records_the_refusal(self):
+        """A deflection is not a "no", but it is not an acceptance either."""
         engine = _engine()
         case = self._engine_proposed_case()
 
         await _run_expecting_fall_through(
             engine,
             case,
-            "We'll apply it in Friday's maintenance window — can you list "
-            "the steps the on-call should follow?",
+            "We'll apply it in Friday's maintenance window and the on-call "
+            "team will pick it up from there.",
         )
 
         assert case.progress.deferred_disposition_declined_signatures == [
             "SUGGEST_CLOSE|1|chain"
         ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "What happens to the runbook if I close this?",
+            "Which deployment revision would that close against?",
+            "Sorry — what does closing actually do here?",
+        ],
+    )
+    async def test_question_about_the_offer_is_not_a_refusal(self, question):
+        """A question is a user DECIDING, not declining.
+
+        ``message_is_substantive`` is true for any message containing "?" —
+        the gate treats a question as "never a gate answer" regardless of
+        length — so recording these as refusals would make the affordance
+        vanish, unexplained, until a premise moved. That is the same
+        engine-acts-without-saying-why defect this PR family exists to kill.
+        The offer is withdrawn for this turn (the question gets answered) and
+        is live again on the next one.
+        """
+        engine = _engine()
+        case = self._engine_proposed_case()
+
+        await _run_expecting_fall_through(engine, case, question)
+
+        assert case.progress.deferred_disposition_declined_signatures == []
 
     @pytest.mark.asyncio
     async def test_second_non_answer_records_the_refusal(self):

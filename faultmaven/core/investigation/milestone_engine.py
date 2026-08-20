@@ -2058,6 +2058,14 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # fixes is therefore path INCONSISTENCY (one proposer disagreeing with the
     # other two), not a reconstructed history of that case. What kept those
     # five turns going is the re-proposal loop, which is a separate concern.
+    # The engine's own offer was withdrawn earlier this turn (a decline, a
+    # question, a deflection, a contradicting status pick). Re-proposing it
+    # now would take the affordances back on the very turn the user acted on
+    # them. Turn-scoped: unlike the refusal record this does not survive the
+    # turn, so an offer the user only asked about returns on the next one.
+    if metadata.get(_ENGINE_DISPOSITION_WITHDRAWN_KEY):
+        return
+
     closure = assess_closure_readiness(case)
     # A decline POSTPONES the offer until the case changes underneath it.
     # Re-proposing every turn regardless is what produced five identical
@@ -2515,10 +2523,31 @@ def engine_owned_affordances(
     return None
 
 
+#: Metadata key: the engine's OWN disposition offer was withdrawn during this
+#: turn. Turn-scoped and never persisted — it says nothing about whether the
+#: user refused, only that re-proposing the same offer later in the SAME turn
+#: would be taking back an affordance the user just acted on.
+_ENGINE_DISPOSITION_WITHDRAWN_KEY = "engine_disposition_withdrawn_this_turn"
+
 #: How many refused deferred-disposition signatures a case carries. Bounds the
 #: progress blob; large enough that an oscillation between a handful of
 #: justifying states cannot evict a signature the user is still refusing.
 _MAX_DECLINED_DISPOSITION_SIGNATURES = 8
+
+
+def _note_engine_disposition_withdrawn(case: "Case", metadata: dict) -> None:
+    """Mark the engine's own disposition offer as withdrawn for the rest of
+    this turn.
+
+    Withdrawal is not refusal — the durable record is a separate, narrower
+    decision. This exists because the withdrawing branches fall through to
+    normal processing, which reaches ``_maybe_propose_deferred_close`` again
+    on the SAME turn and re-proposes the offer the user just moved past,
+    re-taking the affordances with it (fm#1122). Scoped to the turn so an
+    offer the user merely asked a question about is back on the next one.
+    """
+    if (getattr(case, "pending_transition", None) or {}).get("justifying_signature"):
+        metadata[_ENGINE_DISPOSITION_WITHDRAWN_KEY] = True
 
 
 def _record_deferred_disposition_decline(case: "Case") -> None:
@@ -2527,14 +2556,19 @@ def _record_deferred_disposition_decline(case: "Case") -> None:
     LLM-initiated or user-initiated disposition says nothing about the
     engine-initiated one.
 
-    Called from EVERY site that withdraws a standing offer without executing
-    it, not only the explicit-decline branch: a deflection ("we'll do it in
-    Friday's window — can you list the steps?") and a contradicting status
-    pick are both refusals of the disposition, and cancelling them unrecorded
-    lets the proposer re-fire from unchanged state — in the deflection case
-    within the SAME turn, since the fall-through reaches
-    ``_maybe_propose_deferred_close`` again (fm#1122's affordance takeover, on
-    the very turn the user pushed it away).
+    Called from the withdrawal paths that constitute a REFUSAL, which is more
+    than the explicit-decline branch: a contradicting status pick names a
+    different target, and a long non-answer that is not a question is a
+    deflection ("we'll do it in Friday's maintenance window"). Cancelling
+    those unrecorded lets the proposer re-fire from unchanged state (fm#1122).
+
+    NOT called for a question. ``message_is_substantive`` is true for ANY
+    message containing "?" — "what happens to the runbook if I close this?"
+    is a user deciding, not declining, and recording it would make the
+    affordance vanish, unexplained, until a premise moved. The same-turn
+    re-take those messages would otherwise cause is handled by
+    ``_note_engine_disposition_withdrawn`` instead, which expires with the
+    turn.
     """
     pending = getattr(case, "pending_transition", None) or {}
     # Only THIS proposer writes `justifying_signature`, so its absence means
@@ -4422,6 +4456,7 @@ class MilestoneEngine:
                     # deferred disposition re-fires next turn from state the
                     # user just contradicted.
                     _record_deferred_disposition_decline(case)
+                    _note_engine_disposition_withdrawn(case, metadata)
                     cancel_pending_transition(case)
                     logger.info(
                         f"Pending transition to '{old_target}' cancelled — user "
@@ -4561,6 +4596,7 @@ class MilestoneEngine:
                         # Record the refusal BEFORE cancelling: the cancel is
                         # what erases the provenance this reads (fm#1122).
                         _record_deferred_disposition_decline(case)
+                        _note_engine_disposition_withdrawn(case, metadata)
                         cancel_pending_transition(case)
 
                         if message_is_substantive:
@@ -4619,15 +4655,25 @@ class MilestoneEngine:
                         if stripped_message and (
                             message_is_substantive or already_re_presented
                         ):
-                            # A deflection is a refusal of the offer even
-                            # though it is not a "no": the withdrawal must be
-                            # recorded before the cancel erases the
-                            # provenance. Without this the fall-through below
-                            # reaches _maybe_propose_deferred_close in the
-                            # SAME turn with an unchanged signature and
-                            # re-takes the affordances the user just pushed
-                            # away (fm#1122).
-                            _record_deferred_disposition_decline(case)
+                            # The offer is withdrawn either way; whether that
+                            # is a REFUSAL splits on the two halves of
+                            # message_is_substantive, which the gate
+                            # deliberately conflates. A QUESTION is a user
+                            # deciding — "what happens to the runbook if I
+                            # close this?" — and recording it would make the
+                            # affordance disappear, unexplained, until a
+                            # premise moved: the same engine-acts-without-
+                            # saying-why defect this PR family exists to kill.
+                            # A long non-question non-answer is a deflection
+                            # ("we'll do it in Friday's window") and IS a
+                            # refusal. Either way the withdrawal is noted for
+                            # the turn, because the fall-through below reaches
+                            # _maybe_propose_deferred_close again and would
+                            # otherwise re-take the affordances on this very
+                            # turn (fm#1122).
+                            if "?" not in stripped_message:
+                                _record_deferred_disposition_decline(case)
+                            _note_engine_disposition_withdrawn(case, metadata)
                             cancel_pending_transition(case)
                             logger.info(
                                 f"Pending transition withdrawn for case "
