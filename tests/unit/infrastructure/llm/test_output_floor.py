@@ -17,12 +17,15 @@ cleanly (STOP) below the floor is a short answer and is returned as-is.
 Default is absent — callers that do not set a floor keep the existing
 behavior of receiving truncated responses to inspect.
 
-Visible output is measured with the provider's tokenizer where one exists and
-deliberately over-estimated (one token per character) where none does — never
-read from ``output_tokens``, because OpenAI's ``completion_tokens`` and
-Anthropic's ``output_tokens`` INCLUDE hidden reasoning, so on exactly the
-starved call this guard exists to catch the reported count reads as ample and
-a check built on it would fail open.
+Visible output is measured with the provider's tokenizer when it has one AND
+the body is at or under ``_TOKENIZER_EXACT_MAX_CHARS``; everything else — the
+five providers with no tokenizer, and any longer body — is deliberately
+over-estimated at one token per character. The invariant across all of them is
+that the estimate must never UNDER-state, since under-stating fires the guard
+on a body that met its floor. It is never read from ``output_tokens``, because
+OpenAI's ``completion_tokens`` and Anthropic's ``output_tokens`` INCLUDE hidden
+reasoning, so on exactly the starved call this guard exists to catch the
+reported count reads as ample and a check built on it would fail open.
 
 These tests exercise the REAL ``route()`` signature on a real ``LLMRouter``
 (only the registry behind it is mocked), so a signature drift cannot hide
@@ -811,3 +814,149 @@ class TestFloorOnProvidersWithoutATokenizer:
             f"floor check took {elapsed_ms:.0f} ms on a degenerate body — the "
             f"tokenizer input is meant to be bounded"
         )
+        # …and the bound must not buy its speed with a wrong number. Asserting
+        # only elapsed time let a mechanism that UNDER-states pass unnoticed.
+        from faultmaven.infrastructure.llm.router import (
+            _estimate_visible_output_tokens,
+        )
+        from faultmaven.utils.token_estimation import estimate_tokens
+
+        body = "x" * 32000
+        assert _estimate_visible_output_tokens(
+            body, "openai", "gpt-5.4-mini"
+        ) >= estimate_tokens(body, provider="openai")
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+class TestEstimateNeverUnderStates:
+    """The invariant behind the CPU bound, bound as a PROPERTY rather than as
+    a mechanism: whatever the estimator does internally, it must never report
+    fewer tokens than the text really holds.
+
+    Under-stating fires the floor on a body that met it and kills an
+    otherwise-usable turn; over-stating only wastes a guard. The first version
+    of the bound — tokenize a 4k prefix, scale by ``len/4000`` — violated this
+    on any body whose sparse part comes first, which is why the assertion here
+    is on the direction and not on the sampling scheme.
+    """
+
+    def _real_tokens(self, text):
+        from faultmaven.utils.token_estimation import estimate_tokens
+
+        return estimate_tokens(text, provider="openai", model="gpt-4")
+
+    def _adversarial_body(self):
+        """4k of prose followed by 12k of id-dense JSON.
+
+        The reviewer's exact shape: the prefix is ~6.5 chars/token and the
+        tail ~2, so any estimate extrapolated from the head understates the
+        whole by roughly 3x.
+        """
+        import json
+        import uuid
+
+        prose = (
+            "The database connection pool became exhausted during the "
+            "traffic spike. " * 100
+        )[:4000]
+        dense = json.dumps(
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "ts": "2026-08-19T22:14:03.221Z",
+                    "v": i * 1.37,
+                }
+                for i in range(200)
+            ],
+            separators=(",", ":"),
+        )[:12000]
+        return prose + dense
+
+    @pytest.mark.parametrize(
+        "provider", ["openai", "openrouter", "anthropic", "fireworks", "gemini"]
+    )
+    def test_never_under_states_on_a_mixed_density_body(self, provider):
+        from faultmaven.infrastructure.llm.router import (
+            _estimate_visible_output_tokens,
+        )
+
+        body = self._adversarial_body()
+        estimate = _estimate_visible_output_tokens(body, provider, None)
+        assert estimate >= self._real_tokens(body), (
+            f"{provider}: estimated {estimate} for a body holding "
+            f"{self._real_tokens(body)} real tokens — under-stating fires the "
+            f"floor on a body that met it"
+        )
+
+    @pytest.mark.parametrize(
+        "shape",
+        ["prose", "dense_json", "degenerate_run", "base64", "mixed"],
+    )
+    def test_never_under_states_across_shapes(self, shape):
+        import base64
+        import json
+        import os
+        import uuid
+
+        from faultmaven.infrastructure.llm.router import (
+            _estimate_visible_output_tokens,
+        )
+
+        bodies = {
+            "prose": "The pool became exhausted during the spike. " * 300,
+            "dense_json": json.dumps(
+                [{"id": str(uuid.uuid4()), "v": i} for i in range(300)],
+                separators=(",", ":"),
+            ),
+            "degenerate_run": "x" * 20000,
+            "base64": base64.b64encode(os.urandom(9000)).decode(),
+            "mixed": self._adversarial_body(),
+        }
+        body = bodies[shape]
+        estimate = _estimate_visible_output_tokens(body, "openai", "gpt-4")
+        assert estimate >= self._real_tokens(body), f"{shape} under-stated"
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestLongMixedBodyDoesNotFalsePositive:
+    """Item 1 end-to-end, through the real ``route()``.
+
+    The 16,000-char adversarial body holds ~7,180 real tokens. Under
+    prefix-and-scale it scored 2,448 and raised on any floor in 2449-7180 — a
+    body that exceeded a 4000-token floor by 77% being killed.
+    """
+
+    async def test_no_raise_at_a_floor_the_body_genuinely_met(
+        self, router, mock_registry
+    ):
+        import json
+        import uuid
+
+        prose = (
+            "The database connection pool became exhausted during the "
+            "traffic spike. " * 100
+        )[:4000]
+        dense = json.dumps(
+            [
+                {
+                    "id": str(uuid.uuid4()),
+                    "ts": "2026-08-19T22:14:03.221Z",
+                    "v": i * 1.37,
+                }
+                for i in range(200)
+            ],
+            separators=(",", ":"),
+        )[:12000]
+        body = prose + dense
+        assert len(body) == 16000
+
+        mock_registry.route_request = AsyncMock(
+            return_value=_response(body, StopReason.MAX_TOKENS, provider="openai")
+        )
+        response = await router.route(
+            prompt="test", max_tokens=20000, min_output_tokens=4000, bypass_cache=True
+        )
+        assert response.is_truncated

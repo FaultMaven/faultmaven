@@ -420,13 +420,19 @@ neither, so the shape-based provider defaults above are what runs:
   exists), so this is a floor, not a new budget. Pre-call it raises `max_tokens`
   to at least the floor; post-call a `MAX_TOKENS` stop measuring below it raises
   `LLMOutputFloorError` rather than returning a body the caller pre-declared
-  unusable. Visible output is measured with the provider's real tokenizer where
-  one exists (`utils/token_estimation.estimate_tokens` covers openai, openrouter,
-  anthropic and fireworks) and **deliberately over-estimated at one token per
-  character** on the five providers it cannot tokenize (gemini, groq, cohere,
-  local, huggingface). A raw `len//4` is used for neither: it is shape-dependent,
-  understating dense JSON/CJK by 2-4x, and would fire the guard on bodies that
-  met their floor — the failure direction that kills an otherwise-usable turn.
+  unusable. Visible output is measured with the provider's real tokenizer when
+  the provider has one (`utils/token_estimation.estimate_tokens` covers openai,
+  openrouter, anthropic and fireworks) **and** the body is at or under
+  `_TOKENIZER_EXACT_MAX_CHARS` (4000 — tiktoken is super-linear on the degenerate
+  looped-output shape, 1.3 s of blocking CPU at 32k chars). Everything else —
+  the five providers it cannot tokenize, and any longer body — is **deliberately
+  over-estimated at one token per character**. The governing invariant is that
+  the estimate must never UNDER-state: under-stating fires the guard on a body
+  that met its floor and kills an otherwise-usable turn, while over-stating only
+  wastes a guard. That is why neither a raw `len//4` (shape-dependent, understates
+  dense JSON/CJK by 2-4x) nor a scaled prefix sample (sound only under uniform
+  density) is used. The cost is guard reach on long bodies, which is affordable
+  because starvation produces short ones — and short bodies are tokenized exactly.
 
 Two invariants worth knowing before adopting them: **`INFERENCE` requires
 `min_output_tokens`** (it lifts starvation guards, and the floor is what makes

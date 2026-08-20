@@ -54,7 +54,8 @@ _TOKENIZER_BACKED_PROVIDERS = frozenset(
     {"openai", "openrouter", "anthropic", "fireworks"}
 )
 
-# Chars handed to tiktoken before switching to prefix-and-scale.
+# Longest body handed to a real tokenizer. Above this we do not sample it —
+# we stop measuring and fall back to the conservative rule below.
 #
 # tiktoken's BPE merge loop is super-linear on a long unbroken run of ONE
 # character — precisely the degenerate "model looped until it hit MAX_TOKENS"
@@ -62,11 +63,30 @@ _TOKENIZER_BACKED_PROVIDERS = frozenset(
 # 385 ms, 32k 1316 ms of BLOCKING CPU, against 1-4 ms for prose or dense JSON
 # of the same length. The floor check runs on the event loop, so an unbounded
 # call would hand a starved-and-looping response a second failure mode. At 4k
-# the same worst case measures ~24 ms; a 4k prefix is far more than enough to
-# characterise a body whose density we only need to within a factor.
-_TOKENIZER_SAMPLE_CHARS = 4000
+# the same worst case measures ~24 ms.
+#
+# WHY NOT SAMPLE-AND-SCALE. The obvious bound — tokenize a 4k prefix and scale
+# by ``len(text)/4000`` — is sound only if density is uniform, which the block
+# below argues at length it is not. Measured on a 16,000-char body of 4k prose
+# followed by 12k id-dense JSON: 7,180 real tokens, scored 2,448 (0.34x). That
+# is the SAME false positive as B1 — a body that met its floor being killed —
+# reintroduced on the four providers we promise measurement for. Sampling more
+# slices and taking the densest improves the average (1.23x on that body) but
+# still cannot GUARANTEE the direction: any dense region the slices miss brings
+# the estimate back under.
+#
+# The invariant is what matters, not the accuracy: the estimate must never
+# UNDER-state, because under-stating kills a turn that met its floor while
+# over-stating only wastes a guard. Only a bound that stops guessing satisfies
+# that, so above this length we use the conservative rule — the same one the
+# off-tokenizer providers already use, which makes it one policy rather than
+# two. What it costs is guard REACH on long bodies, and that is affordable
+# precisely because starvation produces SHORT bodies: fm#1094's was 215 chars,
+# and every body at or under this bound is still tokenized EXACTLY.
+_TOKENIZER_EXACT_MAX_CHARS = 4000
 
-# Conservative chars-per-token divisor for providers with no tokenizer.
+# Conservative chars-per-token divisor: used for providers with no tokenizer,
+# and for any body too long to tokenize exactly (see above).
 #
 # Derived from measurement, not chosen for roundness. Real cl100k density by
 # shape: CJK 0.92, base64 1.41, id-dense JSON 1.98, log lines 2.07, escaped
@@ -93,12 +113,21 @@ _CONSERVATIVE_CHARS_PER_TOKEN = 1
 def _estimate_visible_output_tokens(
     text: str, provider: Optional[str], model: Optional[str]
 ) -> int:
-    """Visible output tokens, measured where possible and over-estimated where not.
+    """Visible output tokens: exact where cheap, over-estimated everywhere else.
 
-    Two deliberate asymmetries, both in the direction of NOT raising: an
-    unknown provider is treated as untokenizable rather than guessed at, and an
-    untokenizable body is scored at one token per character (see
-    ``_CONSERVATIVE_CHARS_PER_TOKEN``).
+    INVARIANT — this must never UNDER-state the token count. Under-stating
+    makes the floor fire on a body that met it, killing an otherwise-usable
+    turn; over-stating only wastes a guard. Every branch below is chosen for
+    that direction rather than for accuracy:
+
+    - exact tokenization for a body short enough to measure cheaply, which is
+      every body in the regime the guard exists for (starvation is short);
+    - one token per character otherwise — an unknown or untokenizable
+      provider, or a body too long to tokenize inside the CPU bound.
+
+    Nothing is extrapolated from a sample: a scaled sample is an assumption
+    about the part it did not read, and there is no sampling scheme that
+    cannot be defeated by a body whose sparse part comes first.
     """
     if not text:
         return 0
@@ -108,18 +137,13 @@ def _estimate_visible_output_tokens(
     # ``None`` reach ``provider.lower()``. An AttributeError here would be
     # swallowed by the generic handler and reported as "All providers failed".
     provider_name = (provider or "unknown").strip().lower()
-    if provider_name not in _TOKENIZER_BACKED_PROVIDERS:
-        return len(text) // _CONSERVATIVE_CHARS_PER_TOKEN
-
-    if len(text) <= _TOKENIZER_SAMPLE_CHARS:
+    if (
+        provider_name in _TOKENIZER_BACKED_PROVIDERS
+        and len(text) <= _TOKENIZER_EXACT_MAX_CHARS
+    ):
         return estimate_tokens(text, provider=provider_name, model=model)
 
-    # Measure a prefix and scale by length. Bounds the worst-case CPU while
-    # staying accurate for the uniform bodies that trigger it.
-    sample_tokens = estimate_tokens(
-        text[:_TOKENIZER_SAMPLE_CHARS], provider=provider_name, model=model
-    )
-    return int(sample_tokens * (len(text) / _TOKENIZER_SAMPLE_CHARS))
+    return len(text) // _CONSERVATIVE_CHARS_PER_TOKEN
 
 
 def _opik_track_llm(name: str):

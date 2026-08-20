@@ -74,7 +74,7 @@ The `gpt-5.x` and o-series models bill **hidden reasoning tokens against the sam
 | Carries `response_format`, no tools | `"low"` | Hidden reasoning must not starve the schema JSON and truncate it |
 | Plain chat — neither of the above | `"none"`, and only for families that reason by **default** | Nothing else caps these; server-side default reasoning otherwise competes with the answer for one budget |
 
-These three shapes are the **defaults**, resolved through one helper (`_shape_default_effort`) so the policy has a single home. A caller can refine them per call with a **reasoning intent** — see below.
+The two **no-tools** rows are the shape defaults, resolved through one helper (`_shape_default_effort`) so that policy has a single home. The tools row is not: `"none"` is a hard API constraint for the `gpt-5.6` family and is set inside the `if tools:` block, before the helper is reached — extending `_shape_default_effort` will not change what tool calls send. A caller can refine the no-tools defaults per call with a **reasoning intent** — see below.
 
 The plain-chat cap is scoped to `_DEFAULT_REASONING_MODEL_FAMILIES` (currently `gpt-5.6`), the families that reason without being asked. Models that accept the parameter but stay silent unless asked — `gpt-5`, `gpt-5.4-mini`, `o1`, `o3-mini` — are deliberately left alone, since forcing the parameter there would change behaviour on models that never had the problem. In all three cases an explicit `reasoning_effort` from the caller still wins: the provider sets its value before merging caller kwargs.
 

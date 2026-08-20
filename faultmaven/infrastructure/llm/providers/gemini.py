@@ -181,12 +181,20 @@ class GeminiProvider(BaseLLMProvider):
         - EXTRACTION → ``{"thinkingLevel": "low"}`` on every shape, plain
           calls included (grounded generation does not need the reasoning
           loop, and it bills against the same budget as the answer);
-        - INFERENCE → None, but ONLY when the caller also declared an output
-          floor. Native dynamic thinking IS the model reasoning at its own
-          discretion — the honoured translation is to not cap it — and on a
-          structured call that lifts the starvation guard. The floor is what
-          makes lifting it safe, so without one this FAILS CLOSED: the cap
-          stays, and a warning says the intent was refused.
+        - INFERENCE → None. Native dynamic thinking IS the model reasoning at
+          its own discretion, so the honoured translation is to not cap it.
+
+          On a STRUCTURED call that lifts a real starvation guard, and the
+          output floor is what makes lifting it safe — so without a declared
+          floor the structured shape FAILS CLOSED: the cap stays and a warning
+          says the intent was refused.
+
+          On a PLAIN call there is no cap to lift (the shape default is no
+          ``thinkingConfig`` at all), so there is nothing to fail closed about:
+          the result is ``None`` with or without a floor, which is exactly what
+          INFERENCE asked for. Refusal must never impose a restriction the
+          shape default did not apply, or declaring the intent would buy LESS
+          thinking than declaring nothing.
 
           The router raises on INFERENCE-without-floor, but the router is not
           the only door: ``milestone_engine`` binds a concrete provider and
@@ -222,19 +230,31 @@ class GeminiProvider(BaseLLMProvider):
             # cap to keep; a plain call never had one, so capping it here would
             # mean declaring INFERENCE bought LESS thinking than declaring
             # nothing — the opposite of what the caller asked for.
-            self.logger.warning(
-                f"reasoning_intent='inference' REFUSED on {model}: no output "
-                f"floor was declared (min_output_tokens), and lifting the "
-                f"thinkingLevel cap without one re-arms silent starvation "
-                f"(fm#1094) — "
-                + (
-                    "keeping the cap"
-                    if is_structured
-                    else "leaving this plain call at the shape default (no "
-                    "thinkingConfig), which is what it would have had anyway"
+            #
+            # The two shapes therefore get different reports, because different
+            # things happened. Only the structured shape actually refuses
+            # anything; on a plain call the outcome is identical to a floored
+            # INFERENCE, so announcing a REFUSAL — at WARNING, which the
+            # runbook's LOG_LEVEL leaves visible — would alert an operator to a
+            # call that got precisely what it asked for, and advise a floor
+            # that would change nothing.
+            if is_structured:
+                self.logger.warning(
+                    f"reasoning_intent='inference' REFUSED on {model}: no "
+                    f"output floor was declared (min_output_tokens), and "
+                    f"lifting the thinkingLevel cap without one re-arms silent "
+                    f"starvation (fm#1094) — keeping the cap. Declare a floor "
+                    f"alongside the intent to reason here."
                 )
-                + ". Declare a floor alongside the intent to reason here."
-            )
+            else:
+                self.logger.info(
+                    f"reasoning_intent='inference' on a plain call to {model}: "
+                    f"no thinkingLevel cap applies to this shape, so nothing is "
+                    f"lifted and the model's native dynamic thinking stands — "
+                    f"the intent is satisfied by the shape default. Hidden "
+                    f"reasoning still bills against maxOutputTokens; declare "
+                    f"min_output_tokens if a starved body must be caught."
+                )
             # Fall through to the shape-default return below.
             intent = None
 

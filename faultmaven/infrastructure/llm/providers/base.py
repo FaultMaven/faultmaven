@@ -532,9 +532,15 @@ class BaseLLMProvider(ABC):
         # mechanism at all; raising here would turn an unrecognised intent
         # into a hard failure from a provider that was never going to act on
         # it, and behind the fallback chain every provider would raise the
-        # same thing and surface it as "All providers failed". Validation
-        # belongs at the boundary that ACCEPTS the intent (``route()``), where
-        # it fails loudly at the call site that got it wrong.
+        # same thing and surface it as "All providers failed".
+        #
+        # This is a deliberate SPLIT, not an inconsistency with the providers
+        # that do raise. ``route()`` and the three translating providers
+        # (OpenAI, OpenRouter via inheritance, Gemini) coerce and therefore
+        # raise, because they are about to ACT on the value and a typo there
+        # must fail at the call site that made it. This path only reports, so
+        # tolerance costs nothing and refusing costs a turn. Validate where you
+        # act; tolerate where you narrate.
         intent_value = getattr(intent, "value", intent)
         # Worded as "does not act on", not "has no reasoning control": a
         # provider may well have a reasoning mechanism (or grow one) that
@@ -555,10 +561,11 @@ class BaseLLMProvider(ABC):
         # (docs/operations/monitoring/operations-runbook.md) and OpenAI warns
         # for the identical condition. EXTRACTION stays INFO: the intent asks
         # for LESS reasoning, so not applying it risks spend, not silence.
-        # Compares on the VALUE so an uncoerced string spelling is classified
-        # the same as the member — the tolerance above must not silently
-        # demote an INFERENCE warning to INFO.
-        if intent_value == ReasoningIntent.INFERENCE.value:
+        # Compares on the VALUE, case-insensitively, so an uncoerced string
+        # spelling is classified the same as the member — the tolerance above
+        # must not silently demote an INFERENCE warning to INFO, and a caller
+        # that wrote ``"INFERENCE"`` meant the same thing as ``"inference"``.
+        if str(intent_value).strip().lower() == ReasoningIntent.INFERENCE.value:
             self.logger.warning(message)
         else:
             self.logger.info(message)

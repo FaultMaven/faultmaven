@@ -843,7 +843,7 @@ class TestRefusedInferenceRestoresTheShapeDefault:
         self, mock_aiohttp_session, caplog
     ):
         provider = _gemini_provider("gemini-3.5-flash")
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             body = await _sent_body(
                 mock_aiohttp_session,
                 provider,
@@ -851,11 +851,12 @@ class TestRefusedInferenceRestoresTheShapeDefault:
                 reasoning_intent=ReasoningIntent.INFERENCE,
             )
         assert "thinkingConfig" not in body["generationConfig"]
-        # …and the warning must not claim a cap was kept on a shape that never
-        # had one.
-        refusal = " ".join(r.message for r in caplog.records if "REFUSED" in r.message)
-        assert refusal, "refusal must still be reported"
-        assert "keeping the cap" not in refusal
+        # The report must not claim a cap was kept on a shape that never had
+        # one. What it says about this shape is pinned by
+        # TestPlainRefusalReadsAsWhatHappened below; here we only require that
+        # nothing claims a cap was retained.
+        messages = " ".join(r.message for r in caplog.records)
+        assert "keeping the cap" not in messages
 
     async def test_structured_call_refusal_still_keeps_the_cap(
         self, mock_aiohttp_session, caplog
@@ -1038,5 +1039,152 @@ class TestDiscardPathIsTolerant:
                 provider,
                 _OPENAI_RESP,
                 reasoning_intent="inference",
+            )
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestLlamaCppTransportKeepsCachePrompt:
+    """``cache_prompt`` is a REAL llama.cpp body field, and this transport had
+    never been covered — ``test_local_pops_knobs``'s base_url routes to the
+    OpenAI-compatible transport, so routing llama.cpp through the shared merge
+    seam silently dropped a field that reached the wire at merge-base.
+
+    ``milestone_engine`` passes ``cache_prompt=True`` on every DA tool-loop
+    iteration, so llama.cpp-fallback deployments lost prompt-prefix caching.
+    """
+
+    def _llamacpp_provider(self):
+        from faultmaven.infrastructure.llm.providers.local_provider import (
+            LocalProvider,
+        )
+
+        # A base_url with no "ollama" in it, and a 404 from the
+        # OpenAI-compatible endpoint, is what selects the llama.cpp transport.
+        return LocalProvider(_config("local", "llama3", "http://localhost:8080"))
+
+    async def _llamacpp_body(self, make_session, **generate_kwargs):
+        """Drive generate() so it falls through to the llama.cpp transport."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        openai_attempt = AsyncMock()
+        openai_attempt.status = 404
+        openai_attempt.json = AsyncMock(return_value={})
+        openai_attempt.text = AsyncMock(return_value="not found")
+        openai_attempt.__aenter__ = AsyncMock(return_value=openai_attempt)
+        openai_attempt.__aexit__ = AsyncMock(return_value=False)
+
+        llamacpp_attempt = AsyncMock()
+        llamacpp_attempt.status = 200
+        llamacpp_attempt.json = AsyncMock(
+            return_value={"content": "ok", "stopped_limit": False}
+        )
+        llamacpp_attempt.text = AsyncMock(return_value="")
+        llamacpp_attempt.__aenter__ = AsyncMock(return_value=llamacpp_attempt)
+        llamacpp_attempt.__aexit__ = AsyncMock(return_value=False)
+
+        session = MagicMock()
+        session.post = MagicMock(side_effect=[openai_attempt, llamacpp_attempt])
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            await self._llamacpp_provider().generate("Test", **generate_kwargs)
+
+        # The second post is the llama.cpp /completion call.
+        last = session.post.call_args_list[-1]
+        assert "/completion" in last.args[0]
+        return last.kwargs.get("json") or last[1].get("json")
+
+    async def test_cache_prompt_reaches_the_completion_body(self, mock_aiohttp_session):
+        body = await self._llamacpp_body(mock_aiohttp_session, cache_prompt=True)
+        assert body["cache_prompt"] is True
+
+    async def test_router_knobs_still_do_not_reach_the_completion_body(
+        self, mock_aiohttp_session
+    ):
+        body = await self._llamacpp_body(
+            mock_aiohttp_session,
+            cache_prompt=True,
+            reasoning_intent=ReasoningIntent.EXTRACTION,
+            min_output_tokens=500,
+        )
+        assert body["cache_prompt"] is True
+        flat = str(body)
+        assert "reasoning_intent" not in flat
+        assert "min_output_tokens" not in flat
+
+    async def test_absent_cache_prompt_is_not_invented(self, mock_aiohttp_session):
+        body = await self._llamacpp_body(mock_aiohttp_session)
+        assert "cache_prompt" not in body
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestPlainRefusalReadsAsWhatHappened:
+    """Item 6: on a plain call nothing is refused — the outcome is identical
+    to a floored INFERENCE — so it must not announce a REFUSAL at WARNING, nor
+    advise a floor that would change nothing on that shape."""
+
+    async def test_plain_call_does_not_warn_or_claim_refusal(
+        self, mock_aiohttp_session, caplog
+    ):
+        provider = _gemini_provider("gemini-3.5-flash")
+        with caplog.at_level(logging.INFO):
+            await _sent_body(
+                mock_aiohttp_session,
+                provider,
+                _GEMINI_RESP,
+                reasoning_intent=ReasoningIntent.INFERENCE,
+            )
+        assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+        messages = " ".join(r.message for r in caplog.records)
+        assert "REFUSED" not in messages
+        assert "no thinkingLevel cap applies" in messages
+
+    async def test_structured_call_still_warns_about_the_refusal(
+        self, mock_aiohttp_session, caplog
+    ):
+        provider = _gemini_provider("gemini-3.5-flash")
+        with caplog.at_level(logging.INFO):
+            await _sent_body(
+                mock_aiohttp_session,
+                provider,
+                _GEMINI_RESP,
+                response_format=_RESPONSE_FORMAT,
+                reasoning_intent=ReasoningIntent.INFERENCE,
+            )
+        assert any(
+            "REFUSED" in r.message and r.levelno == logging.WARNING
+            for r in caplog.records
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+@pytest.mark.asyncio
+class TestIntentLevelIsCaseInsensitive:
+    """An uncoerced ``"INFERENCE"`` meant the same thing as ``"inference"``;
+    an exact string compare logged it at INFO, where the runbook's
+    LOG_LEVEL=WARNING hides it."""
+
+    @pytest.mark.parametrize("spelling", ["INFERENCE", "Inference", " inference "])
+    async def test_uppercase_inference_still_warns(
+        self, mock_aiohttp_session, caplog, spelling
+    ):
+        from faultmaven.infrastructure.llm.providers.groq_provider import GroqProvider
+
+        provider = GroqProvider(
+            _config("groq", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1")
+        )
+        with caplog.at_level(logging.INFO):
+            await _sent_body(
+                mock_aiohttp_session,
+                provider,
+                _OPENAI_RESP,
+                reasoning_intent=spelling,
             )
         assert any(r.levelno == logging.WARNING for r in caplog.records)

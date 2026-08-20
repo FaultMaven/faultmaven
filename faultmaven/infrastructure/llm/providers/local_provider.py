@@ -390,6 +390,23 @@ class LocalProvider(BaseLLMProvider):
             "stream": False,
         }
 
+        # ``cache_prompt`` is a REAL llama.cpp body field (it reuses the KV
+        # cache for a shared prompt prefix), so this transport genuinely
+        # consumes the knob rather than discarding it — the one condition the
+        # merge seam sets for popping something yourself.
+        #
+        # It has to be lifted out BEFORE the merge, because
+        # ``_merge_extra_kwargs`` drops it for everyone: it is Anthropic's
+        # caching hint, and the providers that do not implement it reject
+        # unknown body fields. Routing this transport through that seam without
+        # this line silently dropped the field that had reached the wire at
+        # merge-base, costing llama.cpp-fallback deployments their prompt-prefix
+        # caching on the DA tool loop (``milestone_engine`` passes
+        # ``cache_prompt=True`` there on every iteration).
+        cache_prompt = kwargs.pop("cache_prompt", None)
+        if cache_prompt is not None:
+            payload["cache_prompt"] = cache_prompt
+
         # Add any additional options (knobs discarded, None values filtered).
         if kwargs:
             self._merge_extra_kwargs(payload, kwargs, model=model)
