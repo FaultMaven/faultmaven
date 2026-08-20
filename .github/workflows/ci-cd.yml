@@ -309,8 +309,23 @@ jobs:
         env:
           # Cloud configuration - optional features enabled (external services mocked)
           SKIP_SERVICE_CHECKS: "true"
-          OPIK_ENABLED: "true"
-          OPIK_TRACK_DISABLE: "false"
+          # Both switches off. Unit tests call the real
+          # DataClassifier().classify(); with tracing live the SDK builds a
+          # client against its Comet Cloud default and ships span batches
+          # (401) from every cloud CI run — the #1121 defect reproduced inside
+          # CI, where it is least visible.
+          #
+          # OPIK_ENABLED=false is the load-bearing one: OPIK_TRACK_DISABLE
+          # alone FAILS OPEN, because the SDK's is_tracing_active() returns
+          # True from a bare `except` if OpikConfig cannot be constructed (a
+          # malformed OPIK_* value, an SDK config change). The app-level gate
+          # has no such branch.
+          #
+          # This costs no coverage: since #1121 the decorators are applied
+          # whenever opik is importable and the gate is checked per call, so
+          # the tracked wrapper is still exercised on this path.
+          OPIK_ENABLED: "false"
+          OPIK_TRACK_DISABLE: "true"
           PROMETHEUS_ENABLED: "true"
           TRACING_ENABLED: "true"
           METRICS_ENABLED: "true"

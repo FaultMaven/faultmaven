@@ -4,12 +4,42 @@ Core observability tests focusing on actual implementation.
 """
 
 import asyncio
+import os
 import time
 from unittest.mock import patch
 
 import pytest
 
 from faultmaven.infrastructure.observability.tracing import trace
+
+
+@pytest.fixture
+def restore_opik_sdk_state():
+    """Contain init_opik_tracing's process-global side effects.
+
+    init_opik_tracing sets os.environ["OPIK_TRACK_DISABLE"] and calls
+    opik.set_tracing_active() — both process-global with no restore path. A
+    test that calls it would otherwise leave the SDK's tracing flag flipped
+    for every test that runs after it in the session, making any later
+    in-process assertion about tracing order-dependent.
+    """
+    previous_env = os.environ.get("OPIK_TRACK_DISABLE")
+    try:
+        import opik
+
+        previous_active = opik.is_tracing_active()
+    except ImportError:
+        opik = None
+        previous_active = None
+
+    yield
+
+    if previous_env is None:
+        os.environ.pop("OPIK_TRACK_DISABLE", None)
+    else:
+        os.environ["OPIK_TRACK_DISABLE"] = previous_env
+    if opik is not None:
+        opik.set_tracing_active(previous_active)
 
 
 class TestCoreObservability:
@@ -110,12 +140,21 @@ class TestCoreObservability:
 class TestObservabilityIntegration:
     """Test that observability is properly integrated into key components."""
 
-    def test_llm_router_has_tracing(self):
-        """Verify LLM router methods have trace decorators."""
-        from faultmaven.infrastructure.llm.router import LLMRouter
+    def test_llm_router_route_is_wrapped_iff_opik_installed(self):
+        """LLMRouter.route carries the tracing wrapper exactly when the Opik
+        SDK is importable — independent of OPIK_ENABLED.
 
-        # Check that key methods have been wrapped with @trace
-        assert hasattr(LLMRouter.route, "__wrapped__")
+        Since #1121 the gate is evaluated per CALL, not at import, so the
+        wrapper is always applied when opik is installed and dispatches to the
+        raw function when tracing is off. Decoration alone constructs no
+        client, so this costs nothing when disabled. The behavioural
+        guarantees (disabled ⇒ no client, no egress; enabled ⇒ traced) are
+        proven in tests/unit/infrastructure/observability/test_opik_fail_closed.py
+        under subprocess-controlled environments."""
+        from faultmaven.infrastructure.llm import router
+
+        wrapped = hasattr(router.LLMRouter.route, "__wrapped__")
+        assert wrapped == router.OPIK_AVAILABLE
 
     def test_agent_has_tracing(self):
         """Verify agent service methods have trace decorators."""
@@ -226,8 +265,13 @@ class TestObservabilityConfiguration:
 
         assert callable(init_opik_tracing)
 
-    def test_init_opik_tracing_graceful_failure(self):
-        """Test that init_opik_tracing handles failures gracefully."""
+    def test_init_opik_tracing_graceful_failure(self, restore_opik_sdk_state):
+        """Test that init_opik_tracing handles failures gracefully.
+
+        Uses restore_opik_sdk_state: with OPIK_ENABLED cleared by conftest
+        this call takes the disabled path, which flips the SDK's global
+        tracing flag and sets OPIK_TRACK_DISABLE for the rest of the session.
+        """
         from faultmaven.infrastructure.observability.tracing import init_opik_tracing
 
         # Should not raise exceptions even with invalid parameters
