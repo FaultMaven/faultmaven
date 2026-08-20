@@ -1480,3 +1480,78 @@ def test_counterfactually_confirmed_restating_root_is_still_reported():
     derive_node_states(case)
     assert root.node_state is NodeState.INCONCLUSIVE
     assert restatement_held_root_ids(case) == {root.node_id}
+
+
+def test_a_settled_root_elsewhere_does_not_suppress_a_live_hold():
+    """The eligibility pre-scan must bail only when NOTHING is live. Inverting
+    it (bail when any settled root exists) silently recreates the fm#1137
+    bare-line stall for every case where a settled root coexists with a held
+    one — and passed the whole suite until this pin."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    # Genuinely settled THROUGH derive — a hand-stamped VALIDATED root with no
+    # bearing evidence is demoted to CANDIDATE on the next pass, which would
+    # leave this fixture with nothing settled and the pin asserting nothing.
+    settled = _node(
+        _nid(0x113B),
+        node_type=NodeType.ROOT,
+        links=[_link("settled-refute", EvidenceStance.REFUTES)],
+    )
+    case.causal_nodes[settled.node_id] = settled
+    case.evidence.append(_evidence("settled-refute", EvidenceCategory.SYMPTOM_EVIDENCE))
+    derive_node_states(case)
+    assert settled.node_state is NodeState.REFUTED, "fixture no longer settles"
+    assert restatement_held_root_ids(case) == {root.node_id}
+
+
+def test_every_held_root_is_reported_not_just_one():
+    """Two roots restating the same frame are two separate stalls; annotating
+    only one leaves the other rendering as a bare line."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    frame_echo = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    root.statement = frame_echo
+    twin = CausalNode(
+        node_id=_nid(0x113C),
+        statement=frame_echo + " in production",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.INCONCLUSIVE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=False,
+        generated_at_turn=6,
+        evidence_links=list(root.evidence_links),
+    )
+    case.causal_nodes[twin.node_id] = twin
+    derive_node_states(case)
+    assert restatement_held_root_ids(case) == {root.node_id, twin.node_id}
+
+
+def test_mirror_collapsed_supports_are_not_reported_as_restatement_held():
+    """Grounding is the INDEPENDENT count, not the raw one. Two supports that
+    mutually mirror are ONE observation, so such a root is held by the
+    grounding bar too — its recovery is a second independent observation, and
+    claiming supporting evidence cannot help it would be false."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    # Identical summaries -> the independence mirror collapses them to one.
+    for e in case.evidence:
+        if e.category is EvidenceCategory.CAUSAL_EVIDENCE:
+            e.summary = "the very same observation recorded twice over"
+            e.extract = None
+    derive_node_states(case)
+    assert restatement_held_root_ids(case) == set()

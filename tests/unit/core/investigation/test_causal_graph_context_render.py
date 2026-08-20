@@ -435,6 +435,7 @@ def test_restatement_held_root_carries_its_own_recovery_note():
     ]
     block = _build_causal_graph_block(case)
     held_line = next(line for line in block.splitlines() if "cn_00000000f137" in line)
-    assert "MORE EVIDENCE WILL NOT VALIDATE IT" in held_line
+    assert "MORE SUPPORTING EVIDENCE WILL NOT VALIDATE IT" in held_line
+    assert "REFUTE or RETIRE that alternative" in held_line  # the dilution slice
     assert "node_evidence_links" in held_line  # a recovery the schema offers
     assert "SECOND INDEPENDENT" not in held_line

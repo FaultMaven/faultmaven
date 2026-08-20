@@ -2816,10 +2816,20 @@ def _build_causal_graph_block(case: Case) -> str:
         ),
         # §7.1 restatement guard. Its own arm because its recovery is the
         # OPPOSITE of the grounding arms': this root's evidence bar is already
-        # met, so more observations move nothing — the STATEMENT is what has to
-        # change. Without the note the model sees a bare [root/inconclusive]
-        # beside confident causal supports and keeps collecting (fm#1137: nine
-        # turns of it).
+        # met, so more SUPPORTING observations move nothing. Without the note
+        # the model sees a bare [root/inconclusive] beside confident causal
+        # supports and keeps collecting (fm#1137: nine turns of it).
+        #
+        # BOTH recoveries are named because the held population is not one
+        # shape. A root held by a true duplicate of its own hypothesis needs a
+        # new MECHANISM statement; a root held by frame DILUTION — a different
+        # cause's hypothesis whose verbose statement happens to cover this one,
+        # the documented <=2% FP class — validates the moment that alternative
+        # is refuted or retired. The engine cannot tell the two apart (that is
+        # the fm#1137 known limit), so telling the model only the surgery half
+        # would be categorically false for the dilution slice and would repeat,
+        # in a new place, the wrong-recovery-advice failure this note exists to
+        # fix.
         #
         # Spelled as ADD-and-relink, not "restate this node", because
         # state_updates carries no node-update field — causal_nodes_to_add /
@@ -2834,12 +2844,14 @@ def _build_causal_graph_block(case: Case) -> str:
         # hypothesis-less orphan root.
         BLOCK_REASON_RESTATEMENT: (
             " — fully supported, but its statement adds no content beyond what "
-            "the problem and the other hypotheses already say; MORE EVIDENCE "
-            "WILL NOT VALIDATE IT. Add a NEW root node naming the specific "
-            "MECHANISM (what is misconfigured/exhausted/failing), give it a "
-            "produces edge so its chain reaches D, point this hypothesis's "
-            "root_node_ref at it, and re-link this node's ev_ ids to it via "
-            "node_evidence_links"
+            "the problem and the other hypotheses already say, so MORE "
+            "SUPPORTING EVIDENCE WILL NOT VALIDATE IT. Two recoveries: if an "
+            "overlapping ALTERNATIVE hypothesis is what this restates, REFUTE "
+            "or RETIRE that alternative; if this node is the symptom restated, "
+            "add a NEW root naming the specific MECHANISM (what is "
+            "misconfigured/exhausted/failing), give it a produces edge so its "
+            "chain reaches D, point this hypothesis's root_node_ref at it, and "
+            "re-link this node's ev_ ids to it via node_evidence_links"
         ),
     }
 
