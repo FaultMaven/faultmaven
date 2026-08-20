@@ -109,7 +109,8 @@ def _opik_track_classifier(func: Callable) -> Callable:
 
         return wrapper
 
-    # Fail-closed passthrough: Opik not installed, or tracing not enabled.
+    # Fail-closed passthrough: Opik not installed. (Tracing being disabled is
+    # handled per call inside the wrapper above, not here.)
     return func
 
 
