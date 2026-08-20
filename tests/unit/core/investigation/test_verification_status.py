@@ -745,3 +745,29 @@ def test_work_gate_counts_distinct_evidence_not_rows():
     case.evidence.append(third)
     assert work_gate_passed(case)
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_the_assurance_ladder_membership_is_pinned():
+    """The grounding axis is written as ``grade != NO_ROOT``, which grounds any
+    future grade BY DEFAULT. That spelling is deliberate for a rung added at the
+    top (a stronger grade must not read ungrounded — that would lose the whole
+    grid row). It is wrong for a rung added at the BOTTOM: a "speculative" or
+    "weak" grade between NO_ROOT and MECHANISTIC would inherit grounded, and a
+    stalled case holding one would dispose TREATMENT_BLOCKED — "you have a cause
+    but can't verify the fix" — on a case that has not got one.
+
+    The ladder has three rungs today and this pins that, so adding one forces a
+    decision in ``_is_grounded`` rather than silently inheriting the default.
+    """
+    from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
+
+    assert {g.name for g in CauseAssuranceGrade} == {
+        "NO_ROOT",
+        "MECHANISTIC",
+        "CONFIRMED",
+    }, (
+        "The assurance ladder changed. `verification_status._is_grounded` reads "
+        "`grade != NO_ROOT`; decide explicitly whether the new grade is grounded "
+        "for DISPOSITION purposes before updating this set. A rung BELOW "
+        "MECHANISTIC almost certainly is not."
+    )

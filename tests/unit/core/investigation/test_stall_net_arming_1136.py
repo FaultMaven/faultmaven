@@ -473,3 +473,141 @@ def test_novel_keys_reach_the_progress_predicate_through_the_real_apply_path(eng
     assert again["evidence_added"], "the duplicate row is still minted and recorded"
     assert not again.get("novel_evidence_added")
     assert engine._check_if_progress_made(again) is False
+
+
+# --- Arm 4: the same evidence link, re-emitted every turn --------------------
+
+
+def _link(hyp, stance, turn, confidence=0.9, reasoning="because the log says so"):
+    from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+
+    manager = HypothesisManager.__new__(HypothesisManager)
+    return manager.link_evidence(
+        hyp,
+        "ev_000000000001",
+        stance,
+        turn,
+        reasoning=reasoning,
+        stance_confidence=confidence,
+    )
+
+
+def _hypothesis():
+    return next(iter(_case(current_turn=1).hypotheses.values()))
+
+
+def test_re_emitting_the_same_link_is_not_progress(engine):
+    """Storage upserts by ``evidence_id``, so re-emitting a standing link leaves
+    the link set unchanged — but the counter used to increment per CALL, so a
+    parked case whose model re-links the same evidence each turn never stalled.
+    The novel_* hole, one arm over."""
+    from faultmaven.modules.case.contracts import EvidenceStance
+
+    hyp = _hypothesis()
+    assert _link(hyp, EvidenceStance.SUPPORTS, 1) is True
+    for turn in range(2, 6):
+        assert _link(hyp, EvidenceStance.SUPPORTS, turn) is False, turn
+    assert len(hyp.evidence_links) == 1, "upsert — one distinct link throughout"
+
+
+def test_the_caller_counts_only_material_links(engine):
+    """The other half of the arm: ``_apply_hypothesis_evidence_links`` must GATE
+    its counter on what ``link_evidence`` reports. Pinned separately because a
+    correct return value that the caller ignores restores the whole bug — and
+    reads as fixed from ``link_evidence``'s side.
+    """
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+    from faultmaven.modules.case.contracts import EvidenceStance
+
+    case = _case(current_turn=1)
+    case.evidence = [_standing_evidence("OOMKilled exit 137", source="file_a")]
+    hyp = next(iter(case.hypotheses.values()))
+    engine.hypothesis_manager = HypothesisManager.__new__(HypothesisManager)
+
+    def emit(stance):
+        return SimpleNamespace(
+            hypothesis_id_ref=hyp.hypothesis_id,
+            evidence_id_ref="ev_000000000001",
+            stance=stance,
+            reasoning="because the log says so",
+            stance_confidence=0.9,
+        )
+
+    first = {}
+    engine._apply_hypothesis_evidence_links(
+        case, [emit(EvidenceStance.SUPPORTS)], first
+    )
+    assert first.get("hypothesis_evidence_links_applied") == 1
+    assert engine._check_if_progress_made(
+        {**first, "outcome": TurnOutcome.CONVERSATION}
+    )
+
+    # Four more turns re-emitting the SAME link: none of them count.
+    for turn in range(2, 6):
+        case.current_turn = turn
+        repeat = {}
+        engine._apply_hypothesis_evidence_links(
+            case, [emit(EvidenceStance.SUPPORTS)], repeat
+        )
+        assert not repeat.get("hypothesis_evidence_links_applied"), turn
+        assert (
+            engine._check_if_progress_made(
+                {**repeat, "outcome": TurnOutcome.CONVERSATION}
+            )
+            is False
+        ), turn
+
+    # A revised stance counts again.
+    case.current_turn = 6
+    revised = {}
+    engine._apply_hypothesis_evidence_links(
+        case, [emit(EvidenceStance.REFUTES)], revised
+    )
+    assert revised.get("hypothesis_evidence_links_applied") == 1
+
+
+def test_rewording_the_same_link_is_not_progress():
+    """Restating with fresh prose is the exact LLM behaviour this change exists
+    to stop counting."""
+    from faultmaven.modules.case.contracts import EvidenceStance
+
+    hyp = _hypothesis()
+    _link(hyp, EvidenceStance.SUPPORTS, 1, reasoning="the log shows the OOM kill")
+    assert (
+        _link(hyp, EvidenceStance.SUPPORTS, 2, reasoning="per the OOM kill in the log")
+        is False
+    )
+
+
+def test_a_revised_stance_is_progress():
+    """Not "new links only": the model changing its read of what the evidence
+    means is diagnostic work — that is what hypothesis testing looks like."""
+    from faultmaven.modules.case.contracts import EvidenceStance
+
+    hyp = _hypothesis()
+    _link(hyp, EvidenceStance.SUPPORTS, 1)
+    assert _link(hyp, EvidenceStance.REFUTES, 2) is True
+
+
+def test_crossing_the_hedge_bar_is_progress_but_jitter_beside_it_is_not():
+    """At an unchanged stance, crossing ``CAUSAL_STANCE_CONFIDENCE_MIN`` changes
+    what the case knows: below it the link is a self-hedge that grounds nothing,
+    above it it counts for chain grounding and lifts the evidence-free cap.
+    Movement that stays on one side of the bar changes nothing."""
+    from faultmaven.core.investigation.cause_assurance import (
+        CAUSAL_STANCE_CONFIDENCE_MIN,
+    )
+    from faultmaven.modules.case.contracts import EvidenceStance
+
+    above, below = (
+        CAUSAL_STANCE_CONFIDENCE_MIN + 0.3,
+        CAUSAL_STANCE_CONFIDENCE_MIN - 0.2,
+    )
+    hyp = _hypothesis()
+    _link(hyp, EvidenceStance.SUPPORTS, 1, confidence=above)
+    assert _link(hyp, EvidenceStance.SUPPORTS, 2, confidence=above + 0.05) is False
+    assert _link(hyp, EvidenceStance.SUPPORTS, 3, confidence=below) is True
+    assert _link(hyp, EvidenceStance.SUPPORTS, 4, confidence=below - 0.1) is False
+    assert _link(hyp, EvidenceStance.SUPPORTS, 5, confidence=above) is True

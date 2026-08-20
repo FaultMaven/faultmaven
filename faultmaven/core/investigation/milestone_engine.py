@@ -10464,17 +10464,23 @@ class MilestoneEngine:
             ):
                 continue
 
-            self.hypothesis_manager.link_evidence(
+            # Counts only a NEW or materially revised link (#1136). Storage is an
+            # upsert by evidence_id, so counting every call let a model re-emitting
+            # the same link each turn hold ``turns_without_progress`` at 0 forever —
+            # the same restatement leak the ``novel_*`` keys close on the other
+            # arms. ``link_evidence`` decides, because only it holds both the prior
+            # link and the new one.
+            if self.hypothesis_manager.link_evidence(
                 case.hypotheses[h_id],
                 e_id,
                 link.stance,
                 case.current_turn,
                 reasoning=link.reasoning,
                 stance_confidence=link.stance_confidence,
-            )
-            metadata["hypothesis_evidence_links_applied"] = (
-                metadata.get("hypothesis_evidence_links_applied", 0) + 1
-            )
+            ):
+                metadata["hypothesis_evidence_links_applied"] = (
+                    metadata.get("hypothesis_evidence_links_applied", 0) + 1
+                )
 
     # =========================================================================
     # Evidence Need apply-layer (Phase 3 of evidence-needs rollout)
@@ -11911,7 +11917,11 @@ class MilestoneEngine:
         ):
             return True
 
-        # Hypothesis-evidence linking counts as progress
+        # A NEW or materially revised evidence link counts as progress. The
+        # caller gates this counter on what ``link_evidence`` reports, so a
+        # re-emitted standing link never reaches here (#1136) — linking storage
+        # is an upsert, so counting per call was the same restatement leak the
+        # ``novel_*`` keys close on the other arms.
         if metadata.get("hypothesis_evidence_links_applied"):
             return True
 

@@ -68,7 +68,14 @@ class TestBroadenedProgressDefinition:
         assert engine._check_if_progress_made(empty_metadata) is False
 
     def test_evidence_links_count_as_progress(self, engine, empty_metadata):
-        """Hypothesis-evidence linking should count as progress even without new artifacts."""
+        """A NEW or materially revised evidence link counts as progress even
+        without new artifacts.
+
+        Post-#1136 the caller gates this counter on what ``link_evidence``
+        reports: storage upserts by ``evidence_id``, so re-emitting a standing
+        link leaves the link set unchanged and no longer increments. See
+        ``test_stall_net_arming_1136.py`` for the restatement cases.
+        """
         empty_metadata["hypothesis_evidence_links_applied"] = 2
 
         assert engine._check_if_progress_made(empty_metadata) is True
