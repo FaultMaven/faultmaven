@@ -29,6 +29,21 @@ from faultmaven.modules.case.contracts import (
 )
 from faultmaven.modules.case.domain.models import CauseState
 
+#: Link count at or above which a hypothesis stops reading as thinly
+#: supported. An editorial band, NOT a claim about what a case requires.
+_WELL_SUPPORTED_LINK_COUNT = 3
+
+#: Mean support density below which the next step is "collect more evidence"
+#: rather than "validate what you have". Pre-dates the ``evidence_completeness``
+#: rename and is kept at its original value: the density is a MEAN across
+#: active hypotheses, so testing it against 1.0 would let one thinly linked
+#: hypothesis dictate the next step for a well-supported pool.
+_COLLECT_MORE_EVIDENCE_DENSITY = 0.70
+
+#: Mean support density below which thin evidence is reported as a reason the
+#: investigation is stalling. Also pre-dates the rename.
+_BLOCKED_SUPPORT_DENSITY = 0.30
+
 
 @dataclass
 class ProgressMetrics:
@@ -42,8 +57,9 @@ class ProgressMetrics:
     investigation_momentum: InvestigationMomentum
     """Overall investigation momentum indicator"""
 
-    evidence_completeness: float
-    """Average evidence completeness across active hypotheses (0.0-1.0)"""
+    support_density: float
+    """Mean supporting-link density across active hypotheses (0.0-1.0).
+    NOT evidence completeness — see ``_supporting_link_density``."""
 
     turns_since_last_progress: int
     """Number of turns since meaningful progress was made"""
@@ -105,17 +121,12 @@ def generate_working_conclusion(
     # Find highest likelihood hypothesis
     best_hypothesis = max(active_hypotheses, key=lambda h: h.likelihood)
 
-    # Calculate evidence completeness for best hypothesis
-    evidence_completeness = _calculate_hypothesis_evidence_completeness(
-        best_hypothesis, case
-    )
-
     # Count supporting evidence
     supporting_count = len(best_hypothesis.supporting_evidence)
     total_evidence = len(case.evidence)
 
     # Generate caveats
-    caveats = _generate_caveats(best_hypothesis, evidence_completeness, case)
+    caveats = _generate_caveats(best_hypothesis)
 
     # Determine if can proceed with solution (≥70% likelihood)
     can_proceed = best_hypothesis.likelihood >= 0.70
@@ -123,8 +134,11 @@ def generate_working_conclusion(
     return WorkingConclusion(
         statement=best_hypothesis.statement,
         likelihood=best_hypothesis.likelihood,
-        reasoning=f"Based on {supporting_count} supporting evidence items "
-        f"with {evidence_completeness * 100:.0f}% evidence completeness.",
+        reasoning=(
+            f"Based on {supporting_count} supporting evidence "
+            f"item{'' if supporting_count == 1 else 's'} linked to this "
+            f"hypothesis (of {total_evidence} on the case)."
+        ),
         supporting_evidence_ids=list(best_hypothesis.supporting_evidence),
         caveats=caveats,
         updated_at=datetime.now(timezone.utc),
@@ -155,9 +169,7 @@ def calculate_progress_metrics(
     ]
 
     # Calculate evidence completeness across all active hypotheses
-    evidence_completeness = _calculate_overall_evidence_completeness(
-        active_hypotheses, case
-    )
+    support_density = _overall_support_density(active_hypotheses)
 
     # Determine investigation momentum
     momentum = _determine_investigation_momentum(case, current_turn)
@@ -172,18 +184,16 @@ def calculate_progress_metrics(
     highest_likelihood = max((h.likelihood for h in active_hypotheses), default=0.0)
 
     # Generate next steps
-    next_steps = _generate_next_steps(case, momentum, evidence_completeness)
+    next_steps = _generate_next_steps(case, momentum, support_density)
 
     # Generate blocked reasons if momentum low
     blocked_reasons: List[str] = []
     if momentum in [InvestigationMomentum.LOW, InvestigationMomentum.BLOCKED]:
-        blocked_reasons = _generate_blocked_reasons(
-            case, evidence_completeness, active_count
-        )
+        blocked_reasons = _generate_blocked_reasons(case, support_density, active_count)
 
     return ProgressMetrics(
         investigation_momentum=momentum,
-        evidence_completeness=evidence_completeness,
+        support_density=support_density,
         turns_since_last_progress=turns_since_progress,
         active_hypotheses_count=active_count,
         highest_hypothesis_likelihood=highest_likelihood,
@@ -209,39 +219,39 @@ def _get_confidence_level_from_value(likelihood: float) -> ConfidenceLevel:
         return ConfidenceLevel.SPECULATION
 
 
-def _calculate_hypothesis_evidence_completeness(
-    hypothesis: Hypothesis, case: Case
-) -> float:
-    """Calculate evidence completeness for a single hypothesis."""
-    # Check evidence requirements if defined
-    if (
-        hasattr(hypothesis, "evidence_requirements")
-        and hypothesis.evidence_requirements
-    ):
-        required = len(hypothesis.evidence_requirements)
-        obtained = len(hypothesis.supporting_evidence)
-        return min(obtained / required, 1.0) if required > 0 else 1.0
+def _supporting_link_density(hypothesis: Hypothesis) -> float:
+    """SUPPORTS links on this hypothesis over ``_WELL_SUPPORTED_LINK_COUNT``,
+    capped at 1.0.
 
-    # Fallback: use supporting evidence count relative to typical needs
-    # Typical investigation needs ~3-5 evidence items per hypothesis
-    typical_required = 3
-    obtained = len(hypothesis.supporting_evidence)
-    return min(obtained / typical_required, 1.0)
+    A link COUNT expressed as a ratio so callers can band it. It is NOT
+    evidence completeness and must never be rendered as a percentage of
+    required evidence: the engine has no per-hypothesis requirement model here
+    (the demand side lives in ``EvidenceNeed``, which this module never reads).
+
+    Was ``_calculate_hypothesis_evidence_completeness``, which preferred a
+    ``hypothesis.evidence_requirements`` field that **exists nowhere in the
+    codebase** — so that branch was unreachable and the value was ALWAYS
+    ``links / 3``. Every renderer still printed it as "N% evidence
+    completeness", including into the LLM prompt on every turn via the working
+    conclusion's ``reasoning``: 2 links read "67% complete", 14 links read
+    "100%", and neither figure meant anything (fm#1122).
+    """
+    return min(len(hypothesis.supporting_evidence) / _WELL_SUPPORTED_LINK_COUNT, 1.0)
 
 
-def _calculate_overall_evidence_completeness(
-    active_hypotheses: List[Hypothesis],
-    case: Case,
-) -> float:
-    """Calculate average evidence completeness across all active hypotheses."""
+def _overall_support_density(active_hypotheses: List[Hypothesis]) -> float:
+    """Mean supporting-link density across active hypotheses.
+
+    ``0.0`` for an empty list is "nothing to average", NOT "nothing is
+    linked" — callers that phrase a finding about active hypotheses must
+    check the count first.
+    """
     if not active_hypotheses:
         return 0.0
 
-    completeness_scores = [
-        _calculate_hypothesis_evidence_completeness(h, case) for h in active_hypotheses
-    ]
+    densities = [_supporting_link_density(h) for h in active_hypotheses]
 
-    return sum(completeness_scores) / len(completeness_scores)
+    return sum(densities) / len(densities)
 
 
 def _determine_investigation_momentum(
@@ -286,22 +296,22 @@ def _determine_investigation_momentum(
         return InvestigationMomentum.MODERATE
 
 
-def _generate_caveats(
-    hypothesis: Hypothesis,
-    evidence_completeness: float,
-    case: Case,
-) -> List[str]:
-    """Generate caveats based on evidence state and confidence."""
+def _generate_caveats(hypothesis: Hypothesis) -> List[str]:
+    """Generate caveats based on evidence state and confidence.
+
+    Takes no density: the thin-support caveat bands the raw link COUNT on this
+    hypothesis, and keeping the parameter would tell the next reader the
+    caveat still tracks a density it does not read.
+    """
     caveats = []
 
-    # Evidence completeness caveats
-    if evidence_completeness < 0.50:
+    # Thin-support caveat, stated as the COUNT. The engine does not know what
+    # this hypothesis requires, so it must not imply a fraction of it.
+    linked = len(hypothesis.supporting_evidence)
+    if linked < _WELL_SUPPORTED_LINK_COUNT:
         caveats.append(
-            f"Only {evidence_completeness * 100:.0f}% of required evidence collected"
-        )
-    elif evidence_completeness < 0.70:
-        caveats.append(
-            f"Evidence partially complete ({evidence_completeness * 100:.0f}%)"
+            f"Only {linked} supporting evidence "
+            f"item{'' if linked == 1 else 's'} linked to this hypothesis"
         )
 
     # Likelihood level caveats
@@ -322,7 +332,7 @@ def _generate_caveats(
 def _generate_next_steps(
     case: Case,
     momentum: InvestigationMomentum,
-    evidence_completeness: float,
+    support_density: float,
 ) -> List[str]:
     """Generate next steps based on investigation state."""
     steps = []
@@ -342,7 +352,7 @@ def _generate_next_steps(
     if not progress.symptom_verified:
         steps.append("Verify symptom with concrete evidence")
     elif progress.cause_state != CauseState.IDENTIFIED:
-        if evidence_completeness < 0.70:
+        if support_density < _COLLECT_MORE_EVIDENCE_DENSITY:
             steps.append("Collect more evidence to test hypotheses")
         else:
             steps.append("Validate hypotheses to identify root cause")
@@ -362,7 +372,7 @@ def _generate_next_steps(
 
 def _generate_blocked_reasons(
     case: Case,
-    evidence_completeness: float,
+    support_density: float,
     active_hypotheses_count: int,
 ) -> List[str]:
     """Generate reasons why investigation is blocked or progressing slowly."""
@@ -373,10 +383,16 @@ def _generate_blocked_reasons(
             f"No progress for {case.turns_without_progress} consecutive turns"
         )
 
-    if evidence_completeness < 0.30:
-        reasons.append(
-            f"Evidence collection insufficient ({evidence_completeness * 100:.0f}%)"
-        )
+    # Guarded on the count: an empty active list averages to 0.0, and a reason
+    # asserting that nothing is linked to any active hypothesis states a fact
+    # about hypotheses that do not exist — the empty case has its own reason
+    # below. Two bands so the exact-zero wording stays exact while a starved
+    # pool (some links, far too few) is still reported.
+    if active_hypotheses_count > 0:
+        if support_density <= 0.0:
+            reasons.append("No supporting evidence linked to any active hypothesis")
+        elif support_density < _BLOCKED_SUPPORT_DENSITY:
+            reasons.append("Supporting evidence is thin across active hypotheses")
 
     if active_hypotheses_count == 0 and len(case.hypotheses) > 0:
         reasons.append("No active hypotheses remaining (all refuted or retired)")

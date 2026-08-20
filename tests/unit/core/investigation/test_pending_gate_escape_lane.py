@@ -209,6 +209,119 @@ async def test_whitespace_only_message_never_reaches_llm():
     assert "Please select one of the options above" in result["agent_response"]
 
 
+class TestWithdrawalRecordsTheEngineOffer:
+    """Every withdrawal path must record the refusal, not only the explicit
+    "no".
+
+    fm#1122 follow-up: a decline records the offer's ``justifying_signature``
+    so the deferred-implementation proposer stops re-firing from unchanged
+    state. The two OTHER paths that withdraw a standing offer — a deflection
+    that is not a gate answer, and a contradicting status pick — cancelled it
+    unrecorded. The deflection case is the sharper one: the turn falls through
+    to normal processing, which reaches ``_maybe_propose_deferred_close``
+    again in the SAME turn and re-takes the affordances the user just pushed
+    away.
+    """
+
+    @staticmethod
+    def _engine_proposed_case(signature: str = "SUGGEST_CLOSE|1|chain") -> Case:
+        case = _investigating_case_with_pending_close()
+        # Only the engine proposer writes this key; it is what a refusal is
+        # recorded against.
+        case.pending_transition["justifying_signature"] = signature
+        return case
+
+    @pytest.mark.asyncio
+    async def test_long_non_question_deflection_records_the_refusal(self):
+        """A deflection is not a "no", but it is not an acceptance either."""
+        engine = _engine()
+        case = self._engine_proposed_case()
+
+        await _run_expecting_fall_through(
+            engine,
+            case,
+            "We'll apply it in Friday's maintenance window and the on-call "
+            "team will pick it up from there.",
+        )
+
+        assert case.progress.deferred_disposition_declined_signatures == [
+            "SUGGEST_CLOSE|1|chain"
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "What happens to the runbook if I close this?",
+            "Which deployment revision would that close against?",
+            "Sorry — what does closing actually do here?",
+        ],
+    )
+    async def test_question_about_the_offer_is_not_a_refusal(self, question):
+        """A question is a user DECIDING, not declining.
+
+        ``message_is_substantive`` is true for any message containing "?" —
+        the gate treats a question as "never a gate answer" regardless of
+        length — so recording these as refusals would make the affordance
+        vanish, unexplained, until a premise moved. That is the same
+        engine-acts-without-saying-why defect this PR family exists to kill.
+        The offer is withdrawn for this turn (the question gets answered) and
+        is live again on the next one.
+        """
+        engine = _engine()
+        case = self._engine_proposed_case()
+
+        await _run_expecting_fall_through(engine, case, question)
+
+        assert case.progress.deferred_disposition_declined_signatures == []
+
+    @pytest.mark.asyncio
+    async def test_second_non_answer_records_the_refusal(self):
+        """The withdrawal on the second non-answer (the spent re-present
+        allowance) goes through the same branch and must record too."""
+        engine = _engine()
+        case = self._engine_proposed_case()
+        case.pending_transition["re_presented"] = True
+
+        await _run_expecting_fall_through(engine, case, "hmm maybe")
+
+        assert case.progress.deferred_disposition_declined_signatures == [
+            "SUGGEST_CLOSE|1|chain"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_contradicting_status_pick_records_the_refusal(self):
+        """Picking "Investigating" from the status dropdown while a close
+        offer stands is a refusal of that offer."""
+        engine = _engine()
+        case = self._engine_proposed_case()
+
+        with pytest.raises(MilestoneEngineError):
+            await engine.process_turn(
+                case=case,
+                user_message="",
+                intent_type="status_transition",
+                intent_data={"to_state": "investigating"},
+            )
+
+        assert case.pending_transition is None
+        assert case.progress.deferred_disposition_declined_signatures == [
+            "SUGGEST_CLOSE|1|chain"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_withdrawal_of_another_proposers_offer_records_nothing(self):
+        """An LLM- or user-initiated offer carries no signature, so declining
+        it says nothing about the engine-initiated disposition."""
+        engine = _engine()
+        case = _investigating_case_with_pending_close()
+        assert "justifying_signature" not in case.pending_transition
+
+        await _run_expecting_fall_through(engine, case, INCIDENT_QUESTION)
+
+        assert case.progress.deferred_disposition_declined_signatures == []
+
+
 class TestGateAnswerMatchers:
     """Word-boundary + bare-confirmation contracts on the typed matchers."""
 

@@ -25,10 +25,12 @@ from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     CauseState,
+    ConfidenceLevel,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
     InvestigationProgress,
+    RootCauseConclusion,
     Solution,
     SolutionFeasible,
     SolutionState,
@@ -427,6 +429,285 @@ class TestDeferredImplementationClose:
         # It must state the reason the engine is proposing anything at all.
         assert "out-of-band" in message
         assert "resolved" in message.lower()
+
+    def test_decline_stops_the_re_proposal_loop(self):
+        """A decline POSTPONES the offer instead of being forgotten.
+
+        fm#1122: the proposer re-fired every turn while solution_feasible was
+        DEFERRED. A decline clears pending_transition, the only state the
+        guards read, so nothing carried the refusal forward — five identical
+        offers against five explicit declines.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            cancel_pending_transition,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+
+        offers = 0
+        for _ in range(10):
+            meta = {}
+            _maybe_propose_deferred_close(case, meta)
+            if meta.get("transition_proposed_this_turn"):
+                offers += 1
+                _record_deferred_disposition_decline(case)
+                cancel_pending_transition(case)
+
+        assert offers == 1, f"offered {offers}x across 10 declined turns"
+
+    def test_offer_returns_when_the_justifying_state_changes(self):
+        """A decline must never permanently disarm the offer.
+
+        Suppressing it for good would be engine-steered abandonment (D4): the
+        case would carry a documented cause and fix with no route to a
+        disposition. When a premise moves the offer is legitimate again.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            cancel_pending_transition,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert meta.get("transition_proposed_this_turn") is True
+        _record_deferred_disposition_decline(case)
+        cancel_pending_transition(case)
+
+        # Silent while nothing has changed.
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert "transition_proposed_this_turn" not in meta
+
+        # A second solution lands — a premise moved, so the offer is live again.
+        case.solutions = [_solution(), _solution("Raise the container limit")]
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert meta.get("transition_proposed_this_turn") is True
+
+    def test_withdrawal_suppresses_the_offer_for_the_rest_of_the_turn(self):
+        """Withdrawing the offer must not be undone later in the SAME turn.
+
+        The withdrawing branches fall through to normal processing, which
+        reaches this proposer again on that turn. Without a turn-scoped guard
+        it re-proposes and re-takes the affordances the user just acted on
+        (fm#1122) — and for a QUESTION, which is deliberately not recorded as
+        a refusal, this flag is the ONLY thing standing between the user and
+        that takeover.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _note_engine_disposition_withdrawn,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            cancel_pending_transition,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+
+        # Turn N: the engine offers, the user asks a question, the gate
+        # withdraws the offer and the turn continues.
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert meta.get("transition_proposed_this_turn") is True
+        _note_engine_disposition_withdrawn(case, meta)
+        cancel_pending_transition(case)
+
+        # Same turn, same metadata: the fall-through must not re-propose.
+        _maybe_propose_deferred_close(case, meta)
+        assert case.pending_transition is None
+
+        # Next turn (fresh metadata, nothing recorded as refused): the offer
+        # is live again, because a question is not a refusal.
+        next_meta = {}
+        _maybe_propose_deferred_close(case, next_meta)
+        assert next_meta.get("transition_proposed_this_turn") is True
+        assert case.progress.deferred_disposition_declined_signatures == []
+
+    def test_withdrawal_of_another_proposers_offer_is_not_noted(self):
+        """The turn guard is keyed to THIS proposer's offer: withdrawing an
+        LLM- or user-initiated disposition must not suppress it."""
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _note_engine_disposition_withdrawn,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+        case.pending_transition = {"to_state": "closed", "summary": "LLM proposed"}
+
+        meta = {}
+        _note_engine_disposition_withdrawn(case, meta)
+        case.pending_transition = None
+        _maybe_propose_deferred_close(case, meta)
+
+        assert meta.get("transition_proposed_this_turn") is True
+
+    def test_oscillating_justifying_state_does_not_re_arm_the_offer(self):
+        """A signature the user already refused must stay refused when the
+        case flips back into it.
+
+        ``cause_identification_leg`` reads "chain" only while cause_state is
+        IDENTIFIED — recomputed from the chain every turn — and falls back to
+        "rcc" while an RCC stands. A case that flickers between the two
+        alternates S1->S2->S1, so a single stored slot is evicted on every
+        flip and the offer re-fires forever against a user who has refused
+        both.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            cancel_pending_transition,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+        # An RCC gives the case a second, non-"chain" leg to fall back to
+        # when cause_state is not IDENTIFIED.
+        case.root_cause_conclusion = RootCauseConclusion(
+            root_cause="The OIDC provider client ID does not match the "
+            "audience the pods present.",
+            confidence_level=ConfidenceLevel.VERIFIED,
+            likelihood=0.9,
+            mechanism="The pods present sts.amazonaws.com; the provider lists "
+            "a different audience, so AssumeRole is rejected.",
+        )
+        case.progress.symptom_verified = True
+
+        offers = 0
+        for turn in range(6):
+            # Flip the leg between "chain" (IDENTIFIED) and the RCC backstop.
+            case.progress.cause_state = (
+                CauseState.IDENTIFIED if turn % 2 == 0 else CauseState.CANDIDATES
+            )
+            meta = {}
+            _maybe_propose_deferred_close(case, meta)
+            if meta.get("transition_proposed_this_turn"):
+                offers += 1
+                _record_deferred_disposition_decline(case)
+                cancel_pending_transition(case)
+
+        # One offer per distinct justifying state, and never again after the
+        # user has refused in it.
+        assert offers <= 2, f"offered {offers}x across 6 refused turns"
+        assert len(case.progress.deferred_disposition_declined_signatures) == offers
+
+    def test_refused_signatures_are_bounded(self):
+        """The refusal record is persisted in the progress blob, so it must
+        not grow without limit on a case that keeps changing underneath the
+        offer."""
+        from faultmaven.core.investigation.milestone_engine import (
+            _MAX_DECLINED_DISPOSITION_SIGNATURES,
+            _record_deferred_disposition_decline,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        for i in range(_MAX_DECLINED_DISPOSITION_SIGNATURES + 5):
+            case.pending_transition = {
+                "to_state": "closed",
+                "summary": "offer",
+                "justifying_signature": f"SUGGEST_CLOSE|{i}|chain",
+            }
+            _record_deferred_disposition_decline(case)
+
+        declined = case.progress.deferred_disposition_declined_signatures
+        assert len(declined) == _MAX_DECLINED_DISPOSITION_SIGNATURES
+        # Oldest dropped first: the most recent refusals are the ones most
+        # likely to recur.
+        assert declined[-1] == (
+            f"SUGGEST_CLOSE|{_MAX_DECLINED_DISPOSITION_SIGNATURES + 4}|chain"
+        )
+
+    def test_resolve_pivot_keeps_the_offer_refusable(self):
+        """The INV-37 pivot must not launder an engine offer into an
+        anonymous one.
+
+        ``confirm_pending_transition`` replaces the pending dict wholesale via
+        ``propose_transition``, so the provenance the refusal recorder reads
+        was dropped: engine proposes CLOSED -> a qualifying causal-absence row
+        lands -> the user confirms -> the pivot presents RESOLVED -> the user
+        refuses THAT -> nothing is recorded and the offer returns next turn.
+        """
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _record_deferred_disposition_decline,
+        )
+        from faultmaven.core.investigation.terminal_transitions import (
+            cancel_pending_transition,
+            confirm_pending_transition,
+        )
+
+        # No causal absence yet: the engine offers the CLOSE.
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert case.pending_transition["to_state"] == "closed"
+
+        # A qualifying gone=>gone row lands after the offer was made.
+        case.evidence.append(
+            Evidence(
+                category=EvidenceCategory.CAUSAL_ABSENCE_EVIDENCE,
+                primary_purpose="confirm the cause was eliminated",
+                summary="After the provider client-ID correction the pods "
+                "obtained credentials and the AssumeRole failures stopped.",
+                source_type=EvidenceSourceType.USER_DESCRIPTION,
+                collected_by="user",
+                collected_at_turn=9,
+            )
+        )
+
+        # Confirm pivots CLOSED -> RESOLVED without committing anything.
+        executed = confirm_pending_transition(case, "user_test")
+        assert executed is False
+        assert case.pending_transition["to_state"] == "resolved"
+
+        # The user refuses the pivoted offer. It is still the engine's offer,
+        # so the refusal must stick — against the verdict that now holds.
+        _record_deferred_disposition_decline(case)
+        cancel_pending_transition(case)
+        assert case.progress.deferred_disposition_declined_signatures != []
+
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert "transition_proposed_this_turn" not in meta
+
+    def test_decline_of_another_proposers_offer_is_not_recorded(self):
+        """A decline of an LLM- or user-initiated disposition says nothing
+        about the engine-initiated one, so it must not suppress it."""
+        from faultmaven.core.investigation.milestone_engine import (
+            _maybe_propose_deferred_close,
+            _record_deferred_disposition_decline,
+        )
+
+        case = self._case(feasible=SolutionFeasible.DEFERRED, solution_proposed=True)
+        case.solutions = [_solution()]
+        # An LLM- or user-initiated disposition: no `justifying_signature`,
+        # because this proposer is its only writer. That absence is the whole
+        # discriminator, so the fixture must not smuggle one in.
+        case.pending_transition = {"to_state": "closed", "summary": "LLM proposed"}
+        assert "justifying_signature" not in case.pending_transition
+
+        _record_deferred_disposition_decline(case)
+        assert case.progress.deferred_disposition_declined_signatures == []
+
+        case.pending_transition = None
+        meta = {}
+        _maybe_propose_deferred_close(case, meta)
+        assert meta.get("transition_proposed_this_turn") is True
 
     def test_no_proposal_from_inquiry(self):
         """INQUIRY is the state the new guard actually adds.

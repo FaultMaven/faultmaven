@@ -222,10 +222,15 @@ class TestProgressMetricsCalculation:
 
 
 class TestEvidenceCompleteness:
-    """Test evidence completeness calculation."""
+    """Test the supporting-link density calculation."""
 
-    def test_calculates_completeness_from_evidence(self, base_case):
-        """Should calculate completeness from supporting evidence count."""
+    def test_density_is_links_over_the_editorial_band(self, base_case):
+        """Density is a LINK COUNT over `_WELL_SUPPORTED_LINK_COUNT`.
+
+        Renamed from "completeness": the old name implied a fraction of what
+        the case required, which the engine never knew. Nothing may render
+        this as a percentage of required evidence (fm#1122).
+        """
         base_case.hypotheses = {
             "hyp_000000000001": create_hypothesis(
                 "hyp_000000000001",
@@ -238,8 +243,33 @@ class TestEvidenceCompleteness:
 
         metrics = calculate_progress_metrics(base_case, current_turn=1)
 
-        # 2/3 = 0.67 completeness
-        assert 0.6 <= metrics.evidence_completeness <= 0.7
+        # 2 links over the band of 3 — a density, not a completeness claim.
+        assert 0.6 <= metrics.support_density <= 0.7
+
+    def test_no_visible_string_states_a_completeness_percentage(self, base_case):
+        """The renderers must state COUNTS, never a fabricated fraction.
+
+        The reasoning string goes into the LLM prompt every turn. With the old
+        hardcoded denominator a 2-link hypothesis read "67% evidence
+        completeness" and a 14-link one read "100%", so the model was handed an
+        engine-voiced number that measured nothing (fm#1122).
+        """
+        base_case.hypotheses = {
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
+                "Heap exceeds the container limit",
+                HypothesisState.ACTIVE,
+                0.8,
+                supporting_evidence=["ev_1", "ev_2"],
+            ),
+        }
+
+        conclusion = generate_working_conclusion(base_case, current_turn=4)
+        rendered = conclusion.reasoning + " " + " ".join(conclusion.caveats)
+
+        assert "%" not in rendered, f"a fabricated percentage survives: {rendered!r}"
+        assert "completeness" not in rendered.lower()
+        assert "2 supporting evidence items" in conclusion.reasoning
 
 
 class TestNextStepsGeneration:
@@ -294,3 +324,133 @@ class TestBlockedReasonsGeneration:
         metrics = calculate_progress_metrics(base_case, current_turn=6)
 
         assert any("progress" in reason.lower() for reason in metrics.blocked_reasons)
+
+    def test_no_active_hypotheses_does_not_assert_a_fact_about_them(self, base_case):
+        """An empty active pool averages to a density of 0.0, which must not
+        be read as "nothing is linked".
+
+        `_overall_support_density` returns 0.0 for "nothing to average", so an
+        unguarded threshold makes the engine state a fact about active
+        hypotheses that do not exist — next to the reason that correctly says
+        there are none.
+        """
+        base_case.turns_without_progress = 5
+        base_case.hypotheses = {
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
+                "Retired theory",
+                HypothesisState.RETIRED,
+                0.1,
+                supporting_evidence=[],
+            ),
+        }
+
+        metrics = calculate_progress_metrics(base_case, current_turn=6)
+
+        assert metrics.active_hypotheses_count == 0
+        assert not any(
+            "any active hypothesis" in reason for reason in metrics.blocked_reasons
+        ), metrics.blocked_reasons
+        assert any("No active hypotheses" in r for r in metrics.blocked_reasons)
+
+    def test_starved_support_is_still_reported(self, base_case):
+        """A pool with a few links and far too few is thin, not fine.
+
+        The exact-zero wording only covers density 0.0, so without a second
+        band a starved pool (1 link across two hypotheses => 0.167) produces
+        no support-related reason at all.
+        """
+        base_case.turns_without_progress = 5
+        base_case.hypotheses = {
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
+                "Heap exceeds the container limit",
+                HypothesisState.ACTIVE,
+                0.5,
+                supporting_evidence=["ev_1"],
+            ),
+            "hyp_000000000002": create_hypothesis(
+                "hyp_000000000002",
+                "Node memory pressure evicts the pod",
+                HypothesisState.ACTIVE,
+                0.4,
+                supporting_evidence=[],
+            ),
+        }
+
+        metrics = calculate_progress_metrics(base_case, current_turn=6)
+
+        assert 0.0 < metrics.support_density < 0.30
+        assert any(
+            "thin" in reason.lower() for reason in metrics.blocked_reasons
+        ), metrics.blocked_reasons
+        # The COUNT contract still holds: no fabricated percentage.
+        assert not any("%" in reason for reason in metrics.blocked_reasons)
+
+
+class TestSupportDensityThresholds:
+    """The density is a MEAN across active hypotheses, so the bands that read
+    it must not let one thinly linked hypothesis speak for the pool."""
+
+    def test_well_supported_pool_is_told_to_validate_not_collect(self, base_case):
+        """Two hypotheses at 3 and 2 links (density 0.833) is a pool with
+        evidence to work with — the next step is to validate it.
+
+        Testing the mean against 1.0 instead of the 0.70 band makes every pool
+        short of universally-well-supported read as "collect more evidence",
+        however well supported the rest of it is.
+        """
+        from faultmaven.modules.case.contracts import CauseState
+
+        base_case.progress.symptom_verified = True
+        base_case.progress.cause_state = CauseState.CANDIDATES
+        base_case.hypotheses = {
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
+                "Heap exceeds the container limit",
+                HypothesisState.ACTIVE,
+                0.6,
+                supporting_evidence=["ev_1", "ev_2", "ev_3"],
+            ),
+            "hyp_000000000002": create_hypothesis(
+                "hyp_000000000002",
+                "Node memory pressure evicts the pod",
+                HypothesisState.ACTIVE,
+                0.5,
+                supporting_evidence=["ev_4", "ev_5"],
+            ),
+        }
+
+        metrics = calculate_progress_metrics(base_case, current_turn=4)
+
+        assert metrics.support_density > 0.80
+        assert any("Validate hypotheses" in step for step in metrics.next_steps)
+        assert not any("Collect more evidence" in step for step in metrics.next_steps)
+
+    def test_thin_pool_is_told_to_collect(self, base_case):
+        """The other side of the band: one link across two hypotheses is not
+        yet something to validate."""
+        from faultmaven.modules.case.contracts import CauseState
+
+        base_case.progress.symptom_verified = True
+        base_case.progress.cause_state = CauseState.CANDIDATES
+        base_case.hypotheses = {
+            "hyp_000000000001": create_hypothesis(
+                "hyp_000000000001",
+                "Heap exceeds the container limit",
+                HypothesisState.ACTIVE,
+                0.6,
+                supporting_evidence=["ev_1"],
+            ),
+            "hyp_000000000002": create_hypothesis(
+                "hyp_000000000002",
+                "Node memory pressure evicts the pod",
+                HypothesisState.ACTIVE,
+                0.5,
+                supporting_evidence=[],
+            ),
+        }
+
+        metrics = calculate_progress_metrics(base_case, current_turn=4)
+
+        assert any("Collect more evidence" in step for step in metrics.next_steps)
