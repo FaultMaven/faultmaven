@@ -12,7 +12,9 @@ Covered behaviors:
   transcript on success and on failure (best-effort, never raises)
 - Reachability: any affordance label a turn names must be present in that
   turn's own ``suggested_follow_ups`` (prose and the suggestion list are built
-  a few lines apart and drift silently)
+  a few lines apart and drift silently), and the completion notifications —
+  which carry no suggestion list at all and are read in the Dashboard, where
+  no chip UI exists — must name no affordance
 - The kickoff turn promises only what every client delivers: no in-chat
   notification claim (that system row is invisible in the copilot, failure
   notices included), the Dashboard location named, a way forward that survives
@@ -484,6 +486,51 @@ _CREATION_TURN_SCENARIOS = [
     pytest.param({"ready": False}, id="not-ready"),
 ]
 
+_NOTIFICATION_OUTCOMES = ["success", "no-drafts", "exception"]
+
+
+async def _notification_content(mock_llm, outcome: str) -> str:
+    """Drive ``_run_runbook_conversion`` and return the transcript notice."""
+    from faultmaven.modules.knowledge.domain.models.conversion import (
+        CaseConversionRequest,
+    )
+
+    case = _make_resolved_case()
+    request = CaseConversionRequest(
+        case_id=case.case_id,
+        title=case.title,
+        description=case.description,
+        scope="global",
+    )
+
+    conversion_service = MagicMock()
+    if outcome == "exception":
+        conversion_service.convert_from_case = AsyncMock(
+            side_effect=RuntimeError("LLM exploded")
+        )
+    else:
+        draft = MagicMock()
+        draft.title = "Pool Timeout Runbook"
+        drafts = [draft] if outcome == "success" else []
+        conversion_service.convert_from_case = AsyncMock(
+            return_value=MagicMock(drafts=drafts)
+        )
+
+    repo = MagicMock()
+    repo.get = AsyncMock(return_value=case)
+    repo.save = AsyncMock()
+    engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
+
+    await engine._run_runbook_conversion(conversion_service, request, "u1")
+    return case.messages[-1]["content"]
+
+
+# The Dashboard's navigation item is "Knowledge Base"; there is no section
+# called "Knowledge". Naming a place the reader cannot find in the nav fails
+# the same rule as naming a button that is not on screen, so any mention of
+# the section must carry the real label.
+_WRONG_NAV_LABEL_RE = re.compile(r"Knowledge(?! Base)")
+
 _LABEL_LITERAL_RE = re.compile(r'"label":\s*"([^"]+)"')
 
 
@@ -539,6 +586,65 @@ class TestNamedAffordancesAreReachableOnTheirOwnTurn:
             f"reader is sent looking for a chip that is not on screen, and "
             f"the label is not typeable. Turn text: {response!r}; offered: "
             f"{sorted(offered)}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", _NOTIFICATION_OUTCOMES)
+    async def test_completion_notifications_name_no_affordance(self, outcome, mock_llm):
+        """The same rule, extended to text that reaches the reader elsewhere.
+
+        ``_run_runbook_conversion`` appends its outcome to the transcript
+        rather than returning a turn, so it carries no ``suggested_follow_ups``
+        at all — the offered set is empty by construction and the subset rule
+        collapses to "name nothing". That is the correct reading: the copilot
+        drops system rows, and the Dashboard, which does render them, has no
+        suggestion-chip UI for a label to refer to.
+
+        Binding the rule only where it was first tested is how the defect
+        recurred one function away, so it is bound here too.
+        """
+        content = await _notification_content(mock_llm, outcome)
+        assert content.strip(), "notification is empty — nothing to check"
+
+        named = {label for label in _known_affordance_labels() if label in content}
+        assert not named, (
+            f"completion notification names {sorted(named)}, but a "
+            f"notification reaches no suggestion list: the copilot drops the "
+            f"row entirely and the Dashboard has no chip UI, so this points "
+            f"at a control the reader cannot have. Content: {content!r}"
+        )
+
+
+class TestDashboardSectionIsNamedAsTheReaderSeesIt:
+    """A named place must be findable, exactly as a named button must be.
+
+    The Dashboard nav item reads "Knowledge Base". A message that says
+    "Knowledge > Drafts" sends the reader hunting for a section that is not
+    in the nav — the same failure as naming an absent chip, one word smaller.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs", _CREATION_TURN_SCENARIOS)
+    async def test_turn_text_uses_the_real_nav_label(self, kwargs, mock_llm, mock_repo):
+        case, engine = _creation_turn_engine(mock_llm, mock_repo, **kwargs)
+
+        response = (await engine._handle_runbook_creation(case, metadata={}))[
+            "agent_response"
+        ]
+
+        assert not _WRONG_NAV_LABEL_RE.search(response), (
+            f"turn names a Dashboard section called 'Knowledge'; the nav item "
+            f"is 'Knowledge Base': {response!r}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", _NOTIFICATION_OUTCOMES)
+    async def test_notification_text_uses_the_real_nav_label(self, outcome, mock_llm):
+        content = await _notification_content(mock_llm, outcome)
+
+        assert not _WRONG_NAV_LABEL_RE.search(content), (
+            f"notification names a Dashboard section called 'Knowledge'; the "
+            f"nav item is 'Knowledge Base': {content!r}"
         )
 
 
@@ -623,7 +729,10 @@ class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
         ]
 
         assert "Dashboard" in response
-        assert "Knowledge > Drafts" in response
+        # "Knowledge Base" is the Dashboard's actual nav label; the section is
+        # not called "Knowledge". Naming a place the reader cannot find in the
+        # nav fails the same rule as naming an absent button.
+        assert "Knowledge Base > Drafts" in response
 
     @pytest.mark.asyncio
     async def test_initiating_turn_offers_a_way_forward_that_outlives_the_turn(
@@ -725,8 +834,13 @@ class TestRunbookCompletionNotification:
         repo.save.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_failure_writes_retry_message(self, mock_llm):
-        """LLM exception → system message offering retry, save still called."""
+    async def test_failure_writes_recovery_message(self, mock_llm):
+        """LLM exception → system message naming a way forward, save called.
+
+        Asserts the two things the reader needs — that it failed, and where to
+        go next — rather than the word "retry", which named a chat affordance
+        the Dashboard (the only client that renders this row) does not have.
+        """
         from faultmaven.modules.knowledge.domain.models.conversion import (
             CaseConversionRequest,
         )
@@ -756,12 +870,17 @@ class TestRunbookCompletionNotification:
         assert notification["role"] == "system"
         content_lower = notification["content"].lower()
         assert "fail" in content_lower
-        assert "retry" in content_lower
+        assert "Dashboard" in notification["content"]
         repo.save.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_no_drafts_writes_retry_message(self, mock_llm):
-        """Empty drafts (e.g. quality-rejected) → retry message, save called."""
+    async def test_no_drafts_writes_recovery_message(self, mock_llm):
+        """Empty drafts (e.g. quality-rejected) → recovery message, save called.
+
+        The no-drafts outcome is a failure from the reader's side — the draft
+        they were told to expect will never arrive — so the notice must say
+        nothing was saved, not merely that the run "completed".
+        """
         from faultmaven.modules.knowledge.domain.models.conversion import (
             CaseConversionRequest,
         )
@@ -789,8 +908,8 @@ class TestRunbookCompletionNotification:
 
         notification = case.messages[-1]
         assert notification["role"] == "system"
-        assert "no draft was produced" in notification["content"].lower()
-        assert "retry" in notification["content"].lower()
+        assert "nothing was saved" in notification["content"].lower()
+        assert "Dashboard" in notification["content"]
         repo.save.assert_called_once()
 
     @pytest.mark.asyncio
