@@ -271,6 +271,45 @@ class AnthropicProvider(BaseLLMProvider):
         # request byte-identical to pre-#1116 behavior).
         if request_body.get("tools"):
             thinking_param = self._resolve_thinking(max_tokens)
+            # Thinking supports only tool_choice auto/none — forced tool use
+            # ({"type": "any"} / {"type": "tool"}) is rejected with a 400. We
+            # FAIL CLOSED here: the caller's forcing is left exactly as it set
+            # it and thinking is refused for this call.
+            #
+            # The alternative — silently downgrading the forcing to "auto" —
+            # trades a soundness property for an experiment knob, in two ways:
+            #   1. On the SINGLE-SHOT structured path (milestone_engine
+            #      ~:8163 sets tool_choice="required" for FUNCTION_CALLING
+            #      providers, which is every Anthropic call) there is NO
+            #      prose→schema recovery: an "auto" answer in prose leaves
+            #      tool_calls empty, model_validate_json raises, with_retry
+            #      exhausts and the turn fails. The nudge-retry loop is
+            #      tool-loop-only.
+            #   2. On DA turns, force_tool_use exists to enforce "gather
+            #      evidence before concluding". Dropping it re-opens the
+            #      premature-conclusion failure mode the startup tool-calling
+            #      gate is built to prevent.
+            # Consequence, stated deliberately: forced-schema turns on
+            # Anthropic cannot carry thinking at all under this PR. Making
+            # them able to would require prose→schema recovery on the
+            # single-shot path — an engine-wide change affecting every
+            # provider, and an owner decision (#1116).
+            forced_choice = request_body.get("tool_choice")
+            forced = isinstance(forced_choice, dict) and forced_choice.get("type") in (
+                "any",
+                "tool",
+            )
+            if thinking_param is not None and forced:
+                self.logger.warning(
+                    "Anthropic thinking refused for this call: the caller "
+                    "forced tool use (tool_choice=%s) and Anthropic rejects "
+                    "forced tool use with thinking enabled. Keeping the "
+                    "forcing — dropping it would disarm schema forcing on the "
+                    "single-shot structured path (no prose recovery there) "
+                    "and the evidence-before-conclusion guarantee on DA turns.",
+                    forced_choice,
+                )
+                thinking_param = None
             if thinking_param is not None:
                 request_body["thinking"] = thinking_param
                 # Thinking is incompatible with temperature modification —
@@ -282,26 +321,6 @@ class AnthropicProvider(BaseLLMProvider):
                         request_body["temperature"],
                     )
                     del request_body["temperature"]
-                # Thinking supports only tool_choice auto/none. Forced tool
-                # use ({"type": "any"} / {"type": "tool"}) is rejected with a
-                # 400, so downgrade to auto rather than issuing a doomed
-                # call. The engine already tolerates auto responses (non-DA
-                # turns run auto, and prose falls back to schema recovery).
-                # The downgrade must be consistent across a whole tool loop:
-                # toggling thinking off just for forced iterations would
-                # leave thinking blocks in history with thinking disabled,
-                # which Anthropic also rejects.
-                forced = request_body.get("tool_choice", {}).get("type") in (
-                    "any",
-                    "tool",
-                )
-                if forced:
-                    self.logger.warning(
-                        "Downgrading tool_choice %s → auto: Anthropic "
-                        "rejects forced tool use when thinking is enabled",
-                        request_body["tool_choice"],
-                    )
-                    request_body["tool_choice"] = {"type": "auto"}
 
         # Make API request
         url = f"{self.config.base_url.rstrip('/')}/messages"

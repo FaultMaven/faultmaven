@@ -5807,6 +5807,19 @@ class MilestoneEngine:
             parts = [str(m.get("content") or "")]
             if m.get("tool_calls"):
                 parts.append(str(m.get("tool_calls")))
+            # Reasoning artifacts are part of the WIRE payload and must be
+            # counted, or this bound is not a bound. For a thinking-carrying
+            # assistant turn the provider serializes
+            # provider_metadata["assistant_content"] (Anthropic thinking /
+            # redacted_thinking blocks) or ["assistant_parts"] (Gemini parts
+            # with thoughtSignatures) INSTEAD OF `content` — reasoning text
+            # that can run to thousands of tokens. Estimating from `content`
+            # alone under-counts those turns by roughly the size of their
+            # reasoning, so this function would report "under budget" while
+            # the request it green-lights blows the provider's context limit
+            # — precisely the failure it exists to prevent.
+            if m.get("provider_metadata"):
+                parts.append(str(m.get("provider_metadata")))
             val = estimate_tokens(" ".join(parts), provider=_prov, model=_model)
             if token_cache is not None:
                 token_cache[key] = val
@@ -6272,7 +6285,20 @@ class MilestoneEngine:
                     iteration,
                 )
 
-                # Append the plain text response so the LLM knows what it said
+                # Append the plain text response so the LLM knows what it said.
+                #
+                # Reasoning artifacts (response.provider_metadata — Anthropic
+                # thinking blocks, Gemini assistant_parts) are DELIBERATELY
+                # dropped here, unlike _build_assistant_message which
+                # round-trips them. This is a recovery re-prompt, not a
+                # continuation: the point is to re-ask with a fresh
+                # instruction after the model failed to call a tool, and
+                # replaying signed reasoning blocks across a state the
+                # provider may not accept them in is rejected outright
+                # (Anthropic 400s on thinking blocks echoed when thinking is
+                # not enabled for that call). Re-prompting without the prior
+                # reasoning is the safe direction and is the intended
+                # behaviour, not an oversight (#1116).
                 messages.append(
                     {
                         "role": "assistant",

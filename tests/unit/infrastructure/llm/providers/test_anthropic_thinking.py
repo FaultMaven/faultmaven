@@ -7,10 +7,13 @@ Behind config, DEFAULT OFF. Pins, all asserted on the OUTGOING request payload
      `thinking` key, temperature is preserved, and forced tool_choice is
      preserved: byte-identical behavior to pre-#1116.
   2. "adaptive" mode sends ``{"type": "adaptive"}`` on tool-calling calls
-     only (structured-output scope, mirroring Gemini), drops temperature
-     (Anthropic rejects a modified temperature with thinking on), and
-     downgrades forced tool_choice to auto (forced tool use with thinking
-     is a 400).
+     only (structured-output scope, mirroring Gemini) and drops temperature
+     (Anthropic rejects a modified temperature with thinking on). When the
+     caller FORCED tool use it FAILS CLOSED instead: thinking is refused and
+     the forcing is left exactly as the caller set it, because dropping the
+     forcing would disarm schema forcing on the single-shot structured path
+     (no prose→schema recovery there) and the evidence-before-conclusion
+     guarantee on DA turns.
   3. "enabled" mode budget validation — thinking bills INSIDE max_tokens
      (fm#1094): a budget that is >= max_tokens, leaves less than the answer
      floor, or is below the API minimum of 1024 downgrades the call to
@@ -199,9 +202,17 @@ class TestAdaptiveThinking:
         assert "temperature" not in body
 
     @pytest.mark.asyncio
-    async def test_adaptive_downgrades_forced_tool_choice_to_auto(self, caplog):
-        """Forced tool use ({"type": "any"}/{"type": "tool"}) with thinking
-        is a 400 — the provider downgrades to auto instead of issuing it."""
+    async def test_forced_tool_choice_refuses_thinking_and_keeps_forcing(self, caplog):
+        """FAIL CLOSED: forced tool use with thinking is a 400, so thinking is
+        refused and the caller's forcing is left untouched.
+
+        Downgrading the forcing to auto instead would disarm schema forcing on
+        the single-shot structured path (milestone_engine sets
+        tool_choice="required" for FUNCTION_CALLING providers and has NO
+        prose→schema recovery there — the turn fails), and would drop the
+        evidence-before-conclusion guarantee force_tool_use enforces on DA
+        turns. A soundness property is never traded for an experiment knob.
+        """
         provider = AnthropicProvider(_config(thinking_mode="adaptive"))
 
         with caplog.at_level("WARNING"):
@@ -209,9 +220,39 @@ class TestAdaptiveThinking:
                 provider, tools=_TOOLS, tool_choice="required", max_tokens=8000
             )
 
+        assert "thinking" not in body
+        # The caller's forcing survives EXACTLY as it set it.
+        assert body["tool_choice"] == {"type": "any"}
+        # Temperature is untouched too — the drop is part of the thinking path.
+        assert any("forced tool use" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_explicit_forced_tool_dict_also_refuses_thinking(self):
+        """Anthropic-native {"type": "tool", ...} forcing is refused the same
+        way as the "required" → {"type": "any"} translation."""
+        provider = AnthropicProvider(_config(thinking_mode="adaptive"))
+
+        body = await _sent_request_body(
+            provider,
+            tools=_TOOLS,
+            tool_choice={"type": "tool", "name": "search_file"},
+            max_tokens=8000,
+        )
+
+        assert "thinking" not in body
+        assert body["tool_choice"] == {"type": "tool", "name": "search_file"}
+
+    @pytest.mark.asyncio
+    async def test_auto_tool_choice_still_carries_thinking(self):
+        """Only forced choice is incompatible — auto turns keep thinking."""
+        provider = AnthropicProvider(_config(thinking_mode="adaptive"))
+
+        body = await _sent_request_body(
+            provider, tools=_TOOLS, tool_choice="auto", max_tokens=8000
+        )
+
         assert body["thinking"] == {"type": "adaptive"}
         assert body["tool_choice"] == {"type": "auto"}
-        assert any("tool_choice" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_adaptive_not_applied_without_tools(self):

@@ -479,3 +479,100 @@ def test_resolve_tool_loop_budget_is_bounded():
     # down to the model ceiling. Always a positive int, never above target+obs.
     assert isinstance(b, int) and b >= 2000
     assert b <= 32000 + 16000
+
+
+def test_tool_loop_bound_counts_reasoning_artifacts(monkeypatch):
+    """Echoed reasoning artifacts are WIRE payload and must be counted (#1116).
+
+    For a thinking-carrying assistant turn the provider serializes
+    ``provider_metadata["assistant_content"]`` (Anthropic thinking blocks) or
+    ``["assistant_parts"]`` (Gemini parts) INSTEAD OF ``content``. Estimating
+    from ``content`` + ``tool_calls`` alone under-counts those turns by the
+    whole size of their reasoning, so the bound would green-light a request
+    that blows the provider's context limit — the failure this function exists
+    to prevent.
+
+    Fails before the fix: the reasoning-heavy history estimates as tiny, the
+    early-exit returns the input list unchanged, and nothing is elided.
+    """
+    from types import SimpleNamespace
+
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+
+    fake = SimpleNamespace(da_model=None)
+    reasoning = "step " * 2000  # thousands of tokens of hidden reasoning
+
+    msgs = [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "BASE"},
+    ]
+    for i in range(4):
+        msgs.append(
+            {
+                "role": "assistant",
+                # Short visible content — the whole weight is in the artifact.
+                "content": "ok",
+                "tool_calls": [
+                    {
+                        "id": f"c{i}",
+                        "function": {"name": "search_file", "arguments": "{}"},
+                    }
+                ],
+                "provider_metadata": {
+                    "assistant_content": [
+                        {
+                            "type": "thinking",
+                            "thinking": f"{reasoning}{i}",
+                            "signature": "sig==",
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": f"c{i}",
+                            "name": "search_file",
+                            "input": {},
+                        },
+                    ]
+                },
+            }
+        )
+        msgs.append(
+            {
+                "role": "tool",
+                "tool_call_id": f"c{i}",
+                "name": "search_file",
+                "content": f"RESULT_{i}",
+            }
+        )
+
+    # Sized so ONE reasoning-carrying group fits and four do not: the elision
+    # policy is unchanged, only the estimate that drives it.
+    budget = 4000
+    out = MilestoneEngine._bound_tool_loop_messages(fake, msgs, budget, "openai")
+
+    # The reasoning is visible to the estimator, so the history is over budget
+    # and gets bounded rather than passed through untouched.
+    assert out is not msgs, "reasoning-heavy history must be recognised as over budget"
+    assert any(
+        "elided to stay within" in (m.get("content") or "") for m in out
+    ), "INV-4 marker"
+    # Newest observation survives, oldest is elided (unchanged elision policy).
+    joined = " ".join(str(m.get("content")) for m in out)
+    assert "RESULT_3" in joined
+    assert "RESULT_0" not in joined
+
+    # Gemini's artifact key is counted by the same code path.
+    gemini_msgs = [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "BASE"},
+        {
+            "role": "assistant",
+            "content": "ok",
+            "provider_metadata": {
+                "assistant_parts": [{"text": reasoning, "thoughtSignature": "sig=="}]
+            },
+        },
+    ]
+    assert (
+        MilestoneEngine._bound_tool_loop_messages(fake, gemini_msgs, 1000, "openai")
+        is not gemini_msgs
+    )

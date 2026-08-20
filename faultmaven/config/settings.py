@@ -148,6 +148,13 @@ class ServerSettings(BaseSettings):
     model_config = {"env_prefix": "", "extra": "ignore"}
 
 
+# Accepted values for ANTHROPIC_THINKING_MODE (#1116). Module-level, not a
+# class attribute: a leading-underscore name on a BaseSettings subclass is
+# captured by pydantic as a ModelPrivateAttr and is not the tuple by the time
+# a validator reads it.
+ANTHROPIC_THINKING_MODES = ("off", "adaptive", "enabled")
+
+
 class LLMSettings(BaseSettings):
     """LLM provider configuration with flexible multi-model support"""
 
@@ -261,7 +268,14 @@ class LLMSettings(BaseSettings):
     #     warning rather than issued — see AnthropicProvider._resolve_thinking).
     # Scope: the provider applies thinking only to tool-calling (structured
     # output) requests, mirroring Gemini's structured-only thinking config.
-    anthropic_thinking_mode: Literal["off", "adaptive", "enabled"] = Field(
+    # Declared `str`, not Literal: pydantic-settings' case-insensitivity
+    # applies to env var NAMES, not values, so a Literal would raise a
+    # ValidationError — and take the whole API down at boot — for
+    # ANTHROPIC_THINKING_MODE=OFF, i.e. an operator trying to turn this
+    # experiment knob OFF. The validator below normalizes case/whitespace and
+    # fails closed to "off" with a WARNING for anything unrecognized: a
+    # default-off experiment knob must never be able to down the server.
+    anthropic_thinking_mode: str = Field(
         default="off", validation_alias="ANTHROPIC_THINKING_MODE"
     )
     # Thinking budget for "enabled" mode (ignored in other modes). Anthropic's
@@ -429,6 +443,30 @@ class LLMSettings(BaseSettings):
         le=4096,
         description="Maximum tokens for phase handler and tool responses",
     )
+
+    @field_validator("anthropic_thinking_mode")
+    @classmethod
+    def normalize_anthropic_thinking_mode(cls, v):
+        """Normalize case/whitespace; fail closed to "off" on anything else.
+
+        Rejecting an unrecognized value would abort settings construction and
+        refuse to boot the API — an unacceptable outcome for a default-off
+        experiment knob, and one that fires on the most likely typo of all
+        (``ANTHROPIC_THINKING_MODE=OFF``). The warning is mandatory: a silent
+        fallback would leave an operator believing thinking is on when it is
+        not, and the provider layer's own fail-closed branch is unreachable
+        once this validator normalizes.
+        """
+        normalized = str(v).strip().lower()
+        if normalized in ANTHROPIC_THINKING_MODES:
+            return normalized
+        logging.getLogger(__name__).warning(
+            "Unrecognized ANTHROPIC_THINKING_MODE %r — falling back to 'off' "
+            "(valid values: %s). Extended thinking is DISABLED.",
+            v,
+            ", ".join(ANTHROPIC_THINKING_MODES),
+        )
+        return "off"
 
     @field_validator("max_tokens")
     @classmethod
