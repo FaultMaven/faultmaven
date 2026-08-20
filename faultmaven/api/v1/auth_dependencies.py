@@ -219,7 +219,10 @@ async def get_current_user_optional(
             username=claims.get("username", ""),
             email=claims.get("email", ""),
             display_name=claims.get("username", ""),  # Use username as display name
-            created_at=datetime.now(timezone.utc),  # JWT doesn't include created_at
+            # The JWT carries no created_at claim, so this is the moment of
+            # authentication, NOT the account's creation time. Anything
+            # user-facing must read the persisted user row instead (#1120).
+            created_at=datetime.now(timezone.utc),
             is_dev_user=claims.get("auth_mode") == "local",  # Local mode = dev user
             is_active=True,
             roles=claims.get("roles", ["user"]),

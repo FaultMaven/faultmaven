@@ -515,9 +515,13 @@ curl http://localhost:8000/api/v1/auth/me \
   "display_name": "Alice Smith",
   "roles": ["user", "admin", "platform_admin"],
   "created_at": "2025-10-23T12:00:00Z",
-  "last_login": null
+  "last_login": "2025-11-04T09:12:45Z"
 }
 ```
+
+Both timestamps come from the stored user row. `last_login` is `null` when
+the row's `last_login_at` has never been stamped — currently the case for
+accounts that have only used local (non-SSO) login ([#1127](https://github.com/FaultMaven/faultmaven/issues/1127)).
 
 ---
 
