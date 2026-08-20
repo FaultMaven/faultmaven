@@ -1974,30 +1974,6 @@ def _log_grounding_assessment(case: "Case") -> None:
         logger.debug("grounding-assessment trace failed", exc_info=True)
 
 
-def _deferred_disposition_signature(case: "Case", closure_verdict: str) -> str:
-    """The state that JUSTIFIES the deferred-implementation offer, as a
-    comparable string.
-
-    A decline is recorded against this, so the offer returns exactly when one
-    of its premises moves — a new or withdrawn solution, a change in which
-    disposition is warranted (e.g. a gone=>gone row arriving flips the verdict
-    to SUGGEST_RESOLVE), or the cause being re-established on a different leg.
-    Deliberately NOT turn-based: a cooldown would re-nag on a case where
-    nothing changed, which is the behaviour being fixed.
-    """
-    from faultmaven.core.investigation.terminal_transitions import (
-        cause_identification_leg,
-    )
-
-    return "|".join(
-        (
-            str(closure_verdict),
-            str(len(case.solutions or [])),
-            str(cause_identification_leg(case)),
-        )
-    )
-
-
 def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     """Deferred-implementation disposition (redesign §3.1 row 3 / §6 Q2).
 
@@ -2061,6 +2037,7 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
 
     from faultmaven.core.investigation.terminal_transitions import (
         assess_closure_readiness,
+        deferred_disposition_signature,
         propose_transition,
     )
 
@@ -2090,8 +2067,8 @@ def _maybe_propose_deferred_close(case: "Case", metadata: dict) -> None:
     # on a decline count: counting declines and giving up would be the engine
     # steering toward abandonment (D4 soft-collapse), and it would also strand
     # a case whose situation later genuinely warrants the offer again.
-    signature = _deferred_disposition_signature(case, closure.verdict)
-    if p.deferred_disposition_declined_signature == signature:
+    signature = deferred_disposition_signature(case, closure.verdict)
+    if signature in p.deferred_disposition_declined_signatures:
         return
 
     if closure.verdict == closure.SUGGEST_RESOLVE:
@@ -2538,11 +2515,27 @@ def engine_owned_affordances(
     return None
 
 
+#: How many refused deferred-disposition signatures a case carries. Bounds the
+#: progress blob; large enough that an oscillation between a handful of
+#: justifying states cannot evict a signature the user is still refusing.
+_MAX_DECLINED_DISPOSITION_SIGNATURES = 8
+
+
 def _record_deferred_disposition_decline(case: "Case") -> None:
-    """Persist that the user declined THIS proposer's offer, against the state
+    """Persist that the user refused THIS proposer's offer, against the state
     that justified it. No-op for any other pending transition — a decline of an
     LLM-initiated or user-initiated disposition says nothing about the
-    engine-initiated one."""
+    engine-initiated one.
+
+    Called from EVERY site that withdraws a standing offer without executing
+    it, not only the explicit-decline branch: a deflection ("we'll do it in
+    Friday's window — can you list the steps?") and a contradicting status
+    pick are both refusals of the disposition, and cancelling them unrecorded
+    lets the proposer re-fire from unchanged state — in the deflection case
+    within the SAME turn, since the fall-through reaches
+    ``_maybe_propose_deferred_close`` again (fm#1122's affordance takeover, on
+    the very turn the user pushed it away).
+    """
     pending = getattr(case, "pending_transition", None) or {}
     # Only THIS proposer writes `justifying_signature`, so its absence means
     # the standing offer came from the LLM or the user — declining that says
@@ -2550,9 +2543,16 @@ def _record_deferred_disposition_decline(case: "Case") -> None:
     signature = pending.get("justifying_signature")
     if not signature or not getattr(case, "progress", None):
         return
-    case.progress.deferred_disposition_declined_signature = signature
+    declined = case.progress.deferred_disposition_declined_signatures
+    if signature in declined:
+        return
+    declined.append(signature)
+    # Bounded: a case that oscillates between two justifying states could
+    # otherwise grow the progress blob without limit. Oldest first — the
+    # signatures most likely to recur are the recent ones.
+    del declined[:-_MAX_DECLINED_DISPOSITION_SIGNATURES]
     logger.info(
-        "Deferred-implementation disposition declined for case %s; not "
+        "Deferred-implementation disposition refused for case %s; not "
         "re-proposing until the justifying state changes (signature=%s)",
         case.case_id,
         signature,
@@ -4416,6 +4416,12 @@ class MilestoneEngine:
                 ):
                     old_target = case.pending_transition.get("to_state")
                     new_target = intent_data.get("to_state")
+                    # Picking a different target is an unmistakable refusal of
+                    # the standing offer, so record it before the cancel erases
+                    # the provenance (fm#1122) — otherwise the engine's
+                    # deferred disposition re-fires next turn from state the
+                    # user just contradicted.
+                    _record_deferred_disposition_decline(case)
                     cancel_pending_transition(case)
                     logger.info(
                         f"Pending transition to '{old_target}' cancelled — user "
@@ -4613,6 +4619,15 @@ class MilestoneEngine:
                         if stripped_message and (
                             message_is_substantive or already_re_presented
                         ):
+                            # A deflection is a refusal of the offer even
+                            # though it is not a "no": the withdrawal must be
+                            # recorded before the cancel erases the
+                            # provenance. Without this the fall-through below
+                            # reaches _maybe_propose_deferred_close in the
+                            # SAME turn with an unchanged signature and
+                            # re-takes the affordances the user just pushed
+                            # away (fm#1122).
+                            _record_deferred_disposition_decline(case)
                             cancel_pending_transition(case)
                             logger.info(
                                 f"Pending transition withdrawn for case "

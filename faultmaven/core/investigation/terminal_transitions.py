@@ -614,6 +614,33 @@ def derive_disposition_eligibility(case: "Case") -> dict[str, str]:
     }
 
 
+def deferred_disposition_signature(case: Case, closure_verdict: str) -> str:
+    """The state that JUSTIFIES the deferred-implementation offer, as a
+    comparable string.
+
+    A refusal is recorded against this, so the offer returns exactly when one
+    of its premises moves — a new or withdrawn solution, a change in which
+    disposition is warranted (e.g. a gone=>gone row arriving flips the verdict
+    to SUGGEST_RESOLVE), or the cause being re-established on a different leg.
+    Deliberately NOT turn-based: a cooldown would re-nag on a case where
+    nothing changed, which is the behaviour being fixed.
+
+    Lives here rather than in ``milestone_engine`` because the INV-37 pivot in
+    ``confirm_pending_transition`` has to RECOMPUTE it: the pivot replaces the
+    pending dict wholesale, and carrying the pre-pivot string across would
+    record a refusal against a verdict that no longer holds — which the next
+    turn's freshly computed signature would not match, so the offer would
+    return anyway.
+    """
+    return "|".join(
+        (
+            str(closure_verdict),
+            str(len(case.solutions or [])),
+            str(cause_identification_leg(case)),
+        )
+    )
+
+
 def propose_transition(
     case: Case,
     to_state: str,
@@ -693,7 +720,19 @@ def confirm_pending_transition(case: Case, user_id: str) -> bool:
     if to_state == "closed" and case.state == CaseState.INVESTIGATING:
         closure = assess_closure_readiness(case)
         if closure.verdict == ClosureReadiness.SUGGEST_RESOLVE:
+            engine_proposed = "justifying_signature" in pending
             propose_transition(case, to_state="resolved", summary=closure.message)
+            # Carry the engine-proposer's provenance across the pivot, against
+            # the verdict that now holds. propose_transition builds a fresh
+            # dict, so without this the pivoted offer looks LLM-initiated and a
+            # refusal of it records nothing — the deferred-disposition offer
+            # then returns on the next turn from unchanged state (fm#1122).
+            # Recomputed, not copied: the pivot fires BECAUSE the verdict moved
+            # to SUGGEST_RESOLVE, so the pre-pivot string is already stale.
+            if engine_proposed:
+                case.pending_transition["justifying_signature"] = (
+                    deferred_disposition_signature(case, closure.verdict)
+                )
             close_pivoted_to_resolve_total.inc()
             logger.info(
                 f"Case {case.case_id}: pending CLOSE pivoted to RESOLVED at "

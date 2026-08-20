@@ -33,6 +33,17 @@ from faultmaven.modules.case.domain.models import CauseState
 #: supported. An editorial band, NOT a claim about what a case requires.
 _WELL_SUPPORTED_LINK_COUNT = 3
 
+#: Mean support density below which the next step is "collect more evidence"
+#: rather than "validate what you have". Pre-dates the ``evidence_completeness``
+#: rename and is kept at its original value: the density is a MEAN across
+#: active hypotheses, so testing it against 1.0 would let one thinly linked
+#: hypothesis dictate the next step for a well-supported pool.
+_COLLECT_MORE_EVIDENCE_DENSITY = 0.70
+
+#: Mean support density below which thin evidence is reported as a reason the
+#: investigation is stalling. Also pre-dates the rename.
+_BLOCKED_SUPPORT_DENSITY = 0.30
+
 
 @dataclass
 class ProgressMetrics:
@@ -110,15 +121,12 @@ def generate_working_conclusion(
     # Find highest likelihood hypothesis
     best_hypothesis = max(active_hypotheses, key=lambda h: h.likelihood)
 
-    # Calculate evidence completeness for best hypothesis
-    support_density = _supporting_link_density(best_hypothesis, case)
-
     # Count supporting evidence
     supporting_count = len(best_hypothesis.supporting_evidence)
     total_evidence = len(case.evidence)
 
     # Generate caveats
-    caveats = _generate_caveats(best_hypothesis, support_density, case)
+    caveats = _generate_caveats(best_hypothesis)
 
     # Determine if can proceed with solution (≥70% likelihood)
     can_proceed = best_hypothesis.likelihood >= 0.70
@@ -161,7 +169,7 @@ def calculate_progress_metrics(
     ]
 
     # Calculate evidence completeness across all active hypotheses
-    support_density = _overall_support_density(active_hypotheses, case)
+    support_density = _overall_support_density(active_hypotheses)
 
     # Determine investigation momentum
     momentum = _determine_investigation_momentum(case, current_turn)
@@ -211,7 +219,7 @@ def _get_confidence_level_from_value(likelihood: float) -> ConfidenceLevel:
         return ConfidenceLevel.SPECULATION
 
 
-def _supporting_link_density(hypothesis: Hypothesis, case: Case) -> float:
+def _supporting_link_density(hypothesis: Hypothesis) -> float:
     """SUPPORTS links on this hypothesis over ``_WELL_SUPPORTED_LINK_COUNT``,
     capped at 1.0.
 
@@ -231,17 +239,19 @@ def _supporting_link_density(hypothesis: Hypothesis, case: Case) -> float:
     return min(len(hypothesis.supporting_evidence) / _WELL_SUPPORTED_LINK_COUNT, 1.0)
 
 
-def _overall_support_density(
-    active_hypotheses: List[Hypothesis],
-    case: Case,
-) -> float:
-    """Mean supporting-link density across active hypotheses."""
+def _overall_support_density(active_hypotheses: List[Hypothesis]) -> float:
+    """Mean supporting-link density across active hypotheses.
+
+    ``0.0`` for an empty list is "nothing to average", NOT "nothing is
+    linked" — callers that phrase a finding about active hypotheses must
+    check the count first.
+    """
     if not active_hypotheses:
         return 0.0
 
-    completeness_scores = [_supporting_link_density(h, case) for h in active_hypotheses]
+    densities = [_supporting_link_density(h) for h in active_hypotheses]
 
-    return sum(completeness_scores) / len(completeness_scores)
+    return sum(densities) / len(densities)
 
 
 def _determine_investigation_momentum(
@@ -286,12 +296,13 @@ def _determine_investigation_momentum(
         return InvestigationMomentum.MODERATE
 
 
-def _generate_caveats(
-    hypothesis: Hypothesis,
-    support_density: float,
-    case: Case,
-) -> List[str]:
-    """Generate caveats based on evidence state and confidence."""
+def _generate_caveats(hypothesis: Hypothesis) -> List[str]:
+    """Generate caveats based on evidence state and confidence.
+
+    Takes no density: the thin-support caveat bands the raw link COUNT on this
+    hypothesis, and keeping the parameter would tell the next reader the
+    caveat still tracks a density it does not read.
+    """
     caveats = []
 
     # Thin-support caveat, stated as the COUNT. The engine does not know what
@@ -341,7 +352,7 @@ def _generate_next_steps(
     if not progress.symptom_verified:
         steps.append("Verify symptom with concrete evidence")
     elif progress.cause_state != CauseState.IDENTIFIED:
-        if support_density < 1.0:
+        if support_density < _COLLECT_MORE_EVIDENCE_DENSITY:
             steps.append("Collect more evidence to test hypotheses")
         else:
             steps.append("Validate hypotheses to identify root cause")
@@ -372,8 +383,16 @@ def _generate_blocked_reasons(
             f"No progress for {case.turns_without_progress} consecutive turns"
         )
 
-    if support_density <= 0.0:
-        reasons.append("No supporting evidence linked to any active hypothesis")
+    # Guarded on the count: an empty active list averages to 0.0, and a reason
+    # asserting that nothing is linked to any active hypothesis states a fact
+    # about hypotheses that do not exist — the empty case has its own reason
+    # below. Two bands so the exact-zero wording stays exact while a starved
+    # pool (some links, far too few) is still reported.
+    if active_hypotheses_count > 0:
+        if support_density <= 0.0:
+            reasons.append("No supporting evidence linked to any active hypothesis")
+        elif support_density < _BLOCKED_SUPPORT_DENSITY:
+            reasons.append("Supporting evidence is thin across active hypotheses")
 
     if active_hypotheses_count == 0 and len(case.hypotheses) > 0:
         reasons.append("No active hypotheses remaining (all refuted or retired)")

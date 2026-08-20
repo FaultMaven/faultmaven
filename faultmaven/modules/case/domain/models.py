@@ -687,20 +687,26 @@ class InvestigationProgress(BaseModel):
         ),
     )
 
-    deferred_disposition_declined_signature: str | None = Field(
-        default=None,
+    deferred_disposition_declined_signatures: List[str] = Field(
+        default_factory=list,
         description=(
-            "The justifying-state signature in force when the user last "
-            "DECLINED the engine's deferred-implementation disposition offer "
-            "(None = never declined). The offer is re-proposed only when the "
-            "current signature differs, so a decline POSTPONES it until "
-            "something about the case actually changes — it never permanently "
-            "disarms it. A decline counter would instead teach the engine to "
-            "abandon, which is soft-collapse (D4). Persisted in the progress "
-            "blob so the decline survives the turn that cleared "
-            "``pending_transition``; before this, nothing recorded the decline "
-            "and the proposal re-fired every single turn (fm#1122: five "
-            "identical offers against five explicit declines)."
+            "Every justifying-state signature the user has REFUSED the "
+            "engine's deferred-implementation disposition offer against "
+            "(empty = never refused). The offer is re-proposed only when the "
+            "current signature is not among these, so a refusal POSTPONES it "
+            "until something about the case actually changes — it never "
+            "permanently disarms it. A decline counter would instead teach "
+            "the engine to abandon, which is soft-collapse (D4). Persisted in "
+            "the progress blob so the refusal survives the turn that cleared "
+            "``pending_transition``; before this, nothing recorded it and the "
+            "proposal re-fired every single turn (fm#1122: five identical "
+            "offers against five explicit declines). A SET rather than the "
+            "last signature: the cause-identification leg is recomputed every "
+            "turn and can flip back (``chain`` while cause_state is "
+            "IDENTIFIED, ``rcc`` while it is not), so a single slot re-arms "
+            "the offer on every oscillation between two states the user has "
+            "already refused in. Bounded by "
+            "``_MAX_DECLINED_DISPOSITION_SIGNATURES``, oldest dropped first."
         ),
     )
 
