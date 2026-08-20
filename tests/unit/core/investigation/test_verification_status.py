@@ -612,3 +612,136 @@ def test_grounded_but_symptom_unverified_stalled_is_insufficient_not_treatment_b
     # With the symptom verified, the SAME stalled grounded case is TREATMENT_BLOCKED.
     case.progress.symptom_verified = True
     assert assess_verification_status(case) == VerificationStatus.TREATMENT_BLOCKED
+
+
+# --- Confusable pair 3, IN FLIGHT (#1136) ------------------------------------
+# The pair above splits correctly only at the CONFIRMED grade — which the engine
+# cannot reach mid-investigation, because the sole producer of CONFIRMED is the
+# resolution confirm-stamp and that fires after the last per-turn recompute. So
+# every fixture above models a state no live INVESTIGATING turn is ever in, and
+# the whole grounded ROW went untested where it actually runs. These pin the pair
+# at the grade a live turn really holds: MECHANISTIC — a validated root that has
+# not been counterfactually borne out.
+
+
+def _mechanistic_root() -> CausalNode:
+    """A VALIDATED ROOT with no counterfactual confirmation → ``MECHANISTIC``.
+
+    Deliberately carries NO ``causal_absence`` SUPPORTS link (contrast
+    ``_grounded_root``): that link is what lifts the grade to CONFIRMED, and only
+    the resolution confirm-stamp mints it.
+    """
+    return CausalNode(
+        node_id=_nid(2),
+        statement="OIDC provider audience mismatch",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        actionable=True,
+        generated_at_turn=4,
+    )
+
+
+def _mechanistic_case(**overrides) -> Case:
+    """A work-gate-passing case holding a MECHANISTIC root, symptom verified."""
+    case = _work_done(**overrides)
+    d, root = _problem(), _mechanistic_root()
+    case.causal_nodes = {d.node_id: d, root.node_id: root}
+    case.causal_edges = [
+        CausalEdge(cause_node_id=root.node_id, effect_node_id=d.node_id)
+    ]
+    case.progress.symptom_verified = True
+    return case
+
+
+def test_mechanistic_root_is_grounded_in_flight():
+    """The grade a live stalled case actually holds must read as grounded.
+
+    Before #1136 this disposed INSUFFICIENT_EVIDENCE — asserting "no cause could
+    be grounded" over a case holding a validated root, to consumers that take the
+    claim at face value.
+    """
+    from faultmaven.core.investigation.cause_assurance import (
+        CauseAssuranceGrade,
+        grade_cause_assurance,
+    )
+
+    case = _mechanistic_case(current_turn=15, turns_without_progress=7)
+    assert grade_cause_assurance(case) == CauseAssuranceGrade.MECHANISTIC
+    assert assess_verification_status(case) == VerificationStatus.TREATMENT_BLOCKED
+
+
+def test_mechanistic_grounded_progressing_is_healthy():
+    """The other grounded cell is reachable in flight too, not just the stalled one."""
+    case = _mechanistic_case(current_turn=9, turns_without_progress=1)
+    assert assess_verification_status(case) == VerificationStatus.HEALTHY
+
+
+def test_in_flight_pair_splits_on_a_validated_root_not_on_confirmation():
+    """The live confusable pair: identical stall and identical work, differing only
+    in whether a root was ever validated.
+
+    Both shapes are drawn from real runs (fm#1122): a mechanistically identified
+    cause stalled awaiting an out-of-band fix, versus a case whose graph holds no
+    validated root at all. They must not receive the same verdict — the first has
+    a cause and cannot verify the fix; only the second is short of evidence.
+    """
+    grounded_stalled = _mechanistic_case(current_turn=15, turns_without_progress=7)
+    no_root_stalled = _work_done(current_turn=15, turns_without_progress=7)
+    no_root_stalled.progress.symptom_verified = True
+
+    assert (
+        assess_verification_status(grounded_stalled)
+        == VerificationStatus.TREATMENT_BLOCKED
+    )
+    assert (
+        assess_verification_status(no_root_stalled)
+        == VerificationStatus.INSUFFICIENT_EVIDENCE
+    )
+
+
+def test_symptom_anchor_still_gates_the_mechanistic_arm():
+    """Loosening the GRADE bar must not loosen the symptom anchor with it."""
+    case = _mechanistic_case(current_turn=15, turns_without_progress=7)
+    case.progress.symptom_verified = False
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+
+
+# --- Work gate counts DISTINCT observations (#1136) --------------------------
+
+
+def test_work_gate_counts_distinct_evidence_not_rows():
+    """The same datum recorded twice is one thing the investigation knows.
+
+    Without this, a case re-submitting one snapshot satisfies the ≥2 evidence
+    dimension on no new work and leaves NOT_YET_PRODUCTIVE — blaming the case for
+    what the reasoner never gathered, the §5.2 line this gate exists to draw.
+    """
+    case = _case(
+        grounded=False,
+        n_hypotheses=2,
+        n_categories=2,
+        n_evidence=0,
+        current_turn=9,
+        turns_without_progress=5,
+    )
+    dup_a, dup_b = _ev("same"), _ev("same")
+    dup_a.evidence_id, dup_b.evidence_id = _eid("a"), _eid("b")
+    dup_a.source_file_id = dup_b.source_file_id = None
+    dup_a.extract = "OOMKilled  exit code 137"
+    # Same datum, differing only in whitespace/case — still one observation.
+    dup_b.extract = "oomkilled   Exit Code 137"
+    case.evidence = [dup_a, dup_b]
+
+    assert len(case.evidence) >= 2
+    assert not work_gate_passed(case)
+    assert assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+
+    # A genuinely different observation crosses the gate.
+    third = _ev("other")
+    third.evidence_id = _eid("c")
+    third.source_file_id = None
+    third.extract = "memory usage 394Mi of 400Mi limit"
+    case.evidence.append(third)
+    assert work_gate_passed(case)
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE

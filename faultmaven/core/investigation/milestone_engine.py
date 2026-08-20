@@ -42,6 +42,7 @@ from faultmaven.core.investigation.causal_graph import (
     demote_disconfirmed_cause_via_evidence,
     derive_node_states,
     find_duplicate_hypothesis,
+    hypothesis_statements_duplicate,
     ingest_emitted_chain,
     is_chain_root_validated,
     link_llm_rcc_to_cause,
@@ -60,6 +61,7 @@ from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
     absence_row_link_refused,
     conclusion_overclaims,
+    evidence_datum_key,
     grade_cause_assurance,
     runbook_conversion_ready,
 )
@@ -2281,6 +2283,75 @@ def _gate1_is_pending(case: "Case") -> bool:
     return not inq.problem_statement_confirmed
 
 
+def _restates_standing_solution(s_item, case: "Case") -> bool:
+    """Whether an emitted solution merely RESTATES one already on the case (#1136).
+
+    Re-proposing the standing fix is what a well-behaved model does while it waits
+    for the user to apply it — every turn, in the same words. Each restatement
+    minted a fresh ``sol_*`` row, and a minted row counted as progress, so a case
+    parked on an unapplied fix reset ``turns_without_progress`` indefinitely and no
+    stall net could ever arm (observed: ``case_07a2d687f057``, turns 8-18 — eleven
+    consecutive turns whose only artifact was the same fix re-offered).
+
+    The engine already names this situation on the *action* side: INV-32's
+    ``_supersede_pending_solution_offers(reason="reproposal")`` retires the standing
+    pending offer when a new one arrives. This is the same judgement applied to the
+    progress signal.
+
+    Deliberately NOT a mint-time skip (the INV-36 hypothesis treatment): a
+    ``Solution`` row anchors a ``ProposedAction``, which is the compliance-detection
+    chain the user's later "I ran it" is matched against. Dropping the row to fix a
+    counter would risk that chain. The row is kept; only ``metadata`` records
+    whether it was NEW. Duplicate rows accumulating on the case is a real but
+    separate defect — see the PR's follow-up note.
+
+    Text comparison reuses ``hypothesis_statements_duplicate`` for its two
+    fail-open guards, both of which matter more here than for hypotheses: the
+    numeric-discriminator guard keeps a REVISED fix distinct (``-Xmx256m`` is not a
+    restatement of ``-Xmx512m``), and the mutual-mirror bar keeps a more-specific
+    elaboration distinct from the general fix it refines. Same ``solution_type`` is
+    required as well — the same words proposed as a WORKAROUND and as a permanent
+    SOLUTION are different offers.
+    """
+    description = getattr(s_item, "description", None)
+    if not description:
+        # No text to compare — fail open (treat as new), never dedup on absence.
+        return False
+    for standing in case.solutions or []:
+        if standing.solution_type != s_item.solution_type:
+            continue
+        if not standing.immediate_action:
+            continue
+        if hypothesis_statements_duplicate(description, standing.immediate_action):
+            return True
+    return False
+
+
+def _restates_standing_evidence(ev_item, case: "Case") -> bool:
+    """Whether an emitted evidence row quotes an extract already on the case (#1136).
+
+    The counterpart of ``_restates_standing_solution`` on the supply side: a user
+    re-submitting a snapshot they already sent (or a model re-extracting the same
+    lines from the same file) minted new ``ev_*`` rows, and a minted row counted as
+    progress.
+
+    The bar is **exact match after normalisation**, not the fuzzy mirror used for
+    solutions, and the difference is deliberate. An evidence ``extract`` is a quoted
+    span, not a paraphrase — two spans are the same datum or they are not, and a
+    near-miss is far more likely to be a genuinely different span (an adjacent log
+    window, the next occurrence of a repeating line) than a restatement. Source
+    identity is required too: the same text observed in two different files is two
+    observations, which is precisely the independent-corroboration signal the
+    grading layer counts.
+
+    Fail-open on an empty extract — a row with nothing quoted is never deduped away.
+    """
+    if not getattr(ev_item, "extract", None):
+        return False
+    key = evidence_datum_key(ev_item)
+    return any(evidence_datum_key(standing) == key for standing in case.evidence or [])
+
+
 def _insufficient_evidence_handoff_suggestions() -> list:
     """Deterministic structured-handoff affordances for an insufficient-evidence
     case (verification-status Phase 1).
@@ -2440,6 +2511,88 @@ def _hypothesis_vacuum_pending(case: "Case") -> bool:
     return assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
 
 
+def _treatment_blocked_suggestions() -> list:
+    """Deterministic affordances for a case that HAS a cause but cannot reach a
+    verified fix (§5.1's grounded × stalled cell — "failed fix, no access, change
+    window, waiting on another team").
+
+    The third peer of the insufficient-evidence handoff and the hypothesis-vacuum
+    pull-back: same mechanism (a code-guarded branch that substitutes a
+    deterministic affordance pair regardless of LLM compliance), different
+    trigger, different ask. Where those two ask for data that would *ground* a
+    cause, this one has the cause — what it lacks is a path to *verifying the
+    fix*. Asking such a case for more diagnostic data is the wrong question, and
+    was the observable symptom before this branch existed: the engine either
+    re-offered a close every turn or restated the same fix and waited.
+
+    **Names the blocker, never proposes a disposition.** Offering to close here
+    would resurrect through the affordance channel exactly the deferred-close nag
+    #1138 removed (five offers against five typed declines). Disposition stays
+    with the disposition gate, which is checked first in
+    ``engine_owned_affordances`` — so before a decline that gate owns the turn,
+    and after it these moves take over without re-asking the settled question.
+    Keep-engaging by construction (D4: the engine must never steer toward
+    abandonment).
+
+    Both sub-shapes of the cell are covered: a fix proposed but not yet applied
+    (blocked on access, a window, or another team), and a grounded cause with no
+    fix on the table yet. Non-clickable FREE_SPEECH — the user supplies the
+    content.
+    """
+    return [
+        {
+            "label": "Say what's blocking the fix",
+            "action_type": "FREE_SPEECH",
+            "body": (
+                "The investigation has a cause but can't confirm a fix from here. "
+                "Naming what stands in the way — access, a change window, another "
+                "team, or a fix already tried that didn't hold — lets it work the "
+                "blocker instead of re-asking for data."
+            ),
+        },
+        {
+            "label": "Report what happened when the fix was applied",
+            "action_type": "FREE_SPEECH",
+            "body": (
+                "If the change went in, its outcome is the decisive observation — "
+                "what recovered, what didn't, or what broke instead. If it hasn't "
+                "gone in yet, say so and the case holds without re-asking."
+            ),
+        },
+    ]
+
+
+def _treatment_blocked_pending(case: "Case") -> bool:
+    """Whether the engine should drive the treatment-blocked handoff this turn
+    (#1136 — the third code-guarded branch).
+
+    ``TREATMENT_BLOCKED`` was unreachable in-flight before #1136 (the grounding
+    axis required ``CONFIRMED``, which only the resolution confirm-stamp mints),
+    so the cell drove nothing because nothing ever landed in it. Making the axis
+    read "any validated root" lands the **most common stall shape** there — a
+    mechanistically identified cause waiting on a fix — and a reachable cell that
+    drives nothing is the same defect this issue exists to close, one cell over.
+
+    Scoped to ``INVESTIGATING`` and ordered with its two peers, below the
+    state-machine gates. Mutually exclusive with them by construction: all three
+    read the same join, and a case has exactly one verification status.
+
+    Must be evaluated AFTER the per-turn recompute so the status read is fresh
+    (the #593 re-derive-after-stamp ordering); the single
+    ``engine_owned_affordances`` call site satisfies that.
+    """
+    if case.state != CaseState.INVESTIGATING:
+        return False
+    # Cheap short-circuit before the grounding-grade computation, mirroring the
+    # sibling handoff: TREATMENT_BLOCKED requires a stall. The plain time arm is
+    # the exact reading here — the declared-data-wall arm belongs to the
+    # not-grounded branch (it is about failing to GROUND a cause, which this cell
+    # has already done), exactly as ``assess_verification_status`` scopes it.
+    if not is_stalled(case):
+        return False
+    return assess_verification_status(case) == VerificationStatus.TREATMENT_BLOCKED
+
+
 def _schema_prompt_instruction(schema: dict) -> str:
     """In-prompt schema block for providers that need the schema in prompt
     text (json_object / prompt_only strategies).
@@ -2519,6 +2672,9 @@ def engine_owned_affordances(
 
     if _hypothesis_vacuum_pending(case):
         return ("not_yet_productive", _hypothesis_vacuum_suggestions())
+
+    if _treatment_blocked_pending(case):
+        return ("treatment_blocked", _treatment_blocked_suggestions())
 
     return None
 
@@ -5791,6 +5947,10 @@ class MilestoneEngine:
                     metadata["verification_status"] = (
                         VerificationStatus.NOT_YET_PRODUCTIVE.value
                     )
+                elif gate_name == "treatment_blocked":
+                    metadata["verification_status"] = (
+                        VerificationStatus.TREATMENT_BLOCKED.value
+                    )
 
             # Closure-ack turn (LLM-driven path): when generation
             # succeeded, suggestions stay minimal — the rendered summary
@@ -8681,6 +8841,14 @@ class MilestoneEngine:
         # creates Evidence via evidence_to_add with the appropriate category.
         if attachments:
             for attachment in attachments:
+                # #1136: is this attachment data the case did not already hold?
+                # Content-hash dedup already happened upstream
+                # (``investigation_service._preprocess_attachment``): a
+                # byte-identical re-submission REUSES the existing UploadedFile,
+                # so the metadata arrives carrying that row's ``file_id``.
+                # Recognising the id we already hold is therefore exact, and
+                # needs no second hash here. Checked BEFORE the append.
+                known_ids = {f.file_id for f in case.uploaded_files}
                 uploaded_file = self._create_uploaded_file_from_attachment(
                     case=case, attachment=attachment, turn_number=case.current_turn
                 )
@@ -8688,6 +8856,10 @@ class MilestoneEngine:
                 metadata["files_uploaded"] = metadata.get("files_uploaded", []) + [
                     uploaded_file.file_id
                 ]
+                if uploaded_file.file_id not in known_ids:
+                    metadata["novel_files_uploaded"] = metadata.get(
+                        "novel_files_uploaded", []
+                    ) + [uploaded_file.file_id]
 
         # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)
         # This repairs LLM classification failures before applying state updates
@@ -9761,8 +9933,18 @@ class MilestoneEngine:
                     coverage_start_ts=coverage_start,
                     coverage_end_ts=coverage_end,
                 )
+                # #1136: does this row carry a datum the case did not already
+                # hold? Computed BEFORE the append, or the row would match
+                # itself. ``evidence_added`` keeps every minted id (positional
+                # ``new_index_N`` refs, milestone attribution and coverage all
+                # resolve against it); only the progress signal narrows.
+                restates = _restates_standing_evidence(ev_item, case)
                 case.evidence.append(ev)
                 metadata["evidence_added"].append(ev.evidence_id)
+                if not restates:
+                    metadata.setdefault("novel_evidence_added", []).append(
+                        ev.evidence_id
+                    )
                 logger.info(
                     f"Created evidence: {ev.evidence_id} | "
                     f"category={ev.category.value}, source_type={ev.source_type.value}, "
@@ -9983,8 +10165,16 @@ class MilestoneEngine:
                     ),
                     proposed_at=datetime.now(UTC),
                 )
+                # #1136: as for evidence above — computed BEFORE the append so
+                # the row cannot match itself. ``solutions_proposed`` keeps every
+                # minted id; only the progress signal narrows to NEW offers.
+                restates = _restates_standing_solution(s_item, case)
                 case.solutions.append(sol)
                 metadata["solutions_proposed"].append(sol.solution_id)
+                if not restates:
+                    metadata.setdefault("novel_solutions_proposed", []).append(
+                        sol.solution_id
+                    )
 
                 # Gap 0: Create ProposedAction for compliance detection chain
                 action_type = _determine_action_type(case, s_item.solution_type)
@@ -11654,21 +11844,57 @@ class MilestoneEngine:
         )
 
     def _check_if_progress_made(self, metadata: dict[str, Any]) -> bool:
-        """Check if any meaningful investigative activity occurred.
+        """Whether the investigation ADVANCED this turn — the sole writer of
+        ``turns_without_progress``, and therefore of every stall net downstream.
 
-        Progress includes structural artifacts (milestones, evidence, hypotheses)
-        AND active investigative behaviors (requesting data, testing hypotheses,
-        linking evidence). A skilled troubleshooter gathering information IS
-        making progress.
+        The distinction this draws is *advancement*, not *activity* (#1136). The
+        predicate used to accept any touched artifact, on the reasoning that "a
+        skilled troubleshooter gathering information IS making progress". That is
+        true of gathering something NEW and false of restating what the case
+        already holds — and because the LLM restates constantly while it waits for
+        the user (re-proposing the standing fix, re-quoting the same log lines),
+        the counter reset almost every turn. It reached the ``EXHAUSTION_*``
+        thresholds on 8 of 103 real cases past the turn floor, so ``is_stalled``,
+        ``is_progress_stalled``, ``INSUFFICIENT_EVIDENCE``, ``TREATMENT_BLOCKED``,
+        the exhaustion detector and the LOW/BLOCKED momentum bands were all
+        effectively unreachable together.
+
+        Each arm is therefore keyed to something the case did not already have:
+
+        - ``novel_*`` rather than the raw ``evidence_added`` / ``solutions_proposed``
+          / ``files_uploaded`` lists. Those keep every minted id — positional
+          ``new_index_N`` resolution, milestone attribution and the turn record all
+          depend on them — so the narrowing lives here, in the progress reading,
+          not in what gets written. See ``_restates_standing_solution`` /
+          ``_restates_standing_evidence`` for the per-arm bars.
+        - ``DATA_PROVIDED`` is **dropped** as a separate arm. It is set from
+          ``evidence_added`` (``turn_outcome.determine_turn_outcome``), so keeping
+          it would readmit through the outcome label exactly the duplicate rows the
+          ``novel_evidence_added`` key exists to exclude. Genuinely new evidence
+          still lands via that key; nothing else was ever reaching this arm.
+        - ``DATA_REQUESTED`` stays, and is now structural — a NEW outstanding
+          ``EvidenceNeed`` raised this turn, not a keyword scan of the previous
+          turn's prose (``turn_outcome._new_data_request_raised``). Re-asking for
+          data the case is already waiting on no longer counts, which is the
+          behaviour a parked investigation actually exhibits.
+        - ``HYPOTHESIS_TESTED`` stays as-is: it reads ``tested_at ==
+          current_turn``, already state-backed and already per-turn.
+
+        Note this makes the counter honest for its OTHER readers too, all of which
+        were reading the same inflated signal: ``progress_monitor``'s exhaustion
+        detector, the LOW/BLOCKED momentum bands in
+        ``working_conclusion_generator``, the "M turns since last progress" line in
+        ``prompts/context_builder``, and the ``evidence_need_surfacing`` page
+        cursor (which now rotates on genuinely barren turns, as it was meant to).
         """
-        # Structural progress: new artifacts created or status changed
+        # Structural progress: an artifact the case did not already hold.
         structural_keys = [
             "milestones_completed",
-            "evidence_added",
+            "novel_evidence_added",
             "hypotheses_generated",
             "hypotheses_validated",
-            "solutions_proposed",
-            "files_uploaded",
+            "novel_solutions_proposed",
+            "novel_files_uploaded",
         ]
         for key in structural_keys:
             if metadata.get(key):
@@ -11682,7 +11908,6 @@ class MilestoneEngine:
         if outcome in (
             TurnOutcome.DATA_REQUESTED,
             TurnOutcome.HYPOTHESIS_TESTED,
-            TurnOutcome.DATA_PROVIDED,
         ):
             return True
 
