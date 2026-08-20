@@ -630,7 +630,7 @@ class ConversionService:
         if existing and existing.has_live_draft():
             raise ConversionRejectedError(
                 "A runbook draft already exists for this case. View or update it "
-                "in the Dashboard under Knowledge > Drafts.",
+                "in the Dashboard under Knowledge Base > Drafts.",
                 error_code=ConversionErrorCode.CASE_RUNBOOK_EXISTS,
             )
 

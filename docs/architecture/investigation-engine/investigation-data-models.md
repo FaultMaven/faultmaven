@@ -741,7 +741,7 @@ Maps case data to the 7 canonical runbook sections:
 1. Content readiness (RunbookReadiness check — no I/O)
 2. Deduplication (ChromaDB vector search via `runbook_kb`, scoped to the case owner by `scope_resolver` — a ≥70% best-chunk match returns `SIMILAR_FOUND`: the turn names the candidate by title and score as overlap, never coverage, creates no draft, and a "Generate a new runbook anyway" affordance creates one only on explicit confirmation; there is no auto-suppressing "existing covers" verdict, fm#1030)
 
-If eligible, `ConversionService.convert_from_case()` runs as a fire-and-forget background task. The draft appears in Dashboard Knowledge > Drafts.
+If eligible, `ConversionService.convert_from_case()` runs as a fire-and-forget background task. The draft appears in the Dashboard under Knowledge Base > Drafts.
 
 **ClosureReadiness** (`assess_closure_readiness(case)`) — investigation summary for the CLOSED confirmation prompt.
 

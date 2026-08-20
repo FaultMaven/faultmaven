@@ -3819,7 +3819,7 @@ class MilestoneEngine:
             return {
                 "agent_response": (
                     "A runbook draft already exists for this case. You can view or "
-                    "update it in the Dashboard under **Knowledge > Drafts**."
+                    "update it in the Dashboard under **Knowledge Base > Drafts**."
                 ),
                 "suggested_follow_ups": [],
                 "case_updated": case,
@@ -3843,10 +3843,42 @@ class MilestoneEngine:
                 self._run_runbook_conversion(conversion_service, request, case.user_id)
             )
 
+            # Name only what the reader can act on while reading this turn.
+            #
+            # No in-chat notification is promised. The background task DOES
+            # write a completion notification into the transcript, but it is a
+            # `role: "system"` row and the copilot's conversation loader keeps
+            # only user/assistant rows — and there is no push channel for case
+            # messages, so that row is invisible on this turn and after a
+            # reload alike. The FAILURE notifications ride the same row, so a
+            # failed or empty conversion is silent there.
+            #
+            # No chat affordance is named either. "Generate runbook from this
+            # case" is deliberately suppressed on THIS turn (see
+            # `runbook_already_exists=True` below), and free-typed text never
+            # reaches the creation path — `_RUNBOOK_CREATION_PATTERNS` matches
+            # the DECIDE payload exactly, so the label is not typeable. Naming
+            # it here would point at nothing.
+            #
+            # No failure is inferred from absence, either. `_persist_job` runs
+            # only after the pipeline finishes, so nothing lands in Drafts
+            # while the conversion is in flight: "not there yet" and "it
+            # failed" look identical to the reader. Telling them to act on an
+            # empty Drafts list would fire on the healthy path.
+            #
+            # What is left is the destination (true, and reachable now) and
+            # the Dashboard's own create/edit path (`POST
+            # /knowledge/runbooks/create` plus the Drafts editor), offered as
+            # a standing capability rather than a failure diagnosis — the same
+            # framing the SUGGEST message already uses ("You can also do this
+            # later from the Dashboard"). That is the durable way out when the
+            # silent failure above happens, and it costs the reader nothing
+            # when it does not.
             agent_response = (
                 "Creating your runbook draft from this case. "
-                "I'll let you know here when it's ready — you'll also find it in "
-                "the Dashboard under **Knowledge > Drafts**."
+                "It will appear in the Dashboard under "
+                "**Knowledge Base > Drafts** once generation finishes. You can "
+                "also create and edit runbooks there directly."
             )
             # Carry the dedup caveat onto the user-visible turn. Only NOT_READY
             # surfaces `suggestion.message` above, so a
@@ -3861,14 +3893,21 @@ class MilestoneEngine:
                 f"Runbook creation initiated for case {case.case_id}",
                 extra={"case_id": case.case_id},
             )
-            # Success path re-offers the standard terminal Q&A affordances
-            # (regenerate summary, generate runbook) so the user can iterate
-            # on the summary while the background runbook conversion runs,
-            # or retry the runbook if the background task fails (the
-            # completion notification will tell them so). The runbook
-            # affordance is hidden on this turn — we just kicked off a
-            # generation, so re-offering it would race the background
-            # task and risk a duplicate draft.
+            # Success path re-offers the standard terminal Q&A affordances so
+            # the user can iterate on the summary while the background runbook
+            # conversion runs. The runbook affordance is hidden on THIS turn —
+            # we just kicked off a generation, so re-offering it would race the
+            # background task and risk a duplicate draft. The suppression is
+            # per-turn: it returns on subsequent terminal Q&A turns, where the
+            # idempotence guard above answers a repeat click with a clean
+            # "already exists" instead of a second draft.
+            #
+            # Because it is absent here, the text above must not name it — a
+            # message that points at a chip this turn does not carry sends the
+            # reader looking for something that is not on screen, and the label
+            # is not typeable either (exact-match dispatch on the DECIDE
+            # payload). The Dashboard create/edit path it names instead is
+            # reachable independently of any turn's suggestion set.
             remaining = await self._remaining_regens_for(case)
             follow_ups = _resolved_suggestions(
                 case, remaining, runbook_already_exists=True
@@ -3944,11 +3983,23 @@ class MilestoneEngine:
     ) -> None:
         """Background task for runbook conversion.
 
-        Logs success/failure and writes a completion notification to the
-        case transcript so the chat-side user sees a confirmation message
-        (success) or a failure note with a retry path. The notification is
-        best-effort: if writing it fails, the background task swallows the
-        secondary error rather than masking the primary outcome.
+        Logs success/failure and writes a completion notification to the case
+        transcript. The notification is best-effort: if writing it fails, the
+        background task swallows the secondary error rather than masking the
+        primary outcome.
+
+        Who reads these three strings decides what they may name. The copilot
+        drops `role: "system"` rows, so its users never see them at all; the
+        Dashboard renders the transcript, so it is the only reader to write
+        for. That rules out naming a chat affordance — the Dashboard has no
+        suggestion-chip UI whatsoever, so "click X" there points at a control
+        that has never existed, and it also has no case-to-runbook trigger of
+        its own to redirect to. What a Dashboard reader can reach is the
+        Knowledge Base: the Drafts tab to view, and the "write a runbook from
+        the template" form to author one by hand. The two unhappy notices
+        therefore state plainly that nothing was saved and offer that manual
+        path, which is a weaker remedy than the conversion they were promised
+        but the only one on their screen.
         """
         notification_content: str
         try:
@@ -3968,7 +4019,7 @@ class MilestoneEngine:
                 )
                 notification_content = (
                     f"Your runbook draft **{draft.title}** is ready. "
-                    f"View it in the Dashboard under **Knowledge > Drafts**."
+                    f"View it in the Dashboard under **Knowledge Base > Drafts**."
                 )
             else:
                 logger.warning(
@@ -3977,8 +4028,9 @@ class MilestoneEngine:
                     extra={"case_id": request.case_id},
                 )
                 notification_content = (
-                    "Runbook generation completed but no draft was produced. "
-                    "Click **Generate runbook from this case** to retry."
+                    "Runbook generation finished without producing a draft, "
+                    "so nothing was saved for this case. You can write one "
+                    "yourself in the Dashboard under **Knowledge Base**."
                 )
         except Exception as e:
             logger.error(
@@ -3987,8 +4039,9 @@ class MilestoneEngine:
                 exc_info=True,
             )
             notification_content = (
-                "Runbook generation failed. "
-                "Click **Generate runbook from this case** to retry."
+                "Runbook generation failed, so no draft was created for this "
+                "case. You can write one yourself in the Dashboard under "
+                "**Knowledge Base**."
             )
 
         # Best-effort completion notification. The case is loaded fresh
