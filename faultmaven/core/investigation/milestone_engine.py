@@ -3766,19 +3766,42 @@ class MilestoneEngine:
                 self._run_runbook_conversion(conversion_service, request, case.user_id)
             )
 
-            # Promise only what every client actually delivers. The background
-            # task DOES write a completion notification into the transcript,
-            # but it is a `role: "system"` row and the copilot's conversation
-            # loader keeps only user/assistant rows — and there is no push
-            # channel for case messages, so that row is invisible on this turn
-            # and after a reload alike. Since the FAILURE notifications ride
-            # the same system row, a failed or empty conversion is silent
-            # there: the only honest thing to name is the Dashboard location
-            # (true) plus a self-serve retry the user can reach unprompted.
+            # Name only what the reader can act on while reading this turn.
+            #
+            # No in-chat notification is promised. The background task DOES
+            # write a completion notification into the transcript, but it is a
+            # `role: "system"` row and the copilot's conversation loader keeps
+            # only user/assistant rows — and there is no push channel for case
+            # messages, so that row is invisible on this turn and after a
+            # reload alike. The FAILURE notifications ride the same row, so a
+            # failed or empty conversion is silent there.
+            #
+            # No chat affordance is named either. "Generate runbook from this
+            # case" is deliberately suppressed on THIS turn (see
+            # `runbook_already_exists=True` below), and free-typed text never
+            # reaches the creation path — `_RUNBOOK_CREATION_PATTERNS` matches
+            # the DECIDE payload exactly, so the label is not typeable. Naming
+            # it here would point at nothing.
+            #
+            # No failure is inferred from absence, either. `_persist_job` runs
+            # only after the pipeline finishes, so nothing lands in Drafts
+            # while the conversion is in flight: "not there yet" and "it
+            # failed" look identical to the reader. Telling them to act on an
+            # empty Drafts list would fire on the healthy path.
+            #
+            # What is left is the destination (true, and reachable now) and
+            # the Dashboard's own create/edit path (`POST
+            # /knowledge/runbooks/create` plus the Drafts editor), offered as
+            # a standing capability rather than a failure diagnosis — the same
+            # framing the SUGGEST message already uses ("You can also do this
+            # later from the Dashboard"). That is the durable way out when the
+            # silent failure above happens, and it costs the reader nothing
+            # when it does not.
             agent_response = (
                 "Creating your runbook draft from this case. "
-                "It will appear in the Dashboard under **Knowledge > Drafts** — "
-                "if it doesn't, click **Generate runbook from this case** to retry."
+                "It will appear in the Dashboard under **Knowledge > Drafts** "
+                "once generation finishes. You can also create and edit "
+                "runbooks there directly."
             )
             # Carry the dedup caveat onto the user-visible turn. Only NOT_READY
             # surfaces `suggestion.message` above, so a
@@ -3793,16 +3816,21 @@ class MilestoneEngine:
                 f"Runbook creation initiated for case {case.case_id}",
                 extra={"case_id": case.case_id},
             )
-            # Success path re-offers the standard terminal Q&A affordances
-            # (regenerate summary, generate runbook) so the user can iterate
-            # on the summary while the background runbook conversion runs,
-            # or retry the runbook if the background task fails. Retry is
-            # user-initiated by design: a chat client that drops system rows
-            # never shows the failure notification, so the initiating message
-            # names the retry affordance instead of relying on a prompt that
-            # may never arrive. The runbook affordance is hidden on this turn
-            # — we just kicked off a generation, so re-offering it would race
-            # the background task and risk a duplicate draft.
+            # Success path re-offers the standard terminal Q&A affordances so
+            # the user can iterate on the summary while the background runbook
+            # conversion runs. The runbook affordance is hidden on THIS turn —
+            # we just kicked off a generation, so re-offering it would race the
+            # background task and risk a duplicate draft. The suppression is
+            # per-turn: it returns on subsequent terminal Q&A turns, where the
+            # idempotence guard above answers a repeat click with a clean
+            # "already exists" instead of a second draft.
+            #
+            # Because it is absent here, the text above must not name it — a
+            # message that points at a chip this turn does not carry sends the
+            # reader looking for something that is not on screen, and the label
+            # is not typeable either (exact-match dispatch on the DECIDE
+            # payload). The Dashboard create/edit path it names instead is
+            # reachable independently of any turn's suggestion set.
             remaining = await self._remaining_regens_for(case)
             follow_ups = _resolved_suggestions(
                 case, remaining, runbook_already_exists=True

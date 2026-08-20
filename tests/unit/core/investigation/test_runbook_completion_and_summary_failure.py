@@ -10,15 +10,21 @@ Covered behaviors:
   task runs
 - RG1+RG2: ``_run_runbook_conversion`` writes a system message to the case
   transcript on success and on failure (best-effort, never raises)
+- Reachability: any affordance label a turn names must be present in that
+  turn's own ``suggested_follow_ups`` (prose and the suggestion list are built
+  a few lines apart and drift silently)
 - The kickoff turn promises only what every client delivers: no in-chat
   notification claim (that system row is invisible in the copilot, failure
-  notices included), the Dashboard location named, and a self-serve retry
+  notices included), the Dashboard location named, a way forward that survives
+  a silent failure, and no recovery advice keyed on the draft's absence while
+  the conversion is still running
 - RG4: the case→runbook chat path (``_handle_runbook_creation``) uses the
   canonical ``CaseConversionRequest.from_case`` factory (no inline extraction)
 - RG5: missing ``runbook_kb`` is logged at WARNING when dedup is skipped
 """
 
 import inspect
+import re
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -429,8 +435,111 @@ class TestRunbookCreationFollowUps:
 
 
 # =============================================================================
-# The initiating turn may only promise what every client delivers
+# A turn may only name what the reader can act on while reading it
 # =============================================================================
+
+
+def _creation_turn_engine(
+    mock_llm,
+    mock_repo,
+    *,
+    ready: bool = True,
+    service: bool = True,
+    existing_draft: bool = False,
+):
+    """Build a (case, engine) pair for one ``_handle_runbook_creation`` branch.
+
+    ``knowledge_service`` is always spec-empty, so dedup is skipped and the
+    verdict carries the SUGGEST_WITH_CAVEATS prefix — the composed turn, not
+    the bare line, which is what the user reads.
+    """
+    case = _make_resolved_case()
+    if ready:
+        _make_runbook_ready(case)
+
+    engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+    engine.knowledge_service = MagicMock(spec=[])
+
+    if not service:
+        engine.conversion_service = None
+        return case, engine
+
+    conversion_service = MagicMock()
+    conversion_service.convert_from_case = AsyncMock(return_value=MagicMock(drafts=[]))
+    if existing_draft:
+        existing = MagicMock()
+        existing.has_live_draft.return_value = True
+        conversion_service.get_conversion_by_case = AsyncMock(return_value=existing)
+    else:
+        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+    engine.conversion_service = conversion_service
+    return case, engine
+
+
+# Every branch of `_handle_runbook_creation` that produces a user-visible turn.
+_CREATION_TURN_SCENARIOS = [
+    pytest.param({}, id="kickoff"),
+    pytest.param({"existing_draft": True}, id="already-exists"),
+    pytest.param({"service": False}, id="service-unavailable"),
+    pytest.param({"ready": False}, id="not-ready"),
+]
+
+_LABEL_LITERAL_RE = re.compile(r'"label":\s*"([^"]+)"')
+
+
+def _known_affordance_labels() -> set[str]:
+    """Every suggestion label the engine can offer, scraped from its source.
+
+    Derived from the module rather than hand-listed on purpose: a newly added
+    affordance joins the vocabulary automatically, so the reachability
+    property cannot quietly stop covering the newest label. Fails closed if
+    the scrape stops matching.
+    """
+    import faultmaven.core.investigation.milestone_engine as engine_module
+
+    labels = set(_LABEL_LITERAL_RE.findall(inspect.getsource(engine_module)))
+    assert "Generate runbook from this case" in labels, (
+        "affordance-label scrape found no runbook label — the pattern has "
+        "drifted and this property would pass vacuously"
+    )
+    return labels
+
+
+class TestNamedAffordancesAreReachableOnTheirOwnTurn:
+    """Reachability: if a turn names an affordance, that turn must offer it.
+
+    Prose and the suggestion list are produced a few lines apart and drift
+    silently — the message says "click X" while X is filtered out of
+    ``suggested_follow_ups`` further down. Nothing about the text alone can
+    catch that; the turn has to be judged as a whole. Free-typed text is no
+    escape hatch either: ``_RUNBOOK_CREATION_PATTERNS`` exact-matches the
+    DECIDE payload, so a label the user reads is not a label they can type.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kwargs", _CREATION_TURN_SCENARIOS)
+    async def test_every_named_label_is_offered_on_that_turn(
+        self, kwargs, mock_llm, mock_repo
+    ):
+        case, engine = _creation_turn_engine(mock_llm, mock_repo, **kwargs)
+
+        result = await engine._handle_runbook_creation(case, metadata={})
+        response = result["agent_response"]
+        offered = {s["label"] for s in result["suggested_follow_ups"]}
+
+        # The property is a subset check over text that must exist: a branch
+        # that returned no prose would satisfy it while saying nothing.
+        assert response.strip(), "branch produced an empty turn — nothing to check"
+
+        unreachable = {
+            label for label in _known_affordance_labels() if label in response
+        } - offered
+        assert not unreachable, (
+            f"turn names {sorted(unreachable)} but does not offer it — the "
+            f"reader is sent looking for a chip that is not on screen, and "
+            f"the label is not typeable. Turn text: {response!r}; offered: "
+            f"{sorted(offered)}"
+        )
 
 
 # Phrasings that all assert the same thing: "the result will be delivered to
@@ -458,6 +567,25 @@ _IN_CHAT_DELIVERY_CLAIMS = (
     "watch this space",
 )
 
+# Conditionals that ask the reader to read failure out of an empty Drafts
+# list. ``_persist_job`` runs only after the conversion pipeline finishes, so
+# nothing is written while the work is in flight: "not there yet" and "it
+# failed" are indistinguishable to the reader. A recovery instruction keyed on
+# absence therefore fires on the healthy path, telling a user whose conversion
+# is working normally to go around it.
+_ABSENCE_AS_FAILURE_CONDITIONALS = (
+    "if it doesn't",
+    "if it does not",
+    "if it isn't",
+    "if it is not",
+    "if it hasn't",
+    "if it has not",
+    "if it never",
+    "if nothing",
+    "if you don't see",
+    "if you do not see",
+)
+
 
 class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
     @pytest.mark.asyncio
@@ -469,17 +597,7 @@ class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
         Pins the invariant, not the prose: any rewording is free as long as
         it does not reintroduce a delivery promise the transport cannot keep.
         """
-        case = _make_resolved_case()
-        _make_runbook_ready(case)
-
-        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        conversion_service = MagicMock()
-        conversion_service.convert_from_case = AsyncMock(
-            return_value=MagicMock(drafts=[])
-        )
-        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-        engine.conversion_service = conversion_service
-        engine.knowledge_service = MagicMock(spec=[])
+        case, engine = _creation_turn_engine(mock_llm, mock_repo)
 
         response = (await engine._handle_runbook_creation(case, metadata={}))[
             "agent_response"
@@ -498,17 +616,7 @@ class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
         self, mock_llm, mock_repo
     ):
         """The one true destination must be named, or the draft is unfindable."""
-        case = _make_resolved_case()
-        _make_runbook_ready(case)
-
-        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        conversion_service = MagicMock()
-        conversion_service.convert_from_case = AsyncMock(
-            return_value=MagicMock(drafts=[])
-        )
-        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-        engine.conversion_service = conversion_service
-        engine.knowledge_service = MagicMock(spec=[])
+        case, engine = _creation_turn_engine(mock_llm, mock_repo)
 
         response = (await engine._handle_runbook_creation(case, metadata={}))[
             "agent_response"
@@ -518,34 +626,48 @@ class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
         assert "Knowledge > Drafts" in response
 
     @pytest.mark.asyncio
-    async def test_initiating_turn_carries_a_self_serve_recovery_path(
+    async def test_initiating_turn_offers_a_way_forward_that_outlives_the_turn(
         self, mock_llm, mock_repo
     ):
-        """Failures are silent, so the retry must be stated up front.
+        """Silent failure needs an exit the reader keeps after this turn ends.
 
-        The background task's own retry prompt rides the same invisible
-        system row, so the only retry instruction the user ever reads is
-        this one. It names the suggestion label verbatim so the affordance
-        it points at is findable.
+        The background task's failure notice rides the invisible system row,
+        so nothing will ever tell the user that generation did not work. The
+        turn must therefore name a path that does not depend on a chip, on a
+        notification, or on the user first deducing that something broke —
+        the Dashboard's own runbook creation path.
         """
-        case = _make_resolved_case()
-        _make_runbook_ready(case)
-
-        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
-        conversion_service = MagicMock()
-        conversion_service.convert_from_case = AsyncMock(
-            return_value=MagicMock(drafts=[])
-        )
-        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
-        engine.conversion_service = conversion_service
-        engine.knowledge_service = MagicMock(spec=[])
+        case, engine = _creation_turn_engine(mock_llm, mock_repo)
 
         response = (await engine._handle_runbook_creation(case, metadata={}))[
             "agent_response"
         ]
 
-        assert "Generate runbook from this case" in response
-        assert "retry" in response.lower()
+        assert "Dashboard" in response
+        assert "create" in response.lower(), (
+            f"the turn names no way to produce a runbook without the "
+            f"background task, leaving a silent failure with no exit: "
+            f"{response!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_initiating_turn_does_not_read_failure_out_of_absence(
+        self, mock_llm, mock_repo
+    ):
+        """Recovery advice must not fire while the conversion is still running."""
+        case, engine = _creation_turn_engine(mock_llm, mock_repo)
+
+        response = (await engine._handle_runbook_creation(case, metadata={}))[
+            "agent_response"
+        ]
+        lowered = response.lower()
+
+        offenders = [c for c in _ABSENCE_AS_FAILURE_CONDITIONALS if c in lowered]
+        assert not offenders, (
+            f"the turn treats an empty Drafts list as failure ({offenders}), "
+            f"but nothing is persisted until the pipeline finishes — this "
+            f"fires on the healthy path: {response!r}"
+        )
 
 
 # =============================================================================
