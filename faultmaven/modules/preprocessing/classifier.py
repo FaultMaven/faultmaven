@@ -48,8 +48,33 @@ except ImportError:
     _OPIK_AVAILABLE = False
 
 
+def _opik_tracing_enabled() -> bool:
+    """FaultMaven-level gate for @opik.track (OPIK_ENABLED).
+
+    Fail closed: any error reading settings means no tracing. Without this
+    gate the decorator is live even when OPIK_ENABLED=false and the SDK
+    lazily builds a client pointed at its default (Comet Cloud) (#1121).
+
+    Read LAZILY, at call time — reading it at import time would bootstrap the
+    settings singleton (load_dotenv, preset env mutation, data/.jwt_secret
+    creation) merely by importing this module.
+    """
+    try:
+        from faultmaven.config.settings import get_settings
+
+        return get_settings().observability.opik_enabled
+    except Exception:
+        return False
+
+
 def _opik_track_classifier(func: Callable) -> Callable:
-    """Wrap classify() with an Opik span and attach classifier-decision tags."""
+    """Wrap classify() with an Opik span and attach classifier-decision tags.
+
+    The tracked wrapper is built at import time (decoration alone constructs
+    no client), but every call re-checks the gate and dispatches to the RAW
+    function when tracing is off, so a disabled deployment never reaches the
+    SDK at this call site.
+    """
     if _OPIK_AVAILABLE:
         tracked = opik.track(
             name="tier0_classify", capture_input=False, capture_output=False
@@ -57,6 +82,8 @@ def _opik_track_classifier(func: Callable) -> Callable:
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            if not _opik_tracing_enabled():
+                return func(*args, **kwargs)
             result: ClassificationResult = tracked(*args, **kwargs)
             try:
                 if result.confidence >= CONFIDENCE_THRESHOLDS["auto_accept"]:
@@ -82,12 +109,8 @@ def _opik_track_classifier(func: Callable) -> Callable:
 
         return wrapper
 
-    # No-op when Opik isn't installed.
-    @functools.wraps(func)
-    def passthrough(*args, **kwargs):
-        return func(*args, **kwargs)
-
-    return passthrough
+    # Fail-closed passthrough: Opik not installed, or tracing not enabled.
+    return func
 
 
 # =============================================================================

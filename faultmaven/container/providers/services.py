@@ -579,6 +579,7 @@ def create_user_service(
         )
 
     try:
+        from faultmaven.config.settings import persistent_database_configured
         from faultmaven.infrastructure.persistence.user_repository import (
             InMemoryUserRepository,
             SessionlessUserRepository,
@@ -586,12 +587,14 @@ def create_user_service(
         from faultmaven.modules.auth.domain.services.user_service import UserService
 
         # Use the persistent database when one is configured, else InMemory for
-        # ephemeral/no-database development. Keyed off the configured
-        # DATABASE_URL — NOT a shared session handle. The sessionless repo opens
-        # a fresh session per operation (Principle 5, #703 fix); it never holds
-        # a process-lifetime session that could leak idle-in-transaction.
-        database_url = settings.database.database_url or ""
-        if database_url and database_url != ":memory:":
+        # ephemeral/no-database development. Keyed off the ONE shared predicate
+        # (fm#1128) — the user store selects with the same call, so the store
+        # login writes to and the store this service reads for /auth/me cannot
+        # disagree about whether a database is in play. NOT a shared session
+        # handle. The sessionless repo opens a fresh session per operation
+        # (Principle 5, #703 fix); it never holds a process-lifetime session
+        # that could leak idle-in-transaction.
+        if persistent_database_configured(settings.database.database_url):
             user_repo = SessionlessUserRepository()
             logger.debug("UserService using SessionlessUserRepository")
         else:
