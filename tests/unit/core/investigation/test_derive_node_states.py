@@ -15,6 +15,7 @@ import pytest
 from faultmaven.core.investigation.causal_graph import (
     derive_node_states,
     is_chain_root_validated,
+    record_contested_root_claim,
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
@@ -1311,8 +1312,10 @@ def _fm1137_case() -> tuple[Case, CausalNode]:
         "CrashLoopBackOff.",
         root.node_id,
     )
-    # Emitted four turns later, refused adoption of `root` (fm#1091), so it
-    # keeps root_node_id=None while saying exactly what `root` says.
+    # Emitted four turns later; it pointed its root_node_ref at `root` and the
+    # fm#1091 guard refused the attachment, so it keeps root_node_id=None while
+    # saying exactly what `root` says. The refused CLAIM is what stops it from
+    # framing the very node it claimed (fm#1137).
     duplicate = _hyp(
         "The v2.1.4 JVM configuration sets a 512MB maximum heap inside a "
         "400Mi container, leaving insufficient headroom for JVM "
@@ -1321,6 +1324,7 @@ def _fm1137_case() -> tuple[Case, CausalNode]:
         "restarts it into CrashLoopBackOff.",
         None,
     )
+    record_contested_root_claim(root, duplicate.hypothesis_id)
     case = _case(
         [root, problem],
         edges=[
@@ -1339,11 +1343,11 @@ def _fm1137_case() -> tuple[Case, CausalNode]:
     return case, root
 
 
-def test_unattached_duplicate_hypothesis_does_not_hold_its_own_root():
+def test_refused_claimant_does_not_hold_the_root_it_claimed():
     """The incident end to end: the root's evidence bars are all met, so it
-    must VALIDATE. Before the containment arm of the frame-owner hatch, the
-    unattached duplicate framed it and it sat at INCONCLUSIVE indefinitely —
-    nine turns and fourteen evidence rows in the live case."""
+    must VALIDATE. Before the refused claim was kept, the unattached duplicate
+    framed it and it sat at INCONCLUSIVE indefinitely — nine turns and fourteen
+    evidence rows in the live case."""
     case, root = _fm1137_case()
     derive_node_states(case)
     assert root.node_state is NodeState.VALIDATED

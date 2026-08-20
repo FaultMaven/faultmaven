@@ -197,7 +197,7 @@ def test_dilution_fp_bounded_under_realistic_sibling_frames():
             if not st:
                 continue
             siblings = [
-                (None, _content_tokens(o["cause_statement"]))
+                (None, f"hyp_{j:012d}", _content_tokens(o["cause_statement"]))
                 for j, o in enumerate(causes)
                 if j != i
             ]
@@ -211,24 +211,38 @@ def test_dilution_fp_bounded_under_realistic_sibling_frames():
 
 
 # ---------------------------------------------------------------------------
-# fm#1137 — the frame-owner hatch must see the containment shape
+# fm#1137 — a refused root CLAIM still excludes that hypothesis from the frame
 # ---------------------------------------------------------------------------
 #
 # Live incident (case_a3d354f08765): a ROOT carrying THREE independent causal
 # supports at stance_confidence 0.90/0.95/0.99 sat at INCONCLUSIVE for nine
 # turns. Its own hypothesis was attached and correctly excluded from the frame;
-# a near-duplicate hypothesis the model emitted at turn 11 was REFUSED the same
-# chain root by the fm#1091 one-cause-one-chain guard, so it stood UNATTACHED —
-# and, being a longer narrative of the very same cause, it covered 8 of the
-# root's 9 content tokens. Novelty 1/9 = 0.11 against a 0.30 bar. The hatch that
-# exists for exactly this ("unattached presumptive owner") missed it, because
-# mutual Jaccard between a one-clause root and a full-narrative hypothesis is
-# ~0.28 however certain the ownership.
+# a near-duplicate hypothesis the model emitted at turn 11 pointed its
+# root_node_ref at that SAME root and was refused by the fm#1091
+# one-cause-one-chain guard, so it stood UNATTACHED — and, being a longer
+# narrative of the same cause, it covered 8 of the root's 9 content tokens.
+# Novelty 1/9 = 0.11 against a 0.30 bar, permanently: a true duplicate is never
+# refuted or retired, so the frame never shrinks.
+#
+# The engine already knew the two were about the same cause — it said so in its
+# own refusal message. ``record_contested_root_claim`` keeps that, and the
+# guard reads it. Note what is NOT used: lexical containment. A #656
+# disjunction root is CONTAINED IN each verbose sibling it OR-s (measured 0.667
+# against a realistically-worded sibling), so a containment arm would excuse
+# the incident shape — pinned below.
 
 
-def test_unattached_duplicate_hypothesis_is_not_its_own_root_s_frame():
-    """The fm#1137 shape, verbatim from the incident: the root's OWN cause
-    restated at narrative length, standing unattached, must NOT frame it."""
+def _claimed(root, hypothesis_id: str):
+    from faultmaven.core.investigation.causal_graph import (
+        record_contested_root_claim,
+    )
+
+    record_contested_root_claim(root, hypothesis_id)
+    return root
+
+
+def test_refused_claimant_is_not_its_own_root_s_frame():
+    """The fm#1137 shape, verbatim from the incident."""
     case = _case(
         "The production payment-processor deployment in the `payments` "
         "namespace is currently unavailable or unstable because its v2.1.4 "
@@ -245,41 +259,63 @@ def test_unattached_duplicate_hypothesis_is_not_its_own_root_s_frame():
     root = _root(
         "JVM heap and native/non-heap memory exceed the 400Mi container " "cgroup limit"
     )
+    duplicate = next(iter(case.hypotheses.values()))
+    # Without the claim the duplicate frames the root and it reads as a
+    # restatement — this is the live incident.
+    assert root_restates_case_frame(root, case) is True
+    # With the refused claim recorded, it is recognised as this root's own.
+    _claimed(root, duplicate.hypothesis_id)
     assert root_restates_case_frame(root, case) is False
 
 
-def test_frame_owner_containment_is_asymmetric_the_656_root_stays_framed():
-    """The containment arm must NEVER be symmetrised. The #656 disjunction root
-    CONTAINS each sibling hypothesis it OR-s; that direction is the incident,
-    not an ownership signal, and those siblings stay IN the frame."""
-    from faultmaven.core.investigation.causal_graph import (
-        _content_tokens,
-        _presumptive_frame_owner,
+def test_claim_excludes_only_the_claimant_and_only_while_unattached():
+    """The exclusion is per (node, hypothesis) and lapses once the hypothesis
+    has a chain root of its own — a claim is not a standing licence."""
+    case = _case(
+        "Checkout requests fail",
+        hyp_statements=[
+            "The connection pool max_size was lowered to 5 during the "
+            "release, so checkout requests queue and fail"
+        ],
     )
+    root = _root("connection pool max_size lowered to 5")
+    other = _root("an unrelated DNS resolution failure in the mesh sidecar")
+    hyp = next(iter(case.hypotheses.values()))
+    _claimed(root, hyp.hypothesis_id)
+    assert root_restates_case_frame(root, case) is False
+    # A DIFFERENT node carries no claim, so the hypothesis still frames it.
+    assert "hyp" not in (other.metadata or {}).get("contested_root_claims", [])
+    # Once the claimant is anchored elsewhere, the claim no longer applies.
+    hyp.root_node_id = other.node_id
+    assert root_restates_case_frame(root, case) is True
 
-    root_tokens = _content_tokens(
+
+def test_656_disjunction_root_stays_blocked_against_verbose_siblings():
+    """REGRESSION PIN. The #656 TP must survive siblings written at the length
+    real hypotheses are written at. A disjunction root is CONTAINED IN each
+    verbose sibling (0.667 here), so any one-way-containment ownership arm
+    releases the incident shape; the guard must not use one."""
+    case = _case(
+        "Intermittent 502 errors under load",
+        hyp_statements=[
+            "Transient network congestion between the ingress controller and "
+            "the backend pods causes intermittent 502 errors whenever request "
+            "volume rises under load",
+            "Resource contention on the backend host - CPU and memory pressure "
+            "from co-tenant workloads - causes intermittent 502 errors under "
+            "load",
+        ],
+    )
+    root = _root(
         "Transient network congestion or resource contention causing "
         "intermittent 502 errors"
     )
-    sibling = _content_tokens("Transient network congestion")
-    # The sibling is fully contained in the ROOT ...
-    assert len(root_tokens & sibling) / len(sibling) == 1.0
-    # ... and that must not make it an owner (the guarded direction is the
-    # reverse: the ROOT contained in the hypothesis).
-    assert _presumptive_frame_owner(root_tokens, sibling) is False
+    from faultmaven.core.investigation.causal_graph import _content_tokens
 
-
-def test_frame_owner_containment_bar_holds_at_the_calibrated_value():
-    """Pin the arm's shape: a hypothesis covering the root's content is an
-    owner; one covering little of it is not."""
-    from faultmaven.core.investigation.causal_graph import (
-        _FRAME_OWNER_CONTAINMENT,
-        _presumptive_frame_owner,
-    )
-
-    root = {"heap", "native", "memory", "cgroup", "limit"}
-    covering = root | {"sigkill", "kubernetes", "restart", "crashloopbackoff"}
-    assert _presumptive_frame_owner(root, covering) is True
-    partial = {"heap", "connection", "pool", "exhausted", "timeout"}
-    assert len(root & partial) / len(root) < _FRAME_OWNER_CONTAINMENT
-    assert _presumptive_frame_owner(root, partial) is False
+    st = _content_tokens(root.statement)
+    covers = [
+        len(st & _content_tokens(h.statement)) / len(st)
+        for h in case.hypotheses.values()
+    ]
+    assert max(covers) >= 0.6, f"fixture no longer exercises containment: {covers}"
+    assert root_restates_case_frame(root, case) is True

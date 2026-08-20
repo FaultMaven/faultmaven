@@ -2820,11 +2820,22 @@ def _build_causal_graph_block(case: Case) -> str:
         # change. Without the note the model sees a bare [root/inconclusive]
         # beside confident causal supports and keeps collecting (fm#1137: nine
         # turns of it).
+        #
+        # Spelled as ADD-and-relink, not "restate this node", because
+        # state_updates carries no node-update field — causal_nodes_to_add /
+        # causal_edges_to_add / node_evidence_links only, and
+        # ingest_emitted_chain reuses a node solely on an exact normalised
+        # statement match. A model told to "restate" either no-ops (the hold
+        # persists) or mints a root carrying none of the held node's evidence
+        # links, landing at CANDIDATE with zero supports. Same completeness as
+        # the fm#1091 refusal feedback in milestone_engine.
         BLOCK_REASON_RESTATEMENT: (
             " — fully supported, but its statement adds no content beyond what "
             "the problem and the other hypotheses already say; MORE EVIDENCE "
-            "WILL NOT VALIDATE IT. Restate this node as the specific MECHANISM "
-            "(what is misconfigured/exhausted/failing, and how that produces D)"
+            "WILL NOT VALIDATE IT. Add a NEW root node naming the specific "
+            "MECHANISM (what is misconfigured/exhausted/failing, and how that "
+            "produces D), point this hypothesis's root_node_ref at it, and "
+            "re-link this node's ev_ ids to it via node_evidence_links"
         ),
     }
 

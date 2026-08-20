@@ -696,6 +696,44 @@ def restatement_held_root_ids(case: Case) -> set[str]:
     return held
 
 
+# Node-metadata key holding the ids of hypotheses that emitted a
+# ``root_node_ref`` naming THIS node and were refused the attachment by the
+# fm#1091 one-cause-one-chain guard. Metadata, not a column: ``causal_nodes``
+# already carries a JSONB ``metadata`` that round-trips on both repositories,
+# so this needs no migration.
+CONTESTED_ROOT_CLAIMS_KEY = "contested_root_claims"
+
+
+def record_contested_root_claim(node: "CausalNode", hypothesis_id: str) -> bool:
+    """Record that ``hypothesis_id`` claimed ``node`` as its chain root and was
+    refused (fm#1091). Returns True if this is a new claim.
+
+    The refusal is CORRECT — one cause, one chain — but it denies the
+    ATTACHMENT, not the claim. Without this record the engine forgets that the
+    hypothesis is about this node's cause, and the §7.1 restatement guard then
+    reads it as an unrelated standing cause and puts it into that very node's
+    frame. In fm#1137 the duplicate hypothesis covered 8 of the root's 9
+    content tokens, so a root carrying three confident independent causal
+    supports sat at INCONCLUSIVE for nine turns with novelty 1/9. Keeping the
+    claim is the exact fix: the engine already knew, in its own refusal
+    message, that the two were about the same cause.
+    """
+    claims = node.metadata.setdefault(CONTESTED_ROOT_CLAIMS_KEY, [])
+    if hypothesis_id in claims:
+        return False
+    claims.append(hypothesis_id)
+    return True
+
+
+def contested_root_claimants(node: "CausalNode") -> frozenset[str]:
+    """Hypothesis ids that claimed ``node`` and were refused. Tolerant of a
+    reloaded row whose metadata carries anything else under the key."""
+    claims = (getattr(node, "metadata", None) or {}).get(CONTESTED_ROOT_CLAIMS_KEY)
+    if not isinstance(claims, list):
+        return frozenset()
+    return frozenset(c for c in claims if isinstance(c, str))
+
+
 def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
     """§7.1 restatement guard predicate (single-node form; ``_restating_root_ids``
     is the batch form — keep their semantics identical): a ROOT whose statement
@@ -705,15 +743,24 @@ def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
     standing predicate — see ``derive_node_states``).
 
     The frame = problem anchors + OTHER standing hypotheses' statements. A
-    hypothesis is treated as the node's OWN (excluded from the frame) when it is
-    attached to the node (``root_node_id`` match) or when it is unattached but
-    reads as its presumptive owner (``_presumptive_frame_owner``: mutual mirror,
-    or the root's content CONTAINED IN the hypothesis): during the normal
-    attachment lag a chain root's own not-yet-linked hypothesis restates it and
-    must not block it. Containment in the OTHER direction deliberately does NOT
-    make an owner: the #656 disjunction root fully CONTAINS each sibling
-    hypothesis it OR-s, but shares few tokens mutually — those siblings stay in
-    the frame, which is what catches the incident shape.
+    hypothesis is excluded from a node's frame — it is not "other", it is that
+    node's OWN cause — on any of three signals, in descending order of strength:
+
+    1. It is ATTACHED to the node (``root_node_id`` match).
+    2. It CLAIMED the node and was refused (``contested_root_claimants``): the
+       model emitted this hypothesis's ``root_node_ref`` pointing at this exact
+       node and the fm#1091 one-cause-one-chain guard refused the attachment
+       because another hypothesis already owned it. The refusal denies the
+       ATTACHMENT; it does not make the claim untrue, and the claim is the
+       engine's own record that this hypothesis is about this cause. Exact, not
+       lexical — see fm#1137.
+    3. It is unattached and MUTUALLY mirrors the node (Jaccard ≥
+       ``_FRAME_OWNER_JACCARD``) — the plain attachment lag, before any chain
+       ref has been emitted. Weak by construction, and deliberately mutual:
+       one-way containment does NOT make an owner in EITHER direction. A #656
+       disjunction root is contained in each verbose sibling it OR-s, and each
+       terse sibling is contained in the root; both readings would excuse the
+       incident shape, so neither is used.
 
     ROOT-only by design (rungs adjacent to ``D`` legitimately paraphrase).
     Known limits (§7.1): the check is lexical — synonym paraphrases and
@@ -726,12 +773,18 @@ def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
     if not statement_tokens:
         return False
     anchors, hyp_token_sets = _frame_components(case)
-    return _node_restates(statement_tokens, node.node_id, anchors, hyp_token_sets)
+    return _node_restates(
+        statement_tokens,
+        node.node_id,
+        anchors,
+        hyp_token_sets,
+        contested_root_claimants(node),
+    )
 
 
 def _frame_components(case: Case) -> tuple:
     """Tokenize the frame's raw material ONCE: (anchor-token union,
-    [(root_node_id, hypothesis-statement tokens), ...])."""
+    [(root_node_id, hypothesis_id, hypothesis-statement tokens), ...])."""
     anchors: set = set()
     for anchor in _problem_anchor_statements(case):
         anchors |= _content_tokens(anchor)
@@ -741,61 +794,40 @@ def _frame_components(case: Case) -> tuple:
             if h.statement:
                 tokens = _content_tokens(h.statement)
                 if tokens:
-                    hyp_token_sets.append((getattr(h, "root_node_id", None), tokens))
+                    hyp_token_sets.append(
+                        (
+                            getattr(h, "root_node_id", None),
+                            getattr(h, "hypothesis_id", None),
+                            tokens,
+                        )
+                    )
     return anchors, hyp_token_sets
 
 
 def _node_restates(
-    statement_tokens: set, node_id: str, anchors: set, hyp_token_sets: list
+    statement_tokens: set,
+    node_id: str,
+    anchors: set,
+    hyp_token_sets: list,
+    claimants: frozenset[str] = frozenset(),
 ) -> bool:
-    """Novelty core shared by the single-node and batch forms."""
+    """Novelty core shared by the single-node and batch forms. ``claimants`` is
+    THIS node's refused-claim set (``contested_root_claimants``)."""
     frame = set(anchors)
-    for rid, tokens in hyp_token_sets:
+    for rid, hyp_id, tokens in hyp_token_sets:
         if rid == node_id:
             continue  # attached own hypothesis
-        if rid is None and _presumptive_frame_owner(statement_tokens, tokens):
+        if rid is None and hyp_id in claimants:
+            continue  # claimed this node, refused attachment (fm#1091/fm#1137)
+        if rid is None and _mutual_mirror(
+            statement_tokens, tokens, _FRAME_OWNER_JACCARD
+        ):
             continue  # unattached presumptive owner (attachment lag)
         frame |= tokens
     if not frame:
         return False  # no frame to restate — the guard is inert
     novel = len(statement_tokens - frame) / len(statement_tokens)
     return novel < ROOT_NOVELTY_MIN_FRACTION
-
-
-def _presumptive_frame_owner(node_tokens: set, hyp_tokens: set) -> bool:
-    """Is this UNATTACHED hypothesis really the ROOT's OWN cause — the
-    attachment-lag shape — so it must be excluded from that root's frame?
-
-    Two arms, because no single relation sees both real shapes:
-
-    * MUTUAL restatement (Jaccard ≥ ``_FRAME_OWNER_JACCARD``) — the two texts
-      are ~the same claim. This is the equal-length case.
-    * The ROOT is CONTAINED IN the hypothesis (≥ ``_FRAME_OWNER_CONTAINMENT``
-      of the root's content tokens appear in it). A chain root states the
-      mechanism in one clause ("JVM heap and native memory exceed the 400Mi
-      container cgroup limit"); its hypothesis states the whole narrative —
-      heap cap, container limit, SIGKILL, CrashLoopBackOff. The root is then a
-      near-SUBSET of its own hypothesis while their Jaccard stays low, because
-      the union is dominated by narrative the root never had to say. Measured
-      over the deployment's KNOWN owner pairs (a hypothesis and the root it is
-      attached to), the Jaccard arm recognises 3/57; the containment arm 17/57.
-      Without this arm the hatch is close to inert at real statement lengths,
-      and a root whose own duplicate hypothesis sits unattached is framed by
-      it forever (fm#1137: 9 turns at INCONCLUSIVE on 3 confident independent
-      causal supports, novelty 1/9).
-
-    DIRECTION is load-bearing; the containment arm is deliberately ASYMMETRIC.
-    The reverse — the ROOT covering the hypothesis — is the #656 disjunction
-    (a root OR-ing the case's standing siblings contains each of them while
-    mutually mirroring none, Jaccard ~0.33), and those siblings must stay IN
-    the frame. Only "the hypothesis says everything this root says, and more"
-    makes an owner. Never symmetrise this.
-    """
-    if not node_tokens or not hyp_tokens:
-        return False
-    if _mutual_mirror(node_tokens, hyp_tokens, _FRAME_OWNER_JACCARD):
-        return True
-    return len(node_tokens & hyp_tokens) / len(node_tokens) >= _FRAME_OWNER_CONTAINMENT
 
 
 def _mutual_mirror(a_tokens: set, b_tokens: set, threshold: float) -> bool:
@@ -823,7 +855,13 @@ def _restating_root_ids(case: Case) -> set:
         statement_tokens = _content_tokens(node.statement)
         if not statement_tokens:
             continue
-        if _node_restates(statement_tokens, node.node_id, anchors, hyp_token_sets):
+        if _node_restates(
+            statement_tokens,
+            node.node_id,
+            anchors,
+            hyp_token_sets,
+            contested_root_claimants(node),
+        ):
             restating.add(node.node_id)
     return restating
 
@@ -2946,16 +2984,9 @@ ROOT_NOVELTY_MIN_FRACTION = 0.3
 # Jaccard at or above which an UNATTACHED hypothesis is treated as a node's
 # presumptive OWNER (excluded from that node's frame): both statements are
 # mutually ~the same claim, the normal chain-emission shape during the
-# attachment lag. See ``_presumptive_frame_owner`` for why this arm alone does
-# not see the dominant real shape.
+# attachment lag. Lexical and therefore weak — see ``_node_restates`` for the
+# EXACT ownership signal that carries the load.
 _FRAME_OWNER_JACCARD = 0.6
-
-# Fraction of a ROOT's content tokens that an UNATTACHED hypothesis must
-# COVER for the same presumptive-ownership read (``_presumptive_frame_owner``,
-# second arm). Its own knob, and deliberately not the Jaccard bar: this
-# compares a clause against a narrative, not two texts of a kind. Calibrated
-# against the live corpus in test_restatement_guard_calibration.py.
-_FRAME_OWNER_CONTAINMENT = 0.6
 
 
 def restatement_score(a: str, b: str) -> float:
