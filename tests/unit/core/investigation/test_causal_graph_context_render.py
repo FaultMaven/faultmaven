@@ -374,3 +374,66 @@ def test_refuted_hypothesis_gets_no_anchoring_ask():
     )
 
     assert "no chain yet" not in _build_causal_graph_block(case)
+
+
+def test_restatement_held_root_carries_its_own_recovery_note():
+    """§7.1 restatement guard elicitation (fm#1137): a ROOT whose evidence bars
+    are ALL met but whose statement restates the case frame must say so inline,
+    and must NOT be given the grounding arms' "collect another observation"
+    advice — more evidence cannot move this bar. Before this, such a root
+    rendered as a bare [root/inconclusive] and the model kept collecting
+    (nine turns in the live case)."""
+    from datetime import datetime, timezone
+
+    from faultmaven.modules.case.contracts import (
+        Evidence,
+        EvidenceCategory,
+        EvidenceSourceType,
+        EvidenceStance,
+        NodeEvidenceLink,
+    )
+
+    # Statement == the case frame verbatim: zero novelty, so the guard holds it.
+    root = _node(
+        "cn_00000000f137",
+        statement="orders failing",
+        state=NodeState.INCONCLUSIVE,
+    )
+    root.evidence_links = [
+        NodeEvidenceLink(
+            evidence_id="ev_" + "c" * 12,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="bears on the root",
+            linked_at_turn=2,
+            stance_confidence=0.95,
+        ),
+        NodeEvidenceLink(
+            evidence_id="ev_" + "d" * 12,
+            stance=EvidenceStance.SUPPORTS,
+            reasoning="bears on the root",
+            linked_at_turn=3,
+            stance_confidence=0.95,
+        ),
+    ]
+    hyp = _hyp(hypothesis_id="hyp_00000000f137", root_node_id=root.node_id)
+    case = _case(nodes=[root], hyps=[hyp])
+    case.evidence = [
+        Evidence(
+            evidence_id="ev_" + c * 12,
+            summary=summary,
+            primary_purpose="diagnosis",
+            category=EvidenceCategory.CAUSAL_EVIDENCE,
+            source_type=EvidenceSourceType.USER_DESCRIPTION,
+            collected_by="llm",
+            collected_at_turn=2,
+            collected_at=datetime.now(timezone.utc),
+        )
+        for c, summary in (
+            ("c", "config diff shows pool max_size dropped to 5"),
+            ("d", "broker delivered zero messages while consumers idled"),
+        )
+    ]
+    block = _build_causal_graph_block(case)
+    held_line = next(line for line in block.splitlines() if "cn_00000000f137" in line)
+    assert "MORE EVIDENCE WILL NOT VALIDATE IT" in held_line
+    assert "SECOND INDEPENDENT" not in held_line

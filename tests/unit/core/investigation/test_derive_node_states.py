@@ -1250,3 +1250,138 @@ def test_hedged_counterfactual_does_not_evict_root_from_block_classifier():
     # Raise the refute to decisive: the root leaves the classifier entirely.
     root.evidence_links[2] = _link("ev_ch_abs", EvidenceStance.REFUTES)
     assert root_support_block_reasons(case) == {}
+
+
+# ---------------------------------------------------------------------------
+# fm#1137 — an unattached duplicate hypothesis must not hold its own root
+# ---------------------------------------------------------------------------
+
+
+def _fm1137_case() -> tuple[Case, CausalNode]:
+    """The live incident graph (case_a3d354f08765), reduced to what the §7.1
+    bars read: a ROOT with two independent confident causal supports, its own
+    hypothesis ATTACHED, and a near-duplicate hypothesis standing UNATTACHED
+    because the fm#1091 one-cause-one-chain guard refused it the same root."""
+    root = CausalNode(
+        node_id=_nid(0x1137),
+        statement=(
+            "JVM heap and native/non-heap memory exceed the 400Mi container "
+            "cgroup limit"
+        ),
+        node_type=NodeType.ROOT,
+        node_state=NodeState.INCONCLUSIVE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=False,
+        generated_at_turn=5,
+        evidence_links=[
+            _link("heap-cap-vs-limit", EvidenceStance.SUPPORTS, 0.99),
+            _link("rss-at-limit-pre-kill", EvidenceStance.SUPPORTS, 0.90),
+        ],
+    )
+    problem = CausalNode(
+        node_id=_nid(0x1138),
+        statement=(
+            "The production payment-processor deployment enters "
+            "CrashLoopBackOff after 2-3 minutes, causing payment failures."
+        ),
+        node_type=NodeType.PROBLEM,
+        node_state=NodeState.CANDIDATE,
+        validation_method=ValidationMethod.NONE,
+        belief=0.5,
+        actionable=False,
+        generated_at_turn=4,
+    )
+
+    def _hyp(statement, root_node_id):
+        return Hypothesis(
+            statement=statement,
+            category=HypothesisCategory.CONFIG,
+            state=HypothesisState.ACTIVE,
+            generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+            rationale="posited",
+            generated_at_turn=5,
+            root_node_id=root_node_id,
+        )
+
+    owner = _hyp(
+        "The payment-processor v2.1.4 pods use a JVM maximum heap of 512m "
+        "under a 400Mi Kubernetes memory limit; heap plus JVM native/non-heap "
+        "memory exceeds the cgroup limit, causing OOMKilled termination and "
+        "CrashLoopBackOff.",
+        root.node_id,
+    )
+    # Emitted four turns later, refused adoption of `root` (fm#1091), so it
+    # keeps root_node_id=None while saying exactly what `root` says.
+    duplicate = _hyp(
+        "The v2.1.4 JVM configuration sets a 512MB maximum heap inside a "
+        "400Mi container, leaving insufficient headroom for JVM "
+        "native/non-heap memory; total RSS reaches the cgroup limit, the "
+        "kernel kills the process with SIGKILL/exit 137, and Kubernetes "
+        "restarts it into CrashLoopBackOff.",
+        None,
+    )
+    case = _case(
+        [root, problem],
+        edges=[
+            CausalEdge(
+                cause_node_id=root.node_id,
+                effect_node_id=problem.node_id,
+                created_at_turn=5,
+            )
+        ],
+        evidence=[
+            _evidence("heap-cap-vs-limit", EvidenceCategory.CAUSAL_EVIDENCE),
+            _evidence("rss-at-limit-pre-kill", EvidenceCategory.CAUSAL_EVIDENCE),
+        ],
+        hyps=[owner, duplicate],
+    )
+    return case, root
+
+
+def test_unattached_duplicate_hypothesis_does_not_hold_its_own_root():
+    """The incident end to end: the root's evidence bars are all met, so it
+    must VALIDATE. Before the containment arm of the frame-owner hatch, the
+    unattached duplicate framed it and it sat at INCONCLUSIVE indefinitely —
+    nine turns and fourteen evidence rows in the live case."""
+    case, root = _fm1137_case()
+    derive_node_states(case)
+    assert root.node_state is NodeState.VALIDATED
+    assert root.validation_method is ValidationMethod.EMPIRICAL
+    assert root.actionable is True
+    assert grade_cause_assurance(case) is not CauseAssuranceGrade.NO_ROOT
+
+
+def test_restatement_hold_is_reported_as_a_standing_signal():
+    """A root held ONLY by the restatement guard must be nameable while it is
+    held. The block counter fires on state TRANSITIONS, so a root that was
+    already INCONCLUSIVE when the guard took over is never counted — fm#1137
+    read 0 on that counter throughout the nine-turn hold."""
+    from faultmaven.core.investigation.causal_graph import restatement_held_root_ids
+
+    case, root = _fm1137_case()
+    # Restate the root AS the problem: fully supported, zero novelty.
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    derive_node_states(case)
+    assert root.node_state is NodeState.INCONCLUSIVE
+    assert restatement_held_root_ids(case) == {root.node_id}
+
+
+def test_restatement_held_root_is_not_count_held():
+    """The standing restatement signal must never leak into the count-held set
+    — that set feeds the resolution confirm-stamp and the anti-anchoring
+    exemption, and a confirmation does not supply a missing mechanism."""
+    from faultmaven.core.investigation.causal_graph import (
+        support_count_held_root_ids,
+    )
+
+    case, root = _fm1137_case()
+    root.statement = (
+        "The production payment-processor deployment enters CrashLoopBackOff "
+        "after 2-3 minutes, causing payment failures."
+    )
+    derive_node_states(case)
+    assert support_count_held_root_ids(case) == set()

@@ -208,3 +208,78 @@ def test_dilution_fp_bounded_under_realistic_sibling_frames():
     assert (
         blocked / checked <= 0.02
     ), f"dilution FP regressed: {blocked}/{checked} ({blocked/checked:.1%})"
+
+
+# ---------------------------------------------------------------------------
+# fm#1137 — the frame-owner hatch must see the containment shape
+# ---------------------------------------------------------------------------
+#
+# Live incident (case_a3d354f08765): a ROOT carrying THREE independent causal
+# supports at stance_confidence 0.90/0.95/0.99 sat at INCONCLUSIVE for nine
+# turns. Its own hypothesis was attached and correctly excluded from the frame;
+# a near-duplicate hypothesis the model emitted at turn 11 was REFUSED the same
+# chain root by the fm#1091 one-cause-one-chain guard, so it stood UNATTACHED —
+# and, being a longer narrative of the very same cause, it covered 8 of the
+# root's 9 content tokens. Novelty 1/9 = 0.11 against a 0.30 bar. The hatch that
+# exists for exactly this ("unattached presumptive owner") missed it, because
+# mutual Jaccard between a one-clause root and a full-narrative hypothesis is
+# ~0.28 however certain the ownership.
+
+
+def test_unattached_duplicate_hypothesis_is_not_its_own_root_s_frame():
+    """The fm#1137 shape, verbatim from the incident: the root's OWN cause
+    restated at narrative length, standing unattached, must NOT frame it."""
+    case = _case(
+        "The production payment-processor deployment in the `payments` "
+        "namespace is currently unavailable or unstable because its v2.1.4 "
+        "pods enter CrashLoopBackOff after 2-3 minutes, causing customer "
+        "payment failures.",
+        hyp_statements=[
+            "The v2.1.4 JVM configuration sets a 512MB maximum heap inside a "
+            "400Mi container, leaving insufficient headroom for JVM "
+            "native/non-heap memory; total RSS reaches the cgroup limit, the "
+            "kernel kills the process with SIGKILL/exit 137, and Kubernetes "
+            "restarts it into CrashLoopBackOff."
+        ],
+    )
+    root = _root(
+        "JVM heap and native/non-heap memory exceed the 400Mi container " "cgroup limit"
+    )
+    assert root_restates_case_frame(root, case) is False
+
+
+def test_frame_owner_containment_is_asymmetric_the_656_root_stays_framed():
+    """The containment arm must NEVER be symmetrised. The #656 disjunction root
+    CONTAINS each sibling hypothesis it OR-s; that direction is the incident,
+    not an ownership signal, and those siblings stay IN the frame."""
+    from faultmaven.core.investigation.causal_graph import (
+        _content_tokens,
+        _presumptive_frame_owner,
+    )
+
+    root_tokens = _content_tokens(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors"
+    )
+    sibling = _content_tokens("Transient network congestion")
+    # The sibling is fully contained in the ROOT ...
+    assert len(root_tokens & sibling) / len(sibling) == 1.0
+    # ... and that must not make it an owner (the guarded direction is the
+    # reverse: the ROOT contained in the hypothesis).
+    assert _presumptive_frame_owner(root_tokens, sibling) is False
+
+
+def test_frame_owner_containment_bar_holds_at_the_calibrated_value():
+    """Pin the arm's shape: a hypothesis covering the root's content is an
+    owner; one covering little of it is not."""
+    from faultmaven.core.investigation.causal_graph import (
+        _FRAME_OWNER_CONTAINMENT,
+        _presumptive_frame_owner,
+    )
+
+    root = {"heap", "native", "memory", "cgroup", "limit"}
+    covering = root | {"sigkill", "kubernetes", "restart", "crashloopbackoff"}
+    assert _presumptive_frame_owner(root, covering) is True
+    partial = {"heap", "connection", "pool", "exhausted", "timeout"}
+    assert len(root & partial) / len(root) < _FRAME_OWNER_CONTAINMENT
+    assert _presumptive_frame_owner(root, partial) is False

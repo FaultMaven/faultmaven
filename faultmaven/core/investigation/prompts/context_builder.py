@@ -33,7 +33,9 @@ from faultmaven.core.investigation.causal_graph import (
     BLOCK_REASON_COUNT,
     BLOCK_REASON_HEDGED,
     BLOCK_REASON_MIRROR,
+    BLOCK_REASON_RESTATEMENT,
     mece_contested_root_ids,
+    restatement_held_root_ids,
     root_support_block_reasons,
 )
 from faultmaven.core.investigation.evidence_need_surfacing import (
@@ -2812,6 +2814,18 @@ def _build_causal_graph_block(case: Case) -> str:
             " — its causal support is self-hedged (stance_confidence below "
             "0.6); record a CONFIDENT causal observation to ground it"
         ),
+        # §7.1 restatement guard. Its own arm because its recovery is the
+        # OPPOSITE of the grounding arms': this root's evidence bar is already
+        # met, so more observations move nothing — the STATEMENT is what has to
+        # change. Without the note the model sees a bare [root/inconclusive]
+        # beside confident causal supports and keeps collecting (fm#1137: nine
+        # turns of it).
+        BLOCK_REASON_RESTATEMENT: (
+            " — fully supported, but its statement adds no content beyond what "
+            "the problem and the other hypotheses already say; MORE EVIDENCE "
+            "WILL NOT VALIDATE IT. Restate this node as the specific MECHANISM "
+            "(what is misconfigured/exhausted/failing, and how that produces D)"
+        ),
     }
 
     # §7.1.2 MECE arbitration: contested roots (several simultaneously-
@@ -2828,8 +2842,13 @@ def _build_causal_graph_block(case: Case) -> str:
         "cause identification is HELD until discriminating evidence refutes "
         "the alternatives (at most one can be the real cause)"
     )
+    # The two hold populations are disjoint by construction —
+    # root_support_block_reasons excludes restating roots, and
+    # restatement_held_root_ids requires the grounding bar already MET — so
+    # the merge order below cannot silently reclassify a root.
     node_reasons = {
         **block_reasons,
+        **dict.fromkeys(restatement_held_root_ids(case), BLOCK_REASON_RESTATEMENT),
         **dict.fromkeys(mece_contested_root_ids(case), _MECE_CONTESTED),
     }
 
