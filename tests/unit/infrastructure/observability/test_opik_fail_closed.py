@@ -61,15 +61,30 @@ def _run_probe(body: str, extra_env: dict | None = None) -> dict:
     Runs in a temporary cwd so pydantic-settings cannot pick up the
     developer's `.env`; results come back through a file because the app logs
     on import.
+
+    Every probe is pinned to THIS checkout before it measures anything. The
+    package is installed editable, and the PEP 660 finder resolves
+    `import faultmaven` to the primary checkout regardless of PYTHONPATH — so
+    a probe run from the wrong cwd silently measures whatever tree is
+    installed instead of the one under test, and reports a green result about
+    code it never loaded.
     """
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
     for key in _OPIK_ENV_KEYS:
         env.pop(key, None)
     if extra_env:
         env.update(extra_env)
+    pin = (
+        "import faultmaven as _fm, pathlib as _pl\n"
+        f"_root = _pl.Path({str(REPO_ROOT)!r}).resolve()\n"
+        "_loaded = _pl.Path(_fm.__file__).resolve()\n"
+        "assert _root in _loaded.parents, (\n"
+        "    'probe loaded faultmaven from %s, not the tree under test (%s)' % (_loaded, _root)\n"
+        ")\n"
+    )
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "probe.json"
-        program = f"OUT = {str(out)!r}\n" + body
+        program = f"OUT = {str(out)!r}\n" + pin + body
         result = subprocess.run(
             [sys.executable, "-c", program],
             capture_output=True,
@@ -294,6 +309,136 @@ def test_init_enabled_without_url_also_disables_sdk():
     result = _run_probe(_INIT_KILL_SWITCH_PROBE, extra_env={"OPIK_ENABLED": "true"})
     assert result["after"] is False
     assert result["track_disable_env"] == "true"
+
+
+# Runs a full enabled init (endpoint pointed at a closed local port so the
+# client, if built, reaches nothing) and reports both the SDK flag and the
+# env var, so a test can tell "honoured the operator" from "overrode them".
+_OPERATOR_KNOB_PROBE = """
+import json
+import os
+
+import opik
+
+from faultmaven.infrastructure.observability.tracing import init_opik_tracing
+
+init_opik_tracing()
+
+result = {
+    "tracing_active": opik.is_tracing_active(),
+    "track_disable_env": os.environ.get("OPIK_TRACK_DISABLE"),
+}
+
+try:
+    from faultmaven.modules.preprocessing.classifier import DataClassifier
+    from opik.api_objects import opik_client
+
+    DataClassifier().classify("app.log", "ERROR: timeout connecting to db")
+    result["client_constructed"] = (
+        opik_client.get_current_client_raw() is not None
+        or getattr(opik_client, "_global_singleton", None) is not None
+    )
+except ImportError:
+    result["client_constructed"] = False
+
+with open(OUT, "w") as f:
+    json.dump(result, f)
+"""
+
+
+@pytest.mark.skipif(not OPIK_INSTALLED, reason="opik SDK not installed")
+def test_operator_track_disable_survives_enabled_init():
+    """An operator's explicit OPIK_TRACK_DISABLE=true is never overridden.
+
+    OPIK_ENABLED=true with a configured endpoint takes the enabled path, which
+    must undo only FaultMaven's own kill switch — not the operator's. Forcing
+    the switches on here would make a documented knob silently inert and, worse,
+    RESUME tracing on upgrade for anyone relying on it: for a Comet Cloud
+    backend that restarts the exact egress #1121 exists to stop."""
+    result = _run_probe(
+        _OPERATOR_KNOB_PROBE,
+        extra_env={
+            "OPIK_ENABLED": "true",
+            "OPIK_TRACK_DISABLE": "true",
+            "OPIK_URL_OVERRIDE": "http://127.0.0.1:1/",
+            "OPIK_CONNECTION_MONITOR_PING_INTERVAL": "999999",
+        },
+    )
+    assert result["tracing_active"] is False
+    assert result["track_disable_env"] == "true"  # left exactly as the operator set it
+    assert result["client_constructed"] is False  # and nothing was built to send with
+
+
+@pytest.mark.skipif(not OPIK_INSTALLED, reason="opik SDK not installed")
+def test_operator_track_disable_false_still_traces():
+    """The undo is value-exact, not merely delete-or-not.
+
+    With the operator's OPIK_TRACK_DISABLE=false, the disabled path overwrites
+    the variable with "true"; the enabled path must put back the literal
+    "false" it found. Deleting instead would also leave tracing on, so this
+    asserts the restored VALUE — the only assertion that can tell the two
+    implementations apart."""
+    result = _run_probe(
+        _OPERATOR_KNOB_PROBE,
+        extra_env={
+            "OPIK_ENABLED": "true",
+            "OPIK_TRACK_DISABLE": "false",
+            "OPIK_URL_OVERRIDE": "http://127.0.0.1:1/",
+            "OPIK_CONNECTION_MONITOR_PING_INTERVAL": "999999",
+        },
+    )
+    assert result["tracing_active"] is True
+    assert result["track_disable_env"] == "false"
+    assert result["client_constructed"] is True
+
+
+@pytest.mark.skipif(not OPIK_INSTALLED, reason="opik SDK not installed")
+def test_enabled_init_after_disabled_init_traces():
+    """Finding 3's original hazard: a disabled init must not leave tracing off
+    for an enabled init later in the same process.
+
+    The disabled path writes OPIK_TRACK_DISABLE itself, so re-deriving from the
+    environment without first restoring would read FaultMaven's own value and
+    keep tracing off — the leak, reintroduced. Here the operator set nothing,
+    so the restore removes the variable entirely and tracing comes back on."""
+    result = _run_probe("""
+import json
+import os
+
+import opik
+
+from faultmaven.config.settings import reset_settings
+from faultmaven.infrastructure.observability.tracing import init_opik_tracing
+
+init_opik_tracing()  # OPIK_ENABLED unset -> disabled path
+after_disabled = {
+    "tracing_active": opik.is_tracing_active(),
+    "track_disable_env": os.environ.get("OPIK_TRACK_DISABLE"),
+}
+
+os.environ["OPIK_ENABLED"] = "true"
+os.environ["OPIK_URL_OVERRIDE"] = "http://127.0.0.1:1/"
+os.environ["OPIK_CONNECTION_MONITOR_PING_INTERVAL"] = "999999"
+reset_settings()
+
+init_opik_tracing()  # now the enabled path
+
+result = {
+    "after_disabled": after_disabled,
+    "tracing_active": opik.is_tracing_active(),
+    "track_disable_env": os.environ.get("OPIK_TRACK_DISABLE"),
+}
+
+with open(OUT, "w") as f:
+    json.dump(result, f)
+""")
+    # The disabled init really did shut tracing off (otherwise the second half
+    # proves nothing).
+    assert result["after_disabled"]["tracing_active"] is False
+    assert result["after_disabled"]["track_disable_env"] == "true"
+    # And the enabled init that followed restored it.
+    assert result["tracing_active"] is True
+    assert result["track_disable_env"] is None  # our own write, fully undone
 
 
 def test_deployed_configmap_keys_bind_to_settings(monkeypatch):

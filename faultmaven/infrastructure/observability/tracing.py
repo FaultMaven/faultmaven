@@ -281,14 +281,25 @@ class OpikTracer(BaseExternalClient, ITracer):
                 self.logger.warning(f"Failed to record fallback metrics: {e}")
 
 
+# Sentinel distinguishing "we have not written OPIK_TRACK_DISABLE" from "the
+# operator had it unset", which are different states with different undos.
+_TRACK_DISABLE_UNRECORDED = object()
+
+# What OPIK_TRACK_DISABLE held before the disabled path overwrote it: either
+# _TRACK_DISABLE_UNRECORDED (we never wrote it), None (the operator had it
+# unset), or the operator's exact string. Only what WE wrote may be undone —
+# an operator's explicit "off" is never overridden.
+_track_disable_prior_value: Any = _TRACK_DISABLE_UNRECORDED
+
+
 def _disable_sdk_tracing() -> None:
     """Flip the Opik SDK's own kill switches so disabled means disabled.
 
     The @opik.track call sites (llm/router.py, preprocessing/classifier.py)
-    are already import-time passthroughs when OPIK_ENABLED=false, but any
-    other tracked code path would still lazily build an SDK client pointed at
-    the SDK's default backend (Comet Cloud) — outbound requests and 401s from
-    a self-hosted deployment (#1121). Two switches, belt and braces:
+    already gate per call when OPIK_ENABLED=false, but any other tracked code
+    path would still lazily build an SDK client pointed at the SDK's default
+    backend (Comet Cloud) — outbound requests and 401s from a self-hosted
+    deployment (#1121). Two switches, belt and braces:
 
     - ``set_tracing_active(False)`` makes ``is_tracing_active()`` False
       process-wide, overriding any True the SDK may already have cached.
@@ -297,7 +308,15 @@ def _disable_sdk_tracing() -> None:
     - ``OPIK_TRACK_DISABLE=true`` covers anything that re-reads OpikConfig
       from the environment (the SDK owns this env var; it is deliberately
       not a settings field).
+
+    The pre-existing value is recorded so _enable_sdk_tracing can undo exactly
+    this write and nothing else. Recorded only on the FIRST write: a second
+    disabled init must not record our own "true" as if the operator set it.
     """
+    global _track_disable_prior_value
+    if _track_disable_prior_value is _TRACK_DISABLE_UNRECORDED:
+        _track_disable_prior_value = os.environ.get("OPIK_TRACK_DISABLE")
+
     os.environ["OPIK_TRACK_DISABLE"] = "true"
     try:
         import opik as _opik
@@ -308,23 +327,42 @@ def _disable_sdk_tracing() -> None:
 
 
 def _enable_sdk_tracing() -> None:
-    """Assert the SDK tracing state the enabled path depends on.
+    """Undo our own kill switch, honouring anything the operator set.
 
-    The mirror of _disable_sdk_tracing. Both switches are process-global with
-    no restore path, so a disabled init leaves the SDK off for everything that
-    runs afterwards in the same process. Without this, an enabled init that
-    follows a disabled one (or an OPIK_TRACK_DISABLE inherited from the
-    environment) would silently trace nothing while logging that tracing was
-    initialized. Configuration should state its own preconditions rather than
-    inherit whatever the last caller left behind.
+    Both SDK switches are process-global with no restore path, so a disabled
+    init leaves tracing off for everything that runs afterwards in the same
+    process; an enabled init that follows one would otherwise log that tracing
+    was initialized while silently tracing nothing.
+
+    The undo is deliberately narrow. Forcing the switches on instead —
+    ``os.environ.pop`` plus ``set_tracing_active(True)`` — also overrides an
+    OPERATOR-set ``OPIK_TRACK_DISABLE=true``, which is a documented way to
+    suppress spans while keeping a backend configured. That would make a
+    documented knob silently inert (#1121's own defect class, moved to the
+    other switch) and would RESUME tracing on upgrade for anyone relying on
+    it — restarting the very egress this change exists to stop.
+
+    So: restore exactly the value the disabled path overwrote (including its
+    absence), then let ``reset_tracing_to_config_default()`` re-derive the flag
+    from the environment. That clears a stale programmatic ``False`` while
+    still reading an operator's ``OPIK_TRACK_DISABLE=true`` as off.
     """
-    os.environ.pop("OPIK_TRACK_DISABLE", None)
+    global _track_disable_prior_value
+    if _track_disable_prior_value is not _TRACK_DISABLE_UNRECORDED:
+        if _track_disable_prior_value is None:
+            os.environ.pop("OPIK_TRACK_DISABLE", None)
+        else:
+            os.environ["OPIK_TRACK_DISABLE"] = _track_disable_prior_value
+        _track_disable_prior_value = _TRACK_DISABLE_UNRECORDED
+
     try:
         import opik as _opik
 
-        _opik.set_tracing_active(True)
+        # Re-derives from the environment, so an operator's OPIK_TRACK_DISABLE
+        # still wins. Never set_tracing_active(True) — that would override it.
+        _opik.reset_tracing_to_config_default()
     except Exception as e:
-        logging.debug(f"Could not flip Opik SDK tracing switch: {e}")
+        logging.debug(f"Could not reset Opik SDK tracing switch: {e}")
 
 
 def init_opik_tracing(

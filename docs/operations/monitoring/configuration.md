@@ -283,12 +283,13 @@ Tracing is all-or-nothing. The two variables act at different layers:
   switch (`OPIK_TRACK_DISABLE=true` plus `set_tracing_active(False)`). No Opik
   client is constructed, so nothing is sent anywhere.
 - `OPIK_TRACK_DISABLE` is read by the **Opik SDK itself**, straight from the
-  environment — it is not a `settings.py` field. The SDK derives
-  `is_tracing_active()` from it *unless* something has called
-  `set_tracing_active()`, which overrides the env-derived value; FaultMaven
-  calls it on both paths so the SDK state always matches `OPIK_ENABLED`.
-  `main.py` calls `load_dotenv()` before the SDK is imported, so a value in
-  `.env` reaches it.
+  environment — it is not a `settings.py` field. It is an independent "off"
+  switch, and FaultMaven never overrides a value you set: the disabled path
+  sets it, and the enabled path restores exactly the value it found (including
+  no value at all) before letting the SDK re-derive `is_tracing_active()` from
+  the environment. So `OPIK_TRACK_DISABLE=true` suppresses spans even with
+  `OPIK_ENABLED=true`. `main.py` calls `load_dotenv()` before the SDK is
+  imported, so a value in `.env` reaches it.
 
 Setting `OPIK_ENABLED=false` is therefore enough to stop tracing completely,
 including any outbound request to Comet Cloud (the SDK's default backend when
@@ -305,7 +306,9 @@ a restart.
 **Examples:**
 
 ```bash
-# Stop emitting spans but keep the backend configured
+# Stop emitting spans but keep the backend configured.
+# Honoured even though OPIK_ENABLED is true — FaultMaven does not override it.
+OPIK_ENABLED=true
 OPIK_TRACK_DISABLE=true
 
 # Turn Opik off entirely — this alone is sufficient
