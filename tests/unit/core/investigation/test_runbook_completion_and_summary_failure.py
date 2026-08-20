@@ -10,6 +10,9 @@ Covered behaviors:
   task runs
 - RG1+RG2: ``_run_runbook_conversion`` writes a system message to the case
   transcript on success and on failure (best-effort, never raises)
+- The kickoff turn promises only what every client delivers: no in-chat
+  notification claim (that system row is invisible in the copilot, failure
+  notices included), the Dashboard location named, and a self-serve retry
 - RG4: the case→runbook chat path (``_handle_runbook_creation``) uses the
   canonical ``CaseConversionRequest.from_case`` factory (no inline extraction)
 - RG5: missing ``runbook_kb`` is logged at WARNING when dedup is skipped
@@ -423,6 +426,126 @@ class TestRunbookCreationFollowUps:
 
         result = await engine._handle_runbook_creation(case, metadata={})
         assert result["suggested_follow_ups"] == []
+
+
+# =============================================================================
+# The initiating turn may only promise what every client delivers
+# =============================================================================
+
+
+# Phrasings that all assert the same thing: "the result will be delivered to
+# you in this conversation". The completion notification is written as a
+# `role: "system"` message and the copilot's conversation loader keeps only
+# user/assistant rows, with no push channel for case messages — so no client
+# reliably shows it, on the turn or after a reload. The FAILURE notifications
+# ride the same row, which is the half that matters: a failed or empty
+# conversion is silent, so a user told to wait for word would wait forever.
+_IN_CHAT_DELIVERY_CLAIMS = (
+    "let you know here",
+    "let you know when",
+    "i'll let you know",
+    "i will let you know",
+    "notify you here",
+    "tell you here",
+    "here when it's ready",
+    "here when it is ready",
+    "in this chat",
+    "in this conversation",
+    "message you when",
+    "ping you when",
+    "post it here",
+    "come back here",
+    "watch this space",
+)
+
+
+class TestRunbookInitiationMessagePromisesOnlyWhatIsDelivered:
+    @pytest.mark.asyncio
+    async def test_initiating_turn_makes_no_in_chat_notification_claim(
+        self, mock_llm, mock_repo
+    ):
+        """The kickoff turn must not tell the user to wait for word in chat.
+
+        Pins the invariant, not the prose: any rewording is free as long as
+        it does not reintroduce a delivery promise the transport cannot keep.
+        """
+        case = _make_resolved_case()
+        _make_runbook_ready(case)
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        conversion_service = MagicMock()
+        conversion_service.convert_from_case = AsyncMock(
+            return_value=MagicMock(drafts=[])
+        )
+        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+        engine.conversion_service = conversion_service
+        engine.knowledge_service = MagicMock(spec=[])
+
+        response = (await engine._handle_runbook_creation(case, metadata={}))[
+            "agent_response"
+        ]
+        lowered = response.lower()
+
+        offenders = [c for c in _IN_CHAT_DELIVERY_CLAIMS if c in lowered]
+        assert not offenders, (
+            f"the runbook kickoff turn promises in-chat delivery ({offenders}), "
+            f"but the completion notification is a system-role message no "
+            f"client surfaces — including the failure notice: {response!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_initiating_turn_names_the_dashboard_location(
+        self, mock_llm, mock_repo
+    ):
+        """The one true destination must be named, or the draft is unfindable."""
+        case = _make_resolved_case()
+        _make_runbook_ready(case)
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        conversion_service = MagicMock()
+        conversion_service.convert_from_case = AsyncMock(
+            return_value=MagicMock(drafts=[])
+        )
+        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+        engine.conversion_service = conversion_service
+        engine.knowledge_service = MagicMock(spec=[])
+
+        response = (await engine._handle_runbook_creation(case, metadata={}))[
+            "agent_response"
+        ]
+
+        assert "Dashboard" in response
+        assert "Knowledge > Drafts" in response
+
+    @pytest.mark.asyncio
+    async def test_initiating_turn_carries_a_self_serve_recovery_path(
+        self, mock_llm, mock_repo
+    ):
+        """Failures are silent, so the retry must be stated up front.
+
+        The background task's own retry prompt rides the same invisible
+        system row, so the only retry instruction the user ever reads is
+        this one. It names the suggestion label verbatim so the affordance
+        it points at is findable.
+        """
+        case = _make_resolved_case()
+        _make_runbook_ready(case)
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        conversion_service = MagicMock()
+        conversion_service.convert_from_case = AsyncMock(
+            return_value=MagicMock(drafts=[])
+        )
+        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+        engine.conversion_service = conversion_service
+        engine.knowledge_service = MagicMock(spec=[])
+
+        response = (await engine._handle_runbook_creation(case, metadata={}))[
+            "agent_response"
+        ]
+
+        assert "Generate runbook from this case" in response
+        assert "retry" in response.lower()
 
 
 # =============================================================================

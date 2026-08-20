@@ -3766,10 +3766,19 @@ class MilestoneEngine:
                 self._run_runbook_conversion(conversion_service, request, case.user_id)
             )
 
+            # Promise only what every client actually delivers. The background
+            # task DOES write a completion notification into the transcript,
+            # but it is a `role: "system"` row and the copilot's conversation
+            # loader keeps only user/assistant rows — and there is no push
+            # channel for case messages, so that row is invisible on this turn
+            # and after a reload alike. Since the FAILURE notifications ride
+            # the same system row, a failed or empty conversion is silent
+            # there: the only honest thing to name is the Dashboard location
+            # (true) plus a self-serve retry the user can reach unprompted.
             agent_response = (
                 "Creating your runbook draft from this case. "
-                "I'll let you know here when it's ready — you'll also find it in "
-                "the Dashboard under **Knowledge > Drafts**."
+                "It will appear in the Dashboard under **Knowledge > Drafts** — "
+                "if it doesn't, click **Generate runbook from this case** to retry."
             )
             # Carry the dedup caveat onto the user-visible turn. Only NOT_READY
             # surfaces `suggestion.message` above, so a
@@ -3787,11 +3796,13 @@ class MilestoneEngine:
             # Success path re-offers the standard terminal Q&A affordances
             # (regenerate summary, generate runbook) so the user can iterate
             # on the summary while the background runbook conversion runs,
-            # or retry the runbook if the background task fails (the
-            # completion notification will tell them so). The runbook
-            # affordance is hidden on this turn — we just kicked off a
-            # generation, so re-offering it would race the background
-            # task and risk a duplicate draft.
+            # or retry the runbook if the background task fails. Retry is
+            # user-initiated by design: a chat client that drops system rows
+            # never shows the failure notification, so the initiating message
+            # names the retry affordance instead of relying on a prompt that
+            # may never arrive. The runbook affordance is hidden on this turn
+            # — we just kicked off a generation, so re-offering it would race
+            # the background task and risk a duplicate draft.
             remaining = await self._remaining_regens_for(case)
             follow_ups = _resolved_suggestions(
                 case, remaining, runbook_already_exists=True
