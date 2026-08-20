@@ -19,10 +19,12 @@ behavior of receiving truncated responses to inspect.
 
 Visible output is measured with the provider's tokenizer when it has one AND
 the body is at or under ``_TOKENIZER_EXACT_MAX_CHARS``; everything else — the
-five providers with no tokenizer, and any longer body — is deliberately
-over-estimated at one token per character. The invariant across all of them is
-that the estimate must never UNDER-state, since under-stating fires the guard
-on a body that met its floor. It is never read from ``output_tokens``, because
+five providers with no tokenizer, and any longer body — is bounded above by its
+UTF-8 BYTE count. The invariant across all of them is that the estimate must
+never UNDER-state, since under-stating fires the guard on a body that met its
+floor. Bytes rather than characters because a byte-level BPE token consumes at
+least one byte, which makes the bound provable for every script; the character
+form is only its ASCII corollary and multi-byte text breaks it. It is never read from ``output_tokens``, because
 OpenAI's ``completion_tokens`` and Anthropic's ``output_tokens`` INCLUDE hidden
 reasoning, so on exactly the starved call this guard exists to catch the
 reported count reads as ample and a check built on it would fail open.
@@ -709,9 +711,9 @@ class TestFloorOnProvidersWithoutATokenizer:
     That matters most on Gemini, the one provider where declaring INFERENCE
     LIFTS a starvation guard and makes the floor load-bearing.
 
-    Where no tokenizer exists the estimate is now one token per character: an
-    upper bound for every Latin-script shape measured (densest, base64, needs
-    1.41 chars/token), so it errs toward NOT raising.
+    Where no tokenizer exists the estimate is the body's UTF-8 byte count —
+    an upper bound on the token count for ANY script, since a byte-level BPE
+    token consumes at least one byte — so it errs toward NOT raising.
     """
 
     # Every provider in the registry, tokenizer-backed or not. Parametrised
@@ -891,7 +893,19 @@ class TestEstimateNeverUnderStates:
 
     @pytest.mark.parametrize(
         "shape",
-        ["prose", "dense_json", "degenerate_run", "base64", "mixed"],
+        [
+            "prose",
+            "dense_json",
+            "degenerate_run",
+            "base64",
+            "mixed",
+            # Multi-byte shapes. Their absence is exactly why a
+            # character-based ceiling survived review: every shape above is
+            # ASCII, where bytes and characters coincide.
+            "emoji",
+            "cjk",
+            "mixed_script",
+        ],
     )
     def test_never_under_states_across_shapes(self, shape):
         import base64
@@ -912,6 +926,9 @@ class TestEstimateNeverUnderStates:
             "degenerate_run": "x" * 20000,
             "base64": base64.b64encode(os.urandom(9000)).decode(),
             "mixed": self._adversarial_body(),
+            "emoji": "🔥🚀💡" * 400,
+            "cjk": "数据库连接池耗尽导致请求超时" * 200,
+            "mixed_script": ("pool exhausted 数据库 🔥 переполнение " * 200),
         }
         body = bodies[shape]
         estimate = _estimate_visible_output_tokens(body, "openai", "gpt-4")
@@ -960,3 +977,71 @@ class TestLongMixedBodyDoesNotFalsePositive:
             prompt="test", max_tokens=20000, min_output_tokens=4000, bypass_cache=True
         )
         assert response.is_truncated
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+class TestCeilingIsBytesNotCharacters:
+    """The ceiling is the body's UTF-8 BYTE count, and that is load-bearing.
+
+    ``tokens <= chars`` is only the ASCII corollary of the real bound. What is
+    provable is ``tokens <= bytes``: a byte-level BPE token maps to a
+    non-empty byte string, so N bytes cannot produce more than N tokens for
+    any script. Outside ASCII the character form fails — measured, a 4,000
+    mixed-script fuzz put 3,912 strings over the character rule (worst 3.00
+    tokens per character) and zero over the byte count.
+    """
+
+    def _real_tokens(self, text):
+        from faultmaven.utils.token_estimation import estimate_tokens
+
+        return estimate_tokens(text, provider="openai", model="gpt-4")
+
+    def test_emoji_body_would_have_broken_the_character_rule(self):
+        """The case that motivates the unit. Asserts BOTH halves: the old
+        character ceiling really would have under-stated here (so this test
+        would fail against it), and the byte ceiling really does bound it."""
+        from faultmaven.infrastructure.llm.router import (
+            _estimate_visible_output_tokens,
+        )
+
+        body = "🔥🚀💡" * 100
+        real = self._real_tokens(body)
+        assert real > len(body), (
+            "sample must be one the character rule under-states: "
+            f"{real} tokens vs {len(body)} chars"
+        )
+        assert real <= len(body.encode("utf-8"))
+        # gemini has no tokenizer, so this takes the conservative branch.
+        assert _estimate_visible_output_tokens(body, "gemini", None) >= real
+
+    @pytest.mark.parametrize(
+        "provider", ["gemini", "groq", "cohere", "local", "huggingface", "openai"]
+    )
+    def test_multibyte_body_never_under_states_on_any_provider(self, provider):
+        from faultmaven.infrastructure.llm.router import (
+            _estimate_visible_output_tokens,
+        )
+
+        # Long enough that the tokenizer-backed providers also take the
+        # conservative branch, so this covers both untokenizable cases.
+        body = "🔥🚀💡 数据库连接池耗尽 " * 500
+        estimate = _estimate_visible_output_tokens(body, provider, None)
+        assert estimate >= self._real_tokens(body)
+
+    def test_ascii_boundary_cases_are_unchanged_by_the_unit_switch(self):
+        """Both contract boundaries are pure ASCII, where bytes == chars, so
+        switching the unit moved neither of them."""
+        from faultmaven.infrastructure.llm.router import (
+            _estimate_visible_output_tokens,
+        )
+
+        starved = "x" * 215
+        assert len(starved.encode("utf-8")) == len(starved)
+        # Still below a 500-token floor -> still raises (covered end-to-end
+        # elsewhere; this pins the number the check compares).
+        assert _estimate_visible_output_tokens(starved, "gemini", None) < 500
+
+        dense = "a" * 3143
+        assert len(dense.encode("utf-8")) == len(dense)
+        assert _estimate_visible_output_tokens(dense, "gemini", None) >= 1000

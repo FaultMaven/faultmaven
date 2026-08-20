@@ -85,35 +85,42 @@ _TOKENIZER_BACKED_PROVIDERS = frozenset(
 # and every body at or under this bound is still tokenized EXACTLY.
 _TOKENIZER_EXACT_MAX_CHARS = 4000
 
-# Conservative chars-per-token divisor: used for providers with no tokenizer,
-# and for any body too long to tokenize exactly (see above).
+# Conservative ceiling, in BYTES per token: used for providers with no
+# tokenizer, and for any body too long to tokenize exactly (see above). One
+# rule for both — they are the same question ("we cannot measure this; what
+# can we still prove?") and must not drift into two answers.
 #
-# Derived from measurement, not chosen for roundness. Real cl100k density by
-# shape: CJK 0.92, base64 1.41, id-dense JSON 1.98, log lines 2.07, escaped
-# JSON 2.55, English-valued JSON 4.58, English prose 6.53 chars/token. A
-# divisor of 4 sits in the MIDDLE of that range, so it understates the dense
-# shapes by 2-4x — and understating makes the guard fire on a body that met
-# its floor, killing an otherwise-usable turn. That false positive is the
-# unsafe direction; a missed starvation merely leaves the pre-#1117 behaviour.
+# WHY A DIVISOR OF 4 IS WRONG, and why the fix is not a better divisor. Real
+# cl100k density by shape: CJK 0.92, base64 1.41, id-dense JSON 1.98, log
+# lines 2.07, escaped JSON 2.55, English-valued JSON 4.58, English prose 6.53
+# chars/token. A divisor of 4 sits in the MIDDLE of that spread, so it
+# understates the dense shapes by 2-4x — and understating makes the guard fire
+# on a body that MET its floor, killing an otherwise-usable turn. That false
+# positive is the unsafe direction; a missed starvation merely leaves the
+# pre-#1117 behaviour. But no divisor drawn from that table is safe either: it
+# would be an average masquerading as a bound.
 #
-# So where we cannot measure, we assume the densest plausible packing: one
-# token per character. That is an upper bound on the token count for every
-# Latin-script shape measured (the densest, base64, still needs 1.41 chars per
-# token), which makes the estimate err toward NOT raising exactly as intended.
-# CJK is the one measured shape that can exceed it, by ~8% — nowhere near the
-# order of magnitude that separates a starved body from a healthy one.
+# THE BOUND IS PROVED, NOT MEASURED. A byte-level BPE token maps to a
+# non-empty byte string, so a body of N UTF-8 bytes cannot tokenize to more
+# than N tokens, whatever its script or content. That is why the unit here is
+# bytes and not characters: ``tokens <= chars`` is only the ASCII COROLLARY of
+# this bound, and it fails outside ASCII — measured, ``'🔥🚀💡' * 100`` is 300
+# characters but 800 tokens (2.67 tokens per character), and a 4,000-string
+# mixed-script fuzz put 3,912 strings over the character rule (worst 3.00) and
+# ZERO over the byte count.
 #
-# It keeps both ends of the contract:
-#   fm#1094 starved body — 215 chars vs a 500-token floor -> 215 < 500, RAISES;
-#   dense-JSON false positive — 3143 chars vs a 1000-token floor -> 3143 >= 1000,
+# Both ends of the contract are unchanged by the switch, because both boundary
+# bodies are pure ASCII, where bytes and characters are identical:
+#   fm#1094 starved body — 215 bytes vs a 500-token floor -> 215 < 500, RAISES;
+#   dense-JSON false positive — 3143 bytes vs a 1000-token floor -> 3143 >= 1000,
 #   PASSES (it scored 785 under ``len // 4`` and wrongly raised).
-_CONSERVATIVE_CHARS_PER_TOKEN = 1
+_CONSERVATIVE_BYTES_PER_TOKEN = 1
 
 
 def _estimate_visible_output_tokens(
     text: str, provider: Optional[str], model: Optional[str]
 ) -> int:
-    """Visible output tokens: exact where cheap, over-estimated everywhere else.
+    """Visible output tokens: exact where cheap, bounded from above elsewhere.
 
     INVARIANT — this must never UNDER-state the token count. Under-stating
     makes the floor fire on a body that met it, killing an otherwise-usable
@@ -122,12 +129,22 @@ def _estimate_visible_output_tokens(
 
     - exact tokenization for a body short enough to measure cheaply, which is
       every body in the regime the guard exists for (starvation is short);
-    - one token per character otherwise — an unknown or untokenizable
-      provider, or a body too long to tokenize inside the CPU bound.
+    - otherwise its UTF-8 byte count — an unknown or untokenizable provider,
+      or a body too long to tokenize inside the CPU bound.
 
     Nothing is extrapolated from a sample: a scaled sample is an assumption
     about the part it did not read, and there is no sampling scheme that
     cannot be defeated by a body whose sparse part comes first.
+
+    The byte ceiling holds for any tokenizer whose vocabulary is made of
+    NON-EMPTY byte strings — byte-level BPE (the OpenAI/Anthropic families
+    here) and SentencePiece with byte fallback both qualify, since every token
+    consumes at least one byte of input. Two things it does not promise: a
+    tokenizer that prepends BOS or a word-prefix marker can add a small O(1)
+    number of tokens beyond the input's own bytes, and a vocabulary admitting
+    zero-width tokens would break it outright. Neither is material against
+    floors in the hundreds of tokens, but the claim is stated at exactly its
+    real strength rather than as an absolute.
     """
     if not text:
         return 0
@@ -143,7 +160,9 @@ def _estimate_visible_output_tokens(
     ):
         return estimate_tokens(text, provider=provider_name, model=model)
 
-    return len(text) // _CONSERVATIVE_CHARS_PER_TOKEN
+    # ONE rule serves both untokenizable cases — no tokenizer for this
+    # provider, and no CPU budget for a body this long.
+    return len(text.encode("utf-8")) // _CONSERVATIVE_BYTES_PER_TOKEN
 
 
 def _opik_track_llm(name: str):
