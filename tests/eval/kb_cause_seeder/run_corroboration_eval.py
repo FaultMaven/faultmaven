@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+"""#1144 corroboration measurement — offline, LLM-free, retrieval-level.
+
+The re-runnable artifact behind ``KB_SEED_MIN_CORROBORATING_CHUNKS``. The seeder
+asserts a retrieved cause to the user as a **candidate root cause**, and #1144 is
+what happens when that assertion rests on rank alone: a thin problem statement
+flattens the score distribution and whichever runbook owns a cause-heading chunk
+in the band gets promoted. This driver is how the guard that replaced rank was
+chosen, and it is the thing to re-run before re-sizing the threshold.
+
+**It measures a guard, not a model.** No server, no provider key, no LLM — it
+needs only an ingested KB (ChromaDB collection + the ``knowledge_items`` rows),
+so it is deterministic and re-runnable offline. That also bounds what it can
+say: it measures ADMISSION (which runbooks' causes are allowed to seed), never
+whether the investigation that follows is any good. The live flag-ON driver
+(``run_seed_eval.py``) is what covers the latter.
+
+Not a CI test — it depends on the ingested corpus, and its numbers are corpus
+facts rather than invariants. The invariants it motivated ARE pinned in CI, in
+``tests/unit/core/investigation/test_kb_cause_seeder_seams.py``.
+
+Usage:
+    python run_corroboration_eval.py <mode> [--chroma DIR] [--db PATH]
+                                     [--statements PATH] [--json PATH]
+
+Modes:
+    guards   compare candidate admission guards head to head over every
+             candidate seed — the table that ruled out a score floor and the
+             kb_context cross-check, and selected corroboration.
+    sweep    sweep a minimum-score floor and report what each value keeps and
+             drops, per population. This is the evidence that NO floor separates
+             them; keep it runnable so the claim can be re-checked, not
+             re-asserted.
+    e2e      drive the REAL wrapper (_prefetch_kb_context ->
+             _seed_candidate_causes_from_kb) with live retrieval and print which
+             runbooks actually seed, with the guard off vs on.
+
+Reading the output: a corpus where every runbook is long (the shipped pack's
+smallest is 9 chunks) cannot exercise the length-relative half of the rule —
+that is exactly the blind spot that let the first cut of #1144 ship a flat
+threshold which would have made compact personal runbooks permanently
+unseedable. If you extend the corpus, extend it with short documents.
+"""
+
+import argparse
+import asyncio
+import json
+import os
+import sqlite3
+import sys
+from types import SimpleNamespace
+from unittest.mock import patch
+from uuid import uuid4
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+DEFAULT_CHROMA = os.path.join(REPO_ROOT, "data", "chroma-kb")
+DEFAULT_DB = os.path.join(REPO_ROOT, "data", "faultmaven.db")
+DEFAULT_STATEMENTS = os.path.join(
+    os.path.dirname(__file__), "corroboration-statements.json"
+)
+
+
+# ---------------------------------------------------------------------------
+# Corpus access
+# ---------------------------------------------------------------------------
+class Corpus:
+    """Titles and ``metadata["causes"]`` for the ingested KB, read once."""
+
+    def __init__(self, db_path):
+        db = sqlite3.connect(db_path)
+        self.titles = {
+            i: t for i, t in db.execute("select item_id, title from knowledge_items")
+        }
+        self.causes = {}
+        for item_id, meta in db.execute(
+            "select item_id, metadata from knowledge_items"
+        ):
+            try:
+                self.causes[item_id] = (json.loads(meta or "{}") or {}).get(
+                    "causes"
+                ) or []
+            except (TypeError, ValueError):
+                self.causes[item_id] = []
+
+    def title(self, item_id):
+        return self.titles.get(item_id, "?")
+
+
+async def _store(chroma_dir):
+    """A warmed KnowledgeVectorStore over the local persistent KB.
+
+    The embedder is warmed FIRST: BGE-M3 takes ~15s to load and
+    ``embedding_guard`` times out at 10s, so an unwarmed first search fails with
+    KNOWLEDGE_EMBEDDER_TIMEOUT rather than returning anything.
+    """
+    import chromadb
+
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KnowledgeVectorStore,
+    )
+    from faultmaven.infrastructure.model_cache import model_cache
+
+    await model_cache.aembed_query("warmup")
+    return KnowledgeVectorStore(chromadb.PersistentClient(path=chroma_dir))
+
+
+async def retrieve(store, query):
+    """The turn's relevance-filtered hits, exactly as the prefetch produces them."""
+    from faultmaven.core.investigation.milestone_engine import (
+        KB_PREFETCH_FETCH_LIMIT,
+        KB_PREFETCH_RELEVANCE_THRESHOLD,
+    )
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KB_COLLECTION,
+        _read_stamped_cause_letters,
+        _read_total_chunks,
+    )
+
+    raw = await store.search(
+        collection_name=KB_COLLECTION,
+        query=query,
+        k=KB_PREFETCH_FETCH_LIMIT,
+        where={"scope": "global"},
+    )
+    hits = []
+    for hit in raw:
+        if hit.get("score", 0.0) < KB_PREFETCH_RELEVANCE_THRESHOLD:
+            continue
+        meta = hit.get("metadata") or {}
+        hits.append(
+            SimpleNamespace(
+                chunk_id=hit.get("id"),
+                score=hit["score"],
+                parent_document_id=meta.get("parent_document_id"),
+                total_chunks=_read_total_chunks(meta),
+                letters=_read_stamped_cause_letters(meta, hit.get("content") or ""),
+            )
+        )
+    return hits
+
+
+def candidates(hits):
+    """Per cause-naming runbook: best matched-cause score and the guard inputs.
+
+    Mirrors the wrapper's fold. Kept separate from the engine so a candidate that
+    the guard REJECTS is still visible — the cost of a guard cannot be measured
+    from its survivors.
+    """
+    from faultmaven.core.investigation.milestone_engine import KB_CONTEXT_MAX_ENTRIES
+
+    in_context = {h.parent_document_id for h in hits[:KB_CONTEXT_MAX_ENTRIES]}
+    chunks, best, length = {}, {}, {}
+    for hit in hits:
+        parent = hit.parent_document_id
+        if not parent:
+            continue
+        chunks.setdefault(parent, set()).add(hit.chunk_id)
+        if hit.total_chunks:
+            length[parent] = hit.total_chunks
+        for letter in hit.letters:
+            per = best.setdefault(parent, {})
+            per[letter] = max(per.get(letter, -1.0), hit.score)
+    out = []
+    for parent, per_letter in best.items():
+        out.append(
+            SimpleNamespace(
+                parent=parent,
+                score=max(per_letter.values()),
+                chunks=len(chunks[parent]),
+                total_chunks=length.get(parent),
+                in_context=parent in in_context,
+            )
+        )
+    out.sort(key=lambda c: c.score, reverse=True)
+    return out
+
+
+def labelled(corpus, cand, expected):
+    """True if this candidate is an on-domain seed for the statement."""
+    title = corpus.title(cand.parent).lower()
+    return any(fragment.lower() in title for fragment in expected)
+
+
+async def collect(store, corpus, statements):
+    """Every candidate seed the corpus produces, labelled ON/OFF domain.
+
+    Only candidates that would actually be CONSULTED are collected
+    (MAX_SEEDED_RUNBOOKS): a runbook ranked below the cap is not a seed under any
+    guard, so counting it would flatter every guard equally and measure nothing.
+    """
+    from faultmaven.core.investigation.kb_cause_seeder import MAX_SEEDED_RUNBOOKS
+
+    rows = []
+    for query, expected in statements["positive"]:
+        for cand in candidates(await retrieve(store, query))[:MAX_SEEDED_RUNBOOKS]:
+            cand.on_domain = labelled(corpus, cand, expected)
+            cand.query = query
+            rows.append(cand)
+    for query in statements["negative"]:
+        for cand in candidates(await retrieve(store, query))[:MAX_SEEDED_RUNBOOKS]:
+            cand.on_domain = False
+            cand.query = query
+            rows.append(cand)
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Modes
+# ---------------------------------------------------------------------------
+def mode_guards(rows, corpus):
+    from faultmaven.core.investigation.milestone_engine import (
+        KB_SEED_MIN_CORROBORATING_CHUNKS,
+    )
+
+    on = [r for r in rows if r.on_domain]
+    off = [r for r in rows if not r.on_domain]
+    print(f"\n{len(rows)} candidate seeds: {len(on)} on-domain, {len(off)} off-domain")
+    print(
+        f"  on-domain  score range {min(r.score for r in on):.3f}"
+        f"-{max(r.score for r in on):.3f}"
+    )
+    print(
+        f"  off-domain score range {min(r.score for r in off):.3f}"
+        f"-{max(r.score for r in off):.3f}"
+        "   <- overlapping ranges are why no score floor separates them"
+    )
+
+    def required(r):
+        if r.total_chunks is None:
+            return KB_SEED_MIN_CORROBORATING_CHUNKS
+        return min(KB_SEED_MIN_CORROBORATING_CHUNKS, r.total_chunks)
+
+    guards = [
+        ("baseline (rank only — the #1144 defect)", lambda r: True),
+        ("score >= 0.62", lambda r: r.score >= 0.62),
+        ("score >= 0.66", lambda r: r.score >= 0.66),
+        ("score >= 0.70", lambda r: r.score >= 0.70),
+        ("parent also in kb_context/Sources", lambda r: r.in_context),
+        ("CORROBORATION (shipped)", lambda r: r.chunks >= required(r)),
+    ]
+    print(f"\n{'guard':44} {'on-domain kept':>15} {'off-domain kept':>16}")
+    for name, keep in guards:
+        print(
+            f"{name:44} {sum(map(keep, on)):>10}/{len(on):<4} "
+            f"{sum(map(keep, off)):>11}/{len(off):<4}"
+        )
+    print("\nA guard is good when the two columns move APART, not down together.")
+
+
+def mode_sweep(rows):
+    on = [r for r in rows if r.on_domain]
+    off = [r for r in rows if not r.on_domain]
+    print(f"\n{'floor':>6} {'on-domain kept':>15} {'off-domain kept':>16}")
+    for floor in (0.50, 0.55, 0.60, 0.62, 0.64, 0.66, 0.68, 0.70, 0.72, 0.74):
+        print(
+            f"{floor:6.2f} {sum(1 for r in on if r.score >= floor):>10}/{len(on):<4} "
+            f"{sum(1 for r in off if r.score >= floor):>11}/{len(off):<4}"
+        )
+    print(
+        "\nNo row separates the populations: every floor that drops most "
+        "off-domain\nseeds drops most on-domain ones too. That is the finding, "
+        "not a tuning exercise."
+    )
+
+
+async def mode_e2e(store, corpus, statements):
+    """Drive the REAL wrapper, guard off vs on."""
+    import faultmaven.core.investigation.milestone_engine as engine_module
+    from faultmaven.core.investigation.hypothesis_manager import (
+        create_hypothesis_manager,
+    )
+    from faultmaven.core.investigation.kb_cause_seeder import SEEDED_FROM_RUNBOOK_KEY
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.models.common import SearchResult
+    from faultmaven.modules.case.contracts import (
+        Case,
+        CaseSeverity,
+        CaseState,
+        InquiryData,
+        ProblemVerification,
+    )
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KB_COLLECTION,
+        _read_stamped_cause_letters,
+        _read_total_chunks,
+    )
+
+    class _KS:
+        """The two knowledge_service seams the engine path touches."""
+
+        async def search_knowledge(self, query, limit=10, filters=None):
+            raw = await store.search(
+                collection_name=KB_COLLECTION,
+                query=query,
+                k=limit,
+                where={"scope": "global"},
+            )
+            out = []
+            for hit in raw:
+                meta = hit.get("metadata") or {}
+                out.append(
+                    SearchResult(
+                        document_id=hit.get("id", "unknown"),
+                        title=corpus.title(meta.get("parent_document_id")),
+                        document_type="runbook",
+                        tags=[],
+                        score=hit["score"],
+                        snippet=(hit.get("content") or "")[:200],
+                        parent_document_id=meta.get("parent_document_id"),
+                        total_chunks=_read_total_chunks(meta),
+                        matched_cause_letters=_read_stamped_cause_letters(
+                            meta, hit.get("content") or ""
+                        ),
+                    )
+                )
+            return out
+
+        async def get_runbook_causes(self, item_id):
+            return corpus.causes.get(item_id) or None
+
+    async def seeded_for(description):
+        engine = MilestoneEngine.__new__(MilestoneEngine)
+        engine.knowledge_service = _KS()
+        engine.hypothesis_manager = create_hypothesis_manager()
+        engine.runbook_kb = None
+        case = Case(
+            case_id=f"case_{uuid4().hex[:12]}",
+            user_id="eval",
+            organization_id="eval",
+            title="eval",
+            description=description,
+            state=CaseState.INVESTIGATING,
+            inquiry=InquiryData(
+                proposed_problem_statement=description,
+                problem_statement_confirmed=True,
+                decided_to_investigate=True,
+            ),
+            problem_verification=ProblemVerification(
+                symptom_statement=description, severity=CaseSeverity.HIGH
+            ),
+            current_turn=1,
+        )
+        relevant = await engine._prefetch_kb_context(case, description, "symptom")
+        await engine._seed_candidate_causes_from_kb(case, relevant)
+        return sorted(
+            {
+                corpus.title((n.metadata or {}).get(SEEDED_FROM_RUNBOOK_KEY))
+                for n in case.causal_nodes.values()
+                if (n.metadata or {}).get(SEEDED_FROM_RUNBOOK_KEY)
+            }
+        )
+
+    for label, threshold in (("GUARD OFF (#1144)", 1), ("GUARD ON", None)):
+        print("\n" + "=" * 96)
+        print(label)
+        ctx = (
+            patch.object(engine_module, "KB_SEED_MIN_CORROBORATING_CHUNKS", threshold)
+            if threshold
+            else patch.object(
+                engine_module,
+                "KB_SEED_MIN_CORROBORATING_CHUNKS",
+                engine_module.KB_SEED_MIN_CORROBORATING_CHUNKS,
+            )
+        )
+        on_domain = 0
+        with ctx:
+            for query, expected in statements["positive"]:
+                got = await seeded_for(query)
+                hit = any(any(f.lower() in g.lower() for f in expected) for g in got)
+                on_domain += bool(hit)
+                print(f"  {'ON ' if hit else 'off'} {query[:52]:54} -> {got}")
+            junk = 0
+            for query in statements["negative"]:
+                got = await seeded_for(query)
+                junk += bool(got)
+                print(f"  {'JUNK' if got else 'none'} {query[:52]:54} -> {got}")
+        print(
+            f"  == on-domain {on_domain}/{len(statements['positive'])}; "
+            f"content-free statements seeding junk {junk}/"
+            f"{len(statements['negative'])}"
+        )
+
+
+async def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("mode", choices=("guards", "sweep", "e2e"))
+    ap.add_argument("--chroma", default=DEFAULT_CHROMA)
+    ap.add_argument("--db", default=DEFAULT_DB)
+    ap.add_argument("--statements", default=DEFAULT_STATEMENTS)
+    ap.add_argument("--json", dest="json_out")
+    args = ap.parse_args()
+
+    for path in (args.chroma, args.db, args.statements):
+        if not os.path.exists(path):
+            sys.exit(f"missing: {path} (needs an ingested KB; see the README)")
+
+    statements = json.load(open(args.statements))
+    corpus = Corpus(args.db)
+    store = await _store(args.chroma)
+
+    if args.mode == "e2e":
+        await mode_e2e(store, corpus, statements)
+        return
+
+    rows = await collect(store, corpus, statements)
+    if args.mode == "guards":
+        mode_guards(rows, corpus)
+    else:
+        mode_sweep(rows)
+    if args.json_out:
+        json.dump(
+            [
+                {
+                    "query": r.query,
+                    "runbook": corpus.title(r.parent),
+                    "on_domain": r.on_domain,
+                    "score": round(r.score, 4),
+                    "chunks": r.chunks,
+                    "total_chunks": r.total_chunks,
+                    "in_context": r.in_context,
+                }
+                for r in rows
+            ],
+            open(args.json_out, "w"),
+            indent=1,
+        )
+        print(f"\nwrote {args.json_out}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

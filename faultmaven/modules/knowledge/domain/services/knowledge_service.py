@@ -116,6 +116,24 @@ def _matched_cause_letters(chunk_text: str) -> List[str]:
     return seen
 
 
+def _read_total_chunks(chunk_metadata: Optional[Dict[str, Any]]) -> Optional[int]:
+    """How many chunks this hit's parent document was split into, or None.
+
+    Returns None rather than a guess whenever the stamp is missing or unusable —
+    the seeder's corroboration guard reads None as "unknown" and applies its full
+    threshold, so a bad parse must never be able to masquerade as a small
+    document and wave a runbook through.
+    """
+    if not chunk_metadata:
+        return None
+    raw = chunk_metadata.get("total_chunks")
+    try:
+        total = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return total if total > 0 else None
+
+
 def _letter_can_head_a_cause(letter: str) -> bool:
     """Could a ``### Cause X:`` heading for this letter exist at all?
 
@@ -694,6 +712,7 @@ class KnowledgeService:
                             ]
                             + "...",
                             parent_document_id=parent_document_id,
+                            total_chunks=_read_total_chunks(result_meta),
                             matched_cause_letters=matched_cause_letters,
                         )
                         search_results.append(search_result)

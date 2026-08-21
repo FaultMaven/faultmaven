@@ -238,6 +238,13 @@ Retrieval routinely returns several runbooks and each runbook has many Causes.
 Left unbounded, seeding would flood the graph and trip anchoring detection (≥4
 active hypotheses in one category reads as fixation). The bounds:
 
+- **Require corroboration before a runbook may seed at all (#1144):** the
+  relevance-filtered result set must contain at least
+  `min(KB_SEED_MIN_CORROBORATING_CHUNKS, total_chunks)` distinct chunks of that
+  runbook — two for an ordinary runbook, but never more than the document has,
+  so a document that *is* one chunk corroborates itself. This is the **admission**
+  test; the bounds that follow are fan-out bounding, a different question. See
+  [Corroboration — rank is not fit](#corroboration--rank-is-not-fit).
 - **Cap runbooks:** dedup hits by `parent_document_id`, take the top-N distinct
   runbooks by their **best matched-cause** score (`MAX_SEEDED_RUNBOOKS`, default 2)
   — a runbook is worth entering only for the causes retrieval surfaced in it, so
@@ -293,6 +300,7 @@ active hypotheses in one category reads as fixation). The bounds:
   > Kubernetes investigation, one of which became the case's displayed working
   > conclusion. Under the join, the first seeds Cause D and the second seeds at
   > most the single cause whose chunk actually matched.
+
 - **Cap total seeded causes:** across all runbooks, seed at most
   `MAX_SEEDED_CAUSES`. This is **derived from** the anchoring condition-1
   threshold (`< N_same_category`), not a hardcoded 3, so a future change to the
@@ -341,6 +349,97 @@ active hypotheses in one category reads as fixation). The bounds:
   is likewise rejected, but under its own `converges_unmodeled` class — the
   convergence is legal, well-authored grammar, so it must not trip the quality
   alarm (see below).
+
+#### Corroboration — rank is not fit
+
+The bounds above all answer *how many* to seed. They assume the prior question is
+already settled — that a runbook reaching the top of the ranking belongs to this
+case. The seeder's original premise said so outright: "retrieval has already done
+the semantic case↔cause alignment; this bounds fan-out."
+
+That premise does not hold, and #1144 is where it broke. Rank is a statement
+about the other nine results; it is never a statement about fit. When the
+confirmed problem statement is thin — a page-captured dashboard, a symptom
+described without a signature — nothing in the corpus matches it well, the whole
+result set collapses into a narrow score band, and whichever runbook happens to
+own a chunk carrying a `### Cause` heading in that band is promoted to a
+**candidate root cause**. A live k8s OOMKilled case was seeded an NGINX-502 chain
+and a MongoDB WiredTiger chain, and displayed the NGINX text in its case header
+as the working conclusion; their chains then supplied 7 of the 10 nodes in the
+resolution causal map. The same build, same scenario, seeded three on-domain OOM
+causes a few hours earlier — the outcome swung on ranking variance alone.
+
+**The two obvious guards were measured, and neither works.** 41 candidate seeds
+over 24 problem statements against the shipped pack:
+
+| Guard | Result |
+|---|---|
+| Minimum retrieval **score** floor | No separating value exists. On-domain seeds scored 0.603–0.731, off-domain ones 0.519–0.715. The score tracks how much concrete text the *query* carries far more than how well the runbook fits, so a vague-but-correct match and a vague-but-wrong one land together. A floor at 0.66 dropped 8 of 14 correct seeds. |
+| Require the runbook to also be in the turn's `kb_context`/Sources | Near-inert: it keeps 19 of 27 off-domain seeds (and, on the content-free statements alone, 12 of 14) — they were **already** in the top-3 `kb_context`, because `kb_context` is the top slice of the very same ranking. It cannot cross-check a ranking against itself. |
+
+All three rows above are reproducible: `tests/eval/kb_cause_seeder/run_corroboration_eval.py guards`
+prints this table, and `… sweep` prints the floor sweep behind the first row.
+
+What does separate the populations is **breadth of match within one document**.
+A runbook that genuinely covers the failure matches on several of its sections at
+once — Symptom Recognition, a Cause, Diagnostic Steps; an off-domain runbook
+matches exactly one paragraph, by lexical coincidence. Requiring ≥2 chunks kept
+13 of 14 on-domain seeds while dropping 21 of 27 off-domain ones.
+
+Driven end-to-end through the real wrapper against live retrieval, the guard also
+turned out to *raise* precision on well-stated problems rather than merely
+suppress junk: clearing single-chunk coincidences out of the two runbook slots
+lets the corroborated runbook take one. On-domain seeding went from 13/16 to
+**16/16**, and three cases changed to the right runbook — "pods killed with exit
+code 137" from `GKE Workloads Not Running` + `GitHub Actions Workflow Failure` to
+`Kubernetes Container OOMKilled`; "disk at 100%" from `GitHub Actions` +
+`Jenkins` to `Linux Disk Full`; "Postgres refusing new connections" from
+`RDS storage-full` to `RDS Connection Exhaustion`.
+
+Three properties worth keeping straight:
+
+- **Corroboration counts chunks of the runbook, not cause chunks.** The
+  corroborating chunk usually carries no cause letter at all. Requiring it to be
+  a second *cause* chunk would measure how a runbook is chunked rather than how
+  well it matches.
+- **It is per-runbook, never per-result-set.** A broad result set does not vouch
+  for a lone chunk inside it; breadth only means anything within one document.
+- **It is not a score floor wearing another name.** A lone chunk at the very top
+  of the ranking is still declined. That is the measured point of the change.
+
+**The bar is relative to the document's own length, and has to be.** Breadth of
+match means nothing except against how much document there was to match: a
+runbook cannot corroborate itself beyond its chunk count, and a document that is
+one chunk matches *completely* when that chunk matches — the strongest evidence
+available for it, not the weakest. A flat threshold read that as marginal, which
+would have made compact documents permanently unseedable.
+
+That is not a hypothetical corner. The shipped pack is comfortable (smallest
+runbook 9 chunks, median 14, ≥4 cause-bearing), but the pack is not the only
+source: `ContentChunker` merges sections under `MIN_CHUNK_CHARS` while the
+running total stays under `MAX_CHUNK_CHARS` (3000), so a complete, grammar-valid
+runbook of a few hundred characters chunks **whole**. Those are the flywheel's
+own output — authored through `POST /knowledge/runbooks/create`, or converted
+from a resolved case — and seeding them is exactly what the prefetch's
+owner-aware scope exists for. A flat threshold would have excluded the personal
+runbooks the feature was built to serve, silently.
+
+The exemption is not a hole: the same lone chunk of a fourteen-chunk runbook is
+still declined, and an **absent** `total_chunks` stamp reads as *unknown*, never
+*small*, so the full threshold applies to pre-stamp content and no missing
+metadata can wave a runbook through. `SearchResult.total_chunks` carries the
+stamp, which the indexer already wrote.
+
+The threshold is also meaningful only relative to `KB_PREFETCH_FETCH_LIMIT` — a
+shallower fetch tightens it silently — so the two are pinned together by test.
+
+**What it does not fix.** Corroboration cannot manufacture signal that the
+problem statement never carried. Of eight deliberately content-free statements
+("The application is slow.", "We had an outage last night"), three stopped
+seeding entirely and five still seed something. A statement that thin normally
+gets sharpened by INQUIRY before seeding runs at all — the remedy there is the
+confirmed problem statement, not the seeder.
+
 
 ### 4–5. Instantiation
 
@@ -693,11 +792,12 @@ divergence.
 Seeding only retrieval-matched causes is a strictly narrower intake than the
 author-order fallback it replaced. That trade is deliberate (see §2–3), but its
 recall side is an empirical question, not an assumption, so it is counted rather
-than argued. Five counters in `lifecycle_metrics.py`:
+than argued. Six counters in `lifecycle_metrics.py`:
 
 | Counter | Reads as |
 |---|---|
-| `faultmaven_kb_cause_seed_attempt_total{outcome}` | One increment per seeding **attempt** (retrieval returned hits, flag on), labeled `seeded` / `all_causes_skipped` / `no_cause_chunk_matched` / `no_seedable_cause` / `crashed`. The labels are mutually exclusive and sum to attempts, so `seeded`/total is the seeding **yield** and its complement the zero-seed rate. |
+| `faultmaven_kb_cause_seed_attempt_total{outcome}` | One increment per seeding **attempt** (retrieval returned hits, flag on), labeled `seeded` / `all_causes_skipped` / `no_cause_chunk_matched` / `no_corroborated_runbook` / `no_seedable_cause` / `crashed`. The labels are mutually exclusive and sum to attempts, so `seeded`/total is the seeding **yield** and its complement the zero-seed rate. |
+| `faultmaven_kb_cause_seed_uncorroborated_total` | A runbook named a cause on a single retrieved chunk and was therefore not seeded (#1144). One increment per **declined runbook** per attempt — the question it sizes is "how often does a runbook reach the seeder on one lone chunk". **Not an alarm and no value is healthy:** it is the corroboration guard's *cost*, and the only honest basis for re-sizing `KB_SEED_MIN_CORROBORATING_CHUNKS`. Rising alongside a steady `seeded` share is the guard turning away noise; rising while `seeded` falls (or `no_corroborated_runbook` climbs) means it is costing real seeds — look at fetch depth before touching the threshold. |
 | `faultmaven_kb_cause_seed_letter_mismatch_total` | A matched chunk's `### Cause X:` heading named a letter absent from the runbook's causes record, so that runbook seeded nothing. **Zero is the healthy state** — nonzero means a runbook's causes are unseedable while looking well-formed from either side alone. |
 | `faultmaven_kb_cause_unseedable_at_ingest_total{chunker,direction}` | The same defect caught at **write** time: a document was indexed with a causes record and chunk headings that disagree. `chunker` is `pack`/`runtime`; `direction` is `record_letter_unchunked` (a declared letter no chunk carries) or `chunk_letter_unrecorded` (a heading the record does not declare). The two have opposite fixes, so one counter that could not tell them apart would misdirect. **Zero is the healthy state.** |
 | `faultmaven_kb_cause_ingest_check_failed_total` | The write-time check itself raised and was swallowed, so that document went **unchecked**. Nonzero invalidates the row above until it returns to zero. |
@@ -801,6 +901,7 @@ the counter says how often the micro recall loss is even in play.
 | Knob | Kind | Default | Effect |
 |---|---|---|---|
 | `FAULTMAVEN_KB_CAUSE_SEEDER` (`features.kb_cause_seeder_enabled`) | env flag | `true` | Gates seeder invocation **and** the AUTHORITY prompt override. On by default; set `false` as the kill switch — disables in prod without rollback. |
+| `KB_SEED_MIN_CORROBORATING_CHUNKS` | module constant (`milestone_engine.py`) | `2` | Distinct chunks of one runbook that must appear in the relevance-filtered result set before any of its causes may seed (#1144). Not an env var: it is calibrated against `KB_PREFETCH_FETCH_LIMIT` and re-sized from `kb_cause_seed_uncorroborated_total`, not per deployment. |
 | `MAX_SEEDED_RUNBOOKS` | module constant (`kb_cause_seeder.py`) | `2` | Distinct runbooks seeded per retrieval, top by score. |
 | `MAX_SEEDED_CAUSES` | module constant, **derived** | `ANCHORING_SAME_CATEGORY_THRESHOLD − 1` (= `3`) | Total causes seeded per turn. Derived from the anchoring condition-1 constant (not an env var — deriving then overriding would break the coupling guarantee), asserted `< threshold` in a test. |
 

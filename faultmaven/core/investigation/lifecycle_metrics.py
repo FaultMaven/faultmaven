@@ -674,6 +674,12 @@ prompt_context_recovery_total = Counter(
 #                            carried no causes record (flat prose) or none of the
 #                            matched letters. The latter also increments
 #                            ``kb_cause_seed_letter_mismatch_total``.
+#   no_corroborated_runbook— cause chunks matched, but every runbook that named
+#                            a cause did so on ONE lone chunk and was declined by
+#                            the #1144 corroboration guard. Held apart from
+#                            ``no_cause_chunk_matched`` because it is the guard's
+#                            cost, not retrieval's: read it with
+#                            ``kb_cause_seed_uncorroborated_total``.
 #   crashed                — a seeder bug; the transition still completed.
 #
 # No level is "healthy" in the abstract — this is a rate to watch for movement.
@@ -683,8 +689,9 @@ kb_cause_seed_attempt_total = Counter(
     "faultmaven_kb_cause_seed_attempt_total",
     "KB cause-seeding attempts at the INQUIRY->INVESTIGATING transition, labeled "
     "by ``outcome`` (seeded | all_causes_skipped | no_cause_chunk_matched | "
-    "no_seedable_cause | crashed). Labels are exclusive and sum to attempts, so "
-    "``seeded``/total is the seeding yield (fm#1092).",
+    "no_corroborated_runbook | no_seedable_cause | crashed). Labels are "
+    "exclusive and sum to attempts, so ``seeded``/total is the seeding yield "
+    "(fm#1092, fm#1144).",
     ["outcome"],
 )
 
@@ -705,6 +712,38 @@ kb_cause_seed_letter_mismatch_total = Counter(
     "A matched chunk's ``### Cause X:`` heading named a letter absent from the "
     "runbook's causes record, so the runbook seeded nothing (fm#1092). One "
     "increment per dropped runbook. Zero is the healthy state.",
+)
+
+
+# fm#1144 sizing surface for the seeding corroboration guard. A runbook named a
+# cause but surfaced too few of its chunks to corroborate, so its causes were not
+# seeded — see ``KB_SEED_MIN_CORROBORATING_CHUNKS`` for why a thin match is the
+# signature of an off-domain coincidence rather than of a runbook that covers the
+# case, and why the bar is relative to the document's own length.
+#
+# Deliberately does NOT restate the threshold. This is the counter the threshold
+# gets re-sized FROM, so a help string quoting today's value would describe
+# behaviour the code no longer has the moment it does its job.
+#
+# Counts only the declines that COST a seed — a runbook that would not have been
+# consulted anyway (ranked below ``MAX_SEEDED_RUNBOOKS``) is not counted, or the
+# guard's price would be inflated by runbooks it never turned away.
+#
+# NOT an alarm, and it has no healthy value: it is the guard's *cost* made
+# visible, and the only honest way to re-size the threshold later. One increment
+# per declined runbook per attempt. Read it against
+# ``kb_cause_seed_attempt_total`` — a rising count alongside a steady ``seeded``
+# share is the guard turning away noise, while a rising count that tracks a
+# falling ``seeded`` share (or a rising ``no_corroborated_runbook``) is it
+# starting to cost real seeds, which is the signal to look at fetch depth before
+# touching the threshold.
+kb_cause_seed_uncorroborated_total = Counter(
+    "faultmaven_kb_cause_seed_uncorroborated_total",
+    "Runbooks that named a cause but surfaced too few of their own chunks to "
+    "corroborate it, and were therefore not seeded (fm#1144). One increment per "
+    "declined runbook per seeding attempt, counting only runbooks that would "
+    "otherwise have been consulted. A cost measure, not an alarm — no value is "
+    "'healthy'.",
 )
 
 
