@@ -168,16 +168,17 @@ These secondary documents reinforce the above but do NOT override this skill:
 
 ---
 
-## 7. Enforcement (Future)
+## 7. Enforcement
 
-The terminology, capitalization, audience, and verb rules above are currently enforced manually via `/sync-brand`. The grep-style search cues throughout this skill (and in the `/sync-brand` propagation checklist) are written so they can graduate into automated checks:
+Part of this is automated. `scripts/brand_lint.py` (this repo) and `scripts/brand-lint.mjs` (in `faultmaven-copilot`, `faultmaven-dashboard`, `faultmaven-website`) grep a fixed set of brand-facing files for retired terms; each repo runs its copy in a `brand-lint` CI workflow, and this repo also runs it as a pre-commit hook. The rest — capitalization, naming architecture, audience, tone — stays manual, via `/sync-brand`.
 
-- **Pre-commit hook** — a regex scan over staged `.md`, `.html`, `.tsx`, `package.json`, and `manifest.json` files that fails the commit on a violation. Two pattern classes, matching "Authority by rule type":
-  - **Universal (terminology — runs on ALL brand-facing files, including marketing/website):** `troubleshooting assistant`, `microservices backend`, `Local Deployment`, `Deploy locally` (deployment context), `Enterprise SaaS` (as the Cloud tier name), `Community Edition` / `Enterprise Edition` / `CE/EE` (use Standalone/Cloud — one unified codebase), `faultmaven-deploy` / `fm-*-service` (obsolete repos).
+The checks carry two pattern classes, matching "Authority by rule type":
+  - **Universal (terminology — runs on ALL brand-facing files, including marketing/website):** `troubleshooting assistant`, `live telemetry` (retired overclaim — FaultMaven has no reach into production; see #821), `microservices backend`, `Local Deployment`, `Deploy locally` (deployment context), `Enterprise SaaS` (as the Cloud tier name), `Community Edition` / `Enterprise Edition` / `CE/EE` (use Standalone/Cloud — one unified codebase), `faultmaven-deploy` / `fm-*-service` (obsolete repos).
   - **Core surfaces only (positioning/audience/tone — README + product descriptions, NOT marketing copy):** `for SRE teams`, `designed for DevOps`, `leverages`, `utilizes`, etc.
   - **NOT grep-enforced (human / `/sync-brand` judgment only):** category terms like *AIOps platform*, *observability platform*, and *playbook*; **and `open source` / `open-source` describing the backend or product** (now fair-source/FSL — see §3). FaultMaven legitimately references the category terms by **contrast** ("not the predictive AIOps platform"), and "open source" legitimately appears for third-party models ("HuggingFace open-source models") and the permissively-licensed frontends — so a substring grep would false-positive. The §3 rules still apply — don't *label FaultMaven* a category platform, and don't call the *backend/product* "open source" — but enforce both by review, not regex.
-- **CI lint job** — same two pattern classes, run against brand-facing files in PRs (a `.github/workflows/brand-lint.yml`-style workflow that greps and posts a comment with offending lines). The universal class runs on marketing files too; the core-surfaces class does not.
-- **Search-cue maintenance** — when a violation pattern is added or retired in this skill, update the corresponding hook/CI rule in the same PR. The skill remains the source of truth; the automation is a downstream check, exactly as `/sync-brand` treats this skill as canonical and downstream-repo copies as derivatives.
+**Search-cue maintenance** — when a violation pattern is added or retired in this skill, update **every** copy of the check in the same change: `scripts/brand_lint.py` here, and `scripts/brand-lint.mjs` in each of the three downstream repos. The skill remains the source of truth; the four scripts are downstream copies, exactly as `/sync-brand` treats this skill as canonical and downstream-repo copies as derivatives. A pattern added here and nowhere else silently exempts every other public surface.
+
+**Not yet covered:** `faultmaven-slack-agent` is public and carries product copy, but has no brand-lint check.
 
 Goal: prevent a contributor from ever successfully committing `<meta name="description" content="AIOps platform">` in the first place, rather than catching it in a quarterly audit.
 

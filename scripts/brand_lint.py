@@ -12,9 +12,9 @@ Two pattern classes, per the skill's "Authority by rule type":
 * ``CORE_ONLY`` — positioning / audience / tone. Enforced on core product
   surfaces (README, product descriptions), NOT marketing copy or the dev guide.
 
-This repo (faultmaven CE) has no marketing surfaces. Downstream repos
+This repo (the FaultMaven API) has no marketing surfaces. Downstream repos
 (faultmaven-website, -copilot, -dashboard) carry their own copy of this check
-scoped to their own surfaces.
+scoped to their own surfaces; keep the pattern lists in step when one changes.
 
 Put ``brand-lint: allow`` anywhere on a line to whitelist a deliberate, justified
 use. The brand skill and the ``/sync-brand`` command are intentionally NOT scanned
@@ -55,13 +55,35 @@ CORE_FILES = [
 # NOT grepped — FaultMaven references those categories by contrast (intended
 # positioning), so a substring match false-positives. They stay §3 review rules.
 UNIVERSAL = [
-    (r"\btroubleshooting assistant\b", "use 'troubleshooting copilot', not 'troubleshooting assistant'"),
-    (r"\bmicroservices?\s+backend\b", "FaultMaven is a modular monolith, not microservices"),
-    (r"\bLocal Deployment\b", "use 'Standalone' (ADR-004); 'local' is reserved for AUTH_MODE/CHAT_PROVIDER"),
+    (
+        r"\btroubleshooting assistant\b",
+        "use 'troubleshooting copilot', not 'troubleshooting assistant'",
+    ),
+    # Retired overclaim (#821): FaultMaven has no reach into production — it
+    # works from what you paste, upload or capture. Universal because it is a
+    # factual claim about the product, not a stylistic preference.
+    (
+        r"\blive telemetry\b",
+        "FaultMaven reads no live telemetry — say 'the logs, metrics, and configs you share'",
+    ),
+    (
+        r"\bmicroservices?\s+backend\b",
+        "FaultMaven is a modular monolith, not microservices",
+    ),
+    (
+        r"\bLocal Deployment\b",
+        "use 'Standalone' (ADR-004); 'local' is reserved for AUTH_MODE/CHAT_PROVIDER",
+    ),
     (r"\bdeploy locally\b", "use 'self-host' / 'Standalone' (ADR-004)"),
     (r"\bEnterprise SaaS\b", "use 'FaultMaven Cloud'; there is no Enterprise tier"),
-    (r"\bCommunity Edition\b", "retired tier name — use 'Standalone' (one unified codebase)"),
-    (r"\bEnterprise Edition\b", "retired tier name — use 'Cloud' (one unified codebase)"),
+    (
+        r"\bCommunity Edition\b",
+        "retired tier name — use 'Standalone' (one unified codebase)",
+    ),
+    (
+        r"\bEnterprise Edition\b",
+        "retired tier name — use 'Cloud' (one unified codebase)",
+    ),
     (r"\bfaultmaven-deploy\b", "obsolete repo — do not reference"),
     # (?!-) — the rule targets complete retired repo names (fm-auth-service,
     # fm-case-service), not hyphen-continuations: the fm-provision-service-account
@@ -72,7 +94,10 @@ UNIVERSAL = [
 CORE_ONLY = [
     (r"\bfor SRE teams\b", "don't narrow the audience to one role (brand §4)"),
     (r"\bdesigned for DevOps\b", "don't narrow the audience to one role (brand §4)"),
-    (r"\bleverages?\b", "use a precise verb (uses/reads/queries…), not 'leverage' (brand §5)"),
+    (
+        r"\bleverages?\b",
+        "use a precise verb (uses/reads/queries…), not 'leverage' (brand §5)",
+    ),
     (r"\butiliz(?:e|es|ed|ing|ation)\b", "use 'use', not 'utilize' (brand §5)"),
 ]
 
@@ -86,7 +111,9 @@ def _scan(rel_path: str, rules: list, hits: list) -> None:
     path = ROOT / rel_path
     if not path.exists():
         return
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         if ALLOW_MARKER in line:
             continue
         for pattern, message in rules:
@@ -102,7 +129,9 @@ def main() -> int:
         _scan(rel, _COMPILED["CORE_ONLY"], hits)
 
     if hits:
-        print("Brand-messaging lint failed (canonical: .claude/skills/brand-messaging.md):\n")
+        print(
+            "Brand-messaging lint failed (canonical: .claude/skills/brand-messaging.md):\n"
+        )
         for h in hits:
             print(f"  {h}")
         print(
