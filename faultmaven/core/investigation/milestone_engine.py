@@ -87,6 +87,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
     inquiry_handshake_recovered_total,
     kb_cause_seed_attempt_total,
     kb_cause_seed_letter_mismatch_total,
+    kb_cause_seed_uncorroborated_total,
     narration_overclaim_total,
     pending_action_superseded_stale_total,
     prompt_context_recovery_total,
@@ -241,6 +242,45 @@ _PENDING_GATE_SUBSTANTIVE_LEN = 40
 # so the prompt the LLM sees does not change.
 KB_PREFETCH_FETCH_LIMIT = 10
 KB_CONTEXT_MAX_ENTRIES = 3
+
+# Distinct chunks of ONE runbook that must appear in the relevance-filtered
+# retrieval set before any of that runbook's causes may be seeded as a candidate
+# root cause (#1144). Corroboration, not rank.
+#
+# Seeding asserts "this may be why your system is broken". Retrieval score
+# supports only "this text is semantically nearby", and the gap between the two
+# is where #1144 lives: a page-captured, symptom-vague problem statement seeded
+# an NGINX-502 chain and a MongoDB WiredTiger chain into a Kubernetes OOMKilled
+# case, then carried the NGINX text into the case header as the working
+# conclusion.
+#
+# The obvious guards do not work, and were measured rather than assumed
+# (41 candidate seeds over 24 problem statements against the shipped pack):
+#
+#   * A minimum SCORE floor cannot separate them. On-domain seeds scored
+#     0.603-0.731 and off-domain ones 0.519-0.715 — overlapping, because the
+#     score tracks how much concrete text the QUERY carries far more than how
+#     well the runbook fits. A floor at 0.66 (needed to drop most junk) also
+#     dropped 8 of 14 correct seeds.
+#   * Requiring the runbook to also appear in the turn's kb_context/Sources
+#     does almost nothing: 12 of 14 junk seeds were ALREADY in the top-3
+#     kb_context, because kb_context is the top slice of the very same ranking.
+#
+# What does separate them is BREADTH OF MATCH WITHIN ONE DOCUMENT. A runbook
+# that genuinely covers the failure matches on several of its sections at once
+# (symptom recognition, a cause, diagnostic steps); an off-domain runbook
+# matches exactly one paragraph, by lexical coincidence. At >=2 chunks the same
+# measurement kept 13 of 14 on-domain seeds while dropping 21 of 27 off-domain
+# ones — and of the six survivors, four were runbooks a reader would call
+# defensible for the query asked.
+#
+# Reachable for every runbook: the shipped pack's smallest has 9 chunks (median
+# 14, >=4 of them cause-bearing), so nothing is excluded for being short. The
+# threshold is meaningful only relative to KB_PREFETCH_FETCH_LIMIT — a shallower
+# fetch would tighten it silently — so the two are pinned together by test.
+# ``kb_cause_seed_uncorroborated_total`` counts what it declines, which is how
+# the number gets re-sized on evidence rather than on this comment.
+KB_SEED_MIN_CORROBORATING_CHUNKS = 2
 
 # Cosine floor a pre-fetched runbook must clear to enter `case.kb_context` (and
 # to reach the KB cause seeder). Same scale, corpus and calibration as
@@ -11110,25 +11150,71 @@ class MilestoneEngine:
             # and a seeded cause is asserted to the user as a candidate root, so
             # precision is worth more here than fan-out. Runbooks that seed
             # nothing are already a normal, served outcome (the flat-prose path).
+            #
+            # #1144 adds the CORROBORATION guard below. Knowing which cause a
+            # chunk names fixed *which* of a matched runbook's causes seed; it
+            # did not establish that the runbook belongs to this case at all.
+            # That was left to rank alone ("retrieval has already done the
+            # semantic case<->cause alignment"), and rank is a statement about
+            # the other nine results, never about fit.
+            chunks_per_runbook: dict[str, int] = {}
+            for hit in kb_hits:
+                parent_id = getattr(hit, "parent_document_id", None)
+                if parent_id:
+                    chunks_per_runbook[parent_id] = (
+                        chunks_per_runbook.get(parent_id, 0) + 1
+                    )
+
             best_score_by_cause: dict[str, dict[str, float]] = {}
+            uncorroborated: set[str] = set()
             for hit in kb_hits:
                 parent_id = getattr(hit, "parent_document_id", None)
                 if not parent_id:
                     continue
-                for letter in getattr(hit, "matched_cause_letters", None) or []:
+                letters = getattr(hit, "matched_cause_letters", None) or []
+                if not letters:
+                    continue
+                if chunks_per_runbook[parent_id] < KB_SEED_MIN_CORROBORATING_CHUNKS:
+                    # One lone chunk of this runbook surfaced. Its causes are not
+                    # asserted — see KB_SEED_MIN_CORROBORATING_CHUNKS.
+                    uncorroborated.add(parent_id)
+                    continue
+                for letter in letters:
                     per_cause = best_score_by_cause.setdefault(parent_id, {})
                     if hit.score > per_cause.get(letter, -1.0):
                         per_cause[letter] = hit.score
 
-            if not best_score_by_cause:
-                kb_cause_seed_attempt_total.labels(
-                    outcome="no_cause_chunk_matched"
-                ).inc()
-                logger.debug(
-                    "KB cause seeder: no retrieved chunk mapped to a runbook "
-                    "cause for case %s — nothing to seed (the runbook prose "
-                    "still reaches the LLM via kb_context)",
+            if uncorroborated:
+                # Counted per DROPPED RUNBOOK (not per chunk or per cause): the
+                # question this sizes is "how often does a runbook reach the
+                # seeder on one lone chunk", which is what the threshold trades.
+                kb_cause_seed_uncorroborated_total.inc(len(uncorroborated))
+                logger.info(
+                    "KB cause seeder: %d runbook(s) named a cause on a single "
+                    "retrieved chunk and were not seeded for case %s (%s) — "
+                    "their prose still reaches the LLM via kb_context",
+                    len(uncorroborated),
                     case.case_id,
+                    sorted(uncorroborated),
+                )
+
+            if not best_score_by_cause:
+                # Two different zero-seeds, kept apart: nothing named a cause at
+                # all, versus something did and the corroboration guard declined
+                # it. Collapsing them would hide the guard's whole cost inside a
+                # counter that already means something else.
+                outcome = (
+                    "no_corroborated_runbook"
+                    if uncorroborated
+                    else "no_cause_chunk_matched"
+                )
+                kb_cause_seed_attempt_total.labels(outcome=outcome).inc()
+                logger.debug(
+                    "KB cause seeder: no seedable runbook cause for case %s "
+                    "(%s) — nothing to seed (the runbook prose still reaches "
+                    "the LLM via kb_context)",
+                    case.case_id,
+                    outcome,
                 )
                 return
 

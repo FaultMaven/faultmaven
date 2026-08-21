@@ -33,6 +33,7 @@ from faultmaven.core.investigation.milestone_engine import (
     KB_CONTEXT_MAX_ENTRIES,
     KB_PREFETCH_FETCH_LIMIT,
     KB_PREFETCH_RELEVANCE_THRESHOLD,
+    KB_SEED_MIN_CORROBORATING_CHUNKS,
     MilestoneEngine,
 )
 from faultmaven.modules.case.contracts import (
@@ -96,6 +97,25 @@ def _hit(parent_id, score, letters=("A",)):
         score=score,
         matched_cause_letters=list(letters),
     )
+
+
+def _corroborator(parent_id, score=0.5):
+    """A second, letter-less chunk of the same runbook.
+
+    The #1144 corroboration guard seeds a runbook only when the turn's retrieval
+    surfaced at least ``KB_SEED_MIN_CORROBORATING_CHUNKS`` of its chunks — one
+    lone chunk is the signature of an off-domain coincidence, not of a runbook
+    that covers the case. Real retrieval supplies the second chunk for free
+    (every shipped runbook has >=9 chunks, >=4 of them cause-bearing), so a
+    stub handing the wrapper ONE hit per runbook describes a shape production
+    does not produce.
+
+    Tests below that are about something else — rank order, cause ordering,
+    telemetry labels, loader fan-out — pair each seedable runbook with this so
+    the guard is satisfied and the contract under test is what a failure points
+    at. The guard itself is pinned in its own section, on hits without it.
+    """
+    return _hit(parent_id, score, ())
 
 
 def _good_cause(letter="A", root_stmt="root A: the underlying fault") -> dict:
@@ -198,7 +218,9 @@ async def test_wrapper_flag_off_is_a_noop(monkeypatch, seed_spy):
     )
     ks = _KnowledgeStub()
     engine = _engine(ks)
-    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9), _corroborator("rb1")]
+    )
     assert ks.calls == []
     assert seed_spy == []
 
@@ -206,7 +228,9 @@ async def test_wrapper_flag_off_is_a_noop(monkeypatch, seed_spy):
 async def test_wrapper_no_knowledge_service_is_a_noop(enable_seeder, seed_spy):
     engine = _engine(knowledge_service=None)
     # Must not raise despite kb_hits present.
-    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9), _corroborator("rb1")]
+    )
     assert seed_spy == []
 
 
@@ -232,7 +256,12 @@ async def test_wrapper_dedups_to_distinct_runbooks_best_score_wins(
     engine = _engine(ks)
     await engine._seed_candidate_causes_from_kb(
         _case(),
-        [_hit("rb1", 0.4), _hit("rb2", 0.7, ("B",)), _hit("rb1", 0.9)],
+        [
+            _hit("rb1", 0.4),
+            _hit("rb2", 0.7, ("B",)),
+            _corroborator("rb2"),
+            _hit("rb1", 0.9),
+        ],
     )
     # Consulted in rank order, once per distinct runbook.
     assert ks.calls == ["rb1", "rb2"]
@@ -255,6 +284,7 @@ async def test_wrapper_skips_hits_without_parent_document_id(enable_seeder, seed
             SimpleNamespace(parent_document_id=None, score=0.9),
             SimpleNamespace(score=0.8),  # attribute entirely absent
             _hit("rb1", 0.7),
+            _corroborator("rb1"),
         ],
     )
     assert ks.calls == ["rb1"]
@@ -275,7 +305,14 @@ async def test_wrapper_caps_runbooks_consulted(enable_seeder, seed_spy):
     engine = _engine(ks)
     await engine._seed_candidate_causes_from_kb(
         _case(),
-        [_hit("rb1", 0.9), _hit("rb2", 0.8, ("B",)), _hit("rb3", 0.7, ("C",))],
+        [
+            _hit("rb1", 0.9),
+            _corroborator("rb1"),
+            _hit("rb2", 0.8, ("B",)),
+            _corroborator("rb2"),
+            _hit("rb3", 0.7, ("C",)),
+            _corroborator("rb3"),
+        ],
     )
     assert ks.calls == ["rb1", "rb2"]
     assert "rb3" not in ks.calls
@@ -300,7 +337,9 @@ async def test_wrapper_seeds_only_the_causes_retrieval_matched(enable_seeder, se
     causes = [_good_cause(x) for x in ("A", "B", "C", "D")]
     ks = _KnowledgeStub({"rb1": causes})
     engine = _engine(ks)
-    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("D",))])
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9, ("D",)), _corroborator("rb1")]
+    )
 
     passed = seed_spy[0].runbooks
     assert [c["cause_letter"] for c in passed[0].causes] == ["D"]
@@ -327,7 +366,9 @@ async def test_wrapper_ties_keep_author_order(enable_seeder, seed_spy):
     # rather than an arbitrary one.
     ks = _KnowledgeStub({"rb1": [_good_cause(x) for x in ("A", "B", "C")]})
     engine = _engine(ks)
-    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("C", "A"))])
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9, ("C", "A")), _corroborator("rb1")]
+    )
 
     assert [c["cause_letter"] for c in seed_spy[0].runbooks[0].causes] == ["A", "C"]
 
@@ -357,6 +398,7 @@ async def test_wrapper_ranks_runbooks_by_best_matched_cause(enable_seeder, seed_
         [
             _hit("rb2", 0.95, ()),
             _hit("rb1", 0.70, ("A",)),
+            _corroborator("rb1"),
             _hit("rb2", 0.40, ("B",)),
         ],
     )
@@ -374,10 +416,123 @@ async def test_wrapper_letter_naming_no_cause_in_record_is_dropped(
     # seeding whatever the record happens to hold.
     ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
     engine = _engine(ks)
-    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("E",))])
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9, ("E",)), _corroborator("rb1")]
+    )
 
     assert ks.calls == ["rb1"]
     assert seed_spy == []
+
+
+# ---------------------------------------------------------------------------
+# Wrapper: corroboration guard (#1144) — a runbook must be matched BROADLY
+# before any of its causes may be asserted as a candidate root cause
+# ---------------------------------------------------------------------------
+
+
+async def test_lone_cause_chunk_does_not_seed(enable_seeder, seed_spy):
+    """The #1144 regression, in its exact shape.
+
+    A wrong-domain runbook surfaces on ONE chunk that happens to carry a cause
+    heading, and rank alone promoted it to a candidate root cause: a live k8s
+    OOMKilled case was seeded an NGINX-502 chain and a MongoDB WiredTiger chain,
+    and wore the NGINX text in its case header as the working conclusion.
+
+    One chunk is not enough to assert a cause. The runbook's prose still reaches
+    the LLM through kb_context — what is withheld is the ASSERTION.
+    """
+    ks = _KnowledgeStub({"rb_offdomain": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb_offdomain", 0.9)])
+
+    assert ks.calls == []  # not even looked up — declined before the load
+    assert seed_spy == []
+
+
+async def test_second_chunk_of_the_same_runbook_unlocks_seeding(
+    enable_seeder, seed_spy
+):
+    """The other half of the guard: breadth of match is what admits a runbook.
+
+    Same cause chunk, same score, same everything — plus one more chunk of the
+    SAME runbook. That is the whole difference between a lexical coincidence in
+    one paragraph and a document that is actually about this failure, and it is
+    what separated the two populations when the alternatives were measured (a
+    score floor could not: on-domain seeds scored 0.603-0.731 and off-domain
+    ones 0.519-0.715).
+    """
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9), _corroborator("rb1")]
+    )
+
+    assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb1"]
+
+
+async def test_corroborating_chunk_need_not_carry_a_cause(enable_seeder, seed_spy):
+    """Corroboration counts CHUNKS of the runbook, not cause chunks.
+
+    A runbook that covers the case matches across its sections — Symptom
+    Recognition, Diagnostic Steps, Sources — and those carry no cause letter.
+    Requiring the second chunk to be a cause chunk too would measure how a
+    runbook is chunked rather than how well it matches.
+    """
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9, ("A",)), _hit("rb1", 0.4, ())]
+    )
+
+    assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb1"]
+
+
+async def test_guard_is_per_runbook_not_per_result_set(enable_seeder, seed_spy):
+    """A corroborated runbook is not vouched for by its neighbours.
+
+    rb1 arrives on two chunks, rb2 on one. The result set is 'broad' overall,
+    but breadth only means anything WITHIN one document — so rb1 seeds and rb2
+    does not.
+    """
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")], "rb2": [_good_cause("B")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(),
+        [_hit("rb1", 0.9), _corroborator("rb1"), _hit("rb2", 0.95, ("B",))],
+    )
+
+    assert ks.calls == ["rb1"]
+    assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb1"]
+
+
+async def test_guard_declines_regardless_of_score(enable_seeder, seed_spy):
+    """The guard is not a score floor wearing a different name.
+
+    A lone chunk at the top of the ranking is still a lone chunk. This is the
+    measured point of the whole change: score does not separate on-domain from
+    off-domain seeds, so nothing here may quietly key on it.
+    """
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.99)])
+
+    assert seed_spy == []
+
+
+def test_corroboration_threshold_is_reachable_within_the_fetch_depth():
+    """The threshold means nothing except relative to how deep retrieval fetches.
+
+    Halve KB_PREFETCH_FETCH_LIMIT and the same threshold silently becomes a much
+    harder bar; raise the threshold past the depth and NOTHING can ever seed.
+    Pinned together so a change to either has to come here and say so.
+    """
+    assert KB_SEED_MIN_CORROBORATING_CHUNKS >= 2, "1 chunk is the defect (#1144)"
+    assert KB_SEED_MIN_CORROBORATING_CHUNKS < KB_PREFETCH_FETCH_LIMIT
+    # Room for at least MAX_SEEDED_RUNBOOKS runbooks to corroborate at once,
+    # or the guard would cap fan-out below the seeder's own cap by accident.
+    assert KB_SEED_MIN_CORROBORATING_CHUNKS * MAX_SEEDED_RUNBOOKS <= (
+        KB_PREFETCH_FETCH_LIMIT
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +561,9 @@ async def test_outcome_counter_records_seeded(enable_seeder):
     ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
     engine = _engine(ks)
     with _counters() as m:
-        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+        await engine._seed_candidate_causes_from_kb(
+            _case(), [_hit("rb1", 0.9), _corroborator("rb1")]
+        )
     assert _outcomes(m) == ["seeded"]
 
 
@@ -425,7 +582,9 @@ async def test_outcome_counter_records_no_seedable_cause(enable_seeder):
     ks = _KnowledgeStub({"rb1": None})
     engine = _engine(ks)
     with _counters() as m:
-        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+        await engine._seed_candidate_causes_from_kb(
+            _case(), [_hit("rb1", 0.9), _corroborator("rb1")]
+        )
     assert _outcomes(m) == ["no_seedable_cause"]
 
 
@@ -437,7 +596,9 @@ async def test_outcome_counter_records_all_causes_skipped(enable_seeder):
     ks = _KnowledgeStub({"rb1": [fallback]})
     engine = _engine(ks)
     with _counters() as m:
-        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("Z",))])
+        await engine._seed_candidate_causes_from_kb(
+            _case(), [_hit("rb1", 0.9, ("Z",)), _corroborator("rb1")]
+        )
     assert _outcomes(m) == ["all_causes_skipped"]
 
 
@@ -454,8 +615,46 @@ async def test_outcome_counter_records_crash_and_only_crash(enable_seeder, monke
     ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
     engine = _engine(ks)
     with _counters() as m:
-        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+        await engine._seed_candidate_causes_from_kb(
+            _case(), [_hit("rb1", 0.9), _corroborator("rb1")]
+        )
     assert _outcomes(m) == ["crashed"]
+
+
+async def test_outcome_counter_separates_the_guard_from_a_retrieval_miss(
+    enable_seeder,
+):
+    """A cause DID match; the #1144 guard declined it. That is the guard's cost,
+    not retrieval landing on prose, and folding it into ``no_cause_chunk_matched``
+    would hide it inside a counter that already means something else."""
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    with _counters() as m:
+        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+    assert _outcomes(m) == ["no_corroborated_runbook"]
+
+
+async def test_uncorroborated_counter_sizes_the_guard_per_runbook(enable_seeder):
+    """The sizing surface the threshold gets re-tuned from: one increment per
+    DECLINED RUNBOOK, not per chunk and not per cause."""
+    ks = _KnowledgeStub({})
+    engine = _engine(ks)
+    with patch(
+        "faultmaven.core.investigation.milestone_engine."
+        "kb_cause_seed_uncorroborated_total"
+    ) as c:
+        await engine._seed_candidate_causes_from_kb(
+            _case(),
+            # rb1 declined on two lone cause letters (still ONE runbook);
+            # rb2 declined on one; rb3 corroborated, so never counted.
+            [
+                _hit("rb1", 0.9, ("A", "B")),
+                _hit("rb2", 0.8, ("A",)),
+                _hit("rb3", 0.7, ("A",)),
+                _corroborator("rb3"),
+            ],
+        )
+    c.inc.assert_called_once_with(2)
 
 
 async def test_no_attempt_counted_when_retrieval_returned_nothing(enable_seeder):
@@ -475,7 +674,9 @@ async def test_letter_mismatch_is_counted_not_just_logged(enable_seeder):
     ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
     engine = _engine(ks)
     with _counters() as m:
-        await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9, ("E",))])
+        await engine._seed_candidate_causes_from_kb(
+            _case(), [_hit("rb1", 0.9, ("E",)), _corroborator("rb1")]
+        )
     assert m["kb_cause_seed_letter_mismatch_total"].inc.call_count == 1
     assert _outcomes(m) == ["no_seedable_cause"]
 
@@ -493,7 +694,13 @@ async def test_wrapper_all_runbooks_without_causes_seeds_nothing(
     ks = _KnowledgeStub({"rb1": None, "rb2": []})
     engine = _engine(ks)
     await engine._seed_candidate_causes_from_kb(
-        _case(), [_hit("rb1", 0.9), _hit("rb2", 0.8)]
+        _case(),
+        [
+            _hit("rb1", 0.9),
+            _corroborator("rb1"),
+            _hit("rb2", 0.8),
+            _corroborator("rb2"),
+        ],
     )
     assert ks.calls == ["rb1", "rb2"]  # both were looked up
     assert seed_spy == []  # but none carried causes → seeder not called
@@ -507,7 +714,13 @@ async def test_wrapper_mixed_causes_seeds_only_causes_bearing_runbooks(
     ks = _KnowledgeStub({"rb1": [_good_cause("A")], "rb2": None})
     engine = _engine(ks)
     await engine._seed_candidate_causes_from_kb(
-        _case(), [_hit("rb1", 0.9), _hit("rb2", 0.8)]
+        _case(),
+        [
+            _hit("rb1", 0.9),
+            _corroborator("rb1"),
+            _hit("rb2", 0.8),
+            _corroborator("rb2"),
+        ],
     )
     assert ks.calls == ["rb1", "rb2"]
     assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb1"]
@@ -523,7 +736,9 @@ async def test_wrapper_swallows_loader_error(enable_seeder, seed_spy):
     # depth) must not propagate out of the transition.
     ks = _KnowledgeStub({"rb1": RuntimeError("boom")})
     engine = _engine(ks)
-    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9), _corroborator("rb1")]
+    )
     # Did not raise; and because the load blew up, the seeder never ran.
     assert seed_spy == []
 
@@ -541,7 +756,9 @@ async def test_wrapper_swallows_seeder_crash(enable_seeder, monkeypatch):
     ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
     engine = _engine(ks)
     # Must complete without raising.
-    await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.9)])
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9), _corroborator("rb1")]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -555,7 +772,9 @@ async def test_wrapper_happy_path_seeds_through_real_seeder(enable_seeder):
     ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
     case = _case()
     engine = _engine(ks)
-    await engine._seed_candidate_causes_from_kb(case, [_hit("rb1", 0.9)])
+    await engine._seed_candidate_causes_from_kb(
+        case, [_hit("rb1", 0.9), _corroborator("rb1")]
+    )
 
     assert len(case.hypotheses) == 1
     h = next(iter(case.hypotheses.values()))
@@ -577,7 +796,9 @@ async def test_wrapper_seeds_rung_evidence_needs(enable_seeder):
     ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
     case = _case()
     engine = _engine(ks)
-    await engine._seed_candidate_causes_from_kb(case, [_hit("rb1", 0.9)])
+    await engine._seed_candidate_causes_from_kb(
+        case, [_hit("rb1", 0.9), _corroborator("rb1")]
+    )
 
     hyp_id = next(iter(case.hypotheses))
     needs = [n for n in case.evidence_needs if hyp_id in n.motivating_hypothesis_ids]
@@ -866,6 +1087,7 @@ async def test_prefetch_then_seed_end_to_end_seeds_both_runbooks(enable_seeder):
         _search_hit(score=0.85, parent_id="rb_a"),
         _search_hit(score=0.80, parent_id="rb_a"),
         _search_hit(score=0.75, parent_id="rb_b", letters=("B",)),
+        _search_hit(score=0.70, parent_id="rb_b", letters=()),
     ]
     # Distinct roots AND statements so neither the exact-root nor the paraphrase
     # dedup collapses them — both are genuinely distinct causes.
