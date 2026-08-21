@@ -1759,7 +1759,10 @@ else:
 
 
 # Register domain exception handlers (TASK-027)
-from faultmaven.api.exception_handlers import get_exception_handlers
+from faultmaven.api.exception_handlers import (
+    get_exception_handlers,
+    request_validation_exception_handler,
+)
 
 for exc_type, handler in get_exception_handlers().items():
     app.add_exception_handler(exc_type, handler)
@@ -1767,38 +1770,13 @@ logger.info("✅ Domain exception handlers registered")
 
 
 # Custom exception handlers
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    """Custom handler for request/response validation errors (422)"""
-    # Convert validation errors to JSON-serializable format
-    errors = []
-    for error in exc.errors():
-        # Create a copy of the error dict
-        clean_error = dict(error)
-
-        # Convert any ValueError objects in ctx to strings
-        if "ctx" in clean_error and isinstance(clean_error["ctx"], dict):
-            clean_ctx = {}
-            for key, value in clean_error["ctx"].items():
-                if isinstance(value, ValueError):
-                    clean_ctx[key] = str(value)
-                else:
-                    clean_ctx[key] = value
-            clean_error["ctx"] = clean_ctx
-
-        errors.append(clean_error)
-
-    logger.error(
-        f"Validation error on {request.method} {request.url}: {errors}",
-        extra={
-            "validation_errors": errors,
-            "body": exc.body if hasattr(exc, "body") else None,
-        },
-    )
-
-    return JSONResponse(
-        status_code=422, content={"detail": "Validation error", "errors": errors}
-    )
+#
+# RequestValidationError is registered explicitly rather than through
+# get_exception_handlers(), which maps domain exceptions: this one fires before
+# any module code runs, on a request FastAPI could not bind to the endpoint
+# signature. The handler lives beside the others in api/exception_handlers.py —
+# see fm#1048 for why its serialization has to be total.
+app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 
 
 @app.exception_handler(HTTPException)

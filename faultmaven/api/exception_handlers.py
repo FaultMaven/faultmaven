@@ -9,6 +9,11 @@ This module provides exception handlers for:
 - ConflictError → 409 Conflict
 - ServiceError → 500 Internal Server Error
 
+It also holds the handler for FastAPI's own ``RequestValidationError``
+(→ 422), which is a framework error rather than a domain one: it fires
+before any module code runs, and ``main.py`` registers it separately from
+``get_exception_handlers()``.
+
 NotFoundError and ConflictError surface their structured metadata
 (``resource_type``, ``resource_id``, and ``conflict_reason`` on
 ConflictError) in the response body when present. Clients should
@@ -17,11 +22,13 @@ branch on those fields rather than parsing the ``detail`` string.
 Specification: docs/architecture/specifications/exception-contract.md
 """
 
+import json
 import logging
 from json import JSONDecodeError
-from typing import Callable, Iterator, Optional, Type
+from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Type
 
 from fastapi import HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -36,6 +43,7 @@ from faultmaven.exceptions import (
     ValidationException,
     is_billing_error,
 )
+from faultmaven.utils.serialization import to_json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -501,3 +509,84 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ConflictError: conflict_exception_handler,
         ServiceError: service_error_handler,
     }
+
+
+# =============================================================================
+# Framework validation errors (fm#1048)
+# =============================================================================
+
+# Per-error ceiling on the echoed `input`. Beyond it the value is replaced by a
+# summary. Without a ceiling a body-level error echoes the WHOLE body — up to
+# MAX_UPLOAD_SIZE_MB — back at whoever sent it, from one unauthenticated
+# request. (Pre-#1048 the reflection was already 1:1 for field-level errors:
+# a 200 KB bad field produced a 200 KB 422.)
+MAX_VALIDATION_INPUT_BYTES = 2048
+
+
+def sanitize_validation_error(error: Mapping[str, Any]) -> Dict[str, Any]:
+    """Make one pydantic error dict renderable, and bound its echoed input."""
+    safe = to_json_safe(error)
+    if not isinstance(safe, dict):  # pragma: no cover - errors() yields dicts
+        return {"msg": str(safe)}
+
+    if "input" in safe:
+        # to_json_safe is total, so this dumps cannot raise.
+        rendered = len(json.dumps(safe["input"], ensure_ascii=False))
+        if rendered > MAX_VALIDATION_INPUT_BYTES:
+            safe["input"] = (
+                f"<input omitted: {rendered} bytes exceeds the "
+                f"{MAX_VALIDATION_INPUT_BYTES}-byte echo budget>"
+            )
+    return safe
+
+
+async def request_validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    """Handle FastAPI's RequestValidationError → 422.
+
+    Distinct from :func:`validation_exception_handler` above, which handles the
+    domain-layer ``ValidationException``: this one fires *before* any module
+    code runs, on the request FastAPI could not bind to the endpoint's
+    signature. It is registered explicitly in ``main.py`` rather than through
+    :func:`get_exception_handlers`, which maps domain exceptions only.
+
+    The invariant that matters here is that this handler **cannot raise**.
+    A pydantic error's ``input`` is whatever object the framework fed to
+    validation, and ``ctx`` values are likewise arbitrary; serializing them
+    directly is how a well-formed 422 turned into an opaque 500 (fm#1048).
+    Five request shapes did it, and only the first was diagnosed from the
+    symptom:
+
+    * a form-encoded (or any non-JSON) body on a JSON endpoint → ``input`` is
+      raw ``bytes`` → TypeError;
+    * a file part supplied for a scalar ``Form`` field → ``input`` is an
+      ``UploadFile`` → TypeError;
+    * ``NaN``/``Infinity`` in a JSON body (``json.loads`` accepts both) →
+      ValueError, because Starlette renders with ``allow_nan=False``;
+    * a lone surrogate in a JSON string (``"\\ud800"``) → UnicodeEncodeError at
+      ``.encode("utf-8")``, from a plain ``str``;
+    * anything else pydantic hands back that json cannot render.
+
+    So the fix is not a bytes special-case — the previous handler already had a
+    special-case of exactly that shape, for ``ValueError`` in ``ctx``, and this
+    is the same bug one type later. :func:`to_json_safe` is total instead.
+    """
+    errors = [sanitize_validation_error(error) for error in exc.errors()]
+
+    logger.error(
+        "Validation error on %s %s: %s",
+        request.method,
+        request.url,
+        errors,
+        extra={
+            "validation_errors": errors,
+            "body": to_json_safe(getattr(exc, "body", None)),
+        },
+    )
+
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Validation error", "errors": errors},
+    )

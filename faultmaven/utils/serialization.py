@@ -21,8 +21,10 @@ Usage:
 """
 
 import json
+import math
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
+from decimal import Decimal
 from typing import Any, Dict, Optional
 from uuid import UUID
 
@@ -109,6 +111,10 @@ def to_json_compatible(obj: Any) -> Any:
     - dict: recursive processing
     - list/tuple/set: recursive processing
     - Other types: returned as-is (int, str, float, bool, None)
+
+    Unknown types are passed through for ``json.dumps`` to accept or reject, so
+    this can still raise at encode time. On an error path — where a raise costs
+    the caller a 500 — use :func:`to_json_safe` instead.
 
     Args:
         obj: Object to serialize
@@ -273,3 +279,143 @@ def serialize_for_redis(obj: Any) -> str:
         JSON string ready for Redis storage
     """
     return safe_json_dumps(obj)
+
+
+# ---------------------------------------------------------------------------
+# Total ("cannot raise") serialization — for error paths
+# ---------------------------------------------------------------------------
+
+# Strings and repr fallbacks are cut to this many characters. Long enough to
+# diagnose a bad field, short enough that a response can never mirror a large
+# request body back at its sender.
+DEFAULT_SAFE_STRING_CHARS = 512
+
+# Containers deeper than this are summarized instead of walked. `input` on a
+# validation error is attacker-supplied JSON of arbitrary nesting, and this
+# function runs *inside* an exception handler, where a RecursionError becomes
+# the 500 the handler exists to prevent.
+DEFAULT_SAFE_DEPTH = 6
+
+_TRUNCATED = "... [truncated]"
+
+# ints are rendered by json.dumps via str(), which raises above
+# sys.get_int_max_str_digits() (4300 digits by default since 3.11). 256 bits is
+# ~78 digits — comfortably below it, and above anything a real payload carries.
+_SAFE_INT_BITS = 256
+
+
+def _safe_text(text: str, limit: int) -> str:
+    """Truncate to ``limit`` and strip anything UTF-8 cannot encode.
+
+    Both halves are load-bearing. Starlette renders JSON with
+    ``ensure_ascii=False`` and then ``.encode("utf-8")``, so a lone surrogate
+    (``json.loads('"\\ud800"')`` produces one, from a *valid* JSON body) raises
+    UnicodeEncodeError at render time — a str that looks entirely safe.
+    """
+    if len(text) > limit:
+        text = text[:limit] + _TRUNCATED
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        text = text.encode("utf-8", "replace").decode("utf-8")
+    return text
+
+
+def _safe_fallback(value: Any, limit: int) -> str:
+    """Render an object of unknown type as a bounded string, never raising."""
+    try:
+        if isinstance(value, BaseException):
+            # Keeps the pre-#1048 behaviour for the `ctx` case that handler
+            # special-cased (a ValueError rendered as its message), widened to
+            # every exception type rather than that one.
+            text = str(value)
+        elif isinstance(value, (datetime, date, time, UUID, Decimal)):
+            text = str(value)
+        else:
+            text = repr(value)
+    except Exception:
+        try:
+            return f"<unrepresentable {type(value).__name__}>"
+        except Exception:
+            return "<unrepresentable>"
+    return _safe_text(text, limit)
+
+
+def to_json_safe(
+    obj: Any,
+    *,
+    max_string_chars: int = DEFAULT_SAFE_STRING_CHARS,
+    max_depth: int = DEFAULT_SAFE_DEPTH,
+) -> Any:
+    """Convert ``obj`` into something ``JSONResponse`` can always render.
+
+    The contract is **totality**: for any input, the result is composed only of
+    ``None``/``bool``/``int``/finite ``float``/UTF-8-encodable ``str``/``list``/
+    ``dict`` with ``str`` keys, and this function does not raise. Fidelity is
+    given up wherever it conflicts with that — unknown objects become their
+    ``repr``, long strings are truncated, deep structures are summarized.
+
+    That is the difference from :func:`to_json_compatible`, and it is why both
+    exist. ``to_json_compatible`` preserves the value (it is used to build
+    payloads that get *stored*) and passes unknown types straight through for
+    ``json.dumps`` to accept or reject. That is correct for a persistence path
+    and wrong for an error path, where a raise means the handler itself fails
+    and the caller gets a 500 instead of the error it was owed.
+
+    "Whatever ``json.dumps`` accepts" is not the bar, either. Starlette renders
+    with ``allow_nan=False`` and ``ensure_ascii=False`` + ``.encode("utf-8")``,
+    so ``float('nan')`` and lone surrogates — both reachable from a *valid*
+    JSON request body — raise there while plain ``json.dumps`` accepts them.
+    This function targets Starlette's stricter encoder.
+
+    Args:
+        obj: Anything at all.
+        max_string_chars: Cut strings (and repr fallbacks) to this length.
+        max_depth: Summarize containers nested deeper than this.
+
+    Returns:
+        A JSON-encodable structure. See fm#1048 for the five request shapes
+        that crashed the validation handler before this existed.
+    """
+
+    def convert(value: Any, depth: int) -> Any:
+        # bool before int: bool IS an int, and False must stay False.
+        if value is None or isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return (
+                value
+                if value.bit_length() <= _SAFE_INT_BITS
+                else f"<int: {value.bit_length()} bits>"
+            )
+        if isinstance(value, float):
+            # allow_nan=False rejects these; repr gives 'nan'/'inf'/'-inf'.
+            return value if math.isfinite(value) else repr(value)
+        if isinstance(value, str):
+            return _safe_text(value, max_string_chars)
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return _safe_text(bytes(value).decode("utf-8", "replace"), max_string_chars)
+
+        is_container = isinstance(value, (dict, list, tuple, set, frozenset))
+        if is_container and depth >= max_depth:
+            # Summarize rather than repr(): repr of a large container would
+            # materialize the whole thing just to throw it away.
+            return f"<{type(value).__name__}: {len(value)} items>"
+
+        if isinstance(value, dict):
+            return {_key(k): convert(v, depth + 1) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [convert(v, depth + 1) for v in value]
+
+        return _safe_fallback(value, max_string_chars)
+
+    def _key(key: Any) -> str:
+        # json.dumps coerces str/int/float/bool/None keys and rejects the rest —
+        # and rejects a NaN key even with the coercion. Making every key a safe
+        # str is what json would have produced anyway, minus the failure modes.
+        if isinstance(key, str):
+            return _safe_text(key, max_string_chars)
+        converted = convert(key, max_depth)
+        return converted if isinstance(converted, str) else str(converted)
+
+    return convert(obj, 0)
