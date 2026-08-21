@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from faultmaven.config.tenant_context import writable_org_id
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -86,9 +87,13 @@ RUNBOOK_MAX_TOKENS_CEILING = RUNBOOK_MAX_TOKENS * 2
 ANALYSIS_MAX_TOKENS = 2048
 ANALYSIS_MAX_TOKENS_CEILING = ANALYSIS_MAX_TOKENS * 2
 
-# Single-tenant default organization. Conversion sources (KB-bound uploads)
-# require organization_id NOT NULL on both the upload and the conversion job;
-# fall back to this when the caller doesn't supply one.
+# Single-tenant default organization. It is the *contextvar's* default (see
+# ``config.tenant_context``), not a fallback any writer here applies directly:
+# stamping this constant on a write is only correct in a single-tenant
+# deployment, and under ``TENANT_PROVIDER=multi`` it is the sentinel org, which
+# no tenant session may write (#1143). Writers resolve the org through
+# :func:`writable_org_id` instead. No production code reads this any more; it
+# stays exported because the tests name the single-tenant org by it.
 DEFAULT_ORGANIZATION_ID = SingleTenantProvider.DEFAULT_ORG_ID
 
 # Threshold for parallel vs sequential conversion
@@ -1105,12 +1110,13 @@ class ConversionService:
         if not self._db_session_factory:
             return
 
+        org_id = writable_org_id(organization_id)
+
         async with self._db_session_factory() as session:
             # ``conversion_jobs`` carries a single ``source_file_id`` FK to
             # ``uploaded_files`` (ON DELETE RESTRICT). Create the upload row
             # first; the conversion_jobs row references it. Both tables
             # require organization_id NOT NULL.
-            org_id = organization_id or DEFAULT_ORGANIZATION_ID
             source_file_id = f"file_{uuid4().hex[:12]}"
             upload = UploadedFileModel(
                 file_id=source_file_id,
@@ -2104,7 +2110,9 @@ status: draft
         Args:
             user_id: User triggering the scan (recorded as conversion job owner).
             organization_id: Org for scoping the conversion job + source upload.
-                Falls back to DEFAULT_ORGANIZATION_ID when None.
+                Falls back to the tenant the database session is bound to when
+                None (``writable_org_id``) — which is the single-tenant org in
+                a standalone deployment, and the caller's tenant under multi.
             is_platform_admin: Whether the caller may author global-scope KB. A file whose
                 inferred scope is ``global`` (the org-free platform corpus) is
                 SKIPPED when the caller is not a platform operator (any tenant

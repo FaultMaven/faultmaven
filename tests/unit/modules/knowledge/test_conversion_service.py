@@ -2528,3 +2528,185 @@ class TestTruncatedRunbookIsNeverPersisted:
                     )
 
         assert "truncated" in str(exc.value).lower()
+
+
+# =============================================================================
+# #1143: the org stamped on the conversion's tenanted rows
+# =============================================================================
+
+
+class TestPersistJobOrgStamp:
+    """``_persist_job`` writes three RLS-tenanted tables; the stamp must match
+    the tenant the session is bound to.
+
+    Under PostgreSQL the RLS policy from migration 018 is ``FOR ALL`` with the
+    USING expression doubling as the WITH CHECK, so a row whose
+    ``organization_id`` differs from ``app.current_org_id`` is *refused*, not
+    merely hidden. ``app.current_org_id`` comes from the tenant contextvar (the
+    engine's ``begin`` listener), so a writer that resolves a missing org to a
+    hardcoded single-tenant sentinel writes a row its own transaction may not
+    write — the #1143 failure. These tests assert the stamped value, which makes
+    them bite on SQLite too, where there is no RLS to catch it.
+    """
+
+    @staticmethod
+    async def _seed_org(session_factory, org_id: str) -> None:
+        async with session_factory() as session:
+            session.add(
+                EnterpriseModel(
+                    enterprise_id=org_id, name="Guest Enterprise", slug=f"e-{org_id}"
+                )
+            )
+            session.add(
+                OrganizationModel(
+                    organization_id=org_id,
+                    enterprise_id=org_id,
+                    name="Guest Org",
+                    slug=f"o-{org_id}",
+                )
+            )
+            await session.commit()
+
+    @staticmethod
+    async def _run_persist(service, conversion_id: str, organization_id, tmp_path):
+        await service._persist_job(
+            conversion_id=conversion_id,
+            user_id="u1",
+            organization_id=organization_id,
+            scope="personal",
+            team_id=None,
+            status=ConversionStatus.COMPLETED,
+            source_file=SourceFileInfo(
+                filename="Case case_1765256eccdd",
+                size_bytes=3289,
+                content_type="application/x-faultmaven-case",
+                retained_path=None,
+            ),
+            analysis=AnalysisResult(
+                is_actionable=True,
+                failure_modes=[],
+                source_assessment=SourceAssessment(
+                    content_type="resolved_case",
+                    actionability_rating="high",
+                    missing_information=[],
+                ),
+            ),
+            drafts=[_make_case_draft(draft_id="draft_org1143", tmp_path=tmp_path)],
+            created_at=datetime.now(UTC),
+            source_type="case",
+            case_id="case_1765256eccdd",
+        )
+
+    @staticmethod
+    async def _stamped_orgs(session_factory, conversion_id: str) -> set[str]:
+        async with session_factory() as session:
+            job = await session.get(ConversionJobModel, conversion_id)
+            upload = await session.get(UploadedFileModel, job.source_file_id)
+            drafts = (
+                (
+                    await session.execute(
+                        select(ConversionDraftModel).where(
+                            ConversionDraftModel.conversion_id == conversion_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            return {job.organization_id, upload.organization_id} | {
+                d.organization_id for d in drafts
+            }
+
+    @pytest.mark.asyncio
+    async def test_no_explicit_org_stamps_the_bound_tenant(
+        self, live_case_session_factory, tmp_path
+    ):
+        """A caller that supplies no org gets the tenant the session is bound to.
+
+        The regression: it used to get ``DEFAULT_ORGANIZATION_ID`` — correct in
+        a single-tenant deployment by coincidence, and the sentinel org (which
+        no tenant may write) everywhere else.
+        """
+        from faultmaven.config.tenant_context import _current_org_id
+
+        guest_org = "org_guest_7f2a"
+        await self._seed_org(live_case_session_factory, guest_org)
+        service = _make_live_case_service(live_case_session_factory)
+
+        token = _current_org_id.set(guest_org)
+        try:
+            await self._run_persist(service, "conv_org_ctx", None, tmp_path)
+        finally:
+            _current_org_id.reset(token)
+
+        assert await self._stamped_orgs(live_case_session_factory, "conv_org_ctx") == {
+            guest_org
+        }, (
+            "#1143: with no explicit org, every tenanted row must carry the "
+            "session's bound tenant — a sentinel stamp is refused by RLS."
+        )
+
+    @pytest.mark.asyncio
+    async def test_explicit_org_wins_over_the_context(
+        self, live_case_session_factory, tmp_path
+    ):
+        """An explicit org is the more specific answer and is used verbatim."""
+        from faultmaven.config.tenant_context import _current_org_id
+
+        explicit_org = "org_explicit_11b3"
+        await self._seed_org(live_case_session_factory, explicit_org)
+        service = _make_live_case_service(live_case_session_factory)
+
+        token = _current_org_id.set("org_ambient_beef")
+        try:
+            await self._run_persist(
+                service, "conv_org_explicit", explicit_org, tmp_path
+            )
+        finally:
+            _current_org_id.reset(token)
+
+        assert await self._stamped_orgs(
+            live_case_session_factory, "conv_org_explicit"
+        ) == {explicit_org}
+
+    @pytest.mark.asyncio
+    async def test_single_tenant_default_is_unchanged(
+        self, live_case_session_factory, tmp_path
+    ):
+        """Standalone keeps stamping the single-tenant org.
+
+        The contextvar's own default *is* that org, so the fix is a no-op for
+        every single-tenant deployment — pinned so a future change to the
+        fallback cannot quietly move standalone rows to a different org.
+        """
+        service = _make_live_case_service(live_case_session_factory)
+        await self._run_persist(service, "conv_org_standalone", None, tmp_path)
+
+        assert await self._stamped_orgs(
+            live_case_session_factory, "conv_org_standalone"
+        ) == {DEFAULT_ORGANIZATION_ID}
+
+    def test_conversion_source_upload_stays_case_less(self):
+        """The synthetic ``uploaded_files`` row must NOT carry ``case_id``.
+
+        #1143 flagged ``case_id=None`` as suspect alongside the org defect. It
+        is deliberate and must stay: ``uploaded_files.case_id`` is
+        ``ON DELETE CASCADE`` while ``conversion_jobs.source_file_id`` is
+        ``ON DELETE RESTRICT``. Linking the source row to the case would make
+        deleting a converted case attempt to cascade away a row the job still
+        restricts — the delete would fail with an FK violation. The runbook
+        outlives its case by design (``conversion_jobs.case_id`` is
+        ``ON DELETE SET NULL``), and this is what lets it.
+        """
+        assert (
+            UploadedFileModel.__table__.c.case_id.foreign_keys.pop().ondelete
+            == "CASCADE"
+        )
+        assert (
+            ConversionJobModel.__table__.c.source_file_id.foreign_keys.pop().ondelete
+            == "RESTRICT"
+        )
+        assert (
+            ConversionJobModel.__table__.c.case_id.foreign_keys.pop().ondelete
+            == "SET NULL"
+        )
