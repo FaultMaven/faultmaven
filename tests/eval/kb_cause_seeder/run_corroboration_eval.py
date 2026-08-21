@@ -49,8 +49,8 @@ import os
 import sqlite3
 import sys
 from types import SimpleNamespace
-from uuid import uuid4
 from unittest.mock import patch
+from uuid import uuid4
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if REPO_ROOT not in sys.path:
@@ -274,6 +274,7 @@ async def mode_e2e(store, corpus, statements):
     )
     from faultmaven.core.investigation.kb_cause_seeder import SEEDED_FROM_RUNBOOK_KEY
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.models.common import SearchResult
     from faultmaven.modules.case.contracts import (
         Case,
         CaseSeverity,
@@ -286,7 +287,6 @@ async def mode_e2e(store, corpus, statements):
         _read_stamped_cause_letters,
         _read_total_chunks,
     )
-    from faultmaven.models.common import SearchResult
 
     class _KS:
         """The two knowledge_service seams the engine path touches."""
