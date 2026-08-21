@@ -1,0 +1,118 @@
+{
+ "_comment": "Problem statements for the #1144 corroboration measurement. 'positive' pairs a statement a user might actually type with the runbook title fragments that would be an on-domain seed for it; 'negative' holds statements carrying no concrete failure signature, where the correct outcome is to seed NOTHING. Expectations are title fragments, not ids, so a pack rebuild does not invalidate them.",
+ "positive": [
+  [
+   "Our pods keep getting killed with exit code 137 and restart. Memory limit is 512Mi.",
+   [
+    "Kubernetes Container OOMKilled",
+    "Kubernetes Pod CrashLoopBackOff",
+    "GKE Workloads"
+   ]
+  ],
+  [
+   "Postgres is refusing new connections, clients get 'remaining connection slots are reserved'.",
+   [
+    "PostgreSQL Connection Pool Exhaustion",
+    "AWS RDS Connection Exhaustion"
+   ]
+  ],
+  [
+   "Nginx is returning 502 Bad Gateway for about 30% of requests since the deploy.",
+   [
+    "NGINX 502 Bad Gateway"
+   ]
+  ],
+  [
+   "Kafka consumer group lag keeps climbing, consumers are falling behind on the orders topic.",
+   [
+    "Kafka Consumer Lag"
+   ]
+  ],
+  [
+   "Redis is evicting keys and returning OOM command not allowed when used memory > maxmemory.",
+   [
+    "Redis Out of Memory"
+   ]
+  ],
+  [
+   "Certificate expired this morning and browsers show a security warning for our API domain.",
+   [
+    "TLS Certificate Expiry",
+    "cert-manager Certificate Issuance Failure"
+   ]
+  ],
+  [
+   "Pods are stuck in ImagePullBackOff after we switched to a private registry.",
+   [
+    "Kubernetes ImagePullBackOff"
+   ]
+  ],
+  [
+   "Disk on the app server is at 100%, writes are failing with no space left on device.",
+   [
+    "Linux Disk Full"
+   ]
+  ],
+  [
+   "JVM heap keeps growing and we get java.lang.OutOfMemoryError: Java heap space.",
+   [
+    "Java JVM OutOfMemoryError",
+    ".NET High Memory"
+   ]
+  ],
+  [
+   "ArgoCD application is stuck OutOfSync and the sync keeps failing.",
+   [
+    "ArgoCD Application Sync Failure"
+   ]
+  ],
+  [
+   "Lambda invocations are timing out at 3 seconds and downstream calls never complete.",
+   [
+    "AWS Lambda Function Timeout"
+   ]
+  ],
+  [
+   "Elasticsearch cluster health went red after a node restarted, shards unassigned.",
+   [
+    "Elasticsearch Cluster Yellow or Red Health Status"
+   ]
+  ],
+  [
+   "MySQL replica stopped applying changes, Seconds_Behind_Master is NULL and IO thread is off.",
+   [
+    "MySQL Replication Broken"
+   ]
+  ],
+  [
+   "DNS lookups inside the cluster are failing intermittently, CoreDNS pods look busy.",
+   [
+    "Kubernetes CoreDNS Resolution Failures"
+   ]
+  ],
+  [
+   "S3 PutObject is returning 403 Access Denied for our service role.",
+   [
+    "AWS S3 403 Access Denied",
+    "GCS 403",
+    "AWS IAM Access Denied"
+   ]
+  ],
+  [
+   "Terraform apply is blocked, state lock held by another operation that already finished.",
+   [
+    "Terraform State Lock Stuck or Orphaned"
+   ]
+  ]
+ ],
+ "negative": [
+  "Production dashboard shows elevated error rate and pod restarts. Panels: HTTP 5xx rate, p99 latency, container memory working set, CPU throttling, replica count. Several pods restarting repeatedly over the last hour.",
+  "Service degraded: users report failures. Dashboard capture attached showing latency and error panels.",
+  "Investigating an incident using a captured Grafana dashboard screenshot. The dashboard shows request throughput, error percentage, response time percentiles, memory usage climbing, and restarts increasing on one deployment.",
+  "Something is wrong with the platform this morning, customers are complaining.",
+  "We had an outage last night, need to figure out what happened.",
+  "Attached is a screenshot of our monitoring page. Times are UTC. Please help.",
+  "The application is slow.",
+  "Deployment went out at 14:00 and things started looking bad afterwards."
+ ]
+}

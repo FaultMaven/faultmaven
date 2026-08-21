@@ -263,8 +263,9 @@ KB_CONTEXT_MAX_ENTRIES = 3
 #     well the runbook fits. A floor at 0.66 (needed to drop most junk) also
 #     dropped 8 of 14 correct seeds.
 #   * Requiring the runbook to also appear in the turn's kb_context/Sources
-#     does almost nothing: 12 of 14 junk seeds were ALREADY in the top-3
-#     kb_context, because kb_context is the top slice of the very same ranking.
+#     does almost nothing: it keeps 19 of the 27 off-domain seeds, which were
+#     ALREADY in the top-3 kb_context — kb_context is the top slice of the very
+#     same ranking, so it cannot cross-check a ranking against itself.
 #
 # What does separate them is BREADTH OF MATCH WITHIN ONE DOCUMENT. A runbook
 # that genuinely covers the failure matches on several of its sections at once
@@ -282,7 +283,9 @@ KB_CONTEXT_MAX_ENTRIES = 3
 # KB_PREFETCH_FETCH_LIMIT — a shallower fetch would tighten it silently — so the
 # two are pinned together by test.
 # ``kb_cause_seed_uncorroborated_total`` counts what it declines, which is how
-# the number gets re-sized on evidence rather than on this comment.
+# the number gets re-sized on evidence rather than on this comment. The
+# measurement itself is re-runnable:
+# ``tests/eval/kb_cause_seeder/run_corroboration_eval.py``.
 KB_SEED_MIN_CORROBORATING_CHUNKS = 2
 
 # Cosine floor a pre-fetched runbook must clear to enter `case.kb_context` (and
@@ -11160,13 +11163,31 @@ class MilestoneEngine:
             # That was left to rank alone ("retrieval has already done the
             # semantic case<->cause alignment"), and rank is a statement about
             # the other nine results, never about fit.
-            chunks_per_runbook: dict[str, int] = {}
+            # DISTINCT chunks, by chunk id — not a hit count. The two are the
+            # same today (one vector search returns each chunk at most once), so
+            # this changes nothing now; it is here because the day they diverge
+            # is the day the guard fails OPEN. A hybrid/BM25 merge returning the
+            # same chunk from both arms would let one chunk corroborate itself,
+            # silently restoring the exact #1144 behaviour with the guard still
+            # apparently in place. Cheaper to enforce than to detect.
+            #
+            # ``document_id`` is the CHUNK id here (``{parent}_chunk_{n}``):
+            # search_knowledge falls through to the vector store's ``id`` because
+            # the formatted hit carries no ``document_id`` key. A hit that
+            # supplies no usable id still counts as its own chunk — a MISSING id
+            # is not the failure mode being closed, a REPEATED one is, and
+            # collapsing anonymous hits together would tighten the guard on a
+            # source that never duplicated anything.
+            chunk_ids_per_runbook: dict[str, set[str]] = {}
             length_of_runbook: dict[str, int] = {}
-            for hit in kb_hits:
+            for index, hit in enumerate(kb_hits):
                 parent_id = getattr(hit, "parent_document_id", None)
                 if not parent_id:
                     continue
-                chunks_per_runbook[parent_id] = chunks_per_runbook.get(parent_id, 0) + 1
+                chunk_id = getattr(hit, "document_id", None) or ""
+                if not chunk_id or chunk_id == "unknown":
+                    chunk_id = f"__unidentified_{index}"
+                chunk_ids_per_runbook.setdefault(parent_id, set()).add(chunk_id)
                 total = getattr(hit, "total_chunks", None)
                 if isinstance(total, int) and total > 0:
                     length_of_runbook[parent_id] = total
@@ -11211,7 +11232,8 @@ class MilestoneEngine:
             best_score_by_cause: dict[str, dict[str, float]] = {}
             uncorroborated: set[str] = set()
             for parent_id, per_cause in cause_naming.items():
-                if chunks_per_runbook[parent_id] >= _chunks_required(parent_id):
+                surfaced = len(chunk_ids_per_runbook[parent_id])
+                if surfaced >= _chunks_required(parent_id):
                     best_score_by_cause[parent_id] = per_cause
                 else:
                     uncorroborated.add(parent_id)

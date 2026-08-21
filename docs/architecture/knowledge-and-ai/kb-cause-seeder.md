@@ -375,7 +375,10 @@ over 24 problem statements against the shipped pack:
 | Guard | Result |
 |---|---|
 | Minimum retrieval **score** floor | No separating value exists. On-domain seeds scored 0.603–0.731, off-domain ones 0.519–0.715. The score tracks how much concrete text the *query* carries far more than how well the runbook fits, so a vague-but-correct match and a vague-but-wrong one land together. A floor at 0.66 dropped 8 of 14 correct seeds. |
-| Require the runbook to also be in the turn's `kb_context`/Sources | Near-inert: 12 of 14 junk seeds were **already** in the top-3 `kb_context`, because `kb_context` is the top slice of the very same ranking. It cannot cross-check a ranking against itself. |
+| Require the runbook to also be in the turn's `kb_context`/Sources | Near-inert: it keeps 19 of 27 off-domain seeds (and, on the content-free statements alone, 12 of 14) — they were **already** in the top-3 `kb_context`, because `kb_context` is the top slice of the very same ranking. It cannot cross-check a ranking against itself. |
+
+All three rows above are reproducible: `tests/eval/kb_cause_seeder/run_corroboration_eval.py guards`
+prints this table, and `… sweep` prints the floor sweep behind the first row.
 
 What does separate the populations is **breadth of match within one document**.
 A runbook that genuinely covers the failure matches on several of its sections at

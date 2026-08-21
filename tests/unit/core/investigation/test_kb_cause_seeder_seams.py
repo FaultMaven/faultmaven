@@ -84,7 +84,7 @@ def _case() -> Case:
     )
 
 
-def _hit(parent_id, score, letters=("A",), total_chunks=None):
+def _hit(parent_id, score, letters=("A",), total_chunks=None, chunk_id=None):
     """A retrieval hit as the wrapper reads it.
 
     ``.matched_cause_letters`` is the #1092 join key: which of the parent
@@ -97,6 +97,7 @@ def _hit(parent_id, score, letters=("A",), total_chunks=None):
         score=score,
         matched_cause_letters=list(letters),
         total_chunks=total_chunks,
+        document_id=chunk_id,
     )
 
 
@@ -483,6 +484,67 @@ async def test_corroborating_chunk_need_not_carry_a_cause(enable_seeder, seed_sp
     engine = _engine(ks)
     await engine._seed_candidate_causes_from_kb(
         _case(), [_hit("rb1", 0.9, ("A",)), _hit("rb1", 0.4, ())]
+    )
+
+    assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb1"]
+
+
+async def test_one_chunk_returned_twice_does_not_corroborate_itself(
+    enable_seeder, seed_spy
+):
+    """Corroboration counts DISTINCT chunks, not hits.
+
+    The two are identical today — one vector search returns each chunk at most
+    once — so nothing exercises the difference in production yet. It is pinned
+    because the day they diverge is the day the guard fails OPEN: a hybrid/BM25
+    merge returning the same chunk from both arms would let one chunk corroborate
+    itself and silently restore the #1144 behaviour with the guard still
+    apparently in place.
+    """
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(),
+        [
+            _hit("rb1", 0.9, chunk_id="rb1_chunk_4", total_chunks=14),
+            # Same chunk, second retrieval arm, different score.
+            _hit("rb1", 0.7, chunk_id="rb1_chunk_4", total_chunks=14),
+        ],
+    )
+
+    assert ks.calls == []
+    assert seed_spy == []
+
+
+async def test_two_genuinely_distinct_chunks_still_corroborate(enable_seeder, seed_spy):
+    """The other side of the same rule: distinct ids corroborate as before, so
+    the dedup cannot be mistaken for a tightening of the threshold."""
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(),
+        [
+            _hit("rb1", 0.9, chunk_id="rb1_chunk_4", total_chunks=14),
+            _hit("rb1", 0.7, (), chunk_id="rb1_chunk_9", total_chunks=14),
+        ],
+    )
+
+    assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb1"]
+
+
+async def test_hits_without_a_chunk_id_each_count_as_their_own_chunk(
+    enable_seeder, seed_spy
+):
+    """A MISSING id is not the failure mode being closed; a REPEATED one is.
+
+    Collapsing anonymous hits together would tighten the guard against a source
+    that never duplicated anything, so they stay distinct — which is also what
+    keeps every other test in this file describing the behaviour it means to.
+    """
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9, chunk_id=None), _hit("rb1", 0.7, (), chunk_id=None)]
     )
 
     assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb1"]

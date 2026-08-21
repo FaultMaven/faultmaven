@@ -24,6 +24,64 @@ a *measurement* surface — whether a real model actually validates or refutes t
 now-present seeded rung-needs — informing the deferred `interventions → Solution`
 follow-on, never a new soundness gate.
 
+## Sibling driver: `run_corroboration_eval.py` (#1144, offline)
+
+A **second** driver lives here, measuring a different question. `run_seed_eval.py`
+above asks whether seeding is *sound once it fires*;
+`run_corroboration_eval.py` asks **which runbooks should be allowed to seed at
+all** — the admission question #1144 was opened on, where off-domain causes
+(an NGINX-502 chain, a MongoDB WiredTiger chain) were seeded into a Kubernetes
+OOMKilled case and one became its displayed working conclusion.
+
+It is the artifact behind `KB_SEED_MIN_CORROBORATING_CHUNKS`, and **the thing to
+re-run before re-sizing that threshold** — which is what
+`faultmaven_kb_cause_seed_uncorroborated_total` is there to prompt.
+
+Unlike the driver above it needs **no server, no provider key and no flag** —
+only an ingested KB (a ChromaDB collection plus the `knowledge_items` rows), so
+it is deterministic and re-runnable offline:
+
+```bash
+python tests/eval/kb_cause_seeder/run_corroboration_eval.py guards   # the table that chose the guard
+python tests/eval/kb_cause_seeder/run_corroboration_eval.py sweep    # why no score floor works
+python tests/eval/kb_cause_seeder/run_corroboration_eval.py e2e      # real wrapper, guard off vs on
+```
+
+Paths default to `data/chroma-kb` and `data/faultmaven.db`; override with
+`--chroma` / `--db`. The 24 problem statements live in
+`corroboration-statements.json` — 16 written as a user would actually type them,
+each paired with the runbook-title fragments that count as an on-domain seed,
+plus 8 carrying no concrete failure signature, where the correct outcome is to
+seed nothing. Expectations are title *fragments*, so a pack rebuild does not
+invalidate them.
+
+What it found, and what the guard is:
+
+| Guard | on-domain kept | off-domain kept |
+|---|---|---|
+| rank alone (the #1144 defect) | 14/14 | 27/27 |
+| score ≥ 0.66 | 6/14 | 5/27 |
+| also in `kb_context`/Sources | 14/14 | 19/27 |
+| **corroboration (shipped)** | **13/14** | **6/27** |
+
+A guard is good when the two columns move **apart**, not down together — which
+is why a score floor was rejected rather than tuned: on-domain seeds scored
+0.603–0.731 and off-domain ones 0.519–0.715, so the ranges overlap and no floor
+separates them. End to end (`e2e`), corroboration took on-domain seeding from
+13/16 to **16/16** while three cases moved to the *right* runbook.
+
+⚠️ **Its blind spot, stated because it already cost something.** Every runbook in
+the shipped pack is long (smallest 9 chunks, median 14), so this corpus cannot
+exercise the *length-relative* half of the rule. That is exactly how the first
+cut of #1144 shipped a flat threshold which would have made compact personal
+runbooks — a document that chunks whole, i.e. the flywheel's own output —
+permanently unseedable. If you extend the corpus, extend it with **short**
+documents. The length rule itself is pinned in CI, in
+`tests/unit/core/investigation/test_kb_cause_seeder_seams.py`.
+
+These numbers are **corpus facts, not invariants**: they move when the pack
+moves, which is why this is not a CI test. The invariants it motivated are.
+
 ## What it asserts
 
 Every check reads **engine state** from `GET /debug/cases/{id}/causal-graph`
