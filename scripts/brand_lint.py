@@ -85,10 +85,16 @@ UNIVERSAL = [
         "retired tier name — use 'Cloud' (one unified codebase)",
     ),
     (r"\bfaultmaven-deploy\b", "obsolete repo — do not reference"),
-    # (?!-) — the rule targets complete retired repo names (fm-auth-service,
-    # fm-case-service), not hyphen-continuations: the fm-provision-service-account
-    # console entrypoint (#887) must not match.
-    (r"\bfm-[a-z]+-service\b(?!-)", "obsolete microservice repo — do not reference"),
+    # The exemption names the ONE thing it exempts: the fm-provision-service-account
+    # console entrypoint (#887), singular or plural. A bare (?!-) was too broad —
+    # it also let fm-case-service-v2 and fm-agent-service-archive through, which
+    # ARE the retired repo names the rule exists to catch. The optional 's' keeps
+    # "fm-provision-service-accounts" out; -accountant is not the entrypoint and
+    # still matches.
+    (
+        r"\bfm-[a-z]+-service\b(?!-accounts?\b)",
+        "obsolete microservice repo — do not reference",
+    ),
 ]
 
 CORE_ONLY = [
