@@ -4093,7 +4093,12 @@ class MilestoneEngine:
             import asyncio
 
             asyncio.create_task(
-                self._run_runbook_conversion(conversion_service, request, case.user_id)
+                self._run_runbook_conversion(
+                    conversion_service,
+                    request,
+                    case.user_id,
+                    case.organization_id,
+                )
             )
 
             # Name only what the reader can act on while reading this turn.
@@ -4233,8 +4238,33 @@ class MilestoneEngine:
         conversion_service,
         request,
         user_id: str,
+        organization_id: str,
     ) -> None:
         """Background task for runbook conversion.
+
+        ``organization_id`` is the SOURCE CASE's org, and it is required, not
+        optional. The conversion persists three RLS-tenanted rows (the synthetic
+        ``uploaded_files`` conversion source, the ``conversion_jobs`` row, its
+        ``conversion_drafts``); each is stamped with whatever this carries. It
+        was a hardcoded single-tenant sentinel before #1143, which PostgreSQL
+        RLS rejected for every tenant under ``TENANT_PROVIDER=multi``.
+
+        Passing it explicitly is belt-and-braces, NOT a fix for a context that
+        might not propagate — be clear about which. This whole task depends on
+        inheriting the request's tenant contextvar and cannot work without it:
+        the RLS binding itself is sampled from it per transaction (the ``begin``
+        listener in ``infrastructure/persistence/database``), and so are the
+        dedup read (``get_conversion_by_case``) and the completion-notification
+        read/write below, none of which take an org argument. If that
+        propagation ever broke, this parameter would not save the write — stamp
+        and binding would simply disagree and RLS would refuse it, which is the
+        fail-closed outcome we want rather than a silent cross-tenant write.
+
+        What it buys instead is provenance: the stamp becomes a property of the
+        resource being converted (the case's own org, hydrated from its row)
+        rather than of the ambient context the task happened to be scheduled
+        under, and the missing argument that caused #1143 becomes a TypeError
+        instead of a sentinel.
 
         Logs success/failure and writes a completion notification to the case
         transcript. The notification is best-effort: if writing it fails, the
@@ -4259,6 +4289,7 @@ class MilestoneEngine:
             result = await conversion_service.convert_from_case(
                 request=request,
                 user_id=user_id,
+                organization_id=organization_id,
             )
             if result.drafts:
                 draft = result.drafts[0]

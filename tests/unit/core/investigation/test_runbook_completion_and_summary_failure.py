@@ -580,7 +580,7 @@ async def _notification_content(mock_llm, outcome: str) -> str:
     repo.save = AsyncMock()
     engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
-    await engine._run_runbook_conversion(conversion_service, request, "u1")
+    await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
     return case.messages[-1]["content"]
 
 
@@ -861,7 +861,7 @@ class TestRunbookCompletionNotification:
 
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
-        await engine._run_runbook_conversion(conversion_service, request, "u1")
+        await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
 
         assert len(case.messages) == initial_message_count + 1
         notification = case.messages[-1]
@@ -908,7 +908,7 @@ class TestRunbookCompletionNotification:
 
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
-        await engine._run_runbook_conversion(conversion_service, request, "u1")
+        await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
 
         notification = case.messages[-1]
         assert notification["role"] == "system"
@@ -948,7 +948,7 @@ class TestRunbookCompletionNotification:
 
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
-        await engine._run_runbook_conversion(conversion_service, request, "u1")
+        await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
 
         notification = case.messages[-1]
         assert notification["role"] == "system"
@@ -983,7 +983,7 @@ class TestRunbookCompletionNotification:
         engine = MilestoneEngine(mock_llm, repo, investigation_tools=MagicMock())
 
         # Must not raise
-        await engine._run_runbook_conversion(conversion_service, request, "u1")
+        await engine._run_runbook_conversion(conversion_service, request, "u1", "o1")
         repo.save.assert_not_called()
 
 
@@ -1080,3 +1080,85 @@ class TestCaseConversionUsesFactory:
                 f"RG4 violation: inline-extraction marker '{marker}' "
                 f"reappeared in the case→runbook path."
             )
+
+
+# =============================================================================
+# #1143: the case→runbook background task carries the CASE's organization
+# =============================================================================
+
+
+class TestRunbookConversionCarriesOrg:
+    """The conversion writes RLS-tenanted rows; it must be told whose they are.
+
+    ``_persist_job`` stamps three tenanted tables (``uploaded_files``,
+    ``conversion_jobs``, ``conversion_drafts``) with the org it is handed. The
+    chat path passed none, so the service fell back to the single-tenant
+    sentinel and every write under ``TENANT_PROVIDER=multi`` was refused by the
+    RLS ``WITH CHECK`` — the user saw "Runbook generation failed, so no draft
+    was created" (#1143). SQLite has no RLS, which is why this was invisible in
+    every standalone rehearsal; these tests bite on the *stamp*, so they fail on
+    SQLite too.
+    """
+
+    @pytest.mark.asyncio
+    async def test_kickoff_passes_case_org_to_conversion_service(
+        self, mock_llm, mock_repo
+    ):
+        """The org reaching ``convert_from_case`` is the source case's own."""
+        import asyncio
+
+        case = _make_resolved_case()
+        _make_runbook_ready(case)
+        object.__setattr__(case, "organization_id", "org_guest_7f2a")
+
+        conversion_service = MagicMock()
+        conversion_service.convert_from_case = AsyncMock(
+            return_value=MagicMock(drafts=[])
+        )
+        conversion_service.get_conversion_by_case = AsyncMock(return_value=None)
+
+        engine = MilestoneEngine(mock_llm, mock_repo, investigation_tools=MagicMock())
+        engine.conversion_service = conversion_service
+        engine.knowledge_service = MagicMock(spec=[])
+
+        # The kickoff fires the conversion as a fire-and-forget task, so capture
+        # the coroutine and drive it here rather than racing the event loop.
+        spawned = []
+
+        def _capture(coro):
+            spawned.append(coro)
+            return MagicMock()
+
+        with patch("asyncio.create_task", side_effect=_capture):
+            await engine._handle_runbook_creation(case, metadata={})
+
+        assert spawned, "kickoff did not schedule the background conversion"
+        for coro in spawned:
+            await coro
+
+        conversion_service.convert_from_case.assert_awaited_once()
+        kwargs = conversion_service.convert_from_case.await_args.kwargs
+        assert kwargs["organization_id"] == "org_guest_7f2a", (
+            "#1143: the background conversion must carry the case's org — "
+            "without it the service stamps the single-tenant sentinel and "
+            "PostgreSQL RLS refuses every write."
+        )
+        # Guard the whole call, not just the happy field: a future refactor that
+        # reintroduces a positional call would silently drop the org again.
+        assert kwargs["user_id"] == case.user_id
+
+        await asyncio.sleep(0)
+
+    def test_org_is_a_required_parameter(self):
+        """``organization_id`` has no default — omitting it must not be silent.
+
+        A defaulted parameter is how the org was lost in the first place: the
+        service's ``organization_id: str = None`` let the only caller omit it
+        and turned a tenancy bug into a signature nobody had to notice.
+        """
+        sig = inspect.signature(MilestoneEngine._run_runbook_conversion)
+        param = sig.parameters["organization_id"]
+        assert param.default is inspect.Parameter.empty, (
+            "#1143: _run_runbook_conversion.organization_id must stay required; "
+            "a default reopens the silent-omission path."
+        )
