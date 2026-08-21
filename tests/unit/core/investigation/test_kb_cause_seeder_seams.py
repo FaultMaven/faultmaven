@@ -84,7 +84,7 @@ def _case() -> Case:
     )
 
 
-def _hit(parent_id, score, letters=("A",)):
+def _hit(parent_id, score, letters=("A",), total_chunks=None):
     """A retrieval hit as the wrapper reads it.
 
     ``.matched_cause_letters`` is the #1092 join key: which of the parent
@@ -96,6 +96,7 @@ def _hit(parent_id, score, letters=("A",)):
         parent_document_id=parent_id,
         score=score,
         matched_cause_letters=list(letters),
+        total_chunks=total_chunks,
     )
 
 
@@ -517,6 +518,114 @@ async def test_guard_declines_regardless_of_score(enable_seeder, seed_spy):
     await engine._seed_candidate_causes_from_kb(_case(), [_hit("rb1", 0.99)])
 
     assert seed_spy == []
+
+
+async def test_a_one_chunk_runbook_corroborates_itself(enable_seeder, seed_spy):
+    """A document that IS one chunk matches COMPLETELY when that chunk matches.
+
+    Corroboration asks whether a runbook matched broadly, and breadth only means
+    anything against the document's own length. A flat threshold read a whole
+    one-chunk document as a marginal match and made it permanently unseedable —
+    and compact documents are the flywheel's own output: a runbook authored
+    through ``POST /knowledge/runbooks/create``, or converted from a resolved
+    case, chunks whole under the chunker's section budget. The owner-aware
+    prefetch scope exists to seed exactly those.
+    """
+    ks = _KnowledgeStub({"rb_personal": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb_personal", 0.9, total_chunks=1)]
+    )
+
+    assert [rb.item_id for rb in seed_spy[0].runbooks] == ["rb_personal"]
+
+
+async def test_a_long_runbook_on_one_chunk_still_declines(enable_seeder, seed_spy):
+    """The length exemption is not a hole in the guard.
+
+    Same single hit, same score — the only difference is that this document has
+    fourteen chunks and surfaced one of them. That is the #1144 shape and it
+    stays declined.
+    """
+    ks = _KnowledgeStub({"rb_long": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb_long", 0.9, total_chunks=14)]
+    )
+
+    assert seed_spy == []
+
+
+async def test_absent_length_stamp_reads_as_unknown_not_small(enable_seeder, seed_spy):
+    """Pre-stamp content must not be waved through by MISSING metadata.
+
+    An absent ``total_chunks`` is 'unknown', so the full threshold applies — the
+    behaviour such content had before the exemption existed. Reading absence as
+    'small' would let any unstamped document seed on one lone chunk, which is the
+    defect wearing a disguise.
+    """
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    await engine._seed_candidate_causes_from_kb(
+        _case(), [_hit("rb1", 0.9, total_chunks=None)]
+    )
+
+    assert seed_spy == []
+
+
+async def test_uncorroborated_counter_ignores_runbooks_never_consultable(
+    enable_seeder,
+):
+    """The guard's COST is what it turned away, not everything it looked at.
+
+    Two corroborated runbooks fill both MAX_SEEDED_RUNBOOKS slots and seed
+    normally; three lone-chunk runbooks rank below them and could not have been
+    consulted even with the guard off. Nothing was lost, so nothing is counted —
+    otherwise the number the threshold gets re-sized from reports a price the
+    guard never charged.
+    """
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")], "rb2": [_good_cause("B")]})
+    engine = _engine(ks)
+    with patch(
+        "faultmaven.core.investigation.milestone_engine."
+        "kb_cause_seed_uncorroborated_total"
+    ) as c:
+        await engine._seed_candidate_causes_from_kb(
+            _case(),
+            [
+                _hit("rb1", 0.90),
+                _corroborator("rb1"),
+                _hit("rb2", 0.85, ("B",)),
+                _corroborator("rb2"),
+                _hit("rb_low1", 0.60, ("A",)),
+                _hit("rb_low2", 0.55, ("A",)),
+                _hit("rb_low3", 0.50, ("A",)),
+            ],
+        )
+    c.inc.assert_not_called()
+
+
+async def test_uncorroborated_counter_counts_a_decline_that_cost_a_slot(
+    enable_seeder,
+):
+    """The other half: a lone-chunk runbook that OUTRANKED the corroborated one
+    would have been consulted, so declining it genuinely cost a seed and is
+    counted."""
+    ks = _KnowledgeStub({"rb1": [_good_cause("A")]})
+    engine = _engine(ks)
+    with patch(
+        "faultmaven.core.investigation.milestone_engine."
+        "kb_cause_seed_uncorroborated_total"
+    ) as c:
+        await engine._seed_candidate_causes_from_kb(
+            _case(),
+            [
+                _hit("rb_top", 0.95, ("A",), total_chunks=14),
+                _hit("rb1", 0.70),
+                _corroborator("rb1"),
+            ],
+        )
+    c.inc.assert_called_once_with(1)
 
 
 def test_corroboration_threshold_is_reachable_within_the_fetch_depth():

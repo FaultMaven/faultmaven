@@ -198,6 +198,22 @@ class SearchResult(BaseModel):
             "is the chunk id."
         ),
     )
+    total_chunks: Optional[int] = Field(
+        default=None,
+        description=(
+            "How many chunks the parent document was split into at index time, "
+            "as stamped on THIS hit's chunk. Lets a consumer read a hit count "
+            "relative to the document's own length: one hit on a one-chunk "
+            "document is a COMPLETE match, while one hit on a fourteen-chunk "
+            "runbook is a marginal one. The KB cause seeder's corroboration "
+            "guard (#1144) needs exactly that distinction — without it a compact "
+            "personal runbook, which chunks whole, could never corroborate "
+            "itself and so could never seed. None when the stamp is absent "
+            "(pre-stamp content), which consumers must read as 'unknown', "
+            "never as 'small'."
+        ),
+    )
+
     matched_cause_letters: List[str] = Field(
         default_factory=list,
         description=(

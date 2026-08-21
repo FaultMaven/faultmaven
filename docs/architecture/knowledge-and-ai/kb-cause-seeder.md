@@ -238,11 +238,13 @@ Retrieval routinely returns several runbooks and each runbook has many Causes.
 Left unbounded, seeding would flood the graph and trip anchoring detection (≥4
 active hypotheses in one category reads as fixation). The bounds:
 
-- **Require corroboration before a runbook may seed at all (#1144):** at least
-  `KB_SEED_MIN_CORROBORATING_CHUNKS` (2) distinct chunks of that runbook must
-  appear in the relevance-filtered result set. See
-  [Corroboration](#corroboration--rank-is-not-fit) below — this is the admission
-  test; everything under it is fan-out bounding, which is a different question.
+- **Require corroboration before a runbook may seed at all (#1144):** the
+  relevance-filtered result set must contain at least
+  `min(KB_SEED_MIN_CORROBORATING_CHUNKS, total_chunks)` distinct chunks of that
+  runbook — two for an ordinary runbook, but never more than the document has,
+  so a document that *is* one chunk corroborates itself. This is the **admission**
+  test; the bounds that follow are fan-out bounding, a different question. See
+  [Corroboration — rank is not fit](#corroboration--rank-is-not-fit).
 - **Cap runbooks:** dedup hits by `parent_document_id`, take the top-N distinct
   runbooks by their **best matched-cause** score (`MAX_SEEDED_RUNBOOKS`, default 2)
   — a runbook is worth entering only for the causes retrieval surfaced in it, so
@@ -299,6 +301,55 @@ active hypotheses in one category reads as fixation). The bounds:
   > conclusion. Under the join, the first seeds Cause D and the second seeds at
   > most the single cause whose chunk actually matched.
 
+- **Cap total seeded causes:** across all runbooks, seed at most
+  `MAX_SEEDED_CAUSES`. This is **derived from** the anchoring condition-1
+  threshold (`< N_same_category`), not a hardcoded 3, so a future change to the
+  anchoring threshold cannot silently let the seeder self-anchor — the
+  relationship is asserted in a test.
+- **Dedup across runbooks:** the same cause retrieved via two runbooks seeds
+  once. The check runs **before** `ingest_emitted_chain`, via the shared dedup key
+  `find_canonical_node_id` (the same exact-normalized `(node_type, statement)` key
+  ingest reuses on): if a runbook's root would collapse onto a root that already
+  heads a hypothesis, the cause is skipped `benign_dedup` *without first minting*
+  its chain. This matters when a second runbook shares a root but diverges
+  mid-chain — deciding the dedup after ingest would leave the divergent
+  intermediate rungs as orphan nodes/edges (on no hypothesis path, invisible to
+  the skip taxonomy). A **second, paraphrase** dedup runs in the same pre-ingest
+  block: the hypothesis statement the seed would create is passed to the INV-36
+  predicate `find_duplicate_hypothesis` (`causal_graph.py`) — the *same*
+  mutual-Jaccard + polarity-guard + numeric-discriminator-guard predicate already
+  applied to the LLM's `hypotheses_to_add` — and a hit against a **chain-heading**
+  standing hypothesis is skipped `benign_dedup` ("duplicates standing hypothesis …
+  (paraphrase)"). This stops two runbooks that describe one cause in different
+  words from co-seeding two paraphrase OR-siblings, which would inflate the
+  differential and spuriously raise the `validate_by_exclusion` bar (exclusion
+  needs ≥2 siblings counterfactually refuted). It is sound because it applies the
+  same predicate and reaches the same dedup *decision* as the INV-36 path that
+  would have deduped the statement had the LLM emitted it — the difference is the
+  reconciliation: INV-36 surfaces the matched id so the LLM *updates* the standing
+  hypothesis, whereas the seeder path is a silent skip (there is no emission to
+  merge). The fail-open guards keep genuinely distinct siblings (a negated
+  restatement, or one differing only by a number) separate — no bespoke scorer is
+  introduced. The check is **scoped to chain-heading hypotheses** (`root_node_id`
+  set), the same scope as the exact-root check: a chain-less standing hypothesis
+  must never paraphrase-suppress a structurally-rich runbook cause (that would
+  silently discard its chain, rung-indicator evidence-needs, and interventions),
+  so if both a chain-less match and a chain-heading paraphrase exist the
+  duplicate-sibling cost is preferred over the silent structural loss, left for the
+  LLM to reconcile. Near-duplicate roots below the paraphrase bar are reconciled by
+  the existing MECE arbitration (`distinct_cause_clusters`, Jaccard 0.6).
+- **Distinct roots compete as OR-alternatives:** pack `chain_edges` carry no
+  `and_group`, so seeded predecessors enter as independent OR-alternative sibling
+  causes — never silently merged into one Cause. Evidence separates them. A cause
+  whose shape the seeder does not model — `and_group` co-necessary AND-convergence,
+  or a non-linear chain (a second root, a branching fork, a convergence/join, a
+  dangling edge ref, or a cycle/fragment/non-`D`-terminating chain) — is
+  **rejected**, not flattened/mis-seeded — see the `unsupported_shape` skip below.
+  A cause carrying the grammar's cross-chain `converges: <Cause>.<ref>` directive
+  is likewise rejected, but under its own `converges_unmodeled` class — the
+  convergence is legal, well-authored grammar, so it must not trip the quality
+  alarm (see below).
+
 #### Corroboration — rank is not fit
 
 The bounds above all answer *how many* to seed. They assume the prior question is
@@ -353,9 +404,30 @@ Three properties worth keeping straight:
 - **It is not a score floor wearing another name.** A lone chunk at the very top
   of the ranking is still declined. That is the measured point of the change.
 
-Reachable by construction: the smallest runbook in the shipped pack has 9 chunks
-(median 14, ≥4 of them cause-bearing), so no runbook is excluded for being short.
-The threshold is meaningful only relative to `KB_PREFETCH_FETCH_LIMIT` — a
+**The bar is relative to the document's own length, and has to be.** Breadth of
+match means nothing except against how much document there was to match: a
+runbook cannot corroborate itself beyond its chunk count, and a document that is
+one chunk matches *completely* when that chunk matches — the strongest evidence
+available for it, not the weakest. A flat threshold read that as marginal, which
+would have made compact documents permanently unseedable.
+
+That is not a hypothetical corner. The shipped pack is comfortable (smallest
+runbook 9 chunks, median 14, ≥4 cause-bearing), but the pack is not the only
+source: `ContentChunker` merges sections under `MIN_CHUNK_CHARS` while the
+running total stays under `MAX_CHUNK_CHARS` (3000), so a complete, grammar-valid
+runbook of a few hundred characters chunks **whole**. Those are the flywheel's
+own output — authored through `POST /knowledge/runbooks/create`, or converted
+from a resolved case — and seeding them is exactly what the prefetch's
+owner-aware scope exists for. A flat threshold would have excluded the personal
+runbooks the feature was built to serve, silently.
+
+The exemption is not a hole: the same lone chunk of a fourteen-chunk runbook is
+still declined, and an **absent** `total_chunks` stamp reads as *unknown*, never
+*small*, so the full threshold applies to pre-stamp content and no missing
+metadata can wave a runbook through. `SearchResult.total_chunks` carries the
+stamp, which the indexer already wrote.
+
+The threshold is also meaningful only relative to `KB_PREFETCH_FETCH_LIMIT` — a
 shallower fetch tightens it silently — so the two are pinned together by test.
 
 **What it does not fix.** Corroboration cannot manufacture signal that the
@@ -365,54 +437,6 @@ seeding entirely and five still seed something. A statement that thin normally
 gets sharpened by INQUIRY before seeding runs at all — the remedy there is the
 confirmed problem statement, not the seeder.
 
-- **Cap total seeded causes:** across all runbooks, seed at most
-  `MAX_SEEDED_CAUSES`. This is **derived from** the anchoring condition-1
-  threshold (`< N_same_category`), not a hardcoded 3, so a future change to the
-  anchoring threshold cannot silently let the seeder self-anchor — the
-  relationship is asserted in a test.
-- **Dedup across runbooks:** the same cause retrieved via two runbooks seeds
-  once. The check runs **before** `ingest_emitted_chain`, via the shared dedup key
-  `find_canonical_node_id` (the same exact-normalized `(node_type, statement)` key
-  ingest reuses on): if a runbook's root would collapse onto a root that already
-  heads a hypothesis, the cause is skipped `benign_dedup` *without first minting*
-  its chain. This matters when a second runbook shares a root but diverges
-  mid-chain — deciding the dedup after ingest would leave the divergent
-  intermediate rungs as orphan nodes/edges (on no hypothesis path, invisible to
-  the skip taxonomy). A **second, paraphrase** dedup runs in the same pre-ingest
-  block: the hypothesis statement the seed would create is passed to the INV-36
-  predicate `find_duplicate_hypothesis` (`causal_graph.py`) — the *same*
-  mutual-Jaccard + polarity-guard + numeric-discriminator-guard predicate already
-  applied to the LLM's `hypotheses_to_add` — and a hit against a **chain-heading**
-  standing hypothesis is skipped `benign_dedup` ("duplicates standing hypothesis …
-  (paraphrase)"). This stops two runbooks that describe one cause in different
-  words from co-seeding two paraphrase OR-siblings, which would inflate the
-  differential and spuriously raise the `validate_by_exclusion` bar (exclusion
-  needs ≥2 siblings counterfactually refuted). It is sound because it applies the
-  same predicate and reaches the same dedup *decision* as the INV-36 path that
-  would have deduped the statement had the LLM emitted it — the difference is the
-  reconciliation: INV-36 surfaces the matched id so the LLM *updates* the standing
-  hypothesis, whereas the seeder path is a silent skip (there is no emission to
-  merge). The fail-open guards keep genuinely distinct siblings (a negated
-  restatement, or one differing only by a number) separate — no bespoke scorer is
-  introduced. The check is **scoped to chain-heading hypotheses** (`root_node_id`
-  set), the same scope as the exact-root check: a chain-less standing hypothesis
-  must never paraphrase-suppress a structurally-rich runbook cause (that would
-  silently discard its chain, rung-indicator evidence-needs, and interventions),
-  so if both a chain-less match and a chain-heading paraphrase exist the
-  duplicate-sibling cost is preferred over the silent structural loss, left for the
-  LLM to reconcile. Near-duplicate roots below the paraphrase bar are reconciled by
-  the existing MECE arbitration (`distinct_cause_clusters`, Jaccard 0.6).
-- **Distinct roots compete as OR-alternatives:** pack `chain_edges` carry no
-  `and_group`, so seeded predecessors enter as independent OR-alternative sibling
-  causes — never silently merged into one Cause. Evidence separates them. A cause
-  whose shape the seeder does not model — `and_group` co-necessary AND-convergence,
-  or a non-linear chain (a second root, a branching fork, a convergence/join, a
-  dangling edge ref, or a cycle/fragment/non-`D`-terminating chain) — is
-  **rejected**, not flattened/mis-seeded — see the `unsupported_shape` skip below.
-  A cause carrying the grammar's cross-chain `converges: <Cause>.<ref>` directive
-  is likewise rejected, but under its own `converges_unmodeled` class — the
-  convergence is legal, well-authored grammar, so it must not trip the quality
-  alarm (see below).
 
 ### 4–5. Instantiation
 

@@ -716,9 +716,18 @@ kb_cause_seed_letter_mismatch_total = Counter(
 
 
 # fm#1144 sizing surface for the seeding corroboration guard. A runbook named a
-# cause on exactly ONE retrieved chunk, so its causes were not seeded — see
-# ``KB_SEED_MIN_CORROBORATING_CHUNKS`` for why a lone chunk is the signature of
-# an off-domain coincidence rather than of a runbook that covers the case.
+# cause but surfaced too few of its chunks to corroborate, so its causes were not
+# seeded — see ``KB_SEED_MIN_CORROBORATING_CHUNKS`` for why a thin match is the
+# signature of an off-domain coincidence rather than of a runbook that covers the
+# case, and why the bar is relative to the document's own length.
+#
+# Deliberately does NOT restate the threshold. This is the counter the threshold
+# gets re-sized FROM, so a help string quoting today's value would describe
+# behaviour the code no longer has the moment it does its job.
+#
+# Counts only the declines that COST a seed — a runbook that would not have been
+# consulted anyway (ranked below ``MAX_SEEDED_RUNBOOKS``) is not counted, or the
+# guard's price would be inflated by runbooks it never turned away.
 #
 # NOT an alarm, and it has no healthy value: it is the guard's *cost* made
 # visible, and the only honest way to re-size the threshold later. One increment
@@ -730,9 +739,11 @@ kb_cause_seed_letter_mismatch_total = Counter(
 # touching the threshold.
 kb_cause_seed_uncorroborated_total = Counter(
     "faultmaven_kb_cause_seed_uncorroborated_total",
-    "Runbooks that named a cause on a single retrieved chunk and were therefore "
-    "not seeded (fm#1144). One increment per declined runbook per seeding "
-    "attempt. A cost measure, not an alarm — no value is 'healthy'.",
+    "Runbooks that named a cause but surfaced too few of their own chunks to "
+    "corroborate it, and were therefore not seeded (fm#1144). One increment per "
+    "declined runbook per seeding attempt, counting only runbooks that would "
+    "otherwise have been consulted. A cost measure, not an alarm — no value is "
+    "'healthy'.",
 )
 
 
