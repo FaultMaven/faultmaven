@@ -228,6 +228,46 @@ than regex-matching `detail` — those are the stable machine-readable
 keys. The `detail` string is human-facing and may be edited freely
 without bumping the contract.
 
+### Framework validation errors (`RequestValidationError`)
+
+FastAPI raises `RequestValidationError` *before* any module code runs,
+when it cannot bind the request to the endpoint signature. Its handler
+lives beside the domain handlers in `api/exception_handlers.py` but is
+registered explicitly in `main.py`, because
+`get_exception_handlers()` maps domain exceptions only. It answers with
+a different, older shape than the table above:
+
+```json
+{
+  "detail": "Validation error",
+  "errors": [
+    {
+      "type": "string_too_short",
+      "loc": ["body", "username"],
+      "msg": "String should have at least 3 characters",
+      "input": "a",
+      "ctx": {"min_length": 3}
+    }
+  ]
+}
+```
+
+Two invariants govern it, both learned from fm#1048:
+
+1. **Serialization must be total.** A pydantic error's `input` is
+   whatever object the framework fed to validation — raw `bytes` for a
+   non-JSON body, an `UploadFile` for a misbound multipart part — and
+   `NaN` or a lone surrogate reaches it from a *valid* JSON body.
+   Serializing any of those directly raises inside the handler, and an
+   exception in the handler is an opaque 500 plus an `api.error_rate`
+   hit for a request that was only malformed. `utils.serialization.
+   to_json_safe` is the total converter; `to_json_compatible` is not
+   (it passes unknown types through) and must not be used here.
+2. **The echoed `input` is bounded** (`MAX_VALIDATION_INPUT_BYTES`).
+   A body-level error's `input` is the entire request body, so an
+   unbounded echo would mirror up to `MAX_UPLOAD_SIZE_MB` back at an
+   unauthenticated caller.
+
 ## Route Pattern
 
 The recommended route structure when an outer `try/except` is
