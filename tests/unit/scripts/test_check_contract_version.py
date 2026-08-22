@@ -347,4 +347,8 @@ class TestAgainstTheRealRepository:
         )
 
         assert result.returncode == 0, result.stdout + result.stderr
-        assert "API contract" in result.stdout
+        # Case-insensitive and phrase-free on purpose: this test exists to
+        # catch an import-time break, and pinning one of the four verdict
+        # phrasings made it fail the first time a real publication took the
+        # "re-publication" branch instead of the "unchanged" one.
+        assert "contract" in result.stdout.lower(), result.stdout

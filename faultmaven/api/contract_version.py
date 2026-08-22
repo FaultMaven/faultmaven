@@ -30,4 +30,13 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
-API_CONTRACT_VERSION = "1.0.0"
+# 2.0.0 — MAJOR, and it publishes a change that already shipped. #1152 moved
+# `invalid_grant` from 401 to 400, replaced `{"detail": ...}` with the RFC 6749
+# §5.2 error object, and dropped `TokenRequest`/`RevokeRequest` from
+# `components` on POST /auth/oauth/token and /auth/oauth/revoke. It merged
+# before this machinery existed, so main's contract diverged from the one the
+# clients pinned while both still called themselves 1.0.0 — a version that
+# cannot tell two contracts apart is not doing its job. The first act of the
+# version is therefore to give the contract on main an identity distinct from
+# the 1.0.0 the clients are written against.
+API_CONTRACT_VERSION = "2.0.0"
