@@ -176,6 +176,16 @@ Every response body contains at minimum:
 {"error": "<class label>", "detail": "<message>", "status_code": <int>}
 ```
 
+**One exception answers a different body on purpose.**
+`OAuthProtocolError` (`models/exceptions.py`) renders as RFC 6749 §5.2 —
+`{"error": "<rfc code>", "error_description": "<text>"}`, with no `detail`
+and no `status_code` field — because a standards-written OAuth client
+dispatches on `error`, and the RFC fixes the field names. It is raised only
+by `POST /auth/oauth/token` and `POST /auth/oauth/revoke` (#1150); every
+other route, `GET /auth/oauth/authorize` included, keeps the shape above.
+Raising it from anywhere else would hand that caller a body its client does
+not read.
+
 `NotFoundError` and `ConflictError` additionally surface their
 structured metadata **when present** on the exception instance.
 Fields are **omitted** (not `null`) when absent, so the response

@@ -8,6 +8,12 @@ This module provides exception handlers for:
 - ValidationException → 422 Unprocessable Entity
 - ConflictError → 409 Conflict
 - ServiceError → 500 Internal Server Error
+- OAuthProtocolError → the RFC 6749 §5.2 body, at the status it carries
+
+``OAuthProtocolError`` is the one handler here that does not answer the
+common ``{"error", "detail", "status_code"}`` shape: the OAuth token and
+revocation endpoints answer the RFC's own object so a standards-written
+client can dispatch on its ``error`` code (#1150).
 
 It also holds the handler for FastAPI's own ``RequestValidationError``
 (→ 422), which is a framework error rather than a domain one: it fires
@@ -43,6 +49,7 @@ from faultmaven.exceptions import (
     ValidationException,
     is_billing_error,
 )
+from faultmaven.models.exceptions import OAuthProtocolError
 from faultmaven.utils.serialization import to_json_safe
 
 logger = logging.getLogger(__name__)
@@ -496,6 +503,32 @@ async def service_error_handler(
     )
 
 
+async def oauth_protocol_error_handler(
+    request: Request, exc: OAuthProtocolError
+) -> JSONResponse:
+    """Render an RFC 6749 §5.2 error body for the OAuth token endpoints.
+
+    The OAuth token and revocation endpoints answer errors as
+    ``{"error": ..., "error_description": ...}`` rather than the
+    ``{"detail": ...}`` every other route uses, because a standards-written
+    client dispatches on the `error` code (#1150). `main.py`'s HTTPException
+    handler flattens any raised HTTPException to ``detail``, so this shape
+    cannot be produced that way.
+
+    Only ``OAuthProtocolError`` is rendered here, and only the two endpoints
+    that speak the OAuth wire format raise it — no other route's error shape
+    changes.
+
+    RFC 6749 §5.1: a refusal names an expired or revoked credential, so it is
+    no more cacheable than the token response it replaces.
+    """
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.error, "error_description": exc.error_description},
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
 def get_exception_handlers() -> dict[Type[Exception], Callable]:
     """Get all exception handlers as a dictionary.
 
@@ -508,6 +541,7 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
         ValidationException: validation_exception_handler,
         ConflictError: conflict_exception_handler,
         ServiceError: service_error_handler,
+        OAuthProtocolError: oauth_protocol_error_handler,
     }
 
 

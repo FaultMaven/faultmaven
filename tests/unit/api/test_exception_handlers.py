@@ -6,9 +6,11 @@ Tests:
 - ValidationException → 400 JSON response
 - ConflictError → 409 JSON response
 - ServiceError → 500 JSON response
+- OAuthProtocolError → the RFC 6749 §5.2 object, at the status it carries
 - Error response format (error, detail, status_code fields)
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,6 +22,7 @@ from faultmaven.api.exception_handlers import (
     conflict_exception_handler,
     get_exception_handlers,
     not_found_exception_handler,
+    oauth_protocol_error_handler,
     service_error_handler,
     validation_exception_handler,
 )
@@ -30,6 +33,7 @@ from faultmaven.exceptions import (
     ServiceError,
     ValidationException,
 )
+from faultmaven.models.exceptions import OAuthProtocolError
 
 
 @pytest.fixture
@@ -365,6 +369,7 @@ class TestGetExceptionHandlers:
         assert ValidationException in handlers
         assert ConflictError in handlers
         assert ServiceError in handlers
+        assert OAuthProtocolError in handlers
 
     def test_handler_is_callable(self):
         """Test each handler is callable."""
@@ -373,9 +378,21 @@ class TestGetExceptionHandlers:
             assert callable(handler)
 
     def test_handler_count(self):
-        """Test expected number of handlers."""
+        """Test expected number of handlers.
+
+        A bare count says nothing about *which* handler was added or lost, so
+        the set is asserted with it: a registration silently replaced by
+        another would keep the count and change the contract.
+        """
         handlers = get_exception_handlers()
-        assert len(handlers) == 5
+        assert set(handlers) == {
+            NotFoundError,
+            AuthorizationError,
+            ValidationException,
+            ConflictError,
+            ServiceError,
+            OAuthProtocolError,
+        }
 
 
 # ============================================================
@@ -383,8 +400,57 @@ class TestGetExceptionHandlers:
 # ============================================================
 
 
+class TestOAuthProtocolErrorHandler:
+    """The one handler here that does not answer the house error shape."""
+
+    @pytest.mark.asyncio
+    async def test_renders_the_rfc6749_object(self, mock_request):
+        """RFC 6749 §5.2: `error` + `error_description`, and nothing else.
+
+        A standards-written OAuth client dispatches on `error`. Adding the
+        house `detail`/`status_code` fields beside it would let a client keep
+        reading `detail` and never learn the code (#1150).
+        """
+        response = await oauth_protocol_error_handler(
+            mock_request,
+            OAuthProtocolError("invalid_grant", "Refresh token expired or revoked"),
+        )
+
+        assert response.status_code == 400
+        body = json.loads(response.body)
+        assert body == {
+            "error": "invalid_grant",
+            "error_description": "Refresh token expired or revoked",
+        }
+
+    @pytest.mark.asyncio
+    async def test_carries_the_status_the_error_names(self, mock_request):
+        """The status travels on the exception: 415 and 503 both reach here."""
+        response = await oauth_protocol_error_handler(
+            mock_request,
+            OAuthProtocolError("invalid_request", "Unsupported Content-Type", 415),
+        )
+
+        assert response.status_code == 415
+
+    @pytest.mark.asyncio
+    async def test_is_not_cacheable(self, mock_request):
+        """RFC 6749 §5.1 — a refusal names a credential's state."""
+        response = await oauth_protocol_error_handler(
+            mock_request, OAuthProtocolError("invalid_grant", "nope")
+        )
+
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+
+
 class TestResponseFormatConsistency:
-    """Tests for consistent response format across handlers."""
+    """Tests for consistent response format across handlers.
+
+    ``OAuthProtocolError`` is deliberately absent: it answers the RFC 6749
+    §5.2 object rather than this module's ``{"error", "detail",
+    "status_code"}`` shape, and is covered by the class above.
+    """
 
     @pytest.mark.asyncio
     async def test_all_responses_have_error_field(self, mock_request):

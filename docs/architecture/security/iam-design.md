@@ -845,6 +845,18 @@ Content-Type: application/json
 
 **POST** `/auth/oauth/token` - Exchange code for tokens
 
+The endpoint accepts **both** encodings (#1150). RFC 6749 §3.2 prescribes form
+encoding, so that is what a standards-written client and `curl -d` send:
+
+```http
+POST /auth/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code&code={authorization_code}&code_verifier={original_verifier}&client_id=faultmaven-copilot&redirect_uri=https%3A%2F%2F{extension_id}.chromiumapp.org%2F
+```
+
+JSON is equally accepted, and is what every first-party client sends:
+
 ```http
 POST /auth/oauth/token
 Content-Type: application/json
@@ -857,6 +869,11 @@ Content-Type: application/json
   "redirect_uri": "chrome-extension://{extension_id}/callback"
 }
 ```
+
+Both are validated identically and answer the same body. A request under any
+other content type is refused with **415** naming the two, rather than the
+Pydantic shape error it used to produce. Responses carry `Cache-Control:
+no-store` per RFC 6749 §5.1.
 
 **Response (200 OK):**
 
@@ -882,6 +899,15 @@ Content-Type: application/json
 #### Token Refresh
 
 **POST** `/auth/oauth/token` - Refresh access token
+
+```http
+POST /auth/oauth/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=refresh_token&refresh_token={refresh_token}&client_id=faultmaven-copilot
+```
+
+or, equivalently:
 
 ```http
 POST /auth/oauth/token
@@ -1914,30 +1940,49 @@ oauth_token_exchange_duration = Histogram(
 
 ### OAuth Error Responses
 
-All OAuth errors follow RFC 6749 format:
+`POST /auth/oauth/token` and `POST /auth/oauth/revoke` answer errors in the
+RFC 6749 §5.2 shape (#1150):
 
 ```json
 {
-  "error": "error_code",
-  "error_description": "Human-readable description"
+  "error": "invalid_grant",
+  "error_description": "Refresh token expired or revoked"
 }
 ```
 
-| Error Code | HTTP Status | Description |
-|------------|-------------|-------------|
-| `invalid_client` | 400 | Unknown or invalid client_id |
-| `invalid_grant` | 400 | Code expired, used, or PKCE failed |
-| `invalid_request` | 400 | Missing required parameters |
-| `unauthorized_client` | 401 | Client not authorized for grant type |
-| `access_denied` | 403 | User denied authorization |
-| `server_error` | 500 | Internal server error |
+These are the codes those two endpoints actually emit. The list is exhaustive
+on purpose: `invalid_client`, `unauthorized_client` and `access_denied` are
+**not** among them, because nothing in `OAuthService` raises them — client
+authentication is the `client_id` parameter of a public PKCE client, and there
+is no client registry to reject a caller against.
+
+| Error Code | HTTP Status | Endpoint | Description |
+|------------|-------------|----------|-------------|
+| `invalid_request` | 400 | both | Missing, repeated, empty or unparseable parameters |
+| `invalid_grant` | 400 | `/token` | Code expired, replayed, PKCE failed, or refresh token revoked |
+| `unsupported_grant_type` | 400 | `/token` | `grant_type` is neither `authorization_code` nor `refresh_token` |
+| `unsupported_token_type` | 400 | `/revoke` | `token_type_hint` is not a hint this server knows (RFC 7009 §2.2.1) |
+| `invalid_request` | 415 | both | Body is neither form-encoded nor JSON |
+| `server_error` | 500 | `/token` | Internal server error |
+| `temporarily_unavailable` | 503 | `/revoke` | Revocation could not be recorded, so the token may still be live |
+
+**Every other auth route answers FastAPI's `{"detail": "..."}`,** including
+`GET /auth/oauth/authorize`. That endpoint's encoding is already conformant —
+RFC 6749 §3.1 prescribes query parameters, which is what it takes — but its
+errors are a JSON body rather than the §4.1.2.1 redirect, because its client is
+the Dashboard consent screen rather than a browser following redirects.
+Bringing it to the redirect form is a separate change with a Dashboard-visible
+contract, not a documentation fix.
 
 ### Frontend Error Handling
+
+The dispatch key is `error` — the RFC's field name, and what the copilot reads
+(`body.error_description || body.error` in `token-manager.ts`):
 
 ```typescript
 class AuthErrorHandler {
   async handleAuthError(error: AuthError): Promise<void> {
-    switch (error.code) {
+    switch (error.error) {
       case 'invalid_grant':
         await this.clearAuthState();
         await this.showRetryPrompt();

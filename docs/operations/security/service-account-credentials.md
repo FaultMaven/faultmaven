@@ -107,7 +107,19 @@ Standalone sentinel, which there is the correct answer.
 
 - The agent calls `POST /api/v1/auth/oauth/token` with
   `grant_type=refresh_token` and receives a new access token **and a new refresh
-  token**.
+  token**. Either encoding works — RFC 6749 §3.2 form encoding, which is what
+  `curl -d` sends, or JSON:
+
+  ```bash
+  curl -s -X POST "$FAULTMAVEN_URL/api/v1/auth/oauth/token" \
+    -d grant_type=refresh_token \
+    -d "refresh_token=$FAULTMAVEN_REFRESH_TOKEN" \
+    -d client_id=faultmaven-slack-agent
+  ```
+
+  A refusal comes back as an RFC 6749 §5.2 object — `{"error": "invalid_grant",
+  "error_description": "..."}` — so the code, not the prose, is what to branch
+  on.
 - **Rotation is unconditional.** The presented refresh token is single-use: it
   is revoked as part of the exchange. The agent must persist the returned token
   *before* relying on it (write-before-use).

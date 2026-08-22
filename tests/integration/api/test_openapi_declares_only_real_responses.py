@@ -32,6 +32,18 @@ subprocess and no ordering hazard.
 The property is checked in both directions. A missing 422 on an operation that
 *does* take input would be just as wrong — it would tell a client that malformed
 input cannot be rejected.
+
+One family of operations refuses malformed input WITHOUT a 422, and it is not
+an exemption but a different contract. ``POST /auth/oauth/token`` and ``POST
+/auth/oauth/revoke`` accept two body encodings (RFC 6749 §3.2 form encoding and
+JSON), which FastAPI cannot express on one signature, so they parse and
+validate their own bodies and answer RFC 6749 §5.2 errors — `invalid_request`
+at 400, not a `ValidationError` at 422 (#1150). A client still learns that
+malformed input is rejected; it learns it from the 400. The property is
+therefore "documents a refusal of malformed input", satisfied by a 422 or by a
+400 carrying the RFC 6749 error schema, and ``test_the_oauth_endpoints_refuse_
+malformed_input_per_rfc6749`` pins that the two operations really are in the
+second case rather than quietly missing both.
 """
 
 import json
@@ -90,6 +102,52 @@ def test_the_spec_covers_the_deployment_gated_routes(spec):
     )
 
 
+# The RFC 6749 §5.2 error object, as `OAuthErrorResponse` in the published components.
+_RFC6749_ERROR_REF = "#/components/schemas/OAuthErrorResponse"
+
+# The operations that parse their own request body and so refuse malformed
+# input with an RFC 6749 §5.2 error instead of a ValidationError. Listed rather
+# than inferred: an operation losing its 422 is normally a defect, and only
+# these two have a documented reason to.
+_RFC6749_ERROR_OPERATIONS = {
+    ("POST", "/api/v1/auth/oauth/token"),
+    ("POST", "/api/v1/auth/oauth/revoke"),
+}
+
+
+def _refuses_malformed_input_per_rfc6749(operation):
+    """Whether the operation documents a 400 carrying the RFC 6749 error object."""
+    schema = (
+        operation.get("responses", {})
+        .get("400", {})
+        .get("content", {})
+        .get("application/json", {})
+        .get("schema", {})
+    )
+    return schema.get("$ref") == _RFC6749_ERROR_REF
+
+
+@pytest.mark.integration
+def test_the_oauth_endpoints_refuse_malformed_input_per_rfc6749(spec):
+    """Guard the guard: the two exempted operations must earn the exemption.
+
+    Without this, `_RFC6749_ERROR_OPERATIONS` would let those operations
+    document no refusal at all — the exact failure the invariant below exists
+    to catch, hidden behind the allowance made for them.
+    """
+    for method, path in sorted(_RFC6749_ERROR_OPERATIONS):
+        operation = spec["paths"][path][method.lower()]
+        assert _refuses_malformed_input_per_rfc6749(operation), (
+            f"{method} {path} parses its own body, so it must document a 400 "
+            f"whose schema is {_RFC6749_ERROR_REF}; a client otherwise has no "
+            "documented way to learn that malformed input is rejected"
+        )
+        assert "422" not in operation.get("responses", {}), (
+            f"{method} {path} declares a 422 it cannot produce: it validates "
+            "its body by hand and answers RFC 6749 §5.2 errors at 400"
+        )
+
+
 @pytest.mark.integration
 def test_422_is_declared_exactly_where_input_is_accepted(spec):
     """`422` appears iff the operation declares parameters or a request body."""
@@ -101,10 +159,11 @@ def test_422_is_declared_exactly_where_input_is_accepted(spec):
             operation.get("requestBody")
         )
         declares_422 = "422" in operation.get("responses", {})
+        refuses_per_rfc6749 = (method, path) in _RFC6749_ERROR_OPERATIONS
 
         if declares_422 and not accepts_input:
             spurious.append(f"{method} {path}")
-        elif accepts_input and not declares_422:
+        elif accepts_input and not declares_422 and not refuses_per_rfc6749:
             missing.append(f"{method} {path}")
 
     assert not spurious, (

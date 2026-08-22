@@ -135,6 +135,36 @@ def _schema_label(schema: Dict[str, Any]) -> str:
     return f"`{schema.get('type', 'object')}`"
 
 
+def _body_schema_label(schema: Dict[str, Any]) -> str:
+    """Name a request body's schema, including one written inline.
+
+    The OAuth token and revocation bodies are inline because their operations
+    declare two content types by hand (#1150), so there is no component to link
+    to. A model name plus the property list below it tells the reader more than
+    "object" — but only a *class* name is worth printing: FastAPI synthesizes
+    prose titles for inline schemas ("Response Get Case Analytics Api V1 ..."),
+    which is why this is scoped to request bodies and to space-free titles.
+    """
+    title = schema.get("title", "")
+    if schema.get("properties") and title and " " not in title:
+        return f"`{title}` (inline)"
+    return _schema_label(schema)
+
+
+def _property_lines(schema: Dict[str, Any]) -> List[str]:
+    """Render an inline object's properties the way parameters are rendered."""
+    required = set(schema.get("required", ()))
+    lines = []
+    for name, field in schema.get("properties", {}).items():
+        requirement = "required" if name in required else "optional"
+        description = field.get("description", "")
+        suffix = f" — {description}" if description else ""
+        lines.append(f"- `{name}` ({requirement}){suffix}")
+    if lines:
+        lines.append("")
+    return lines
+
+
 def _describe_auth(operation: Dict[str, Any]) -> str:
     """Say what authentication an operation requires, per the spec.
 
@@ -226,10 +256,19 @@ def render_markdown(spec: Dict[str, Any]) -> str:
                 body = details["requestBody"]
                 required = "required" if body.get("required") else "optional"
                 lines += [f"**Request body** ({required}):", ""]
+                inline_schemas = []
                 for content_type, content in sorted(body.get("content", {}).items()):
-                    schema = _schema_label(content.get("schema", {}))
-                    lines.append(f"- `{content_type}` — {schema}")
+                    schema = content.get("schema", {})
+                    lines.append(f"- `{content_type}` — {_body_schema_label(schema)}")
+                    if schema.get("properties") and schema not in inline_schemas:
+                        inline_schemas.append(schema)
                 lines.append("")
+                # An inline body has no entry in Data Models to link to, so its
+                # fields are written out here or they are not documented at all.
+                # Content types sharing one schema — the two OAuth encodings do
+                # — are rendered once.
+                for schema in inline_schemas:
+                    lines += _property_lines(schema)
 
             if details.get("responses"):
                 lines += ["**Responses:**", ""]
