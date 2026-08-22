@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel, Field
 
 from faultmaven.api.exception_handlers import (
+    MAX_VALIDATION_ERRORS,
     MAX_VALIDATION_INPUT_BYTES,
     request_validation_exception_handler,
 )
@@ -36,6 +37,14 @@ class LoginBody(BaseModel):
 
     username: str = Field(min_length=3, max_length=50)
     password: str
+
+
+class ListBody(BaseModel):
+    """A list field, so one bad request yields one error per item."""
+
+    username: str
+    password: str
+    tags: List[str]
 
 
 @pytest.fixture
@@ -54,6 +63,10 @@ def client() -> TestClient:
     @app.post("/json")
     async def json_endpoint(body: LoginBody) -> dict:
         return {"ok": body.username}
+
+    @app.post("/json-list")
+    async def json_list_endpoint(body: ListBody) -> dict:
+        return {"ok": len(body.tags)}
 
     @app.post("/multipart")
     async def multipart_endpoint(
@@ -79,11 +92,30 @@ def _errors(response) -> list:
 @pytest.mark.api
 def test_form_encoded_body_on_a_json_endpoint(client):
     """The reported shape. `input` is the raw bytes body → TypeError."""
-    response = client.post("/json", data={"username": "ab", "password": "x"})
+    response = client.post("/json", data={"username": "ab", "password": "hunter2"})
 
     errors = _errors(response)
-    # The body is echoed decoded, not as a repr, so it stays diagnosable.
-    assert "username=ab" in json.dumps(errors)
+    assert errors[0]["type"] == "model_attributes_type"
+    assert "valid dictionary or object" in errors[0]["msg"]
+
+
+@pytest.mark.unit
+@pytest.mark.api
+def test_whole_body_error_does_not_echo_the_body(client):
+    """A body-level `input` IS the body — on an auth route, the credentials.
+
+    Restoring the 422 is what makes this reachable: the crash used to swallow
+    the echo. The message still names the problem, which is the diagnosis; the
+    payload adds nothing the sender does not already have.
+    """
+    response = client.post(
+        "/json", data={"username": "ab", "password": "hunter2-SECRET"}
+    )
+
+    body = response.text
+    assert "hunter2-SECRET" not in body
+    assert "username=ab" not in body
+    assert "<request body not echoed" in body
 
 
 @pytest.mark.unit
@@ -181,6 +213,64 @@ def test_large_input_is_not_mirrored_back(client):
     assert len(response.content) < 4 * MAX_VALIDATION_INPUT_BYTES, (
         f"422 body was {len(response.content)} bytes for a "
         f"{len(payload)}-byte request"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.api
+def test_error_count_is_capped(client):
+    """Pydantic emits one error per offending item, so the count needs a cap.
+
+    Without it a 128,900-byte body of wrong-typed list items measured a
+    2,057,820-byte response (x16) — the per-error budget cannot bound that,
+    because every individual error is already small.
+    """
+    payload = json.dumps(
+        {"username": "abc", "password": "x", "tags": list(range(5000))}
+    )
+
+    response = client.post(
+        "/json-list",
+        content=payload.encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    errors = _errors(response)
+    assert len(errors) == MAX_VALIDATION_ERRORS + 1
+    assert errors[-1]["type"] == "too_many_errors"
+    assert "4950 further" in errors[-1]["msg"]
+    assert len(response.content) < len(payload)
+
+
+@pytest.mark.unit
+@pytest.mark.api
+def test_budget_is_measured_in_utf8_bytes_not_characters(client):
+    """The response is UTF-8; counting characters lets CJK through at ~3x.
+
+    The value has to be a *structure* of short strings, not one long string:
+    to_json_safe cuts every string to DEFAULT_SAFE_STRING_CHARS first, so a
+    single long value is under both budgets by the time they are applied and
+    would not exercise the boundary at all. 50 keys of 30 CJK characters
+    render as 2040 characters and 5040 bytes — inside a character-counted
+    budget of 2048, well outside a byte-counted one.
+    """
+    tags = {f"k{i}": "\u98df" * 30 for i in range(50)}
+    payload = json.dumps(
+        {"username": "abc", "password": "abcdefghij", "tags": tags},
+        ensure_ascii=False,
+    )
+
+    response = client.post(
+        "/json-list",
+        content=payload.encode(),
+        headers={"Content-Type": "application/json"},
+    )
+
+    errors = _errors(response)
+    echoed = json.dumps(errors[0]["input"], ensure_ascii=False).encode("utf-8")
+    assert len(echoed) <= MAX_VALIDATION_INPUT_BYTES, (
+        f"echoed {len(echoed)} UTF-8 bytes under a "
+        f"{MAX_VALIDATION_INPUT_BYTES}-byte budget"
     )
 
 

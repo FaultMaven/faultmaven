@@ -394,7 +394,15 @@ def to_json_safe(
         if isinstance(value, str):
             return _safe_text(value, max_string_chars)
         if isinstance(value, (bytes, bytearray, memoryview)):
-            return _safe_text(bytes(value).decode("utf-8", "replace"), max_string_chars)
+            # Slice BEFORE decoding. `exc.body` is the whole raw request body
+            # and nothing bounds a JSON one, so decoding it entire to keep 512
+            # characters costs a full bytes copy plus a full str copy inside an
+            # exception handler, on an unauthenticated path. 4 bytes is the
+            # widest UTF-8 encoding, so `4 * limit + 4` always covers `limit`
+            # whole characters; the +4 keeps the last one from being cut into a
+            # replacement char.
+            head = bytes(value[: max_string_chars * 4 + 4])
+            return _safe_text(head.decode("utf-8", "replace"), max_string_chars)
 
         is_container = isinstance(value, (dict, list, tuple, set, frozenset))
         if is_container and depth >= max_depth:

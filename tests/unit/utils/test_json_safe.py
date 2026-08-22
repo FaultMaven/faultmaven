@@ -19,6 +19,7 @@ import pytest
 from faultmaven.utils.serialization import (
     DEFAULT_SAFE_DEPTH,
     DEFAULT_SAFE_STRING_CHARS,
+    _safe_text,
     to_json_safe,
 )
 
@@ -112,6 +113,19 @@ def test_long_strings_are_truncated():
 def test_bytes_are_decoded_not_repred():
     """The form-encoded body should still be readable in the 422."""
     assert to_json_safe(b"grant_type=refresh_token") == "grant_type=refresh_token"
+
+
+@pytest.mark.unit
+def test_long_bytes_are_sliced_before_decoding():
+    """A 10 MB body must not be copied whole to yield 512 characters.
+
+    The result has to be identical to decoding everything and then cutting,
+    including for multi-byte text where the slice can land mid-character.
+    """
+    for raw in (b"y" * 1_000_000, "\u98df".encode() * 400_000, b"\xff\xfe" * 300_000):
+        assert to_json_safe(raw) == _safe_text(
+            raw.decode("utf-8", "replace"), DEFAULT_SAFE_STRING_CHARS
+        )
 
 
 @pytest.mark.unit

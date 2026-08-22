@@ -515,12 +515,28 @@ def get_exception_handlers() -> dict[Type[Exception], Callable]:
 # Framework validation errors (fm#1048)
 # =============================================================================
 
-# Per-error ceiling on the echoed `input`. Beyond it the value is replaced by a
-# summary. Without a ceiling a body-level error echoes the WHOLE body — up to
-# MAX_UPLOAD_SIZE_MB — back at whoever sent it, from one unauthenticated
-# request. (Pre-#1048 the reflection was already 1:1 for field-level errors:
-# a 200 KB bad field produced a 200 KB 422.)
+# Per-error ceiling on the echoed `input`, measured in UTF-8 bytes because that
+# is what the response is encoded as: counting characters lets a CJK payload
+# through at ~3x the stated ceiling. Pre-#1048 the reflection was already 1:1
+# for field-level errors — a 200 KB bad field produced a 200 KB 422.
 MAX_VALIDATION_INPUT_BYTES = 2048
+
+# Ceiling on how many errors one 422 reports. Pydantic emits one per offending
+# item, so a request whose body is a long list of wrong-typed values produces a
+# response many times its own size: a measured 128,900-byte body yielded 20,000
+# errors and a 2,057,820-byte response (x16), and the same line goes to the log.
+# The per-error budget above cannot bound that — only a cap on the count can.
+MAX_VALIDATION_ERRORS = 50
+
+# `loc == ("body",)` means the whole body failed to bind, so `input` IS the whole
+# body. Echoing it hands a caller's own credentials back in the response: the
+# form-encoded POST that motivated #1048 is exactly this shape, and on
+# /auth/oauth/token or /auth/login the body is a refresh token or a password.
+# Before #1048 that echo could not happen — the handler crashed instead — so
+# restoring the 422 without this would have introduced it. Field-level errors
+# keep their `input`; it is what makes a 422 actionable, and it names one field
+# rather than the whole payload.
+_WHOLE_BODY_LOC = ("body",)
 
 
 def sanitize_validation_error(error: Mapping[str, Any]) -> Dict[str, Any]:
@@ -529,14 +545,23 @@ def sanitize_validation_error(error: Mapping[str, Any]) -> Dict[str, Any]:
     if not isinstance(safe, dict):  # pragma: no cover - errors() yields dicts
         return {"msg": str(safe)}
 
-    if "input" in safe:
-        # to_json_safe is total, so this dumps cannot raise.
-        rendered = len(json.dumps(safe["input"], ensure_ascii=False))
-        if rendered > MAX_VALIDATION_INPUT_BYTES:
-            safe["input"] = (
-                f"<input omitted: {rendered} bytes exceeds the "
-                f"{MAX_VALIDATION_INPUT_BYTES}-byte echo budget>"
-            )
+    if "input" not in safe:
+        return safe
+
+    if tuple(error.get("loc") or ()) == _WHOLE_BODY_LOC:
+        raw = error.get("input")
+        size = f": {len(raw)} bytes" if isinstance(raw, (bytes, bytearray)) else ""
+        safe["input"] = f"<request body not echoed{size}>"
+        return safe
+
+    # to_json_safe is total, so this dumps cannot raise. Measured after encoding
+    # for the reason given on MAX_VALIDATION_INPUT_BYTES.
+    rendered = len(json.dumps(safe["input"], ensure_ascii=False).encode("utf-8"))
+    if rendered > MAX_VALIDATION_INPUT_BYTES:
+        safe["input"] = (
+            f"<input omitted: {rendered} bytes exceeds the "
+            f"{MAX_VALIDATION_INPUT_BYTES}-byte echo budget>"
+        )
     return safe
 
 
@@ -572,8 +597,30 @@ async def request_validation_exception_handler(
     So the fix is not a bytes special-case — the previous handler already had a
     special-case of exactly that shape, for ``ValueError`` in ``ctx``, and this
     is the same bug one type later. :func:`to_json_safe` is total instead.
+
+    Three ceilings bound what a 422 costs, because restoring the response is
+    what makes them reachable: ``MAX_VALIDATION_INPUT_BYTES`` per echoed value,
+    ``MAX_VALIDATION_ERRORS`` on the count, and no echo at all for a whole-body
+    error. Note ``exc.body`` still reaches the log in full-ish (bounded to 512
+    characters by :func:`to_json_safe`) — that predates #1048 and is unchanged
+    here, but it does mean an auth endpoint's credentials land in an ERROR log
+    line.
     """
-    errors = [sanitize_validation_error(error) for error in exc.errors()]
+    raw_errors = exc.errors()
+    errors = [
+        sanitize_validation_error(error) for error in raw_errors[:MAX_VALIDATION_ERRORS]
+    ]
+    if len(raw_errors) > MAX_VALIDATION_ERRORS:
+        errors.append(
+            {
+                "type": "too_many_errors",
+                "loc": ["body"],
+                "msg": (
+                    f"{len(raw_errors) - MAX_VALIDATION_ERRORS} further "
+                    f"validation errors were not reported"
+                ),
+            }
+        )
 
     logger.error(
         "Validation error on %s %s: %s",
