@@ -159,6 +159,11 @@ real run it caught a `minLength` tightening and a response that had quietly
 lost its `type: object` — the latter a regression introduced in the very change
 that built this machinery.
 
+It runs with `if: always()`, so it still reports when the version gate above it
+*fails* — that is the moment its evidence is most wanted, since a surface change
+whose version stood still is exactly when someone is deciding MINOR versus
+MAJOR.
+
 ## What this deliberately does not do
 
 - **It does not classify MINOR versus MAJOR for you.** The advisory report

@@ -523,8 +523,8 @@ jobs:
             BASE="HEAD~1"
           fi
           echo "Comparing the contract against ${BASE}"
+          echo "CONTRACT_BASE=${BASE}" >> "$GITHUB_ENV"
           python scripts/check_contract_version.py --base "${BASE}"
-          git show "${BASE}:docs/reference/api/openapi.json" > /tmp/base-openapi.json 2>/dev/null || true
 
       # ADVISORY. The check above requires a version bump for any structural
       # change but deliberately does not judge MINOR versus MAJOR — that is the
@@ -546,15 +546,39 @@ jobs:
       # Advisory until its output has been read on enough real changes to know
       # what it flags that this project considers routine. A gate that cries
       # wolf on day one gets switched off on day two.
+      # `if: always()` because the step above FAILS exactly when this report is
+      # most wanted: a surface change whose version stood still is the moment
+      # the author is deciding MINOR versus MAJOR. Skipping it there would have
+      # withheld the evidence on precisely the pull requests it was built for.
+      # The base ref comes through $GITHUB_ENV rather than a file written by
+      # that step, for the same reason — a failing step writes nothing.
       - name: Breaking-change report (advisory)
+        if: always()
         continue-on-error: true
+        env:
+          # sha256 of oasdiff_1.29.1_linux_amd64.tar.gz as published.
+          OASDIFF_SHA256: "541f7c66c933495fceef24eaf5c48aa66c19069f366f7bd0a60a6a4820c5e533"
         run: |
-          if [ ! -s /tmp/base-openapi.json ]; then
-            echo "No base contract to compare against; skipping."
+          BASE="${CONTRACT_BASE:-}"
+          if [ -z "${BASE}" ]; then
+            echo "No base ref resolved; skipping."
+            exit 0
+          fi
+          if ! git show "${BASE}:docs/reference/api/openapi.json" > /tmp/base-openapi.json 2>/dev/null; then
+            echo "No contract at ${BASE} to compare against; skipping."
             exit 0
           fi
           curl -fsSL -o /tmp/oasdiff.tar.gz \
             https://github.com/oasdiff/oasdiff/releases/download/v1.29.1/oasdiff_1.29.1_linux_amd64.tar.gz
+          # A pinned URL is not a pinned artifact: release assets are mutable by
+          # the publisher, and this runs on pull requests from forks. The digest
+          # is of the v1.29.1 tarball as published; a mismatch means the asset
+          # changed under the tag, which is worth failing this step over even
+          # though the step itself is advisory.
+          echo "${OASDIFF_SHA256}  /tmp/oasdiff.tar.gz" | sha256sum -c - || {
+            echo "::warning::oasdiff tarball digest mismatch; skipping the report."
+            exit 0
+          }
           tar xzf /tmp/oasdiff.tar.gz -C /tmp oasdiff
           echo "### API contract: breaking-change report" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
