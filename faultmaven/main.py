@@ -48,6 +48,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from starlette.requests import Request as StarletteRequest
 
+from faultmaven.api.contract_version import API_CONTRACT_VERSION
 from faultmaven.api.middleware.tenant_scope import bind_request_org_context
 from faultmaven.utils.serialization import to_json_compatible
 
@@ -1030,7 +1031,10 @@ app = FastAPI(
     title="FaultMaven API",
     description="AI-powered troubleshooting copilot for Engineers, "
     "SREs, and DevOps professionals",
-    version="1.0.0",
+    # Becomes `info.version` in the published contract, so it is the CONTRACT
+    # version rather than the product's — see api/contract_version.py. The two
+    # were the same literal, which is part of why neither ever moved.
+    version=API_CONTRACT_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -1839,6 +1843,9 @@ async def root():
     """Root endpoint with API information."""
     return {
         "message": "FaultMaven API",
+        # The product version. Deliberately not API_CONTRACT_VERSION: what a
+        # client negotiates against is the contract, which moves on its own
+        # cadence (api/contract_version.py).
         "version": "1.0.0",
         "description": "AI-powered troubleshooting copilot",
         "docs": "/docs",

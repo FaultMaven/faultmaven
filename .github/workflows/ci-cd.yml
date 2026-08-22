@@ -501,6 +501,30 @@ jobs:
         run: |
           python scripts/generate_api_docs.py --check
 
+      # The check above is satisfied by regenerating, which a route change does
+      # automatically — so it proves the document describes the code, not that
+      # anyone decided to amend the contract. This one refuses a structural
+      # change whose info.version did not move.
+      #
+      # The base differs by event, and both matter: a pull request is compared
+      # against the branch it targets, while a push (main is not protected, so
+      # direct ones happen) is compared against its own parent. Comparing a
+      # push against origin/main would compare the commit with itself — a check
+      # that cannot fail. The checkout is shallow either way, hence the fetch;
+      # the script exits 2 rather than passing blind if it still cannot read
+      # the base contract.
+      - name: Contract changes are published deliberately
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch --depth=1 origin "${{ github.base_ref }}"
+            BASE="origin/${{ github.base_ref }}"
+          else
+            git fetch --deepen=1
+            BASE="HEAD~1"
+          fi
+          echo "Comparing the contract against ${BASE}"
+          python scripts/check_contract_version.py --base "${BASE}"
+
   # ============================================================================
   # PACKAGING TESTS
   # Verify pyproject.toml and packaging configuration
