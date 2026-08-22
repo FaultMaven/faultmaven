@@ -732,7 +732,7 @@ async def token(
     request: Request,
     response: Response,
     oauth_service: IOAuthService = Depends(get_oauth_service),
-) -> Any:
+) -> TokenResponse:
     """OAuth 2.0 Token Endpoint.
 
     Accepts `application/x-www-form-urlencoded` (RFC 6749 §3.2) or
@@ -884,7 +884,7 @@ async def revoke(
     request: Request,
     response: Response,
     oauth_service: IOAuthService = Depends(get_oauth_service),
-) -> Any:
+) -> dict:
     """OAuth 2.0 Token Revocation Endpoint.
 
     Revokes access tokens or refresh tokens (for logout). Accepts

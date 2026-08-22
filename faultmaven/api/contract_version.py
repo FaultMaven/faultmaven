@@ -30,6 +30,14 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 2.0.1 — PATCH. `revoke()` was annotated `-> Any` while it still returned a
+# JSONResponse for errors; once those moved to a raised exception the
+# annotation was merely inaccurate, and it erased `type: object` from the
+# documented 200 response. Nothing on the wire changes, so no client can break
+# on this and none needs to adopt it urgently — it restores what the document
+# says about a response that never varied. Found by the advisory
+# breaking-change report on its first real run, and by nothing else.
+#
 # 2.0.0 — MAJOR, and it publishes a change that already shipped. #1152 moved
 # `invalid_grant` from 401 to 400, replaced `{"detail": ...}` with the RFC 6749
 # §5.2 error object, and dropped `TokenRequest`/`RevokeRequest` from
@@ -39,4 +47,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.0.0"
+API_CONTRACT_VERSION = "2.0.1"

@@ -138,11 +138,38 @@ python scripts/generate_api_models.py --spec ../faultmaven/docs/reference/api/op
 so a client can build and test against a change while the contract it pins is
 still the old one. Getting ready and saying yes stay separate acts.
 
+## The advisory breaking-change report
+
+CI also prints what a differ (`oasdiff`) thinks of the change, into the job
+summary. It is **advisory** — an input to the MINOR-versus-MAJOR judgement, not
+a substitute for it — and two limits are worth knowing before leaning on it.
+
+**It only compares what the document declares.** The 2.0.0 change moved
+`invalid_grant` from 401 to 400 and replaced `{"detail": ...}` with the RFC
+error object, and the report flagged *neither*: 1.0.0 declared only `200` and
+`422` for that operation, so the behaviour that changed had never been in the
+contract to compare. An undocumented response is invisible to every differ.
+That is an argument for declaring responses, not for distrusting the tool.
+
+**It has no view of semantics.** A field that keeps its type and changes its
+meaning breaks clients and no tool will say so.
+
+What it is good at is the mechanical detail a human skims past. On its first
+real run it caught a `minLength` tightening and a response that had quietly
+lost its `type: object` — the latter a regression introduced in the very change
+that built this machinery.
+
+It runs with `if: always()`, so it still reports when the version gate above it
+*fails* — that is the moment its evidence is most wanted, since a surface change
+whose version stood still is exactly when someone is deciding MINOR versus
+MAJOR.
+
 ## What this deliberately does not do
 
-- **It does not classify MINOR versus MAJOR for you.** A tool that decided
-  whether clients can survive a change would be making the agreement on their
-  behalf.
+- **It does not classify MINOR versus MAJOR for you.** The advisory report
+  above is evidence, not a verdict: it cannot see undeclared behaviour or
+  semantics, and whether clients survive a change is the question they are
+  being asked.
 - **It does not stop a breaking change.** Breaking changes are legitimate; they
   are what MAJOR is for. What it stops is a breaking change reaching a client
   that never agreed to it.
