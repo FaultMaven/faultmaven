@@ -1,9 +1,10 @@
 """The version of the API contract, moved by hand.
 
 ``docs/reference/api/openapi.json`` is the contract between this API and its
-clients (faultmaven-copilot, faultmaven-dashboard). A contract changes only by
-agreement, so this number moves only when someone decides to publish a change —
-never automatically, and never as a side effect of shipping.
+clients — faultmaven-copilot, faultmaven-dashboard and faultmaven-slack-agent.
+A contract changes only by agreement, so this number moves only when someone
+decides to publish a change: never automatically, and never as a side effect of
+shipping.
 
 It is deliberately **not** the product version. The product ships on its own
 cadence, and most releases change no route, no schema and no status code; a

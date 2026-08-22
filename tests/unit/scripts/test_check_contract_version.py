@@ -176,6 +176,46 @@ class TestProseIsNotSurface:
         assert code == 1
         assert "~ schema    CaseSummary" in "\n".join(report)
 
+    def test_prose_inside_a_name_colliding_property_is_still_stripped(self, check):
+        """The mirror of the regression above, and the harder direction.
+
+        Deciding "is this a name map?" from the child's *name* gets it wrong
+        both ways. A property called `title` looked like prose (dropping it was
+        invisible); a property called `content` looks like a name map, so its
+        description survived stripping and rewording it demanded a version bump
+        for prose — the false positive this class exists to prevent. Six real
+        schemas have a `content` property: CaseReport, ReportResponse,
+        ReportUpdateRequest, DraftUpdateRequest, Message, KnowledgeBaseDocument.
+        """
+        base = _spec(
+            schemas={
+                "CaseReport": {
+                    "properties": {"content": {"type": "string", "description": "old"}}
+                }
+            }
+        )
+        head = _spec(
+            schemas={
+                "CaseReport": {
+                    "properties": {
+                        "content": {"type": "string", "description": "REWORDED"}
+                    }
+                }
+            }
+        )
+
+        code, report = check(base, head)
+
+        assert code == 0, "\n".join(report)
+
+    def test_dropping_a_name_colliding_property_is_still_caught(self, check):
+        code, _ = check(
+            _spec(schemas={"Message": {"properties": {"content": {"type": "string"}}}}),
+            _spec(schemas={"Message": {"properties": {}}}),
+        )
+
+        assert code == 1
+
     def test_a_field_named_like_prose_is_not_confused_with_it(self, mod):
         """`_PROSE_KEYS` names schema keywords, not a property called 'title'."""
         surface = mod._surface(
@@ -185,6 +225,49 @@ class TestProseIsNotSurface:
         assert surface["components"]["schemas"]["Doc"]["properties"] == {
             "title": {"type": "string"}
         }
+
+
+class TestTheRefusalAlwaysNamesWhatMoved:
+    """A refusal with no delta is the failure it exists to prevent."""
+
+    def test_a_change_outside_schemas_still_reports_a_delta(self, check):
+        """`_surface` compares all of `components`, so the describer must too.
+
+        A change confined to `securitySchemes` (or `responses`, `parameters`,
+        `headers`) otherwise failed the gate with an empty list under
+        "the surface changed" — leaving the reader to diff a generated
+        document by hand, which is what the report exists to spare them.
+        """
+        base = _spec()
+        head = _spec()
+        head["components"]["securitySchemes"] = {"OAuth2": {"type": "oauth2"}}
+
+        code, report = check(base, head)
+
+        assert code == 1
+        assert any("OAuth2" in line for line in report), report
+
+
+class TestTheVersionMustMoveForward:
+    def test_a_backwards_version_is_refused(self, check):
+        """Publishing moves forward. A client comparing what it pinned against
+        what is published would read a lowered version as already adopted."""
+        code, report = check(_spec("1.2.0", paths=_TOKEN_OP), _spec("1.1.0"))
+
+        assert code == 1
+        assert "BACKWARDS" in "\n".join(report)
+
+    def test_a_version_that_cannot_be_ordered_is_refused(self, check):
+        """`1.O.0` — letter O — is a typo, not a publication."""
+        code, report = check(_spec("1.0.0", paths=_TOKEN_OP), _spec("1.O.0"))
+
+        assert code == 1
+        assert "MAJOR.MINOR.PATCH" in "\n".join(report)
+
+    def test_a_forward_version_publishes(self, check):
+        code, _ = check(_spec("1.0.0", paths=_TOKEN_OP), _spec("1.1.0"))
+
+        assert code == 0
 
 
 class TestItNeverPassesBlind:
@@ -209,6 +292,24 @@ class TestItNeverPassesBlind:
 
         assert code == 2
         assert "could not read" in "\n".join(report)
+
+    def test_a_corrupt_committed_contract_is_an_error_not_a_bump_demand(
+        self, mod, tmp_path, monkeypatch
+    ):
+        """Exit 2, not a traceback exiting 1.
+
+        1 is the code that means "a surface change needs a version bump", so an
+        unreadable document must not borrow it.
+        """
+        spec_path = tmp_path / "openapi.json"
+        spec_path.write_text("{not json")
+        monkeypatch.setattr(mod, "SPEC_PATH", spec_path)
+        monkeypatch.setattr(mod, "read_base_spec", lambda ref: _spec())
+
+        code, report = mod.run_check("origin/main")
+
+        assert code == 2
+        assert "could not be read" in "\n".join(report)
 
     def test_a_missing_committed_contract_is_an_error(self, mod, tmp_path, monkeypatch):
         monkeypatch.setattr(mod, "SPEC_PATH", tmp_path / "absent.json")

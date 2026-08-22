@@ -1,7 +1,8 @@
 # Changing the API contract
 
 `docs/reference/api/openapi.json` is the contract between this API and its
-clients — `faultmaven-copilot` and `faultmaven-dashboard`. It is generated from
+clients — `faultmaven-copilot`, `faultmaven-dashboard` and
+`faultmaven-slack-agent`. It is generated from
 the code, but that does not make it a build artifact: it is the document both
 ends are written against, and it changes **by agreement, in cooperation**, not
 as a side effect of editing a handler.
@@ -97,27 +98,45 @@ reading.
 
 ## Adopting a change (client side)
 
-Each client repo pins the ref it fetches the contract from:
+Each client repo pins the contract it is written against in
+`api-contract.pin.json` at its root:
 
-```yaml
-# .github/workflows/ci.yml
-env:
-  FM_SPEC_REF: <commit sha>
+```json
+{
+  "repository": "FaultMaven/faultmaven",
+  "ref": "51d511ab20d6dc170e5616d2728ef4a249e0bc8a",
+  "contractVersion": "1.0.0",
+  "adopted": "2026-08-22"
+}
 ```
 
-To adopt: move the ref, regenerate the typed client, fix whatever the compiler
-and tests now object to, and open it as one PR. That PR is where the client
-says yes.
+Both CI and the local generator read that file, so they cannot disagree about
+which contract is in force.
+
+To adopt: move `ref` (and `contractVersion` to match), regenerate, fix whatever
+the compiler and tests now object to, and open it as one PR. That PR is where
+the client says yes.
+
+| Client | Regenerate with | Generated artifact |
+|---|---|---|
+| `faultmaven-copilot` | `pnpm generate:api-types` | `src/types/api.generated.ts` |
+| `faultmaven-dashboard` | `pnpm generate:api-types` | `src/types/api.generated.ts` |
+| `faultmaven-slack-agent` | `python scripts/generate_api_models.py` | `faultmaven/api_generated.py` |
+
+All three consume the contract the same way, because the server cannot tell
+them apart: it generates **types or models, not a client**. The HTTP calls stay
+hand-written in each; what comes from the contract is the shapes they exchange.
 
 Before the backend merges, a client can prepare against the proposed contract
-without adopting it — the generator takes an explicit spec:
+without adopting it — every generator takes an explicit spec:
 
 ```bash
-pnpm generate:api-types --spec ../faultmaven/docs/reference/api/openapi.json
+pnpm generate:api-types --spec ../faultmaven/docs/reference/api/openapi.json   # copilot, dashboard
+python scripts/generate_api_models.py --spec ../faultmaven/docs/reference/api/openapi.json   # slack-agent
 ```
 
-so the client can build and test against a change while the contract it pins
-is still the old one.
+so a client can build and test against a change while the contract it pins is
+still the old one. Getting ready and saying yes stay separate acts.
 
 ## What this deliberately does not do
 

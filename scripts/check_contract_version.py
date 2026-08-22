@@ -38,10 +38,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SPEC_RELPATH = "docs/reference/api/openapi.json"
@@ -81,13 +82,30 @@ def _strip_prose(node: Any, *, in_name_map: bool = False) -> Any:
 
     ``in_name_map`` marks a dict whose keys were chosen by whoever wrote the
     API — field names, schema names, status codes, media types. Those keys are
-    kept whatever they are called; only their values are filtered.
+    kept whatever they are called; their values are ordinary objects and are
+    filtered normally.
+
+    That last clause is the whole subtlety, and it has to key on **position**
+    rather than on the child's name. Deciding from the name alone gets it wrong
+    in both directions: a property named `title` looks like prose (dropping it
+    from a response would be invisible to the gate), and a property named
+    `content` looks like a name map (its description would survive stripping,
+    so rewording it would demand a version bump for prose). Six schemas here
+    really do have a `content` property — CaseReport, ReportResponse,
+    ReportUpdateRequest, DraftUpdateRequest, Message, KnowledgeBaseDocument.
     """
     if isinstance(node, dict):
+        if in_name_map:
+            # Author-chosen keys. Keep every one of them, and step back into
+            # ordinary filtering for the objects they point at.
+            return {
+                key: _strip_prose(value, in_name_map=False)
+                for key, value in node.items()
+            }
         return {
             key: _strip_prose(value, in_name_map=key in _NAME_MAP_KEYS)
             for key, value in node.items()
-            if in_name_map or key not in _PROSE_KEYS
+            if key not in _PROSE_KEYS
         }
     if isinstance(node, list):
         return [_strip_prose(item) for item in node]
@@ -104,6 +122,22 @@ def _surface(spec: Dict[str, Any]) -> Dict[str, Any]:
 
 def _version(spec: Dict[str, Any]) -> str:
     return str(spec.get("info", {}).get("version", ""))
+
+
+#: A published contract version is exactly MAJOR.MINOR.PATCH. Parsed rather
+#: than compared as text so the gate can require an INCREASE: accepting any
+#: inequality would pass a PR that changed the surface while lowering the
+#: version (1.0.0 -> 0.9.0), and would read a typo (`1.O.0`, letter O) as a
+#: deliberate publication.
+_VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+def _version_tuple(version: str) -> Optional[Tuple[int, int, int]]:
+    match = _VERSION_PATTERN.match(version)
+    if not match:
+        return None
+    major, minor, patch = match.groups()
+    return int(major), int(minor), int(patch)
 
 
 def read_base_spec(ref: str) -> Dict[str, Any]:
@@ -163,15 +197,29 @@ def describe_surface_change(base: Dict[str, Any], head: Dict[str, Any]) -> List[
             lines.append(f"  ~ operation {method.upper()} {path}")
             lines.extend(_describe_operation(base_ops[method], head_ops[method]))
 
-    base_schemas = base["components"].get("schemas", {})
-    head_schemas = head["components"].get("schemas", {})
-    for name in sorted(set(head_schemas) - set(base_schemas)):
-        lines.append(f"  + schema    {name}")
-    for name in sorted(set(base_schemas) - set(head_schemas)):
-        lines.append(f"  - schema    {name}")
-    for name in sorted(set(base_schemas) & set(head_schemas)):
-        if base_schemas[name] != head_schemas[name]:
-            lines.append(f"  ~ schema    {name}")
+    # Every section of `components`, not only `schemas`: `_surface` compares
+    # the whole object, so a change confined to `securitySchemes` (or
+    # `responses`, `parameters`, `headers`) would otherwise fail the gate with
+    # an EMPTY delta — "the surface changed" and nothing else, which leaves the
+    # reader diffing a generated document by hand.
+    base_components, head_components = base["components"], head["components"]
+    for section in sorted(set(base_components) | set(head_components)):
+        base_section = base_components.get(section, {})
+        head_section = head_components.get(section, {})
+        if base_section == head_section:
+            continue
+        if not isinstance(base_section, dict) or not isinstance(head_section, dict):
+            lines.append(f"  ~ components.{section}")
+            continue
+        # `schemas` is the common case and reads better unqualified.
+        label = "schema   " if section == "schemas" else f"{section}"
+        for name in sorted(set(head_section) - set(base_section)):
+            lines.append(f"  + {label} {name}")
+        for name in sorted(set(base_section) - set(head_section)):
+            lines.append(f"  - {label} {name}")
+        for name in sorted(set(base_section) & set(head_section)):
+            if base_section[name] != head_section[name]:
+                lines.append(f"  ~ {label} {name}")
 
     return lines
 
@@ -207,7 +255,12 @@ def run_check(base_ref: str) -> Tuple[int, List[str]]:
     if not SPEC_PATH.exists():
         return 2, [f"❌ {SPEC_RELPATH} is missing; it is generated and committed."]
 
-    head_spec = json.loads(SPEC_PATH.read_text())
+    try:
+        head_spec = json.loads(SPEC_PATH.read_text())
+    except (OSError, ValueError) as exc:
+        # Guarded like the base read: unguarded, this exits 1 with a traceback,
+        # and 1 is the code that means "a surface change needs a version bump".
+        return 2, [f"❌ {SPEC_RELPATH} could not be read: {exc}"]
 
     base_surface, head_surface = _surface(base_spec), _surface(head_spec)
     base_version, head_version = _version(base_spec), _version(head_spec)
@@ -223,6 +276,24 @@ def run_check(base_ref: str) -> Tuple[int, List[str]]:
     changes = describe_surface_change(base_surface, head_surface)
 
     if base_version != head_version:
+        base_parts = _version_tuple(base_version)
+        head_parts = _version_tuple(head_version)
+        if head_parts is None:
+            return 1, [
+                f"❌ API_CONTRACT_VERSION is {head_version!r}, which is not "
+                "MAJOR.MINOR.PATCH. A version that cannot be ordered cannot "
+                "tell a client whether it is behind.",
+            ]
+        if base_parts is not None and head_parts < base_parts:
+            return 1, [
+                f"❌ The contract version went BACKWARDS, {base_version} -> "
+                f"{head_version}, alongside a surface change:",
+                *changes,
+                "",
+                "   Publishing moves the version forward. A client comparing "
+                "what it pinned against what is published would read this as "
+                "already adopted.",
+            ]
         return 0, [
             f"✅ API contract {base_version} -> {head_version}:",
             *changes,
@@ -244,7 +315,8 @@ def run_check(base_ref: str) -> Tuple[int, List[str]]:
         "       python scripts/generate_api_docs.py",
         "",
         "   MINOR if every existing client survives it, MAJOR if one can break.",
-        "   Then open the pin bump in faultmaven-copilot / faultmaven-dashboard.",
+        "   Then open the pin bump in each client that adopts it:",
+        "   faultmaven-copilot, faultmaven-dashboard, faultmaven-slack-agent.",
     ]
 
 
