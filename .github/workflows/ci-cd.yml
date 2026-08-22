@@ -524,6 +524,43 @@ jobs:
           fi
           echo "Comparing the contract against ${BASE}"
           python scripts/check_contract_version.py --base "${BASE}"
+          git show "${BASE}:docs/reference/api/openapi.json" > /tmp/base-openapi.json 2>/dev/null || true
+
+      # ADVISORY. The check above requires a version bump for any structural
+      # change but deliberately does not judge MINOR versus MAJOR — that is the
+      # question the clients are being asked, and a script answering it would
+      # make the agreement on their behalf. This prints what a differ thinks,
+      # as an input to that judgement rather than a substitute for it.
+      #
+      # Two things it cannot see, both worth knowing before trusting it:
+      #
+      #   * It only compares what the document DECLARES. The 2.0.0 change moved
+      #     `invalid_grant` from 401 to 400 and replaced the error body, and
+      #     oasdiff reported neither — because 1.0.0 declared only `200` and
+      #     `422` for that operation, so the behaviour that changed was never in
+      #     the contract to be compared. An undocumented response is invisible
+      #     to every differ, including this one.
+      #   * It has no view of semantics. A field that keeps its type and changes
+      #     its meaning is not a breaking change to any tool.
+      #
+      # Advisory until its output has been read on enough real changes to know
+      # what it flags that this project considers routine. A gate that cries
+      # wolf on day one gets switched off on day two.
+      - name: Breaking-change report (advisory)
+        continue-on-error: true
+        run: |
+          if [ ! -s /tmp/base-openapi.json ]; then
+            echo "No base contract to compare against; skipping."
+            exit 0
+          fi
+          curl -fsSL -o /tmp/oasdiff.tar.gz \
+            https://github.com/oasdiff/oasdiff/releases/download/v1.29.1/oasdiff_1.29.1_linux_amd64.tar.gz
+          tar xzf /tmp/oasdiff.tar.gz -C /tmp oasdiff
+          echo "### API contract: breaking-change report" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          /tmp/oasdiff breaking /tmp/base-openapi.json docs/reference/api/openapi.json \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # ============================================================================
   # PACKAGING TESTS
