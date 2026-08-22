@@ -191,7 +191,8 @@ class TestTokenEndpoint:
     ):
         """Test token endpoint with missing required field.
 
-        Verifies FastAPI request validation works correctly.
+        The endpoint validates its own body (#1150), so the refusal is an
+        RFC 6749 §5.2 object rather than FastAPI's `detail` string.
         """
         response = await client_with_mocked_oauth.post(
             "/api/v1/auth/oauth/token",
@@ -206,7 +207,8 @@ class TestTokenEndpoint:
 
         # Verify validation error
         assert response.status_code == status.HTTP_400_BAD_REQUEST
-        assert "code" in response.json()["detail"].lower()
+        assert response.json()["error"] == "invalid_request"
+        assert "code" in response.json()["error_description"].lower()
 
     @pytest.mark.asyncio
     async def test_token_endpoint_invalid_grant_type(self, client_with_mocked_oauth):
@@ -222,11 +224,11 @@ class TestTokenEndpoint:
             },
         )
 
-        # Verify error response
-        assert response.status_code in [
-            status.HTTP_400_BAD_REQUEST,
-            422,
-        ]
+        # Verify error response. The status is no longer "400 or 422": an
+        # unknown grant is answered by the endpoint's own dispatch, with the
+        # code RFC 6749 §5.2 reserves for it (#1150).
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.json()["error"] == "unsupported_grant_type"
 
 
 class TestRevokeEndpoint:
@@ -339,7 +341,6 @@ class TestGlobalMiddlewareCompatibility:
         assert response.status_code in [
             status.HTTP_200_OK,
             status.HTTP_400_BAD_REQUEST,
-            422,
         ]
 
     @pytest.mark.asyncio

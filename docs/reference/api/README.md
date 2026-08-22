@@ -1061,7 +1061,9 @@ Raises:
 
 OAuth 2.0 Token Revocation Endpoint.
 
-Revokes access tokens or refresh tokens (for logout).
+Revokes access tokens or refresh tokens (for logout). Accepts
+`application/x-www-form-urlencoded` (RFC 7009 §2.1) or `application/json`;
+errors use the RFC 6749 §5.2 shape that RFC 7009 §2.2.1 refers to.
 
 When to revoke:
 - User logs out: Revoke both access and refresh tokens
@@ -1069,11 +1071,12 @@ When to revoke:
 - Token rotation: Old refresh token revoked automatically
 
 Args:
-    revoke_request: Token revocation request
+    request: Raw request; the body is parsed per its content type
+    response: Used to attach the no-store headers
     oauth_service: OAuth service dependency
 
 Returns:
-    Success response (200 OK, no body per RFC 7009)
+    Empty object (200 OK per RFC 7009), or an RFC 6749 §5.2 error body.
 
 Note: Returns 200 even if token doesn't exist (per RFC 7009)
 
@@ -1083,12 +1086,19 @@ Note: Returns 200 even if token doesn't exist (per RFC 7009)
 
 **Request body** (required):
 
-- `application/json` — [`RevokeRequest`](#revokerequest)
+- `application/json` — `RevokeRequest` (inline)
+- `application/x-www-form-urlencoded` — `RevokeRequest` (inline)
+
+- `token` (required) — Token to revoke (access or refresh)
+- `token_type_hint` (optional) — Hint about token type (optional)
+- `client_id` (required) — OAuth client ID
 
 **Responses:**
 
 - `200` — Successful Response (`object`)
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `400` — RFC 6749 §5.2 error: `invalid_request`, `invalid_grant`, `unsupported_grant_type`, or `unsupported_token_type`. ([`OAuthErrorResponse`](#oautherrorresponse))
+- `415` — Body is neither `application/x-www-form-urlencoded` nor `application/json`. ([`OAuthErrorResponse`](#oautherrorresponse))
+- `503` — Revocation could not be recorded (RFC 7009 §2.2.1). ([`OAuthErrorResponse`](#oautherrorresponse))
 
 ---
 
@@ -1099,6 +1109,10 @@ Note: Returns 200 even if token doesn't exist (per RFC 7009)
 **Token**
 
 OAuth 2.0 Token Endpoint.
+
+Accepts `application/x-www-form-urlencoded` (RFC 6749 §3.2) or
+`application/json`; errors are RFC 6749 §5.2 objects
+(`{"error": ..., "error_description": ...}`), not FastAPI's `detail` shape.
 
 Handles two grant types:
 1. authorization_code: Exchange authorization code for access/refresh tokens
@@ -1117,14 +1131,14 @@ Refresh Token Flow:
 4. Extension updates stored tokens
 
 Args:
-    token_request: Token request (authorization_code or refresh_token)
+    request: Raw request; the body is parsed per its content type
+    response: Used to attach the RFC 6749 §5.1 no-store headers
     oauth_service: OAuth service dependency
 
 Returns:
-    Access token, refresh token, and user information
-
-Raises:
-    HTTPException: 400 if request invalid, 401 if grant invalid
+    TokenResponse on success; an RFC 6749 §5.2 error body otherwise
+    (400 invalid_request / invalid_grant / unsupported_grant_type,
+    415 unsupported content type, 500 server_error).
 
 **Tags:** `oauth`
 
@@ -1132,12 +1146,22 @@ Raises:
 
 **Request body** (required):
 
-- `application/json` — [`TokenRequest`](#tokenrequest)
+- `application/json` — `TokenRequest` (inline)
+- `application/x-www-form-urlencoded` — `TokenRequest` (inline)
+
+- `grant_type` (required) — Grant type: 'authorization_code' or 'refresh_token'
+- `code` (optional) — Authorization code (required for authorization_code grant)
+- `redirect_uri` (optional) — Redirect URI (required for authorization_code grant, must match)
+- `code_verifier` (optional) — PKCE code verifier (required for authorization_code grant)
+- `refresh_token` (optional) — Refresh token (required for refresh_token grant)
+- `client_id` (required) — OAuth client ID
 
 **Responses:**
 
 - `200` — Successful Response ([`TokenResponse`](#tokenresponse))
-- `422` — Validation Error ([`HTTPValidationError`](#httpvalidationerror))
+- `400` — RFC 6749 §5.2 error: `invalid_request`, `invalid_grant`, `unsupported_grant_type`, or `unsupported_token_type`. ([`OAuthErrorResponse`](#oautherrorresponse))
+- `415` — Body is neither `application/x-www-form-urlencoded` nor `application/json`. ([`OAuthErrorResponse`](#oautherrorresponse))
+- `500` — RFC 6749 §5.2 `server_error`. ([`OAuthErrorResponse`](#oautherrorresponse))
 
 ---
 
@@ -5630,6 +5654,25 @@ OAuth configuration for cloud mode.
 
 ---
 
+### OAuthErrorResponse
+
+An RFC 6749 §5.2 error, as `/token` and `/revoke` answer it.
+
+Declared for the OpenAPI document; the body itself is written by
+``api.exception_handlers.oauth_protocol_error_handler``. It carries these
+two fields and no others — notably no `correlation_id`, which travels in
+the `X-Correlation-ID` / `X-Request-ID` response headers instead (the
+middleware that stamps the latter is skipped in test environments, so a
+body field sourced from it would exist in production and nowhere a client
+author could try it).
+
+**Properties:**
+
+- `error` (string, required) — RFC 6749 §5.2 error code, e.g. 'invalid_grant'
+- `error_description` (string, required) — Human-readable explanation, for the developer holding the request
+
+---
+
 ### OperatorAccessAuditEntry
 
 One recorded platform-operator access (ADR-012 D8/D9).
@@ -5886,20 +5929,6 @@ Overall resolution metrics for RESOLVED phase.
 - `key_insights` (array, optional) — Key learnings from this investigation
 - `milestones_completed` (integer, required) — Count of milestones completed over the case's life. A raw count, not a fraction: milestones complete opportunistically and a case can resolve without traversing the mitigation path, so there is no fixed total to compare against.
 - `total_duration_minutes` (integer, required) — Total time from case creation to resolution
-
----
-
-### RevokeRequest
-
-OAuth token revocation request.
-
-Supports revoking both access tokens and refresh tokens.
-
-**Properties:**
-
-- `client_id` (string, required) — OAuth client ID
-- `token` (string, required) — Token to revoke (access or refresh)
-- `token_type_hint` (object, optional) — Hint about token type (optional)
 
 ---
 
@@ -6206,25 +6235,6 @@ session_id and user profile and only swaps the tokens.
 - `expires_in` (integer, required) — Token expiration time in seconds
 - `refresh_token` (string, required) — New refresh token (the old one is revoked — rotation)
 - `token_type` (string, optional) — Token type (always 'bearer')
-
----
-
-### TokenRequest
-
-OAuth token request (authorization_code or refresh_token grant).
-
-Two grant types supported:
-1. authorization_code: Exchange code for tokens
-2. refresh_token: Refresh access token using refresh token
-
-**Properties:**
-
-- `client_id` (string, required) — OAuth client ID
-- `code` (object, optional) — Authorization code (required for authorization_code grant)
-- `code_verifier` (object, optional) — PKCE code verifier (required for authorization_code grant)
-- `grant_type` (string, required) — Grant type: 'authorization_code' or 'refresh_token'
-- `redirect_uri` (object, optional) — Redirect URI (required for authorization_code grant, must match)
-- `refresh_token` (object, optional) — Refresh token (required for refresh_token grant)
 
 ---
 

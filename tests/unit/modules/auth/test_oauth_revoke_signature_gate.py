@@ -16,14 +16,16 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from fastapi import Request, Response
 
 from faultmaven.config.settings import MAX_TOKEN_LIFETIME_DAYS
-from faultmaven.modules.auth.api.oauth import RevokeRequest, revoke
+from faultmaven.modules.auth.api.oauth import revoke
 from faultmaven.modules.auth.domain.services.jwt_token_generator import (
     HS256JWTTokenGenerator,
     RS256JWTTokenGenerator,
@@ -136,16 +138,42 @@ def _user():
     )
 
 
+def _form_request(params: dict) -> Request:
+    """A real Request carrying an RFC 7009 §2.1 form-encoded body.
+
+    The endpoint parses its own body (#1150), so handing it a pre-built
+    ``RevokeRequest`` would no longer be "what FastAPI does" — and would skip
+    the decoding a submitted token now passes through on its way to the store.
+    """
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "path": "/api/v1/auth/oauth/revoke",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/x-www-form-urlencoded")],
+    }
+    body = urlencode(params).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(scope, receive)
+
+
 async def _call_revoke(oauth_service, token: str, hint=DEFAULT_HINT):
     """Invoke the endpoint exactly as FastAPI would.
 
     ``hint=None`` is the RFC 7009 case of a client that sends no
     ``token_type_hint`` at all — which the handler routes as an access token.
     """
+    params = {"token": token, "client_id": "faultmaven-copilot"}
+    if hint is not None:
+        params["token_type_hint"] = hint
+
     return await revoke(
-        revoke_request=RevokeRequest(
-            token=token, token_type_hint=hint, client_id="faultmaven-copilot"
-        ),
+        request=_form_request(params),
+        response=Response(),
         oauth_service=oauth_service,
     )
 

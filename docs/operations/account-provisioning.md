@@ -348,7 +348,10 @@ are stored (in Redis). Capture it directly into its destination.
 
 The consumer exchanges it for access tokens at `POST /api/v1/auth/oauth/token`
 with `grant_type=refresh_token`, receiving a rotated refresh token each time.
-The organization claim rides that rotation.
+The organization claim rides that rotation. The endpoint takes RFC 6749 §3.2
+form encoding or JSON, and answers refusals as RFC 6749 §5.2 objects — see
+[service-account-credentials.md](security/service-account-credentials.md#how-the-credential-renews)
+for the exact call.
 
 > A consumer that expects a **static bearer token** (for example the simulator's
 > `FM_SIM_AUTH_TOKEN`) needs an access token, not this refresh token — and

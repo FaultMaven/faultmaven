@@ -23,17 +23,32 @@ Security:
 - Short-lived access tokens (15 minutes)
 - Long-lived refresh tokens (7 days) with rotation
 - Constant-time comparison for PKCE verification
+
+Wire format:
+- POST /token and POST /revoke accept BOTH RFC 6749 §3.2 form encoding and
+  JSON, and answer errors in the RFC 6749 §5.2 shape. See the "RFC 6749 wire
+  format" section below for why the routes parse their own bodies.
+- GET /authorize takes query parameters, which is already the encoding RFC 6749
+  §3.1 prescribes for the authorization endpoint. Its *errors* are JSON rather
+  than the §4.1.2.1 redirect, because its client is the Dashboard consent
+  screen rather than a browser following redirects.
 """
 
+import json
 import logging
 import re
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Type, TypeVar, get_args
+from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from faultmaven.api.v1.auth_dependencies import require_authentication
-from faultmaven.models.exceptions import InvalidGrantError, InvalidRequestError
+from faultmaven.models.exceptions import (
+    InvalidGrantError,
+    InvalidRequestError,
+    OAuthProtocolError,
+)
 from faultmaven.modules.auth.api.rate_limiting import (
     require_oauth_rate_limit_authorize,
     require_oauth_rate_limit_revoke,
@@ -105,6 +120,21 @@ class AuthorizationResponse(BaseModel):
     state: str = Field(description="Client state (echoed back for verification)")
 
 
+# The supported grant types, named once. `token()` checks `grant_type` against
+# `SUPPORTED_GRANT_TYPES` before model validation so an unknown value answers
+# RFC 6749 §5.2's `unsupported_grant_type` rather than a generic parameter
+# error; deriving the tuple from the annotation keeps the check from drifting
+# out of step with the model, which is how the endpoint's original
+# "Unsupported grant_type" branch became unreachable.
+GrantType = Literal["authorization_code", "refresh_token"]
+SUPPORTED_GRANT_TYPES: tuple[str, ...] = get_args(GrantType)
+
+# RFC 7009 §2.1: the hint is optional, and §2.2.1 gives an unknown one its own
+# error code.
+TokenTypeHint = Literal["access_token", "refresh_token"]
+SUPPORTED_TOKEN_TYPE_HINTS: tuple[str, ...] = get_args(TokenTypeHint)
+
+
 class TokenRequest(BaseModel):
     """OAuth token request (authorization_code or refresh_token grant).
 
@@ -113,7 +143,7 @@ class TokenRequest(BaseModel):
     2. refresh_token: Refresh access token using refresh token
     """
 
-    grant_type: Literal["authorization_code", "refresh_token"] = Field(
+    grant_type: GrantType = Field(
         description="Grant type: 'authorization_code' or 'refresh_token'"
     )
 
@@ -137,7 +167,12 @@ class TokenRequest(BaseModel):
     )
 
     # Common parameters
-    client_id: str = Field(description="OAuth client ID")
+    #
+    # `min_length=1` because form encoding makes an empty parameter easy to
+    # send by accident (`-d client_id=`) where a JSON client would have had to
+    # write `""`; an empty client id identifies nobody and must be refused as a
+    # malformed request rather than carried into the grant.
+    client_id: str = Field(min_length=1, description="OAuth client ID")
 
 
 class TokenResponse(BaseModel):
@@ -157,17 +192,222 @@ class TokenResponse(BaseModel):
     username: str = Field(description="Username")
 
 
+class OAuthErrorResponse(BaseModel):
+    """An RFC 6749 §5.2 error, as `/token` and `/revoke` answer it.
+
+    Declared for the OpenAPI document; the body itself is written by
+    ``api.exception_handlers.oauth_protocol_error_handler``. It carries these
+    two fields and no others — notably no `correlation_id`, which travels in
+    the `X-Correlation-ID` / `X-Request-ID` response headers instead (the
+    middleware that stamps the latter is skipped in test environments, so a
+    body field sourced from it would exist in production and nowhere a client
+    author could try it).
+    """
+
+    error: str = Field(
+        description="RFC 6749 §5.2 error code, e.g. 'invalid_grant'",
+    )
+    error_description: str = Field(
+        description="Human-readable explanation, for the developer holding the request",
+    )
+
+
 class RevokeRequest(BaseModel):
     """OAuth token revocation request.
 
     Supports revoking both access tokens and refresh tokens.
     """
 
-    token: str = Field(description="Token to revoke (access or refresh)")
-    token_type_hint: Optional[Literal["access_token", "refresh_token"]] = Field(
+    token: str = Field(min_length=1, description="Token to revoke (access or refresh)")
+    token_type_hint: Optional[TokenTypeHint] = Field(
         default=None, description="Hint about token type (optional)"
     )
-    client_id: str = Field(description="OAuth client ID")
+    client_id: str = Field(min_length=1, description="OAuth client ID")
+
+
+# ============================================================
+# RFC 6749 wire format
+# ============================================================
+
+# RFC 6749 §3.2 prescribes `application/x-www-form-urlencoded` at the token
+# endpoint, and RFC 7009 §2.1 says the same for revocation. FastAPI's
+# `Body(...)` parses JSON only: every other content type reaches Pydantic as
+# raw bytes and fails as `model_attributes_type`, so a standards-written client
+# — or anyone reaching for `curl -d` — was refused with an error about the
+# body's *shape* when the problem was its *encoding* (#1150).
+#
+# FastAPI cannot declare two body encodings on one signature, so `token()` and
+# `revoke()` take the raw Request, dispatch on content type and validate by
+# hand. JSON stays supported alongside form encoding: every first-party client
+# sends it (copilot `background.ts` / `token-manager.ts` / `auth-service.ts`,
+# faultmaven-slack-agent `client.py`), and these endpoints are the OAuth
+# surface of an otherwise-JSON API.
+#
+# Errors move to the RFC 6749 §5.2 shape in the same change, deliberately:
+# accepting the prescribed encoding while answering `{"detail": ...}` would
+# leave a client that can now *reach* the endpoint unable to read its refusals.
+
+FORM_MEDIA_TYPE = "application/x-www-form-urlencoded"
+
+# RFC 6749 §5.1: a token response carries credentials, so it must not be
+# cached. The same convention already applies to POST /auth/refresh and the SSO
+# exchange; the OAuth token endpoint was the one credential-bearing response
+# that omitted it.
+_NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+
+_OAuthRequestModel = TypeVar("_OAuthRequestModel", bound=BaseModel)
+
+# A refusal that names the offending value is what makes it diagnosable, but
+# the value is client-supplied and these endpoints are unauthenticated: echoed
+# unbounded, a megabyte `grant_type` becomes a megabyte error body and a
+# megabyte log line. #1048 capped the same class of reflection in the
+# validation handler. The bound is in UTF-8 BYTES because that is what the
+# response is encoded as — counting characters lets a CJK value through at
+# roughly three times the stated ceiling — and it is small because every value
+# echoed here is short by nature: a grant type, a media type, a parameter name.
+_MAX_ECHOED_BYTES = 120
+
+
+def _echo(value: Any) -> str:
+    """Render a client-supplied value for an error message, bounded."""
+    encoded = str(value).encode("utf-8")
+    if len(encoded) <= _MAX_ECHOED_BYTES:
+        return str(value)
+    # Truncation can land inside a multi-byte character; drop the partial one.
+    return encoded[:_MAX_ECHOED_BYTES].decode("utf-8", "ignore") + "…"
+
+
+# `OAuthProtocolError` lives in `faultmaven.models.exceptions` beside the other
+# OAuth exceptions and is rendered centrally by
+# `api.exception_handlers.oauth_protocol_error_handler`. The endpoints below
+# raise it and never build an error response themselves: a `return` inside an
+# `except` block is how internal exception text reaches an unauthenticated body,
+# and `tests/unit/modules/auth/api/test_auth_error_text_not_echoed.py` refuses
+# that shape structurally rather than site by site.
+
+
+async def _read_oauth_params(request: Request) -> dict[str, Any]:
+    """Decode a token/revocation body into a parameter mapping.
+
+    Accepts RFC 6749 §3.2 form encoding and JSON. A body sent with no
+    Content-Type at all is read as JSON, which is what FastAPI did before these
+    routes parsed their own bodies — a client that omits the header keeps
+    working.
+
+    Raises:
+        OAuthProtocolError: the body is empty, undecodable, or sent under a
+            content type that is neither of the two.
+    """
+    raw = await request.body()
+    media_type = (
+        (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    )
+
+    if not raw:
+        raise OAuthProtocolError("invalid_request", "A request body is required.")
+
+    if media_type == FORM_MEDIA_TYPE:
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise OAuthProtocolError(
+                "invalid_request",
+                "Form-encoded body must be UTF-8 (RFC 6749 §3.2).",
+            ) from exc
+
+        params: dict[str, Any] = {}
+        for name, value in parse_qsl(decoded, keep_blank_values=True):
+            if name in params:
+                # RFC 6749 §3.1: a request parameter MUST NOT be sent more than
+                # once. Silently taking the first or the last would let whoever
+                # controls the duplicate choose which value the server reads.
+                raise OAuthProtocolError(
+                    "invalid_request",
+                    f"Parameter '{_echo(name)}' is included more than once.",
+                )
+            params[name] = value
+        return params
+
+    if media_type in ("", "application/json") or (
+        media_type.startswith("application/") and media_type.endswith("+json")
+    ):
+        try:
+            payload = json.loads(raw)
+        except ValueError as exc:
+            raise OAuthProtocolError(
+                "invalid_request", "Request body is not valid JSON."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise OAuthProtocolError("invalid_request", "JSON body must be an object.")
+        return payload
+
+    raise OAuthProtocolError(
+        "invalid_request",
+        f"Unsupported Content-Type '{_echo(media_type)}'. Send "
+        f"'{FORM_MEDIA_TYPE}' (RFC 6749 §3.2) or 'application/json'.",
+        status_code=415,
+    )
+
+
+def _validate_oauth_params(
+    model: Type[_OAuthRequestModel], params: dict[str, Any]
+) -> _OAuthRequestModel:
+    """Validate decoded parameters, reporting failures as `invalid_request`.
+
+    RFC 6749 §5.2 has no structured slot for per-field errors, so the detail
+    that made the old 422 diagnosable is folded into `error_description` rather
+    than dropped. Only `loc` and `msg` are read: a Pydantic error's `input` can
+    be any object, and rendering it is what turned a 422 into a 500 (#1048).
+    """
+    try:
+        return model.model_validate(params)
+    except ValidationError as exc:
+        details = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc']) or 'body'}: {error['msg']}"
+            for error in exc.errors()
+        )
+        raise OAuthProtocolError(
+            "invalid_request", details or "Request parameters failed validation."
+        ) from exc
+
+
+def _oauth_request_body(model: Type[BaseModel], description: str) -> dict[str, Any]:
+    """The `openapi_extra` requestBody declaring both accepted encodings.
+
+    Hand-written because the routes take a raw Request: FastAPI derives a
+    requestBody from a `Body(...)` parameter, and there is no such parameter to
+    derive it from. The schema is inlined rather than `$ref`-ed for the same
+    reason — nothing else puts these models in `components.schemas`.
+    """
+    schema = model.model_json_schema()
+    return {
+        "requestBody": {
+            "required": True,
+            "description": description,
+            "content": {
+                FORM_MEDIA_TYPE: {"schema": schema},
+                "application/json": {"schema": schema},
+            },
+        }
+    }
+
+
+_RFC6749_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {
+        "model": OAuthErrorResponse,
+        "description": (
+            "RFC 6749 §5.2 error: `invalid_request`, `invalid_grant`, "
+            "`unsupported_grant_type`, or `unsupported_token_type`."
+        ),
+    },
+    415: {
+        "model": OAuthErrorResponse,
+        "description": (
+            "Body is neither `application/x-www-form-urlencoded` nor "
+            "`application/json`."
+        ),
+    },
+}
 
 
 # ============================================================
@@ -475,13 +715,29 @@ async def post_authorization_approval(
 @router.post(
     "/token",
     response_model=TokenResponse,
+    responses={
+        **_RFC6749_ERROR_RESPONSES,
+        500: {
+            "model": OAuthErrorResponse,
+            "description": "RFC 6749 §5.2 `server_error`.",
+        },
+    },
     dependencies=[Depends(require_oauth_rate_limit_token)],
+    openapi_extra=_oauth_request_body(
+        TokenRequest,
+        "RFC 6749 §3.2 form encoding, or the same parameters as a JSON object.",
+    ),
 )
 async def token(
-    token_request: TokenRequest = Body(...),
+    request: Request,
+    response: Response,
     oauth_service: IOAuthService = Depends(get_oauth_service),
-) -> TokenResponse:
+) -> Any:
     """OAuth 2.0 Token Endpoint.
+
+    Accepts `application/x-www-form-urlencoded` (RFC 6749 §3.2) or
+    `application/json`; errors are RFC 6749 §5.2 objects
+    (`{"error": ..., "error_description": ...}`), not FastAPI's `detail` shape.
 
     Handles two grant types:
     1. authorization_code: Exchange authorization code for access/refresh tokens
@@ -500,30 +756,43 @@ async def token(
     4. Extension updates stored tokens
 
     Args:
-        token_request: Token request (authorization_code or refresh_token)
+        request: Raw request; the body is parsed per its content type
+        response: Used to attach the RFC 6749 §5.1 no-store headers
         oauth_service: OAuth service dependency
 
     Returns:
-        Access token, refresh token, and user information
-
-    Raises:
-        HTTPException: 400 if request invalid, 401 if grant invalid
+        TokenResponse on success; an RFC 6749 §5.2 error body otherwise
+        (400 invalid_request / invalid_grant / unsupported_grant_type,
+        415 unsupported content type, 500 server_error).
     """
     try:
+        params = await _read_oauth_params(request)
+
+        # Checked before model validation so an unknown grant answers
+        # `unsupported_grant_type` (RFC 6749 §5.2) instead of being reported as
+        # a bad value for a field.
+        grant_type = params.get("grant_type")
+        if grant_type is None:
+            raise OAuthProtocolError(
+                "invalid_request", "Missing required parameter: grant_type."
+            )
+        if grant_type not in SUPPORTED_GRANT_TYPES:
+            raise OAuthProtocolError(
+                "unsupported_grant_type",
+                f"Unsupported grant_type '{_echo(grant_type)}'. Supported: "
+                + ", ".join(SUPPORTED_GRANT_TYPES)
+                + ".",
+            )
+
+        token_request = _validate_oauth_params(TokenRequest, params)
+
         if token_request.grant_type == "authorization_code":
-            # Validate required parameters
-            if not token_request.code:
-                raise HTTPException(
-                    status_code=400, detail="Missing required parameter: code"
-                )
-            if not token_request.redirect_uri:
-                raise HTTPException(
-                    status_code=400, detail="Missing required parameter: redirect_uri"
-                )
-            if not token_request.code_verifier:
-                raise HTTPException(
-                    status_code=400, detail="Missing required parameter: code_verifier"
-                )
+            for parameter in ("code", "redirect_uri", "code_verifier"):
+                if not getattr(token_request, parameter):
+                    raise OAuthProtocolError(
+                        "invalid_request",
+                        f"Missing required parameter: {parameter}.",
+                    )
 
             # Exchange authorization code for tokens
             token_dto = await oauth_service.exchange_code_for_token(
@@ -537,10 +806,9 @@ async def token(
             )
 
         elif token_request.grant_type == "refresh_token":
-            # Validate required parameters
             if not token_request.refresh_token:
-                raise HTTPException(
-                    status_code=400, detail="Missing required parameter: refresh_token"
+                raise OAuthProtocolError(
+                    "invalid_request", "Missing required parameter: refresh_token."
                 )
 
             # Refresh access token
@@ -552,44 +820,76 @@ async def token(
             logger.info(f"Refreshed access token (user: {token_dto.user_id})")
 
         else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported grant_type: {token_request.grant_type}",
+            # Reachable only if GrantType gains a member without a branch here:
+            # the membership check above has already answered every value that
+            # is not in the Literal.
+            raise OAuthProtocolError(
+                "unsupported_grant_type",
+                f"grant_type '{token_request.grant_type}' is accepted but not "
+                "implemented.",
             )
 
-        # Convert DTO to response model
-        return TokenResponse(
-            access_token=token_dto.access_token,
-            refresh_token=token_dto.refresh_token,
-            token_type=token_dto.token_type,
-            expires_in=token_dto.expires_in,
-            refresh_expires_in=token_dto.refresh_expires_in,
-            user_id=token_dto.user_id,
-            username=token_dto.username,
-        )
-
-    except InvalidGrantError as e:
-        logger.warning(f"Invalid grant: {e}")
-        raise HTTPException(status_code=401, detail=str(e))
-    except HTTPException:
+    except OAuthProtocolError:
+        # Already the client's answer: re-raise for the RFC renderer.
         raise
+    except InvalidRequestError as e:
+        logger.warning(f"Invalid token request: {e}")
+        raise OAuthProtocolError("invalid_request", str(e)) from e
+    except InvalidGrantError as e:
+        # RFC 6749 §5.2 puts invalid_grant at 400. It was a 401 before this
+        # endpoint had an RFC error body to carry the code in.
+        #
+        # The message crosses to the client because these are curated, literal,
+        # caller-facing strings ("PKCE verification failed", "Authorization code
+        # expired") — the 4xx domain-message case the leak guard deliberately
+        # allows. The 5xx arm below carries nothing from its exception.
+        logger.warning(f"Invalid grant: {e}")
+        raise OAuthProtocolError("invalid_grant", str(e)) from e
     except Exception as e:
         logger.error(f"Token endpoint error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise OAuthProtocolError("server_error", "Internal server error.", 500) from e
+
+    # RFC 6749 §5.1: the body carries fresh credentials.
+    response.headers.update(_NO_STORE_HEADERS)
+
+    # Convert DTO to response model
+    return TokenResponse(
+        access_token=token_dto.access_token,
+        refresh_token=token_dto.refresh_token,
+        token_type=token_dto.token_type,
+        expires_in=token_dto.expires_in,
+        refresh_expires_in=token_dto.refresh_expires_in,
+        user_id=token_dto.user_id,
+        username=token_dto.username,
+    )
 
 
 @router.post(
     "/revoke",
     status_code=200,
+    responses={
+        **_RFC6749_ERROR_RESPONSES,
+        503: {
+            "model": OAuthErrorResponse,
+            "description": "Revocation could not be recorded (RFC 7009 §2.2.1).",
+        },
+    },
     dependencies=[Depends(require_oauth_rate_limit_revoke)],
+    openapi_extra=_oauth_request_body(
+        RevokeRequest,
+        "RFC 7009 §2.1 form encoding, or the same parameters as a JSON object.",
+    ),
 )
 async def revoke(
-    revoke_request: RevokeRequest = Body(...),
+    request: Request,
+    response: Response,
     oauth_service: IOAuthService = Depends(get_oauth_service),
-) -> dict:
+) -> Any:
     """OAuth 2.0 Token Revocation Endpoint.
 
-    Revokes access tokens or refresh tokens (for logout).
+    Revokes access tokens or refresh tokens (for logout). Accepts
+    `application/x-www-form-urlencoded` (RFC 7009 §2.1) or `application/json`;
+    errors use the RFC 6749 §5.2 shape that RFC 7009 §2.2.1 refers to.
 
     When to revoke:
     - User logs out: Revoke both access and refresh tokens
@@ -597,15 +897,31 @@ async def revoke(
     - Token rotation: Old refresh token revoked automatically
 
     Args:
-        revoke_request: Token revocation request
+        request: Raw request; the body is parsed per its content type
+        response: Used to attach the no-store headers
         oauth_service: OAuth service dependency
 
     Returns:
-        Success response (200 OK, no body per RFC 7009)
+        Empty object (200 OK per RFC 7009), or an RFC 6749 §5.2 error body.
 
     Note: Returns 200 even if token doesn't exist (per RFC 7009)
     """
     try:
+        params = await _read_oauth_params(request)
+
+        # RFC 7009 §2.2.1 gives an unrecognised hint its own error code, so it
+        # is answered before the model reports it as a bad field value.
+        hint = params.get("token_type_hint")
+        if hint is not None and hint not in SUPPORTED_TOKEN_TYPE_HINTS:
+            raise OAuthProtocolError(
+                "unsupported_token_type",
+                f"Unsupported token_type_hint '{_echo(hint)}'. Supported: "
+                + ", ".join(SUPPORTED_TOKEN_TYPE_HINTS)
+                + ".",
+            )
+
+        revoke_request = _validate_oauth_params(RevokeRequest, params)
+
         # Determine token type
         token_type = revoke_request.token_type_hint or "access_token"
 
@@ -616,9 +932,8 @@ async def revoke(
             await oauth_service.revoke_token(revoke_request.token)
             logger.info(f"Revoked access token for client {revoke_request.client_id}")
 
-        # Per RFC 7009, return 200 OK even if token invalid/not found
-        return {}
-
+    except OAuthProtocolError:
+        raise
     except Exception as e:
         logger.error(f"Token revocation error: {e}")
         # Invalid/unknown tokens are already treated as success inside the
@@ -626,7 +941,13 @@ async def revoke(
         # NOT recorded (e.g. store outage). Surface it (RFC 7009 §2.2.1
         # permits 503) so the client retries instead of believing the token
         # is dead.
-        raise HTTPException(
-            status_code=503,
-            detail="Token revocation temporarily unavailable. Please retry.",
-        )
+        raise OAuthProtocolError(
+            "temporarily_unavailable",
+            "Token revocation temporarily unavailable. Please retry.",
+            503,
+        ) from e
+
+    response.headers.update(_NO_STORE_HEADERS)
+
+    # Per RFC 7009, return 200 OK even if token invalid/not found
+    return {}

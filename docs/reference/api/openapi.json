@@ -3829,6 +3829,27 @@
         "title": "OAuthConfigResponse",
         "type": "object"
       },
+      "OAuthErrorResponse": {
+        "description": "An RFC 6749 \u00a75.2 error, as `/token` and `/revoke` answer it.\n\nDeclared for the OpenAPI document; the body itself is written by\n``api.exception_handlers.oauth_protocol_error_handler``. It carries these\ntwo fields and no others \u2014 notably no `correlation_id`, which travels in\nthe `X-Correlation-ID` / `X-Request-ID` response headers instead (the\nmiddleware that stamps the latter is skipped in test environments, so a\nbody field sourced from it would exist in production and nowhere a client\nauthor could try it).",
+        "properties": {
+          "error": {
+            "description": "RFC 6749 \u00a75.2 error code, e.g. 'invalid_grant'",
+            "title": "Error",
+            "type": "string"
+          },
+          "error_description": {
+            "description": "Human-readable explanation, for the developer holding the request",
+            "title": "Error Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "error_description"
+        ],
+        "title": "OAuthErrorResponse",
+        "type": "object"
+      },
       "OperatorAccessAuditEntry": {
         "description": "One recorded platform-operator access (ADR-012 D8/D9).\n\nCarries identifiers, an action and context counts only \u2014 never case titles\nor content, which is what lets the trail be read without a break-glass\ngrant.",
         "properties": {
@@ -4548,43 +4569,6 @@
           "evidence_collected"
         ],
         "title": "ResolutionSummary",
-        "type": "object"
-      },
-      "RevokeRequest": {
-        "description": "OAuth token revocation request.\n\nSupports revoking both access tokens and refresh tokens.",
-        "properties": {
-          "client_id": {
-            "description": "OAuth client ID",
-            "title": "Client Id",
-            "type": "string"
-          },
-          "token": {
-            "description": "Token to revoke (access or refresh)",
-            "title": "Token",
-            "type": "string"
-          },
-          "token_type_hint": {
-            "anyOf": [
-              {
-                "enum": [
-                  "access_token",
-                  "refresh_token"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Hint about token type (optional)",
-            "title": "Token Type Hint"
-          }
-        },
-        "required": [
-          "token",
-          "client_id"
-        ],
-        "title": "RevokeRequest",
         "type": "object"
       },
       "RevokeUserTokensResponse": {
@@ -5539,79 +5523,6 @@
           "refresh_token"
         ],
         "title": "TokenRefreshResponse",
-        "type": "object"
-      },
-      "TokenRequest": {
-        "description": "OAuth token request (authorization_code or refresh_token grant).\n\nTwo grant types supported:\n1. authorization_code: Exchange code for tokens\n2. refresh_token: Refresh access token using refresh token",
-        "properties": {
-          "client_id": {
-            "description": "OAuth client ID",
-            "title": "Client Id",
-            "type": "string"
-          },
-          "code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Authorization code (required for authorization_code grant)",
-            "title": "Code"
-          },
-          "code_verifier": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "PKCE code verifier (required for authorization_code grant)",
-            "title": "Code Verifier"
-          },
-          "grant_type": {
-            "description": "Grant type: 'authorization_code' or 'refresh_token'",
-            "enum": [
-              "authorization_code",
-              "refresh_token"
-            ],
-            "title": "Grant Type",
-            "type": "string"
-          },
-          "redirect_uri": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Redirect URI (required for authorization_code grant, must match)",
-            "title": "Redirect Uri"
-          },
-          "refresh_token": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Refresh token (required for refresh_token grant)",
-            "title": "Refresh Token"
-          }
-        },
-        "required": [
-          "grant_type",
-          "client_id"
-        ],
-        "title": "TokenRequest",
         "type": "object"
       },
       "TokenResponse": {
@@ -8000,16 +7911,94 @@
     },
     "/api/v1/auth/oauth/revoke": {
       "post": {
-        "description": "OAuth 2.0 Token Revocation Endpoint.\n\nRevokes access tokens or refresh tokens (for logout).\n\nWhen to revoke:\n- User logs out: Revoke both access and refresh tokens\n- Security event: Revoke all tokens for user\n- Token rotation: Old refresh token revoked automatically\n\nArgs:\n    revoke_request: Token revocation request\n    oauth_service: OAuth service dependency\n\nReturns:\n    Success response (200 OK, no body per RFC 7009)\n\nNote: Returns 200 even if token doesn't exist (per RFC 7009)",
+        "description": "OAuth 2.0 Token Revocation Endpoint.\n\nRevokes access tokens or refresh tokens (for logout). Accepts\n`application/x-www-form-urlencoded` (RFC 7009 \u00a72.1) or `application/json`;\nerrors use the RFC 6749 \u00a75.2 shape that RFC 7009 \u00a72.2.1 refers to.\n\nWhen to revoke:\n- User logs out: Revoke both access and refresh tokens\n- Security event: Revoke all tokens for user\n- Token rotation: Old refresh token revoked automatically\n\nArgs:\n    request: Raw request; the body is parsed per its content type\n    response: Used to attach the no-store headers\n    oauth_service: OAuth service dependency\n\nReturns:\n    Empty object (200 OK per RFC 7009), or an RFC 6749 \u00a75.2 error body.\n\nNote: Returns 200 even if token doesn't exist (per RFC 7009)",
         "operationId": "revoke_api_v1_auth_oauth_revoke_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RevokeRequest"
+                "description": "OAuth token revocation request.\n\nSupports revoking both access tokens and refresh tokens.",
+                "properties": {
+                  "client_id": {
+                    "description": "OAuth client ID",
+                    "minLength": 1,
+                    "title": "Client Id",
+                    "type": "string"
+                  },
+                  "token": {
+                    "description": "Token to revoke (access or refresh)",
+                    "minLength": 1,
+                    "title": "Token",
+                    "type": "string"
+                  },
+                  "token_type_hint": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "access_token",
+                          "refresh_token"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Hint about token type (optional)",
+                    "title": "Token Type Hint"
+                  }
+                },
+                "required": [
+                  "token",
+                  "client_id"
+                ],
+                "title": "RevokeRequest",
+                "type": "object"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "description": "OAuth token revocation request.\n\nSupports revoking both access tokens and refresh tokens.",
+                "properties": {
+                  "client_id": {
+                    "description": "OAuth client ID",
+                    "minLength": 1,
+                    "title": "Client Id",
+                    "type": "string"
+                  },
+                  "token": {
+                    "description": "Token to revoke (access or refresh)",
+                    "minLength": 1,
+                    "title": "Token",
+                    "type": "string"
+                  },
+                  "token_type_hint": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "access_token",
+                          "refresh_token"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Hint about token type (optional)",
+                    "title": "Token Type Hint"
+                  }
+                },
+                "required": [
+                  "token",
+                  "client_id"
+                ],
+                "title": "RevokeRequest",
+                "type": "object"
               }
             }
           },
+          "description": "RFC 7009 \u00a72.1 form encoding, or the same parameters as a JSON object.",
           "required": true
         },
         "responses": {
@@ -8017,23 +8006,41 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Revoke Api V1 Auth Oauth Revoke Post",
-                  "type": "object"
+                  "title": "Response Revoke Api V1 Auth Oauth Revoke Post"
                 }
               }
             },
             "description": "Successful Response"
           },
-          "422": {
+          "400": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/OAuthErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "RFC 6749 \u00a75.2 error: `invalid_request`, `invalid_grant`, `unsupported_grant_type`, or `unsupported_token_type`."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorResponse"
+                }
+              }
+            },
+            "description": "Body is neither `application/x-www-form-urlencoded` nor `application/json`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorResponse"
+                }
+              }
+            },
+            "description": "Revocation could not be recorded (RFC 7009 \u00a72.2.1)."
           }
         },
         "summary": "Revoke",
@@ -8044,16 +8051,164 @@
     },
     "/api/v1/auth/oauth/token": {
       "post": {
-        "description": "OAuth 2.0 Token Endpoint.\n\nHandles two grant types:\n1. authorization_code: Exchange authorization code for access/refresh tokens\n2. refresh_token: Refresh access token using refresh token\n\nAuthorization Code Flow:\n1. Extension calls /authorize and gets authorization code\n2. Extension exchanges code + verifier for tokens\n3. Extension stores tokens securely\n4. Extension uses access token for API requests\n\nRefresh Token Flow:\n1. Extension detects access token expiring soon (< 5 minutes)\n2. Extension exchanges refresh token for new access token\n3. Extension gets new access token + rotated refresh token\n4. Extension updates stored tokens\n\nArgs:\n    token_request: Token request (authorization_code or refresh_token)\n    oauth_service: OAuth service dependency\n\nReturns:\n    Access token, refresh token, and user information\n\nRaises:\n    HTTPException: 400 if request invalid, 401 if grant invalid",
+        "description": "OAuth 2.0 Token Endpoint.\n\nAccepts `application/x-www-form-urlencoded` (RFC 6749 \u00a73.2) or\n`application/json`; errors are RFC 6749 \u00a75.2 objects\n(`{\"error\": ..., \"error_description\": ...}`), not FastAPI's `detail` shape.\n\nHandles two grant types:\n1. authorization_code: Exchange authorization code for access/refresh tokens\n2. refresh_token: Refresh access token using refresh token\n\nAuthorization Code Flow:\n1. Extension calls /authorize and gets authorization code\n2. Extension exchanges code + verifier for tokens\n3. Extension stores tokens securely\n4. Extension uses access token for API requests\n\nRefresh Token Flow:\n1. Extension detects access token expiring soon (< 5 minutes)\n2. Extension exchanges refresh token for new access token\n3. Extension gets new access token + rotated refresh token\n4. Extension updates stored tokens\n\nArgs:\n    request: Raw request; the body is parsed per its content type\n    response: Used to attach the RFC 6749 \u00a75.1 no-store headers\n    oauth_service: OAuth service dependency\n\nReturns:\n    TokenResponse on success; an RFC 6749 \u00a75.2 error body otherwise\n    (400 invalid_request / invalid_grant / unsupported_grant_type,\n    415 unsupported content type, 500 server_error).",
         "operationId": "token_api_v1_auth_oauth_token_post",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TokenRequest"
+                "description": "OAuth token request (authorization_code or refresh_token grant).\n\nTwo grant types supported:\n1. authorization_code: Exchange code for tokens\n2. refresh_token: Refresh access token using refresh token",
+                "properties": {
+                  "client_id": {
+                    "description": "OAuth client ID",
+                    "minLength": 1,
+                    "title": "Client Id",
+                    "type": "string"
+                  },
+                  "code": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Authorization code (required for authorization_code grant)",
+                    "title": "Code"
+                  },
+                  "code_verifier": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "PKCE code verifier (required for authorization_code grant)",
+                    "title": "Code Verifier"
+                  },
+                  "grant_type": {
+                    "description": "Grant type: 'authorization_code' or 'refresh_token'",
+                    "enum": [
+                      "authorization_code",
+                      "refresh_token"
+                    ],
+                    "title": "Grant Type",
+                    "type": "string"
+                  },
+                  "redirect_uri": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Redirect URI (required for authorization_code grant, must match)",
+                    "title": "Redirect Uri"
+                  },
+                  "refresh_token": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Refresh token (required for refresh_token grant)",
+                    "title": "Refresh Token"
+                  }
+                },
+                "required": [
+                  "grant_type",
+                  "client_id"
+                ],
+                "title": "TokenRequest",
+                "type": "object"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "description": "OAuth token request (authorization_code or refresh_token grant).\n\nTwo grant types supported:\n1. authorization_code: Exchange code for tokens\n2. refresh_token: Refresh access token using refresh token",
+                "properties": {
+                  "client_id": {
+                    "description": "OAuth client ID",
+                    "minLength": 1,
+                    "title": "Client Id",
+                    "type": "string"
+                  },
+                  "code": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Authorization code (required for authorization_code grant)",
+                    "title": "Code"
+                  },
+                  "code_verifier": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "PKCE code verifier (required for authorization_code grant)",
+                    "title": "Code Verifier"
+                  },
+                  "grant_type": {
+                    "description": "Grant type: 'authorization_code' or 'refresh_token'",
+                    "enum": [
+                      "authorization_code",
+                      "refresh_token"
+                    ],
+                    "title": "Grant Type",
+                    "type": "string"
+                  },
+                  "redirect_uri": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Redirect URI (required for authorization_code grant, must match)",
+                    "title": "Redirect Uri"
+                  },
+                  "refresh_token": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "Refresh token (required for refresh_token grant)",
+                    "title": "Refresh Token"
+                  }
+                },
+                "required": [
+                  "grant_type",
+                  "client_id"
+                ],
+                "title": "TokenRequest",
+                "type": "object"
               }
             }
           },
+          "description": "RFC 6749 \u00a73.2 form encoding, or the same parameters as a JSON object.",
           "required": true
         },
         "responses": {
@@ -8067,15 +8222,35 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "400": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/OAuthErrorResponse"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "RFC 6749 \u00a75.2 error: `invalid_request`, `invalid_grant`, `unsupported_grant_type`, or `unsupported_token_type`."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorResponse"
+                }
+              }
+            },
+            "description": "Body is neither `application/x-www-form-urlencoded` nor `application/json`."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthErrorResponse"
+                }
+              }
+            },
+            "description": "RFC 6749 \u00a75.2 `server_error`."
           }
         },
         "summary": "Token",

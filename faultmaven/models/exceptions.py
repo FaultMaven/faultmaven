@@ -125,6 +125,39 @@ class OAuthError(FaultMavenError):
         super().__init__(message, error_code or "OAUTH_ERROR", context)
 
 
+class OAuthProtocolError(OAuthError):
+    """An RFC 6749 §5.2 error to be rendered to the client verbatim.
+
+    Distinct from the OAuth exceptions below, which say what went wrong
+    *inside* the service. This one says what the client is to be told: an
+    `error` code from the RFC's registry, a description written for whoever is
+    holding the failing request, and the status to answer with.
+
+    Raised only by `POST /auth/oauth/token` and `POST /auth/oauth/revoke`, and
+    rendered by ``api.exception_handlers.oauth_protocol_error_handler``. Every
+    other route — `GET /auth/oauth/authorize` included — keeps FastAPI's
+    ``{"detail": ...}`` shape, so this must stay a type those routes do not
+    raise (#1150).
+
+    It is an exception rather than a returned response so that the endpoints
+    need no ``return`` inside an ``except`` block: that shape leaks internal
+    exception text into unauthenticated bodies, and
+    ``tests/unit/modules/auth/api/test_auth_error_text_not_echoed.py`` refuses
+    it structurally.
+    """
+
+    def __init__(
+        self,
+        error: str,
+        error_description: str,
+        status_code: int = 400,
+    ):
+        super().__init__(error_description, error_code=error.upper())
+        self.error = error
+        self.error_description = error_description
+        self.status_code = status_code
+
+
 class InvalidRequestError(OAuthError):
     """Invalid OAuth request (missing or invalid parameters)"""
 

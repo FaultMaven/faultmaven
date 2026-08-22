@@ -316,7 +316,9 @@ class TestCompleteOAuthFlow:
             },
         )
 
-        assert second_response.status_code == status.HTTP_401_UNAUTHORIZED
+        # RFC 6749 §5.2: a replayed code is invalid_grant, at 400 (#1150).
+        assert second_response.status_code == status.HTTP_400_BAD_REQUEST
+        assert second_response.json()["error"] == "invalid_grant"
 
     @pytest.mark.asyncio
     async def test_pkce_verification_prevents_code_interception(
@@ -357,7 +359,9 @@ class TestCompleteOAuthFlow:
             },
         )
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        # RFC 6749 §5.2: a rejected grant is invalid_grant, at 400 (#1150).
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.json()["error"] == "invalid_grant"
 
 
 class TestTokenRevocation:
@@ -469,7 +473,9 @@ class TestOAuthErrorHandling:
             },
         )
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        # RFC 6749 §5.2: a rejected grant is invalid_grant, at 400 (#1150).
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.json()["error"] == "invalid_grant"
 
     @pytest.mark.asyncio
     async def test_redirect_uri_mismatch(self, authenticated_client, pkce_pair):
@@ -501,4 +507,6 @@ class TestOAuthErrorHandling:
             },
         )
 
-        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        # RFC 6749 §5.2: a rejected grant is invalid_grant, at 400 (#1150).
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.json()["error"] == "invalid_grant"
