@@ -14,13 +14,14 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import Request, status
+from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from faultmaven.api.exception_handlers import (
     authorization_exception_handler,
     conflict_exception_handler,
     get_exception_handlers,
+    http_exception_handler,
     not_found_exception_handler,
     oauth_protocol_error_handler,
     service_error_handler,
@@ -442,6 +443,129 @@ class TestOAuthProtocolErrorHandler:
 
         assert response.headers["cache-control"] == "no-store"
         assert response.headers["pragma"] == "no-cache"
+
+
+class TestDictDetailIsCoerced:
+    """A dict `detail` cannot promise a renderable message.
+
+    `http_exception_handler` pulls a message out of a dict `detail` and puts it
+    straight into a JSONResponse. Both branches take whatever the raising code
+    put there — `nested["message"]`, or `detail.get("message")` — so a value the
+    encoder cannot render raised *inside the handler* and turned a deliberate
+    4xx into a 500 with none of the message the client was meant to see. That is
+    the defect #1048 fixed for the validation handler, which lived on here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_nonserializable_nested_message_still_answers_its_status(
+        self, mock_request
+    ):
+        class Unrenderable:
+            def __repr__(self):
+                return "<Unrenderable>"
+
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(
+                status_code=400,
+                detail={"error": {"code": "x", "message": Unrenderable()}},
+            ),
+        )
+
+        assert response.status_code == 400
+        assert json.loads(response.body)["detail"] == "<Unrenderable>"
+
+    @pytest.mark.asyncio
+    async def test_a_nonserializable_flat_message_still_answers_its_status(
+        self, mock_request
+    ):
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(status_code=409, detail={"message": object()}),
+        )
+
+        assert response.status_code == 409
+        assert isinstance(json.loads(response.body)["detail"], str)
+
+    @pytest.mark.asyncio
+    async def test_a_string_detail_with_a_lone_surrogate_still_answers(
+        self, mock_request
+    ):
+        """The other branch, and the likelier one in practice.
+
+        A `str` detail is not a safe type here. A lone surrogate reaches one
+        from a *valid* JSON body — `json.loads('"\ud800"')` succeeds — and
+        user-supplied strings are interpolated straight into details
+        (`auth.py`'s `username`, `admin_config.py`'s `provider_name`). The
+        encoder then raised inside this handler, and the deliberate 4xx became
+        a 500 carrying none of the message.
+        """
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(status_code=409, detail="user '\ud800' already exists"),
+        )
+
+        assert response.status_code == 409
+        # Rendered at all is the property; the surrogate itself is
+        # unrepresentable, so what it becomes is `to_json_safe`'s business.
+        assert "already exists" in json.loads(response.body)["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_dict_whose_repr_raises_still_answers_its_status(
+        self, mock_request
+    ):
+        """The fallback path, where the stringification itself was the hazard.
+
+        With no `message` or `detail` key the handler fell back to
+        `str(detail)` — and `str()` on a container calls `repr()` on its
+        members, so a value with a raising `__repr__` blew up inside the
+        handler. Coercing had to move ahead of the stringification, not after.
+        """
+
+        class Boom:
+            def __repr__(self):
+                raise RuntimeError("repr exploded")
+
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(status_code=400, detail={"code": "x", "payload": Boom()}),
+        )
+
+        assert response.status_code == 400
+        assert isinstance(json.loads(response.body)["detail"], str)
+
+    @pytest.mark.parametrize("detail", [["a", "b"], 42, ("x",)])
+    @pytest.mark.asyncio
+    async def test_a_non_string_detail_stays_text(self, mock_request, detail):
+        """`detail` is rendered verbatim by clients, so its type is contract.
+
+        Coercing with `to_json_safe` alone preserved native JSON types, which
+        would have published a list detail as an array and an int as a number
+        where both were previously stringified.
+        """
+        response = await http_exception_handler(
+            mock_request, HTTPException(status_code=400, detail=detail)
+        )
+
+        assert isinstance(json.loads(response.body)["detail"], str)
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_string_detail_is_unchanged(self, mock_request):
+        response = await http_exception_handler(
+            mock_request, HTTPException(status_code=404, detail="Case not found")
+        )
+
+        assert json.loads(response.body) == {"detail": "Case not found"}
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_message_is_unchanged(self, mock_request):
+        """Coercion must not reshape the common case."""
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(status_code=404, detail={"error": {"message": "not found"}}),
+        )
+
+        assert json.loads(response.body) == {"detail": "not found"}
 
 
 class TestResponseFormatConsistency:

@@ -1765,6 +1765,7 @@ else:
 # Register domain exception handlers (TASK-027)
 from faultmaven.api.exception_handlers import (
     get_exception_handlers,
+    http_exception_handler,
     request_validation_exception_handler,
 )
 
@@ -1783,41 +1784,13 @@ logger.info("✅ Domain exception handlers registered")
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """Custom HTTPException handler to ensure consistent error response format"""
-    detail = exc.detail
-
-    # Two dict-detail shapes reach here, and both must yield the human message
-    # because clients render `detail` verbatim as user-facing text:
-    #
-    #   nested — `ErrorResponse.model_dump()`, built at runtime by the case
-    #            router: {"schema_version": ..., "error": {"code", "message"}}
-    #   flat   — written literally: {"error": "<code>", "message": "<text>"}
-    #
-    # The `error` value is a str in the flat shape, so the nested branch must
-    # test the *type* before subscripting: `"message" in detail["error"]` alone
-    # is a substring test over the error code, and a code such as
-    # "message_send_failed" would take the branch and raise TypeError here,
-    # inside the exception handler.
-    if isinstance(detail, dict):
-        nested = detail.get("error")
-        if isinstance(nested, dict) and "message" in nested:
-            message = nested["message"]
-        else:
-            message = detail.get("message") or detail.get("detail") or str(detail)
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": message},
-            headers=getattr(exc, "headers", None),
-        )
-    # If detail is a string, return it as expected by tests
-    else:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"detail": str(detail)},
-            headers=getattr(exc, "headers", None),
-        )
+# HTTPException is registered explicitly too, and that is load-bearing rather
+# than stylistic: FastAPI does `exception_handlers.setdefault(HTTPException,
+# ...)` at construction, so losing this registration does NOT leave the
+# exception unhandled — it falls back to FastAPI's default, which renders a
+# dict `detail` into the body raw. The failure would be silent, which is why
+# `tests/integration/api/test_exception_handlers_are_registered.py` asserts it.
+app.add_exception_handler(HTTPException, http_exception_handler)
 
 
 @app.exception_handler(500)
