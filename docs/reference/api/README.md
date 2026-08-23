@@ -1362,13 +1362,18 @@ a "revoked" confirmation while the real account kept authenticating —
 the same false-confirmation failure this endpoint was fixed for.
 
 The revocation happens BEFORE that lookup and is never conditional on it.
-``DatabaseUserStore.get_user`` swallows its exceptions and returns None, so
-an auth-DB outage is indistinguishable from a genuinely absent user (see
-#703, where exactly that DB froze). Gating on it would let a DB blip answer
-"user not found" to an admin containing a live compromise, having revoked
-nothing. Revocation only needs Redis, so it runs on Redis alone; the lookup
-only shapes the response. A watermark written for an id that turns out not
-to exist is inert and expires on its own.
+Gating on it would let an auth-DB blip answer "user not found" to an admin
+containing a live compromise, having revoked nothing (see #703, where
+exactly that DB froze). Revocation only needs Redis, so it runs on Redis
+alone; the lookup only shapes the response. A watermark written for an id
+that turns out not to exist is inert and expires on its own.
+
+Since #1043 the lookup distinguishes its two outcomes, so this endpoint
+reports them differently: a completed lookup that matched nothing is the
+404 above, while a lookup that could not run returns **200** naming the
+revocation as landed and the identity as unverified. It has to be a 200 —
+the tokens really are dead, and a 5xx here would tell the admin the
+containment failed and send them to do it again.
 
 **Tags:** `authentication`
 
