@@ -512,10 +512,29 @@ async def service_error_handler(
 # =============================================================================
 
 
+#: Ceiling on the human-facing `detail` string, in characters.
+#:
+#: Deliberately its own constant rather than `to_json_safe`'s default. That
+#: default (512) is tuned for bounding an *echoed request body* in a 422 — a
+#: different job with a different right answer — and borrowing it silently
+#: truncated admin and LLM error text where callers previously got the whole
+#: message. `admin.py` and `admin_config.py` interpolate `str(e)` into details
+#: at twenty sites, and a provider error body clears 512 easily.
+#:
+#: Retuning the echo bound for echo reasons must not move error-message length
+#: with it, which is exactly what sharing the constant would have done, with
+#: nothing to notice.
+#:
+#: 2048 is a ceiling rather than a target: past a couple of thousand characters
+#: a "message" is a payload, and an unbounded detail makes an unbounded
+#: response.
+MAX_DETAIL_CHARS = 2048
+
+
 def _detail_text(value: Any) -> str:
     """A renderable string for the `detail` field, for any input.
 
-    Two properties, and both are load-bearing:
+    Three properties, and all are load-bearing:
 
     * **Total.** `to_json_safe` guards `repr` internally, so this cannot raise.
       Calling `str()` first does not: `str()` on a container invokes `repr()`
@@ -526,8 +545,10 @@ def _detail_text(value: Any) -> str:
       the field's type is part of the contract. Passing a list or an int
       through `to_json_safe` alone would publish it as a JSON array or number
       where it used to be stringified.
+    * **Bounded**, at `MAX_DETAIL_CHARS` rather than at `to_json_safe`'s
+      default — see that constant for why the two must not be the same number.
     """
-    safe = to_json_safe(value)
+    safe = to_json_safe(value, max_string_chars=MAX_DETAIL_CHARS)
     return safe if isinstance(safe, str) else str(safe)
 
 
