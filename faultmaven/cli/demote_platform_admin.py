@@ -1,15 +1,31 @@
-"""Demote Platform Admin to Regular User
+"""Demote a platform admin back to a regular user — the inverse of promotion.
 
-This script removes the 'platform_admin' role from a user account.
+``platform_admin`` is the DEPLOYMENT-scoped operator role (ADR-012 D9), and
+removing it revokes cross-tenant reach. But a promotion grants more than that
+one role: ``PLATFORM_ADMIN_ROLE_SET`` is ``user`` + org ``admin`` +
+``platform_admin``, because an operator needs authority inside its own
+organization too and ``platform_admin`` grants none by construction.
 
-That role is the DEPLOYMENT-scoped operator role (ADR-012 D9). Removing it
-revokes cross-tenant reach. It is NOT the organization-scoped 'admin' role,
-which is tenant-bounded; this script leaves that one untouched, so a user who
-also holds 'admin' keeps full authority inside their own organization.
+**This used to remove only ``platform_admin`` (#1040 item 3).** So
+promote-then-demote left the account holding the org-scoped ``admin`` it did not
+hold beforehand — deployment reach revoked, in-org authority silently added and
+kept. That was latent only because org roles enforce nothing at the API surface
+yet; it becomes a real privilege residue the moment they do, and by then the
+grant is old enough that nobody remembers where it came from.
+
+It now removes everything a promotion adds (``OPERATOR_GRANTED_ROLES``, derived
+from the same constant the grant uses so the two cannot drift again), leaving
+the base ``user`` marker so the account stays usable.
+
+**If the account held org ``admin`` before it was ever promoted**, this removes
+that too — nothing records which grant it came from. Pass ``--keep-org-admin``
+when you know it did, or re-grant it afterwards through the org-role API
+(``POST /api/v1/admin/users/{id}/roles``), which is where org roles belong and
+which is itself audited.
 
 Usage (``fm-demote-platform-admin``, installed with the package):
     fm-demote-platform-admin username
-    fm-demote-platform-admin bob
+    fm-demote-platform-admin bob --keep-org-admin
 
 In a Kubernetes deployment, run it in the API pod:
     kubectl exec -it deploy/faultmaven-api -- fm-demote-platform-admin bob
@@ -22,8 +38,13 @@ import sys
 from faultmaven.bootstrap.data_init import DEFAULT_ADMIN_USERNAME
 from faultmaven.cli._operator_role_audit import record_operator_role_change
 from faultmaven.container import container
+from faultmaven.exceptions import UserLookupFailed
 from faultmaven.models.interfaces_operator_audit import OperatorAction
-from faultmaven.modules.auth.contracts import PLATFORM_ADMIN_ROLE
+from faultmaven.modules.auth.contracts import (
+    BASE_USER_ROLE,
+    OPERATOR_GRANTED_ROLES,
+    PLATFORM_ADMIN_ROLE,
+)
 
 #: How to enumerate accounts. ``list_users.py`` is a checkout-only dev script
 #: (it is deliberately not a console entrypoint), so a pod needs the API.
@@ -34,8 +55,18 @@ _HOW_TO_LIST_USERS = (
 )
 
 
-async def demote_from_platform_admin(username: str) -> bool:
-    """Remove platform_admin role from user. Returns True on success."""
+async def demote_from_platform_admin(
+    username: str, *, keep_org_admin: bool = False
+) -> bool:
+    """Remove the operator roles from a user. Returns True on success.
+
+    Args:
+        username: Account to demote.
+        keep_org_admin: Leave the org-scoped ``admin`` role in place. Use it when
+            the account held that role independently of any promotion — this
+            command cannot tell, because nothing records which grant a role came
+            from (see the module docstring).
+    """
     print("=" * 80)
     print("Demote Platform Admin to Regular User")
     print("=" * 80)
@@ -52,7 +83,21 @@ async def demote_from_platform_admin(username: str) -> bool:
 
     # Find user
     print(f"\nLooking up user '{username}'...")
-    user = await user_store.get_user_by_username(username)
+    try:
+        user = await user_store.get_user_by_username(username)
+    except UserLookupFailed as exc:
+        # Not "not found": the store did not answer (#1043). Saying "not found"
+        # here would send an operator hunting for the right username while the
+        # real fault — an unavailable user store — stayed invisible, and the
+        # demotion they came to make had not happened.
+        print(
+            f"❌ The username lookup for '{username}' FAILED — this is not "
+            "'user not found'."
+        )
+        print("   Whether the account exists is unknown, and nothing was changed.")
+        print(f"   Underlying error: {exc}")
+        print("   Check the API logs and the database, then re-run.")
+        return False
     if not user:
         print(f"❌ User '{username}' not found")
         print()
@@ -83,13 +128,27 @@ async def demote_from_platform_admin(username: str) -> bool:
             print("❌ Cancelled")
             return False
 
-    # Remove platform_admin role
-    print(f"\nRemoving '{PLATFORM_ADMIN_ROLE}' role from user '{username}'...")
-    user.roles = [role for role in user.roles if role != PLATFORM_ADMIN_ROLE]
+    # Remove exactly what a promotion grants, so the two are inverses (#1040
+    # item 3). Derived from PLATFORM_ADMIN_ROLE_SET rather than restated here —
+    # restating it is how the asymmetry arose in the first place.
+    to_remove = [
+        role
+        for role in OPERATOR_GRANTED_ROLES
+        if not (keep_org_admin and role != PLATFORM_ADMIN_ROLE)
+    ]
+    removed = [role for role in to_remove if role in (user.roles or [])]
 
-    # Ensure user still has 'user' role
-    if "user" not in user.roles:
-        user.roles.append("user")
+    print(
+        f"\nRemoving {', '.join(repr(r) for r in to_remove)} from user '{username}'..."
+    )
+    if keep_org_admin:
+        print("   (--keep-org-admin: the org-scoped 'admin' role is left in place)")
+    user.roles = [role for role in user.roles if role not in to_remove]
+
+    # Leave a usable account: the base marker grants nothing, but an empty role
+    # list is not a state anything else in the system expects.
+    if BASE_USER_ROLE not in user.roles:
+        user.roles.append(BASE_USER_ROLE)
 
     # Update user
     try:
@@ -141,7 +200,10 @@ async def demote_from_platform_admin(username: str) -> bool:
             await record_operator_role_change(
                 action=OperatorAction.ROLE_REVOKED,
                 user=user,
-                roles_changed=[PLATFORM_ADMIN_ROLE],
+                # What was actually taken away, not what was aimed at: an
+                # account that already lacked the org role must not leave a
+                # trail claiming it was revoked.
+                roles_changed=removed,
                 invoked_via="fm-demote-platform-admin",
             )
         except Exception as audit_error:
@@ -177,16 +239,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="fm-demote-platform-admin",
         description=(
-            "Remove the deployment-scoped platform_admin role from a user. "
-            "The organization-scoped 'admin' role is left in place."
+            "Remove the operator roles from a user — the inverse of "
+            "fm-promote-platform-admin. Removes the deployment-scoped "
+            "platform_admin AND the organization-scoped admin that a promotion "
+            "grants alongside it; pass --keep-org-admin to leave the latter."
         ),
         epilog=_HOW_TO_LIST_USERS,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("username", help="Username of the account to demote")
+    parser.add_argument(
+        "--keep-org-admin",
+        action="store_true",
+        help=(
+            "Leave the organization-scoped 'admin' role in place. Use it when "
+            "the account held that role independently of any promotion — "
+            "nothing records which grant a role came from, so this command "
+            "cannot tell"
+        ),
+    )
     args = parser.parse_args()
 
-    success = asyncio.run(demote_from_platform_admin(args.username))
+    success = asyncio.run(
+        demote_from_platform_admin(args.username, keep_org_admin=args.keep_org_admin)
+    )
     sys.exit(0 if success else 1)
 
 

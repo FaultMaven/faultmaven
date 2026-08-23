@@ -359,7 +359,12 @@ class PostgreSQLUserRepository(UserRepository):
         the one to read for effective roles in either mode.
 
         Wiring the org-scoped `Permission` mapping to endpoint checks is the
-        remaining RBAC work; see #1040.
+        remaining RBAC work; see #1040 and
+        `docs/architecture/security/org-permission-enforcement.md`, which
+        concludes that the org axis should be resolved per request from
+        `organization_members` rather than minted here — so this field stays the
+        source of the `roles` claim without becoming the org authorization
+        source.
         """
         import json
 

@@ -30,10 +30,15 @@ from faultmaven.modules.auth.contracts import (
 from faultmaven.modules.auth.domain.models import rbac as auth_rbac
 from faultmaven.modules.auth.domain.services.user_service import UserService
 
-# Both live copies of the role vocabulary. `models.rbac` is the one
-# `UserService.assign_role` validates against and that migration 029 seeds;
-# `modules.auth...rbac` is the one the auth service uses. A role added to
-# either must satisfy the same invariant.
+# Both import paths for the role vocabulary. There used to be two separate
+# definitions here and this parametrisation was the tripwire keeping them
+# honest; since #1040 item 4 `modules.auth...rbac` re-exports
+# `models.rbac`, so these are the same object and the parametrisation asserts
+# the invariant once per door rather than once per copy. Kept because both doors
+# are live — `UserService.assign_role` validates against the first and
+# `contracts.py` re-exports the second — and a future fork would silently make
+# it mean two things again, which
+# `test_the_role_vocabulary_has_exactly_one_definition` below catches.
 ROLE_ENUMS = [models_rbac.Role, auth_rbac.Role]
 
 
@@ -295,3 +300,81 @@ class TestOperatorRoleSurvivesOrgRoleManagement:
         assert "user" in saved
         assert "member" not in saved  # org axis replaced
         assert "admin" in saved
+
+
+# =============================================================================
+# One vocabulary, two doors (#1040 item 4)
+# =============================================================================
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "name",
+    ["Role", "Permission", "ROLE_PERMISSIONS"],
+)
+def test_the_role_vocabulary_has_exactly_one_definition(name):
+    """The two modules must expose the *same* objects, not equal ones.
+
+    Identity rather than equality is the point. Two separately-defined enums
+    with identical members compare unequal member-by-member and pass most
+    plausible assertions anyway, so an equality check would keep passing right
+    through a re-fork — while `Role.ADMIN` from one import stopped matching
+    `Role.ADMIN` from the other in every `in` test and dict lookup in the
+    codebase.
+
+    Before #1040 item 4 these were genuinely two copies, and the failure this
+    guards is a role granting different permissions depending on which import
+    the caller reached for.
+    """
+    assert getattr(models_rbac, name) is getattr(auth_rbac, name)
+
+
+@pytest.mark.unit
+def test_the_operator_constants_stay_out_of_the_shared_vocabulary():
+    """`platform_admin` belongs to the auth module, not to the org role model.
+
+    The convergence pulled the org vocabulary down into `models.rbac`; it must
+    not have dragged the operator role with it. `models.rbac.Role` is what
+    `UserService.assign_role` validates against, so an operator constant landing
+    there is how the user-management API starts minting deployment operators —
+    the exact thing `test_platform_admin_is_not_an_org_role` forbids, arriving
+    by a different route.
+    """
+    assert not hasattr(models_rbac, "PLATFORM_ADMIN_ROLE")
+    assert not hasattr(models_rbac, "PLATFORM_ADMIN_ROLE_SET")
+    assert auth_rbac.PLATFORM_ADMIN_ROLE == PLATFORM_ADMIN_ROLE
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_demotion_removes_exactly_what_promotion_grants():
+    """The promote/demote asymmetry (#1040 item 3), pinned at the constant.
+
+    `fm-promote-platform-admin` grants PLATFORM_ADMIN_ROLE_SET; demotion used to
+    remove only `platform_admin`, so promote-then-demote left the account
+    holding the org-scoped `admin` it never had. Deriving one list from the
+    other is what makes them inverses — restating it is how they came apart.
+
+    The base `user` marker is excluded deliberately: a demotion must leave a
+    usable account, not an empty role list.
+    """
+    assert auth_rbac.OPERATOR_GRANTED_ROLES == [
+        r for r in PLATFORM_ADMIN_ROLE_SET if r != auth_rbac.BASE_USER_ROLE
+    ]
+    assert auth_rbac.BASE_USER_ROLE not in auth_rbac.OPERATOR_GRANTED_ROLES
+    assert PLATFORM_ADMIN_ROLE in auth_rbac.OPERATOR_GRANTED_ROLES
+    # The org role is the half that used to be left behind.
+    assert models_rbac.Role.ADMIN.value in auth_rbac.OPERATOR_GRANTED_ROLES
+
+
+@pytest.mark.unit
+def test_the_base_marker_grants_nothing():
+    """`user` is a marker, not a role — which is why demotion may leave it.
+
+    It is not a member of `Role`, so it maps to no permissions. If a future edit
+    made it grant something, "demotion leaves the base marker" would silently
+    become "demotion leaves authority behind", and #1040 item 2 (the
+    `user`/`member` vocabulary duplication) is exactly the kind of change that
+    would do it.
+    """
+    assert auth_rbac.get_permissions_for_roles([auth_rbac.BASE_USER_ROLE]) == set()

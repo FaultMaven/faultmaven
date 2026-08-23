@@ -21,6 +21,7 @@ import pytest
 
 from faultmaven.bootstrap.data_init import DEFAULT_ADMIN_USERNAME
 from faultmaven.cli import demote_platform_admin, promote_platform_admin
+from faultmaven.exceptions import UserLookupFailed
 from faultmaven.models.interfaces_operator_audit import OperatorAction
 from faultmaven.modules.auth.contracts import (
     PLATFORM_ADMIN_ROLE,
@@ -175,9 +176,19 @@ def test_promote_main_requires_a_username():
 # =============================================================================
 
 
-async def test_demote_removes_platform_admin_but_keeps_org_admin(wire, store):
-    """Withdrawing operator status must not also strip authority inside the
-    user's own organization — those are different scopes (ADR-012 D9)."""
+async def test_demote_removes_everything_promotion_granted(wire, store):
+    """Demotion is the inverse of promotion (#1040 item 3).
+
+    It used to remove only `platform_admin` and leave the org-scoped `admin`
+    that `PLATFORM_ADMIN_ROLE_SET` grants alongside it, so promote-then-demote
+    left the account holding in-org authority it never had — deployment reach
+    revoked, org authority silently added and kept. Latent only while org roles
+    enforce nothing at the API surface (#1040 item 1); a real privilege residue
+    the moment they do.
+
+    The base `user` marker stays: it grants nothing, and an empty role list is
+    not a state the rest of the system expects.
+    """
     user = _user(username="bob", roles=list(PLATFORM_ADMIN_ROLE_SET))
     wire(demote_platform_admin, user)
 
@@ -185,8 +196,53 @@ async def test_demote_removes_platform_admin_but_keeps_org_admin(wire, store):
 
     written = store.update_user.await_args.args[0]
     assert PLATFORM_ADMIN_ROLE not in written.roles
+    assert "admin" not in written.roles
+    assert written.roles == ["user"]
+
+
+async def test_keep_org_admin_leaves_the_org_role_in_place(wire, store, capsys):
+    """The escape hatch for an account that held org `admin` independently.
+
+    Nothing records which grant a role came from, so this command cannot tell a
+    promotion's `admin` from one the account has held since before it was ever
+    an operator. Removing it by default is the safe direction — a wrongly
+    stripped org role is re-granted through the audited org-role API, while a
+    wrongly retained one is invisible privilege — and this flag is how an
+    operator who *does* know says so.
+    """
+    user = _user(username="bob", roles=list(PLATFORM_ADMIN_ROLE_SET))
+    wire(demote_platform_admin, user)
+
+    assert (
+        await demote_platform_admin.demote_from_platform_admin(
+            "bob", keep_org_admin=True
+        )
+        is True
+    )
+
+    written = store.update_user.await_args.args[0]
+    assert PLATFORM_ADMIN_ROLE not in written.roles
     assert "admin" in written.roles
-    assert "user" in written.roles
+    assert "--keep-org-admin" in capsys.readouterr().out
+
+
+async def test_demote_audits_what_was_actually_removed(wire, store, audit):
+    """An account that never held the org role must not leave a trail saying it did.
+
+    `roles_changed` is the record a reviewer reads to reconstruct a privilege
+    change. Recording the *intent* (both roles) rather than the effect would
+    describe a revocation that never happened — on the one table that exists
+    precisely because operator privilege changes were going unrecorded (fm#1050).
+    """
+    wire(
+        demote_platform_admin,
+        _user(username="bob", roles=["user", PLATFORM_ADMIN_ROLE]),
+    )
+
+    assert await demote_platform_admin.demote_from_platform_admin("bob") is True
+
+    kwargs = audit.await_args.kwargs
+    assert kwargs["roles_changed"] == [PLATFORM_ADMIN_ROLE]
 
 
 async def test_demote_is_a_no_op_on_a_non_operator(wire, store, capsys):
@@ -293,7 +349,8 @@ async def test_demote_records_the_revocation(wire, store, audit):
     audit.assert_awaited_once()
     kwargs = audit.await_args.kwargs
     assert kwargs["action"] is OperatorAction.ROLE_REVOKED
-    assert kwargs["roles_changed"] == [PLATFORM_ADMIN_ROLE]
+    # Both halves of the grant, because this account held both (#1040 item 3).
+    assert kwargs["roles_changed"] == ["admin", PLATFORM_ADMIN_ROLE]
     assert kwargs["invoked_via"] == "fm-demote-platform-admin"
 
 
@@ -471,3 +528,43 @@ def test_the_role_actions_are_values_migration_042_admits(action):
     assert (
         action.value in admitted
     ), f"{action.value!r} is not in the CHECK constraint {sorted(admitted)}"
+
+
+# =============================================================================
+# A failed lookup is not "not found" (#1043)
+# =============================================================================
+#
+# Both commands used to print `User 'alice' not found` when the user store threw
+# — a transient database error, an exhausted pool, a role problem. The operator
+# then went looking for the right username while the promotion or demotion they
+# came to make had not happened and the real fault was invisible. These are the
+# operator paths #1043 names, so they get the assertion.
+
+
+@pytest.mark.parametrize(
+    ("module", "entrypoint"),
+    [
+        (promote_platform_admin, "promote_to_platform_admin"),
+        (demote_platform_admin, "demote_from_platform_admin"),
+    ],
+    ids=["promote", "demote"],
+)
+async def test_a_failed_lookup_is_reported_as_a_failure_not_as_not_found(
+    wire, store, capsys, module, entrypoint
+):
+    wire(module, None)
+    store.get_user_by_username.side_effect = UserLookupFailed(
+        "connection pool exhausted", lookup="username", identifier="alice"
+    )
+
+    assert await getattr(module, entrypoint)("alice") is False
+
+    out = capsys.readouterr().out
+    assert "FAILED" in out
+    assert "not 'user not found'" in out
+    assert "nothing was changed" in out
+    # The listing hint belongs on the absent-account path only: it tells the
+    # operator to go check the username, which is the wrong next step when the
+    # store is what is broken.
+    assert "/api/v1/admin/users" not in out
+    store.update_user.assert_not_awaited()
