@@ -9,6 +9,10 @@ This module provides exception handlers for:
 - ConflictError → 409 Conflict
 - ServiceError → 500 Internal Server Error
 - OAuthProtocolError → the RFC 6749 §5.2 body, at the status it carries
+- HTTPException → `{"detail": "<text>"}`, with the text coerced so a detail
+  the encoder cannot render answers its own status instead of crashing the
+  handler into a 500. Keyed on FastAPI's HTTPException; Starlette's own class
+  (router-raised 404/405) still goes to FastAPI's default handler.
 
 ``OAuthProtocolError`` is the one handler here that does not answer the
 common ``{"error", "detail", "status_code"}`` shape: the OAuth token and
@@ -508,6 +512,25 @@ async def service_error_handler(
 # =============================================================================
 
 
+def _detail_text(value: Any) -> str:
+    """A renderable string for the `detail` field, for any input.
+
+    Two properties, and both are load-bearing:
+
+    * **Total.** `to_json_safe` guards `repr` internally, so this cannot raise.
+      Calling `str()` first does not: `str()` on a container invokes `repr()`
+      on its members, so a dict whose value has a raising `__repr__` blew up
+      *inside the handler* and turned a deliberate 4xx into a 500 — the defect
+      class #1048 closed elsewhere, reachable here through the fallback.
+    * **A string.** Clients render `detail` verbatim as user-facing text, so
+      the field's type is part of the contract. Passing a list or an int
+      through `to_json_safe` alone would publish it as a JSON array or number
+      where it used to be stringified.
+    """
+    safe = to_json_safe(value)
+    return safe if isinstance(safe, str) else str(safe)
+
+
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Custom HTTPException handler to ensure consistent error response format"""
     detail = exc.detail
@@ -529,7 +552,9 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         if isinstance(nested, dict) and "message" in nested:
             message = nested["message"]
         else:
-            message = detail.get("message") or detail.get("detail") or str(detail)
+            # `detail` itself, not `str(detail)`: the stringification is
+            # what could raise, so it has to happen after coercion.
+            message = detail.get("message") or detail.get("detail") or detail
         return JSONResponse(
             status_code=exc.status_code,
             # Coerced for the same reason #1048 made the validation handler's
@@ -541,7 +566,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             # whatever the raising code put there, and `detail.get("message")`
             # is unconstrained too. Verified: a non-serializable message made
             # a 400 answer 500.
-            content={"detail": to_json_safe(message)},
+            content={"detail": _detail_text(message)},
             headers=getattr(exc, "headers", None),
         )
     # If detail is a string, return it as expected by tests
@@ -555,7 +580,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             # (auth.py's `username`, admin_config.py's `provider_name`). The
             # encoder then raises inside this handler and the deliberate 4xx
             # becomes a 500 carrying none of the message.
-            content={"detail": to_json_safe(detail)},
+            content={"detail": _detail_text(detail)},
             headers=getattr(exc, "headers", None),
         )
 

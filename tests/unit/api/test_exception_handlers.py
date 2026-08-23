@@ -511,6 +511,45 @@ class TestDictDetailIsCoerced:
         assert "already exists" in json.loads(response.body)["detail"]
 
     @pytest.mark.asyncio
+    async def test_a_dict_whose_repr_raises_still_answers_its_status(
+        self, mock_request
+    ):
+        """The fallback path, where the stringification itself was the hazard.
+
+        With no `message` or `detail` key the handler fell back to
+        `str(detail)` — and `str()` on a container calls `repr()` on its
+        members, so a value with a raising `__repr__` blew up inside the
+        handler. Coercing had to move ahead of the stringification, not after.
+        """
+
+        class Boom:
+            def __repr__(self):
+                raise RuntimeError("repr exploded")
+
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(status_code=400, detail={"code": "x", "payload": Boom()}),
+        )
+
+        assert response.status_code == 400
+        assert isinstance(json.loads(response.body)["detail"], str)
+
+    @pytest.mark.parametrize("detail", [["a", "b"], 42, ("x",)])
+    @pytest.mark.asyncio
+    async def test_a_non_string_detail_stays_text(self, mock_request, detail):
+        """`detail` is rendered verbatim by clients, so its type is contract.
+
+        Coercing with `to_json_safe` alone preserved native JSON types, which
+        would have published a list detail as an array and an int as a number
+        where both were previously stringified.
+        """
+        response = await http_exception_handler(
+            mock_request, HTTPException(status_code=400, detail=detail)
+        )
+
+        assert isinstance(json.loads(response.body)["detail"], str)
+
+    @pytest.mark.asyncio
     async def test_an_ordinary_string_detail_is_unchanged(self, mock_request):
         response = await http_exception_handler(
             mock_request, HTTPException(status_code=404, detail="Case not found")

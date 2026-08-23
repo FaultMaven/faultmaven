@@ -50,7 +50,7 @@ from starlette.requests import Request as StarletteRequest
 
 from faultmaven.api.contract_version import API_CONTRACT_VERSION
 from faultmaven.api.middleware.tenant_scope import bind_request_org_context
-from faultmaven.utils.serialization import to_json_compatible, to_json_safe
+from faultmaven.utils.serialization import to_json_compatible
 
 # Configure enhanced logging system first
 from .infrastructure.logging.config import get_logger

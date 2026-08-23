@@ -75,6 +75,15 @@ def test_the_http_exception_handler_is_the_one_that_ships(app):
     falls back to FastAPI's default, which renders a dict `detail` into the
     body raw and reintroduces the shape #1048 is about. Nothing would 500,
     nothing would error; responses would just quietly change shape.
+
+    Scope, so the guarantee is not read as broader than it is: this is keyed on
+    `fastapi.exceptions.HTTPException`. `starlette.exceptions.HTTPException`
+    remains mapped to FastAPI's own handler, so a router-raised 404 or 405 —
+    anything raising Starlette's class rather than FastAPI's — does not pass
+    through the coercion this module applies. Harmless today (those details are
+    plain phrase strings, and nothing under `faultmaven/` imports Starlette's
+    class), but it is a real edge of the guarantee rather than an oversight in
+    this assertion.
     """
     registered = app.exception_handlers.get(HTTPException)
 
