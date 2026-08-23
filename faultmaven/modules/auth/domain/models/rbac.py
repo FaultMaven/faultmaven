@@ -61,7 +61,13 @@ BASE_USER_ROLE = "user"
 # rather than at a provisioning site so the bootstrap seed, `create_user.py`,
 # and `fm-promote-platform-admin` cannot answer "does platform_admin imply
 # admin?" differently and produce operators with unequal in-org authority.
-PLATFORM_ADMIN_ROLE_SET = [BASE_USER_ROLE, Role.ADMIN.value, PLATFORM_ADMIN_ROLE]
+#: The org-scoped role a promotion grants alongside the operator role, as a
+#: plain string. Named so the demotion path can say "keep the org admin" in the
+#: same vocabulary the flag is named in, without reaching past this module for
+#: the enum.
+ORG_ADMIN_ROLE = Role.ADMIN.value
+
+PLATFORM_ADMIN_ROLE_SET = [BASE_USER_ROLE, ORG_ADMIN_ROLE, PLATFORM_ADMIN_ROLE]
 
 # What a promotion actually *adds* on top of an ordinary account, and therefore
 # what a demotion has to take away for the two to be inverses (#1040 item 3).
@@ -81,6 +87,7 @@ __all__ = [
     "ROLE_PERMISSIONS",
     "BASE_USER_ROLE",
     "OPERATOR_GRANTED_ROLES",
+    "ORG_ADMIN_ROLE",
     "PLATFORM_ADMIN_ROLE",
     "PLATFORM_ADMIN_ROLE_SET",
     "Permission",

@@ -242,9 +242,12 @@ async def remove_org_member(
         print(
             f"\n❌ No user matches '{user_identifier}' "
             "(tried username, then email, then user id).\n"
-            "   All three lookups completed and matched nothing, so this is a "
-            "genuinely absent account rather than a failed lookup (#1043) — "
-            "check the identifier."
+            "   All three lookups completed and matched nothing — a store that "
+            "could not answer raises instead of reaching here (#1043), so this "
+            "is an absent account rather than a failed lookup.\n"
+            "   Check the identifier. If the account should exist, check the API "
+            "logs anyway: this message is only as true as the store's own "
+            "failure reporting."
         )
         return 1
 

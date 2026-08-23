@@ -506,13 +506,25 @@ class RedisUserStore:
             raise
 
     async def _redis_get(self, key: str) -> Optional[str]:
-        """Get Redis key value"""
+        """Get Redis key value, or None if the key is genuinely absent.
+
+        Propagates on failure, like :meth:`_redis_set` — a missing key and an
+        unreachable Redis are different answers and this is the layer that can
+        still tell them apart. It used to log and return ``None``, which made
+        the two identical to every caller.
+
+        That swallow sat *underneath* the lookup methods' own
+        ``UserLookupFailed`` handling (#1043), so those handlers could never
+        fire for the failure they were written for: the exception died here and
+        the lookup returned "no such user" on evidence it did not have. Its only
+        callers are those three lookups, so raising here reaches nothing else.
+        """
         try:
             result = await self.redis.get(key)
             return result if result else None
         except Exception as e:
             logger.error(f"Redis GET failed for key {key}: {e}")
-            return None
+            raise
 
     async def _redis_delete(self, key: str) -> None:
         """Delete Redis key"""

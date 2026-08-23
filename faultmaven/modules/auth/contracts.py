@@ -22,6 +22,7 @@ from faultmaven.modules.auth.domain.models.auth import (
 from faultmaven.modules.auth.domain.models.rbac import (
     BASE_USER_ROLE,
     OPERATOR_GRANTED_ROLES,
+    ORG_ADMIN_ROLE,
     PLATFORM_ADMIN_ROLE,
     PLATFORM_ADMIN_ROLE_SET,
 )
@@ -705,6 +706,7 @@ __all__ = [
     "PLATFORM_ADMIN_ROLE",
     "PLATFORM_ADMIN_ROLE_SET",
     "OPERATOR_GRANTED_ROLES",
+    "ORG_ADMIN_ROLE",
     "BASE_USER_ROLE",
     # DTOs
     "UserDTO",

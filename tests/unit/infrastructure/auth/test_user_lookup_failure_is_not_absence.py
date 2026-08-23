@@ -26,6 +26,7 @@ bug reachable from the same call sites through the other.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -60,14 +61,23 @@ def _database_store(*, failing: bool):
 
 
 def _redis_store(*, failing: bool):
-    """A RedisUserStore whose backing reads either raise or report absence."""
+    """A RedisUserStore whose backing **client** either raises or reports absence.
+
+    The double is the Redis client, deliberately, so the store's own
+    ``_redis_get`` runs for real. Substituting ``_redis_get`` itself is the
+    obvious shortcut and it makes this whole file vacuous: that method used to
+    catch every exception and return ``None``, *underneath* the lookup methods'
+    ``UserLookupFailed`` handling, so the handlers could never fire for a real
+    outage — and a test that replaced it would never notice. The layer being
+    asserted has to be the layer under test.
+    """
     store = RedisUserStore.__new__(RedisUserStore)
     store.user_key_pattern = "user:{}"
     store.username_key_pattern = "username:{}"
     store.email_key_pattern = "email:{}"
-    store._redis_get = AsyncMock(side_effect=BOOM if failing else None)
-    if not failing:
-        store._redis_get.return_value = None
+    store.redis = SimpleNamespace(
+        get=AsyncMock(side_effect=BOOM) if failing else AsyncMock(return_value=None)
+    )
     return store
 
 
@@ -155,7 +165,7 @@ async def test_the_redis_store_treats_an_undecodable_record_as_failure():
     serialisation bug becomes "the user vanished" mid-incident.
     """
     store = _redis_store(failing=False)
-    store._redis_get = AsyncMock(return_value="}{ not json")
+    store.redis.get = AsyncMock(return_value="}{ not json")
 
     with pytest.raises(UserLookupFailed) as exc:
         await store.get_user("abc-123")

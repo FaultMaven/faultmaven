@@ -226,6 +226,44 @@ async def test_keep_org_admin_leaves_the_org_role_in_place(wire, store, capsys):
     assert "--keep-org-admin" in capsys.readouterr().out
 
 
+async def test_keep_org_admin_keeps_only_the_org_admin(wire, store, monkeypatch):
+    """The flag must stay as narrow as its name, even if the grant set grows.
+
+    Written as "keep everything that is not platform_admin" this passes today —
+    the set has exactly two entries — and silently widens the moment a third is
+    added, leaving that new grant behind on every demotion. Which is the
+    privilege residue #1040 item 3 just removed, arriving through the flag meant
+    to be the careful option.
+
+    So the grant set is extended here rather than trusted at its current size.
+    """
+    monkeypatch.setattr(
+        demote_platform_admin,
+        "OPERATOR_GRANTED_ROLES",
+        ["admin", "some_future_operator_grant", PLATFORM_ADMIN_ROLE],
+    )
+    user = _user(
+        username="bob",
+        roles=["user", "admin", "some_future_operator_grant", PLATFORM_ADMIN_ROLE],
+    )
+    wire(demote_platform_admin, user)
+
+    assert (
+        await demote_platform_admin.demote_from_platform_admin(
+            "bob", keep_org_admin=True
+        )
+        is True
+    )
+
+    written = store.update_user.await_args.args[0]
+    assert "admin" in written.roles, "the flag's whole purpose"
+    assert PLATFORM_ADMIN_ROLE not in written.roles
+    assert "some_future_operator_grant" not in written.roles, (
+        "--keep-org-admin retained a grant that is not the org admin role; the "
+        "flag has widened past its name"
+    )
+
+
 async def test_demote_audits_what_was_actually_removed(wire, store, audit):
     """An account that never held the org role must not leave a trail saying it did.
 

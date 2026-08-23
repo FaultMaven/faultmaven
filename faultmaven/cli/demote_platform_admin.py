@@ -43,6 +43,7 @@ from faultmaven.models.interfaces_operator_audit import OperatorAction
 from faultmaven.modules.auth.contracts import (
     BASE_USER_ROLE,
     OPERATOR_GRANTED_ROLES,
+    ORG_ADMIN_ROLE,
     PLATFORM_ADMIN_ROLE,
 )
 
@@ -131,10 +132,15 @@ async def demote_from_platform_admin(
     # Remove exactly what a promotion grants, so the two are inverses (#1040
     # item 3). Derived from PLATFORM_ADMIN_ROLE_SET rather than restated here —
     # restating it is how the asymmetry arose in the first place.
+    # Named exactly what the flag is named, rather than "everything that is not
+    # platform_admin". The two agree only while OPERATOR_GRANTED_ROLES has these
+    # two entries; if the grant ever gains a third, the looser form would leave
+    # that one behind too — the privilege residue #1040 item 3 just fixed,
+    # arriving through the flag that is supposed to be narrow.
     to_remove = [
         role
         for role in OPERATOR_GRANTED_ROLES
-        if not (keep_org_admin and role != PLATFORM_ADMIN_ROLE)
+        if not (keep_org_admin and role == ORG_ADMIN_ROLE)
     ]
     removed = [role for role in to_remove if role in (user.roles or [])]
 

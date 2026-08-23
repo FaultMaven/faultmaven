@@ -51,12 +51,25 @@ a re-login after a promotion and cannot be got wrong.
 Not yet every writer
 --------------------
 The tripwire cannot see ``faultmaven-cloud``, so the composed module carries its
-own obligation to call this service rather than the repositories. Both of its
-paths — ``DELETE`` and ``PATCH /api/v1/admin/organization/members/{user_id}`` —
-are wired to it (faultmaven-cloud#17 for removal, and the role-change half that
-lands with #1042). Say so from evidence rather than intent: a docstring that
-claims to be the chokepoint would let the next reader assume a path is covered
-when it is not.
+own obligation to call this service rather than the repositories, and the state
+of the two paths differs:
+
+* ``DELETE /api/v1/admin/organization/members/{user_id}`` **is** wired
+  (faultmaven-cloud#17, merged);
+* ``PATCH`` — the role change — is written against this service but **not yet
+  merged**. Until it is, changing a member's role *through the admin console*
+  still writes the row without revoking, and a demoted admin keeps elevated
+  claims until their refresh token expires. That is the bug #1042 exists to
+  close, still open on the API path.
+
+Note also that ``set_member_role`` has **no caller in this repository** — unlike
+``remove_member``, which ``fm-remove-org-member`` drives. Its only production
+caller lives in the Cloud repo, which is precisely the caller the tripwire
+cannot see.
+
+Say this from evidence rather than intent. A docstring that describes the
+intended end state would let the next reader assume a containment control is in
+place while it is not — and this is the file they would check.
 """
 
 from __future__ import annotations
