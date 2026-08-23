@@ -384,6 +384,51 @@ class TestRunSettingsGate:
         result = await run(settings=settings, ttl_hours=72)
         assert result["ttl_hours"] == 72
 
+    @pytest.mark.asyncio
+    async def test_explicit_dry_run_false_does_not_enable_cleanup(self):
+        """An override is a lever, not an enabler (issue #923).
+
+        `dry_run=False` — what `--no-dry-run` delivers — asks for deletion. It
+        satisfies neither arm of the gate while cleanup is disabled, so the
+        run is refused exactly as a settings-level dry_run=False is.
+        """
+        settings = self._settings(enabled=False, dry_run=True)
+        result = await run(settings=settings, dry_run=False)
+        assert result["status"] == "skipped"
+        assert result["reason"] == "orphan_cleanup_disabled"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ttl_hours", [0, -1, 721])
+    async def test_out_of_range_ttl_override_refused(self, ttl_hours):
+        """The kwarg must not be a way around the setting's own bound.
+
+        ttl_hours=0 puts every unlinked file past the cutoff, in-flight
+        uploads included — refuse it rather than clamp it silently.
+        """
+        settings = self._settings(enabled=True, dry_run=False)
+        with pytest.raises(ValueError, match="ttl_hours must be between"):
+            await run(settings=settings, ttl_hours=ttl_hours)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ttl_hours", [1, 720])
+    async def test_ttl_override_at_the_bounds_accepted(self, ttl_hours):
+        settings = self._settings(enabled=True, dry_run=True)
+        result = await run(settings=settings, ttl_hours=ttl_hours)
+        assert result["ttl_hours"] == ttl_hours
+
+    def test_ttl_bounds_track_the_settings_field(self):
+        """The bound is read off the field, so the two cannot drift apart."""
+        from faultmaven.config.settings import EvidenceStorageSettings
+
+        field = EvidenceStorageSettings.model_fields["orphan_file_ttl_hours"]
+        declared = {
+            name: getattr(c, name)
+            for c in field.metadata
+            for name in ("ge", "le")
+            if getattr(c, name, None) is not None
+        }
+        assert storage_cleanup.ttl_hours_bounds() == (declared["ge"], declared["le"])
+
 
 class TestCleanupErrorAccounting:
     """A sweep must never report storage it did not actually reclaim."""

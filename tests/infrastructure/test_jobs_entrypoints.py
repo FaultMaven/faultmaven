@@ -11,7 +11,7 @@ import contextlib
 import os
 import sys
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -945,3 +945,221 @@ class TestCrossTenantMaintenancePath:
         assert exit_code == 0
         assert captured["cross_tenant_maintenance"] is True
         assert captured["job_name"] == "case_cleanup"
+
+
+# =============================================================================
+# Job-specific flags: --dry-run / --ttl-hours (issue #923)
+# =============================================================================
+
+
+def _advertised_commands(*docstrings):
+    """Every ``python -m faultmaven.jobs.run …`` invocation a docstring shows."""
+    prefix = "python -m faultmaven.jobs.run"
+    found = []
+    for text in docstrings:
+        for line in (text or "").splitlines():
+            line = line.split("#")[0].strip().strip("`")
+            if line.startswith(prefix):
+                found.append(line[len(prefix) :].split())
+    return found
+
+
+class TestJobSpecificFlagWiring:
+    """--dry-run/--ttl-hours reach the job, and only the job that declares them."""
+
+    def _capture(self, argv):
+        """Run main() with run_job stubbed; return (exit_code, kwargs)."""
+        from faultmaven.jobs import run as run_module
+
+        captured = {}
+
+        async def fake_run_job(job_name, verbose=False, **kwargs):
+            captured.update(kwargs, job_name=job_name)
+            return {"status": "completed"}
+
+        with patch.object(run_module, "run_job", side_effect=fake_run_job):
+            exit_code = run_module.main(argv)
+        return exit_code, captured
+
+    def test_no_flags_defers_to_settings(self):
+        """The deployed invocation must reach run() with neither kwarg.
+
+        Absent is not the same as the setting's current value: if the runner
+        materialised a default, ORPHAN_CLEANUP_DRY_RUN would stop being
+        reachable and the nightly CronJob's behaviour would change without its
+        command changing.
+        """
+        exit_code, captured = self._capture(["storage_cleanup", "--verbose"])
+
+        assert exit_code == 0
+        assert "dry_run" not in captured
+        assert "ttl_hours" not in captured
+
+    def test_dry_run_flag_reaches_run_job(self):
+        _, captured = self._capture(["storage_cleanup", "--dry-run"])
+        assert captured["dry_run"] is True
+
+    def test_no_dry_run_flag_reaches_run_job_as_false(self):
+        """--no-dry-run must arrive as an explicit False, not as absence."""
+        _, captured = self._capture(["storage_cleanup", "--no-dry-run"])
+        assert captured["dry_run"] is False
+
+    def test_ttl_hours_flag_reaches_run_job(self):
+        _, captured = self._capture(["storage_cleanup", "--ttl-hours", "72"])
+        assert captured["ttl_hours"] == 72
+
+    @pytest.mark.parametrize("value", ["0", "721", "-1"])
+    def test_out_of_range_ttl_refused_at_parse_time(self, value):
+        """An override must not escape the bound the setting is held to."""
+        from faultmaven.jobs import run as run_module
+
+        run_job = MagicMock()
+        with patch.object(run_module, "run_job", run_job):
+            with pytest.raises(SystemExit) as exc:
+                run_module.main(["storage_cleanup", "--ttl-hours", value])
+
+        assert exc.value.code == 2
+        run_job.assert_not_called()
+
+    @pytest.mark.parametrize("value", ["1", "24", "720"])
+    def test_in_range_ttl_accepted(self, value):
+        _, captured = self._capture(["storage_cleanup", "--ttl-hours", value])
+        assert captured["ttl_hours"] == int(value)
+
+    def test_cli_bounds_are_the_settings_field_bounds(self):
+        """The CLI reads its range off the field, so the two cannot diverge."""
+        from faultmaven.config.settings import EvidenceStorageSettings
+        from faultmaven.modules.agent.jobs.storage_cleanup import ttl_hours_bounds
+
+        field = EvidenceStorageSettings.model_fields["orphan_file_ttl_hours"]
+        declared = {}
+        for constraint in field.metadata:
+            for name in ("ge", "le"):
+                if getattr(constraint, name, None) is not None:
+                    declared[name] = getattr(constraint, name)
+
+        assert ttl_hours_bounds() == (declared["ge"], declared["le"])
+
+    def test_every_advertised_command_parses(self):
+        """The defect this closes was a docstring naming a flag that exits 2."""
+        from faultmaven.jobs import run as run_module
+        from faultmaven.modules.agent.jobs import storage_cleanup
+
+        parser = run_module.build_parser()
+        commands = _advertised_commands(
+            run_module.__doc__,
+            run_module.build_parser().epilog,
+            storage_cleanup.__doc__,
+            storage_cleanup.run.__doc__,
+        )
+
+        assert commands, "no advertised invocations found to check"
+        for argv in commands:
+            parser.parse_args(argv)  # SystemExit here means we advertise a lie
+
+    @pytest.mark.asyncio
+    async def test_flag_refused_for_job_that_does_not_declare_it(self):
+        """A job-specific flag must not slide into another job's **kwargs.
+
+        The stand-in is autospecced: the guard reads the *real* run()'s
+        signature, so this stops passing if case_cleanup ever declares
+        dry_run — a bare Mock would keep it green by advertising
+        (*args, **kwargs).
+        """
+        from faultmaven.jobs import case_cleanup
+        from faultmaven.jobs.run import JobArgumentError, run_job
+
+        stand_in = create_autospec(case_cleanup.run)
+        with patch.object(case_cleanup, "run", new=stand_in):
+            with pytest.raises(JobArgumentError, match="--dry-run"):
+                await run_job("case_cleanup", dry_run=True)
+
+        stand_in.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ttl_flag_refused_for_job_that_does_not_declare_it(self):
+        from faultmaven.jobs import kb_seed
+        from faultmaven.jobs.run import JobArgumentError, run_job
+
+        stand_in = create_autospec(kb_seed.run)
+        with patch.object(kb_seed, "run", new=stand_in):
+            with pytest.raises(JobArgumentError, match="--ttl-hours"):
+                await run_job("kb_seed", ttl_hours=48)
+
+        stand_in.assert_not_called()
+
+    def test_guard_reads_the_real_signature_not_a_stand_in(self):
+        """The refusal must key on the job module's own run(), unpatched."""
+        from faultmaven.jobs import case_cleanup
+        from faultmaven.jobs.run import JobArgumentError, _reject_unsupported_job_flags
+
+        with pytest.raises(JobArgumentError, match="--dry-run"):
+            _reject_unsupported_job_flags(
+                case_cleanup, "case_cleanup", {"dry_run": True}
+            )
+
+    def test_storage_cleanup_declares_both_flags(self):
+        """The guard must not refuse the job the flags were added for."""
+        from faultmaven.jobs.run import _reject_unsupported_job_flags
+        from faultmaven.modules.agent.jobs import storage_cleanup
+
+        _reject_unsupported_job_flags(
+            storage_cleanup, "storage_cleanup", {"dry_run": False, "ttl_hours": 48}
+        )
+
+    def test_runner_global_flags_still_reach_every_job(self):
+        """Only JOB_SPECIFIC_FLAGS are gated; runner-global kwargs are not."""
+        from faultmaven.jobs import case_cleanup
+        from faultmaven.jobs.run import _reject_unsupported_job_flags
+
+        _reject_unsupported_job_flags(
+            case_cleanup, "case_cleanup", {"organization_id": "org_1"}
+        )
+
+
+class TestDryRunLeverIsNotAnEnabler:
+    """--no-dry-run asks for deletion; only ORPHAN_CLEANUP_ENABLED grants it."""
+
+    def test_cli_no_dry_run_is_still_skipped_while_disabled(self, mock_container):
+        """End to end through main(): the flag cannot route around the gate.
+
+        The sweep itself is the tripwire — if the wiring ever read an explicit
+        --no-dry-run as intent-to-run, cleanup_orphaned_files would be called
+        with deletion live.
+        """
+        from types import SimpleNamespace
+
+        from faultmaven.jobs import run as run_module
+        from faultmaven.modules.agent.jobs import storage_cleanup
+
+        settings = SimpleNamespace(
+            evidence_storage=SimpleNamespace(
+                orphan_cleanup_enabled=False,
+                orphan_cleanup_dry_run=True,
+                orphan_file_ttl_hours=24,
+            ),
+            server=SimpleNamespace(run_scheduler=False),
+        )
+        sweep = AsyncMock(return_value={"status": "completed"})
+
+        with (
+            patch("faultmaven.config.settings.get_settings", return_value=settings),
+            patch("faultmaven.container.container", mock_container),
+            patch(
+                "faultmaven.config.deployment_coherence.validate_deployment_coherence"
+            ),
+            patch(
+                "faultmaven.providers.tenancy.factory.requested_tenant_provider",
+                return_value="single",
+            ),
+            patch(
+                "faultmaven.infrastructure.persistence.rls_role_guard"
+                ".assert_app_db_role_enforces_rls",
+                AsyncMock(),
+            ),
+            patch.object(storage_cleanup, "cleanup_orphaned_files", sweep),
+        ):
+            exit_code = run_module.main(["storage_cleanup", "--no-dry-run"])
+
+        assert exit_code == 0  # "skipped" is a clean exit, not a failure
+        sweep.assert_not_called()
