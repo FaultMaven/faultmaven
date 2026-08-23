@@ -18,6 +18,7 @@ from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from faultmaven.api.exception_handlers import (
+    MAX_DETAIL_CHARS,
     authorization_exception_handler,
     conflict_exception_handler,
     get_exception_handlers,
@@ -548,6 +549,44 @@ class TestDictDetailIsCoerced:
         )
 
         assert isinstance(json.loads(response.body)["detail"], str)
+
+    @pytest.mark.asyncio
+    async def test_a_long_detail_survives_the_echo_bound(self, mock_request):
+        """Error text is not governed by the echoed-input constant.
+
+        `to_json_safe`'s default (512) exists to bound an echoed *request body*
+        in a 422. Borrowing it for `detail` truncated admin and LLM error
+        messages at 512 characters where callers previously got the whole
+        thing — `admin.py` and `admin_config.py` interpolate `str(e)` into
+        details at twenty sites, and a provider error body clears 512 easily.
+        This pins that the two numbers are separate, so retuning the echo bound
+        for echo reasons cannot move error-message length with it.
+        """
+        message = "provider said: " + "x" * 600
+
+        response = await http_exception_handler(
+            mock_request, HTTPException(status_code=502, detail=message)
+        )
+
+        assert json.loads(response.body)["detail"] == message
+
+    @pytest.mark.asyncio
+    async def test_a_detail_is_still_bounded(self, mock_request):
+        """Bounded, though — an unbounded detail is an unbounded response."""
+        response = await http_exception_handler(
+            mock_request, HTTPException(status_code=502, detail="x" * 50_000)
+        )
+
+        detail = json.loads(response.body)["detail"]
+        assert len(detail) < MAX_DETAIL_CHARS + 100, len(detail)
+        # Asserted absolutely as well as relative to the constant: measuring
+        # only against MAX_DETAIL_CHARS means raising it to a million passes,
+        # so the relative check alone cannot tell "bounded" from "unbounded".
+        assert MAX_DETAIL_CHARS <= 8192, (
+            "MAX_DETAIL_CHARS is a ceiling on a human-facing message; past a "
+            "few thousand characters it is a payload, and an unbounded detail "
+            "makes an unbounded response"
+        )
 
     @pytest.mark.asyncio
     async def test_an_ordinary_string_detail_is_unchanged(self, mock_request):
