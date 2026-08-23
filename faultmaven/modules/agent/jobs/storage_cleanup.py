@@ -27,12 +27,23 @@ is created referencing the file (called from
 This job ships with `orphan_cleanup_enabled=False` and `dry_run=True` by
 default. Per the M1 canary protocol: run dry-run for ≥48 hours, eyeball
 logs, fix any unexpected entries in the `mark_linked` path, then flip
-`dry_run=False`.
+`dry_run=False`. A run reporting `found=0` has watched nothing — the
+selection branch never executed — so seed one known orphan and confirm a
+dry run reports it before flipping (docs/operations/evidence-job-scheduling.md).
 
 ## Usage
 
     python -m faultmaven.jobs.run storage_cleanup
     python -m faultmaven.jobs.run storage_cleanup --dry-run
+    python -m faultmaven.jobs.run storage_cleanup --no-dry-run
+    python -m faultmaven.jobs.run storage_cleanup --ttl-hours 72
+
+Omitting a flag defers to settings (`ORPHAN_CLEANUP_DRY_RUN`,
+`ORPHAN_FILE_TTL_HOURS`), which is not the same as passing their current
+values — the plain invocation above is what the deployed CronJob runs.
+`--no-dry-run` asks for deletion but cannot grant it: with
+`orphan_cleanup_enabled=False` the run is still refused (`status="skipped"`).
+`--ttl-hours` is bounded by the same range as the setting.
 """
 
 import logging
@@ -56,6 +67,50 @@ JOB_DESCRIPTION = (
 # Backend sweep driven by sidecar metadata written at upload time — no tenanted
 # DB reads, so it runs identically in both tenancy modes.
 JOB_TENANT_SCOPE = "tenant_neutral"
+
+
+def ttl_hours_bounds() -> tuple[int, int]:
+    """The (min, max) that ``orphan_file_ttl_hours`` itself enforces.
+
+    Read off the pydantic field rather than restated here, so a caller-side
+    override (the CLI's ``--ttl-hours``, or a direct ``run()`` call) cannot
+    drift from the bound the environment variable has.
+    """
+    from faultmaven.config.settings import EvidenceStorageSettings
+
+    field = EvidenceStorageSettings.model_fields["orphan_file_ttl_hours"]
+    low = high = None
+    for constraint in field.metadata:
+        low = getattr(constraint, "ge", low)
+        high = getattr(constraint, "le", high)
+
+    if low is None or high is None:
+        raise RuntimeError(
+            "orphan_file_ttl_hours no longer declares ge/le bounds; refusing "
+            "to validate a TTL override against bounds that do not exist."
+        )
+    return int(low), int(high)
+
+
+def validate_ttl_hours(value: int) -> int:
+    """Return ``value`` if the settings field would accept it, else raise.
+
+    ``run()`` takes ``ttl_hours`` as a plain kwarg, so without this every
+    caller-side override is a path around a field constraint that exists for a
+    reason: ``ttl_hours=0`` makes every unlinked file older than "now", which
+    includes uploads still in flight.
+
+    Raises:
+        ValueError: If the value is outside the setting's own range.
+    """
+    low, high = ttl_hours_bounds()
+    if not low <= value <= high:
+        raise ValueError(
+            f"ttl_hours must be between {low} and {high} (got {value}); this "
+            "is the same range ORPHAN_FILE_TTL_HOURS is bounded to — a "
+            "shorter TTL would sweep uploads that are still in flight."
+        )
+    return value
 
 
 async def cleanup_orphaned_files(
@@ -227,17 +282,30 @@ async def run(
     Args:
         settings: ``FaultMavenSettings`` injected by the runner.
         container: DI container injected by the runner.
-        ttl_hours: Override for ``evidence_storage.orphan_file_ttl_hours``.
+        ttl_hours: Override for ``evidence_storage.orphan_file_ttl_hours``,
+            bounded to the same range as that setting.
         dry_run: Override for ``evidence_storage.orphan_cleanup_dry_run``.
             Caller-supplied overrides win over settings — useful for manual
             testing / one-shot invocations.
+
+    ``None`` means "defer to settings" for both, which is distinct from
+    passing the setting's current value: it is what the flagless CronJob
+    invocation delivers.
 
     The gate is:
       1. ``evidence_storage.orphan_cleanup_enabled`` must be True, OR
       2. caller must pass ``dry_run=True`` explicitly (safe to run anyway).
 
-    Otherwise the job exits with status="skipped" and no side effects.
+    Otherwise the job exits with status="skipped" and no side effects. An
+    explicit ``dry_run=False`` therefore asks for deletion without granting
+    it — it satisfies neither arm while cleanup is disabled.
+
+    Raises:
+        ValueError: If ``ttl_hours`` is outside the setting's own range.
     """
+    if ttl_hours is not None:
+        validate_ttl_hours(ttl_hours)
+
     if settings is None:
         from faultmaven.config.settings import get_settings
 

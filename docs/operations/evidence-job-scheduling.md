@@ -25,33 +25,59 @@ These jobs support the failure mode handling infrastructure documented in:
 
 **Execution:**
 ```bash
-# Manual execution
+# Manual execution — settings decide dry-run and TTL
 python -m faultmaven.jobs.run storage_cleanup
 
 # With debug logging (what the deployed CronJob passes)
 python -m faultmaven.jobs.run storage_cleanup --verbose
+
+# Per-invocation overrides (this run only)
+python -m faultmaven.jobs.run storage_cleanup --dry-run
+python -m faultmaven.jobs.run storage_cleanup --no-dry-run
+python -m faultmaven.jobs.run storage_cleanup --ttl-hours 72
 ```
 
-The runner's entire flag surface is the positional job name plus `--list`,
-`--verbose`/`-v`, `--organization-id` and `--cross-tenant-maintenance`
-(`faultmaven/jobs/run.py`). **There is no `--dry-run` and no `--ttl-hours`** —
-argparse exits 2 on either. Both behaviours are configured by environment
-variable instead (`faultmaven/config/settings.py`, `EvidenceStorageSettings`):
+The runner's flags are the positional job name plus `--list`, `--verbose`/`-v`,
+`--organization-id` and `--cross-tenant-maintenance`, which apply to whatever
+job is named, plus two that belong to **this job only**: `--dry-run` /
+`--no-dry-run` and `--ttl-hours` (`faultmaven/jobs/run.py`, #923). Passing
+either to another job is refused rather than silently ignored. The same two
+behaviours are configured deployment-wide by environment variable
+(`faultmaven/config/settings.py`, `EvidenceStorageSettings`):
 
-| Variable | Default | Effect |
-|----------|---------|--------|
-| `ORPHAN_CLEANUP_ENABLED` | `false` | Must be `true` before the job will delete anything |
-| `ORPHAN_CLEANUP_DRY_RUN` | `true` | Logs `[DRY RUN] would delete …` instead of deleting |
-| `ORPHAN_FILE_TTL_HOURS` | `24` (min 1, max 720) | Age threshold; younger files are never deleted |
+| Variable | Default | Effect | Per-run override |
+|----------|---------|--------|------------------|
+| `ORPHAN_CLEANUP_ENABLED` | `false` | Must be `true` before the job will delete anything | none — deliberately |
+| `ORPHAN_CLEANUP_DRY_RUN` | `true` | Logs `[DRY RUN] would delete …` instead of deleting | `--dry-run` / `--no-dry-run` |
+| `ORPHAN_FILE_TTL_HOURS` | `24` (min 1, max 720) | Age threshold; younger files are never deleted | `--ttl-hours` (same range; out-of-range exits 2) |
+
+**Omitting a flag is not the same as passing the setting's current value.** An
+omitted flag means "defer to settings", so the deployed `storage_cleanup
+--verbose` behaves exactly as it did before these flags existed.
+
+**`--no-dry-run` is a lever, not an enabler.** The gate in `run()` is
+`ORPHAN_CLEANUP_ENABLED=true` **or** an explicit dry-run; `--no-dry-run`
+satisfies neither while cleanup is disabled, so the run returns
+`status="skipped"` and touches nothing. Enabling reclamation is a config
+change, and no CLI invocation substitutes for it.
 
 **The M1 canary protocol needs no flag, because dry-run is the default
-posture.** With both defaults in place the job enumerates and logs only, and
-`run()` refuses outright (`status="skipped"`) if `ORPHAN_CLEANUP_ENABLED=false`
-and dry-run has also been switched off. Run it that way for ≥48h, read the
-`[DRY RUN] would delete` lines, then set `ORPHAN_CLEANUP_ENABLED=true` and
-`ORPHAN_CLEANUP_DRY_RUN=false`. Note the asymmetry: there is no per-invocation
-override, so on a deployment that has already gone live you cannot force one
-dry-run pass without changing the CronJob's environment for that run.
+posture.** With both defaults in place the job enumerates and logs only. Run it
+that way, read the `[DRY RUN] would delete` lines, then set
+`ORPHAN_CLEANUP_ENABLED=true` and `ORPHAN_CLEANUP_DRY_RUN=false`. `--dry-run`
+covers the case the defaults do not: forcing a single dry-run pass on a
+deployment that has already gone live, without editing the CronJob's
+environment for that run.
+
+> **"Clean for 48h" is not the criterion — `found ≥ 1` is.** A sweep that
+> reports `found=0` every night has not rehearsed deletion; it has only shown
+> that nothing errored. On-prem ran three consecutive nights at
+> `scanned=119, found=0, deleted=0, errors=0`, which satisfies the letter of a
+> 48-hour clean run while the branch that decides *what to delete* never
+> executed. Before flipping `ORPHAN_CLEANUP_DRY_RUN=false`, seed one known
+> orphan (store a file, leave it unlinked, age its sidecar past the TTL) and
+> confirm a dry run reports `found=1` against an object you can identify. That
+> watches the selection path while deletion is still inert.
 
 **Schedule:** Daily at 3:00 AM UTC. Deliberately **after** case-cleanup at
 2:00 AM: a case deleted by that sweep has had its files unlinked by the time
