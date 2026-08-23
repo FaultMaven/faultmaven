@@ -48,11 +48,31 @@ org) turns "cleanup" into either a silent no-op or a cross-tenant delete.
 The runner also runs the same boot gates as the web lifespan: the deployment
 coherence gate and, under multi, the RLS role guard — a Kubernetes CronJob with
 a misprovisioned (RLS-exempt) DB role must refuse to run, exactly like the API.
+
+## Runner-global vs job-specific flags
+
+Most flags configure the *runner* and apply to whatever job is named
+(``--verbose``, ``--organization-id``, ``--cross-tenant-maintenance``). A few
+configure ONE job: ``--dry-run``/``--no-dry-run`` and ``--ttl-hours`` belong to
+``storage_cleanup``. A job accepts a job-specific flag only by declaring it as
+an explicit parameter of its ``run()``; passing one to a job that merely
+absorbs ``**kwargs`` is refused (``JobArgumentError``) rather than delivered as
+a stray kwarg nothing reads.
+
+Job-specific flags are **three-valued on purpose**: omitting one means "defer
+to settings", which is not the same as passing the setting's current value.
+``storage_cleanup --verbose`` — what the deployed CronJob runs — reaches
+``run()`` with neither kwarg, so ``ORPHAN_CLEANUP_DRY_RUN`` /
+``ORPHAN_FILE_TTL_HOURS`` decide it, exactly as they did before these flags
+existed. And ``--no-dry-run`` is a lever, not an enabler: it asks for deletion
+but cannot grant it, because ``ORPHAN_CLEANUP_ENABLED=false`` still refuses the
+run (``status="skipped"``).
 """
 
 import argparse
 import asyncio
 import importlib
+import inspect
 import logging
 import sys
 from typing import Any, Dict, List, Optional
@@ -72,6 +92,20 @@ _VALID_TENANT_SCOPES = frozenset(
 
 class JobTenantScopeError(RuntimeError):
     """A job's tenant-scope requirements cannot be satisfied — refuse to run."""
+
+
+class JobArgumentError(RuntimeError):
+    """A job was invoked with an argument it does not accept — refuse to run."""
+
+
+# Arguments that configure ONE job rather than the runner, mapped to the CLI
+# spelling used in refusals. Every runner-global kwarg is absorbed by every
+# job's ``**kwargs``; a job-specific one must not be, or a flag meant for
+# another job would be swallowed silently. See the module docstring.
+JOB_SPECIFIC_FLAGS: Dict[str, str] = {
+    "dry_run": "--dry-run/--no-dry-run",
+    "ttl_hours": "--ttl-hours",
+}
 
 
 # Available jobs registry
@@ -214,6 +248,47 @@ def _enforce_tenant_scope(
     return None  # tenant_neutral: no tenanted DB access, nothing to bind
 
 
+def _reject_unsupported_job_flags(
+    module: Any,
+    job_name: str,
+    kwargs: Dict[str, Any],
+) -> None:
+    """Refuse job-specific arguments the named job does not declare.
+
+    Runner-global kwargs are meant to reach every job and every ``run()``
+    absorbs them via ``**kwargs``. A job-specific one must not travel that
+    way: a job that does not declare ``dry_run`` would swallow ``--dry-run``
+    and then run in whatever mode its settings say, reporting success. The
+    declaration that counts is an explicit parameter on ``run()`` — absorbing
+    ``**kwargs`` is not accepting the flag.
+
+    Raises:
+        JobArgumentError: If a job-specific argument was passed to a job whose
+            ``run()`` has no such parameter.
+    """
+    try:
+        params = inspect.signature(module.run).parameters
+    except (TypeError, ValueError):  # pragma: no cover — non-introspectable run()
+        params = {}
+
+    for name, spelling in JOB_SPECIFIC_FLAGS.items():
+        if name not in kwargs:
+            continue
+        param = params.get(name)
+        if param is None or param.kind is inspect.Parameter.VAR_KEYWORD:
+            accepted = sorted(
+                flag
+                for flag_name, flag in JOB_SPECIFIC_FLAGS.items()
+                if flag_name in params
+            )
+            raise JobArgumentError(
+                f"Job '{job_name}' does not accept {spelling}: its run() "
+                f"declares no '{name}' parameter, so the value would be "
+                "delivered as a kwarg nothing reads. Job-specific flags "
+                f"accepted by this job: {', '.join(accepted) or 'none'}."
+            )
+
+
 async def run_job(
     job_name: str,
     verbose: bool = False,
@@ -236,6 +311,8 @@ async def run_job(
             DEPLOYMENT_MODE, or (under multi) the DB role is RLS-exempt.
         JobTenantScopeError: If the job's tenant-scope requirements cannot be
             satisfied under the configured tenancy mode.
+        JobArgumentError: If a job-specific argument (see JOB_SPECIFIC_FLAGS)
+            was passed to a job whose run() does not declare it.
     """
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
@@ -259,6 +336,9 @@ async def run_job(
         raise AttributeError(f"Job module {module_path} has no 'run' function")
 
     run_func = module.run
+
+    # Refuse a job-specific flag aimed at the wrong job before doing any work.
+    _reject_unsupported_job_flags(module, job_name, kwargs)
 
     # Initialize settings and container
     logger.info("Initializing settings and DI container...")
@@ -388,21 +468,37 @@ async def run_job(
         return {"status": "failed", "error": str(e)}
 
 
-def main(args: Optional[List[str]] = None) -> int:
-    """CLI entry point.
+def _ttl_hours_arg(value: str) -> int:
+    """Parse ``--ttl-hours``, refusing anything the setting itself refuses.
 
-    Args:
-        args: Command line arguments (defaults to sys.argv)
-
-    Returns:
-        Exit code (0 for success, 1 for failure)
+    ``ORPHAN_FILE_TTL_HOURS`` is bounded by pydantic (``ge``/``le``); a CLI
+    override that skipped that bound would be a path around a field
+    constraint — ``--ttl-hours 0`` deletes files of any age, in-flight uploads
+    included. The bounds are read off the settings field rather than restated
+    here, so the two cannot drift apart.
     """
-    # Load environment variables at function level, not module level
-    from dotenv import load_dotenv
+    from faultmaven.modules.agent.jobs.storage_cleanup import validate_ttl_hours
 
-    load_dotenv()
+    try:
+        hours = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}")
 
+    try:
+        return validate_ttl_hours(hours)
+    except (ValueError, RuntimeError) as e:
+        # RuntimeError is validate_ttl_hours' own refusal when the settings
+        # field no longer declares bounds. argparse only turns
+        # ArgumentTypeError/TypeError/ValueError into a parser error, and
+        # parse_args runs outside main()'s try — anything else escapes as a
+        # traceback instead of the exit 2 the docs promise.
+        raise argparse.ArgumentTypeError(str(e))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser (exposed so tests can check what actually parses)."""
     parser = argparse.ArgumentParser(
+        prog="python -m faultmaven.jobs.run",
         description="Run FaultMaven background jobs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -410,6 +506,8 @@ Examples:
   python -m faultmaven.jobs.run case_cleanup
   python -m faultmaven.jobs.run case_cleanup --verbose
   python -m faultmaven.jobs.run --list
+  python -m faultmaven.jobs.run storage_cleanup --dry-run
+  python -m faultmaven.jobs.run storage_cleanup --ttl-hours 72
         """,
     )
 
@@ -452,6 +550,53 @@ Examples:
         ),
     )
 
+    # Job-specific flags (storage_cleanup). Both default to None — "defer to
+    # settings" — which is deliberately distinct from passing the setting's
+    # current value, so an invocation that omits them behaves exactly as it
+    # did before they existed. Passing one to a job that does not declare it
+    # is refused by run_job rather than delivered as a stray kwarg.
+    parser.add_argument(
+        "--dry-run",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "storage_cleanup only. --dry-run logs 'would delete' without "
+            "deleting; --no-dry-run asks for real deletion. Omit to defer to "
+            "ORPHAN_CLEANUP_DRY_RUN. --no-dry-run is not an enabler: with "
+            "ORPHAN_CLEANUP_ENABLED=false the run is still refused "
+            "(status='skipped')."
+        ),
+    )
+    parser.add_argument(
+        "--ttl-hours",
+        type=_ttl_hours_arg,
+        default=None,
+        metavar="HOURS",
+        help=(
+            "storage_cleanup only. Age threshold for orphan deletion, for "
+            "this run only; omit to defer to ORPHAN_FILE_TTL_HOURS. Bounded "
+            "by the same range as that setting."
+        ),
+    )
+
+    return parser
+
+
+def main(args: Optional[List[str]] = None) -> int:
+    """CLI entry point.
+
+    Args:
+        args: Command line arguments (defaults to sys.argv)
+
+    Returns:
+        Exit code (0 for success, 1 for failure)
+    """
+    # Load environment variables at function level, not module level
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    parser = build_parser()
     parsed_args = parser.parse_args(args)
 
     # Handle --list
@@ -472,6 +617,12 @@ Examples:
         kwargs["organization_id"] = parsed_args.organization_id
     if parsed_args.cross_tenant_maintenance:
         kwargs["cross_tenant_maintenance"] = True
+    # Only a flag that was actually given becomes a kwarg: absent means the
+    # job defers to settings, which is not the same as passing their value.
+    if parsed_args.dry_run is not None:
+        kwargs["dry_run"] = parsed_args.dry_run
+    if parsed_args.ttl_hours is not None:
+        kwargs["ttl_hours"] = parsed_args.ttl_hours
 
     # Run the job
     try:
