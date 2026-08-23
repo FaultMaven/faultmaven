@@ -11,7 +11,7 @@ import contextlib
 import os
 import sys
 import types
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -1059,26 +1059,44 @@ class TestJobSpecificFlagWiring:
 
     @pytest.mark.asyncio
     async def test_flag_refused_for_job_that_does_not_declare_it(self):
-        """A job-specific flag must not slide into another job's **kwargs."""
+        """A job-specific flag must not slide into another job's **kwargs.
+
+        The stand-in is autospecced: the guard reads the *real* run()'s
+        signature, so this stops passing if case_cleanup ever declares
+        dry_run — a bare Mock would keep it green by advertising
+        (*args, **kwargs).
+        """
         from faultmaven.jobs import case_cleanup
         from faultmaven.jobs.run import JobArgumentError, run_job
 
-        with patch.object(case_cleanup, "run", new=AsyncMock()) as job_run:
+        stand_in = create_autospec(case_cleanup.run)
+        with patch.object(case_cleanup, "run", new=stand_in):
             with pytest.raises(JobArgumentError, match="--dry-run"):
                 await run_job("case_cleanup", dry_run=True)
 
-        job_run.assert_not_called()
+        stand_in.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_ttl_flag_refused_for_job_that_does_not_declare_it(self):
         from faultmaven.jobs import kb_seed
         from faultmaven.jobs.run import JobArgumentError, run_job
 
-        with patch.object(kb_seed, "run", new=AsyncMock()) as job_run:
+        stand_in = create_autospec(kb_seed.run)
+        with patch.object(kb_seed, "run", new=stand_in):
             with pytest.raises(JobArgumentError, match="--ttl-hours"):
                 await run_job("kb_seed", ttl_hours=48)
 
-        job_run.assert_not_called()
+        stand_in.assert_not_called()
+
+    def test_guard_reads_the_real_signature_not_a_stand_in(self):
+        """The refusal must key on the job module's own run(), unpatched."""
+        from faultmaven.jobs import case_cleanup
+        from faultmaven.jobs.run import JobArgumentError, _reject_unsupported_job_flags
+
+        with pytest.raises(JobArgumentError, match="--dry-run"):
+            _reject_unsupported_job_flags(
+                case_cleanup, "case_cleanup", {"dry_run": True}
+            )
 
     def test_storage_cleanup_declares_both_flags(self):
         """The guard must not refuse the job the flags were added for."""

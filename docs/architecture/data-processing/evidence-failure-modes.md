@@ -530,7 +530,7 @@ Ships with `ORPHAN_CLEANUP_ENABLED=False` and `ORPHAN_CLEANUP_DRY_RUN=True`. Man
 1. Run with `ORPHAN_CLEANUP_DRY_RUN=true` for ≥48 hours. Job logs `would delete: {path}` without deleting.
 2. Eyeball the dry-run log. If unexpected files appear (anything currently referenced by an Evidence row, or recently uploaded), fix the `mark_linked` path before enabling real deletes.
 3. Confirm the sweep has actually selected something: a run reporting `found=0` has exercised no selection logic, so seed one known orphan and check that a dry run reports it. "Clean" means observed selection, not merely absence of errors.
-4. Only then set `ORPHAN_CLEANUP_DRY_RUN=false`.
+4. Only then set `ORPHAN_CLEANUP_ENABLED=true` **and** `ORPHAN_CLEANUP_DRY_RUN=false`. Both: with `enabled=false` and dry-run off, `run()` refuses outright (`status="skipped"`) and the sweep stops even enumerating.
 
 CLI: `python -m faultmaven.jobs.run storage_cleanup`. Invoke from cron, Kubernetes CronJob, or any external scheduler. `--dry-run`/`--no-dry-run` and `--ttl-hours` override the corresponding settings for a single run; neither can delete anything while `ORPHAN_CLEANUP_ENABLED=false`.
 

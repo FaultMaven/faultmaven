@@ -79,10 +79,15 @@ def ttl_hours_bounds() -> tuple[int, int]:
     from faultmaven.config.settings import EvidenceStorageSettings
 
     field = EvidenceStorageSettings.model_fields["orphan_file_ttl_hours"]
+    # Read None-safely: pydantic may carry the bounds as separate Ge/Le
+    # objects or fold them into one Interval whose unused ends are None, and
+    # a None end must not erase a bound another constraint already supplied.
     low = high = None
     for constraint in field.metadata:
-        low = getattr(constraint, "ge", low)
-        high = getattr(constraint, "le", high)
+        if getattr(constraint, "ge", None) is not None:
+            low = constraint.ge
+        if getattr(constraint, "le", None) is not None:
+            high = constraint.le
 
     if low is None or high is None:
         raise RuntimeError(
@@ -294,7 +299,10 @@ async def run(
 
     The gate is:
       1. ``evidence_storage.orphan_cleanup_enabled`` must be True, OR
-      2. caller must pass ``dry_run=True`` explicitly (safe to run anyway).
+      2. the *effective* dry-run must be True — the caller's override if it
+         gave one, else ``orphan_cleanup_dry_run`` (safe to run anyway). The
+         deployed CronJob passes no override and rides the second arm on the
+         shipped default.
 
     Otherwise the job exits with status="skipped" and no side effects. An
     explicit ``dry_run=False`` therefore asks for deletion without granting

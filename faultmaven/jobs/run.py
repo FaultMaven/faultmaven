@@ -486,7 +486,12 @@ def _ttl_hours_arg(value: str) -> int:
 
     try:
         return validate_ttl_hours(hours)
-    except ValueError as e:
+    except (ValueError, RuntimeError) as e:
+        # RuntimeError is validate_ttl_hours' own refusal when the settings
+        # field no longer declares bounds. argparse only turns
+        # ArgumentTypeError/TypeError/ValueError into a parser error, and
+        # parse_args runs outside main()'s try — anything else escapes as a
+        # traceback instead of the exit 2 the docs promise.
         raise argparse.ArgumentTypeError(str(e))
 
 

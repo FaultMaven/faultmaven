@@ -56,7 +56,8 @@ omitted flag means "defer to settings", so the deployed `storage_cleanup
 --verbose` behaves exactly as it did before these flags existed.
 
 **`--no-dry-run` is a lever, not an enabler.** The gate in `run()` is
-`ORPHAN_CLEANUP_ENABLED=true` **or** an explicit dry-run; `--no-dry-run`
+`ORPHAN_CLEANUP_ENABLED=true` **or** an effective dry-run (the flag if given,
+else `ORPHAN_CLEANUP_DRY_RUN`); `--no-dry-run`
 satisfies neither while cleanup is disabled, so the run returns
 `status="skipped"` and touches nothing. Enabling reclamation is a config
 change, and no CLI invocation substitutes for it.
