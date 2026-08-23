@@ -14,7 +14,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import Request, status
+from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from faultmaven.api.exception_handlers import (
@@ -442,6 +442,65 @@ class TestOAuthProtocolErrorHandler:
 
         assert response.headers["cache-control"] == "no-store"
         assert response.headers["pragma"] == "no-cache"
+
+
+class TestDictDetailIsCoerced:
+    """A dict `detail` cannot promise a renderable message.
+
+    `http_exception_handler` pulls a message out of a dict `detail` and puts it
+    straight into a JSONResponse. Both branches take whatever the raising code
+    put there — `nested["message"]`, or `detail.get("message")` — so a value the
+    encoder cannot render raised *inside the handler* and turned a deliberate
+    4xx into a 500 with none of the message the client was meant to see. That is
+    the defect #1048 fixed for the validation handler, which lived on here.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_nonserializable_nested_message_still_answers_its_status(
+        self, mock_request
+    ):
+        from faultmaven.main import http_exception_handler
+
+        class Unrenderable:
+            def __repr__(self):
+                return "<Unrenderable>"
+
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(
+                status_code=400,
+                detail={"error": {"code": "x", "message": Unrenderable()}},
+            ),
+        )
+
+        assert response.status_code == 400
+        assert json.loads(response.body)["detail"] == "<Unrenderable>"
+
+    @pytest.mark.asyncio
+    async def test_a_nonserializable_flat_message_still_answers_its_status(
+        self, mock_request
+    ):
+        from faultmaven.main import http_exception_handler
+
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(status_code=409, detail={"message": object()}),
+        )
+
+        assert response.status_code == 409
+        assert isinstance(json.loads(response.body)["detail"], str)
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_message_is_unchanged(self, mock_request):
+        """Coercion must not reshape the common case."""
+        from faultmaven.main import http_exception_handler
+
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(status_code=404, detail={"error": {"message": "not found"}}),
+        )
+
+        assert json.loads(response.body) == {"detail": "not found"}
 
 
 class TestResponseFormatConsistency:

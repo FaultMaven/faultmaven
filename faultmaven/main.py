@@ -50,7 +50,7 @@ from starlette.requests import Request as StarletteRequest
 
 from faultmaven.api.contract_version import API_CONTRACT_VERSION
 from faultmaven.api.middleware.tenant_scope import bind_request_org_context
-from faultmaven.utils.serialization import to_json_compatible
+from faultmaven.utils.serialization import to_json_compatible, to_json_safe
 
 # Configure enhanced logging system first
 from .infrastructure.logging.config import get_logger
@@ -1808,7 +1808,16 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             message = detail.get("message") or detail.get("detail") or str(detail)
         return JSONResponse(
             status_code=exc.status_code,
-            content={"detail": message},
+            # Coerced for the same reason #1048 made the validation handler's
+            # serialization total: whatever is pulled out of a dict `detail`
+            # goes straight into JSONResponse, and a value the encoder cannot
+            # render raises *inside the handler* — turning a deliberate 4xx
+            # into a 500 with none of the message the client was meant to see.
+            # Neither branch above can promise a str: `nested["message"]` is
+            # whatever the raising code put there, and `detail.get("message")`
+            # is unconstrained too. Verified: a non-serializable message made
+            # a 400 answer 500.
+            content={"detail": to_json_safe(message)},
             headers=getattr(exc, "headers", None),
         )
     # If detail is a string, return it as expected by tests
