@@ -28,7 +28,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
-from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
+from faultmaven.exceptions import (
+    ConflictError,
+    NotFoundError,
+    UserLookupFailed,
+    ValidationException,
+)
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
 if TYPE_CHECKING:
@@ -73,80 +78,120 @@ class RedisUserStore:
         self._record_login_warned = False
 
     async def get_user(self, user_id: str) -> Optional[DevUser]:
-        """Get user by ID
+        """Get user by ID.
 
         Args:
             user_id: User identifier
 
         Returns:
-            DevUser if found, None otherwise
-        """
-        try:
-            if not user_id:
-                return None
+            DevUser if the lookup completed and matched, None if it completed
+            and matched nothing. Never None because the lookup *failed* — see
+            :class:`~faultmaven.exceptions.UserLookupFailed` (#1043).
 
+        Raises:
+            UserLookupFailed: The lookup could not be completed — Redis was
+                unreachable, or the stored record would not decode. The caller
+                must not read either as "no such user".
+        """
+        # An empty id matches no user by construction: there is no key to fetch,
+        # so "absent" here is a completed answer, not a guess.
+        if not user_id:
+            return None
+
+        try:
             user_key = self.user_key_pattern.format(user_id)
             user_data = await self._redis_get(user_key)
 
             if not user_data:
                 return None
 
+            # A record that will not decode is a *corrupt* account, not a
+            # missing one. Reporting it as absent is how a deserialisation bug
+            # becomes "the user vanished" during an incident.
             user_dict = json.loads(user_data)
             return DevUser.from_dict(user_dict)
 
         except Exception as e:
             logger.error(f"Failed to get user {user_id}: {e}")
-            return None
+            raise UserLookupFailed(
+                f"Could not look up user id {user_id!r}: {e}. This is NOT "
+                "'no such user' — the lookup itself failed, so the account's "
+                "existence is unknown.",
+                lookup="user_id",
+                identifier=user_id,
+            ) from e
 
     async def get_user_by_username(self, username: str) -> Optional[DevUser]:
-        """Get user by username
+        """Get user by username.
 
         Args:
             username: Username to search for
 
         Returns:
-            DevUser if found, None otherwise
+            DevUser if the lookup completed and matched, None if it completed
+            and matched nothing. See :meth:`get_user` (#1043).
+
+        Raises:
+            UserLookupFailed: The lookup could not be completed. A failure in
+                the ``get_user`` hop this delegates to propagates unchanged, so
+                it names the id rather than this username — which is the more
+                useful of the two when a username index points at a record that
+                cannot be read.
         """
-        try:
-            if not username:
-                return None
-
-            username_key = self.username_key_pattern.format(username.lower())
-            user_id = await self._redis_get(username_key)
-
-            if not user_id:
-                return None
-
-            return await self.get_user(user_id)
-
-        except Exception as e:
-            logger.error(f"Failed to get user by username {username}: {e}")
+        if not username:
             return None
 
+        try:
+            username_key = self.username_key_pattern.format(username.lower())
+            user_id = await self._redis_get(username_key)
+        except Exception as e:
+            logger.error(f"Failed to get user by username {username}: {e}")
+            raise UserLookupFailed(
+                f"Could not look up username {username!r}: {e}. This is NOT "
+                "'no such user' — the lookup itself failed, so the account's "
+                "existence is unknown.",
+                lookup="username",
+                identifier=username,
+            ) from e
+
+        if not user_id:
+            return None
+
+        return await self.get_user(user_id)
+
     async def get_user_by_email(self, email: str) -> Optional[DevUser]:
-        """Get user by email address
+        """Get user by email address.
 
         Args:
             email: Email address to search for
 
         Returns:
-            DevUser if found, None otherwise
-        """
-        try:
-            if not email:
-                return None
+            DevUser if the lookup completed and matched, None if it completed
+            and matched nothing. See :meth:`get_user_by_username` (#1043).
 
+        Raises:
+            UserLookupFailed: The lookup could not be completed.
+        """
+        if not email:
+            return None
+
+        try:
             email_key = self.email_key_pattern.format(email.lower())
             user_id = await self._redis_get(email_key)
-
-            if not user_id:
-                return None
-
-            return await self.get_user(user_id)
-
         except Exception as e:
             logger.error(f"Failed to get user by email {email}: {e}")
+            raise UserLookupFailed(
+                f"Could not look up email {email!r}: {e}. This is NOT "
+                "'no such user' — the lookup itself failed, so the account's "
+                "existence is unknown.",
+                lookup="email",
+                identifier=email,
+            ) from e
+
+        if not user_id:
             return None
+
+        return await self.get_user(user_id)
 
     async def create_user(
         self,

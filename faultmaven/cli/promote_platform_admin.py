@@ -22,6 +22,7 @@ import sys
 
 from faultmaven.bootstrap.data_init import assign_operator_roles
 from faultmaven.container import container
+from faultmaven.exceptions import UserLookupFailed
 
 #: How to enumerate accounts. ``list_users.py`` is a checkout-only dev script
 #: (it is deliberately not a console entrypoint), so a pod needs the API.
@@ -50,7 +51,21 @@ async def promote_to_platform_admin(username: str) -> bool:
 
     # Find user
     print(f"\nLooking up user '{username}'...")
-    user = await user_store.get_user_by_username(username)
+    try:
+        user = await user_store.get_user_by_username(username)
+    except UserLookupFailed as exc:
+        # Not "not found": the store did not answer (#1043). Saying "not found"
+        # here would send an operator hunting for the right username while the
+        # real fault — an unavailable user store — stayed invisible, and the
+        # promotion they came to make had not happened.
+        print(
+            f"❌ The username lookup for '{username}' FAILED — this is not "
+            "'user not found'."
+        )
+        print("   Whether the account exists is unknown, and nothing was changed.")
+        print(f"   Underlying error: {exc}")
+        print("   Check the API logs and the database, then re-run.")
+        return False
     if not user:
         print(f"❌ User '{username}' not found")
         print()
