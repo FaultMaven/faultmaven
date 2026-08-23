@@ -1302,15 +1302,18 @@ Two role vocabularies coexist in the codebase:
   Global KB authoring. It is granted out-of-band by the `fm-promote-platform-admin` command — never
   through the user-management API, whose `assign_role` validates against the
   org `Role` enum and so cannot mint an operator.
-- **Org-scoped roles (`Role` enum).** Separately,
-  `modules/auth/domain/models/rbac.py` defines a `Role` enum — `admin`,
-  `member`, `viewer` — with a granular `Permission` mapping
+- **Org-scoped roles (`Role` enum).** Separately, `models/rbac.py` defines a
+  `Role` enum — `admin`, `member`, `viewer` — with a granular `Permission` mapping
   (`get_permissions_for_roles`) for organization/team-scoped RBAC. `admin` here
   is **tenant-bounded**: full authority inside one organization, none outside
   it. `platform_admin` is deliberately NOT a member of this enum, so holding it
   grants no org permissions by itself; the standalone deployment's single
-  account legitimately holds both. Wiring the granular permissions to actual
-  endpoint checks is tracked as a separate RBAC reconciliation (#1040).
+  account legitimately holds both. (`modules/auth/domain/models/rbac.py`
+  re-exports that enum rather than defining a second copy — #1040 item 4.)
+  Wiring the granular permissions to actual endpoint checks is designed in
+  [org-permission-enforcement.md](org-permission-enforcement.md) and tracked by
+  #1040. It is not implemented, and note that `require_permission` would
+  currently deny every caller: no token generator mints a `permissions` claim.
 - **Baseline (`user`).** Every other authenticated user; baseline access is
   gated by `require_authentication`, not by a specific role string. Token
   generators default the claim to `["user"]` when the user carries no roles.

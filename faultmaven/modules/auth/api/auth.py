@@ -50,7 +50,7 @@ from faultmaven.api.v1.dependencies import (
 from faultmaven.config.settings import AuthMode, get_settings
 from faultmaven.config.tenant_context import usable_tenant_id
 from faultmaven.container import container
-from faultmaven.exceptions import FaultMavenException
+from faultmaven.exceptions import FaultMavenException, UserLookupFailed
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.models.interfaces_user import IOrganizationRepository
 from faultmaven.modules.auth.contracts import IUserQuery
@@ -1453,13 +1453,18 @@ async def revoke_user_tokens(
     the same false-confirmation failure this endpoint was fixed for.
 
     The revocation happens BEFORE that lookup and is never conditional on it.
-    ``DatabaseUserStore.get_user`` swallows its exceptions and returns None, so
-    an auth-DB outage is indistinguishable from a genuinely absent user (see
-    #703, where exactly that DB froze). Gating on it would let a DB blip answer
-    "user not found" to an admin containing a live compromise, having revoked
-    nothing. Revocation only needs Redis, so it runs on Redis alone; the lookup
-    only shapes the response. A watermark written for an id that turns out not
-    to exist is inert and expires on its own.
+    Gating on it would let an auth-DB blip answer "user not found" to an admin
+    containing a live compromise, having revoked nothing (see #703, where
+    exactly that DB froze). Revocation only needs Redis, so it runs on Redis
+    alone; the lookup only shapes the response. A watermark written for an id
+    that turns out not to exist is inert and expires on its own.
+
+    Since #1043 the lookup distinguishes its two outcomes, so this endpoint
+    reports them differently: a completed lookup that matched nothing is the
+    404 above, while a lookup that could not run returns **200** naming the
+    revocation as landed and the identity as unverified. It has to be a 200 —
+    the tokens really are dead, and a 5xx here would tell the admin the
+    containment failed and send them to do it again.
     """
     try:
         auth_service = getattr(request.app.state, "auth_service", None)
@@ -1472,24 +1477,45 @@ async def revoke_user_tokens(
         # Raises ServiceError on store failure, which surfaces as a 500 below.
         revoked_before = await auth_service.revoke_user_tokens(user_id)
 
-        if await user_store.get_user(user_id) is None:
+        try:
+            resolved = await user_store.get_user(user_id)
+        except UserLookupFailed as exc:
+            # The watermark is already written, so the containment the admin
+            # asked for HAS happened. Only the identity check is unavailable.
+            # Reporting this as a failure — which the generic 500 below would —
+            # would send them to revoke again during an incident, chasing a
+            # store outage that never touched the revocation.
+            logger.error(
+                "Revoke-tokens: the watermark was written, but the user lookup "
+                "FAILED so the id could not be confirmed",
+                extra={"user_id": user_id, "lookup": exc.lookup},
+                exc_info=True,
+            )
+            return RevokeUserTokensResponse(
+                message=(
+                    "All tokens revoked for user. NOTE: the user store did not "
+                    "answer, so this id could not be confirmed to exist — the "
+                    "revocation landed regardless. Verify the id once the store "
+                    "recovers."
+                ),
+                revoked_before=revoked_before.isoformat(),
+            )
+
+        if resolved is None:
             logger.warning(
                 "Revoke-tokens called for an unresolvable user_id; watermark "
-                "written anyway (the lookup cannot distinguish absent from "
-                "store failure)",
+                "written anyway (the lookup completed and matched nothing)",
                 extra={"user_id": user_id},
             )
             # Say that the revocation landed. A bare "user not found" would be
-            # actively misleading when the cause is a lookup failure rather
-            # than a bad id: the admin would assume nothing happened and that
-            # they still need to act, which is the false-signal problem this
-            # endpoint was fixed for, inverted.
+            # actively misleading: the admin would assume nothing happened and
+            # that they still need to act, which is the false-signal problem
+            # this endpoint was fixed for, inverted.
             raise HTTPException(
                 status_code=404,
                 detail=(
                     f"Revocation recorded for '{user_id}', but no such user "
-                    "could be resolved — verify the user ID (or, if the user "
-                    "does exist, the user store is failing)."
+                    "exists — verify the user ID."
                 ),
             )
 

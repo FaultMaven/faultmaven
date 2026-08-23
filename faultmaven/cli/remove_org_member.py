@@ -134,6 +134,12 @@ async def _resolve_user(user_store, identifier: str):
     Username first because it is what an operator reads off the runbook and the
     admin console; the id lookup is last so a username that happens to look like
     an id still resolves as a username.
+
+    Returns None only when all three lookups **completed** and matched nothing.
+    A lookup that could not run raises ``UserLookupFailed`` (#1043) rather than
+    falling through to the next one: the next one would be asking the same
+    unavailable store, and reaching the end would report "no such user" on
+    evidence this command does not have.
     """
     for lookup in (
         user_store.get_user_by_username,
@@ -156,6 +162,7 @@ async def remove_org_member(
     """Run the paired removal. Returns the process exit code."""
     from faultmaven.config.tenant_context import set_current_org_id
     from faultmaven.container import container
+    from faultmaven.exceptions import UserLookupFailed
     from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
         SessionlessOrganizationRepository,
     )
@@ -213,18 +220,34 @@ async def remove_org_member(
         print("\n❌ Failed to get user store from container")
         return 1
 
-    user = await _resolve_user(user_store, user_identifier)
+    try:
+        user = await _resolve_user(user_store, user_identifier)
+    except UserLookupFailed as exc:
+        # The distinction #1043 exists to make. Before it, an unavailable
+        # database arrived here as "no such user", and the operator went hunting
+        # for the right username while the cutoff had not happened and the real
+        # fault was invisible. Nothing has been written at this point.
+        print(
+            f"\n❌ Could not look up '{user_identifier}': the {exc.lookup} lookup "
+            "FAILED.\n"
+            "   This is not 'no such user' — the user store did not answer, so "
+            "whether the account exists is unknown and NOTHING has been removed "
+            "or revoked.\n"
+            f"   Underlying error: {exc}\n"
+            "   Fix the store (check the API logs and the database), then re-run."
+        )
+        return 1
+
     if user is None:
-        # The user store swallows lookup errors and returns None, so "absent" and
-        # "the lookup failed" arrive here identically. Say so rather than assert
-        # the account does not exist — during an incident the difference is the
-        # difference between a typo and an unavailable database.
         print(
             f"\n❌ No user matches '{user_identifier}' "
             "(tried username, then email, then user id).\n"
-            "   A failed lookup reads the same as an absent account here; if the "
-            "account should exist, check the API logs for a database error before "
-            "assuming the identifier is wrong."
+            "   All three lookups completed and matched nothing — a store that "
+            "could not answer raises instead of reaching here (#1043), so this "
+            "is an absent account rather than a failed lookup.\n"
+            "   Check the identifier. If the account should exist, check the API "
+            "logs anyway: this message is only as true as the store's own "
+            "failure reporting."
         )
         return 1
 

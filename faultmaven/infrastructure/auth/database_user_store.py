@@ -12,7 +12,12 @@ import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from faultmaven.exceptions import ConflictError, NotFoundError, ValidationException
+from faultmaven.exceptions import (
+    ConflictError,
+    NotFoundError,
+    UserLookupFailed,
+    ValidationException,
+)
 from faultmaven.infrastructure.persistence.user_repository import User, UserRepository
 from faultmaven.modules.auth.domain.models.auth import DevUser
 
@@ -74,73 +79,98 @@ class DatabaseUserStore:
         )
 
     async def get_user(self, user_id: str) -> Optional[DevUser]:
-        """Get user by ID
+        """Get user by ID.
 
         Args:
             user_id: User identifier
 
         Returns:
-            DevUser if found, None otherwise
+            DevUser if the lookup completed and matched, None if it completed
+            and matched nothing. Never None because the lookup *failed* — see
+            :class:`~faultmaven.exceptions.UserLookupFailed` (#1043).
+
+        Raises:
+            UserLookupFailed: The lookup could not be completed. The caller must
+                not read this as "no such user".
         """
-        try:
-            if not user_id:
-                return None
-
-            user = await self.user_repository.get(user_id)
-            if not user:
-                return None
-
-            return self._user_to_devuser(user)
-
-        except Exception as e:
-            logger.error(f"Failed to get user {user_id}: {e}")
+        # An empty id matches no user by construction: there is nothing to ask
+        # the database, so "absent" here is a completed answer, not a guess.
+        if not user_id:
             return None
 
+        try:
+            user = await self.user_repository.get(user_id)
+        except Exception as e:
+            logger.error(f"Failed to get user {user_id}: {e}")
+            raise UserLookupFailed(
+                f"Could not look up user id {user_id!r}: {e}. This is NOT "
+                "'no such user' — the lookup itself failed, so the account's "
+                "existence is unknown.",
+                lookup="user_id",
+                identifier=user_id,
+            ) from e
+
+        return self._user_to_devuser(user) if user else None
+
     async def get_user_by_username(self, username: str) -> Optional[DevUser]:
-        """Get user by username
+        """Get user by username.
 
         Args:
             username: Username to search for
 
         Returns:
-            DevUser if found, None otherwise
+            DevUser if the lookup completed and matched, None if it completed
+            and matched nothing. See :meth:`get_user` (#1043).
+
+        Raises:
+            UserLookupFailed: The lookup could not be completed.
         """
-        try:
-            if not username:
-                return None
-
-            user = await self.user_repository.get_by_username(username)
-            if not user:
-                return None
-
-            return self._user_to_devuser(user)
-
-        except Exception as e:
-            logger.error(f"Failed to get user by username {username}: {e}")
+        if not username:
             return None
 
+        try:
+            user = await self.user_repository.get_by_username(username)
+        except Exception as e:
+            logger.error(f"Failed to get user by username {username}: {e}")
+            raise UserLookupFailed(
+                f"Could not look up username {username!r}: {e}. This is NOT "
+                "'no such user' — the lookup itself failed, so the account's "
+                "existence is unknown.",
+                lookup="username",
+                identifier=username,
+            ) from e
+
+        return self._user_to_devuser(user) if user else None
+
     async def get_user_by_email(self, email: str) -> Optional[DevUser]:
-        """Get user by email address
+        """Get user by email address.
 
         Args:
             email: Email address to search for
 
         Returns:
-            DevUser if found, None otherwise
+            DevUser if the lookup completed and matched, None if it completed
+            and matched nothing. See :meth:`get_user` (#1043).
+
+        Raises:
+            UserLookupFailed: The lookup could not be completed.
         """
+        if not email:
+            return None
+
         try:
-            if not email:
-                return None
-
             user = await self.user_repository.get_by_email(email)
-            if not user:
-                return None
-
-            return self._user_to_devuser(user)
-
         except Exception as e:
             logger.error(f"Failed to get user by email {email}: {e}")
-            return None
+            raise UserLookupFailed(
+                f"Could not look up email {email!r}: {e}. This is NOT "
+                "'no such user' — the lookup itself failed, so the account's "
+                "existence is unknown.",
+                lookup="email",
+                identifier=email,
+            ) from e
+
+        return self._user_to_devuser(user) if user else None
 
     async def create_user(
         self,

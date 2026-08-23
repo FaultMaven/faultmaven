@@ -83,13 +83,16 @@ const isPlatformAdmin = user.roles.includes('platform_admin');
 > **operator** role `platform_admin` is deployment-scoped: it governs Global-KB
 > authoring, cross-tenant case listing, user administration and LLM
 > configuration, and is enforced by the `require_platform_admin` dependency.
-> Separately, an **org-scoped** `Role` enum (`admin`, `member`, `viewer`) in
-> `modules/auth/domain/models/rbac.py` carries a granular `Permission` mapping
+> Separately, an **org-scoped** `Role` enum (`admin`, `member`, `viewer`) defined
+> in `models/rbac.py` and re-exported from `modules/auth/domain/models/rbac.py`
+> carries a granular `Permission` mapping
 > for organization/team RBAC; `admin` there is tenant-bounded and never crosses
 > tenants. `platform_admin` is intentionally **not** a member of that enum —
 > which is what stops `POST /admin/users/{id}/roles` from minting operators —
 > so it maps to no granular permissions on its own. Wiring those permissions to
-> endpoint checks is tracked as a separate RBAC reconciliation (#1040). See
+> endpoint checks is designed in
+> [org-permission-enforcement.md](org-permission-enforcement.md) and tracked by
+> #1040; it is **not** implemented. See
 > [iam-design.md § Role Implementation](iam-design.md#role-implementation).
 
 ### Where roles are stored, and what reads them
@@ -109,7 +112,7 @@ boundary:
 
 | Axis | Values | Granted by | Read by |
 |------|--------|-----------|---------|
-| Org-scoped | `admin`, `member`, `viewer` | `POST/DELETE /admin/users/{id}/roles`; also `fm-promote-platform-admin` / the bootstrap operator seed, which re-grants on **every** startup (see below) | `Permission` mapping (not yet wired to endpoint checks) |
+| Org-scoped | `admin`, `member`, `viewer` | `POST/DELETE /admin/users/{id}/roles`; also `fm-promote-platform-admin` / the bootstrap operator seed, which re-grants on **every** startup (see below) | `Permission` mapping (not yet wired to endpoint checks — see [org-permission-enforcement.md](org-permission-enforcement.md)) |
 | Deployment | `platform_admin` | `fm-promote-platform-admin` / bootstrap operator seed, and nothing else | `require_platform_admin` / `is_platform_admin()` |
 | Base | `user` | registration, SSO JIT provisioning; also the operator grant | nothing today (grants no permissions) |
 
@@ -119,21 +122,30 @@ aiming it at an operator revoked `platform_admin` while reporting a successful
 assignment — a silent operator lockout recoverable only from a shell (#706).
 `platform_admin` is revoked by `fm-demote-platform-admin` and nothing else.
 
-> **Promotion grants all three roles; demotion removes one.** An operator needs
-> authority inside its own organization too — `platform_admin` confers none —
-> so every provisioning path grants the whole `PLATFORM_ADMIN_ROLE_SET`
+> **Promotion and demotion are inverses.** An operator needs authority inside its
+> own organization too — `platform_admin` confers none — so every provisioning
+> path grants the whole `PLATFORM_ADMIN_ROLE_SET`
 > (`["user", "admin", "platform_admin"]`), org `admin` included.
-> `fm-demote-platform-admin` removes only `platform_admin`, so an account
-> promoted and later demoted keeps an org `admin` role it did not hold
-> beforehand. Harmless while org roles enforce nothing; it becomes a real
-> over-grant the moment the `Permission` wiring above lands, and is called out
-> in #1040 as part of that work.
+> `fm-demote-platform-admin` removes `OPERATOR_GRANTED_ROLES` (that set minus the
+> base `user` marker), so a promoted-then-demoted account does not keep org
+> authority it never had. It previously removed only `platform_admin`, which left
+> exactly that residue — harmless while org roles enforce nothing, a real
+> over-grant the moment the `Permission` wiring lands (#1040 item 3).
+>
+> Because nothing records which grant a role came from, this also removes an org
+> `admin` the account held *before* it was ever promoted. Pass `--keep-org-admin`
+> when you know it did, or re-grant through `POST /api/v1/admin/users/{id}/roles`
+> afterwards.
 >
 > **Note on today's enforcement surface.** `require_role` / `require_any_role`
-> exist but have no production call sites, and JWT `scopes` are a fixed list
-> rather than role-derived. So `platform_admin` is currently the only role the
-> enforcement path actually consults; the org-scoped axis is recorded and
-> surfaced (user listing, filtering) ahead of the permission wiring above.
+> exist but have no production call sites; `require_permission` and its siblings
+> are **unusable** rather than merely unused, because no token generator mints a
+> `permissions` claim — `AuthenticatedUser.permissions` is always empty, so they
+> would deny every caller. JWT `scopes` are a fixed list, not role-derived. So
+> `platform_admin` is currently the only role the enforcement path consults; the
+> org-scoped axis is recorded and surfaced (user listing, filtering) ahead of the
+> wiring designed in
+> [org-permission-enforcement.md](org-permission-enforcement.md).
 
 ### 1. Regular User (`user` role)
 

@@ -552,3 +552,43 @@ class RepositoryError(ServiceError):
     """
 
     pass
+
+
+class UserLookupFailed(RepositoryError):
+    """A user lookup could not be completed — this is NOT "no such user" (#1043).
+
+    The user stores previously caught every exception on the read path and
+    returned ``None``, so a transient database error, an exhausted connection
+    pool, or a role/permission problem all surfaced as *absent*. "No such user"
+    is a **claim**, and returning it on evidence the code does not have is the
+    wrong default for an auth substrate: it is worst on the operator paths, which
+    run during incidents and offboarding, where it sends someone hunting for the
+    right username while the real fault — an unavailable database — stays
+    invisible and the cutoff has not happened.
+
+    So a failed lookup raises this instead, and only a lookup that genuinely
+    completed and matched nothing returns ``None``. Callers that legitimately
+    treat absence as a normal outcome (registration uniqueness checks, the SSO
+    JIT path) keep working unchanged — an absent user still returns ``None``;
+    what changes is that they now fail loudly instead of proceeding on a guess.
+
+    Over HTTP this is a ``ServiceError``, so it becomes a generic 500 and the
+    identifier stays in the log (``service_error_handler``). The message is
+    written for the operator reading that log, or the CLI printing it.
+    """
+
+    def __init__(self, message: str, *, lookup: str, identifier: str):
+        """
+        Args:
+            message: What failed, in operator-facing terms.
+            lookup: Which lookup it was ("user_id", "username", "email") — the
+                CLIs try several in sequence, so "which one broke" is the
+                difference between a typo and an outage.
+            identifier: The value looked up. Echoed back to whoever supplied it,
+                never to a different party: it reaches CLI output and structured
+                logs, and the HTTP path replaces the whole body with a generic
+                message.
+        """
+        super().__init__(message, details={"lookup": lookup, "identifier": identifier})
+        self.lookup = lookup
+        self.identifier = identifier

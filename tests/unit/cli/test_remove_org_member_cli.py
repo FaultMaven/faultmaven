@@ -24,6 +24,7 @@ import pytest
 
 from faultmaven.cli import remove_org_member
 from faultmaven.config import tenant_context
+from faultmaven.exceptions import UserLookupFailed
 from faultmaven.modules.auth.domain.services.organization_membership_service import (
     MembershipRemovalIncomplete,
 )
@@ -399,8 +400,74 @@ async def test_unknown_user_is_refused(wiring, capsys):
     )
 
     assert code == 1
-    assert "No user matches" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "No user matches" in out
+    # Now that a failed lookup raises (#1043), this message may state plainly
+    # that the account is absent. It used to have to hedge, because "absent" and
+    # "the lookup broke" arrived here identically.
+    assert "completed and matched nothing" in out
     wiring.orgs.remove_member.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "failing_lookup",
+    ["get_user_by_username", "get_user_by_email", "get_user"],
+)
+async def test_a_failed_lookup_is_refused_as_a_failure_not_as_absence(
+    wiring, capsys, failing_lookup
+):
+    """The operator-path complaint in #1043, on the command it was found on.
+
+    An unavailable user store used to print ``No user matches 'alice'`` and exit
+    1. The operator then went hunting for the right username — during an
+    offboarding, with the cutoff not yet made and the real fault invisible. The
+    three lookups are parametrised because the first one to break is whichever
+    one the identifier happens to reach.
+    """
+    # Everything before the failing lookup completes and matches nothing, so the
+    # resolver actually gets there.
+    order = ["get_user_by_username", "get_user_by_email", "get_user"]
+    for name in order[: order.index(failing_lookup)]:
+        getattr(wiring.user_store, name).return_value = None
+    getattr(wiring.user_store, failing_lookup).side_effect = UserLookupFailed(
+        "the database is unavailable",
+        lookup="username",
+        identifier="alice",
+    )
+
+    code = await remove_org_member.remove_org_member(
+        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+    )
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "FAILED" in out
+    assert "not 'no such user'" in out
+    assert "NOTHING has been removed or revoked" in out
+    # The refusal is before any write, which is what makes it safe to retry.
+    wiring.orgs.remove_member.assert_not_awaited()
+    wiring.auth_service.revoke_user_tokens.assert_not_awaited()
+
+
+async def test_a_failed_first_lookup_does_not_fall_through_to_the_others(
+    wiring, capsys
+):
+    """Asking the same unavailable store twice more cannot turn failure into absence.
+
+    Falling through would reach the end of the resolver and return None, which
+    the caller reports as "no user matches" — the exact misreport #1043 is
+    about, reintroduced one layer up.
+    """
+    wiring.user_store.get_user_by_username.side_effect = UserLookupFailed(
+        "the database is unavailable", lookup="username", identifier="alice"
+    )
+
+    await remove_org_member.remove_org_member(
+        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+    )
+
+    wiring.user_store.get_user_by_email.assert_not_awaited()
+    wiring.user_store.get_user.assert_not_awaited()
 
 
 def test_membership_removal_incomplete_is_the_documented_failure():
