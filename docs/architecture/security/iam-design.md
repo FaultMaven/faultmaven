@@ -2124,13 +2124,14 @@ The in-extension `chrome-extension://…/callback.html` and
 serves those pages itself, so they carry no evidence of who is receiving the
 code.
 
-**Until the id is pinned, the impersonation hole is open, not mitigated.** With
-the skip inactive, a hostile extension can still present
-`client_id=faultmaven-copilot` with its own `launchWebAuthFlow` redirect and
-obtain tokens — the id-agnostic allowlist admits it. The only difference is that
-a consent screen appears first, and that screen renders the client *name*, so it
-reads "FaultMaven Copilot" for the impostor exactly as for the real extension. A
-user cannot tell them apart from it.
+**The impersonation hole is open whether or not the id is pinned.** A hostile
+extension can present `client_id=faultmaven-copilot` with its own
+`launchWebAuthFlow` redirect and obtain tokens — the id-agnostic allowlist
+admits it either way. Pinning changes only who is *prompted*: before it,
+everyone is; after it, our extension is not and the impostor still is. A
+consent screen appears first in both cases, and it renders the client *name*,
+so it reads "FaultMaven Copilot" for the impostor exactly as for the real
+extension. A user cannot tell them apart from it.
 
 So the empty default is the safe *default* — it cannot silently skip a prompt —
 but it is not a control against impersonation, and the prompt standing in front
