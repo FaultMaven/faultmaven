@@ -24,6 +24,7 @@ import pytest
 
 from faultmaven.config.settings import AuthSettings
 from faultmaven.modules.auth.api.oauth import _is_first_party
+from faultmaven.modules.auth.domain.services.oauth_service import OAuthServiceImpl
 
 #: The published id a deployment would pin. Any concrete 32-char a-p id does.
 PINNED_ID = "abcdefghijklmnopabcdefghijklmnop"
@@ -152,6 +153,61 @@ def test_pinned_pattern_admits_only_the_pinned_extension(uri, allowed):
         _is_first_party("faultmaven-copilot", uri, _settings(["faultmaven-copilot"]))
         is allowed
     ), uri
+
+
+# --------------------------------------------------------------------------- #
+# What the pin is NOT: an access control
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_pinning_consent_does_not_narrow_access():
+    """Pinning the consent skip does not stop an impostor being issued a code.
+
+    The design doc used to say pinning ``OAUTH_FIRST_PARTY_REDIRECT_PATTERNS``
+    was what closed the impersonation hole. It is not, and the reason is that
+    the two questions are answered from two different lists: whether a PROMPT
+    RENDERS is ``_is_first_party`` over the first-party patterns, whether a CODE
+    IS ISSUED is ``_is_redirect_uri_allowed`` over
+    ``oauth_redirect_uri_patterns``. Pinning the first list leaves the second
+    id-agnostic, so the impostor is still admitted — all that changes for it is
+    that the prompt it gets keeps appearing, and that prompt renders the client
+    *name*, so it still reads "FaultMaven Copilot".
+
+    Asserted against the real access-decision method rather than a re-matched
+    copy of the patterns, because it is the consumer that has to be wrong for
+    the doc claim to be right.
+
+    Closing it means narrowing the ACCESS list — the second half of this test.
+    That is a deployment-scoped change (the shipped default must stay
+    id-agnostic or unpacked dev builds cannot sign in), tracked as the residual
+    on faultmaven#1066.
+    """
+    impostor = "https://ponmlkjihgfedcbaponmlkjihgfedcba.chromiumapp.org/"
+
+    pinned_consent = SimpleNamespace(
+        oauth_first_party_clients=["faultmaven-copilot"],
+        oauth_first_party_redirect_patterns=[PINNED_PATTERN],
+        oauth_redirect_uri_patterns=_declared_default("oauth_redirect_uri_patterns"),
+        oauth_require_https_redirect=True,
+    )
+    service = OAuthServiceImpl.__new__(OAuthServiceImpl)
+    service.settings = pinned_consent
+
+    # The pin does its own job: the impostor does not skip the prompt.
+    assert not _is_first_party(
+        "faultmaven-copilot", impostor, SimpleNamespace(auth=pinned_consent)
+    )
+    # ...and does NOT do the other one: the impostor is still admitted.
+    assert service._is_redirect_uri_allowed(impostor) is True
+    assert service._is_redirect_uri_allowed(PINNED_REDIRECT) is True
+
+    # Narrowing the ACCESS list is what rejects the impostor before a code
+    # exists — and it is a different key.
+    pinned_consent.oauth_redirect_uri_patterns = [PINNED_PATTERN]
+    assert service._is_redirect_uri_allowed(impostor) is False
+    assert service._is_redirect_uri_allowed(PINNED_REDIRECT) is True
 
 
 # --------------------------------------------------------------------------- #
