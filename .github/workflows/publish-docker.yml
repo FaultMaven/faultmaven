@@ -60,6 +60,7 @@ jobs:
 
       # Build and push Docker image
       - name: Build and push Docker image
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -70,10 +71,19 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64
 
-      # Add image digest to job summary
+      # `digest` comes from build-push-action, NOT metadata-action — the latter
+      # emits tags/labels/version/json and no digest at all, so this line
+      # printed "with digest " and nothing else for as long as it existed. It
+      # reads like provenance and carried none.
+      #
+      # The actionlint gate added alongside this does NOT catch it here, and
+      # will not if it regresses: actionlint knows metadata-action@v5's outputs
+      # but not @v6's, so the bad reference is unresolvable rather than wrong.
+      # It was caught in faultmaven-dashboard, which is still on @v5, and fixed
+      # here by inspection. Keep the `id: build` reference; nothing enforces it.
       - name: Image digest
         if: github.event_name != 'pull_request'
-        run: echo "Published Docker images with digest ${{ steps.meta.outputs.digest }}"
+        run: echo "Published Docker images with digest ${{ steps.build.outputs.digest }}"
 
       # Cross-repo queue update authenticates via the faultmaven-infra-queue-bot
       # GitHub App (org INFRA_BOT_APP_ID / INFRA_BOT_PRIVATE_KEY), minting a
