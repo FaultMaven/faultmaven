@@ -21,6 +21,7 @@ from faultmaven.api.exception_handlers import (
     authorization_exception_handler,
     conflict_exception_handler,
     get_exception_handlers,
+    http_exception_handler,
     not_found_exception_handler,
     oauth_protocol_error_handler,
     service_error_handler,
@@ -459,8 +460,6 @@ class TestDictDetailIsCoerced:
     async def test_a_nonserializable_nested_message_still_answers_its_status(
         self, mock_request
     ):
-        from faultmaven.main import http_exception_handler
-
         class Unrenderable:
             def __repr__(self):
                 return "<Unrenderable>"
@@ -480,8 +479,6 @@ class TestDictDetailIsCoerced:
     async def test_a_nonserializable_flat_message_still_answers_its_status(
         self, mock_request
     ):
-        from faultmaven.main import http_exception_handler
-
         response = await http_exception_handler(
             mock_request,
             HTTPException(status_code=409, detail={"message": object()}),
@@ -491,10 +488,39 @@ class TestDictDetailIsCoerced:
         assert isinstance(json.loads(response.body)["detail"], str)
 
     @pytest.mark.asyncio
+    async def test_a_string_detail_with_a_lone_surrogate_still_answers(
+        self, mock_request
+    ):
+        """The other branch, and the likelier one in practice.
+
+        A `str` detail is not a safe type here. A lone surrogate reaches one
+        from a *valid* JSON body — `json.loads('"\ud800"')` succeeds — and
+        user-supplied strings are interpolated straight into details
+        (`auth.py`'s `username`, `admin_config.py`'s `provider_name`). The
+        encoder then raised inside this handler, and the deliberate 4xx became
+        a 500 carrying none of the message.
+        """
+        response = await http_exception_handler(
+            mock_request,
+            HTTPException(status_code=409, detail="user '\ud800' already exists"),
+        )
+
+        assert response.status_code == 409
+        # Rendered at all is the property; the surrogate itself is
+        # unrepresentable, so what it becomes is `to_json_safe`'s business.
+        assert "already exists" in json.loads(response.body)["detail"]
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_string_detail_is_unchanged(self, mock_request):
+        response = await http_exception_handler(
+            mock_request, HTTPException(status_code=404, detail="Case not found")
+        )
+
+        assert json.loads(response.body) == {"detail": "Case not found"}
+
+    @pytest.mark.asyncio
     async def test_an_ordinary_message_is_unchanged(self, mock_request):
         """Coercion must not reshape the common case."""
-        from faultmaven.main import http_exception_handler
-
         response = await http_exception_handler(
             mock_request,
             HTTPException(status_code=404, detail={"error": {"message": "not found"}}),

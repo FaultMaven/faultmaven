@@ -17,10 +17,12 @@ tests because importing `faultmaven.main` builds it.
 """
 
 import pytest
+from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 
 from faultmaven.api.exception_handlers import (
     get_exception_handlers,
+    http_exception_handler,
     request_validation_exception_handler,
 )
 
@@ -61,4 +63,23 @@ def test_every_domain_handler_is_registered(app):
     assert not missing, (
         f"declared in get_exception_handlers() but not registered on the app: "
         f"{missing}"
+    )
+
+
+@pytest.mark.integration
+def test_the_http_exception_handler_is_the_one_that_ships(app):
+    """The case where losing the registration fails *silently*.
+
+    FastAPI does `exception_handlers.setdefault(HTTPException, ...)` at
+    construction, so dropping ours does not leave HTTPException unhandled — it
+    falls back to FastAPI's default, which renders a dict `detail` into the
+    body raw and reintroduces the shape #1048 is about. Nothing would 500,
+    nothing would error; responses would just quietly change shape.
+    """
+    registered = app.exception_handlers.get(HTTPException)
+
+    assert registered is http_exception_handler, (
+        "faultmaven.main does not register the project's HTTPException "
+        "handler, so FastAPI's default renders dict details raw and the "
+        "coercion this handler applies is not in effect"
     )
