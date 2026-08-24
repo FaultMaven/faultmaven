@@ -707,7 +707,9 @@ jobs:
             # this one under its PYSEC alias (PYSEC-2026-311); it matches
             # aliases, so the GHSA id below is what suppresses it — do not
             # "correct" the id to whatever the log shows.
-            # → vulnerability-exceptions.md "chromadb" (fm#902)
+            # → vulnerability-exceptions.md "chromadb"  (fm#902 is closed; the
+            #   entry, not the issue, is this flag's anchor — same as the three
+            #   below, so all four cite the same place)
             --ignore-vuln GHSA-f4j7-r4q5-qw2c
             # Three further chromadb server advisories, published 2026-06-12
             # and ingested into the audit feed on 2026-08-24: authenticated
