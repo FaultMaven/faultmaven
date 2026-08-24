@@ -140,6 +140,30 @@ jobs:
           Built from: ${{ github.repository }}@${GITHUB_SHA}
           Triggered by: @${{ github.actor }}
           Workflow: ${{ github.workflow }}"
-            git push origin main
+            # Three repositories push to faultmaven-enterprise-infra main —
+            # this one, and the other two service repos — and their builds
+            # finish whenever they finish. A non-fast-forward here is an
+            # ordinary race, not a fault. Failing the job on it leaves GHCR
+            # holding an image the queue does not name, in a repository nobody
+            # watches between PRs; the next promotion then ships an older image
+            # than the operator believes. Rebase and retry instead.
+            # --rebase is safe: this commit touches one file that only this
+            # workflow writes.
+            pushed=""
+            for attempt in 1 2 3; do
+              if git push origin main; then
+                pushed=yes
+                break
+              fi
+              echo "::warning::push attempt ${attempt} rejected; rebasing onto origin/main"
+              git pull --rebase origin main
+            done
+
+            if [ -z "$pushed" ]; then
+              echo "::error::Could not push the queue update after 3 attempts."
+              echo "::error::GHCR holds ${TAG} but the queue does not name it."
+              exit 1
+            fi
+
             echo "✓ Updated image queue: ${TAG}"
           fi
