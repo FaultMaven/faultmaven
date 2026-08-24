@@ -702,13 +702,23 @@ jobs:
       - name: Audit locked dependencies (pip-audit)
         run: |
           IGNORES=(
-            # chromadb pre-auth code injection — no patched release exists;
-            # unreachable in standalone, contained in cloud. pip-audit prints
-            # this one under its PYSEC alias (PYSEC-2026-311); it matches
-            # aliases, so the GHSA id below is what suppresses it — do not
-            # "correct" the id to whatever the log shows.
+            # chromadb — FOUR server-side advisories against our pin, none of
+            # them fixable from here: the affected range of every one ends at
+            # 1.5.9, which is PyPI's newest release. All four are contained by
+            # the same argument (unreachable in standalone, NetworkPolicy-bound
+            # in cloud) and stand or fall together, so they are listed as one
+            # block rather than four independent decisions.
+            #
+            # pip-audit prints these under whichever alias its source carries —
+            # PYSEC-2026-311 for the first, bare CVE ids for the other three —
+            # and it matches on aliases, so the GHSA id is what suppresses each
+            # one. Do NOT "correct" an id to whatever the failing log shows;
+            # verified 2026-08-24 that this exact set reports "4 ignored".
             # → vulnerability-exceptions.md "chromadb" (fm#902)
-            --ignore-vuln GHSA-f4j7-r4q5-qw2c
+            --ignore-vuln GHSA-f4j7-r4q5-qw2c  # CVE-2026-45829 pre-auth code injection
+            --ignore-vuln GHSA-2wm9-hf6c-p5cr  # CVE-2026-45830 cross-tenant data access
+            --ignore-vuln GHSA-xph7-9rjv-w5fr  # CVE-2026-45831 RBAC provider ignores scope
+            --ignore-vuln GHSA-36p7-vc44-83pf  # CVE-2026-45833 code injection
             # lupa sandbox escape — no upstream fix (2.7 and 2.8 are build
             # and packaging releases); Lua bodies are module string constants,
             # no user input reaches them. PRE-ARMED, NOT LOAD-BEARING: the
