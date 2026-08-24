@@ -2127,24 +2127,43 @@ The in-extension `chrome-extension://…/callback.html` and
 serves those pages itself, so they carry no evidence of who is receiving the
 code.
 
-**Until the id is pinned, the impersonation hole is open, not mitigated.** With
-the skip inactive, a hostile extension can still present
-`client_id=faultmaven-copilot` with its own `launchWebAuthFlow` redirect and
-obtain tokens — the id-agnostic allowlist admits it. The only difference is that
-a consent screen appears first, and that screen renders the client *name*, so it
-reads "FaultMaven Copilot" for the impostor exactly as for the real extension. A
-user cannot tell them apart from it.
+**The impersonation hole is open whether or not the id is pinned.** A hostile
+extension can present `client_id=faultmaven-copilot` with its own
+`launchWebAuthFlow` redirect and obtain tokens — the id-agnostic allowlist
+admits it either way. Pinning changes only who is *prompted*: before it,
+everyone is; after it, our extension is not and the impostor still is. A
+consent screen appears first in both cases, and it renders the client *name*,
+so it reads "FaultMaven Copilot" for the impostor exactly as for the real
+extension. A user cannot tell them apart from it.
 
 So the empty default is the safe *default* — it cannot silently skip a prompt —
 but it is not a control against impersonation, and the prompt standing in front
-of the wildcard is misleading rather than protective. Pinning
-`OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` is what closes this, and nothing before
-the rollout does. This predates the first-party work and is not a regression
-from it; it is recorded here so the gap is not read as handled by the presence
-of a consent screen.
+of the wildcard is misleading rather than protective. This predates the
+first-party work and is not a regression from it; it is recorded here so the gap
+is not read as handled by the presence of a consent screen.
 
-The pin is also the only lever: consent cannot be made to distinguish clients,
-because everything it could display about the caller is caller-supplied.
+**Pinning `OAUTH_FIRST_PARTY_REDIRECT_PATTERNS` does not close it.** That key
+decides whether a *prompt renders*; it is not consulted when the authorize
+endpoint decides whether to issue a code. Those are two separate reads of two
+separate lists — `_is_first_party` reads the first-party patterns,
+`OAuthServiceImpl._is_redirect_uri_allowed` reads
+`OAUTH_REDIRECT_URI_PATTERNS` — so with the id pinned, an impostor presenting
+`client_id=faultmaven-copilot` at its own `launchWebAuthFlow` redirect is still
+admitted and still issued a code once the user approves the prompt it gets. All
+the pin changes for the impostor is that the prompt keeps appearing. (Pinned by
+`tests/unit/modules/auth/api/test_first_party_consent.py::test_pinning_consent_does_not_narrow_access`.)
+
+What closes it is narrowing **`OAUTH_REDIRECT_URI_PATTERNS`** to the published
+id, so the impostor's redirect is rejected before a code exists. That is a
+deployment-scoped change, not a shipped default: the default has to stay
+id-agnostic or unpacked development builds cannot sign in at all. It also has a
+real cost wherever the extension is distributed as an unpacked build — those
+take a random per-machine id — so it is gated on retiring that distribution
+channel, and tracked as the residual on faultmaven#1066.
+
+Consent itself is not a lever either way: it cannot be made to distinguish
+clients, because everything it could display about the caller is
+caller-supplied.
 
 The two JWT expiry variables name their unit because they do not share one, and
 both are bounded (1–1440 minutes, 1–90 days) so an implausible value fails at
