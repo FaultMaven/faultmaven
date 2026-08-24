@@ -1,0 +1,57 @@
+name: Workflow Lint
+
+# =============================================================================
+# WORKFLOW SCHEMA + EXPRESSION + SHELL LINT
+# =============================================================================
+# YAML parsing proves a workflow is well-formed. It does not know that
+# `steps.foo.outputs.bar` names an output the action actually emits, that a
+# `needs:` target exists, or that an expression is valid. actionlint does.
+#
+# faultmaven-enterprise-infra has had this gate since infra#177; the service
+# repositories never did. The first run of it here found
+# `steps.meta.outputs.digest` — a provenance log line that has been printing an
+# EMPTY digest for as long as it has existed, because docker/metadata-action
+# does not emit `digest` at all. Nothing was wrong enough to fail a build, which
+# is exactly why nobody noticed.
+#
+# Blocking, not `continue-on-error`. An advisory lint whose green means nothing
+# is worse than no lint.
+#
+# SHELLCHECK_OPTS mirrors faultmaven-enterprise-infra's `-S warning` threshold,
+# deliberately. Below `warning`, the `run:` blocks across this fleet emit dozens
+# of SC2086 complaints about unquoted `$GITHUB_OUTPUT` — the shape of finding
+# that teaches people to close a gate unread. Keep the three service-repo copies
+# of this file byte-identical, as with the other fleet-wide lints.
+# =============================================================================
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run actionlint
+        env:
+          ACTIONLINT_VERSION: '1.7.7'
+          SHELLCHECK_OPTS: '-S warning'
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin actionlint
+          actionlint -version
+          actionlint -color
