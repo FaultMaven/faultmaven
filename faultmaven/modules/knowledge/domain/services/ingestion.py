@@ -39,7 +39,10 @@ import pypdf
 from chromadb.config import Settings
 from docx import Document
 
-from faultmaven.infrastructure.chroma_client import local_chroma_or_fail
+from faultmaven.infrastructure.chroma_client import (
+    chroma_token_auth_kwargs,
+    local_chroma_or_fail,
+)
 from faultmaven.infrastructure.model_cache import model_cache
 from faultmaven.infrastructure.observability.tracing import trace
 from faultmaven.infrastructure.persistence.chromadb_store import (
@@ -101,11 +104,13 @@ class KnowledgeIngester:
             chromadb_url = settings.database.chromadb_url
             chromadb_host = settings.database.chromadb_host
             chromadb_port = settings.database.chromadb_port
-            chromadb_auth_token = (
-                settings.database.chromadb_auth_token.get_secret_value()
-                if settings.database.chromadb_auth_token
-                else "faultmaven-dev-chromadb-2025"
-            )
+            # Shared with the container provider's client factory — before
+            # #1173 this path read a different setting than the container path
+            # and only sent it on the CHROMADB_HOST branch, so the deployed
+            # configuration (CHROMADB_URL set) authenticated nothing. The old
+            # hardcoded fallback token is gone with it: no configured token
+            # means send nothing, not send a guessable default.
+            auth_kwargs = chroma_token_auth_kwargs(settings)
         else:
             # No fallback - unified settings system is mandatory
             from faultmaven.models.exceptions import KnowledgeBaseError
@@ -166,7 +171,9 @@ class KnowledgeIngester:
                 chromadb_url,
                 host=host,
                 port=int(chromadb_url.split(":")[-1]),
-                settings=Settings(anonymized_telemetry=False, allow_reset=True),
+                settings=Settings(
+                    anonymized_telemetry=False, allow_reset=True, **auth_kwargs
+                ),
             )
         elif chromadb_host != "localhost":
             # K8s cluster or external HTTP client
@@ -175,10 +182,7 @@ class KnowledgeIngester:
                 host=chromadb_host,
                 port=chromadb_port,
                 settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True,
-                    chroma_client_auth_provider="chromadb.auth.token_authn.TokenAuthClientProvider",
-                    chroma_client_auth_credentials=chromadb_auth_token,
+                    anonymized_telemetry=False, allow_reset=True, **auth_kwargs
                 ),
             )
         else:

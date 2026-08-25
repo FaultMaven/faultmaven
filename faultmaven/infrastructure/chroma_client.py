@@ -31,12 +31,49 @@ from faultmaven.config.deployment_coherence import (
 
 __all__ = [
     "CHROMA_STORAGE_SYNONYMS",
+    "CHROMA_TOKEN_AUTH_PROVIDER",
     "ChromaUnavailableError",
+    "chroma_token_auth_kwargs",
     "is_external_chroma_configured",
     "local_chroma_or_fail",
 ]
 
 logger = logging.getLogger(__name__)
+
+# The client-side token auth provider. ``chromadb.auth.token`` was renamed to
+# ``chromadb.auth.token_authn`` in ChromaDB 0.5 — below our ``>= 0.5.3`` floor,
+# so the old path never imports and must not appear anywhere. It once did, in
+# the container provider, guarded by ``except Exception: pass`` — which
+# silently produced an unauthenticated client for over a year (#1173).
+CHROMA_TOKEN_AUTH_PROVIDER = "chromadb.auth.token_authn.TokenAuthClientProvider"
+
+
+def chroma_token_auth_kwargs(settings: Any) -> dict[str, str]:
+    """Client-side token-auth ``ChromaSettings`` kwargs, or ``{}`` if no token.
+
+    The single place both HTTP client acquisition paths (the container
+    provider and ``KnowledgeIngester``) resolve their ChromaDB credential, so
+    they cannot drift on either axis again — before #1173 one path read
+    ``chromadb_api_key`` with a dead provider path while the other read
+    ``chromadb_auth_token`` with the correct one, and neither actually sent a
+    token on the deployed configuration. ``CHROMADB_AUTH_TOKEN`` is canonical;
+    ``CHROMADB_API_KEY`` is accepted because the deployed secrets carry the
+    same value under both names (see faultmaven-enterprise-infra
+    ``base/secrets.yaml``).
+
+    No import probe and no ``try`` around this: the provider module exists at
+    every supported chromadb version, and if the provider path ever breaks,
+    client construction must raise — under cloud that is a boot refusal, which
+    is the correct failure direction for "a token is configured but cannot be
+    sent" (#1173: both halves failing open is what hid this).
+    """
+    secret = settings.database.chromadb_auth_token or settings.database.chromadb_api_key
+    if not secret:
+        return {}
+    return {
+        "chroma_client_auth_provider": CHROMA_TOKEN_AUTH_PROVIDER,
+        "chroma_client_auth_credentials": secret.get_secret_value(),
+    }
 
 
 class ChromaUnavailableError(DeploymentCoherenceError):
