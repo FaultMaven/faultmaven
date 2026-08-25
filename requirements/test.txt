@@ -75,7 +75,7 @@ cffi==2.0.0
     #   pycares
 charset-normalizer==3.4.7
     # via requests
-chromadb==1.5.8
+chromadb==1.5.9
     # via faultmaven (pyproject.toml)
 click==8.4.2
     # via
