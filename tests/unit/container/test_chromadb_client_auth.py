@@ -23,40 +23,16 @@ from importlib import import_module
 
 import chromadb
 import pytest
-from pydantic import SecretStr
 
-from faultmaven.config.settings import DeploymentMode, FaultMavenSettings
 from faultmaven.container.providers.infrastructure import _create_chromadb_client
 from faultmaven.infrastructure.chroma_client import (
     CHROMA_TOKEN_AUTH_PROVIDER,
     chroma_token_auth_kwargs,
 )
 from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
+from tests.unit.container.conftest import make_chroma_settings as _settings
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
-
-
-def _settings(
-    *,
-    chromadb_url: str = "",
-    chromadb_host: str = "localhost",
-    auth_token: str | None = None,
-    api_key: str | None = None,
-) -> FaultMavenSettings:
-    settings = FaultMavenSettings(_env_file=None)
-    settings.deployment_mode = DeploymentMode.STANDALONE
-    # Explicit, not ambient — a developer's exported CHROMADB_* must not
-    # decide which branch these tests exercise (same rule as the cloud-gate
-    # tests in test_chromadb_provider_cloud_gate.py).
-    settings.database.chromadb_url = chromadb_url
-    settings.database.chromadb_host = chromadb_host
-    settings.database.vector_storage_type = "chromadb"
-    settings.database.chromadb_auth_token = (
-        SecretStr(auth_token) if auth_token else None
-    )
-    settings.database.chromadb_api_key = SecretStr(api_key) if api_key else None
-    settings.server.skip_service_checks = False
-    return settings
 
 
 class _CapturingHttpClient:
@@ -117,6 +93,45 @@ def test_auth_token_wins_over_api_key():
     assert kwargs["chroma_client_auth_credentials"] == "canonical"
 
 
+def test_both_set_and_different_warns(caplog):
+    """Precedence is silent otherwise, and the loser is the spelling most of
+    the docs mention — a rotated CHROMADB_API_KEY shadowed by a stale
+    CHROMADB_AUTH_TOKEN would send the stale token with no signal."""
+    with caplog.at_level("WARNING"):
+        chroma_token_auth_kwargs(_settings(auth_token="canonical", api_key="legacy"))
+    assert any(
+        "both set" in r.message and "differ" in r.message for r in caplog.records
+    )
+
+
+def test_both_set_and_equal_does_not_warn(caplog):
+    """The deployed secrets carry the same value under both names — the
+    expected configuration must stay quiet."""
+    with caplog.at_level("WARNING"):
+        chroma_token_auth_kwargs(_settings(auth_token="same", api_key="same"))
+    assert not caplog.records
+
+
+def test_surrounding_whitespace_is_stripped():
+    """An echo-minted k8s secret ends in a newline; that must not become a
+    fleet-wide boot refusal when the credential is otherwise fine."""
+    kwargs = chroma_token_auth_kwargs(_settings(auth_token="sekrit\n"))
+    assert kwargs["chroma_client_auth_credentials"] == "sekrit"
+
+
+@pytest.mark.parametrize("bad", ["se krit", "sekrité", "   \n"])
+def test_malformed_token_raises_a_named_error(bad):
+    """Validated HERE, before any client exists: TokenAuthClientProvider's own
+    ValueError fires inside the callers' connection-failure handling, where
+    standalone answers with a silent PersistentClient fallback and cloud with
+    a boot refusal that blames connectivity. The error must name the env var
+    that carried the bad value."""
+    with pytest.raises(ValueError, match="CHROMADB_AUTH_TOKEN"):
+        chroma_token_auth_kwargs(_settings(auth_token=bad))
+    with pytest.raises(ValueError, match="CHROMADB_API_KEY"):
+        chroma_token_auth_kwargs(_settings(api_key=bad))
+
+
 # --------------------------------------------------------------------------- #
 # Container provider path
 # --------------------------------------------------------------------------- #
@@ -144,6 +159,21 @@ def test_container_client_without_token_sends_no_credentials(monkeypatch):
     assert call["settings"].chroma_client_auth_provider is None
 
 
+def test_container_malformed_token_raises_instead_of_falling_back(tmp_path):
+    """A configured-but-unusable token must be loud on standalone too. Left
+    to TokenAuthClientProvider, the ValueError fires inside the HttpClient
+    try block, and standalone answers a construction failure there with a
+    silent local PersistentClient — the populated external store swapped for
+    an empty one, the fail-open shape #1173 removes. The helper validates
+    before any client exists, so the error escapes instead."""
+    settings = _settings(chromadb_url="http://chromadb:8000", auth_token="bad token")
+
+    with pytest.raises(ValueError, match="CHROMADB_AUTH_TOKEN"):
+        _create_chromadb_client(settings, str(tmp_path / "chroma"), "KB")
+
+    assert not (tmp_path / "chroma").exists()
+
+
 # --------------------------------------------------------------------------- #
 # KnowledgeIngester — BOTH http branches, because the deployed configuration
 # (CHROMADB_URL set) took the one that used to send nothing
@@ -161,6 +191,46 @@ def test_ingester_url_branch_carries_the_token(monkeypatch):
     chroma_settings = call["settings"]
     assert chroma_settings.chroma_client_auth_provider == CHROMA_TOKEN_AUTH_PROVIDER
     assert chroma_settings.chroma_client_auth_credentials == "sekrit"
+
+
+def test_ingester_url_without_explicit_port_uses_scheme_default(monkeypatch):
+    """The old split(':')[-1] parse raised on any URL without an explicit
+    port — e.g. an https URL behind a TLS terminator or auth proxy — and the
+    ValueError escaped the degraded-mode guard, so the ingester silently
+    vanished while the container path (urlparse, scheme defaults) connected
+    fine. Both paths must read the same URL the same way."""
+    monkeypatch.setattr(chromadb, "HttpClient", _CapturingHttpClient)
+    settings = _settings(chromadb_url="https://chroma.internal", auth_token="sekrit")
+
+    ingester = KnowledgeIngester(settings=settings)
+
+    assert ingester.degraded is False
+    (call,) = _CapturingHttpClient.captured
+    assert call["host"] == "chroma.internal"
+    assert call["port"] == 443
+
+
+def test_ingester_dispatch_matches_the_container_predicate(monkeypatch, tmp_path):
+    """A legacy VECTOR_STORAGE_TYPE deselects the external server for the
+    container path; the ingester used to go over HTTP anyway — writes landing
+    on a server where reads never look. Both paths now dispatch on
+    is_external_chroma_configured."""
+
+    def _must_not_be_called(*args, **kwargs):  # pragma: no cover - the assertion
+        raise AssertionError("ingester must not open HTTP when deselected")
+
+    monkeypatch.setattr(chromadb, "HttpClient", _must_not_be_called)
+    settings = _settings(
+        chromadb_url="http://chromadb:8000",
+        chromadb_host="chromadb.faultmaven.svc",
+        vector_storage_type="inmemory",
+    )
+    settings.database.chromadb_kb_persist_dir = str(tmp_path / "chroma-kb")
+
+    ingester = KnowledgeIngester(settings=settings)
+
+    assert ingester.chroma_client is not None
+    assert (tmp_path / "chroma-kb").exists()
 
 
 def test_ingester_host_branch_carries_the_token(monkeypatch):

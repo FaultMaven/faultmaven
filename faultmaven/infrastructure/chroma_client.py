@@ -18,6 +18,7 @@ the #881 lesson applied to the vector store.
 from __future__ import annotations
 
 import logging
+import string
 from typing import Any
 
 # The shared predicate lives in the config module (beside coherence check 7)
@@ -47,6 +48,13 @@ logger = logging.getLogger(__name__)
 # silently produced an unauthenticated client for over a year (#1173).
 CHROMA_TOKEN_AUTH_PROVIDER = "chromadb.auth.token_authn.TokenAuthClientProvider"
 
+# chromadb's own rule (``token_authn._check_token`` at the 1.5.8 pin) —
+# mirrored here so a bad credential fails before a client exists, not inside
+# the callers' connection-failure handling. See chroma_token_auth_kwargs.
+_VALID_TOKEN_CHARS = frozenset(
+    string.digits + string.ascii_letters + string.punctuation
+)
+
 
 def chroma_token_auth_kwargs(settings: Any) -> dict[str, str]:
     """Client-side token-auth ``ChromaSettings`` kwargs, or ``{}`` if no token.
@@ -66,13 +74,49 @@ def chroma_token_auth_kwargs(settings: Any) -> dict[str, str]:
     client construction must raise — under cloud that is a boot refusal, which
     is the correct failure direction for "a token is configured but cannot be
     sent" (#1173: both halves failing open is what hid this).
+
+    The token is validated HERE, not left to ``TokenAuthClientProvider``
+    inside ``HttpClient(...)``: the provider's ``ValueError`` fires inside the
+    callers' connection-failure handling, where standalone answers it with a
+    silent ``PersistentClient`` fallback (the populated external store swapped
+    for an empty local one) and cloud with a boot refusal whose headline
+    blames connectivity. Raising before any client is constructed keeps a
+    malformed credential loud and named on both paths. Surrounding whitespace
+    is stripped first — the deployed secret is minted with shell tooling, and
+    a trailing newline should not become a fleet-wide CrashLoop — but any
+    interior violation of chromadb's own character rule (ASCII letters,
+    digits, punctuation; ``token_authn._check_token``) is refused.
     """
-    secret = settings.database.chromadb_auth_token or settings.database.chromadb_api_key
+    auth_token = settings.database.chromadb_auth_token
+    api_key = settings.database.chromadb_api_key
+    if (
+        auth_token
+        and api_key
+        and auth_token.get_secret_value() != api_key.get_secret_value()
+    ):
+        # Precedence is silent otherwise, and the loser is the spelling most
+        # of the docs mention — an operator who rotated CHROMADB_API_KEY
+        # would send the stale token with no signal until enforcement exists.
+        logger.warning(
+            "CHROMADB_AUTH_TOKEN and CHROMADB_API_KEY are both set and "
+            "differ; using CHROMADB_AUTH_TOKEN. The deployed secrets are "
+            "expected to carry the same value under both names."
+        )
+    secret = auth_token or api_key
     if not secret:
         return {}
+    source = "CHROMADB_AUTH_TOKEN" if auth_token else "CHROMADB_API_KEY"
+    token = secret.get_secret_value().strip()
+    if not token or not all(c in _VALID_TOKEN_CHARS for c in token):
+        raise ValueError(
+            f"{source} is set but is not a usable ChromaDB token: it must be "
+            "non-empty and contain only ASCII letters, digits, and "
+            "punctuation. Fix the credential; an unauthenticated client is "
+            "not an acceptable fallback (#1173)."
+        )
     return {
         "chroma_client_auth_provider": CHROMA_TOKEN_AUTH_PROVIDER,
-        "chroma_client_auth_credentials": secret.get_secret_value(),
+        "chroma_client_auth_credentials": token,
     }
 
 

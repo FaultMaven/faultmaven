@@ -252,11 +252,7 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
             client = chromadb.HttpClient(
                 host=host,
                 port=port,
-                settings=(
-                    ChromaSettings(**settings_kwargs)
-                    if settings_kwargs
-                    else ChromaSettings()
-                ),
+                settings=ChromaSettings(**settings_kwargs),
             )
             logger.info(f"✅ ChromaDB {label} client: HttpClient @ {host}:{port}")
             return client
@@ -323,9 +319,7 @@ def create_vector_store(
         logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
         return None, True
 
-    from faultmaven.infrastructure.persistence.chromadb_store import (
-        ChromaDBVectorStore,
-    )
+    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 
     collection_name = getattr(settings.database, "chromadb_collection", "faultmaven_kb")
     store = ChromaDBVectorStore(client=chromadb_client, collection_name=collection_name)
@@ -346,9 +340,7 @@ def create_case_vector_store(
         logger.info("Skipping case vector store (SKIP_SERVICE_CHECKS=True)")
         return None
 
-    from faultmaven.infrastructure.persistence.case_vector_store import (
-        CaseVectorStore,
-    )
+    from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 
     store = CaseVectorStore(client=chromadb_client)
     logger.info("✅ Case vector store: ChromaDB (dynamic per-case collections)")

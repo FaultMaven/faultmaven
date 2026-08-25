@@ -19,34 +19,15 @@ against a dead gate.
 import chromadb
 import pytest
 
-from faultmaven.config.settings import DeploymentMode, FaultMavenSettings
 from faultmaven.container.providers.infrastructure import _create_chromadb_client
 from faultmaven.container.providers.tools import create_knowledge_ingester
 from faultmaven.infrastructure.chroma_client import (
     ChromaUnavailableError,
     is_external_chroma_configured,
 )
+from tests.unit.container.conftest import make_chroma_settings as _settings
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
-
-
-def _settings(
-    *,
-    cloud: bool,
-    chromadb_url: str = "",
-    vector_storage_type: str = "chromadb",
-) -> FaultMavenSettings:
-    settings = FaultMavenSettings(_env_file=None)
-    settings.deployment_mode = (
-        DeploymentMode.CLOUD if cloud else DeploymentMode.STANDALONE
-    )
-    # Set the vector config explicitly — ambient env (a developer's exported
-    # CHROMADB_URL or SKIP_SERVICE_CHECKS) must not decide which branch these
-    # tests exercise.
-    settings.database.chromadb_url = chromadb_url
-    settings.database.vector_storage_type = vector_storage_type
-    settings.server.skip_service_checks = False
-    return settings
 
 
 class _ExplodingHttpClient:
@@ -188,9 +169,7 @@ def test_knowledge_ingester_local_branch_refuses_under_cloud():
     """KnowledgeIngester builds its own client; its PersistentClient branch
     (no URL, localhost host) must hit the same gate, not bypass it (#894
     lesson: the jobs path and web path must compose identically)."""
-    from faultmaven.modules.knowledge.domain.services.ingestion import (
-        KnowledgeIngester,
-    )
+    from faultmaven.modules.knowledge.domain.services.ingestion import KnowledgeIngester
 
     settings = _settings(cloud=True, chromadb_url="")
     settings.database.chromadb_host = "localhost"

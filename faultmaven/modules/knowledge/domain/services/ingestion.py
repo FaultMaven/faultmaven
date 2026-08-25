@@ -32,6 +32,7 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 import chromadb
 import pandas as pd
@@ -41,6 +42,7 @@ from docx import Document
 
 from faultmaven.infrastructure.chroma_client import (
     chroma_token_auth_kwargs,
+    is_external_chroma_configured,
     local_chroma_or_fail,
 )
 from faultmaven.infrastructure.model_cache import model_cache
@@ -161,21 +163,27 @@ class KnowledgeIngester:
                     exc,
                 )
 
-        if chromadb_url:
-            host = (
-                chromadb_url.replace("http://", "")
-                .replace("https://", "")
-                .split(":")[0]
-            )
+        # Dispatch on the same predicate as the container provider's client
+        # factory, so a CHROMADB_URL config cannot split-brain the two paths
+        # (e.g. a legacy VECTOR_STORAGE_TYPE used to send this path over HTTP
+        # while the container read a local PersistentClient — writes landing
+        # where reads never look). The URL is parsed the same way too:
+        # urlparse with scheme-default ports, where the old split(":")[-1]
+        # raised on any URL without an explicit port and killed the ingester
+        # before its degraded mode existed. The host-only branch below remains
+        # this path's documented opt-in (see settings.chromadb_host) and is
+        # deliberately unreachable when a URL is configured.
+        if is_external_chroma_configured(settings):
+            parsed = urlparse(chromadb_url.strip())
             _open_http(
                 chromadb_url,
-                host=host,
-                port=int(chromadb_url.split(":")[-1]),
+                host=parsed.hostname or "localhost",
+                port=parsed.port or (443 if parsed.scheme == "https" else 80),
                 settings=Settings(
                     anonymized_telemetry=False, allow_reset=True, **auth_kwargs
                 ),
             )
-        elif chromadb_host != "localhost":
+        elif not chromadb_url.strip() and chromadb_host != "localhost":
             # K8s cluster or external HTTP client
             _open_http(
                 f"{chromadb_host}:{chromadb_port}",
@@ -193,8 +201,9 @@ class KnowledgeIngester:
             # provider's client factory, so this third acquisition path cannot
             # bypass it.
             local_chroma_or_fail(
-                "no external ChromaDB is configured (CHROMADB_URL unset and "
-                "CHROMADB_HOST is localhost)",
+                "no external ChromaDB is configured (CHROMADB_URL unset or "
+                "deselected by VECTOR_STORAGE_TYPE, and CHROMADB_HOST is "
+                "localhost)",
                 settings,
             )
             kb_dir = getattr(
