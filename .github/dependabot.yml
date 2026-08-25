@@ -1,0 +1,42 @@
+# Dependabot configuration.
+#
+# This file exists for ONE narrow reason: to keep a release signal for
+# `chromadb` after its twelve security alerts were dismissed.
+#
+# Four ChromaDB server advisories (GHSA-f4j7 / -36p7 / -2wm9 / -xph7) have no
+# patched release — PyPI's newest chromadb *is* 1.5.9 and every vulnerable
+# range runs through it. They are accepted and documented in
+# docs/operations/security/vulnerability-exceptions.md ("chromadb"), and
+# suppressed in the pip-audit gate by anchored GHSA id.
+#
+# The exception's original watch mechanism was the twelve open Dependabot
+# alerts themselves: "do not dismiss them, they are how we learn a fix
+# shipped". Twelve permanently-unfixable alerts are also how a genuinely NEW
+# and actionable alert gets missed, so they were dismissed as tolerable risk —
+# and Dependabot does not raise security PRs for dismissed alerts. This config
+# is the replacement signal: a version update opens a PR when chromadb
+# publishes anything newer, independent of alert state.
+#
+# Deliberately scoped to chromadb alone. This is not a general dependency-
+# update policy; widening `allow` would bury the one signal it exists to carry.
+#
+# NOTE: requirements/*.txt are pip-compile OUTPUTS. A Dependabot PR here is a
+# NOTIFICATION, not necessarily a mergeable change — regenerate the lockfiles
+# properly, bump the `pyproject.toml` floor, AND bump the Helm image for the
+# deployed server (ghcr.io/chroma-core/chroma), which no scanner here watches.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directories:
+      - "/"              # pyproject.toml
+      - "/requirements"  # cloud.txt, dev.txt, test.txt
+    schedule:
+      interval: "weekly"
+    allow:
+      - dependency-name: "chromadb"
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - "dependencies"
+      - "security"
