@@ -173,12 +173,23 @@ def test_ingester_host_branch_carries_the_token(monkeypatch):
     assert call["settings"].chroma_client_auth_credentials == "sekrit"
 
 
-def test_ingester_without_token_sends_nothing_not_a_default(monkeypatch):
+@pytest.mark.parametrize(
+    "branch_settings",
+    [
+        {"chromadb_url": "http://chromadb:8000"},
+        # The HOST branch is where the hardcoded fallback token lived — this
+        # parametrization is what makes a revert of its removal fail.
+        {"chromadb_host": "chromadb.faultmaven.svc"},
+    ],
+)
+def test_ingester_without_token_sends_nothing_not_a_default(
+    monkeypatch, branch_settings
+):
     """The old code fell back to a hardcoded dev token. No configured token
     must now mean NO credentials — a guessable default sent silently is the
     same fail-open shape #1173 removes."""
     monkeypatch.setattr(chromadb, "HttpClient", _CapturingHttpClient)
-    settings = _settings(chromadb_url="http://chromadb:8000")
+    settings = _settings(**branch_settings)
 
     KnowledgeIngester(settings=settings)
 
