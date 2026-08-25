@@ -199,6 +199,7 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
         label: Human-readable label for logging (e.g., "KB", "evidence")
     """
     from faultmaven.infrastructure.chroma_client import (
+        chroma_token_auth_kwargs,
         is_external_chroma_configured,
         local_chroma_or_fail,
     )
@@ -237,40 +238,21 @@ def _create_chromadb_client(settings: FaultMavenSettings, persist_dir: str, labe
         # Cloud: external ChromaDB server via HTTP
         from urllib.parse import urlparse
 
-        chromadb_token = (
-            settings.database.chromadb_api_key.get_secret_value()
-            if settings.database.chromadb_api_key
-            else None
-        )
-
         parsed = urlparse(settings.database.chromadb_url.strip())
         host = parsed.hostname or "localhost"
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
 
-        settings_kwargs = {}
-        if chromadb_token:
-            try:
-                from importlib import import_module
-
-                import_module("chromadb.auth.token")
-                settings_kwargs.update(
-                    {
-                        "chroma_client_auth_provider": "chromadb.auth.token.TokenAuthClientProvider",
-                        "chroma_client_auth_credentials": chromadb_token,
-                    }
-                )
-            except Exception:
-                pass
+        # Token auth via the shared helper — no probe, no swallow. The old
+        # inline block imported the pre-0.5 module path inside a bare
+        # ``except Exception: pass``, so at every supported chromadb version
+        # it silently built an unauthenticated client (#1173).
+        settings_kwargs = chroma_token_auth_kwargs(settings)
 
         try:
             client = chromadb.HttpClient(
                 host=host,
                 port=port,
-                settings=(
-                    ChromaSettings(**settings_kwargs)
-                    if settings_kwargs
-                    else ChromaSettings()
-                ),
+                settings=ChromaSettings(**settings_kwargs),
             )
             logger.info(f"✅ ChromaDB {label} client: HttpClient @ {host}:{port}")
             return client
@@ -337,9 +319,7 @@ def create_vector_store(
         logger.info("Skipping vector store (SKIP_SERVICE_CHECKS=True)")
         return None, True
 
-    from faultmaven.infrastructure.persistence.chromadb_store import (
-        ChromaDBVectorStore,
-    )
+    from faultmaven.infrastructure.persistence.chromadb_store import ChromaDBVectorStore
 
     collection_name = getattr(settings.database, "chromadb_collection", "faultmaven_kb")
     store = ChromaDBVectorStore(client=chromadb_client, collection_name=collection_name)
@@ -360,9 +340,7 @@ def create_case_vector_store(
         logger.info("Skipping case vector store (SKIP_SERVICE_CHECKS=True)")
         return None
 
-    from faultmaven.infrastructure.persistence.case_vector_store import (
-        CaseVectorStore,
-    )
+    from faultmaven.infrastructure.persistence.case_vector_store import CaseVectorStore
 
     store = CaseVectorStore(client=chromadb_client)
     logger.info("✅ Case vector store: ChromaDB (dynamic per-case collections)")
