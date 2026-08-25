@@ -28,7 +28,7 @@ FaultMaven consists of three components that work together:
 |-----------|------------|---------|
 | **FaultMaven API** | This repo | Backend server: investigation engine, knowledge base, AI orchestration |
 | **FaultMaven Dashboard** | [faultmaven-dashboard](https://github.com/FaultMaven/faultmaven-dashboard) | Web UI: knowledge base management, case history, settings |
-| **FaultMaven Copilot** | [faultmaven-copilot](https://github.com/FaultMaven/faultmaven-copilot) | Browser extension: in-context troubleshooting overlay |
+| **FaultMaven Copilot** | [faultmaven-copilot](https://github.com/FaultMaven/faultmaven-copilot) · [Chrome Web Store](https://chromewebstore.google.com/detail/faultmaven-copilot/fghoagggojmkdopidfopijfnlmchjcng) | Browser extension: in-context troubleshooting overlay |
 
 **Typical usage:** The Copilot extension is your primary interface during incidents. The Dashboard manages your knowledge base and reviews past cases. Both connect to the API backend.
 
@@ -95,11 +95,10 @@ If you need more accounts, you can create them via CLI:
 
 ### Step 3: Install the Copilot Extension
 
-1. Download `faultmaven-copilot.zip` from [Releases](https://github.com/FaultMaven/faultmaven-copilot/releases)
-2. Extract the archive
-3. **Chrome/Edge:** Open `chrome://extensions` → Enable "Developer mode" → "Load unpacked" → Select `.output/chrome-mv3/`
-4. **Firefox:** Open `about:debugging#/runtime/this-firefox` → "Load Temporary Add-on" → Select any file in `.output/firefox-mv3/`
-5. Click the extension icon → Settings → Set API URL to `http://localhost:8090`
+1. Install **[FaultMaven Copilot from the Chrome Web Store](https://chromewebstore.google.com/detail/faultmaven-copilot/fghoagggojmkdopidfopijfnlmchjcng)** — Chrome, Edge, Brave and other Chromium browsers
+2. Click the extension icon → **Settings** → choose the **Standalone (localhost)** preset, or set the API URL to `http://localhost:8090`
+
+> The store build is the right one for self-hosting — it ships the presets and host permissions for a local or LAN backend. Self-hosting is about where *this* server runs, not which extension you install. Prefer to build it yourself? See the [Copilot repository](https://github.com/FaultMaven/faultmaven-copilot#development).
 
 ### Step 4: Configure LLM Provider
 
@@ -524,7 +523,7 @@ FaultMaven provides two frontend interfaces. For setup instructions, see [Quick 
 
 ### Browser Extension (Copilot)
 
-**[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** - Browser extension for reactive troubleshooting:
+**[FaultMaven Copilot](https://github.com/FaultMaven/faultmaven-copilot)** — browser extension for reactive troubleshooting, [available on the Chrome Web Store](https://chromewebstore.google.com/detail/faultmaven-copilot/fghoagggojmkdopidfopijfnlmchjcng):
 
 - **Context Capture**: Reads logs, stack traces, and dashboards directly from your screen
 - **In-Flow Diagnostics**: Troubleshoot within AWS Console, Datadog, Grafana, and other tools
