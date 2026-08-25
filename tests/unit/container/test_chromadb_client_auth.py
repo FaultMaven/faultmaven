@@ -106,10 +106,15 @@ def test_both_set_and_different_warns(caplog):
 
 def test_both_set_and_equal_does_not_warn(caplog):
     """The deployed secrets carry the same value under both names — the
-    expected configuration must stay quiet."""
+    expected configuration must stay quiet. Settings are built OUTSIDE the
+    caplog block and the assertion is scoped to THIS warning: settings
+    construction logs about unrelated ambient env (CI exports
+    OAUTH_ENABLED=true, which warns under the default AUTH_MODE=local), and a
+    bare `not caplog.records` fails on any of it."""
+    settings = _settings(auth_token="same", api_key="same")
     with caplog.at_level("WARNING"):
-        chroma_token_auth_kwargs(_settings(auth_token="same", api_key="same"))
-    assert not caplog.records
+        chroma_token_auth_kwargs(settings)
+    assert not [r for r in caplog.records if "both set" in r.message]
 
 
 def test_surrounding_whitespace_is_stripped():
