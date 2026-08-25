@@ -716,10 +716,13 @@ jobs:
             # code injection via UPDATE_COLLECTION (GHSA-36p7, Critical) and
             # two cross-tenant authorization failures in the server's authz
             # layer (GHSA-2wm9, GHSA-xph7, High). Same containment as above —
-            # the vulnerable HTTP server never starts in standalone, and is
-            # ClusterIP + token-auth behind a NetworkPolicy in cloud. The two
-            # authorization CVEs additionally describe a control FaultMaven
-            # does not use: one ChromaDB tenant/database, one principal,
+            # the vulnerable HTTP server never starts in standalone, and in
+            # cloud is ClusterIP-only behind the allow-chromadb-ingress
+            # NetworkPolicy. That policy is the ONLY control: the running pod
+            # renders no auth stanza, so the server is unauthenticated despite
+            # what values.yaml says (fm#1173). The two authorization CVEs
+            # additionally describe a control FaultMaven does not use: one
+            # ChromaDB tenant/database, no ChromaDB-level authz at all,
             # tenancy enforced above ChromaDB and never delegated to it.
             # Reported under CVE aliases (CVE-2026-45833 / -45830 / -45831);
             # as above, ignore by GHSA id — do not "correct" these to the ids
