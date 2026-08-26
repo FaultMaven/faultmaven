@@ -118,13 +118,25 @@ class IntentResolver:
             from faultmaven.config.settings import get_settings
 
             settings = get_settings()
-            classifier_model = settings.get_classifier_model()
+            # ``settings.llm``, not ``settings`` — the getter lives on
+            # LLMSettings. The previous ``settings.get_classifier_model()``
+            # raised AttributeError on every call, and the blanket
+            # except-below turned that into "classifier failed, default to
+            # conversation": the LLM path of this resolver had never actually
+            # run (tests passed because they mock settings, and a Mock
+            # auto-creates the missing attribute).
+            classifier_model = settings.llm.get_classifier_model()
 
             response = await self.llm_router.route(
                 messages=[{"role": "user", "content": prompt}],
                 model=classifier_model,
                 max_tokens=10,
                 temperature=0.0,
+                # Land on CLASSIFIER_PROVIDER when the operator set one —
+                # without the override the role model name arrives at
+                # CHAT_PROVIDER, which won't be configured for it. None when
+                # unset (= today's routing).
+                provider_override=settings.llm.explicit_role_provider("classifier"),
             )
 
             return self._parse_response(response.content, choices)

@@ -464,8 +464,31 @@ class ProviderRegistry:
         )
         max_retries = schema.get("max_retries", llm_settings.max_retries)
 
+        # The provider must accept every model a role can resolve to, not just
+        # the base one. `get_effective_model` honours a per-call model ONLY if
+        # it is in `config.models` — with `models=[model]` every per-task
+        # override ({PROVIDER}_DA_MODEL, {PROVIDER}_CLASSIFIER_MODEL, …) was
+        # silently replaced by the base model at call time, which is why two
+        # roles could never run different models on one provider. Base model
+        # stays first: `__post_init__` derives `default_model` from models[0],
+        # so no-override calls are unchanged.
+        #
+        # Guarded: a settings object that cannot enumerate per-task models
+        # (test doubles, duck-typed custom settings) means the provider simply
+        # gets its base model only — the pre-per-task behavior, not an init
+        # failure.
+        try:
+            task_models = list(llm_settings.configured_task_models(provider_name))
+        except Exception as exc:
+            self.logger.debug(
+                f"No per-task models resolved for '{provider_name}' "
+                f"({type(exc).__name__}: {exc}); provider gets its base model only"
+            )
+            task_models = []
+        models = [model] + [m for m in task_models if m != model]
+
         self.logger.debug(
-            f"Provider '{provider_name}': model={model}, "
+            f"Provider '{provider_name}': models={models}, "
             f"api_key={'SET' if api_key else 'NOT_SET'}, timeout={timeout}s"
         )
 
@@ -473,7 +496,7 @@ class ProviderRegistry:
             name=provider_name,
             api_key=api_key,
             base_url=base_url,
-            models=[model],
+            models=models,
             max_retries=max_retries,
             timeout=timeout,
             confidence_score=schema["confidence_score"],

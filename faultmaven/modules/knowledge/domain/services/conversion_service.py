@@ -814,6 +814,12 @@ class ConversionService:
                 max_tokens=cap,
                 temperature=0.2,
                 response_format={"type": "json_object"},
+                # Land on KNOWLEDGE_PROVIDER when the operator set one — the
+                # model alone doesn't route. None when unset (= today's
+                # routing).
+                provider_override=self._settings.llm.explicit_role_provider(
+                    "knowledge"
+                ),
             )
 
         # A document with many failure modes can genuinely outgrow the budget.
@@ -972,6 +978,10 @@ class ConversionService:
                     model=knowledge_model,
                     max_tokens=cap,
                     temperature=0.3,
+                    # Same KNOWLEDGE_PROVIDER routing as _analyze_document.
+                    provider_override=self._settings.llm.explicit_role_provider(
+                        "knowledge"
+                    ),
                 )
 
             response = await generate_with_truncation_retry(

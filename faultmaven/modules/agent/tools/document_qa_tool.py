@@ -349,6 +349,13 @@ Answer:"""
                 ],
                 max_tokens=cap,
                 temperature=0.3,  # Low temperature for factual accuracy
+                # Land on SYNTHESIS_PROVIDER when the operator set one — the
+                # model alone doesn't route, so without this the synthesis
+                # model name arrives at CHAT_PROVIDER, which isn't configured
+                # for it. None when unset (= today's routing).
+                provider_override=self._settings.llm.explicit_role_provider(
+                    "synthesis"
+                ),
             )
 
         # Give the answer more room once if the provider says it ran out.

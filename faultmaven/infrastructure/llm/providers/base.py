@@ -474,9 +474,31 @@ class BaseLLMProvider(ABC):
         return content
 
     def get_effective_model(self, requested_model: Optional[str] = None) -> str:
-        """Get the model to use, with fallback logic"""
+        """Get the model to use, with fallback logic.
+
+        A requested model is honoured only when it is in ``config.models`` —
+        the registry populates that list with the provider's base model plus
+        every configured per-task override (``configured_task_models``), so
+        anything else here is a model this provider was never configured to
+        run (typically another provider's model name arriving through the
+        fallback chain). The fallback to the default is the safe behavior,
+        but it must never be silent: running a different model than the
+        caller named is exactly the class of quiet substitution that made the
+        per-task model matrix a no-op for months.
+        """
         if requested_model and requested_model in self.config.models:
             return requested_model
+
+        if requested_model:
+            self.logger.warning(
+                f"⚠️ Requested model '{requested_model}' is not configured for "
+                f"provider '{self.provider_name}' (configured: "
+                f"{self.config.models}) — falling back to "
+                f"'{self.config.default_model or (self.config.models[0] if self.config.models else '?')}'. "
+                f"If this was a per-task override, set the matching "
+                f"{{PROVIDER}}_{{TASK}}_MODEL for THIS provider, or route the "
+                f"call to the right provider via its role provider setting."
+            )
 
         if self.config.default_model:
             return self.config.default_model

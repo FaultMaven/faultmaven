@@ -154,6 +154,28 @@ class ServerSettings(BaseSettings):
 # a validator reads it.
 ANTHROPIC_THINKING_MODES = ("off", "adaptive", "enabled")
 
+# The task axis of the {PROVIDER}_{TASK}_MODEL matrix — every task that
+# `_get_model_for_provider_and_task` can be asked to resolve. Module-level for
+# the same pydantic reason as ANTHROPIC_THINKING_MODES above. The registry uses
+# this to enumerate every model a provider instance must accept per-call
+# (`configured_task_models`): a per-task model that is not in the provider's
+# ``config.models`` is silently replaced by the base model at call time
+# (``BaseLLMProvider.get_effective_model``), which is exactly how the per-task
+# matrix went unhonoured. `structured_output` is listed even though no
+# per-provider field exists for it yet — `getattr(..., None)` makes it a no-op
+# until one is added, and forgetting to extend this tuple then would
+# reintroduce the silent swallow for just that task.
+LLM_MODEL_TASKS = (
+    "chat",
+    "multimodal",
+    "synthesis",
+    "classifier",
+    "code",
+    "da",
+    "knowledge",
+    "structured_output",
+)
+
 
 class LLMSettings(BaseSettings):
     """LLM provider configuration with flexible multi-model support"""
@@ -502,6 +524,49 @@ class LLMSettings(BaseSettings):
             task: Task type ('chat', 'multimodal', 'synthesis', 'classifier', 'code', 'da', 'knowledge')
         """
         return self._get_model_for_provider_and_task(self.provider, task)
+
+    def explicit_role_provider(self, role: str) -> Optional[str]:
+        """The provider NAME a role was explicitly routed to, or ``None``.
+
+        ``None`` means "the operator did not set {ROLE}_PROVIDER" — the role
+        follows CHAT_PROVIDER through the normal routing chain, exactly as
+        before. A name means the call site must pass it as
+        ``provider_override`` so the router lands the call on that provider
+        deterministically (no fallback chain — role routing is static
+        assignment, not fallback). One helper instead of an inline
+        ``x.value if x is not None else None`` at every role call site, so the
+        "explicit only" semantics cannot drift between them.
+
+        ``role`` uses the task vocabulary of :data:`LLM_MODEL_TASKS`
+        ("classifier", "synthesis", "da", …).
+        """
+        field = "provider" if role == "chat" else f"{role}_provider"
+        value = getattr(self, field, None)
+        if value is None:
+            return None
+        return value.value if hasattr(value, "value") else str(value)
+
+    def configured_task_models(self, provider: "LLMProvider | str") -> List[str]:
+        """Every distinct per-task model configured for *provider*.
+
+        The registry folds these into the provider's ``config.models`` so a
+        per-call model override (``OPENAI_DA_MODEL``, ``GEMINI_CLASSIFIER_MODEL``,
+        …) survives ``BaseLLMProvider.get_effective_model`` — which only honours
+        a requested model it can find in that list. Without this, every
+        per-task override was silently replaced by the base model at call time.
+
+        Returns de-duplicated values in ``LLM_MODEL_TASKS`` order; excludes the
+        base ``{PROVIDER}_MODEL`` (the registry already leads with it, keeping
+        it ``models[0]``/``default_model``). ``local`` has no per-task fields
+        and returns [].
+        """
+        provider_name = provider.value if hasattr(provider, "value") else str(provider)
+        seen: List[str] = []
+        for task in LLM_MODEL_TASKS:
+            value = getattr(self, f"{provider_name}_{task}_model", None)
+            if value and value not in seen:
+                seen.append(value)
+        return seen
 
     def get_multimodal_provider(self) -> LLMProvider:
         """Get multimodal provider (falls back to chat provider if not set)"""
