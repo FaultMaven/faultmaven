@@ -112,6 +112,10 @@ from faultmaven.core.investigation.prompts.templates import (
     SCHEMA_INSTRUCTIONS,
     get_prompt_for_case,
 )
+from faultmaven.core.investigation.reliability_metrics import (
+    schema_validation_total,
+    tool_call_attempts_total,
+)
 from faultmaven.core.investigation.schemas import (
     BaseInteractionResponse,
     InquiryResponse,
@@ -6871,12 +6875,29 @@ class MilestoneEngine:
                     ),
                 )
 
+                args_well_formed = True
                 try:
                     args = (
                         json.loads(args_str) if isinstance(args_str, str) else args_str
                     )
                 except (json.JSONDecodeError, TypeError):
                     args = {}
+                    args_well_formed = False
+
+                # Reliability metric (read-only): did the MODEL hold up the
+                # invocation contract? Same label bounding as the budget
+                # metrics below — a hallucinated name folds into "unknown"
+                # so an inventive model can't mint a label per invention.
+                # execution_error is applied after the call, further down.
+                _attempt_tool = (
+                    func_name if func_name in offered_tool_names else "unknown"
+                )
+                if func_name not in offered_tool_names:
+                    _attempt_outcome = "unknown_tool"
+                elif not args_well_formed:
+                    _attempt_outcome = "invalid_args"
+                else:
+                    _attempt_outcome = "ok"
 
                 # Enforce deep_analysis limit
                 if (
@@ -6895,6 +6916,12 @@ class MilestoneEngine:
                     )
                     if func_name == "deep_analysis":
                         deep_analysis_count += 1
+                    if _attempt_outcome == "ok" and not getattr(
+                        tool_result, "success", True
+                    ):
+                        # Well-formed call, tool-side failure: infrastructure
+                        # noise, not the model failing the contract.
+                        _attempt_outcome = "execution_error"
 
                     result_text = self._format_tool_result(
                         tool_result, tool_name=func_name
@@ -6915,6 +6942,10 @@ class MilestoneEngine:
                             da_empty_search_counts=da_empty_search_counts,
                             proactive_tasks=proactive_tasks,
                         )
+
+                tool_call_attempts_total.labels(
+                    tool=_attempt_tool, outcome=_attempt_outcome
+                ).inc()
 
                 # Redact PII in tool results before sending to LLM.
                 # Tool results contain raw file content (search_file,
@@ -7825,8 +7856,15 @@ class MilestoneEngine:
         """
         from pydantic import ValidationError
 
+        def _record(outcome: str):
+            schema_validation_total.labels(
+                schema=schema_model.__name__, outcome=outcome
+            ).inc()
+
         try:
-            return schema_model.model_validate_json(json.dumps(content_obj))
+            parsed = schema_model.model_validate_json(json.dumps(content_obj))
+            _record("clean")
+            return parsed
         except ValidationError as original_error:
             pruned, dropped = self._prune_invalid_list_entries(
                 content_obj, original_error
@@ -7840,6 +7878,7 @@ class MilestoneEngine:
                         "(parse-time validator). Turn preserved.",
                         extra={"schema": schema_model.__name__, "pruned": dropped},
                     )
+                    _record("pruned")
                     return parsed
                 except ValidationError:
                     pass  # fall through to the conversational fallback
@@ -7869,6 +7908,7 @@ class MilestoneEngine:
                             "non_prunable_errors": non_prunable,
                         },
                     )
+                    _record("state_dropped")
                     return parsed
                 except ValidationError:
                     pass
@@ -7917,10 +7957,12 @@ class MilestoneEngine:
                                 "state_updates_dropped": state_dropped,
                             },
                         )
+                        _record("response_synthesized")
                         return parsed
                     except ValidationError:
                         continue
 
+            _record("failed")
             raise original_error
 
     @staticmethod
