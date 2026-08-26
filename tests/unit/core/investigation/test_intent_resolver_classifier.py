@@ -15,7 +15,13 @@ These tests pin:
   2. the resolved classifier model reaches the router call;
   3. ``CLASSIFIER_PROVIDER`` reaches the router as ``provider_override`` when
      explicitly set, and stays ``None`` (chain routing, today's behavior)
-     when not.
+     when not;
+  4. the call is budgeted so the tier can actually ANSWER. Resolving the
+     settings bug only got as far as making a real API call: at
+     ``max_tokens=10`` with no reasoning declaration, a reasoning model spends
+     the whole budget on hidden reasoning, the visible body comes back empty,
+     and ``_parse_response("")`` returns None — the same "no match" as the
+     AttributeError, now billed.
 """
 
 from types import SimpleNamespace
@@ -25,7 +31,12 @@ import pytest
 
 import faultmaven.config.settings as settings_module
 from faultmaven.config.settings import LLMSettings
-from faultmaven.core.investigation.intent_resolver import IntentResolver
+from faultmaven.core.investigation.intent_resolver import (
+    CLASSIFIER_MAX_TOKENS,
+    CLASSIFIER_MIN_OUTPUT_TOKENS,
+    IntentResolver,
+)
+from faultmaven.infrastructure.llm.providers import ReasoningIntent
 
 CHOICES = [
     {
@@ -146,3 +157,34 @@ class TestClassifierSettingsResolution:
         router.route = AsyncMock(side_effect=RuntimeError("provider down"))
 
         assert await IntentResolver(router)._classify("whatever", CHOICES) is None
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+class TestClassifierCallIsBudgetedToAnswer:
+    @pytest.mark.asyncio
+    async def test_declares_extraction_and_an_output_floor(
+        self, production_shaped_settings
+    ):
+        """Hidden reasoning bills against the SAME budget as the answer on
+        every provider, so a one-token answer still needs the call to say what
+        it wants from reasoning (EXTRACTION → the provider's verified minimum)
+        and how little visible output it can live with (the floor turns a
+        starved body into a raised error instead of a silent None)."""
+        router = _router_returning("1")
+        await IntentResolver(router)._classify("close it", CHOICES)
+
+        kwargs = router.route.await_args.kwargs
+        assert kwargs["reasoning_intent"] is ReasoningIntent.EXTRACTION
+        assert kwargs["min_output_tokens"] == CLASSIFIER_MIN_OUTPUT_TOKENS
+        assert kwargs["max_tokens"] == CLASSIFIER_MAX_TOKENS
+
+    def test_cap_leaves_room_for_the_reasoning_extraction_only_minimises(self):
+        """EXTRACTION resolves to ``"low"``, not ``"none"``, on every family
+        outside the verified ones — and low-effort reasoning on a gpt-5.x model
+        is hundreds of tokens, all billed against ``max_completion_tokens``. A
+        cap sized for the digit alone (the original 10, or a nominal 64) still
+        starves the body it was raised to protect."""
+        assert CLASSIFIER_MIN_OUTPUT_TOKENS >= 1
+        assert CLASSIFIER_MAX_TOKENS >= 128
+        assert CLASSIFIER_MAX_TOKENS > CLASSIFIER_MIN_OUTPUT_TOKENS
