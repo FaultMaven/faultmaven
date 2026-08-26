@@ -38,7 +38,9 @@ def _format_searchable_alternatives(
         file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
         if file_meta is None:
             continue
-        filename = file_meta.filename or "(unnamed)"
+        # display_name, not filename: this hint goes back to the LLM and
+        # a minted pasted-content-<ts>.txt gets cited from there (#666).
+        filename = file_meta.display_name or "(unnamed)"
         alternatives.append(f"{ev_id} ({filename})")
 
     if not alternatives:

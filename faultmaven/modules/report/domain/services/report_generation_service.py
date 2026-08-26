@@ -442,12 +442,16 @@ class ReportGenerationService:
         on the Pydantic Evidence model, so direct attribute access is
         safe. ``source_file_id`` is Optional (NULL for chat-extracted
         evidence) and ``case.find_uploaded_file`` is None-safe by design.
+
+        The citation names the source by ``display_name``: the report is
+        read by the person who filed the case, and a minted
+        ``pasted-content-<ts>.txt`` cites a file they never had (#666).
         """
         category_label = ev.category.value.replace("_", " ")
         summary = ev.summary
         file_meta = case.find_uploaded_file(ev.source_file_id)
         if file_meta is not None:
-            source = f" — _{file_meta.filename}_"
+            source = f" — _{file_meta.display_name}_"
         else:
             source = f" — _{ev.source_type.value}_"
         return f"- **[{category_label}]** {summary}{source}"

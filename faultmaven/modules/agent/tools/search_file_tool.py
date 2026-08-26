@@ -446,8 +446,12 @@ class SearchFileTool(AgentTool):
                         file_data = await self.storage_service.retrieve_file(
                             storage_ref
                         )
+                        # display_name, not filename: this string is
+                        # echoed to the LLM in the tool result and gets
+                        # cited back at the user (#666).
                         filename = (
-                            getattr(matching_upload, "filename", None) or evidence_id
+                            getattr(matching_upload, "display_name", None)
+                            or evidence_id
                         )
                         content = file_data.decode("utf-8", errors="replace")
                         logger.debug(
@@ -506,7 +510,10 @@ class SearchFileTool(AgentTool):
         ):
             try:
                 file_data = await self.storage_service.retrieve_file(storage_ref)
-                filename = (file_meta.filename if file_meta else None) or evidence_id
+                # display_name, not filename — see the note above.
+                filename = (
+                    file_meta.display_name if file_meta else None
+                ) or evidence_id
                 content = file_data.decode("utf-8", errors="replace")
                 return content, filename, case_evidence
             except Exception as e:
@@ -554,7 +561,7 @@ class SearchFileTool(AgentTool):
             file_meta = case.find_uploaded_file(getattr(ev, "source_file_id", None))
             if file_meta is None:
                 continue
-            filename = file_meta.filename or "(unnamed)"
+            filename = file_meta.display_name or "(unnamed)"
             alternatives.append(f"{ev_id} ({filename})")
 
         if not alternatives:

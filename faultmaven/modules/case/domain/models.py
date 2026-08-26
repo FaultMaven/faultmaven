@@ -1765,6 +1765,32 @@ class EvidenceStance(str, Enum):
 # =============================================================================
 
 
+# Pasted text and captured pages arrive with no filename, so the turns route
+# mints one at ingestion (``resolve_paste_source_meta`` +
+# ``f"{prefix}{ts}.txt"`` in modules/case/api/routes.py). That name is a
+# storage/transport artifact: the user never typed it and it says nothing
+# about the content. It is still a real ``filename`` — dedup, the storage
+# backend, extension sniffing and the classifier all consume it — so the fix
+# for #666 is not to stop minting it, but to keep it out of anything a model
+# or a user reads. ``display_name`` is that separation: the name to SHOW,
+# distinct from the name it is STORED under.
+_SYNTHETIC_FILENAME_RE = re.compile(
+    r"^(pasted-content|page-capture)-\d{8}T\d{6}Z?\.txt$"
+)
+
+# Anchored on the minted shape, not just the prefix, so a file the user
+# actually named "pasted-notes.txt" keeps its own name.
+_MINTED_PREFIX_TO_KIND = {"pasted-content": "paste", "page-capture": "capture"}
+
+# ``upload_source`` spellings that mean "the user pasted/captured this".
+# Both spellings occur in the wild: the turns route writes ``text_paste`` /
+# ``page_capture`` (resolve_paste_source_meta), and ``paste`` appears on
+# older rows. Checked ahead of the filename pattern so a correctly tagged
+# row is recognised even if its name never matched the minted shape.
+_PASTE_UPLOAD_SOURCES = frozenset({"paste", "text_paste"})
+_CAPTURE_UPLOAD_SOURCES = frozenset({"page_capture"})
+
+
 class UploadedFile(BaseModel):
     """
     File the user submitted to a case (upload, paste, page capture).
@@ -1921,6 +1947,71 @@ class UploadedFile(BaseModel):
             "the file has no parseable timestamps."
         ),
     )
+
+    # ------------------------------------------------------------------
+    # Display identity (#666)
+    #
+    # ``filename`` is the name the file is STORED under. These two
+    # properties are the name it is SHOWN under. Plain properties, not
+    # pydantic fields: they are derived, never persisted, and never
+    # serialised into an API response.
+    # ------------------------------------------------------------------
+
+    @property
+    def _minted_kind(self) -> Optional[str]:
+        """``"paste"`` / ``"capture"`` when ``filename`` has the minted shape.
+
+        The fallback signal for rows whose ``upload_source`` predates the
+        current values, and the reason the check is a full-shape match rather
+        than a prefix: a file the user named ``pasted-notes.txt`` is theirs.
+        """
+        match = _SYNTHETIC_FILENAME_RE.match(self.filename)
+        return _MINTED_PREFIX_TO_KIND[match.group(1)] if match else None
+
+    @property
+    def is_pasted(self) -> bool:
+        """True when the user pasted this content rather than choosing a file."""
+        if (self.upload_source or "") in _PASTE_UPLOAD_SOURCES:
+            return True
+        return self._minted_kind == "paste"
+
+    @property
+    def is_page_capture(self) -> bool:
+        """True when the browser extension captured this from a web page."""
+        if (self.upload_source or "") in _CAPTURE_UPLOAD_SOURCES:
+            return True
+        return self._minted_kind == "capture"
+
+    @property
+    def has_synthetic_filename(self) -> bool:
+        """True when ``filename`` was minted by us, not supplied by the user.
+
+        Callers use this to decide whether the row HAS a filename worth
+        showing at all — a synthesized display name is not a filename, and
+        rendering it in a ``filename=`` slot invites the same mis-citation
+        the real name did.
+        """
+        return self.is_pasted or self.is_page_capture
+
+    @property
+    def display_name(self) -> str:
+        """The name to show a user, or put in front of a model.
+
+        Real uploads keep their filename — the user chose it and recognises
+        it. Pastes and page captures get a short phrase describing what they
+        are ("pasted logs", "captured page"), because the minted
+        ``pasted-content-<ts>.txt`` is meaningless to the person who typed
+        the text and reads as a file they never had (#666).
+
+        Deliberately short and noun-shaped: this lands in prompt attributes
+        and in agent copy, where it has to survive being quoted back.
+        """
+        if not self.has_synthetic_filename:
+            return self.filename
+        if self.is_page_capture:
+            return "captured page"
+        kind = (self.data_type or "data").replace("_", " ")
+        return f"pasted {kind}"
 
 
 # =============================================================================

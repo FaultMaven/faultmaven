@@ -1461,9 +1461,10 @@ class TestIdenticalToPriorUploadAttribute:
 
 
 class TestSemanticLabelForPastedContent:
-    """``_evidence_label`` synthesizes a semantic label from data_type +
-    summary when the filename is the auto-generated pasted-content pattern.
-    Real filenames pass through unchanged."""
+    """``_evidence_label`` synthesizes a semantic label from
+    ``UploadedFile.display_name`` + summary when the filename is the
+    auto-generated pasted-content pattern. Real filenames pass through
+    unchanged."""
 
     def test_pasted_content_label_uses_data_type_and_summary(self):
         file_id = "file_0e0e0e0e0e05"
@@ -1492,15 +1493,15 @@ class TestSemanticLabelForPastedContent:
             )
         ]
         result = _build_evidence_context(case)
-        # Label uses semantic content, not the timestamped filename.
-        assert "configuration: DestinationRule" in result
-        # The raw filename is still present on the filename attribute, but
-        # not as the label.
+        # Label uses semantic content, not the timestamped filename. The
+        # "pasted " prefix comes from UploadedFile.display_name (#666).
+        assert "pasted configuration: DestinationRule" in result
         ev_line = next(line for line in result.splitlines() if ev.evidence_id in line)
-        assert (
-            'label="configuration: DestinationRule'
-            in ev_line[: ev_line.find('filename="')]
-        )
+        assert 'label="pasted configuration: DestinationRule' in ev_line
+        # #666: the minted name no longer rides along on a filename
+        # attribute next to the label — the element has no filename at all,
+        # because the file has none the user would recognise.
+        assert "filename=" not in ev_line
 
     def test_real_filename_passes_through(self):
         file_id = "file_0f0f0f0f0f06"
@@ -1542,7 +1543,7 @@ class TestSemanticLabelForPastedContent:
             )
         ]
         result = _build_evidence_context(case)
-        assert 'label="logs (pasted)"' in result
+        assert 'label="pasted logs"' in result
 
 
 class TestRule5NewDataClaimedButNotAttached:

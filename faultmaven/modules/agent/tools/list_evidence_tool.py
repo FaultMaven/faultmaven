@@ -181,7 +181,10 @@ class ListEvidenceTool(AgentTool):
                 getattr(evidence, "source_file_id", None)
             )
             size_bytes = int(file_meta.size_bytes if file_meta else 0)
-            filename = file_meta.filename if file_meta else None
+            # display_name, not filename: this listing is rendered into the
+            # LLM's tool result, and a minted pasted-content-<ts>.txt read
+            # from there gets cited back at the user (#666).
+            filename = file_meta.display_name if file_meta else None
 
             # Timestamp: domain Evidence uses collected_at
             collected_at = getattr(evidence, "collected_at", None)

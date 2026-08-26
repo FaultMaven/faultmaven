@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.prompts.context_builder import (
+    _uploaded_file_name_attr,
     build_investigation_context,
 )
 
@@ -2588,8 +2589,9 @@ def _fallback_current_turn_evidence(case: Case) -> str:
 
     The fallback fires at the tightest budget — precisely when a fresh upload
     must not be dropped. Renders just the addressable essentials (file_id +
-    filename + searchable) so the agent can `search_file` it. Empty when no
-    current-turn upload exists.
+    name + searchable) so the agent can `search_file` it. Empty when no
+    current-turn upload exists. The name is ``filename`` for a chosen file and
+    ``label`` for a paste/capture, per ``_uploaded_file_name_attr`` (#666).
     """
     current_turn = getattr(case, "current_turn", 0)
     stubs = []
@@ -2599,8 +2601,8 @@ def _fallback_current_turn_evidence(case: Case) -> str:
         ):
             head = (uf.structural_index or "")[:200].replace("\n", " ")
             stubs.append(
-                f'<uploaded_file file_id="{uf.file_id}" '
-                f'filename="{uf.filename or "data"}" searchable="true">'
+                f'<uploaded_file file_id="{uf.file_id}"'
+                f'{_uploaded_file_name_attr(uf)} searchable="true">'
                 f"{head}</uploaded_file>"
             )
         if len(stubs) >= 3:

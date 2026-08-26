@@ -191,7 +191,8 @@ def _format_evidence_summaries(
             if case is not None
             else None
         )
-        filename = file_meta.filename if file_meta else None
+        # display_name, not filename — see list_evidence_tool (#666).
+        filename = file_meta.display_name if file_meta else None
         source_type = getattr(ev, "source_type", None)
         formatted.append(
             {

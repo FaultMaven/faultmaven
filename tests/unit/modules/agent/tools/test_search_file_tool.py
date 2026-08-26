@@ -1,5 +1,7 @@
 """Tests for SearchFileTool — Tier 2 mechanical search (v4.0)."""
 
+import hashlib
+import json
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -8,6 +10,7 @@ import pytest
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.search_file_tool import SearchFileTool
+from faultmaven.modules.case.contracts import UploadedFile
 
 
 @pytest.fixture
@@ -49,6 +52,8 @@ def _make_evidence(
     evidence_id="ev_abc",
     content_ref="evidence/case_123/app.log",
     filename="app.log",
+    upload_source="file_upload",
+    data_type=None,
 ):
     """Build a minimal Evidence-shaped object for case-embedded lookup.
 
@@ -56,6 +61,10 @@ def _make_evidence(
     ``source_file_id`` (set when ``content_ref`` is provided, ``None``
     otherwise). Pass ``content_ref=None`` to model a chat-extracted
     evidence record with no backing file.
+
+    The backing file is a REAL ``UploadedFile``, not a MagicMock: the tool
+    reads ``display_name`` off it, and a bare mock answers that with a mock
+    object, which would make the #666 leak tests unfailable.
     """
     ev = MagicMock()
     ev.evidence_id = evidence_id
@@ -65,18 +74,20 @@ def _make_evidence(
     if content_ref is not None:
         # Bind a unique source_file_id per evidence so case.find_uploaded_file
         # can resolve to the right backing file when multiple evidence records
-        # are present in the case.
-        file_id = (
-            f"file_{evidence_id.replace('-', '_').replace('ev_', 'fl0000000')[:16]}"
-        )
+        # are present in the case. Hashed rather than derived by substitution
+        # because UploadedFile validates the ^(file_|data_)[a-f0-9]{12,16}$
+        # shape.
+        file_id = f"file_{hashlib.md5(evidence_id.encode()).hexdigest()[:12]}"
         ev.source_file_id = file_id
-        uf = MagicMock()
-        uf.file_id = file_id
-        uf.filename = filename
-        uf.size_bytes = 100
-        uf.storage_ref = content_ref
-        uf.upload_source = "file_upload"
-        ev._uploaded_file = uf
+        ev._uploaded_file = UploadedFile(
+            file_id=file_id,
+            filename=filename,
+            size_bytes=100,
+            uploaded_at_turn=1,
+            storage_ref=content_ref,
+            upload_source=upload_source,
+            data_type=data_type,
+        )
     else:
         ev.source_file_id = None
         ev._uploaded_file = None
@@ -986,3 +997,86 @@ class TestNonFileBackedEvidenceGuard:
         # No misleading "Available file-backed evidence:" line when
         # there genuinely isn't any
         assert "Available file-backed evidence" not in result.error
+
+
+class TestSyntheticFilenameNotReported:
+    """#666: the engine appends citation guidance quoting whatever this tool
+    puts under ``filename``, so a minted ``pasted-content-<ts>.txt`` reported
+    here is what the user reads back. The tool reports display names."""
+
+    MINTED = "pasted-content-20260709T105531.txt"
+
+    def _paste_context(self):
+        ev = _make_evidence(
+            evidence_id="ev_paste",
+            filename=self.MINTED,
+            upload_source="text_paste",
+            data_type="logs",
+        )
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [ev]
+        _wire_case_lookup(case)
+        return ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            organization_id="org_1",
+            user_id="user_1",
+            in_memory_case=case,
+        )
+
+    @pytest.mark.asyncio
+    async def test_excerpts_result_reports_display_name(self, tool):
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_paste", "query": "ERROR timeout"},
+            context=self._paste_context(),
+        )
+        assert result.success is True
+        assert result.data["filename"] == "pasted logs"
+        assert self.MINTED not in json.dumps(result.data)
+
+    @pytest.mark.asyncio
+    async def test_count_result_reports_display_name(self, tool):
+        result = await tool.execute_with_context(
+            params={
+                "evidence_id": "ev_paste",
+                "query": "ERROR",
+                "output_format": "count",
+            },
+            context=self._paste_context(),
+        )
+        assert result.success is True
+        assert result.data["filename"] == "pasted logs"
+        assert self.MINTED not in json.dumps(result.data)
+
+    @pytest.mark.asyncio
+    async def test_alternatives_hint_reports_display_name(self, tool):
+        """The redirect hint listing other file-backed evidence is model-
+        visible too, and named files by their raw filename."""
+        chat_ev = _make_evidence(evidence_id="ev_chat", content_ref=None)
+        paste_ev = _make_evidence(
+            evidence_id="ev_paste",
+            filename=self.MINTED,
+            upload_source="text_paste",
+            data_type="logs",
+        )
+        case = MagicMock()
+        case.case_id = "case_123"
+        case.evidence = [chat_ev, paste_ev]
+        _wire_case_lookup(case)
+        ctx = ToolContext(
+            session_id="sess_1",
+            case_id="case_123",
+            organization_id="org_1",
+            user_id="user_1",
+            in_memory_case=case,
+        )
+
+        result = await tool.execute_with_context(
+            params={"evidence_id": "ev_chat", "query": "anything"},
+            context=ctx,
+        )
+
+        assert result.success is False
+        assert self.MINTED not in result.error
+        assert "ev_paste (pasted logs)" in result.error

@@ -8329,16 +8329,24 @@ class MilestoneEngine:
             return prefix + content + suffix
 
         # search_file results: append citation guidance so the LLM cites
-        # filename and line numbers in its response.
+        # the source and line numbers in its response.
+        #
+        # #666: this instruction is the mechanism that put
+        # "pasted-content-20260709T105531.txt (line 20)" in front of Beta
+        # users — it tells the model to cite a name and hands it one. The
+        # tool now supplies ``UploadedFile.display_name`` under that key
+        # ("pasted logs"), so the worked example reads correctly for a
+        # paste; the guidance says "source" rather than "filename" to match,
+        # since a paste has no filename to cite.
         if tool_name == "search_file" and isinstance(result.data, dict):
-            filename = result.data.get("filename", "unknown")
+            source_name = result.data.get("filename", "unknown")
             results_count = result.data.get("results_count", 0)
             content = json.dumps(result.data)
             if results_count > 0:
                 content += (
                     f"\n\nCITATION: When referencing these results, cite the "
-                    f'filename and line numbers (e.g., "In {filename}, '
-                    f'line 42: ...").'
+                    f'source and line numbers exactly as named here (e.g., "In '
+                    f'{source_name}, line 42: ...").'
                 )
             return content
 

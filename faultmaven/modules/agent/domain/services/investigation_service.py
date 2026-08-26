@@ -299,6 +299,24 @@ def _clarification_subject(target: "_PreprocessedAttachment") -> str:
     return f'the file you shared ("{filename}")'
 
 
+def _upload_subject(uf) -> str:
+    """How agent copy names an ``UploadedFile`` back to the user.
+
+    Same rule as ``_clarification_subject``, reached from the other side:
+    that one starts from a preprocessing result, this one from the stored
+    file row. A paste's minted ``pasted-content-<ts>.txt`` names nothing the
+    user recognises, and quoting it at them is #666 in its most literal form
+    — the leak here is not via the LLM at all, this copy is emitted directly.
+    """
+    if uf is None or not getattr(uf, "filename", None):
+        return "the uploaded file"
+    if uf.is_page_capture:
+        return "the page you captured"
+    if uf.is_pasted:
+        return "the text you pasted"
+    return f'"{uf.filename}"'
+
+
 def _build_classification_clarification_suggestions(
     preprocess_results: List["_PreprocessedAttachment"],
 ) -> List[SuggestedActionResponse]:
@@ -1826,11 +1844,11 @@ class InvestigationService:
             trigger="clarification",
         ).inc()
 
-        filename = file_meta.filename or "the uploaded file"
+        subject = _upload_subject(file_meta)
         friendly = _CLARIFICATION_FRIENDLY_NAMES.get(data_type.value, {}).get(
             "long"
         ) or data_type.value.replace("_", " ")
-        agent_response = f'Got it — I\'ve recorded "{filename}" as {friendly}.'
+        agent_response = f"Got it — I've recorded {subject} as {friendly}."
         if preprocessing_result.summary:
             agent_response += f"\n\n{preprocessing_result.summary}"
 
@@ -1840,7 +1858,7 @@ class InvestigationService:
                 {
                     "label": "Analyze it now",
                     "action_type": "DECIDE",
-                    "payload": f'Analyze the file "{filename}".',
+                    "payload": f"Analyze {subject}.",
                     "body": "Run the analysis with the corrected classification.",
                 }
             ],
