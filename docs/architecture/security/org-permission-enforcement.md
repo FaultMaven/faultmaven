@@ -1,6 +1,7 @@
 # Wiring org-scoped permissions to endpoint checks
 
-**Status:** design, not implemented. Tracked by [#1040](https://github.com/FaultMaven/faultmaven/issues/1040).
+**Status:** Phase 0 landed (#1163) — the machinery exists and **enforces
+nothing**. Phases 1–3 are design. Tracked by [#1040](https://github.com/FaultMaven/faultmaven/issues/1040).
 **Supersedes the "tracked in #706" pointers** in [rbac.md](rbac.md), [iam-design.md](iam-design.md) and `infrastructure/persistence/user_repository.py`.
 **Related:** ADR-012 D9 (operator vs org-admin axes), ADR-006 (`TENANT_PROVIDER=multi` seam), #706 (PR #1039, which settled the role *source* question), #874 / #1042 (membership and role writes must revoke), dash#35 (role-naming reconciliation).
 
@@ -145,13 +146,22 @@ would otherwise be diagnosed as "the RBAC wiring doesn't work".
 Enforcement changes authorization across the API surface, and fact 1 means the
 naive first step is an outage. So it stages:
 
-**Phase 0 — the seam, enforcing nothing.** A permission resolver behind the
-`TenantProvider` seam (ADR-006): multi-tenant resolves from
-`organization_members`; standalone returns the fixed set for its single account,
-which is legitimately both org admin and operator, without requiring a table
-that deployment does not populate. Ships with Decision 3. Nothing calls it. A
-test pins that no endpoint uses `require_permission` yet, so Phase 0 cannot
-silently become Phase 2.
+**Phase 0 — the seam, enforcing nothing. Landed (#1163).**
+`providers/tenancy/permissions.PermissionResolver` sits behind the
+`TenantProvider` seam (ADR-006): `MultiTenantPermissionResolver` reads the
+caller's `organization_members` role and expands it through `ROLE_PERMISSIONS`
+live; `SingleTenantPermissionResolver` returns the fixed set for the standalone
+account, which is legitimately both org admin and operator, without reading a
+table that deployment does not populate. `create_permission_resolver` takes the
+*built* `TenantProvider` rather than re-reading `TENANT_PROVIDER`, so one object
+decides the deployment's tenancy. It fails closed throughout: `resolve` returns
+a frozenset and never `None`, an unidentified caller is answered without a
+query, and a `role_id` outside the seeded system set grants nothing.
+
+Nothing calls it. `tests/unit/modules/auth/test_permission_enforcement_is_unwired.py`
+AST-scans the package and holds `require_permission` and its four siblings to an
+empty allowlist of uses (imports: the middleware re-export only), so Phase 0
+cannot silently become Phase 2.
 
 **Phase 1 — populate and observe.** `get_current_user` fills
 `AuthenticatedUser.permissions` from the resolver. Still no endpoint checks, but
