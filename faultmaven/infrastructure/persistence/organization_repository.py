@@ -6,7 +6,7 @@ Implements IOrganizationRepository for organization and member management.
 import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from faultmaven.models.interfaces_user import (
     OrganizationMember,
     OrgPlanTier,
 )
+from faultmaven.models.rbac import Permission
 
 logger = logging.getLogger(__name__)
 
@@ -257,15 +258,29 @@ class PostgreSQLOrganizationRepository(IOrganizationRepository):
         return row if row else None
 
     async def user_has_permission(
-        self, user_id: str, organization_id: str, permission: str
+        self, user_id: str, organization_id: str, permission: Union[Permission, str]
     ) -> bool:
         """Check if user has permission in organization.
 
         Replaces the old SQL function user_has_org_permission() with an ORM join.
-        Permission format: 'resource.action' (e.g., 'cases.write')
+
+        The permission is spelled the way :class:`~faultmaven.models.rbac.Permission`
+        spells it — ``resource:action`` with a **colon** — and a ``Permission``
+        member may be passed directly. That is also how migration 029 seeds the
+        ``permissions`` rows, so caller, enum and table now agree on one
+        spelling. The old ``resource.action`` (dot) form this method used to
+        parse is **no longer accepted**: it was unreachable from the enum's own
+        value, so passing ``Permission.ORG_MANAGE_USERS`` silently denied.
+
+        Anything that is not exactly one ``resource:action`` pair returns
+        ``False`` — an authorization primitive fails closed on input it cannot
+        interpret.
         """
-        parts = permission.split(".")
-        if len(parts) != 2:
+        raw = permission.value if isinstance(permission, Permission) else permission
+        if not isinstance(raw, str):
+            return False
+        parts = raw.split(":")
+        if len(parts) != 2 or not all(parts):
             return False
         resource, action = parts
 

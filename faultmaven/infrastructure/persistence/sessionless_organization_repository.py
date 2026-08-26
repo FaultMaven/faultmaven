@@ -6,7 +6,7 @@ using get_db_session() context manager, following the same pattern as Sessionles
 This removes the need for a long-lived db_session in the DI container.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from faultmaven.infrastructure.persistence.database import get_db_session
 from faultmaven.infrastructure.persistence.organization_repository import (
@@ -17,6 +17,7 @@ from faultmaven.models.interfaces_user import (
     Organization,
     OrganizationMember,
 )
+from faultmaven.models.rbac import Permission
 
 
 class SessionlessOrganizationRepository(IOrganizationRepository):
@@ -100,7 +101,7 @@ class SessionlessOrganizationRepository(IOrganizationRepository):
             return await repo.get_member_role(organization_id, user_id)
 
     async def user_has_permission(
-        self, user_id: str, organization_id: str, permission: str
+        self, user_id: str, organization_id: str, permission: Union[Permission, str]
     ) -> bool:
         """Check if user has permission in organization."""
         async with get_db_session() as session:

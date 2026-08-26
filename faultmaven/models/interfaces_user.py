@@ -31,9 +31,14 @@ tenancy providers implement/consume these interfaces and models.
 from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
+
+# Aliased on import: ``Permission`` is already taken in this module by the
+# ``permissions`` table row model below. The enum is the authority *vocabulary*;
+# the row model is one seeded instance of it.
+from faultmaven.models.rbac import Permission as PermissionEnum
 
 # ============================================================================
 # Enums
@@ -435,17 +440,19 @@ class IOrganizationRepository(ABC):
 
     @abstractmethod
     async def user_has_permission(
-        self, user_id: str, organization_id: str, permission: str
+        self, user_id: str, organization_id: str, permission: Union[PermissionEnum, str]
     ) -> bool:
         """Check if user has permission in organization.
 
         Args:
             user_id: User identifier
             organization_id: Organization identifier
-            permission: Permission string (e.g., 'cases.write')
+            permission: A :class:`~faultmaven.models.rbac.Permission` member, or
+                its ``resource:action`` value (e.g. ``'cases:write'``)
 
         Returns:
-            True if user has permission
+            True if user has permission; False for a permission that cannot be
+            parsed — this check fails closed.
         """
         pass
 

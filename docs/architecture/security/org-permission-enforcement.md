@@ -122,21 +122,29 @@ dashboard's org-role UI reads the org axis and its operator badge reads the
 deployment axis — which is what dash#35 is for. No string it currently renders
 changes meaning; what changes is which endpoint it should read each from.
 
-## Decision 3 — close the dot-versus-colon trap at the boundary
+## Decision 3 — close the dot-versus-colon trap at the boundary — **landed**
 
-`IOrganizationRepository.user_has_permission` parses `"resource.action"` (a
+`IOrganizationRepository.user_has_permission` parsed `"resource.action"` (a
 **dot**) while the `Permission` enum spells the same permission with a **colon**
-(`"org:manage_users"`). Passing the enum's own value silently returns `False` —
-a permission check that denies for a reason unrelated to the user's permissions.
-`faultmaven_cloud` works around it today by defining dot-form literals
+(`"org:manage_users"`) — and migration 029 seeds the `permissions` rows by
+splitting that colon, so the table agreed with the enum and only the lookup did
+not. Passing the enum's own value silently returned `False`: a permission check
+that denied for a reason unrelated to the user's permissions.
+`faultmaven_cloud` worked around it with dot-form literals
 (`PERM_MANAGE_USERS = "org.manage_users"`) beside a comment explaining the trap.
 
 A silent-deny format mismatch in an authorization primitive should not be a
-comment in each caller. `user_has_permission` should accept the `Permission`
-enum (or its colon form) and normalise internally; the dot form stays supported
-for the existing callers. This is small, independently landable, and should
-precede any wiring — it is the one failure mode here that fails *closed* and
-would otherwise be diagnosed as "the RBAC wiring doesn't work".
+comment in each caller. `user_has_permission` now accepts a `Permission` member
+or its colon form and normalises internally. The dot form is **not** kept
+alongside it: two spellings for one permission leaves the next caller free to
+pick the one nothing else understands. Anything that is not exactly one
+`resource:action` pair — a non-string included — returns `False`, because an
+authorization primitive fails closed on input it cannot interpret. The Cloud
+literals and their comments are gone with it.
+
+This landed first and alone, because it is the one failure mode here that fails
+*closed*: during the rollout it would otherwise be diagnosed as "the RBAC wiring
+doesn't work" rather than as a string-format bug.
 
 ---
 
