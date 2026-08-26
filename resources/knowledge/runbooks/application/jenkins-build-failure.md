@@ -6,8 +6,8 @@ service: jenkins
 symptom_class: [deployment_failure, timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [agent-disconnect, channel-closed, outofmemoryerror, executor-starvation, no-space-left-on-device]
@@ -276,5 +276,5 @@ Expected output: no `INACTIVE`/`FAILED` lines; failures print the unsatisfied de
 - [Gc tuning](https://www.jenkins.io/blog/2016/11/21/gc-tuning/) — recommended G1GC flags (`-XX:+UseG1GC -XX:+AlwaysPreTouch -XX:+UseStringDeduplication`) and large-instance tuning (Step 3, Cause B).
 - [3309623](https://wiki.jenkins.io/JENKINS/3309623.html) — "I'm getting OutOfMemoryError": bigger heap guidance, `-XX:+HeapDumpOnOutOfMemoryError`, `-XX:-UseGCOverheadLimit` (Cause B).
 - [12011](https://community.jenkins.io/t/how-can-i-figure-out-why-my-agents-are-closing/12011) / https://community.jenkins.io/t/windows-agent-debugging-unexpected-termination-of-the-channel/10377 — exact channel-termination strings (`Terminating the channel`, `onDeadPing failed`, `channel is closing down`) and `ChannelPinger.pingIntervalSeconds` / power-saving fixes (Cause A).
-- [14157](https://community.jenkins.io/t/noob-builds-fail-on-node-oserror-errno-28-no-space-left-on-device/14157) / https://community.jenkins.io/t/the-jenkins-pipeline-was-stuck-in-the-queue-because-the-built-in-node-was-not-able-to-provide-an-available-executor-additionally-jenkins-detected-low-temporary-disk-space-on-tmp-below-1-gb-threshold/37021 — `No space left on device`/`Errno 28`, workspace cleanup, and the low-`/tmp` (1 GB) executor-unavailability link (Step 4, Cause C).
+- [14157](https://community.jenkins.io/t/noob-builds-fail-on-node-oserror-errno-28-no-space-left-on-device/14157) / https://community.jenkins.io/t/the-jenkins-pipeline-was-stuck-in-the-queue-because-the-built-in-node-was-not-able-to-provide-an-available-executor-additionally-jenkins-detected-low-temporary-disk-space-on-tmp-below-1-gb-threshold-which-caused-the-node-to-become-unavailable-for-bu/37021 — `No space left on device`/`Errno 28`, workspace cleanup, and the low-`/tmp` (1 GB) executor-unavailability link (Step 4, Cause C).
 - [7376](https://community.jenkins.io/t/some-plugins-could-not-be-loaded-due-to-unsatisfied-dependencies-fix-these-issues-and-restart-jenkins-to-re-enable-these-plugins/7376) / https://www.jenkins.io/blog/2022/02/10/last-plugin-version-not-installable/ — unsatisfied-dependency banner text and plugin/core version-requirement causes (Step 6, Cause D).

@@ -6,8 +6,8 @@ service: grafana
 symptom_class: [latency]
 severity: medium
 scope: "global"
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [grafana, dashboard, observability, query-performance, prometheus, rendering]
@@ -452,7 +452,7 @@ Expected output: `type = sqlite3` indicates the embedded database is in use. Und
 ## Sources
 
 - [Grafana — Troubleshooting](https://grafana.com/docs/grafana/latest/troubleshooting/) — Official dashboard performance troubleshooting overview; priority 1
-- [Grafana — Troubleshoot Queries](https://grafana.com/docs/grafana/latest/panels-visualizations/query-transform-data/troubleshoot-queries/) — Query Inspector usage, data-point limits, and transformation debugging; priority 1
+- [Grafana — Troubleshoot Queries](https://grafana.com/docs/grafana/latest/visualizations/panels-visualizations/query-transform-data/troubleshoot-queries/) — Query Inspector usage, data-point limits, and transformation debugging; priority 1
 - [Grafana — Configure Grafana](https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/) — `[dataproxy]`, `[rendering]`, and `[database]` section reference with default values; priority 1
 - [Prometheus — Recording Rules](https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/) — Pre-aggregation configuration for reducing query-time computation; priority 1
 - [Prometheus — Query Logging](https://prometheus.io/docs/guides/query-log/) — Identifying expensive queries at the data-source level via `query_log_file`; priority 1

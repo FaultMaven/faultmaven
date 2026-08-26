@@ -6,8 +6,8 @@ service: aws-cloudwatch
 symptom_class: [service_unavailable, data_loss]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [cwagent, insufficient-data, access-denied, namespace-mismatch, log-retention, putmetricdata]
@@ -241,9 +241,9 @@ Expected output: the alarm's `Namespace`/`MetricName`/`Dimensions`/`Period`, its
 - [Troubleshooting the CloudWatch agent](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/troubleshooting-CloudWatch-Agent.html) — `amazon-cloudwatch-agent-ctl -a status`, the default `CWAgent` namespace, config dir `/opt/aws/amazon-cloudwatch-agent/etc/...`, and the agent log file location/rotation.
 - [Troubleshoot CloudWatch logs and metrics access errors](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-IM-troubleshooting.html) — AccessDenied behavior for missing publish permissions.
 - [CloudWatchAgentServerPolicy (AWS managed policy)](https://docs.aws.amazon.com/aws-managed-policy/latest/reference/CloudWatchAgentServerPolicy.html) — exact actions granted (`PutMetricData`, `CreateLogGroup`/`CreateLogStream`/`PutLogEvents`, `DescribeLogStreams`/`DescribeLogGroups`).
-- [Create IAM roles and users for use with the CloudWatch agent](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/create-iam-roles-for-cloudwatch-agent.html) — attaching `CloudWatchAgentServerPolicy` to the instance role.
-- [Configuring how CloudWatch alarms treat missing data](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html) — `TreatMissingData` values (`breaching`/`notBreaching`/`ignore`/`missing`) and INSUFFICIENT_DATA evaluation behavior.
-- [Using Amazon CloudWatch alarms](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/AlarmThatSendsEmail.html) — sparse-metric INSUFFICIENT_DATA example (Lambda `ProvisionedConcurrencyUtilization`) and EC2-action missing-data recommendation.
+- [CloudWatch agent prerequisites — IAM roles and users](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/prerequisites.html) — creating the agent's EC2 role with `CloudWatchAgentServerPolicy` and attaching that role to the instance.
+- [Configuring how CloudWatch alarms treat missing data](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html) — `TreatMissingData` values (`breaching`/`notBreaching`/`ignore`/`missing`), INSUFFICIENT_DATA evaluation behavior, metrics that report only intermittently by design, and the recommendation to treat missing data as `missing` for alarms taking stop/terminate/reboot/recover actions.
+- [Using Amazon CloudWatch alarms](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Alarms.html) — alarm states (`OK`/`ALARM`/`INSUFFICIENT_DATA`), `describe-alarms` for reading an alarm's configuration, and INSUFFICIENT_DATA on a resource that stops sending metric data.
 - [Working with log groups and log streams](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/Working-with-log-groups-and-streams.html) — retention applies to groups, expired events deleted, ~72h delete delay.
 - [describe-log-groups (AWS CLI)](https://docs.aws.amazon.com/cli/latest/reference/logs/describe-log-groups.html) — `retentionInDays` valid values.
 - [describe-log-streams (AWS CLI)](https://docs.aws.amazon.com/cli/latest/reference/logs/describe-log-streams.html) — `--order-by LastEventTime --descending` and `lastIngestionTime`.

@@ -6,8 +6,8 @@ service: github-actions
 symptom_class: [timeout, auth_failure]
 severity: high
 scope: global
-version: "2.0.1"
-last_updated: "2026-08-17"
+version: "2.0.2"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [github-actions, ci-cd, workflow, automation, pipelines]
@@ -423,7 +423,8 @@ Expected output: Queued jobs should have `runs-on` labels that match at least on
 ## Sources
 
 - [GitHub Actions — Monitoring and Troubleshooting Workflows](https://docs.github.com/en/actions/how-tos/troubleshoot-workflows) — Official troubleshooting procedures, debug logging, and runner diagnostics (Priority 1)
-- [GitHub Actions — Workflow Syntax Reference](https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions) — Complete YAML syntax including `timeout-minutes`, `concurrency`, and expression syntax (Priority 1)
-- [GitHub Actions — Self-Hosted Runners](https://docs.github.com/en/actions/hosting-your-own-runners) — Runner setup, label management, and troubleshooting (Priority 1)
-- [GitHub Actions — Security Hardening](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions) — Secret management, OIDC authentication, and supply chain security (Priority 1)
+- [GitHub Actions — Workflow Syntax Reference](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax) — Complete YAML syntax including `timeout-minutes`, `concurrency`, and expression syntax (Priority 1)
+- [GitHub Actions — Using Labels with Self-Hosted Runners](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/apply-labels) — Creating, assigning and removing custom runner labels; grounds Step 8's `runs-on`-to-runner-label matching and Cause F (Priority 1)
+- [GitHub Actions — Monitoring and Troubleshooting Self-Hosted Runners](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/monitor-and-troubleshoot) — Runner status values (`Idle`/`Active`/`Offline`) and runner connectivity diagnostics; grounds Cause F's offline-runner root and the service-restart mitigation (Priority 1)
+- [GitHub Actions — Secure Use Reference](https://docs.github.com/en/actions/reference/security/secure-use) — Secret management, OIDC authentication, and supply chain security (Priority 1)
 - [actionlint — Static Analyzer for GitHub Actions](https://github.com/rhysd/actionlint) — Workflow YAML linting including expression validation and action reference checking (Priority 2)
