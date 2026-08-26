@@ -108,13 +108,17 @@ class TestClassifierSettingsResolution:
         assert router.route.await_args.kwargs["model"] == "gpt-5.4-mini"
 
     @pytest.mark.asyncio
-    async def test_no_override_when_classifier_provider_unset(
+    async def test_no_override_kwarg_at_all_when_classifier_provider_unset(
         self, production_shaped_settings
     ):
+        """With no CLASSIFIER_PROVIDER the call must be byte-identical to the
+        pre-role-routing shape: the kwarg is ABSENT, not None — duck-typed
+        routers whose route() lacks the parameter (integration test doubles,
+        custom LLM_ROUTER_CLASS implementations) must keep working."""
         router = _router_returning("none")
         await IntentResolver(router)._classify("whatever", CHOICES)
 
-        assert router.route.await_args.kwargs["provider_override"] is None
+        assert "provider_override" not in router.route.await_args.kwargs
 
     @pytest.mark.asyncio
     async def test_classifier_provider_reaches_router_as_override(

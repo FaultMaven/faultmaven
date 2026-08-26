@@ -127,16 +127,24 @@ class IntentResolver:
             # auto-creates the missing attribute).
             classifier_model = settings.llm.get_classifier_model()
 
+            # Land on CLASSIFIER_PROVIDER when the operator set one —
+            # without the override the role model name arrives at
+            # CHAT_PROVIDER, which won't be configured for it. The kwarg is
+            # added ONLY when a role provider is set, so the unset case is
+            # byte-identical to before role routing — and duck-typed routers
+            # without the parameter (test doubles, custom LLM_ROUTER_CLASS
+            # implementations) keep working.
+            route_kwargs = {}
+            override = settings.llm.explicit_role_provider("classifier")
+            if override:
+                route_kwargs["provider_override"] = override
+
             response = await self.llm_router.route(
                 messages=[{"role": "user", "content": prompt}],
                 model=classifier_model,
                 max_tokens=10,
                 temperature=0.0,
-                # Land on CLASSIFIER_PROVIDER when the operator set one —
-                # without the override the role model name arrives at
-                # CHAT_PROVIDER, which won't be configured for it. None when
-                # unset (= today's routing).
-                provider_override=settings.llm.explicit_role_provider("classifier"),
+                **route_kwargs,
             )
 
             return self._parse_response(response.content, choices)

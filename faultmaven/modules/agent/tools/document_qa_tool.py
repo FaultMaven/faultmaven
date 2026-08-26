@@ -340,6 +340,17 @@ Answer:"""
 
         logger.debug(f"Calling synthesis LLM: {synthesis_provider}/{synthesis_model}")
 
+        # Land on SYNTHESIS_PROVIDER when the operator set one — the model
+        # alone doesn't route, so without this the synthesis model name
+        # arrives at CHAT_PROVIDER, which isn't configured for it. The kwarg
+        # is added ONLY when a role provider is set, so the unset case is
+        # byte-identical to before role routing — and duck-typed routers
+        # without the parameter keep working.
+        route_kwargs = {}
+        synthesis_override = self._settings.llm.explicit_role_provider("synthesis")
+        if synthesis_override:
+            route_kwargs["provider_override"] = synthesis_override
+
         async def _synthesize(cap: int):
             return await self._llm_router.route(
                 model=synthesis_model,
@@ -349,13 +360,7 @@ Answer:"""
                 ],
                 max_tokens=cap,
                 temperature=0.3,  # Low temperature for factual accuracy
-                # Land on SYNTHESIS_PROVIDER when the operator set one — the
-                # model alone doesn't route, so without this the synthesis
-                # model name arrives at CHAT_PROVIDER, which isn't configured
-                # for it. None when unset (= today's routing).
-                provider_override=self._settings.llm.explicit_role_provider(
-                    "synthesis"
-                ),
+                **route_kwargs,
             )
 
         # Give the answer more room once if the provider says it ran out.
