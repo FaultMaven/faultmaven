@@ -344,8 +344,10 @@ Answer:"""
         # alone doesn't route, so without this the synthesis model name
         # arrives at CHAT_PROVIDER, which isn't configured for it. The kwarg
         # is added ONLY when a role provider is set, so the unset case is
-        # byte-identical to before role routing — and duck-typed routers
-        # without the parameter keep working.
+        # the SHIPPED case for synthesis, which now defaults to gemini — so a
+        # router used on this path must accept ``provider_override``. It was
+        # previously absent by default, which let duck-typed routers omit the
+        # parameter; that is no longer true.
         route_kwargs = {}
         synthesis_override = self._settings.llm.explicit_role_provider("synthesis")
         if synthesis_override:
