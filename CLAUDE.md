@@ -359,12 +359,15 @@ shape**, plain chat included: `thinkingLevel` is the only reasoning knob left
 there, the server default is `medium`, thinking bills at the full output rate,
 and the product profile for this path is little/no reasoning at low latency.
 The same surface gate also strips the removed sampling params
-(`temperature`/`topP`/`topK`) and adds the mandatory `id` to every
-`functionResponse` (paired with the `functionCall.id` the API issues, which
-the adapter adopts as `ToolCall.id`). Requests to 3.5/3.6 models are
-byte-for-byte unchanged — both measured still accepting the classic params
-(2026-08-26). Details: `docs/reference/llm-model-capabilities.md` §"Gemini
-3.7+ API surface".
+(`temperature`/`topP`/`topK`). A second, EARLIER gate (`>= (3, 6)`) versions
+the tool-result shape: 3.6 rejects the classic `role: "function"` turn
+outright, so from 3.6 the adapter sends function responses as `role: "user"`
+turns carrying `id` + `name` (paired with the `functionCall.id` the API
+issues, which the adapter adopts as `ToolCall.id`; mandatory per the 3.7
+migration guide). Requests to 3.5-generation models are byte-for-byte
+unchanged — the classic shape measured working end-to-end (2026-08-26).
+Details: `docs/reference/llm-model-capabilities.md` §"Gemini 3.6/3.7 API
+surfaces".
 
 That shape-based rule is the **default**, and a caller can now refine it per
 call with a **reasoning intent** (`#1118`, below): `EXTRACTION` extends the cap

@@ -10,16 +10,20 @@ guidance):
     on the server, and this adapter pins the lowest accepted level ("low";
     "minimal" is rejected) on EVERY 3.7+ call shape — product requirement is
     little/no reasoning, and thinking tokens bill at the full output rate;
-  - every ``functionResponse`` must carry the matching functionCall ``id``
-    alongside ``name`` (the migration guide's "call_id");
-  - prefilled (trailing) model turns are not supported;
-  - ``candidateCount`` is unsupported (the adapter never sent it — pinned
-    here so it stays that way).
+  - prefilled (trailing) model turns are not supported (400 measured);
+  - ``candidateCount`` is unsupported (400 measured; the adapter never sent
+    it — pinned here so it stays that way).
 
-Everything is gated on ``_uses_37_api_surface`` — (major, minor) >= (3, 7) —
-so 3.5/3.6 requests stay byte-for-byte what they were: gemini-3.5-flash and
-gemini-3.6-flash still accept the classic params (both measured 200 with
-temperature/topP/topK on 2026-08-26) and must keep receiving them.
+The functionResponse shape changed one generation EARLIER, at 3.6 (measured
+2026-08-26): the classic ``role: "function"`` turn is rejected there ("Role
+'function' is not supported…"), while a ``role: "user"`` turn round-trips —
+and the API issues ``functionCall.id`` (from 3.5 already), which 3.6 accepts
+echoed on the functionResponse and the 3.7 guide makes mandatory. The
+adapter therefore has TWO gates: the FR shape (user role + id echo) at
+``_uses_36_function_response_surface`` (>= (3, 6)), and everything else at
+``_uses_37_api_surface`` (>= (3, 7)). gemini-3.5-* requests stay
+byte-for-byte what they were — the full classic shape (role "function",
+temperature/topP/topK, no ids) measured working end-to-end on 2026-08-26.
 """
 
 import json
@@ -113,6 +117,21 @@ class TestSurfaceGate:
         # A hypothetical gemini-3.10 is NEWER than 3.7; a string compare
         # ("10" < "7") would demote it back to the legacy surface.
         assert GeminiProvider._uses_37_api_surface("gemini-3.10-flash") is True
+
+    @pytest.mark.parametrize(
+        "model,expected",
+        [
+            ("gemini-3.5-flash", False),
+            ("gemini-3.5-flash-lite", False),
+            ("gemini-3.6-flash", True),  # role vocabulary changed HERE
+            ("gemini-3.7-flash", True),
+            ("gemini-4.0-flash", True),
+            ("gemini-2.5-flash", False),
+            (None, False),  # legacy callers pass no model
+        ],
+    )
+    def test_function_response_surface_gate(self, model, expected):
+        assert GeminiProvider._uses_36_function_response_surface(model) is expected
 
 
 # --- sampling parameters -----------------------------------------------------
@@ -292,45 +311,89 @@ _TOOL_LOOP_MESSAGES = [
 
 
 @pytest.mark.unit
-class TestFunctionResponseId:
-    def test_37_function_response_carries_id_and_name(self):
-        provider = GeminiProvider(_config("gemini-3.7-flash"))
-        result = provider._convert_messages_to_gemini(
-            _TOOL_LOOP_MESSAGES, uses_37_surface=True
-        )
+class TestFunctionResponseShape:
+    @pytest.mark.parametrize("model", ["gemini-3.6-flash", "gemini-3.7-flash"])
+    def test_36_plus_fr_turn_is_user_role_with_id_and_name(self, model):
+        """3.6 rejects role "function" outright (400 'Role function is not
+        supported'); the FR turn must be role "user" and carry id+name."""
+        provider = GeminiProvider(_config(model))
+        result = provider._convert_messages_to_gemini(_TOOL_LOOP_MESSAGES, model=model)
         fn_turn = result["contents"][-1]
+        assert fn_turn["role"] == "user"
         fr = fn_turn["parts"][0]["functionResponse"]
         assert fr["id"] == "fc-abc123"
         assert fr["name"] == "get_weather"
         assert fr["response"] == {"result": "22C"}
 
-    def test_37_rebuilt_function_call_carries_matching_id(self):
+    def test_36_plus_rebuilt_function_call_carries_matching_id(self):
         """The fabricated model turn and the functionResponse must be a
         matched pair — the whole history is client-authored, so internal
         consistency is the contract."""
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         result = provider._convert_messages_to_gemini(
-            _TOOL_LOOP_MESSAGES, uses_37_surface=True
+            _TOOL_LOOP_MESSAGES, model="gemini-3.7-flash"
         )
         model_turn = result["contents"][1]
         fc = model_turn["parts"][0]["functionCall"]
         assert fc["id"] == "fc-abc123"
 
-    def test_pre_37_shape_unchanged_no_ids(self):
-        """Regression: the default (and every pre-3.7 call) emits exactly the
-        old shape — no id on functionCall or functionResponse."""
+    def test_pre_36_shape_unchanged_function_role_no_ids(self):
+        """Regression: the default (and every 3.5-generation call) emits
+        exactly the old shape — role "function", no id on functionCall or
+        functionResponse. Measured working end-to-end on gemini-3.5-flash."""
         provider = GeminiProvider(_config("gemini-3.5-flash"))
-        result = provider._convert_messages_to_gemini(_TOOL_LOOP_MESSAGES)
-        model_turn = result["contents"][1]
-        assert "id" not in model_turn["parts"][0]["functionCall"]
-        fr = result["contents"][-1]["parts"][0]["functionResponse"]
-        assert "id" not in fr
-        assert set(fr) == {"name", "response"}
+        for kwargs in ({}, {"model": "gemini-3.5-flash"}):
+            result = provider._convert_messages_to_gemini(_TOOL_LOOP_MESSAGES, **kwargs)
+            model_turn = result["contents"][1]
+            assert "id" not in model_turn["parts"][0]["functionCall"]
+            fn_turn = result["contents"][-1]
+            assert fn_turn["role"] == "function"
+            fr = fn_turn["parts"][0]["functionResponse"]
+            assert "id" not in fr
+            assert set(fr) == {"name", "response"}
+
+    def test_36_plus_fr_turn_does_not_merge_into_real_user_text_turn(self):
+        """With FR turns now role "user", a genuine user TEXT message
+        followed by a tool result must stay two separate turns — grouping
+        requires every part of the previous turn to be a functionResponse."""
+        provider = GeminiProvider(_config("gemini-3.7-flash"))
+        messages = [
+            {"role": "user", "content": "here is more context"},
+            {
+                "role": "tool",
+                "tool_call_id": "fc-1",
+                "name": "t",
+                "content": "result",
+            },
+        ]
+        result = provider._convert_messages_to_gemini(
+            messages, model="gemini-3.7-flash"
+        )
+        assert len(result["contents"]) == 2
+        assert result["contents"][0]["parts"][0] == {"text": "here is more context"}
+        assert "functionResponse" in result["contents"][1]["parts"][0]
+
+    def test_36_plus_consecutive_fr_parts_group_into_one_user_turn(self):
+        """Parallel tool results still group into a single turn on the new
+        surface, each functionResponse keeping its own id."""
+        provider = GeminiProvider(_config("gemini-3.7-flash"))
+        messages = [
+            {"role": "tool", "tool_call_id": "fc-1", "name": "a", "content": "r1"},
+            {"role": "tool", "tool_call_id": "fc-2", "name": "b", "content": "r2"},
+        ]
+        result = provider._convert_messages_to_gemini(
+            messages, model="gemini-3.7-flash"
+        )
+        assert len(result["contents"]) == 1
+        turn = result["contents"][0]
+        assert turn["role"] == "user"
+        ids = [p["functionResponse"]["id"] for p in turn["parts"]]
+        assert ids == ["fc-1", "fc-2"]
 
     def test_37_saved_assistant_parts_still_echoed_verbatim(self):
         """The verbatim-parts path is how Gemini's own functionCall id (and
-        every thoughtSignature) round-trips — the 3.7 flag must not disturb
-        it."""
+        every thoughtSignature) round-trips — the surface gates must not
+        disturb it."""
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         saved = [
             {
@@ -363,7 +426,9 @@ class TestFunctionResponseId:
                 "content": '{"result": "22C"}',
             },
         ]
-        result = provider._convert_messages_to_gemini(messages, uses_37_surface=True)
+        result = provider._convert_messages_to_gemini(
+            messages, model="gemini-3.7-flash"
+        )
         assert result["contents"][1] == {"role": "model", "parts": saved}
         fr = result["contents"][2]["parts"][0]["functionResponse"]
         assert fr["id"] == "fc-from-api"
@@ -374,7 +439,9 @@ class TestFunctionResponseId:
         mismatch."""
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         messages = [{"role": "tool", "name": "t", "content": "x"}]
-        result = provider._convert_messages_to_gemini(messages, uses_37_surface=True)
+        result = provider._convert_messages_to_gemini(
+            messages, model="gemini-3.7-flash"
+        )
         fr = result["contents"][0]["parts"][0]["functionResponse"]
         assert "id" not in fr
 
@@ -445,7 +512,9 @@ class TestPrefillGuard:
     def test_37_trailing_model_turn_warns(self, caplog):
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         with caplog.at_level("WARNING"):
-            provider._convert_messages_to_gemini(self._PREFILL, uses_37_surface=True)
+            provider._convert_messages_to_gemini(
+                self._PREFILL, model="gemini-3.7-flash"
+            )
         assert any("prefill" in r.message.lower() for r in caplog.records)
 
     def test_pre_37_trailing_model_turn_silent(self, caplog):
@@ -460,7 +529,7 @@ class TestPrefillGuard:
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         with caplog.at_level("WARNING"):
             provider._convert_messages_to_gemini(
-                _TOOL_LOOP_MESSAGES, uses_37_surface=True
+                _TOOL_LOOP_MESSAGES, model="gemini-3.7-flash"
             )
         assert not any("prefill" in r.message.lower() for r in caplog.records)
 
@@ -501,7 +570,9 @@ class TestGenerate37EndToEnd:
         assert gen["thinkingConfig"] == {"thinkingLevel": "low"}
         model_turn = body["contents"][1]
         assert model_turn["parts"][0]["functionCall"]["id"] == "fc-abc123"
-        fr = body["contents"][2]["parts"][0]["functionResponse"]
+        fn_turn = body["contents"][2]
+        assert fn_turn["role"] == "user"  # 3.6+: role "function" is a 400
+        fr = fn_turn["parts"][0]["functionResponse"]
         assert fr["id"] == "fc-abc123"
         assert fr["name"] == "get_weather"
 
@@ -535,5 +606,7 @@ class TestGenerate37EndToEnd:
         assert gen["temperature"] == 0.7
         assert gen["thinkingConfig"] == {"thinkingLevel": "low"}
         assert "id" not in body["contents"][1]["parts"][0]["functionCall"]
-        fr = body["contents"][2]["parts"][0]["functionResponse"]
+        fn_turn = body["contents"][2]
+        assert fn_turn["role"] == "function"  # classic role, measured working
+        fr = fn_turn["parts"][0]["functionResponse"]
         assert set(fr) == {"name", "response"}

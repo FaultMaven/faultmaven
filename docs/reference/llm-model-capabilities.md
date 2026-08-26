@@ -136,35 +136,47 @@ loop like any other model. This section previously claimed
 `supports_tool_calling()` returned `False` for all DeepSeek models on
 Fireworks — that has not been true since the V2/R1-era block was lifted.
 
-### Gemini 3.7+ API surface (version-gated in the adapter)
+### Gemini 3.6/3.7 API surfaces (version-gated in the adapter)
 
-Starting at `gemini-3.7-*` (first shipped model: `gemini-3.7-flash`,
-2026-08), the Gemini API removed part of the classic `generateContent`
-surface. `GeminiProvider` applies the new surface by model version —
-`(major, minor) >= (3, 7)`, the same prefix-parse gate as the 3.x thinking
-cap — so requests to 3.5/3.6 models are byte-for-byte unchanged (both
-measured accepting the classic params, 2026-08-26):
+The Gemini `generateContent` surface was reduced in TWO measured steps
+(every boundary measured live 2026-08-26 against `gemini-3.5-flash`,
+`gemini-3.6-flash` and `gemini-3.7-flash`). `GeminiProvider` gates each step
+by model version — the same prefix-parse pattern as the 3.x thinking cap —
+so requests to 3.5-generation models are byte-for-byte unchanged (the full
+classic shape measured working end-to-end there).
+
+**At 3.6 — the functionResponse shape** (`_uses_36_function_response_surface`,
+`(major, minor) >= (3, 6)`):
+
+- The classic `role: "function"` tool-result turn is **rejected** (`400 Role
+  'function' is not supported. Please use a valid role: SYSTEM, SYSTEM_1,
+  USER, ASSISTANT, DEVELOPER, CONTEXT, USER_CONTEXT, MODEL…`). The adapter
+  sends tool results as `role: "user"` turns there.
+- The API issues `functionCall.id` (from 3.5 already); the adapter adopts it
+  as `ToolCall.id` and echoes it on the matching `functionResponse` alongside
+  `name` (the 3.7 migration guide's "call_id"; the REST field is `id`).
+  Accepted from 3.6 (measured; optional there), mandatory per the 3.7 guide —
+  one new wire shape covers both.
+
+**At 3.7 — the rest** (`_uses_37_api_surface`, `>= (3, 7)`):
 
 - **Sampling params removed** — `temperature` / `topP` / `topK` are omitted
-  from 3.7+ requests (logged once per provider instance). `stopSequences`
-  and `maxOutputTokens` remain.
+  from 3.7+ requests (logged once per provider instance; 3.5/3.6 measured
+  still accepting them, so they keep receiving them). `stopSequences` and
+  `maxOutputTokens` remain.
 - **`thinkingLevel` is the only reasoning knob** and server-defaults to
-  `medium`. The adapter pins the lowest accepted level (`low`; `minimal` is
-  rejected) on **every** 3.7+ call shape — plain chat included, unlike the
-  3.x cap which is structured-only. Rationale: the chat/investigation path
-  wants high intelligence with little/no reasoning at low latency, and
-  thinking tokens bill at the full output rate. A caller-declared
-  `reasoning_intent=INFERENCE` lifts the cap (structured calls still require
-  `min_output_tokens`, same as 3.x).
-- **Function responses carry the call id** — 3.7 populates
-  `functionCall.id`; the adapter adopts it as `ToolCall.id`, and every
-  `functionResponse` part sent back carries matching `id` + `name` (the
-  migration guide's "call_id"). Pre-3.7 requests still omit `id` entirely.
-- **No prefilled model turns** — a conversation ending on a model turn is
-  warned about and left for the API to reject (nothing in the engine
-  produces one).
-- **`candidateCount`** was never sent by the adapter; 3.7 removed it (pinned
-  by test).
+  `medium`. The adapter pins the lowest accepted level (`low`; `minimal` →
+  `400 Thinking level MINIMAL is not supported`) on **every** 3.7+ call
+  shape — plain chat included, unlike the 3.x cap which is structured-only.
+  Rationale: the chat/investigation path wants high intelligence with
+  little/no reasoning at low latency, and thinking tokens bill at the full
+  output rate. A caller-declared `reasoning_intent=INFERENCE` lifts the cap
+  (structured calls still require `min_output_tokens`, same as 3.x).
+- **No prefilled model turns** (`400 Requests ending with a model turn are
+  not supported`) — warned about and left for the API to reject (nothing in
+  the engine produces one).
+- **`candidateCount`** was never sent by the adapter; 3.7 rejects it (`400
+  Multiple candidates is not enabled for this model`; pinned by test).
 
 `gemini-3.7-flash` pricing is INTRODUCTORY through 2026-12-31 ($0.75/$3.75
 per 1M in/out; standard $1.50/$7.50 from 2027-01-01) — see the dated comment

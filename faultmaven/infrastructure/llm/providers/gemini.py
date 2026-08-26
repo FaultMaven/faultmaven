@@ -149,17 +149,37 @@ class GeminiProvider(BaseLLMProvider):
         m = re.search(r"gemini-(\d+)\.", model.lower())
         return int(m.group(1)) if m else None
 
-    # First generation on the reduced "3.7" API surface (2026-08). Starting at
-    # gemini-3.7-*, the API removed the classic sampling surface: it no longer
-    # honours ``temperature`` / ``topP`` / ``topK``, requires every
-    # ``functionResponse`` part to carry the matching functionCall ``id``
-    # alongside ``name``, and no longer supports prefilled (trailing) model
-    # turns. ``>=`` on (major, minor), not equality: the surface is the new
-    # baseline going forward (3.8, 4.0, …), while 3.5/3.6 stay on the old one
-    # — measured 2026-08-26: gemini-3.5-flash and gemini-3.6-flash both return
-    # 200 for temperature/topP/topK, so requests to them must stay
-    # byte-for-byte unchanged. Version-gated here exactly like the 3.x
-    # thinking cap above — one adapter, not a fork.
+    # The Gemini API surface was reduced in TWO measured steps (2026-08,
+    # gemini-3.7-flash migration work — every boundary below measured live
+    # 2026-08-26 against gemini-3.5-flash / gemini-3.6-flash / gemini-3.7-flash;
+    # a 400 is deterministic rejection, a 503 proves the body PASSED request
+    # validation and only capacity refused it):
+    #
+    # At 3.6, the tool-response ROLE VOCABULARY changed: a functionResponse
+    # turn with the classic ``role: "function"`` is rejected — ``400 Role
+    # 'function' is not supported. Please use a valid role: SYSTEM, SYSTEM_1,
+    # USER, ASSISTANT, DEVELOPER, CONTEXT, USER_CONTEXT, MODEL…`` — while the
+    # same turn as ``role: "user"`` round-trips (200 with and without the call
+    # id; the API also began issuing ``functionCall.id`` by 3.5). FaultMaven
+    # bundles the id echo into this same gate so there is ONE new
+    # functionResponse wire shape (user role, id + name), not a three-way
+    # matrix; 3.7's migration guide then makes the id mandatory, which the
+    # bundle already satisfies.
+    #
+    # At 3.7, the rest of the classic surface went: ``temperature`` /
+    # ``topP`` / ``topK`` are no longer honoured (stripped — tolerated at
+    # validation but removed per the migration guide), ``thinkingLevel``
+    # becomes the only reasoning knob (server default "medium"; "minimal"
+    # → 400), ``candidateCount`` → 400, and prefilled (trailing) model turns
+    # → 400 "Requests ending with a model turn are not supported".
+    #
+    # ``>=`` on (major, minor), not equality: each surface is the new baseline
+    # going forward (3.8, 4.0, …). gemini-3.5-* requests stay byte-for-byte
+    # what they always were — the full classic shape measured working
+    # end-to-end (fc round trip with role "function" and no ids → 200).
+    # Version-gated exactly like the 3.x thinking cap above — one adapter,
+    # not a fork.
+    _GEMINI_36_FUNCTION_RESPONSE_SURFACE_MIN = (3, 6)
     _GEMINI_37_API_SURFACE_MIN = (3, 7)
 
     @staticmethod
@@ -169,9 +189,19 @@ class GeminiProvider(BaseLLMProvider):
         return (int(m.group(1)), int(m.group(2))) if m else None
 
     @classmethod
-    def _uses_37_api_surface(cls, model: str) -> bool:
+    def _uses_36_function_response_surface(cls, model: Optional[str]) -> bool:
+        """True when *model* requires the 3.6+ functionResponse shape
+        (role "user", call id echoed) — see the boundary map above."""
+        version = cls._gemini_version(model or "")
+        return (
+            version is not None
+            and version >= cls._GEMINI_36_FUNCTION_RESPONSE_SURFACE_MIN
+        )
+
+    @classmethod
+    def _uses_37_api_surface(cls, model: Optional[str]) -> bool:
         """True when *model* speaks the reduced 3.7+ API surface (see above)."""
-        version = cls._gemini_version(model)
+        version = cls._gemini_version(model or "")
         return version is not None and version >= cls._GEMINI_37_API_SURFACE_MIN
 
     def _structured_thinking_config(
@@ -483,9 +513,7 @@ class GeminiProvider(BaseLLMProvider):
 
         # Prepare request body for Gemini API format
         if messages:
-            converted = self._convert_messages_to_gemini(
-                messages, uses_37_surface=uses_37_surface
-            )
+            converted = self._convert_messages_to_gemini(messages, model=selected_model)
             request_body = {
                 "contents": converted["contents"],
                 "generationConfig": generation_config,
@@ -840,7 +868,7 @@ class GeminiProvider(BaseLLMProvider):
         return min(1.0, max(0.0, model_confidence))
 
     def _convert_messages_to_gemini(
-        self, messages: list, uses_37_surface: bool = False
+        self, messages: list, model: Optional[str] = None
     ) -> Dict[str, Any]:
         """Convert OpenAI-format messages to Gemini API format.
 
@@ -848,24 +876,32 @@ class GeminiProvider(BaseLLMProvider):
         - system messages → extracted to 'system_instruction'
         - user messages → role: user with text parts
         - assistant messages → role: model with text/functionCall parts
-        - tool messages → role: function with functionResponse parts
+        - tool messages → functionResponse parts, in a ``function``-role turn
+          pre-3.6 and a ``user``-role turn on 3.6+ (see below)
 
-        ``uses_37_surface`` versions the tool-response shape. The 3.7+ surface
-        requires every ``functionResponse`` to carry the matching
-        functionCall ``id`` alongside ``name`` (REST field ``id`` — the
-        migration guide's "call_id" concept). The id travels as the OpenAI
-        ``tool_call_id`` the engine already writes on every tool message
-        (milestone_engine's tool loop), which under this provider is Gemini's
-        own functionCall id whenever the API issued one (see the response
-        parser). The rebuilt-assistant path mirrors the same id into the
-        fabricated ``functionCall`` part so the pair always matches — in a
-        stateless generateContent request the whole history is client-authored
-        and internal consistency is the contract. Pre-3.7 requests are
-        byte-for-byte unchanged: no ``id`` anywhere.
+        ``model`` versions the tool-response shape (see the surface boundary
+        map at ``_GEMINI_36_FUNCTION_RESPONSE_SURFACE_MIN``). On the 3.6+
+        surface a functionResponse turn uses role ``"user"`` — the classic
+        ``"function"`` role is a 400 there — and carries the matching
+        functionCall ``id`` alongside ``name`` (REST field ``id``; the 3.7
+        migration guide's "call_id", mandatory from 3.7 and accepted from
+        3.6). The id travels as the OpenAI ``tool_call_id`` the engine
+        already writes on every tool message (milestone_engine's tool loop),
+        which under this provider is Gemini's own functionCall id whenever
+        the API issued one (see the response parser). The rebuilt-assistant
+        path mirrors the same id into the fabricated ``functionCall`` part so
+        the pair always matches — in a stateless generateContent request the
+        whole history is client-authored and internal consistency is the
+        contract. Pre-3.6 requests (``model=None`` included) are byte-for-byte
+        unchanged: role ``"function"``, no ``id`` anywhere — the shape
+        measured working end-to-end on gemini-3.5-flash.
 
         Returns:
             Dict with 'contents' list and optional 'system_instruction' string.
         """
+        new_fr_surface = self._uses_36_function_response_surface(model)
+        uses_37_surface = self._uses_37_api_surface(model)
+        fr_role = "user" if new_fr_surface else "function"
         system_parts: List[str] = []
         contents: List[Dict[str, Any]] = []
 
@@ -891,9 +927,10 @@ class GeminiProvider(BaseLLMProvider):
                 # exactly where Gemini placed it, regardless of part type.
                 # The api_response itself is the source of truth for the next
                 # turn; rebuilding from `content` + `tool_calls` would drop
-                # signatures attached to text/thought parts. (On the 3.7+
-                # surface this verbatim echo also preserves each
-                # functionCall's ``id`` exactly where the API issued it.)
+                # signatures attached to text/thought parts. (The verbatim
+                # echo also preserves each functionCall's ``id`` exactly
+                # where the API issued it — issued from 3.5 onward, echoed on
+                # the matching functionResponse from 3.6.)
                 msg_pmeta = msg.get("provider_metadata") or {}
                 saved_parts = msg_pmeta.get("assistant_parts")
                 if saved_parts:
@@ -916,10 +953,10 @@ class GeminiProvider(BaseLLMProvider):
                         "name": func.get("name", ""),
                         "args": args,
                     }
-                    # 3.7+ surface: the fabricated functionCall carries the
+                    # 3.6+ surface: the fabricated functionCall carries the
                     # tool call's id so the functionResponse built below can
                     # name a call that exists in the history it responds to.
-                    if uses_37_surface and tc.get("id"):
+                    if new_fr_surface and tc.get("id"):
                         function_call["id"] = tc["id"]
                     # Per-tool-call signature passthrough — used when the
                     # orchestrator preserves only ToolCall.provider_metadata
@@ -949,27 +986,32 @@ class GeminiProvider(BaseLLMProvider):
                     "name": tool_name,
                     "response": response_content,
                 }
-                # 3.7+ surface: mandatory id+name on every functionResponse.
+                # 3.6+ surface: id+name on every functionResponse (id
+                # accepted from 3.6, mandatory per the 3.7 guide).
                 # ``tool_call_id`` is Gemini's own functionCall id when the
                 # API issued one (adopted by the response parser), else the
                 # provider-synthesized id also present on the rebuilt
                 # functionCall part above — matched either way.
-                if uses_37_surface and msg.get("tool_call_id"):
+                if new_fr_surface and msg.get("tool_call_id"):
                     function_response["id"] = msg["tool_call_id"]
 
                 fn_response_part = {"functionResponse": function_response}
 
-                # Group consecutive function responses into one turn
+                # Group consecutive function responses into one turn. Keyed on
+                # the surface's own fr_role AND on every part being a
+                # functionResponse — on the 3.6+ surface a genuine user TEXT
+                # turn also has role "user" but fails the all-parts check, so
+                # tool results never merge into a real user message.
                 if (
                     contents
-                    and contents[-1].get("role") == "function"
+                    and contents[-1].get("role") == fr_role
                     and all(
                         "functionResponse" in p for p in contents[-1].get("parts", [])
                     )
                 ):
                     contents[-1]["parts"].append(fn_response_part)
                 else:
-                    contents.append({"role": "function", "parts": [fn_response_part]})
+                    contents.append({"role": fr_role, "parts": [fn_response_part]})
 
         # The 3.7+ surface removed prefilled model turns: a conversation may
         # not END on a model turn (the old "seed the reply" trick). Nothing in
