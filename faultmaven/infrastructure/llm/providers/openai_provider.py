@@ -245,6 +245,57 @@ class OpenAIProvider(BaseLLMProvider):
             return cls._DEFAULT_REASONING_PLAIN_EFFORT
         return None
 
+    def _operator_reasoning_effort(
+        self,
+        model: str,
+        *,
+        has_response_format: bool,
+        defaults_reasoning: bool,
+    ) -> Optional[str]:
+        """The operator-configured effort for this call shape, or ``None``.
+
+        ``OPENAI_REASONING_EFFORT`` replaces the SHAPE default (the value
+        ``_shape_default_effort`` would pick), nothing stronger: per-call
+        ``reasoning_intent`` (#1118) and an explicit ``reasoning_effort``
+        kwarg are applied later and still win, and the caller only consults
+        this on shapes where the parameter is sendable at all
+        (``_caps_reasoning_effort``, no function tools).
+
+        Starve-protection is not operator-overridable, and degradation is
+        always toward LESS reasoning, never silent:
+
+        - structured calls (``response_format``): "medium"/"high" degrade to
+          the "low" floor — hidden reasoning starving the schema body is the
+          documented failure this floor exists for (#625);
+        - "none" degrades to "low" wherever "none" is unverified — it is
+          verified only for PLAIN calls on the
+          ``_DEFAULT_REASONING_MODEL_FAMILIES`` families (the capability map
+          to extend when a new family is verified).
+        """
+        configured = self.config.reasoning_effort
+        if configured is None:
+            return None
+
+        if has_response_format and configured in ("medium", "high"):
+            self.logger.warning(
+                f"OPENAI_REASONING_EFFORT='{configured}' would let hidden "
+                f"reasoning starve the structured-output body on {model} "
+                f"(#625) — degrading to the 'low' floor for this call"
+            )
+            return self._STRUCTURED_REASONING_EFFORT
+
+        if configured == "none" and (has_response_format or not defaults_reasoning):
+            self.logger.warning(
+                f"OPENAI_REASONING_EFFORT='none' is unverified for this call "
+                f"shape on {model} ('none' is verified only for plain calls "
+                f"on the {self._DEFAULT_REASONING_MODEL_FAMILIES} families) — "
+                f"sending the broadly-valid 'low' instead; extend "
+                f"_DEFAULT_REASONING_MODEL_FAMILIES once a family is verified"
+            )
+            return self._STRUCTURED_REASONING_EFFORT
+
+        return configured
+
     def _log_unhonoured_intent(self, intent: ReasoningIntent, message: str) -> None:
         """Report an intent this call could not apply.
 
@@ -496,8 +547,18 @@ class OpenAIProvider(BaseLLMProvider):
             shape_effort = self._shape_default_effort(
                 defaults_reasoning, bool(response_format)
             )
-            if shape_effort is not None:
-                payload["reasoning_effort"] = shape_effort
+            # Operator default (OPENAI_REASONING_EFFORT) replaces the shape
+            # default when set — clamped by the starve guards, and still
+            # subordinate to reasoning_intent below and to an explicit
+            # reasoning_effort kwarg in the merge.
+            operator_effort = self._operator_reasoning_effort(
+                effective_model,
+                has_response_format=bool(response_format),
+                defaults_reasoning=defaults_reasoning,
+            )
+            effort = operator_effort if operator_effort is not None else shape_effort
+            if effort is not None:
+                payload["reasoning_effort"] = effort
 
         # Caller-declared intent (#1118) refines the shape-based defaults
         # above; the hard constraints (tools, models that reject the param)

@@ -154,6 +154,11 @@ class ServerSettings(BaseSettings):
 # a validator reads it.
 ANTHROPIC_THINKING_MODES = ("off", "adaptive", "enabled")
 
+# Accepted values for OPENAI_REASONING_EFFORT — the levels OpenAI's
+# ``reasoning_effort`` parameter takes. Module-level for the same pydantic
+# reason as ANTHROPIC_THINKING_MODES above.
+OPENAI_REASONING_EFFORTS = ("none", "low", "medium", "high")
+
 # The task axis of the {PROVIDER}_{TASK}_MODEL matrix — every task that
 # `_get_model_for_provider_and_task` can be asked to resolve. Module-level for
 # the same pydantic reason as ANTHROPIC_THINKING_MODES above. The registry uses
@@ -305,6 +310,28 @@ class LLMSettings(BaseSettings):
     # max_tokens or the call is downgraded to no-thinking.
     anthropic_thinking_budget_tokens: int = Field(
         default=4096, validation_alias="ANTHROPIC_THINKING_BUDGET_TOKENS"
+    )
+
+    # Operator default for OpenAI ``reasoning_effort`` (none|low|medium|high).
+    # The OpenAI analog of ANTHROPIC_THINKING_MODE, with the same contract:
+    # DEFAULT UNSET (None) sends exactly what today's shape-based policy sends
+    # ("none" for plain chat on default-reasoning families, the "low"
+    # starvation floor on structured calls — #625), so existing deployments
+    # are byte-identical. When set, it replaces the SHAPE DEFAULT only; the
+    # precedence is
+    #   shape default < OPENAI_REASONING_EFFORT < per-call reasoning_intent
+    #   (#1118) < explicit reasoning_effort kwarg
+    # — call sites that declared semantic intent keep it (INFERENCE is
+    # floor-paired and load-bearing). Starve-protection is not operator-
+    # overridable: on structured calls "medium"/"high" degrade to the "low"
+    # floor with a warning (hidden reasoning starving the schema body is the
+    # documented failure this floor exists for), and "none" degrades to "low"
+    # with a warning on families where "none" is unverified
+    # (_DEFAULT_REASONING_MODEL_FAMILIES is the verified list). Degradation is
+    # always toward LESS reasoning and never silent. Hard model constraints
+    # still win (tools alongside reasoning, models that reject the parameter).
+    openai_reasoning_effort: Optional[str] = Field(
+        default=None, validation_alias="OPENAI_REASONING_EFFORT"
     )
 
     # Fireworks
@@ -489,6 +516,32 @@ class LLMSettings(BaseSettings):
             ", ".join(ANTHROPIC_THINKING_MODES),
         )
         return "off"
+
+    @field_validator("openai_reasoning_effort")
+    @classmethod
+    def normalize_openai_reasoning_effort(cls, v):
+        """Normalize case/whitespace; fail closed to UNSET on anything else.
+
+        Same rationale as ``normalize_anthropic_thinking_mode`` above: an
+        unrecognized value must warn and disable the knob, never abort settings
+        construction and refuse to boot. Fails closed to ``None`` (= the knob
+        is unset and today's shape-based defaults apply), NOT to ``"none"`` —
+        a typo must not accidentally ENGAGE the override.
+        """
+        if v is None:
+            return None
+        normalized = str(v).strip().lower()
+        if normalized == "":
+            return None
+        if normalized in OPENAI_REASONING_EFFORTS:
+            return normalized
+        logging.getLogger(__name__).warning(
+            "Unrecognized OPENAI_REASONING_EFFORT %r — ignoring it (valid "
+            "values: %s). The shape-based reasoning defaults apply.",
+            v,
+            ", ".join(OPENAI_REASONING_EFFORTS),
+        )
+        return None
 
     @field_validator("max_tokens")
     @classmethod

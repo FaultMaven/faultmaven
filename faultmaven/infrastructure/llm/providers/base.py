@@ -394,6 +394,13 @@ class ProviderConfig:
     # ProviderConfig construction site is unaffected.
     thinking_mode: Optional[str] = None
     thinking_budget_tokens: Optional[int] = None
+    # Operator default for OpenAI ``reasoning_effort`` (OPENAI_REASONING_EFFORT,
+    # "none"|"low"|"medium"|"high"). Same contract as the thinking knobs above:
+    # `None` everywhere by default, read only by OpenAIProvider, where it
+    # replaces the SHAPE default — starve-protection clamps and hard model
+    # constraints still win. Additive so every existing construction site is
+    # unaffected.
+    reasoning_effort: Optional[str] = None
 
     def __post_init__(self):
         if self.models is None:

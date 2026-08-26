@@ -358,6 +358,9 @@ class ProviderRegistry:
         # configuration sent, identical to pre-#1116 requests).
         thinking_mode = None
         thinking_budget_tokens = None
+        # Operator reasoning-effort default — only the OpenAI branch sets it;
+        # None elsewhere (= shape-based defaults, identical requests).
+        reasoning_effort = None
 
         # Settings is required - use settings-based configuration
         llm_settings = self.settings.llm
@@ -378,6 +381,7 @@ class ProviderRegistry:
             )
             model = llm_settings.openai_model or schema["default_model"]
             base_url = llm_settings.openai_base_url or schema["default_base_url"]
+            reasoning_effort = getattr(llm_settings, "openai_reasoning_effort", None)
         elif provider_name == "local":
             api_key = None  # Local doesn't need API key
             model = llm_settings.local_model
@@ -502,6 +506,7 @@ class ProviderRegistry:
             confidence_score=schema["confidence_score"],
             thinking_mode=thinking_mode,
             thinking_budget_tokens=thinking_budget_tokens,
+            reasoning_effort=reasoning_effort,
         )
 
     def _initialize_provider(self, name: str, config: ProviderConfig):
