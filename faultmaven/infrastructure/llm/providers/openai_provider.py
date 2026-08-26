@@ -271,6 +271,16 @@ class OpenAIProvider(BaseLLMProvider):
           verified only for PLAIN calls on the
           ``_DEFAULT_REASONING_MODEL_FAMILIES`` families (the capability map
           to extend when a new family is verified).
+
+        "Less" is measured against what the call would otherwise do, not
+        against the absence of a parameter. On a plain call to a reasoning
+        family the shape default is ``None``, so today's payload carries no
+        ``reasoning_effort`` at all — and a model that accepts the parameter
+        reasons at the API's own default ("medium") when none is sent. Sending
+        ``"low"`` therefore ADDS a key while REDUCING the reasoning, which is
+        the direction this helper promises; ``_DEFAULT_REASONING_MODEL_FAMILIES``
+        is the "requires ``none`` alongside tools / rejects non-default
+        temperature" axis, not a list of the models that reason.
         """
         configured = self.config.reasoning_effort
         if configured is None:
@@ -295,6 +305,47 @@ class OpenAIProvider(BaseLLMProvider):
             return self._STRUCTURED_REASONING_EFFORT
 
         return configured
+
+    def _log_operator_effort_suppressed(self, model: str, *, has_tools: bool) -> None:
+        """Report ONCE per provider instance that ``OPENAI_REASONING_EFFORT``
+        did not reach a call.
+
+        ``reasoning_intent`` has ``_log_unhonoured_intent`` for exactly this
+        class of drop; the operator knob had no equivalent, and its blind spot
+        is the dominant path: the investigation tool loop always sends
+        ``tools``, so an operator who sets the knob to make investigations
+        reason harder saw no warning, no INFO and no behavior change — with
+        ``.env.example`` describing it as the operator default that only hard
+        model constraints override.
+
+        Once per instance rather than per call, because the suppressed shapes
+        are the HOT ones (every tool-loop iteration of every turn) and the
+        condition cannot change between calls on one provider instance —
+        per-call logging would be warning volume proportional to request rate.
+        """
+        if getattr(self, "_operator_effort_suppression_logged", False):
+            return
+        self._operator_effort_suppression_logged = True
+
+        if has_tools:
+            why = (
+                "this model 400s on reasoning_effort alongside function tools "
+                "on /v1/chat/completions (the gpt-5.6 family additionally "
+                "requires 'none' there), so no operator value can be sent"
+            )
+        else:
+            why = (
+                "this provider/model does not accept reasoning_effort at all "
+                "(gpt-4o/gpt-4.1, o1-mini/o1-preview, or a gateway subclass "
+                "that opts out)"
+            )
+        self.logger.warning(
+            f"OPENAI_REASONING_EFFORT='{self.config.reasoning_effort}' is not "
+            f"applied on {model} for this call shape: {why}. The model reasons "
+            f"at its own default and hidden reasoning still bills against the "
+            f"output budget. Logged once per provider instance; the "
+            f"investigation tool loop is the shape this most often affects."
+        )
 
     def _log_unhonoured_intent(self, intent: ReasoningIntent, message: str) -> None:
         """Report an intent this call could not apply.
@@ -559,6 +610,10 @@ class OpenAIProvider(BaseLLMProvider):
             effort = operator_effort if operator_effort is not None else shape_effort
             if effort is not None:
                 payload["reasoning_effort"] = effort
+        elif self.config.reasoning_effort is not None:
+            # The operator set the knob and this call shape cannot carry it.
+            # Never silent: see _log_operator_effort_suppressed.
+            self._log_operator_effort_suppressed(effective_model, has_tools=bool(tools))
 
         # Caller-declared intent (#1118) refines the shape-based defaults
         # above; the hard constraints (tools, models that reject the param)

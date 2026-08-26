@@ -32,8 +32,18 @@ from faultmaven.config.settings import LLMProvider, LLMSettings
 from faultmaven.infrastructure.llm.providers.base import ProviderConfig
 from faultmaven.infrastructure.llm.providers.openai_provider import OpenAIProvider
 
-# Every env var these tests touch — cleared up front so a developer's .env
-# (LLMSettings reads one) cannot leak into assertions.
+# Every env var these tests touch, cleared up front.
+#
+# `delenv` clears os.environ only; pydantic-settings reads the `.env` file as a
+# separate source it cannot reach. That leak is already closed suite-wide —
+# `tests/conftest.py` patches `dotenv.dotenv_values` and
+# `DotEnvSettingsSource._read_env_files` to no-ops before any settings import —
+# so these assertions were never actually at risk from a developer's `.env`.
+# The constructions below still pass `_env_file=None` (the idiom `settings.py`
+# uses at line 3227) so each one is isolated on its own terms rather than by a
+# global patch living in another file: exact-list assertions like
+# `configured_task_models(...) == []` are the shape that fails unreadably if
+# that patch is ever narrowed.
 _ENV_VARS = (
     "CHAT_PROVIDER",
     "DA_PROVIDER",
@@ -62,7 +72,7 @@ class TestConfiguredTaskModels:
     def test_returns_per_task_values_for_provider(self, clean_env):
         clean_env.setenv("OPENAI_DA_MODEL", "gpt-5.6-luna")
         clean_env.setenv("OPENAI_CLASSIFIER_MODEL", "gpt-5.4-mini")
-        settings = LLMSettings()
+        settings = LLMSettings(_env_file=None)
         assert settings.configured_task_models(LLMProvider.OPENAI) == [
             "gpt-5.4-mini",  # classifier precedes da in LLM_MODEL_TASKS order
             "gpt-5.6-luna",
@@ -71,18 +81,20 @@ class TestConfiguredTaskModels:
     def test_deduplicates_repeated_values(self, clean_env):
         clean_env.setenv("OPENAI_DA_MODEL", "gpt-5.6-luna")
         clean_env.setenv("OPENAI_SYNTHESIS_MODEL", "gpt-5.6-luna")
-        settings = LLMSettings()
+        settings = LLMSettings(_env_file=None)
         assert settings.configured_task_models("openai") == ["gpt-5.6-luna"]
 
     def test_empty_when_nothing_configured(self, clean_env):
-        assert LLMSettings().configured_task_models("openai") == []
+        assert LLMSettings(_env_file=None).configured_task_models("openai") == []
 
     def test_local_has_no_per_task_fields(self, clean_env):
-        assert LLMSettings().configured_task_models(LLMProvider.LOCAL) == []
+        assert (
+            LLMSettings(_env_file=None).configured_task_models(LLMProvider.LOCAL) == []
+        )
 
     def test_accepts_enum_and_string(self, clean_env):
         clean_env.setenv("GEMINI_CLASSIFIER_MODEL", "gemini-3.5-flash-lite")
-        settings = LLMSettings()
+        settings = LLMSettings(_env_file=None)
         assert settings.configured_task_models(LLMProvider.GEMINI) == [
             "gemini-3.5-flash-lite"
         ]
@@ -93,24 +105,24 @@ class TestConfiguredTaskModels:
 @pytest.mark.llm
 class TestExplicitRoleProvider:
     def test_none_when_role_provider_unset(self, clean_env):
-        settings = LLMSettings()
+        settings = LLMSettings(_env_file=None)
         assert settings.explicit_role_provider("classifier") is None
         assert settings.explicit_role_provider("synthesis") is None
         assert settings.explicit_role_provider("da") is None
 
     def test_name_when_role_provider_set(self, clean_env):
         clean_env.setenv("CLASSIFIER_PROVIDER", "groq")
-        settings = LLMSettings()
+        settings = LLMSettings(_env_file=None)
         assert settings.explicit_role_provider("classifier") == "groq"
 
     def test_chat_maps_to_primary_provider_field(self, clean_env):
         clean_env.setenv("CHAT_PROVIDER", "gemini")
-        settings = LLMSettings()
+        settings = LLMSettings(_env_file=None)
         assert settings.explicit_role_provider("chat") == "gemini"
 
     def test_unknown_role_is_none(self, clean_env):
         # getattr fallback — an unknown role must not raise in a call site.
-        assert LLMSettings().explicit_role_provider("nonexistent") is None
+        assert LLMSettings(_env_file=None).explicit_role_provider("nonexistent") is None
 
 
 @pytest.mark.unit
@@ -130,7 +142,9 @@ class TestRegistryFoldsTaskModelsIntoProviderConfig:
         # `_create_provider_config` reads only `self.settings.llm`; a
         # namespace around a fresh LLMSettings keeps the global settings
         # singleton out of the test.
-        registry = ProviderRegistry(settings=SimpleNamespace(llm=LLMSettings()))
+        registry = ProviderRegistry(
+            settings=SimpleNamespace(llm=LLMSettings(_env_file=None))
+        )
         return registry._create_provider_config("openai", PROVIDER_SCHEMA["openai"])
 
     def test_models_list_carries_base_plus_task_models(self, clean_env):
@@ -187,3 +201,40 @@ class TestGetEffectiveModelHonoursConfiguredTaskModel:
             "llama-3.3-70b-versatile" in r.message and "falling back" in r.message
             for r in caplog.records
         ), "discarding a requested model must not be silent"
+
+    def test_repeat_of_the_same_foreign_model_warns_once(self, caplog):
+        """The registry hands the SAME requested model to every provider in the
+        routing order, so one call on a fallback chain already produces a line
+        per non-owning provider — and the condition is documented as normal.
+        Warning per call on top of that is log volume proportional to request
+        rate. The FIRST warning stays: it is what makes a genuine per-task
+        misconfiguration visible."""
+        provider = self._provider()
+        with caplog.at_level(logging.WARNING):
+            for _ in range(4):
+                provider.get_effective_model("llama-3.3-70b-versatile")
+        assert (
+            len([r for r in caplog.records if "llama-3.3-70b-versatile" in r.message])
+            == 1
+        )
+
+    def test_a_different_foreign_model_still_warns(self, caplog):
+        """Memoized per requested model, not "warned once and done" — a second,
+        different misconfiguration must still be visible."""
+        provider = self._provider()
+        with caplog.at_level(logging.WARNING):
+            provider.get_effective_model("llama-3.3-70b-versatile")
+            provider.get_effective_model("claude-sonnet-4-6")
+        assert any("llama-3.3-70b-versatile" in r.message for r in caplog.records)
+        assert any("claude-sonnet-4-6" in r.message for r in caplog.records)
+
+    def test_memo_is_per_provider_instance(self, caplog):
+        """A fresh provider has its own memo — otherwise a process-wide cache
+        would silence the warning for every deployment after the first."""
+        with caplog.at_level(logging.WARNING):
+            self._provider().get_effective_model("llama-3.3-70b-versatile")
+            self._provider().get_effective_model("llama-3.3-70b-versatile")
+        assert (
+            len([r for r in caplog.records if "llama-3.3-70b-versatile" in r.message])
+            == 2
+        )

@@ -25,7 +25,12 @@ Pins:
        warning (#625 — hidden reasoning must not starve the schema body);
     8. per-call reasoning_intent still overrides the operator default;
     9. an explicit reasoning_effort kwarg stays the last word;
-   10. the gpt-5.6 tools branch still pins "none" regardless of config.
+   10. the gpt-5.6 tools branch still pins "none" regardless of config;
+   11. a configured value the call shape CANNOT carry is reported — once per
+       provider instance, not per call. The investigation tool loop always
+       sends tools, so this knob silently no-ops on the dominant LLM path;
+       ``reasoning_intent`` logs every unhonoured application and the operator
+       knob had no equivalent.
 """
 
 import logging
@@ -91,31 +96,35 @@ async def _sent_body(make_session, provider, **generate_kwargs):
 class TestSettingNormalization:
     @pytest.fixture(autouse=True)
     def clean_env(self, monkeypatch):
+        # Clears the process env only. The `.env` file is a separate
+        # pydantic-settings source delenv cannot reach — already neutralized
+        # suite-wide by tests/conftest.py; `_env_file=None` below just makes
+        # each construction independently isolated.
         monkeypatch.delenv("OPENAI_REASONING_EFFORT", raising=False)
         return monkeypatch
 
     def test_default_is_unset(self):
-        assert LLMSettings().openai_reasoning_effort is None
+        assert LLMSettings(_env_file=None).openai_reasoning_effort is None
 
     @pytest.mark.parametrize("raw", ["NONE", " none ", "None"])
     def test_values_normalize(self, clean_env, raw):
         clean_env.setenv("OPENAI_REASONING_EFFORT", raw)
-        assert LLMSettings().openai_reasoning_effort == "none"
+        assert LLMSettings(_env_file=None).openai_reasoning_effort == "none"
 
     @pytest.mark.parametrize("valid", OPENAI_REASONING_EFFORTS)
     def test_all_documented_values_accepted(self, clean_env, valid):
         clean_env.setenv("OPENAI_REASONING_EFFORT", valid)
-        assert LLMSettings().openai_reasoning_effort == valid
+        assert LLMSettings(_env_file=None).openai_reasoning_effort == valid
 
     def test_unrecognized_fails_closed_to_unset_with_warning(self, clean_env, caplog):
         clean_env.setenv("OPENAI_REASONING_EFFORT", "turbo")
         with caplog.at_level(logging.WARNING):
-            assert LLMSettings().openai_reasoning_effort is None
+            assert LLMSettings(_env_file=None).openai_reasoning_effort is None
         assert any("OPENAI_REASONING_EFFORT" in r.message for r in caplog.records)
 
     def test_empty_string_is_unset(self, clean_env):
         clean_env.setenv("OPENAI_REASONING_EFFORT", "")
-        assert LLMSettings().openai_reasoning_effort is None
+        assert LLMSettings(_env_file=None).openai_reasoning_effort is None
 
 
 @pytest.mark.unit
@@ -137,7 +146,9 @@ class TestRegistryHandoff:
             monkeypatch.delenv(var, raising=False)
         for key, value in env.items():
             monkeypatch.setenv(key, value)
-        registry = ProviderRegistry(settings=SimpleNamespace(llm=LLMSettings()))
+        registry = ProviderRegistry(
+            settings=SimpleNamespace(llm=LLMSettings(_env_file=None))
+        )
         return registry._create_provider_config(
             provider_name, PROVIDER_SCHEMA[provider_name]
         )
@@ -244,3 +255,79 @@ class TestProviderApplication:
             tool_choice="required",
         )
         assert body["reasoning_effort"] == "none"
+
+
+@pytest.mark.unit
+@pytest.mark.llm
+class TestSuppressedOperatorValueIsReported:
+    """``_log_unhonoured_intent`` exists so a per-call reasoning declaration is
+    never dropped in silence. The operator-level knob deserves the same, and
+    its blind spot is bigger: tool-loop calls are most investigation traffic."""
+
+    @staticmethod
+    def _warnings(caplog):
+        return [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "OPENAI_REASONING_EFFORT" in r.message
+        ]
+
+    async def test_tool_call_reports_the_suppressed_value(
+        self, mock_aiohttp_session, caplog
+    ):
+        provider = _provider("gpt-5.4-mini", reasoning_effort="high")
+        with caplog.at_level(logging.WARNING):
+            body = await _sent_body(mock_aiohttp_session, provider, tools=_TOOLS)
+
+        # Behavior unchanged — this family 400s on the param alongside tools.
+        assert "reasoning_effort" not in body
+        warnings = self._warnings(caplog)
+        assert len(warnings) == 1
+        assert "function tools" in warnings[0].message
+
+    async def test_model_that_rejects_the_parameter_reports_it(
+        self, mock_aiohttp_session, caplog
+    ):
+        provider = _provider("gpt-4o", reasoning_effort="high")
+        with caplog.at_level(logging.WARNING):
+            body = await _sent_body(mock_aiohttp_session, provider)
+
+        assert "reasoning_effort" not in body
+        assert len(self._warnings(caplog)) == 1
+
+    async def test_logged_once_per_provider_instance_not_per_call(
+        self, mock_aiohttp_session, caplog
+    ):
+        """The suppressed shapes are the HOT ones — every tool-loop iteration
+        of every turn — and the condition cannot change between calls on one
+        instance. Per-call logging would be warning volume proportional to
+        request rate."""
+        provider = _provider("gpt-5.4-mini", reasoning_effort="high")
+        with caplog.at_level(logging.WARNING):
+            for _ in range(5):
+                await _sent_body(mock_aiohttp_session, provider, tools=_TOOLS)
+
+        assert len(self._warnings(caplog)) == 1
+
+    async def test_silent_when_the_operator_set_nothing(
+        self, mock_aiohttp_session, caplog
+    ):
+        """No knob, nothing to report — the unset deployment stays quiet."""
+        with caplog.at_level(logging.WARNING):
+            await _sent_body(
+                mock_aiohttp_session, _provider("gpt-5.4-mini"), tools=_TOOLS
+            )
+
+        assert self._warnings(caplog) == []
+
+    async def test_silent_when_the_value_is_actually_applied(
+        self, mock_aiohttp_session, caplog
+    ):
+        """A delivered value is not a failure — logging one spends the signal
+        these warnings exist to carry."""
+        provider = _provider("gpt-5.6-luna", reasoning_effort="low")
+        with caplog.at_level(logging.WARNING):
+            body = await _sent_body(mock_aiohttp_session, provider)
+
+        assert body["reasoning_effort"] == "low"
+        assert self._warnings(caplog) == []

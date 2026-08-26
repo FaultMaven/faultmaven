@@ -497,15 +497,32 @@ class BaseLLMProvider(ABC):
             return requested_model
 
         if requested_model:
-            self.logger.warning(
-                f"⚠️ Requested model '{requested_model}' is not configured for "
-                f"provider '{self.provider_name}' (configured: "
-                f"{self.config.models}) — falling back to "
-                f"'{self.config.default_model or (self.config.models[0] if self.config.models else '?')}'. "
-                f"If this was a per-task override, set the matching "
-                f"{{PROVIDER}}_{{TASK}}_MODEL for THIS provider, or route the "
-                f"call to the right provider via its role provider setting."
-            )
+            # Once per (provider, requested model), not once per call. The
+            # registry passes the SAME requested model to every provider in the
+            # routing order, so one call on a 3-provider fallback chain emits a
+            # line from each provider that does not own the model — and the
+            # condition is documented as NORMAL ("typically another provider's
+            # model name arriving through the fallback chain"). Per-call
+            # logging is therefore warning volume proportional to request rate
+            # for something that cannot change between calls. The FIRST one
+            # stays at WARNING: it is load-bearing, and it is what makes a real
+            # per-task-override misconfiguration visible.
+            warned = getattr(self, "_discarded_requested_models", None)
+            if warned is None:
+                warned = set()
+                self._discarded_requested_models = warned
+            if requested_model not in warned:
+                warned.add(requested_model)
+                self.logger.warning(
+                    f"⚠️ Requested model '{requested_model}' is not configured for "
+                    f"provider '{self.provider_name}' (configured: "
+                    f"{self.config.models}) — falling back to "
+                    f"'{self.config.default_model or (self.config.models[0] if self.config.models else '?')}'. "
+                    f"If this was a per-task override, set the matching "
+                    f"{{PROVIDER}}_{{TASK}}_MODEL for THIS provider, or route the "
+                    f"call to the right provider via its role provider setting. "
+                    f"(Logged once per provider instance per requested model.)"
+                )
 
         if self.config.default_model:
             return self.config.default_model
