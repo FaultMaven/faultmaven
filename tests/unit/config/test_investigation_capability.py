@@ -272,7 +272,10 @@ def test_capacity_gate_has_no_opt_out_flag():
 
 import logging as _logging
 
-from faultmaven.config.investigation_capability import warn_best_effort_enforcement
+from faultmaven.config.investigation_capability import (
+    resolve_enforcement_classes,
+    warn_best_effort_enforcement,
+)
 
 
 class _EnforcementProvider:
@@ -308,6 +311,10 @@ def _enforcement_settings(
     so_prov = NS(value=so_provider_name) if so_provider_name else None
     llm = NS(
         provider=prov,
+        # The BASE {PROVIDER}_MODEL — what the registry builds the provider
+        # with, and what the chat row is judged by. Real LLMSettings always
+        # carries this field per provider.
+        **{f"{provider_name}_model": model},
         da_provider=(da_prov if da_set else None),
         structured_output_provider=so_prov,
         get_da_provider=lambda: (da_prov if da_set else prov),
@@ -420,3 +427,114 @@ def test_unknown_capability_fails_open_silently(caplog):
 
 def test_never_raises_on_malformed_settings():
     warn_best_effort_enforcement(NS(llm=NS()), _PerProviderRegistry({}))
+
+
+class _ByModelEnforcementProvider:
+    """Capability that depends on the MODEL, not just the provider — the only
+    way to tell "judged by the base model" from "judged by the per-task chat
+    model" apart."""
+
+    def __init__(self, by_model, default):
+        self._by_model = by_model
+        self._default = default
+
+    def get_structured_output_capability(self, model=None):
+        return NS(value=self._by_model.get(model, self._default))
+
+
+def test_pinned_da_provider_is_not_compensated_by_structured_output_override(caplog):
+    """A pinned DA_PROVIDER takes precedence over STRUCTURED_OUTPUT_PROVIDER on
+    the tool path (``milestone_engine`` applies the override only when no DA
+    provider is set), so a strict override does NOT carry a best-effort DA
+    provider's schema-bound calls. Reporting that as "acceptable" would clear
+    exactly the misconfiguration this check exists to catch."""
+    settings = _enforcement_settings(
+        provider_name="openai",
+        model="gpt-5.4-mini",
+        da_set=True,
+        da_provider_name="fireworks",
+        da_model="deepseek-v4-flash",
+        so_provider_name="openai",
+    )
+    registry = _PerProviderRegistry(
+        {
+            "openai": _EnforcementProvider("strict"),
+            "fireworks": _EnforcementProvider("best_effort"),
+        }
+    )
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(settings, registry)
+
+    warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
+    assert len(warnings) == 1
+    assert "investigation (DA→CHAT)" in warnings[0].message
+    # Never the "acceptable" line — that is the false clear.
+    assert not [r for r in caplog.records if r.levelno == _logging.INFO]
+
+
+def test_unpinned_da_is_still_compensated(caplog):
+    """The compensation is narrowed, not removed: with DA unset the engine does
+    apply the override, so an enforced route still downgrades to INFO."""
+    settings = _enforcement_settings(so_provider_name="openai")
+    registry = _PerProviderRegistry(
+        {
+            "fireworks": _EnforcementProvider("best_effort"),
+            "openai": _EnforcementProvider("strict"),
+        }
+    )
+    resolved = resolve_enforcement_classes(settings, registry)
+    assert resolved.structured_output_enforced is True
+    assert all(role.compensated for role in resolved.roles)
+    assert resolved.degraded_roles == ()
+
+
+def test_chat_row_judged_by_base_model_not_the_dead_chat_task_model():
+    """``{PROVIDER}_CHAT_MODEL`` is dead config surface — nothing at runtime
+    resolves it (the registry builds the provider with the BASE model) — so a
+    STRICT value there must not clear a BEST_EFFORT base model that the engine
+    actually sends."""
+    settings = _enforcement_settings(
+        provider_name="fireworks", model="deepseek-v4-flash"
+    )
+    # A per-task "chat" model the check must ignore, reporting the opposite class.
+    settings.llm.get_model = lambda task="chat": "gpt-5.4-mini"
+    registry = _PerProviderRegistry(
+        {
+            "fireworks": _ByModelEnforcementProvider(
+                {"deepseek-v4-flash": "best_effort", "gpt-5.4-mini": "strict"},
+                "strict",
+            )
+        }
+    )
+
+    resolved = resolve_enforcement_classes(settings, registry)
+
+    assert [role.model for role in resolved.roles] == ["deepseek-v4-flash"]
+    assert [role.role for role in resolved.roles] == ["investigation/chat"]
+    assert resolved.degraded_roles == resolved.roles
+
+
+def test_resolver_reports_the_verdict_as_data():
+    """Axis 3 is readable as a value, not only as a boot log line — a boot log
+    is gone from ``kubectl logs`` long before someone debugs the degradation."""
+    settings = _enforcement_settings()
+    registry = _PerProviderRegistry({"fireworks": _EnforcementProvider("best_effort")})
+
+    resolved = resolve_enforcement_classes(settings, registry)
+
+    assert len(resolved.roles) == 1
+    role = resolved.roles[0]
+    assert (role.role, role.provider, role.model) == (
+        "investigation/chat",
+        "fireworks",
+        "deepseek-v4-flash",
+    )
+    assert role.enforcement == "best_effort"
+    assert role.unenforced and role.degraded
+    assert resolved.structured_output_enforced is False
+
+
+def test_resolver_never_raises_and_reports_nothing_on_malformed_settings():
+    resolved = resolve_enforcement_classes(NS(llm=NS()), _PerProviderRegistry({}))
+    assert resolved.roles == ()
+    assert resolved.degraded_roles == ()

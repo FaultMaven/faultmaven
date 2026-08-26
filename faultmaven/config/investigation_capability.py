@@ -343,6 +343,14 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
 # exists so the state is visible at boot instead of discovered from degraded
 # investigations. Classifier/synthesis roles are deliberately NOT checked:
 # their outputs are small/enum-like and best-effort is acceptable there.
+#
+# Split the same way as axes 1 and 2: a pure ``resolve_enforcement_classes``
+# that returns the verdict, and a thin ``warn_best_effort_enforcement`` that
+# logs it. Boot logs roll out of ``kubectl logs`` within hours, so an operator
+# debugging degraded investigations a week later needs to be able to ASK the
+# running process what each role resolved to — which a log line can't answer
+# and a resolver can. It is also what makes the verdict testable as a value
+# rather than only through ``caplog``.
 
 _UNENFORCED_CLASSES = ("best_effort", "none")
 
@@ -366,88 +374,196 @@ def _enforcement_class(registry: Any, provider_name: str, model: str) -> Optiona
     return value if isinstance(value, str) else None
 
 
+def _base_model(llm: Any, provider_name: str) -> str:
+    """The provider's BASE ``{PROVIDER}_MODEL``, or ``""``.
+
+    Deliberately NOT ``llm.get_model("chat")``. That resolves
+    ``{PROVIDER}_CHAT_MODEL`` first, and nothing at runtime ever asks for the
+    "chat" per-task model — the registry builds the provider with
+    ``default_model = llm.{provider}_model`` and no call site passes a chat
+    model override — so judging the chat row by it would warn about a model
+    the engine never sends, and (worse) could clear the row on a STRICT
+    ``{PROVIDER}_CHAT_MODEL`` while a BEST_EFFORT base model actually runs.
+    This mirrors what the registry does instead.
+    """
+    value = getattr(llm, f"{provider_name}_model", None)
+    return value if isinstance(value, str) else ""
+
+
+def _provider_name(value: Any) -> str:
+    return value.value if hasattr(value, "value") else str(value)
+
+
+@dataclass(frozen=True)
+class RoleEnforcement:
+    """Resolved schema-enforcement class of ONE checked role.
+
+    ``enforcement`` is the provider's capability string (``strict``,
+    ``function_calling``, ``best_effort``, …) or ``None`` when it could not be
+    determined — ``None`` is ignorance, never a failure. ``compensated``
+    records whether this role's schema-bound calls are actually carried by an
+    enforced ``STRUCTURED_OUTPUT_PROVIDER``; it is per-role because the engine
+    does not apply that override uniformly (see ``resolve_enforcement_classes``).
+    """
+
+    role: str
+    provider: str
+    model: str
+    enforcement: Optional[str] = None
+    compensated: bool = False
+
+    @property
+    def unenforced(self) -> bool:
+        """The resolved model only REQUESTS its schema in-prompt."""
+        return self.enforcement is not None and self.enforcement in _UNENFORCED_CLASSES
+
+    @property
+    def degraded(self) -> bool:
+        """Unenforced AND nothing else carries the schema-bound calls."""
+        return self.unenforced and not self.compensated
+
+
+@dataclass(frozen=True)
+class EnforcementClasses:
+    """Resolved enforcement class of every checked role.
+
+    Pure data: ``warn_best_effort_enforcement`` renders it to the boot log, and
+    it is equally readable from a status endpoint minutes or weeks later.
+    """
+
+    roles: tuple = ()
+    structured_output_provider: Optional[str] = None
+    structured_output_model: Optional[str] = None
+    structured_output_enforced: bool = False
+
+    @property
+    def degraded_roles(self) -> tuple:
+        """Roles running unenforced with no compensation — what to act on."""
+        return tuple(role for role in self.roles if role.degraded)
+
+
+def resolve_enforcement_classes(
+    settings: "Settings", registry: Any
+) -> EnforcementClasses:
+    """Resolve the schema-enforcement class of the investigation and chat roles.
+
+    Pure (never raises): usable by both the boot advisory and any status
+    surface. Roles that resolve to the same (provider, model) are reported as
+    one row, so a default deployment says "investigation/chat" once instead of
+    saying the same thing twice.
+
+    Compensation (``STRUCTURED_OUTPUT_PROVIDER`` carrying the schema-bound
+    calls) is decided PER ROLE, because the engine does not apply that override
+    uniformly: ``milestone_engine._tool_augmented_generate`` gates it on
+    ``not (self.da_model and self.da_provider)`` — a dedicated DA provider gets
+    first dibs on the tool path and the override is skipped there. Treating
+    compensation as a deployment-wide fact would report a best-effort
+    ``DA_PROVIDER`` alongside a strict ``STRUCTURED_OUTPUT_PROVIDER`` as
+    "acceptable", which is precisely the misconfiguration this check exists to
+    catch.
+    """
+    try:
+        llm = settings.llm
+
+        investigation = (
+            "investigation (DA→CHAT)",
+            _provider_name(llm.get_da_provider()),
+            llm.get_da_model(),
+        )
+        chat_provider_name = _provider_name(llm.provider)
+        chat = ("chat", chat_provider_name, _base_model(llm, chat_provider_name))
+
+        # Does an explicitly-set structured-output route actually enforce?
+        so_provider_name = so_model = None
+        so_enforced = False
+        if getattr(llm, "structured_output_provider", None) is not None:
+            so_provider_name = _provider_name(llm.get_structured_output_provider())
+            so_model = llm.get_structured_output_model()
+            so_class = _enforcement_class(registry, so_provider_name, so_model)
+            so_enforced = so_class is not None and so_class not in _UNENFORCED_CLASSES
+
+        # A pinned DA provider skips the override on the tool path (see above),
+        # so the investigation role is compensated only when DA is NOT pinned.
+        da_pinned = getattr(llm, "da_provider", None) is not None
+        investigation_compensated = so_enforced and not da_pinned
+        chat_compensated = so_enforced
+
+        pairs: list[tuple[str, str, str, bool]] = []
+        if not chat[2]:
+            # No base model to judge — fail open on ignorance rather than
+            # probing the empty string and reporting whatever comes back.
+            pairs.append((*investigation, investigation_compensated))
+        elif (investigation[1], investigation[2]) == (chat[1], chat[2]):
+            # One resolved model wearing both hats. It reaches the tool path,
+            # so it inherits the investigation role's stricter compensation
+            # rule rather than chat's.
+            pairs.append(
+                ("investigation/chat", chat[1], chat[2], investigation_compensated)
+            )
+        else:
+            pairs.append((*investigation, investigation_compensated))
+            pairs.append((*chat, chat_compensated))
+
+        roles = tuple(
+            RoleEnforcement(
+                role=role,
+                provider=provider,
+                model=model,
+                enforcement=_enforcement_class(registry, provider, model),
+                compensated=compensated,
+            )
+            for role, provider, model, compensated in pairs
+        )
+        return EnforcementClasses(
+            roles=roles,
+            structured_output_provider=so_provider_name,
+            structured_output_model=so_model,
+            structured_output_enforced=so_enforced,
+        )
+    except Exception as exc:  # advisory — resolution must never block boot
+        logger.debug("Enforcement-class resolution skipped: %s", exc)
+        return EnforcementClasses()
+
+
 def warn_best_effort_enforcement(settings: "Settings", registry: Any) -> None:
     """Advisory startup check: warn when the investigation or chat role
     resolves to a model whose schemas are only best-effort.
 
     Pure and never raises; logs at WARNING when an unenforced role is
-    uncompensated, at INFO when a STRUCTURED_OUTPUT_PROVIDER override routes
-    the schema-bound calls somewhere enforced (the documented escape hatch),
-    and stays silent when the class cannot be determined.
+    uncompensated, at INFO when a STRUCTURED_OUTPUT_PROVIDER override actually
+    carries that role's schema-bound calls (the documented escape hatch), and
+    stays silent when the class cannot be determined.
     """
-    try:
-        llm = settings.llm
-
-        da_provider = llm.get_da_provider()
-        roles: list[tuple[str, str, str]] = [
-            (
-                "investigation (DA→CHAT)",
-                (
-                    da_provider.value
-                    if hasattr(da_provider, "value")
-                    else str(da_provider)
-                ),
-                llm.get_da_model(),
+    resolved = resolve_enforcement_classes(settings, registry)
+    for role in resolved.roles:
+        if not role.unenforced:
+            continue
+        if role.compensated:
+            logger.info(
+                "%s model %s/%s reports %s structured output, but "
+                "STRUCTURED_OUTPUT_PROVIDER=%s (%s) carries the "
+                "schema-bound calls with native enforcement — acceptable.",
+                role.role,
+                role.provider,
+                role.model,
+                (role.enforcement or "").upper(),
+                resolved.structured_output_provider,
+                resolved.structured_output_model,
             )
-        ]
-        chat_provider = llm.provider
-        chat_pair = (
-            (
-                chat_provider.value
-                if hasattr(chat_provider, "value")
-                else str(chat_provider)
-            ),
-            llm.get_model("chat"),
-        )
-        if chat_pair == (roles[0][1], roles[0][2]):
-            roles[0] = ("investigation/chat", roles[0][1], roles[0][2])
         else:
-            roles.append(("chat", chat_pair[0], chat_pair[1]))
-
-        # Compensation: schema-bound calls are routed elsewhere only when the
-        # operator explicitly set STRUCTURED_OUTPUT_PROVIDER — and it only
-        # helps if that route is actually enforced.
-        compensated = False
-        so_provider_name = so_model = None
-        if getattr(llm, "structured_output_provider", None) is not None:
-            so_enum = llm.get_structured_output_provider()
-            so_provider_name = (
-                so_enum.value if hasattr(so_enum, "value") else str(so_enum)
+            logger.warning(
+                "%s model %s/%s reports %s structured output: the engine "
+                "can only request its response schema in-prompt, so "
+                "dropped/renamed required fields silently degrade recorded "
+                "investigation state. Best-effort is fine for "
+                "classifier/synthesis roles, not here — use a "
+                "schema-enforcing provider for this role, or set "
+                "STRUCTURED_OUTPUT_PROVIDER to route just the schema-bound "
+                "calls to one (note: a pinned DA_PROVIDER takes precedence "
+                "over that override on the tool path, so it does not "
+                "compensate a best-effort DA_PROVIDER).",
+                role.role,
+                role.provider,
+                role.model,
+                (role.enforcement or "").upper(),
             )
-            so_model = llm.get_structured_output_model()
-            so_class = _enforcement_class(registry, so_provider_name, so_model)
-            compensated = so_class is not None and so_class not in _UNENFORCED_CLASSES
-
-        for role, provider_name, model in roles:
-            enforcement = _enforcement_class(registry, provider_name, model)
-            if enforcement is None or enforcement not in _UNENFORCED_CLASSES:
-                continue
-            if compensated:
-                logger.info(
-                    "%s model %s/%s reports %s structured output, but "
-                    "STRUCTURED_OUTPUT_PROVIDER=%s (%s) carries the "
-                    "schema-bound calls with native enforcement — acceptable.",
-                    role,
-                    provider_name,
-                    model,
-                    enforcement.upper(),
-                    so_provider_name,
-                    so_model,
-                )
-            else:
-                logger.warning(
-                    "%s model %s/%s reports %s structured output: the engine "
-                    "can only request its response schema in-prompt, so "
-                    "dropped/renamed required fields silently degrade recorded "
-                    "investigation state. Best-effort is fine for "
-                    "classifier/synthesis roles, not here — use a "
-                    "schema-enforcing provider for this role, or set "
-                    "STRUCTURED_OUTPUT_PROVIDER to route just the schema-bound "
-                    "calls to one.",
-                    role,
-                    provider_name,
-                    model,
-                    enforcement.upper(),
-                )
-    except Exception as exc:  # advisory — must never block boot
-        logger.debug("Enforcement-class check skipped: %s", exc)
