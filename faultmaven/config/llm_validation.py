@@ -1,16 +1,17 @@
 """Startup fail-fast for LLM provider credentials.
 
-FaultMaven has **no default LLM provider**: every model needs a credential, so a
-silent default (historically ``fireworks``) is meaningless — if the operator
-supplied, say, an OpenAI key but never set ``CHAT_PROVIDER``, the silent default
-would try Fireworks and fail at first use, deep in a turn, with an opaque error.
+FaultMaven ships a **recommended** provider (``CHAT_PROVIDER=gemini``, mirrored
+in ``.env.example``), but no credential can ship with it — so the recommendation
+is never a silent fallback: an operator who supplied, say, an OpenAI key but
+never set ``CHAT_PROVIDER`` must not have the default quietly try Gemini and
+fail at first use, deep in a turn, with an opaque error.
 
 This module enforces the minimum viable LLM config **at startup** instead:
 
-1. ``CHAT_PROVIDER`` must be **explicitly set** (env or preset) — there is no
-   implicit provider.
-2. The chosen provider's credential must be present — an API key for cloud
-   providers, or ``LOCAL_LLM_URL`` for ``local``.
+1. The resolved provider's credential must be present — an API key for cloud
+   providers, or ``LOCAL_LLM_URL`` for ``local``. An operator who sets nothing
+   resolves to the shipped default and is rejected here for the missing key,
+   with a message naming the provider actually in effect.
 
 Either failure raises ``ValueError`` so the lifespan config gate aborts boot
 with an actionable message. The gate is skipped under ``SKIP_SERVICE_CHECKS``
@@ -91,7 +92,8 @@ def validate_llm_provider_credentials(settings: "Settings") -> None:
             f"No usable LLM credential: the active provider is {provider!r} but "
             f"{env_name} is missing or empty. Set CHAT_PROVIDER to a provider "
             "whose API key you have (or supply this one's key / LOCAL_LLM_URL "
-            "for 'local'). FaultMaven has no usable default. See .env.example "
+            "for 'local'). A provider is shipped as the default, but no "
+            "credential is — one must always be configured. See .env.example "
             "section 1."
         )
     logger.info("✅ LLM provider '%s' configured (%s set)", provider, env_name)

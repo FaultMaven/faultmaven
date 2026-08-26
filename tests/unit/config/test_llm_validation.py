@@ -86,10 +86,19 @@ def test_unsupported_provider_raises():
         validate_llm_provider_credentials(_settings("whatever"))
 
 
-def test_unconfigured_default_placeholder_without_key_raises():
-    # The placeholder default (openai) with no key must NOT silently boot —
-    # there is no usable default provider.
-    with pytest.raises(ValueError, match="no usable default"):
+def test_shipped_default_provider_without_key_raises():
+    """A provider ships as the default; a CREDENTIAL never does. An operator
+    who configures nothing resolves to the shipped default (gemini) and must
+    be refused for the missing key — the message naming the provider actually
+    in effect and its env var, so the fix is obvious."""
+    with pytest.raises(ValueError) as exc:
+        validate_llm_provider_credentials(_settings("gemini"))
+    message = str(exc.value)
+    assert "gemini" in message
+    assert "GEMINI_API_KEY" in message
+
+    # Same protection for any other provider a deployment names.
+    with pytest.raises(ValueError, match="OPENAI_API_KEY"):
         validate_llm_provider_credentials(_settings("openai"))
 
 

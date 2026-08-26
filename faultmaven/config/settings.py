@@ -192,18 +192,23 @@ class LLMSettings(BaseSettings):
     )
 
     # Task-specific provider selection.
-    # NOTE: this default is a non-load-bearing placeholder so Settings() can be
-    # constructed in tests/tools without env. There is NO real default provider:
-    # app startup requires CHAT_PROVIDER to be explicitly set AND its credential
-    # present, and hard-fails otherwise (see config/llm_validation.py). Do not
-    # rely on this value — a deployment that never sets CHAT_PROVIDER refuses to
-    # boot rather than silently picking a provider for which it has no key.
+    # NOTE: startup still requires CHAT_PROVIDER to be set explicitly AND its
+    # credential present, and hard-fails otherwise (see config/llm_validation.py)
+    # — a deployment that names no provider refuses to boot rather than silently
+    # picking one it has no key for. This value is therefore the DOCUMENTED
+    # RECOMMENDATION (mirrored in .env.example), not a silent fallback.
     provider: LLMProvider = Field(
-        default=LLMProvider.OPENAI, validation_alias="CHAT_PROVIDER"
+        default=LLMProvider.GEMINI, validation_alias="CHAT_PROVIDER"
     )
-    multimodal_provider: Optional[LLMProvider] = Field(default=None)
-    synthesis_provider: Optional[LLMProvider] = Field(default=None)
-    classifier_provider: Optional[LLMProvider] = Field(default=None)
+    # Roles pinned to a provider by default. Unlike DA / STRUCTURED_OUTPUT /
+    # KNOWLEDGE (left None so they follow CHAT_PROVIDER), these three are STATIC
+    # assignments: they stay on Gemini when CHAT_PROVIDER is flipped, which is
+    # what keeps them constant across an A/B comparison of the anchor. They
+    # need GEMINI_API_KEY regardless of the anchor; set them to another provider
+    # (or unset to follow CHAT) if that is not wanted.
+    multimodal_provider: Optional[LLMProvider] = Field(default=LLMProvider.GEMINI)
+    synthesis_provider: Optional[LLMProvider] = Field(default=LLMProvider.GEMINI)
+    classifier_provider: Optional[LLMProvider] = Field(default=LLMProvider.GEMINI)
     code_provider: Optional[LLMProvider] = Field(default=None)
     da_provider: Optional[LLMProvider] = Field(default=None)
     knowledge_provider: Optional[LLMProvider] = Field(default=None)
@@ -346,8 +351,10 @@ class LLMSettings(BaseSettings):
     # Google Gemini
     gemini_chat_model: Optional[str] = Field(default=None)
     gemini_multimodal_model: Optional[str] = Field(default=None)
-    gemini_synthesis_model: Optional[str] = Field(default=None)
-    gemini_classifier_model: Optional[str] = Field(default=None)
+    # classifier/synthesis run on the cheap lite tier by default; measured
+    # serving the engine's largest stage schema, so no capability is lost.
+    gemini_synthesis_model: Optional[str] = Field(default="gemini-3.5-flash-lite")
+    gemini_classifier_model: Optional[str] = Field(default="gemini-3.5-flash-lite")
     gemini_code_model: Optional[str] = Field(default=None)
     gemini_da_model: Optional[str] = Field(default=None)
     gemini_knowledge_model: Optional[str] = Field(default=None)
@@ -393,14 +400,14 @@ class LLMSettings(BaseSettings):
     # Defaults are performance-weighted (token-usage billing → quality drives UX),
     # all tool-calling + large-context capable. HuggingFace is the exception: its
     # Inference API can't do tool calling, so it is kept but not recommended.
-    openai_model: str = Field(default="gpt-5.4-mini")
+    openai_model: str = Field(default="gpt-5.6-luna")
     anthropic_model: str = Field(default="claude-sonnet-4-6")
     fireworks_model: str = Field(
         default="accounts/fireworks/models/deepseek-v4-flash",
     )
     groq_model: str = Field(default="llama-3.3-70b-versatile")
     cohere_model: str = Field(default="command-r-plus")
-    gemini_model: str = Field(default="gemini-3.5-flash")
+    gemini_model: str = Field(default="gemini-3.7-flash")
     huggingface_model: str = Field(default="mistralai/Mistral-Large-Instruct-2411")
     openrouter_model: str = Field(default="anthropic/claude-sonnet-4-6")
 

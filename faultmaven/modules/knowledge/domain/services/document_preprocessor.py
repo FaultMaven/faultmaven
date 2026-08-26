@@ -511,10 +511,10 @@ class DocumentPreprocessor:
                 max_tokens=256,
                 temperature=0.1,
                 response_format={"type": "json_object"},
-                # Land on CLASSIFIER_PROVIDER when the operator set one — the
-                # model alone doesn't route; see intent_resolver for the same
-                # pattern (kwarg only when set, so duck-typed routers keep
-                # working).
+                # Land on CLASSIFIER_PROVIDER when one is set — the model
+                # alone doesn't route; see intent_resolver for the same
+                # pattern. The classifier ships PINNED, so this kwarg is
+                # normally present and a router used here must accept it.
                 **(
                     {"provider_override": override}
                     if (
