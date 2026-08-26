@@ -1660,12 +1660,12 @@ class InvestigationService:
         stalled-milestone info.
 
         Emitted when transparent mode is active (stalled-milestone surfacing)
-        **or** when the status is the honest-partial ``INSUFFICIENT_EVIDENCE``.
-        The latter is decoupled from ``progress_transparent`` on purpose: a
-        declared data wall reaches ``INSUFFICIENT_EVIDENCE`` *before* the
-        time-stall thresholds that drive transparent mode, so gating the status
-        on that flag would hide the very outcome the frontend needs to show.
-        ``active`` still reflects transparent mode only.
+        **or** when the status is one of the honest-partial readings. The latter
+        is decoupled from ``progress_transparent`` on purpose: a declared data
+        wall reaches ``INSUFFICIENT_EVIDENCE`` *before* the time-stall thresholds
+        that drive transparent mode, so gating the status on that flag would hide
+        the very outcome the frontend needs to show. ``active`` still reflects
+        transparent mode only.
         """
         verification_status = None
         cause_assurance = None
@@ -1676,17 +1676,22 @@ class InvestigationService:
                 cause_assurance = case.progress.cause_assurance.value
 
         transparent = bool(metadata.get("progress_transparent"))
-        # Both engine-driven honest-partial readings are surfaced independently of
+        # Every engine-driven honest-partial reading is surfaced independently of
         # transparent mode, for the same reason: each can be reached on a turn
         # that never activates it, and gating on the flag would hide the outcome
         # the frontend exists to show. ``INSUFFICIENT_EVIDENCE`` via the declared
         # data wall (which fires before the time thresholds); ``TREATMENT_BLOCKED``
         # (#1136) because a case parked on an unapplied fix is conversational —
         # transparent mode counts investigative turns, so a fix-blocked stall can
-        # sit in that cell for turns on end without ever tripping it.
+        # sit in that cell for turns on end without ever tripping it;
+        # ``RESTATEMENT_HELD`` (#1195) because it is carved OUT of
+        # ``INSUFFICIENT_EVIDENCE`` — omitting it would silence, in this channel,
+        # exactly the cases that channel used to (wrongly) report, which is the
+        # suppression-without-replacement failure that fix exists to avoid.
         surface_honest_partial = verification_status in (
             VerificationStatus.INSUFFICIENT_EVIDENCE.value,
             VerificationStatus.TREATMENT_BLOCKED.value,
+            VerificationStatus.RESTATEMENT_HELD.value,
         )
         if not transparent and not surface_honest_partial:
             return None

@@ -3232,4 +3232,5 @@ register_graph_hooks(
     mechanism_for_chain=mechanism_for_chain,
     project_hypothesis_states_from_roots=project_hypothesis_states_from_roots,
     conjuncts_for_chain=conjuncts_for_chain,
+    restatement_held_root_ids=restatement_held_root_ids,
 )

@@ -794,6 +794,7 @@ def register_graph_hooks(
     mechanism_for_chain,
     project_hypothesis_states_from_roots,
     conjuncts_for_chain,
+    restatement_held_root_ids,
 ) -> None:
     """Called once from ``causal_graph`` at module import."""
     _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
@@ -802,6 +803,11 @@ def register_graph_hooks(
     _GRAPH_HOOKS["mechanism"] = mechanism_for_chain
     _GRAPH_HOOKS["project_hyp_states"] = project_hypothesis_states_from_roots
     _GRAPH_HOOKS["and_conjuncts"] = conjuncts_for_chain
+    # #1195: read by ``verification_status.assess_verification_status``, which
+    # cannot import ``causal_graph`` directly — that edge closes the cycle
+    # causal_graph -> hypothesis_manager -> terminal_transitions ->
+    # verification_status. Same seam, same reason as ``project_hyp_states``.
+    _GRAPH_HOOKS["restatement_held"] = restatement_held_root_ids
 
 
 def _graph_hooks() -> dict:

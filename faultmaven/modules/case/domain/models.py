@@ -448,6 +448,22 @@ class VerificationStatus(str, Enum):
     this *within* the gate; the judgment can never bypass the work gate, and its
     absence defaults to keep-engaging."""
 
+    RESTATEMENT_HELD = "restatement_held"
+    """Not grounded × stalled where the block is LEXICAL, not evidential (#1195):
+    a ROOT that clears every validation bar — causally grounded, net supporting,
+    AND-gate satisfied, not refuted — is held at INCONCLUSIVE by the §7.1
+    restatement guard ALONE (``causal_graph.restatement_held_root_ids``) because
+    its statement adds no content beyond the problem and the other hypotheses.
+
+    Carved out of ``INSUFFICIENT_EVIDENCE``, whose claim — "no cause can be
+    grounded from currently available data" — is FALSE on this shape and whose
+    handoff asks for discriminating data that cannot move the hold. The engine
+    already tells the MODEL so ("MORE SUPPORTING EVIDENCE WILL NOT VALIDATE IT",
+    the restatement recovery note in ``context_builder``); this cell is what
+    stops it telling the USER the opposite in the same turn. The recovery is to
+    state the cause DISTINCTLY — name the mechanism, or settle the overlapping
+    alternative — never to fetch more evidence."""
+
 
 class CauseAssuranceGrade(str, Enum):
     """The assurance behind a case's identified cause, as one of three mutually
@@ -638,7 +654,8 @@ class InvestigationProgress(BaseModel):
         description=(
             "Engine-derived verification status — the grounding × progress join "
             "(HEALTHY | TREATMENT_BLOCKED | OPEN | NOT_YET_PRODUCTIVE | "
-            "INSUFFICIENT_EVIDENCE). Recomputed each turn from case state "
+            "INSUFFICIENT_EVIDENCE | RESTATEMENT_HELD). Recomputed each turn "
+            "from case state "
             "alongside cause_state (never path-stripped) and persisted in the "
             "progress blob, so the model-declared obtainability signal it reads "
             "survives across turns. Drives the code-guarded insufficient-evidence "

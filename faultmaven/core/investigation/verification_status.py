@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
+    _graph_hooks,
     evidence_datum_key,
     grade_cause_assurance,
 )
@@ -253,6 +254,11 @@ def assess_verification_status(
     deductive-validation stamp in the turn pipeline (mirroring the #593
     recompute), so the grounding-first disposition reads a fresh grade rather
     than pre-empting the deductive arm.
+
+    One cell is not a plain product of the two axes: the (not-grounded ×
+    stalled) cell splits on the REASON for the stall. A stall whose only block
+    is the §7.1 restatement guard reads ``RESTATEMENT_HELD`` rather than
+    ``INSUFFICIENT_EVIDENCE`` (#1195) — see the comment at that branch.
     """
     if _is_grounded(case, grade=grade):
         # Grounded × stalled = TREATMENT_BLOCKED, meaning "have a cause but can't
@@ -270,8 +276,44 @@ def assess_verification_status(
     # model that produced nothing is never blamed on the case.
     if not work_gate_passed(case):
         return VerificationStatus.NOT_YET_PRODUCTIVE
-    return (
-        VerificationStatus.INSUFFICIENT_EVIDENCE
-        if is_progress_stalled(case)
-        else VerificationStatus.OPEN
-    )
+    if not is_progress_stalled(case):
+        return VerificationStatus.OPEN
+    # #1195: the stalled cell is not always an evidence deficiency. A ROOT that
+    # clears every validation bar and is held at INCONCLUSIVE by the §7.1
+    # RESTATEMENT guard alone is blocked on its own PHRASING against the case
+    # frame — the engine's own prompt annotation says so in the same turn ("MORE
+    # SUPPORTING EVIDENCE WILL NOT VALIDATE IT"). Reporting INSUFFICIENT_EVIDENCE
+    # there asserts "no cause can be grounded from currently available data" over
+    # a case the engine has already grounded, and sends the user to fetch data
+    # that cannot move the hold (observed: case_a3d354f08765 — 100% coverage, 14
+    # evidence rows, 3 independent causal supports against a bar of 2).
+    #
+    # Placed HERE — inside the stalled arm, below the work gate — deliberately:
+    #   - ABOVE ``OPEN`` would be wrong: a progressing case makes no false claim
+    #     and needs no corrective; the contradiction is specific to this cell.
+    #   - ABOVE the work gate would be wrong: ``NOT_YET_PRODUCTIVE`` is a
+    #     provider-health reading ("too little work to judge"), never a per-case
+    #     evidence verdict, so it does not contradict the hold. (A restatement
+    #     hold below the work gate therefore still reads NOT_YET_PRODUCTIVE and
+    #     receives no corrective unless the 0-hypothesis vacuum fires — the
+    #     documented INV-38 residual band, not a new gap.)
+    #   - It is also the cheapest correct placement: ``restatement_held_root_ids``
+    #     tokenizes the causal graph, and this arm is reached only by a stalled,
+    #     work-gated, ungrounded case — a small minority of turns.
+    #
+    # This does NOT release the held root (that is the open #1122 product
+    # decision). It changes only what the case is REPORTED as, and — via
+    # ``milestone_engine._restatement_held_pending`` — what the user is offered.
+    #
+    # Reached through the ``cause_assurance`` graph-hook seam rather than by a
+    # direct import: ``causal_graph`` -> ``hypothesis_manager`` ->
+    # ``terminal_transitions`` -> here is a real cycle, and the seam is what the
+    # other below-the-graph readers (the confirm-stamp, the hypothesis-state
+    # projection) already use. ``.get`` like every other hook consumer — an
+    # unregistered hook degrades to the pre-#1195 reading rather than raising on
+    # a live turn; ``_graph_hooks()`` cold-starts the registration itself, and
+    # ``test_restatement_hold_hook_is_registered`` pins it.
+    restatement_held = _graph_hooks().get("restatement_held")
+    if restatement_held is not None and restatement_held(case):
+        return VerificationStatus.RESTATEMENT_HELD
+    return VerificationStatus.INSUFFICIENT_EVIDENCE

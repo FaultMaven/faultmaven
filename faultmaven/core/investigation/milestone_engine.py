@@ -2458,6 +2458,13 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     fresh grounding grade and never pre-empts the deductive arm (the #593
     re-derive-after-stamp ordering). The single call site in ``process_turn``
     satisfies this — it runs well after ``_apply_investigation_updates``.
+
+    NOT every work-gated stall reaches here. A stall whose only block is the
+    §7.1 restatement guard reads ``RESTATEMENT_HELD`` instead (#1195) and gets
+    ``_restatement_held_pending``'s moves: this handoff asks for discriminating
+    data, and on that shape more data provably cannot help — the engine says so
+    to the model in the same turn. The carve-out is made once, at the join, so
+    this predicate and the reported status cannot disagree.
     """
     if case.state != CaseState.INVESTIGATING:
         return False
@@ -2470,6 +2477,85 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     if not is_progress_stalled(case):
         return False
     return assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+
+
+def _restatement_held_suggestions() -> list:
+    """Deterministic affordances for a case whose leading cause is held by the
+    §7.1 RESTATEMENT guard (#1195) — the fourth peer of the insufficient-evidence
+    handoff, the hypothesis-vacuum pull-back and the treatment-blocked handoff:
+    same mechanism (a code-guarded branch substituting a deterministic pair
+    regardless of LLM compliance), different trigger, different ask.
+
+    Its two ungrounded peers ask for data that would GROUND a cause. Here the
+    causal grounding is already in hand — in the incident, three independent
+    qualifying causal supports against a bar of two, at 100% evidence coverage —
+    and what blocks validation is that the ROOT's STATEMENT adds no content
+    beyond the problem and the other standing hypotheses. Asking such a case for
+    discriminating data is not merely unhelpful: it is the exact opposite of what
+    the engine tells the MODEL in the same turn ("MORE SUPPORTING EVIDENCE WILL
+    NOT VALIDATE IT" — the restatement recovery note in ``context_builder``).
+    Removing that contradiction by SUPPRESSION alone would leave a silent case,
+    which is the failure ``_insufficient_evidence_handoff_pending`` exists to
+    prevent — so the carve-out ships with this replacement, not without one.
+
+    The two moves mirror the two recoveries the model-facing note already names,
+    for the same reason it names both: the engine cannot tell the held
+    population's two shapes apart (the fm#1137 known limit). A root held by a
+    TRUE DUPLICATE of its own hypothesis needs the mechanism stated distinctly;
+    a root held by frame DILUTION — a different cause's verbose statement
+    happening to cover this one — clears the moment that alternative is settled.
+    Offering only one would be categorically false for the other half.
+
+    Neither move asks for data, and neither steers toward close: a hold the
+    engine can describe is not a reason to abandon the case (D4 soft-collapse).
+    Non-clickable FREE_SPEECH — the user supplies the content.
+    """
+    return [
+        {
+            "label": "Ask for the cause to be stated as a mechanism",
+            "action_type": "FREE_SPEECH",
+            "body": (
+                "The leading explanation currently restates the problem rather "
+                "than explaining it. Asking what specifically is misconfigured, "
+                "exhausted, or failing — and how that produces the symptom — is "
+                "what moves it forward. More data will not."
+            ),
+        },
+        {
+            "label": "Say whether the standing explanations are the same cause",
+            "action_type": "FREE_SPEECH",
+            "body": (
+                "Two of the causes on the table may be one cause worded twice, "
+                "or genuinely different. Saying which — or ruling one out — "
+                "clears the overlap that is holding the leading explanation."
+            ),
+        },
+    ]
+
+
+def _restatement_held_pending(case: "Case") -> bool:
+    """Whether the engine should drive the restatement-held handoff this turn
+    (#1195 — the fourth code-guarded branch).
+
+    Reads the SAME join as its three peers rather than calling
+    ``restatement_held_root_ids`` itself, so the affordance and the reported
+    status can never disagree: a case has exactly one verification status, which
+    is what makes all four branches mutually exclusive by construction.
+
+    Scoped to ``INVESTIGATING`` and ordered with its peers, below the
+    state-machine gates. Must be evaluated AFTER the per-turn recompute so the
+    status read is fresh (the #593 re-derive-after-stamp ordering); the single
+    ``engine_owned_affordances`` call site satisfies that.
+    """
+    if case.state != CaseState.INVESTIGATING:
+        return False
+    # Cheap short-circuit before the grounding-grade computation, mirroring the
+    # siblings: RESTATEMENT_HELD is carved out of the not-grounded × stalled
+    # cell, so it requires the full progress axis exactly as
+    # ``INSUFFICIENT_EVIDENCE`` does (time thresholds OR a declared data wall).
+    if not is_progress_stalled(case):
+        return False
+    return assess_verification_status(case) == VerificationStatus.RESTATEMENT_HELD
 
 
 def _hypothesis_vacuum_suggestions() -> list:
@@ -2623,8 +2709,8 @@ def _treatment_blocked_pending(case: "Case") -> bool:
     mechanistically identified cause waiting on a fix — and a reachable cell that
     drives nothing is the same defect this issue exists to close, one cell over.
 
-    Scoped to ``INVESTIGATING`` and ordered with its two peers, below the
-    state-machine gates. Mutually exclusive with them by construction: all three
+    Scoped to ``INVESTIGATING`` and ordered with its peers, below the
+    state-machine gates. Mutually exclusive with them by construction: all four
     read the same join, and a case has exactly one verification status.
 
     Must be evaluated AFTER the per-turn recompute so the status read is fresh
@@ -2699,15 +2785,21 @@ def engine_owned_affordances(
       - ``"gate1"`` — problem-statement confirmation
       - ``"insufficient_evidence"`` — work-gated stall with no grounded cause
         (code-guarded, always on)
+      - ``"restatement_held"`` — a work-gated stall whose leading cause is held
+        by the §7.1 restatement guard alone: the block is the cause's PHRASING,
+        not missing data, so the moves ask for a distinct restatement rather
+        than for evidence (#1195, code-guarded, always on)
       - ``"not_yet_productive"`` — persisted 0-hypothesis vacuum; a pull-back to
         symptom / expected-vs-observed clarification (code-guarded, always on)
 
     The disposition branch sits above gate1 because pending_transition can
-    fire while gate1 is technically open. The two mid-investigation readings sit
+    fire while gate1 is technically open. The mid-investigation readings sit
     LAST — any pending state-machine handshake (disposition, gate1) takes
-    precedence over them — and are mutually exclusive with each other (the
-    insufficient-evidence handoff needs the ≥2 work gate; the NOT_YET_PRODUCTIVE
-    pull-back needs 0 hypotheses).
+    precedence over them — and are mutually exclusive with each other: all four
+    read the same ``assess_verification_status`` join, and a case has exactly one
+    verification status. Their order among themselves is therefore presentational
+    only; ``restatement_held`` is written beside ``insufficient_evidence`` because
+    it is the cell carved out of it.
     """
     md = metadata or {}
 
@@ -2719,6 +2811,9 @@ def engine_owned_affordances(
 
     if _insufficient_evidence_handoff_pending(case):
         return ("insufficient_evidence", _insufficient_evidence_handoff_suggestions())
+
+    if _restatement_held_pending(case):
+        return ("restatement_held", _restatement_held_suggestions())
 
     if _hypothesis_vacuum_pending(case):
         return ("not_yet_productive", _hypothesis_vacuum_suggestions())
@@ -5954,10 +6049,12 @@ class MilestoneEngine:
             # Gate 2 and Gate 3, and removes LLM compliance from the
             # correctness path. See INV-01, INV-19, INV-21.
             #
-            # It also drives the two mid-investigation correctives (code-guarded,
+            # It also drives the mid-investigation correctives (code-guarded,
             # always on): the insufficient-evidence structured handoff (a
-            # work-gated stall with no grounded cause) and the NOT_YET_PRODUCTIVE
-            # pull-back (a persisted 0-hypothesis vacuum — #656 P3.1). Both read a
+            # work-gated stall with no grounded cause), the restatement-held
+            # handoff (#1195 — the same stall where the block is the cause's
+            # phrasing rather than missing data) and the NOT_YET_PRODUCTIVE
+            # pull-back (a persisted 0-hypothesis vacuum — #656 P3.1). All read a
             # FRESH grounding grade because this runs after
             # ``_apply_investigation_updates`` recomputed cause_state this turn
             # (the #593 re-derive-after-stamp ordering the plan requires).
@@ -6031,6 +6128,10 @@ class MilestoneEngine:
                 elif gate_name == "treatment_blocked":
                     metadata["verification_status"] = (
                         VerificationStatus.TREATMENT_BLOCKED.value
+                    )
+                elif gate_name == "restatement_held":
+                    metadata["verification_status"] = (
+                        VerificationStatus.RESTATEMENT_HELD.value
                     )
 
             # Closure-ack turn (LLM-driven path): when generation
