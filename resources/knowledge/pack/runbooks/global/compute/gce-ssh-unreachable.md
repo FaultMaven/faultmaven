@@ -6,8 +6,8 @@ service: gcp-compute
 symptom_class: [connection_refused, timeout]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [ssh, permission-denied-publickey, os-login, 35-235-240-0-20, no-space-left-on-device, emergency-mode]
@@ -248,9 +248,8 @@ Expected output: `TRUE` if OS Login is enabled at the instance or project level,
 
 ## Sources
 
-- [Troubleshooting ssh](https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshooting-ssh) — core SSH troubleshooter usage (`--troubleshoot`, `--tunnel-through-iap`), serial console access, guest-agent service checks, OS Login vs metadata key conflict, full-disk authorized_keys failure, `.ssh` permission requirements.
-- [Troubleshooting](https://docs.cloud.google.com/compute/docs/troubleshooting) — general VM/SSH and boot troubleshooting, serial console for boot failures, internet-connectivity/firewall prerequisites, `gcloud compute ssh --ssh-key-file`.
-- [Troubleshooting ssh errors](https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshooting-ssh-errors) — exact error strings (`Permission denied (publickey)`, `Could not connect, retrying...`), `systemctl status/restart sshd.service`, `google-guest-agent.service` enable/start, emergency-mode and firewall `tcp:22` grep checks.
+- [Troubleshooting ssh errors](https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshooting-ssh-errors) — core SSH troubleshooter usage (`--troubleshoot`, `--tunnel-through-iap`), serial console access, OS Login vs metadata key conflict, full-disk authorized_keys failure, `.ssh` permission requirements, exact error strings (`Permission denied (publickey)`, `Could not connect, retrying...`), `systemctl status/restart sshd.service`, `google-guest-agent.service` enable/start, emergency-mode and firewall `tcp:22` grep checks.
+- [General tips for using Compute Engine](https://docs.cloud.google.com/compute/docs/troubleshooting/general-tips) — interactive serial-console access, the direct-internet-access conditions (external IP plus a default route to the internet gateway), and `gcloud compute ssh --ssh-key-file`.
 - [Troubleshooting disk full resize](https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshooting-disk-full-resize) — full boot disk detection (`No space left on device`), `gcloud compute instances stop/start`, `gcloud compute disks resize --size`, `growpart`/`resize2fs`/`df -h`, startup-script recovery.
 - [Network access](https://docs.cloud.google.com/compute/docs/connect/ssh-best-practices/network-access) — IAP firewall best practice and the `35.235.240.0/20` IAP TCP-forwarding source range; `gcloud compute firewall-rules create ... --source-ranges=35.235.240.0/20`.
 - [Using tcp forwarding](https://docs.cloud.google.com/iap/docs/using-tcp-forwarding) — IAP TCP forwarding source range and the requirement to allow `35.235.240.0/20` ingress to port 22.

@@ -6,8 +6,8 @@ service: mongodb
 symptom_class: [service_unavailable, replication_lag]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [replica-set, election-timeout, oplog-lag, step-down, network-partition]
@@ -222,8 +222,8 @@ Expected output: `db.getReplicationInfo()` returns `timeDiff`/`timeDiffHours` (t
 - [Replica Set Elections — MongoDB Manual](https://www.mongodb.com/docs/manual/core/replica-set-elections/) — heartbeat interval (2s) / 10s inaccessibility, `electionTimeoutMillis` (10s default) trigger, network partition → primary step-down, priority best-effort takeover.
 - [Self-Managed Replica Set Configuration — MongoDB Manual](https://www.mongodb.com/docs/manual/reference/replica-configuration/) — `priority`, `votes`, `settings.electionTimeoutMillis`, `heartbeatTimeoutSecs`, `catchUpTimeoutMillis` semantics and constraints.
 - [Troubleshoot Replica Sets — MongoDB Manual](https://www.mongodb.com/docs/manual/tutorial/troubleshoot-replica-sets/) — checking replication lag and member status; secondary catch-up failure causes (slow disk flush, cache eviction contention, bulk writes).
-- [rs.printSecondaryReplicationInfo() — MongoDB Manual](https://www.mongodb.com/docs/manual/reference/method/rs.printsecondaryreplicationinfo/) — `syncedTo` and "secs behind the primary" output; delayed/negative value caveats.
-- [rs.status() / replSetGetStatus — MongoDB Manual](https://www.mongodb.com/docs/manual/reference/method/rs.status/) — `stateStr`, `health`, `optimeDate`, `lastHeartbeat`, `lastHeartbeatRecv`, `pingMs` field meanings.
+- [rs.printSecondaryReplicationInfo() — MongoDB Manual](https://www.mongodb.com/docs/manual/reference/method/rs.printSecondaryReplicationInfo) — `syncedTo` and "secs behind the primary" output; delayed/negative value caveats.
+- [rs.status() / replSetGetStatus — MongoDB Manual](https://www.mongodb.com/docs/manual/reference/method/rs.status) — `stateStr`, `health`, `optimeDate`, `lastHeartbeat`, `lastHeartbeatRecv`, `pingMs` field meanings.
 - [Replica Set Oplog — MongoDB Manual](https://www.mongodb.com/docs/manual/core/replica-set-oplog/) — oplog window sizing (≥24h, often 72h) and resync-vs-window behavior; `db.getReplicationInfo()`.
 - [Analyze MongoDB Performance — MongoDB Manual](https://www.mongodb.com/docs/manual/administration/analyzing-mongodb-performance/) — replication-lag definition and impact on primary eligibility; performance/lock analysis context.
 - [MongoDB Diagnostics FAQ — MongoDB Manual](https://www.mongodb.com/docs/manual/faq/diagnostics/) — diagnostic command landscape (`serverStatus`, replication metrics, `mongostat`).

@@ -6,8 +6,8 @@ service: aws-lambda
 symptom_class: [timeout, latency]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [aws, lambda, serverless, cold-start, vpc, provisioned-concurrency]
@@ -468,5 +468,6 @@ For workloads that may exceed 15 minutes, redesign to use AWS Step Functions, SQ
 ## Sources
 
 - [AWS Lambda: Troubleshoot invocation issues](https://docs.aws.amazon.com/lambda/latest/dg/troubleshooting-invocation.html) — Priority 1. Official troubleshooting guide covering `Sandbox.Timedout`, recursive loop detection, provisioned concurrency spillover, and VPC Pending states.
-- [AWS Lambda: Configuring functions](https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html) — Priority 1. Timeout configuration reference including 1–900 s range, memory-to-CPU allocation, and runtime options.
+- [AWS Lambda: Configure function timeout](https://docs.aws.amazon.com/lambda/latest/dg/configuration-timeout.html) — Priority 1. Timeout reference: 3 s default, adjustable in 1 s increments up to 900 s (15 minutes), and `update-function-configuration --timeout`.
+- [AWS Lambda: Configure function memory](https://docs.aws.amazon.com/lambda/latest/dg/configuration-memory.html) — Priority 1. CPU allocated in proportion to memory (128 MB–10,240 MB; one vCPU at 1,769 MB) — the lever for shortening duration on CPU-bound functions.
 - [AWS Lambda: VPC access configuration](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html) — Priority 1. Hyperplane ENI lifecycle, subnet IP requirements, internet access via NAT Gateway, and VPC endpoint configuration for AWS services.

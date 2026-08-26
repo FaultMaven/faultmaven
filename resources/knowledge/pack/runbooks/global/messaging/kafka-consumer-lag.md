@@ -8,8 +8,8 @@ symptom_class:
   - throughput_degradation
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags:
@@ -517,5 +517,5 @@ Expected output: from `jstat`, ten lines of `S0 S1 E O M CCS YGC YGCT FGC FGCT G
 - [Confluent Platform — Consumer Configuration Reference](https://docs.confluent.io/platform/current/installation/configuration/consumer-configs.html) — Priority 1. Authoritative defaults for `max.poll.records=500`, `max.poll.interval.ms=300000`, `session.timeout.ms=45000`, `heartbeat.interval.ms=3000`, `fetch.min.bytes=1`, `max.partition.fetch.bytes=1048576`, `request.timeout.ms=30000`, `connections.max.idle.ms=540000`, `partition.assignment.strategy=[RangeAssignor, CooperativeStickyAssignor]`, `group.instance.id=null`, `enable.auto.commit=true`, `auto.offset.reset=latest`.
 - [Confluent Platform — Kafka Consumer Client Guide](https://docs.confluent.io/platform/current/clients/consumer.html) — Priority 1. Poll-loop semantics, behaviour on `max.poll.interval.ms` exceedance, group coordinator removal mechanics, eager vs cooperative rebalance protocols, `records-lag-max` / `records-consumed-rate` / `poll-idle-ratio-avg` / `fetch-rate` metric definitions, `kafka-consumer-groups` CLI examples (`--list`, `--describe`, `--reset-offsets --shift-by`).
 - [Confluent Platform — Scaling Kafka Consumer Groups](https://docs.confluent.io/platform/current/clients/consumer.html#scaling-consumer-groups) — Priority 1. Partition-to-consumer one-to-one rule within a group, idle-member behaviour when consumers exceed partitions, `CooperativeStickyAssignor` recommendation for minimising disruption, partition-ordering implications when altering partition count.
-- [Apache Kafka — KIP-429: Consumer Incremental Rebalance Protocol](https://cwiki.apache.org/confluence/display/KAFKA/KIP-429%3A+Kafka+Consumer+Incremental+Rebalance+Protocol) — Priority 1. The eager-protocol "stop-the-world" problem, `CooperativeStickyAssignor` design (`ownedPartitions()` augmentation), two-bounce rolling-upgrade migration path from eager to cooperative assignors.
-- [Apache Kafka — KIP-345: Static Membership Protocol](https://cwiki.apache.org/confluence/display/KAFKA/KIP-345%3A+Introduce+static+membership+protocol+to+reduce+consumer+rebalances) — Priority 1. `group.instance.id` semantics for static membership, interaction with `session.timeout.ms` as the sole liveness signal under static membership, broker-side `session.timeout.ms` cap raised to 1800000 (30 minutes), rationale for using static membership with stateful applications and MirrorMaker.
+- [Apache Kafka — KIP-429: Consumer Incremental Rebalance Protocol](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/103090108/KIP-429+Kafka+Consumer+Incremental+Rebalance+Protocol) — Priority 1. The eager-protocol "stop-the-world" problem, `CooperativeStickyAssignor` design (`ownedPartitions()` augmentation), two-bounce rolling-upgrade migration path from eager to cooperative assignors.
+- [Apache Kafka — KIP-345: Static Membership Protocol](https://cwiki.apache.org/confluence/spaces/KAFKA/pages/87300241/KIP-345+Introduce+static+membership+protocol+to+reduce+consumer+rebalances) — Priority 1. `group.instance.id` semantics for static membership, interaction with `session.timeout.ms` as the sole liveness signal under static membership, broker-side `session.timeout.ms` cap raised to 1800000 (30 minutes), rationale for using static membership with stateful applications and MirrorMaker.

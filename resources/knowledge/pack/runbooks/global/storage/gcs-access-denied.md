@@ -6,8 +6,8 @@ service: gcs
 symptom_class: [auth_failure]
 severity: high
 scope: global
-version: "1.0.0"
-last_updated: "2026-06-24"
+version: "1.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [gcs-403, access-denied, iam, uniform-bucket-level-access, signed-url, vpc-service-controls]
@@ -241,8 +241,8 @@ Expected output: a valid signed URL returns `200`; an expired/tampered one retur
 - [Troubleshooting](https://docs.cloud.google.com/storage/docs/troubleshooting) — primary 403 troubleshooting page: exact error strings (`does not have storage.objects.get access`, `Anonymous caller`, `403 Forbidden`), IAM permission/identity checks, IAM deny policies, public access prevention, and CORS preflight/cache guidance.
 - [Uniform bucket level access](https://docs.cloud.google.com/storage/docs/uniform-bucket-level-access) — UBLA disables ACLs; ACL get/set returns 400 and only IAM grants access when enabled.
 - [Using uniform bucket level access](https://docs.cloud.google.com/storage/docs/using-uniform-bucket-level-access) — exact `gcloud storage buckets describe --format="default(uniform_bucket_level_access)"` check and enable/disable update commands.
-- [Lists](https://cloud.google.com/storage/docs/access-control/lists) — legacy ACL model and its interaction with IAM/UBLA.
-- [Signed urls](https://cloud.google.com/storage/docs/access-control/signed-urls) — signed URL structure, `X-Goog-Expires`, and `SignatureDoesNotMatch` from mismatched canonical requests (e.g. spaces after header colons).
-- [Cross origin](https://cloud.google.com/storage/docs/cross-origin) — CORS preflight (`OPTIONS`) triggers and matching Origin/method/header rules; failed preflight blocks the primary request.
+- [Lists](https://docs.cloud.google.com/storage/docs/access-control/lists) — legacy ACL model and its interaction with IAM/UBLA.
+- [Signed urls](https://docs.cloud.google.com/storage/docs/access-control/signed-urls) — signed URL structure, `X-Goog-Expires`, and `SignatureDoesNotMatch` from mismatched canonical requests (e.g. spaces after header colons).
+- [Cross origin](https://docs.cloud.google.com/storage/docs/cross-origin) — CORS preflight (`OPTIONS`) triggers and matching Origin/method/header rules; failed preflight blocks the primary request.
 - [Troubleshooting](https://docs.cloud.google.com/vpc-service-controls/docs/troubleshooting) — 403 `Request is prohibited by organization's policy` with `vpcServiceControlsUniqueIdentifier`; using the UID to find audit-log violations.
-- [Retrieve troubleshoot errors](https://cloud.google.com/vpc-service-controls/docs/retrieve-troubleshoot-errors) — retrieving VPC-SC violation details (`VpcServiceControlAuditMetadata`) from Cloud Audit Logs.
+- [Retrieve troubleshoot errors](https://docs.cloud.google.com/vpc-service-controls/docs/retrieve-troubleshoot-errors) — retrieving VPC-SC violation details (`VpcServiceControlAuditMetadata`) from Cloud Audit Logs.
