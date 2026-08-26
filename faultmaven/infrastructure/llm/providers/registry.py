@@ -106,7 +106,15 @@ class ProviderState:
         self.avg_latency_ms = sum(self._latency_window) / len(self._latency_window)
 
 
-# Data-driven provider schema - single source of truth
+# Data-driven provider schema - single source of truth.
+#
+# ``available_models`` is the DASHBOARD PICKER's curated list, not a catalogue of
+# everything a provider serves: every entry must have a row in
+# infrastructure/llm/pricing.py, so an operator can never pick a model from the
+# UI whose cost silently reports as $0. Pinning an unlisted model via
+# {PROVIDER}_MODEL stays legal — it just reports as unpriced, which is the
+# module's designed, visible failure. Pinned by
+# tests/unit/infrastructure/llm/test_provider_schema_invariants.py.
 PROVIDER_SCHEMA = {
     "fireworks": {
         "api_key_var": "FIREWORKS_API_KEY",
@@ -115,11 +123,8 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://api.fireworks.ai/inference/v1",
         "default_model": "accounts/fireworks/models/deepseek-v4-flash",
         "available_models": [
-            "accounts/fireworks/models/llama-v3p1-8b-instruct",
-            "accounts/fireworks/models/llama-v3p1-70b-instruct",
-            "accounts/fireworks/models/qwen2p5-coder-32b-instruct",
-            "accounts/fireworks/models/deepseek-v3",
             "accounts/fireworks/models/deepseek-v4-flash",
+            "accounts/fireworks/models/deepseek-v3",
         ],
         "provider_class": FireworksProvider,
         "confidence_score": 0.9,
@@ -133,11 +138,6 @@ PROVIDER_SCHEMA = {
         "available_models": [
             "gpt-5.6-luna",
             "gpt-5.4-mini",
-            "gpt-4.1-mini",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "o3-mini",
         ],
         "provider_class": OpenAIProvider,
         "confidence_score": 0.85,
@@ -203,7 +203,6 @@ PROVIDER_SCHEMA = {
             "claude-sonnet-4-6",
             "claude-opus-4-6",
             "claude-haiku-4-5-20251001",
-            "claude-3-5-sonnet-20241022",
         ],
         "provider_class": AnthropicProvider,
         "confidence_score": 0.85,
@@ -215,7 +214,6 @@ PROVIDER_SCHEMA = {
         "default_base_url": "https://api.groq.com/openai/v1",
         "default_model": "llama-3.3-70b-versatile",
         "available_models": [
-            "meta-llama/Llama-4-Scout-17B-16E-Instruct",
             "llama-3.3-70b-versatile",
             "llama-3.1-8b-instant",
         ],
@@ -231,7 +229,6 @@ PROVIDER_SCHEMA = {
         "available_models": [
             "command-r-plus",
             "command-r",
-            "command-light",
         ],
         "provider_class": CohereProvider,
         "confidence_score": 0.82,

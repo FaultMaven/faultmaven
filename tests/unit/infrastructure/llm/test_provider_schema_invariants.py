@@ -58,3 +58,58 @@ def test_dynamic_catalog_providers_have_empty_available_models() -> None:
             f"available_models {PROVIDER_SCHEMA[provider]['available_models']!r}; "
             "remove the static list or drop it from _DYNAMIC_CATALOG_PROVIDERS."
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "provider",
+    [p for p in PROVIDER_SCHEMA if p not in _DYNAMIC_CATALOG_PROVIDERS],
+)
+def test_every_offered_model_is_priced(provider: str) -> None:
+    """Every drop-down option must have a rate in the pricing table.
+
+    An admin picking a model from the UI must not silently produce $0 cost
+    reporting: ``estimate_cost_usd`` returns ``priced=False`` for an unknown
+    model, which the metering layer counts on a separate unpriced counter
+    rather than surfacing as spend. That honest-undercount design is the right
+    behaviour for a model an operator pinned by hand — it is the wrong
+    behaviour for one the product itself offered.
+
+    Audited 2026-08-26: nine offered models across five providers were unpriced
+    (fireworks llama-v3p1-8b/70b + qwen2p5-coder, openai gpt-4-turbo + o3-mini,
+    anthropic claude-3-5-sonnet-20241022, groq Llama-4-Scout, cohere
+    command-light). Adding a model to a picker now means pricing it, or the
+    build fails here.
+    """
+    from faultmaven.infrastructure.llm.pricing import lookup_rates
+
+    unpriced = [
+        model
+        for model in PROVIDER_SCHEMA[provider]["available_models"]
+        if lookup_rates(provider, model) is None
+    ]
+    assert not unpriced, (
+        f"{provider!r} offers {unpriced!r} in the dashboard picker, but "
+        "infrastructure/llm/pricing.py has no rate for them — calls would "
+        "report $0 spend. Add a rate row, or drop the model from "
+        "available_models."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("provider", list(PROVIDER_SCHEMA))
+def test_default_model_is_priced(provider: str) -> None:
+    """The default is what runs when nobody chooses — it must be priced.
+
+    Covers the dynamic-catalog providers too (whose default is not in any
+    list), because an unpriced DEFAULT means a deployment that changed nothing
+    reports zero spend.
+    """
+    from faultmaven.infrastructure.llm.pricing import lookup_rates
+
+    default = PROVIDER_SCHEMA[provider]["default_model"]
+    assert lookup_rates(provider, default) is not None, (
+        f"{provider!r} default_model {default!r} has no rate in "
+        "infrastructure/llm/pricing.py — a deployment that changed nothing "
+        "would report $0 spend."
+    )
