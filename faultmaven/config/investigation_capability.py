@@ -325,3 +325,129 @@ def validate_investigation_tooling(settings: "Settings", registry: Any) -> None:
         f"tool calling to gather evidence (search_file, deep_analysis); without "
         f"it, it would draw conclusions without reaching the evidence. " + remedy
     )
+
+
+# --- Axis 3 (advisory): schema-ENFORCEMENT class per resolved role ------------
+#
+# Distinct from axis 2 above: capacity asks "does the backend accept the
+# engine's schemas at all"; enforcement class asks "is the schema natively
+# ENFORCED (STRICT / forced tool use) or merely requested in-prompt
+# (BEST_EFFORT)". On a best-effort model the LLM can rename or omit required
+# fields, the engine then drops the turn's ``state_updates``, and the
+# investigation degrades with no error — a per-role property of the resolved
+# model, so it is checked per resolved role.
+#
+# Advisory (warning), not a gate: best-effort chat/investigation deployments
+# are documented and deliberately supported (demo/eval on Fireworks among
+# them), and the engine has a runtime accommodation for the class. The check
+# exists so the state is visible at boot instead of discovered from degraded
+# investigations. Classifier/synthesis roles are deliberately NOT checked:
+# their outputs are small/enum-like and best-effort is acceptable there.
+
+_UNENFORCED_CLASSES = ("best_effort", "none")
+
+
+def _enforcement_class(registry: Any, provider_name: str, model: str) -> Optional[str]:
+    """The provider's structured-output capability value for *model*, or
+    ``None`` when it cannot be determined (fail open on ignorance — same
+    philosophy as axis 2). String-compared, not enum-compared, so this
+    config-layer module stays free of an infrastructure import."""
+    try:
+        provider = registry.get_provider(provider_name)
+        if provider is None:
+            return None
+        probe = getattr(provider, "get_structured_output_capability", None)
+        if probe is None:
+            return None
+        capability = probe(model)
+    except Exception:
+        return None
+    value = getattr(capability, "value", None)
+    return value if isinstance(value, str) else None
+
+
+def warn_best_effort_enforcement(settings: "Settings", registry: Any) -> None:
+    """Advisory startup check: warn when the investigation or chat role
+    resolves to a model whose schemas are only best-effort.
+
+    Pure and never raises; logs at WARNING when an unenforced role is
+    uncompensated, at INFO when a STRUCTURED_OUTPUT_PROVIDER override routes
+    the schema-bound calls somewhere enforced (the documented escape hatch),
+    and stays silent when the class cannot be determined.
+    """
+    try:
+        llm = settings.llm
+
+        da_provider = llm.get_da_provider()
+        roles: list[tuple[str, str, str]] = [
+            (
+                "investigation (DA→CHAT)",
+                (
+                    da_provider.value
+                    if hasattr(da_provider, "value")
+                    else str(da_provider)
+                ),
+                llm.get_da_model(),
+            )
+        ]
+        chat_provider = llm.provider
+        chat_pair = (
+            (
+                chat_provider.value
+                if hasattr(chat_provider, "value")
+                else str(chat_provider)
+            ),
+            llm.get_model("chat"),
+        )
+        if chat_pair == (roles[0][1], roles[0][2]):
+            roles[0] = ("investigation/chat", roles[0][1], roles[0][2])
+        else:
+            roles.append(("chat", chat_pair[0], chat_pair[1]))
+
+        # Compensation: schema-bound calls are routed elsewhere only when the
+        # operator explicitly set STRUCTURED_OUTPUT_PROVIDER — and it only
+        # helps if that route is actually enforced.
+        compensated = False
+        so_provider_name = so_model = None
+        if getattr(llm, "structured_output_provider", None) is not None:
+            so_enum = llm.get_structured_output_provider()
+            so_provider_name = (
+                so_enum.value if hasattr(so_enum, "value") else str(so_enum)
+            )
+            so_model = llm.get_structured_output_model()
+            so_class = _enforcement_class(registry, so_provider_name, so_model)
+            compensated = so_class is not None and so_class not in _UNENFORCED_CLASSES
+
+        for role, provider_name, model in roles:
+            enforcement = _enforcement_class(registry, provider_name, model)
+            if enforcement is None or enforcement not in _UNENFORCED_CLASSES:
+                continue
+            if compensated:
+                logger.info(
+                    "%s model %s/%s reports %s structured output, but "
+                    "STRUCTURED_OUTPUT_PROVIDER=%s (%s) carries the "
+                    "schema-bound calls with native enforcement — acceptable.",
+                    role,
+                    provider_name,
+                    model,
+                    enforcement.upper(),
+                    so_provider_name,
+                    so_model,
+                )
+            else:
+                logger.warning(
+                    "%s model %s/%s reports %s structured output: the engine "
+                    "can only request its response schema in-prompt, so "
+                    "dropped/renamed required fields silently degrade recorded "
+                    "investigation state. Best-effort is fine for "
+                    "classifier/synthesis roles, not here — use a "
+                    "schema-enforcing provider for this role, or set "
+                    "STRUCTURED_OUTPUT_PROVIDER to route just the schema-bound "
+                    "calls to one.",
+                    role,
+                    provider_name,
+                    model,
+                    enforcement.upper(),
+                )
+    except Exception as exc:  # advisory — must never block boot
+        logger.debug("Enforcement-class check skipped: %s", exc)

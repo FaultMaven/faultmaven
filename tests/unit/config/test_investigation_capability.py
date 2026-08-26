@@ -262,3 +262,161 @@ def test_capacity_gate_has_no_opt_out_flag():
     settings.llm.allow_toolless_investigation = True  # unrelated flag, must not help
     with pytest.raises(StructuredOutputCapacityError):
         validate_structured_output_capacity(settings, _Registry(_SchemaProvider(False)))
+
+
+# --- Axis 3 (advisory): warn_best_effort_enforcement --------------------------
+#
+# Warning-only: best-effort chat/investigation is supported (demo/eval), but
+# must be VISIBLE at boot rather than discovered from silently degraded
+# investigations. Never blocks, never raises; classifier/synthesis exempt.
+
+import logging as _logging
+
+from faultmaven.config.investigation_capability import warn_best_effort_enforcement
+
+
+class _EnforcementProvider:
+    def __init__(self, capability_value):
+        self._value = capability_value
+
+    def get_structured_output_capability(self, model=None):
+        return NS(value=self._value)
+
+
+class _PerProviderRegistry:
+    """get_provider by name — lets chat and structured-output differ."""
+
+    def __init__(self, providers):
+        self._providers = providers
+
+    def get_provider(self, name):
+        return self._providers.get(name)
+
+
+def _enforcement_settings(
+    provider_name="fireworks",
+    model="deepseek-v4-flash",
+    *,
+    da_set=False,
+    da_provider_name=None,
+    da_model=None,
+    so_provider_name=None,
+    so_model="gpt-5.4-mini",
+):
+    prov = NS(value=provider_name)
+    da_prov = NS(value=da_provider_name) if da_provider_name else prov
+    so_prov = NS(value=so_provider_name) if so_provider_name else None
+    llm = NS(
+        provider=prov,
+        da_provider=(da_prov if da_set else None),
+        structured_output_provider=so_prov,
+        get_da_provider=lambda: (da_prov if da_set else prov),
+        get_da_model=lambda: (da_model if da_set and da_model else model),
+        get_model=lambda task="chat": model,
+        get_structured_output_provider=lambda: so_prov,
+        get_structured_output_model=lambda: so_model,
+    )
+    return NS(llm=llm)
+
+
+def test_best_effort_chat_warns_once_for_coinciding_roles(caplog):
+    """DA unset → investigation and chat resolve identically → ONE warning
+    naming both, not two."""
+    settings = _enforcement_settings()
+    registry = _PerProviderRegistry({"fireworks": _EnforcementProvider("best_effort")})
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
+    assert len(warnings) == 1
+    assert "investigation/chat" in warnings[0].message
+    assert "BEST_EFFORT" in warnings[0].message
+
+
+def test_enforced_models_stay_silent(caplog):
+    settings = _enforcement_settings(provider_name="openai", model="gpt-5.4-mini")
+    registry = _PerProviderRegistry({"openai": _EnforcementProvider("strict")})
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(settings, registry)
+    assert not [r for r in caplog.records if r.levelno >= _logging.INFO]
+
+
+def test_function_calling_counts_as_enforced(caplog):
+    settings = _enforcement_settings(provider_name="anthropic", model="claude-x")
+    registry = _PerProviderRegistry(
+        {"anthropic": _EnforcementProvider("function_calling")}
+    )
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    assert not caplog.records
+
+
+def test_da_override_checks_both_roles_separately(caplog):
+    """DA on a best-effort provider + chat on STRICT → exactly one warning,
+    for the investigation role only."""
+    settings = _enforcement_settings(
+        provider_name="openai",
+        model="gpt-5.4-mini",
+        da_set=True,
+        da_provider_name="fireworks",
+        da_model="deepseek-v4-flash",
+    )
+    registry = _PerProviderRegistry(
+        {
+            "openai": _EnforcementProvider("strict"),
+            "fireworks": _EnforcementProvider("best_effort"),
+        }
+    )
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    warnings = [r for r in caplog.records if r.levelno == _logging.WARNING]
+    assert len(warnings) == 1
+    assert "investigation (DA→CHAT)" in warnings[0].message
+    assert "fireworks" in warnings[0].message
+
+
+def test_structured_output_override_downgrades_to_info(caplog):
+    """An explicitly-set, ENFORCED structured-output route compensates: INFO,
+    not WARNING (the escape hatch the warning itself recommends)."""
+    settings = _enforcement_settings(so_provider_name="openai")
+    registry = _PerProviderRegistry(
+        {
+            "fireworks": _EnforcementProvider("best_effort"),
+            "openai": _EnforcementProvider("strict"),
+        }
+    )
+    with caplog.at_level(_logging.INFO):
+        warn_best_effort_enforcement(settings, registry)
+    assert not [r for r in caplog.records if r.levelno == _logging.WARNING]
+    infos = [r for r in caplog.records if r.levelno == _logging.INFO]
+    assert len(infos) == 1
+    assert "STRUCTURED_OUTPUT_PROVIDER" in infos[0].message
+
+
+def test_best_effort_structured_override_does_not_compensate(caplog):
+    settings = _enforcement_settings(so_provider_name="groq", so_model="llama-x")
+    registry = _PerProviderRegistry(
+        {
+            "fireworks": _EnforcementProvider("best_effort"),
+            "groq": _EnforcementProvider("best_effort"),
+        }
+    )
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, registry)
+    assert [r for r in caplog.records if r.levelno == _logging.WARNING]
+
+
+def test_unknown_capability_fails_open_silently(caplog):
+    """No provider / no probe / raising probe → no verdict, no warning (same
+    fail-open-on-ignorance philosophy as axis 2)."""
+    settings = _enforcement_settings()
+    with caplog.at_level(_logging.WARNING):
+        warn_best_effort_enforcement(settings, _PerProviderRegistry({}))
+        warn_best_effort_enforcement(settings, _RaisingRegistry())
+        warn_best_effort_enforcement(
+            settings, _PerProviderRegistry({"fireworks": _Provider(True)})
+        )
+    assert not caplog.records
+
+
+def test_never_raises_on_malformed_settings():
+    warn_best_effort_enforcement(NS(llm=NS()), _PerProviderRegistry({}))
