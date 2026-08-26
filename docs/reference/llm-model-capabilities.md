@@ -16,6 +16,39 @@ Provider capability matrix for FaultMaven's LLM routing system. These capabiliti
 | Local (Ollama/vLLM) | Model-dependent | Model-dependent | functionary/hermes: tool calling supported |
 | OpenRouter | Inherited | Inherited | Depends on underlying model |
 
+## Role Routing
+
+Every LLM-calling role can be pinned to its own (provider, model). The role
+provider falls back to `CHAT_PROVIDER` when unset; the role's model resolves
+`{PROVIDER}_{ROLE}_MODEL` → that provider's `{PROVIDER}_MODEL` — so two roles
+on the SAME provider can run different models (e.g. `OPENAI_MODEL` for chat,
+a cheaper `OPENAI_CLASSIFIER_MODEL` for the classifier).
+
+| Role env key | Routes which function | Falls back to | Notes |
+|---|---|---|---|
+| `CHAT_PROVIDER` | Everything by default: investigation engine turns, all conversation | — | Required; boot refuses without it and its API key |
+| `DA_PROVIDER` | Directed Analysis tool loop — the evidence-gathering iterations (`search_file`, `deep_analysis`, KB lookups) inside investigation turns | `CHAT_PROVIDER` | The startup tool-calling gate validates the resolved DA→CHAT (provider, model) |
+| `STRUCTURED_OUTPUT_PROVIDER` | Schema-bound engine calls (the response-schema tool / structured output) | `CHAT_PROVIDER` | The escape hatch for a best-effort chat provider: force just the schema-bound calls onto a STRICT-capable provider. A DA override gets first dibs on the tool path |
+| `CLASSIFIER_PROVIDER` | Intent resolver (typed replies vs. offered suggestions) + document triage in knowledge preprocessing | `CHAT_PROVIDER` | Best-effort models are acceptable here (small, enum-like outputs) |
+| `SYNTHESIS_PROVIDER` | QA sub-agent answer synthesis — `kb_qa` / `global_kb_qa` / `user_kb_qa` / `case_evidence_qa` / `document_qa` answers | `CHAT_PROVIDER` | Best-effort acceptable here too |
+| `KNOWLEDGE_PROVIDER` | Document→runbook conversion (failure-mode analysis + runbook drafting) | `CHAT_PROVIDER` | |
+| `MULTIMODAL_PROVIDER` | Visual extractor (image/screenshot analysis in preprocessing) | `CHAT_PROVIDER` | Builds its own client from provider+key+model; does not go through the router |
+| `CODE_PROVIDER` | **Nothing — unwired.** The setting, getter and per-task model fields exist, but no code path consumes them | — | Wire it or remove it; until then it is dead config surface |
+
+Role routing is **static assignment**, not fallback: an explicitly-set role
+provider is routed deterministically (no fallback chain for that call) and
+needs its own `*_API_KEY` configured. Startup checks evaluate the resolved
+per-role models: tool calling (hard gate, DA→CHAT), engine-schema capacity
+(hard gate, STRUCTURED_OUTPUT→CHAT), and schema-enforcement class (warning
+when investigation/chat resolve to a BEST_EFFORT model; classifier/synthesis
+exempt by design).
+
+Provider-wide reasoning knobs (not per-role): `OPENAI_REASONING_EFFORT`
+(none|low|medium|high, unset = shape-based defaults) and
+`ANTHROPIC_THINKING_MODE` / `ANTHROPIC_THINKING_BUDGET_TOKENS`. The
+key-by-key reference with defaults is `.env.example` (CI-synced to
+`settings.py`).
+
 ## Capability Definitions
 
 ### Tool Calling
@@ -98,12 +131,16 @@ Fireworks — that has not been true since the V2/R1-era block was lifted.
 
 ## Configuration
 
-Provider and model selection is configured in `config/settings.py` under `LLMSettings`. The fallback chain determines which provider is primary and which are fallbacks.
+Provider and model selection is configured in `config/settings.py` under `LLMSettings`. The fallback chain determines which provider is primary and which are fallbacks (with `STRICT_PROVIDER_MODE=true`, the default, there are no fallbacks).
 
 ```env
-# Provider selection
-LLM_PROVIDER=fireworks
-FIREWORKS_MODELS=accounts/fireworks/models/deepseek-v3
+# Provider selection — always set the model EXPLICITLY with the provider
+CHAT_PROVIDER=fireworks
+FIREWORKS_MODEL=accounts/fireworks/models/deepseek-v4-flash
+
+# Per-role overrides (see Role Routing above)
+# CLASSIFIER_PROVIDER=gemini
+# GEMINI_CLASSIFIER_MODEL=gemini-3.5-flash-lite
 
 # Timeout — global default; per-provider override below for slow models
 LLM_REQUEST_TIMEOUT=90
