@@ -129,9 +129,16 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
-.env.bak*
-.env.*.bak
+# Deny every dotenv variant, at any depth. The narrow rules this replaces
+# (".env", ".env.bak*", ".env.*.bak", ".env.backup*") left ".env-back",
+# ".env.old", ".env.save" and friends writable to the index -- and a
+# ".env-back" is exactly how live provider keys reached this repo's history.
+# Only the tracked template is exempt.
+.env*
+!.env.example
+# Same mistake without the leading dot.
+env.backup*
+env-back*
 .venv
 env/
 venv/
@@ -213,7 +220,6 @@ venv-*/
 .faultmaven/
 .faultmaven.pid
 .faultmaven-dev.pid
-.env.backup*
 
 # Cryptographic keys and certificates (SECURITY)
 # Never commit private keys, certificates, or other cryptographic secrets

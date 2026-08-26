@@ -360,16 +360,20 @@ class SLAMonitor(BaseExternalClient):
                     "smtp_server": "smtp.faultmaven.com",
                     "smtp_port": 587,
                     "username": "alerts@faultmaven.com",
-                    "password": "secure_password",  # Would use environment variable
+                    # Would use environment variable
+                    "password": "secure_password",  # pragma: allowlist secret
                 },
                 rate_limit_per_hour=10,
             ),
             AlertChannel(
                 channel_id="slack_alerts",
                 channel_type="slack",
-                endpoint="https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX",
+                # Named placeholder, not a webhook-shaped literal: the previous
+                # "T00000000/B00000000/X..." form matched secret scanners on
+                # structure alone and re-alerted on every push.
+                endpoint="slack_webhook_url",  # Would use environment variable
                 credentials={
-                    "webhook_url": "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+                    "webhook_url": "slack_webhook_url"  # Would use environment variable
                 },
                 rate_limit_per_hour=20,
             ),
@@ -388,8 +392,8 @@ class SLAMonitor(BaseExternalClient):
                 channel_type="webhook",
                 endpoint="https://monitoring.faultmaven.com/alerts",
                 credentials={
-                    "api_key": "monitoring_api_key",
-                    "secret": "monitoring_secret",
+                    "api_key": "monitoring_api_key",  # pragma: allowlist secret
+                    "secret": "monitoring_secret",  # pragma: allowlist secret
                 },
                 rate_limit_per_hour=100,
             ),
