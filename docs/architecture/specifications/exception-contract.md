@@ -280,19 +280,41 @@ third from fm#1156:
    unauthenticated caller.
 3. **`input` is echoed only when it names one field's value** — in the
    response *and* in the ERROR log, which carry the same sanitized
-   errors. `input` is otherwise the caller's whole payload, and on
-   `/auth/refresh`, `/auth/login` or `PUT /admin/llm/config` that
-   payload is a refresh token, a password or a provider API key. Two
-   cases are not one field's value: `loc == ("body",)`, where the whole
-   body failed to bind; and the `missing*` error types, where no value
-   exists at `loc` so pydantic substitutes the object the field is
-   missing *from* (`loc` reads field-level while `input` is the
-   enclosing object — this is what fm#1156 was). The log adds only
-   `describe_request_body`'s content-free shape (`<dict: 2 keys>`,
-   `<bytes: 57 bytes>`); it must never carry `exc.body` itself, because
-   there is no redaction processor in the structlog chain to catch it
-   downstream. Field-level errors of every other type keep their
-   `input` — it is what makes a 422 actionable.
+   errors. `input` is otherwise an object of the caller's other fields,
+   and on `/auth/refresh`, `/auth/login` or `PUT /admin/llm/config`
+   those fields are a refresh token, a password or a provider API key.
+   Three shapes are not one field's value:
+
+   - `loc == ("body",)` — the whole body failed to bind, so `input` is
+     the body;
+   - `missing`, `missing_argument`, `missing_keyword_only_argument` or
+     `missing_positional_only_argument` **with an aggregate `input`** —
+     no value exists at `loc`, so pydantic substitutes the object the
+     field is missing *from*, and `loc` reads field-level while `input`
+     is the enclosing object. This is what fm#1156 was. The four are
+     named rather than prefix-matched: pydantic's fifth `missing*` type,
+     `missing_sentinel_error`, reports the supplied value like any other
+     and keeps its `input`. The aggregate condition matters too —
+     FastAPI hard-codes `input=None` for a missing query, header,
+     cookie, path or form field, where nothing was ever enclosed, and
+     those keep their `null`;
+   - `value_error` or `assertion_error` **with a Mapping `input`** — a
+     `@model_validator` failing on a sub-object reports that whole
+     sub-object, so one cross-field check discloses every field in it.
+
+   This is deliberately **not** a complete classification and cannot be
+   one here: a pydantic error carries no schema, so a mapping that is a
+   model object and a mapping that is one field's own dict value are
+   indistinguishable at runtime, and invariant 2 exists precisely to
+   bound the latter rather than withhold it. A model validator raising
+   `PydanticCustomError` with its own type string is the known residual.
+
+   The log adds only `describe_request_body`'s content-free shape
+   (`<dict: 2 items>`, `<bytes: 57 bytes>`) and logs `request.url.path`
+   rather than `request.url`; it must never carry `exc.body` itself,
+   because there is no redaction processor in the structlog chain to
+   catch it downstream. Field-level errors of every other type keep
+   their `input` — it is what makes a 422 actionable.
 
 ## Route Pattern
 
