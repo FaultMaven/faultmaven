@@ -23,12 +23,13 @@ from __future__ import annotations
 import json
 import logging
 from typing import List, Optional
+from urllib.parse import urlencode
 
 import pytest
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.datastructures import FormData
 
 from faultmaven.api.exception_handlers import (
@@ -36,6 +37,8 @@ from faultmaven.api.exception_handlers import (
     _AGGREGATE_INPUT_TYPES,
     _NO_VALUE_AT_LOC_TYPES,
     _NO_VALUE_ECHO,
+    _UNDECLARED_ECHO,
+    _UNDECLARED_FIELD_TYPES,
     MAX_VALIDATION_ERRORS,
     MAX_VALIDATION_INPUT_BYTES,
     describe_request_body,
@@ -351,6 +354,19 @@ class CheckedBody(BaseModel):
     credentials: CheckedCredentials
 
 
+class StrictRefreshBody(BaseModel):
+    """`/auth/refresh`'s shape, with `extra="forbid"` added.
+
+    No credential model in the repo forbids extras today, so this is what one
+    would look like the day someone tightens one — which is when the
+    `extra_forbidden` echo would activate, silently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    refresh_token: str
+
+
 class _Capture(logging.Handler):
     """Collect records off the handler's own logger.
 
@@ -367,7 +383,20 @@ class _Capture(logging.Handler):
         self.records.append(record)
 
     def everything(self) -> str:
-        """Every channel of every record, as one searchable string."""
+        """Every channel of every record, as one searchable string.
+
+        Asserts here rather than in the fixture's teardown. Every test using
+        this provokes a 422, and a 422 always logs, so an empty capture means
+        the record never reached the handler — and every "the secret is not in
+        the log" assertion below would then pass on nothing. In teardown that
+        surfaces as an ERROR against the fixture, after the test it was
+        protecting has already reported success; here it fails the assertion
+        that relied on it, which is what a reader needs to see.
+        """
+        assert self.records, (
+            "no ERROR record was captured, so this assertion about what the "
+            "log does not contain would be vacuous"
+        )
         return json.dumps(
             [
                 {
@@ -383,13 +412,10 @@ class _Capture(logging.Handler):
 
 @pytest.fixture
 def logs():
-    """Capture the handler's ERROR records, and refuse to capture none.
+    """Capture the handler's own ERROR records.
 
-    Every test using this fixture provokes a 422, and a 422 always logs. So an
-    empty capture means the record never reached the handler — a logger silenced
-    somewhere, an exception swallowed — and the "the secret is not in the log"
-    assertions would all pass on nothing. Failing here keeps a vacuous pass from
-    reading as a security guarantee.
+    The anti-vacuity check lives in :meth:`_Capture.everything`, not here — see
+    the note there.
     """
     capture = _Capture()
     handler_logger = logging.getLogger("faultmaven.api.exception_handlers")
@@ -398,10 +424,6 @@ def logs():
         yield capture
     finally:
         handler_logger.removeHandler(capture)
-    assert capture.records, (
-        "no ERROR record was captured, so every assertion about what the log "
-        "does not contain was vacuous"
-    )
 
 
 @pytest.fixture
@@ -430,6 +452,10 @@ def auth_client() -> TestClient:
 
     @app.post("/checked")
     async def checked_endpoint(request_body: CheckedBody) -> dict:
+        return {"ok": True}
+
+    @app.post("/strict-refresh")
+    async def strict_refresh_endpoint(request_body: StrictRefreshBody) -> dict:
         return {"ok": True}
 
     @app.get("/search")
@@ -557,8 +583,12 @@ def test_error_log_does_not_carry_a_form_encoded_body(auth_client, logs):
     assert SECRET_REFRESH not in logs.everything()
 
     # Still distinguishable from a JSON body at a glance, which is what the
-    # logged body was actually good for when #1048 was diagnosed.
-    assert getattr(logs.records[0], "body") == "<bytes: 57 bytes>"
+    # logged body was actually good for when #1048 was diagnosed. The length is
+    # computed, not written down: hard-coding it couples this assertion to
+    # SECRET_REFRESH, so editing that constant breaks this test with a message
+    # naming neither it nor the coupling.
+    encoded = urlencode({"refresh_token": SECRET_REFRESH}).encode()
+    assert getattr(logs.records[0], "body") == f"<bytes: {len(encoded)} bytes>"
 
 
 @pytest.mark.unit
@@ -591,6 +621,38 @@ def test_model_validator_on_a_sub_object_does_not_echo_its_fields(auth_client, l
     assert errors[0]["loc"] == ["body", "credentials"]
     assert "inconsistent" in errors[0]["msg"]
     assert errors[0]["input"] == _AGGREGATE_ECHO
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.api
+def test_an_undeclared_field_does_not_echo_its_value(auth_client, logs):
+    """The mis-key case, half-closed: `missing` was guarded, `extra` was not.
+
+    One camelCase key against a forbidding model produces *two* errors. The
+    `missing` on `refresh_token` is withheld by the aggregate rule; the
+    `extra_forbidden` on `refreshToken` carries the live token as its own
+    value, so none of the shape-based rules fire. The endpoint never declared
+    that field, so the API has no schema for it and cannot know it is not a
+    credential — and an undeclared field is most often a mis-keyed declared
+    one, which is exactly how the token got there.
+    """
+    response = auth_client.post(
+        "/strict-refresh", json={"refreshToken": SECRET_REFRESH}
+    )
+
+    errors = _errors(response)
+    assert SECRET_REFRESH not in response.text
+    assert SECRET_REFRESH not in logs.everything()
+
+    by_type = {e["type"]: e for e in errors}
+    assert set(by_type) == {"missing", "extra_forbidden"}, errors
+    assert by_type["missing"]["input"] == _NO_VALUE_ECHO
+
+    # The key is named — that IS the diagnosis, and it is what the caller fixes.
+    extra = by_type["extra_forbidden"]
+    assert extra["loc"] == ["body", "refreshToken"]
+    assert extra["input"] == _UNDECLARED_ECHO
 
 
 @pytest.mark.unit
@@ -778,6 +840,9 @@ def test_model_validator_types_are_pinned_against_pydantic():
     assert (
         _AGGREGATE_INPUT_TYPES <= catalogue
     ), f"pydantic no longer defines {_AGGREGATE_INPUT_TYPES - catalogue}"
+    assert (
+        _UNDECLARED_FIELD_TYPES <= catalogue
+    ), f"pydantic no longer defines {_UNDECLARED_FIELD_TYPES - catalogue}"
 
 
 @pytest.mark.unit

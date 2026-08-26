@@ -278,29 +278,48 @@ third from fm#1156:
    A body-level error's `input` is the entire request body, so an
    unbounded echo would mirror up to `MAX_UPLOAD_SIZE_MB` back at an
    unauthenticated caller.
-3. **`input` is echoed only when it names one field's value** — in the
-   response *and* in the ERROR log, which carry the same sanitized
-   errors. `input` is otherwise an object of the caller's other fields,
-   and on `/auth/refresh`, `/auth/login` or `PUT /admin/llm/config`
-   those fields are a refresh token, a password or a provider API key.
-   Three shapes are not one field's value:
+3. **`input` is echoed only where echoing it discloses nothing beyond
+   the one field the endpoint declared and the error is about** — in
+   the response *and* in the ERROR log, which carry the same sanitized
+   errors. Otherwise `input` is an object of the caller's other fields,
+   or a field the API never declared, and on `/auth/refresh`,
+   `/auth/login` or `PUT /admin/llm/config` those are a refresh token, a
+   password or a provider API key. `sanitize_validation_error` withholds
+   it in five cases, in this order (the order matters only so that the
+   placeholder a caller sees is the accurate one):
 
-   - `loc == ("body",)` — the whole body failed to bind, so `input` is
-     the body;
-   - `missing`, `missing_argument`, `missing_keyword_only_argument` or
-     `missing_positional_only_argument` **with an aggregate `input`** —
-     no value exists at `loc`, so pydantic substitutes the object the
-     field is missing *from*, and `loc` reads field-level while `input`
-     is the enclosing object. This is what fm#1156 was. The four are
-     named rather than prefix-matched: pydantic's fifth `missing*` type,
-     `missing_sentinel_error`, reports the supplied value like any other
-     and keeps its `input`. The aggregate condition matters too —
-     FastAPI hard-codes `input=None` for a missing query, header,
-     cookie, path or form field, where nothing was ever enclosed, and
-     those keep their `null`;
-   - `value_error` or `assertion_error` **with a Mapping `input`** — a
-     `@model_validator` failing on a sub-object reports that whole
-     sub-object, so one cross-field check discloses every field in it.
+   1. `loc == ("body",)` — the error is about the body, so `input` is
+      the body;
+   2. `missing`, `missing_argument`, `missing_keyword_only_argument` or
+      `missing_positional_only_argument` **with an aggregate `input`** —
+      no value exists at `loc`, so pydantic substitutes the object the
+      field is missing *from*, and `loc` reads field-level while `input`
+      is the enclosing object. This is what fm#1156 was. The four are
+      named rather than prefix-matched: pydantic's fifth `missing*`
+      type, `missing_sentinel_error`, reports the supplied value like
+      any other and keeps its `input`. The aggregate condition matters
+      too — FastAPI hard-codes `input=None` for a missing query, header,
+      cookie, path or form field, where nothing was ever enclosed, and
+      those keep their `null`;
+   3. `value_error` or `assertion_error` **with a Mapping `input`** — a
+      `@model_validator` failing on a sub-object reports that whole
+      sub-object, so one cross-field check discloses every field in it;
+   4. `extra_forbidden`, `unexpected_keyword_argument` or
+      `unexpected_positional_argument`, unconditionally — here `input`
+      really is one field's value, but the field is one the endpoint
+      never declared, so the API has no schema for it and cannot know it
+      is not a credential. An undeclared field is most often a mis-keyed
+      declared one, so this is fm#1156's own headline case arriving
+      under a different type: `{"refreshToken": ...}` against a
+      forbidding model yields a guarded `missing` *and* an
+      `extra_forbidden` carrying the token. This case is why the
+      invariant is phrased as "declared" rather than "one field's
+      value";
+   5. `input is exc.body` at any `loc` — defence in depth for an error
+      type reporting the whole body somewhere the rules above do not
+      name. Guarded by `body is not None`, since `exc.body` is None for
+      a GET and for a JSON `null` body and an unguarded identity test
+      would rewrite every honest `input: null`.
 
    This is deliberately **not** a complete classification and cannot be
    one here: a pydantic error carries no schema, so a mapping that is a

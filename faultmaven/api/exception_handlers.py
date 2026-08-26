@@ -676,8 +676,9 @@ MAX_VALIDATION_ERRORS = 50
 # rather than the whole payload.
 _WHOLE_BODY_LOC = ("body",)
 
-# Beyond that, `input` is echoed only when it names ONE field's value. Two
-# shapes reach this handler where it does not, and both were live #1156 leaks:
+# Beyond that, `input` is echoed only where echoing it discloses nothing
+# beyond the one field the endpoint DECLARED and the error is about. Three
+# shapes reach this handler where that does not hold:
 #
 #  * a **missing** field. No value exists at `loc`, so pydantic substitutes the
 #    object the field is missing FROM. `loc` reads field-level while `input` is
@@ -688,6 +689,17 @@ _WHOLE_BODY_LOC = ("body",)
 #  * a **model-level validator failure** on a sub-object. `@model_validator`
 #    raising reports the whole sub-object as `input` at the sub-object's `loc`,
 #    so one cross-field check discloses every sibling field inside it.
+#  * an **undeclared field** (`extra="forbid"`). Here `input` really is one
+#    field's value — but the field is one the endpoint never declared, so the
+#    API has no schema for it and cannot know it is not a credential. That is
+#    not hypothetical: an undeclared field is most often a *mis-keyed* declared
+#    one, which is #1156's own headline case. `POST /auth/refresh` with
+#    `{"refreshToken": ...}` against a forbidding model yields two errors — a
+#    `missing` on `refresh_token`, guarded, and an `extra_forbidden` on
+#    `refreshToken` carrying the live token. Withholding costs nothing: the
+#    fix is to remove or rename the key, which `loc` and `msg` already say.
+#    This is why the rule is phrased as "declared" rather than "one field's
+#    value" — the narrower phrasing let this through, and did so silently.
 #
 # Type-keyed, not keyed on identity with `exc.body`: identity holds only for a
 # flat body model. Measured across the shapes FastAPI builds —
@@ -751,6 +763,19 @@ _NO_VALUE_AT_LOC_TYPES = frozenset(
 # echoing every model object.
 _AGGREGATE_INPUT_TYPES = frozenset({"value_error", "assertion_error"})
 
+# A value supplied under a name the endpoint does not declare. `extra_forbidden`
+# is the body-model spelling; the other two are what `validate_call` raises for
+# the same thing, enumerated for the same symmetry as the missing family above.
+# No condition on the value: unlike the rules above, this one is not about the
+# input's *shape* but about the API having no schema for it at all.
+_UNDECLARED_FIELD_TYPES = frozenset(
+    {
+        "extra_forbidden",
+        "unexpected_keyword_argument",
+        "unexpected_positional_argument",
+    }
+)
+
 # Withholding costs nothing here: for a missing field `input` is not the
 # field's value, and `loc` + `msg` ("Field required") already say everything
 # the caller needs to fix the request.
@@ -759,6 +784,27 @@ _NO_VALUE_ECHO = "<input not echoed: no value was supplied at this location>"
 # Here it costs the object's other keys, which is the point — `loc`, `msg` and
 # `ctx` still name the field and the reason it was rejected.
 _AGGREGATE_ECHO = "<input not echoed: the value here holds other supplied fields>"
+
+# Naming the key is the whole diagnosis for an undeclared field; its value
+# adds nothing, because the fix is to drop or rename the key.
+_UNDECLARED_ECHO = "<input not echoed: this field is not one the endpoint declares>"
+
+
+def _byte_count(value: Any) -> Optional[int]:
+    """Bytes in a bytes-like value, or None if it is not one.
+
+    Shared by :func:`_withheld_input`'s placeholder and
+    :func:`describe_request_body` so the two cannot disagree about which types
+    carry a byte count — they did, over ``memoryview``, which
+    ``utils.serialization`` also treats as body-like on this same path.
+    ``memoryview`` needs ``nbytes``: ``len`` counts elements, not bytes, for a
+    non-byte format.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        return len(value)
+    if isinstance(value, memoryview):
+        return value.nbytes
+    return None
 
 
 def _is_aggregate(value: Any) -> bool:
@@ -788,7 +834,8 @@ def _withheld_input(error: Mapping[str, Any], body: Any) -> Optional[str]:
     error_type = error.get("type")
 
     def _body_placeholder() -> str:
-        size = f": {len(raw)} bytes" if isinstance(raw, (bytes, bytearray)) else ""
+        count = _byte_count(raw)
+        size = "" if count is None else f": {count} bytes"
         return f"<request body not echoed{size}>"
 
     # Ordered so each placeholder is the accurate one, not merely a safe one.
@@ -801,15 +848,18 @@ def _withheld_input(error: Mapping[str, Any], body: Any) -> Optional[str]:
     if tuple(error.get("loc") or ()) == _WHOLE_BODY_LOC:
         return _body_placeholder()
 
-    # 2. and 3. The error is about a field, but `input` is not that field's
-    #    value — see the block comment above for both shapes and the limits of
-    #    this classification.
+    # 2., 3. and 4. The error is about a field, but echoing `input` would
+    #    disclose more than the one declared field the error is about — see the
+    #    block comment above for all three shapes and the limits of this
+    #    classification.
     if error_type in _NO_VALUE_AT_LOC_TYPES and _is_aggregate(raw):
         return _NO_VALUE_ECHO
     if error_type in _AGGREGATE_INPUT_TYPES and isinstance(raw, Mapping):
         return _AGGREGATE_ECHO
+    if error_type in _UNDECLARED_FIELD_TYPES:
+        return _UNDECLARED_ECHO
 
-    # 4. Belt to those braces: some other error type reporting the whole body
+    # 5. Belt to those braces: some other error type reporting the whole body
     #    at a field-level `loc`. `body is not None` guards this rather than a
     #    sentinel, because `exc.body` is None for a GET and for a JSON `null`
     #    body — an unguarded `raw is body` would then rewrite every legitimate
@@ -898,10 +948,9 @@ def describe_request_body(body: Any) -> Optional[str]:
     if body is None:
         return None
     try:
-        if isinstance(body, (bytes, bytearray)):
-            return f"<{type(body).__name__}: {len(body)} bytes>"
-        if isinstance(body, memoryview):
-            return f"<memoryview: {body.nbytes} bytes>"
+        count = _byte_count(body)
+        if count is not None:
+            return f"<{type(body).__name__}: {count} bytes>"
         if isinstance(body, str):
             # Characters, not bytes: encoding to count would copy the whole body.
             return f"<str: {len(body)} characters>"
