@@ -256,9 +256,12 @@ def assess_verification_status(
     than pre-empting the deductive arm.
 
     One cell is not a plain product of the two axes: the (not-grounded ×
-    stalled) cell splits on the REASON for the stall. A stall whose only block
-    is the §7.1 restatement guard reads ``RESTATEMENT_HELD`` rather than
-    ``INSUFFICIENT_EVIDENCE`` (#1195) — see the comment at that branch.
+    stalled) cell splits on the REASON for the stall (#1195). It reads
+    ``RESTATEMENT_HELD`` instead of ``INSUFFICIENT_EVIDENCE`` only when all
+    three hold — the stall is a TIME stall (no model-declared data wall), the
+    §7.1 restatement guard holds a root, and it holds EVERY unsettled root. Any
+    one of those failing leaves the honest evidence reading in place. See the
+    comment at that branch.
     """
     if _is_grounded(case, grade=grade):
         # Grounded × stalled = TREATMENT_BLOCKED, meaning "have a cause but can't
@@ -278,7 +281,18 @@ def assess_verification_status(
         return VerificationStatus.NOT_YET_PRODUCTIVE
     if not is_progress_stalled(case):
         return VerificationStatus.OPEN
-    # #1195: the stalled cell is not always an evidence deficiency. A ROOT that
+    # WHICH ARM produced the stall decides the rest (#1195 review, finding 2). A
+    # model-declared data wall is an EXPLICIT assertion that the discriminating
+    # data cannot be obtained — the canonical insufficient-evidence archetype,
+    # and the reason the wall arm exists at all. It must win over the lexical
+    # carve-out below, or the engine answers a case whose own model said "this
+    # data is unavailable" with "the block is only phrasing". Evaluated again
+    # here rather than hoisted above ``is_progress_stalled``: that predicate
+    # short-circuits on the cheap time check, and only an already-stalled case —
+    # a small minority of turns — pays this second walk.
+    if _declared_wall(case):
+        return VerificationStatus.INSUFFICIENT_EVIDENCE
+    # #1195: a time stall is not always an evidence deficiency. A ROOT that
     # clears every validation bar and is held at INCONCLUSIVE by the §7.1
     # RESTATEMENT guard alone is blocked on its own PHRASING against the case
     # frame — the engine's own prompt annotation says so in the same turn ("MORE
@@ -287,6 +301,11 @@ def assess_verification_status(
     # a case the engine has already grounded, and sends the user to fetch data
     # that cannot move the hold (observed: case_a3d354f08765 — 100% coverage, 14
     # evidence rows, 3 independent causal supports against a bar of 2).
+    #
+    # ``is_sole_root_block``, not merely "something is held" (#1195 review,
+    # finding 1): the claim the carve-out licenses is about the CASE, and it is
+    # false while some other live ROOT is blocked by something evidence can
+    # actually move. See ``causal_graph.RestatementHold``.
     #
     # Placed HERE — inside the stalled arm, below the work gate — deliberately:
     #   - ABOVE ``OPEN`` would be wrong: a progressing case makes no false claim
@@ -297,9 +316,9 @@ def assess_verification_status(
     #     hold below the work gate therefore still reads NOT_YET_PRODUCTIVE and
     #     receives no corrective unless the 0-hypothesis vacuum fires — the
     #     documented INV-38 residual band, not a new gap.)
-    #   - It is also the cheapest correct placement: ``restatement_held_root_ids``
-    #     tokenizes the causal graph, and this arm is reached only by a stalled,
-    #     work-gated, ungrounded case — a small minority of turns.
+    #   - It is also the cheapest correct placement: the hold summary tokenizes
+    #     the causal graph (~1.3 ms on a 22-root graph), and this arm is reached
+    #     only by a stalled, work-gated, ungrounded case with no declared wall.
     #
     # This does NOT release the held root (that is the open #1122 product
     # decision). It changes only what the case is REPORTED as, and — via
@@ -309,11 +328,15 @@ def assess_verification_status(
     # direct import: ``causal_graph`` -> ``hypothesis_manager`` ->
     # ``terminal_transitions`` -> here is a real cycle, and the seam is what the
     # other below-the-graph readers (the confirm-stamp, the hypothesis-state
-    # projection) already use. ``.get`` like every other hook consumer — an
-    # unregistered hook degrades to the pre-#1195 reading rather than raising on
-    # a live turn; ``_graph_hooks()`` cold-starts the registration itself, and
-    # ``test_restatement_hold_hook_is_registered`` pins it.
-    restatement_held = _graph_hooks().get("restatement_held")
-    if restatement_held is not None and restatement_held(case):
+    # projection) already use. ``.get`` like every other hook consumer: an
+    # unregistered or cleared hook degrades to the pre-#1195 reading instead of
+    # raising on a live turn. That degradation is REAL, not theoretical —
+    # ``_graph_hooks()``'s import fallback does not repopulate a dict that was
+    # emptied after import — so it is pinned in both directions
+    # (``test_restatement_hold_hook_is_registered``, and the cleared-hooks pin
+    # beside it) rather than assumed away.
+    summarize = _graph_hooks().get("restatement_hold")
+    hold = summarize(case) if summarize is not None else None
+    if hold is not None and hold.is_sole_root_block:
         return VerificationStatus.RESTATEMENT_HELD
     return VerificationStatus.INSUFFICIENT_EVIDENCE

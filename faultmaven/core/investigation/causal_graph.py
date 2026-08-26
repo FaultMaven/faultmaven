@@ -28,7 +28,7 @@ import hashlib
 import logging
 from collections import deque
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 from uuid import uuid4
 
 # The statement/content tokenizer moved to ``cause_assurance`` (the shared
@@ -704,6 +704,80 @@ def restatement_held_root_ids(case: Case) -> set[str]:
         if grounded:
             held.add(node_id)
     return held
+
+
+class RestatementHold(NamedTuple):
+    """What the §7.1 restatement hold looks like on ONE case — computed in a
+    single sweep because three consumers need different facets of it and each
+    would otherwise re-tokenize the graph (#1195 review).
+
+    - ``root_ids`` — the held ROOTs (``restatement_held_root_ids``).
+    - ``is_sole_root_block`` — whether EVERY unsettled ROOT is held this way.
+      This is what licenses the claim "more supporting evidence will not move
+      this forward": it is true of a held root, and false of the case as a whole
+      the moment some OTHER live root is blocked by something evidence *can*
+      move (no causal link yet, the independence count, a hedged support). The
+      semantic form was chosen over a literal "exactly one unsettled root"
+      (``confirm_root_from_resolution_absence``'s spelling): two roots BOTH held
+      by the guard are still a case no amount of data advances, and refusing the
+      carve-out there would re-report it as an evidence deficiency.
+    - ``involves_siblings`` — whether any held root is released by dropping the
+      OTHER standing hypotheses from its frame. False means the hold is
+      **anchor-only**: the root restates the problem statement itself, and no two
+      hypotheses need overlap for that (``_node_restates`` unions anchors with
+      the sibling statements). The distinction is what keeps the user-facing
+      recovery from asserting an overlap that does not exist.
+    """
+
+    root_ids: frozenset[str]
+    is_sole_root_block: bool
+    involves_siblings: bool
+
+
+def summarize_restatement_hold(case: Case) -> "RestatementHold | None":
+    """The §7.1 restatement hold as the disposition layer needs to see it, or
+    ``None`` when no root is held.
+
+    Registered on the ``cause_assurance`` graph-hook seam as
+    ``restatement_hold`` and read by ``verification_status`` (the
+    ``RESTATEMENT_HELD`` cell), ``milestone_engine`` (which of the two recovery
+    moves to offer) and ``terminal_transitions`` (the closure reason) — one
+    sweep, one answer, so those three can never describe the same case
+    differently.
+    """
+    held = restatement_held_root_ids(case)
+    if not held:
+        return None
+    # Cheap and tokenization-free: every ROOT the graph still has an open
+    # question about. ``restatement_held_root_ids`` already excludes
+    # VALIDATED/REFUTED, so ``held`` is a subset of this by construction and the
+    # comparison is really "is anything ELSE still open".
+    unsettled = {
+        n.node_id
+        for n in case.causal_nodes.values()
+        if n.node_type == NodeType.ROOT
+        and n.node_state not in (NodeState.VALIDATED, NodeState.REFUTED)
+    }
+    anchors, _hyp_token_sets = _frame_components(case)
+    involves_siblings = False
+    for node_id in held:
+        node = case.causal_nodes.get(node_id)
+        statement_tokens = _content_tokens(node.statement) if node else set()
+        if not statement_tokens:
+            continue
+        # Re-run the novelty core with the sibling statements REMOVED. If the
+        # root no longer restates, the siblings were load-bearing; if it still
+        # does, the problem anchors alone hold it and there is no overlap to
+        # ask the user about. (An empty anchor set reads as "released", which is
+        # right: the frame was then nothing but siblings.)
+        if not _node_restates(statement_tokens, node_id, anchors, []):
+            involves_siblings = True
+            break
+    return RestatementHold(
+        root_ids=frozenset(held),
+        is_sole_root_block=(unsettled == held),
+        involves_siblings=involves_siblings,
+    )
 
 
 def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
@@ -3232,5 +3306,5 @@ register_graph_hooks(
     mechanism_for_chain=mechanism_for_chain,
     project_hypothesis_states_from_roots=project_hypothesis_states_from_roots,
     conjuncts_for_chain=conjuncts_for_chain,
-    restatement_held_root_ids=restatement_held_root_ids,
+    summarize_restatement_hold=summarize_restatement_hold,
 )

@@ -310,6 +310,10 @@ class ReportGenerationService:
             "Closed — stabilized by a verified mitigation, root-cause analysis "
             "deferred"
         ),
+        "closed_restatement_held": (
+            "Closed — a cause was supported by the evidence but never stated "
+            "distinctly from the problem"
+        ),
         "closed_insufficient_evidence": (
             "Closed — insufficient evidence to establish the problem or its cause"
         ),
@@ -320,6 +324,46 @@ class ReportGenerationService:
         if not reason:
             return "Not specified"
         return self._CLOSURE_REASON_LABELS.get(reason, reason)
+
+    def _restatement_held_boundary_block(
+        self, case: Case, hypotheses: List[Any]
+    ) -> List[str]:
+        """Render the capture for a close on the §7.1 restatement hold (#1195).
+
+        The peer of ``_insufficient_evidence_boundary_block`` and its exact
+        inverse: that block records what the case could not GATHER, this one
+        records what it gathered and could not STATE. Using the sibling block
+        here would head the one artifact the user keeps "Why This Remains
+        Unresolved — ... stalled before a single cause could be grounded from
+        the data gathered so far" over a case whose data DID ground one, which
+        is the contradiction #1195 removes from the turn channel.
+
+        Deliberately makes no claim about obtainability and lists no unmet data
+        need: on this shape there is no missing observation to name, and naming
+        one would re-import the evidence framing through the back door.
+        """
+        block: List[str] = ["## Cause Boundary — Why This Remains Unresolved\n"]
+        block.append(
+            "The evidence gathered supported a cause, but its statement never "
+            "added anything beyond the problem already described — so the "
+            "investigation could not promote it as an explanation. The gap was "
+            "a specific mechanism (what was misconfigured, exhausted, or "
+            "failing), not more data.\n"
+        )
+        residual = [
+            h
+            for h in hypotheses
+            if getattr(h, "state", None) not in TERMINAL_HYPOTHESIS_STATES
+        ]
+        if residual:
+            residual.sort(key=lambda h: getattr(h, "likelihood", 0), reverse=True)
+            block.append("**Candidates still in play:**")
+            for h in residual[:5]:
+                block.append(
+                    f"- {h.statement} (confidence: {getattr(h, 'likelihood', 0):.0%})"
+                )
+            block.append("")
+        return block
 
     def _insufficient_evidence_boundary_block(
         self, case: Case, hypotheses: List[Any]
@@ -952,6 +996,12 @@ class ReportGenerationService:
         # state, so no separate snapshot column is needed.
         if closure_reason_raw == "closed_insufficient_evidence":
             parts.extend(self._insufficient_evidence_boundary_block(case, hypotheses))
+        # #1195: the same capture obligation, the opposite finding. Without its
+        # own block a restatement-held close would render no boundary section at
+        # all — silent where the case it replaced was merely wrong, which is the
+        # failure mode this whole fix exists to avoid.
+        elif closure_reason_raw == "closed_restatement_held":
+            parts.extend(self._restatement_held_boundary_block(case, hypotheses))
 
         # Leading Hypotheses — top hypotheses at time of closure
         if hypotheses:
@@ -997,7 +1047,17 @@ class ReportGenerationService:
         # naming. A deferred fix, an unreachable cause, and a sufficient
         # mitigation each already carry their own next step, so a
         # "start here next time" block would misdescribe them.
-        if closure_reason_raw == "closed_insufficient_evidence":
+        if closure_reason_raw == "closed_restatement_held":
+            # #1195: the lead is not in doubt here — its WORDING is. Pointing a
+            # follow-up at "start from the most promising lead" would repeat the
+            # move that did not work.
+            parts.append("## Recommendation\n")
+            parts.append(
+                "A follow-up should begin by naming the mechanism behind the "
+                "leading explanation — what specifically was misconfigured, "
+                "exhausted, or failing — rather than by gathering more data.\n"
+            )
+        elif closure_reason_raw == "closed_insufficient_evidence":
             parts.append("## Recommendation\n")
             if hypotheses:
                 top_hyp = max(hypotheses, key=lambda h: getattr(h, "likelihood", 0))

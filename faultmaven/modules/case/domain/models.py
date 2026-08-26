@@ -353,6 +353,14 @@ class InvestigationStrategy(str, Enum):
 #     relieved and RCA was deferred BY CHOICE, with the cause still reachable if
 #     anyone returns to it. This is the one closure in the set that is not a
 #     failure of any kind, which is why it is not folded into a generic bucket.
+#   - closed_restatement_held: the evidence DID support a cause, and the §7.1
+#     restatement guard held every unsettled root because its statement never
+#     added anything over the problem — so the case ended with a cause it could
+#     not promote for want of a distinct MECHANISM, not for want of data
+#     (#1195). Ranked immediately above the generic bucket, which it only ever
+#     displaces: routing it there would head the closure summary "insufficient
+#     evidence to establish the problem or its cause" over a case that gathered
+#     enough, and would bucket it with genuine data walls in the flywheel.
 #   - closed_insufficient_evidence: the default for any other close from
 #     INVESTIGATING — what was needed was never established, whether at the
 #     SYMPTOM level (the problem could not be verified) or at the CAUSE level
@@ -379,6 +387,7 @@ VALID_CLOSURE_REASONS: set[str] = {
     "solution_deferred",
     "closed_rca_infeasible",
     "mitigation_sufficient",
+    "closed_restatement_held",
     "closed_insufficient_evidence",
 }
 

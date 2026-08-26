@@ -59,6 +59,7 @@ from faultmaven.core.investigation.causal_graph import (
 )
 from faultmaven.core.investigation.cause_assurance import (
     CauseAssuranceGrade,
+    _graph_hooks,
     absence_row_link_refused,
     conclusion_overclaims,
     evidence_datum_key,
@@ -2437,7 +2438,9 @@ def _insufficient_evidence_handoff_suggestions() -> list:
     ]
 
 
-def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
+def _insufficient_evidence_handoff_pending(
+    case: "Case", *, status: "VerificationStatus | None" = None
+) -> bool:
     """Whether the engine should drive the insufficient-evidence structured
     handoff this turn (verification-status Phase 1).
 
@@ -2456,8 +2459,9 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     Must be evaluated AFTER the deductive-validation stamp in the turn pipeline
     (``_recompute_assessment_state``) so ``assess_verification_status`` reads a
     fresh grounding grade and never pre-empts the deductive arm (the #593
-    re-derive-after-stamp ordering). The single call site in ``process_turn``
-    satisfies this — it runs well after ``_apply_investigation_updates``.
+    re-derive-after-stamp ordering). Both ``engine_owned_affordances`` call
+    sites in ``process_turn`` satisfy this — they run well after
+    ``_apply_investigation_updates``.
 
     NOT every work-gated stall reaches here. A stall whose only block is the
     §7.1 restatement guard reads ``RESTATEMENT_HELD`` instead (#1195) and gets
@@ -2476,10 +2480,12 @@ def _insufficient_evidence_handoff_pending(case: "Case") -> bool:
     # disagree and a fully-declared wall fires the handoff immediately.
     if not is_progress_stalled(case):
         return False
-    return assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    if status is None:
+        status = assess_verification_status(case)
+    return status == VerificationStatus.INSUFFICIENT_EVIDENCE
 
 
-def _restatement_held_suggestions() -> list:
+def _restatement_held_suggestions(case: "Case") -> list:
     """Deterministic affordances for a case whose leading cause is held by the
     §7.1 RESTATEMENT guard (#1195) — the fourth peer of the insufficient-evidence
     handoff, the hypothesis-vacuum pull-back and the treatment-blocked handoff:
@@ -2498,19 +2504,35 @@ def _restatement_held_suggestions() -> list:
     which is the failure ``_insufficient_evidence_handoff_pending`` exists to
     prevent — so the carve-out ships with this replacement, not without one.
 
-    The two moves mirror the two recoveries the model-facing note already names,
-    for the same reason it names both: the engine cannot tell the held
-    population's two shapes apart (the fm#1137 known limit). A root held by a
-    TRUE DUPLICATE of its own hypothesis needs the mechanism stated distinctly;
-    a root held by frame DILUTION — a different cause's verbose statement
+    The mechanism move is unconditional — it is the recovery for every held
+    shape. The SIBLING move is offered only when the hold actually depends on
+    another standing hypothesis (``RestatementHold.involves_siblings``). The
+    frame is ``anchors | other-hypothesis tokens``, so a root that restates the
+    PROBLEM STATEMENT alone is held with no two hypotheses overlapping at all —
+    and telling that user "two of the causes on the table may be one cause
+    worded twice" asserts an overlap that does not exist (#1195 review, finding
+    5). That is the same class of wrong guidance this fix exists to remove, so
+    the engine discriminates instead: re-run the novelty core with the siblings
+    dropped from the frame, and offer the move only if that releases the root.
+
+    When the move IS offered, both recoveries are named for the reason the
+    model-facing note names both: the sibling-held population has two shapes the
+    engine cannot tell apart (the fm#1137 known limit). A root held by a TRUE
+    DUPLICATE of its own hypothesis needs the mechanism stated distinctly; a
+    root held by frame DILUTION — a different cause's verbose statement
     happening to cover this one — clears the moment that alternative is settled.
-    Offering only one would be categorically false for the other half.
 
     Neither move asks for data, and neither steers toward close: a hold the
     engine can describe is not a reason to abandon the case (D4 soft-collapse).
     Non-clickable FREE_SPEECH — the user supplies the content.
     """
-    return [
+    summarize = _graph_hooks().get("restatement_hold")
+    hold = summarize(case) if summarize is not None else None
+    # Absent hold summary (a cleared hook — see verification_status): keep the
+    # move that is true of every shape and drop the one that needs evidence for
+    # its claim. Degrading toward the smaller, always-true offer is the safe
+    # direction.
+    moves = [
         {
             "label": "Ask for the cause to be stated as a mechanism",
             "action_type": "FREE_SPEECH",
@@ -2521,19 +2543,26 @@ def _restatement_held_suggestions() -> list:
                 "what moves it forward. More data will not."
             ),
         },
-        {
-            "label": "Say whether the standing explanations are the same cause",
-            "action_type": "FREE_SPEECH",
-            "body": (
-                "Two of the causes on the table may be one cause worded twice, "
-                "or genuinely different. Saying which — or ruling one out — "
-                "clears the overlap that is holding the leading explanation."
-            ),
-        },
     ]
+    if hold is not None and hold.involves_siblings:
+        moves.append(
+            {
+                "label": "Say whether the standing explanations are the same cause",
+                "action_type": "FREE_SPEECH",
+                "body": (
+                    "Two of the causes on the table may be one cause worded "
+                    "twice, or genuinely different. Saying which — or ruling one "
+                    "out — clears the overlap that is holding the leading "
+                    "explanation."
+                ),
+            }
+        )
+    return moves
 
 
-def _restatement_held_pending(case: "Case") -> bool:
+def _restatement_held_pending(
+    case: "Case", *, status: "VerificationStatus | None" = None
+) -> bool:
     """Whether the engine should drive the restatement-held handoff this turn
     (#1195 — the fourth code-guarded branch).
 
@@ -2544,8 +2573,8 @@ def _restatement_held_pending(case: "Case") -> bool:
 
     Scoped to ``INVESTIGATING`` and ordered with its peers, below the
     state-machine gates. Must be evaluated AFTER the per-turn recompute so the
-    status read is fresh (the #593 re-derive-after-stamp ordering); the single
-    ``engine_owned_affordances`` call site satisfies that.
+    status read is fresh (the #593 re-derive-after-stamp ordering); both
+    ``engine_owned_affordances`` call sites satisfy that.
     """
     if case.state != CaseState.INVESTIGATING:
         return False
@@ -2555,7 +2584,9 @@ def _restatement_held_pending(case: "Case") -> bool:
     # ``INSUFFICIENT_EVIDENCE`` does (time thresholds OR a declared data wall).
     if not is_progress_stalled(case):
         return False
-    return assess_verification_status(case) == VerificationStatus.RESTATEMENT_HELD
+    if status is None:
+        status = assess_verification_status(case)
+    return status == VerificationStatus.RESTATEMENT_HELD
 
 
 def _hypothesis_vacuum_suggestions() -> list:
@@ -2597,7 +2628,9 @@ def _hypothesis_vacuum_suggestions() -> list:
     ]
 
 
-def _hypothesis_vacuum_pending(case: "Case") -> bool:
+def _hypothesis_vacuum_pending(
+    case: "Case", *, status: "VerificationStatus | None" = None
+) -> bool:
     """Whether the engine should drive the NOT_YET_PRODUCTIVE pull-back this turn
     (#656 P3.1, DF-6 gap A — the 0-hypothesis corner of NOT_YET_PRODUCTIVE).
 
@@ -2625,8 +2658,8 @@ def _hypothesis_vacuum_pending(case: "Case") -> bool:
     are mutually exclusive by construction (this requires 0 hypotheses; that
     requires the ≥2 work gate). Must be evaluated AFTER the per-turn recompute so
     the status read is fresh (the same #593 re-derive-after-stamp ordering the
-    sibling handoff requires; the single ``engine_owned_affordances`` call site
-    satisfies it).
+    sibling handoff requires; both ``engine_owned_affordances`` call sites
+    satisfy it).
     """
     if case.state != CaseState.INVESTIGATING:
         return False
@@ -2644,7 +2677,9 @@ def _hypothesis_vacuum_pending(case: "Case") -> bool:
     # Authoritative guard: a 0-hypothesis case that is somehow grounded (a chain
     # validated with no backing hypothesis) reads HEALTHY/TREATMENT_BLOCKED, not
     # NOT_YET_PRODUCTIVE, and is not a vacuum — the status join decides.
-    return assess_verification_status(case) == VerificationStatus.NOT_YET_PRODUCTIVE
+    if status is None:
+        status = assess_verification_status(case)
+    return status == VerificationStatus.NOT_YET_PRODUCTIVE
 
 
 def _treatment_blocked_suggestions() -> list:
@@ -2698,7 +2733,9 @@ def _treatment_blocked_suggestions() -> list:
     ]
 
 
-def _treatment_blocked_pending(case: "Case") -> bool:
+def _treatment_blocked_pending(
+    case: "Case", *, status: "VerificationStatus | None" = None
+) -> bool:
     """Whether the engine should drive the treatment-blocked handoff this turn
     (#1136 — the third code-guarded branch).
 
@@ -2714,8 +2751,8 @@ def _treatment_blocked_pending(case: "Case") -> bool:
     read the same join, and a case has exactly one verification status.
 
     Must be evaluated AFTER the per-turn recompute so the status read is fresh
-    (the #593 re-derive-after-stamp ordering); the single
-    ``engine_owned_affordances`` call site satisfies that.
+    (the #593 re-derive-after-stamp ordering); both
+    ``engine_owned_affordances`` call sites satisfy that.
     """
     if case.state != CaseState.INVESTIGATING:
         return False
@@ -2726,7 +2763,9 @@ def _treatment_blocked_pending(case: "Case") -> bool:
     # has already done), exactly as ``assess_verification_status`` scopes it.
     if not is_stalled(case):
         return False
-    return assess_verification_status(case) == VerificationStatus.TREATMENT_BLOCKED
+    if status is None:
+        status = assess_verification_status(case)
+    return status == VerificationStatus.TREATMENT_BLOCKED
 
 
 def _schema_prompt_instruction(schema: dict) -> str:
@@ -2809,16 +2848,28 @@ def engine_owned_affordances(
     if _gate1_is_pending(case):
         return ("gate1", _investigation_confirmation_suggestions())
 
-    if _insufficient_evidence_handoff_pending(case):
+    # The four mid-investigation readings below all ask the SAME join, and each
+    # used to recompute it — across the two ``engine_owned_affordances`` call
+    # sites that is up to eight recomputes per turn, each now carrying a
+    # causal-graph tokenization sweep (#1195 review). Compute it ONCE here and
+    # hand it down: cheaper, and it makes the mutual exclusivity structural
+    # rather than merely argued — the four branches read one value. The
+    # predicates keep their own cheap pre-checks (state, stall, hypothesis
+    # count), which still short-circuit before the status is consulted, and each
+    # still computes the status itself when called directly (tests, and any
+    # future caller that has not got one).
+    status = assess_verification_status(case)
+
+    if _insufficient_evidence_handoff_pending(case, status=status):
         return ("insufficient_evidence", _insufficient_evidence_handoff_suggestions())
 
-    if _restatement_held_pending(case):
-        return ("restatement_held", _restatement_held_suggestions())
+    if _restatement_held_pending(case, status=status):
+        return ("restatement_held", _restatement_held_suggestions(case))
 
-    if _hypothesis_vacuum_pending(case):
+    if _hypothesis_vacuum_pending(case, status=status):
         return ("not_yet_productive", _hypothesis_vacuum_suggestions())
 
-    if _treatment_blocked_pending(case):
+    if _treatment_blocked_pending(case, status=status):
         return ("treatment_blocked", _treatment_blocked_suggestions())
 
     return None

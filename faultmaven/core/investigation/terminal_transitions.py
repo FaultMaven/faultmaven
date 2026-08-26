@@ -417,6 +417,33 @@ def _fix_documented_not_applied(case: "Case") -> bool:
     )
 
 
+def _restatement_held_close(case: "Case") -> bool:
+    """Whether this case ends on the §7.1 restatement hold — the evidence
+    supported a cause and the guard held EVERY unsettled root for want of a
+    distinct mechanism statement (#1195).
+
+    Reads the same one-sweep summary the disposition layer reads
+    (``causal_graph.summarize_restatement_hold``, via the graph-hook seam this
+    module already uses for ``project_hyp_states`` — a direct import would close
+    the causal_graph/hypothesis_manager cycle), so the closure reason and
+    ``verification_status`` can never describe the same case differently.
+
+    Keyed on the structural hold and NOT on ``verification_status ==
+    RESTATEMENT_HELD``: that cell additionally requires a stall, and a user may
+    close before the stall thresholds are met. Keying on the cell would repeat,
+    one label over, the mistake this function's docstring already records — the
+    old ``closed_insufficient_evidence`` was gated on the INSUFFICIENT_EVIDENCE
+    cell and so was unreachable for exactly the population it best described.
+    ``.get`` like every other hook consumer: an absent hook degrades to the
+    generic bucket, which is the pre-#1195 behaviour.
+    """
+    summarize = _graph_hooks().get("restatement_hold")
+    if summarize is None:
+        return False
+    hold = summarize(case)
+    return hold is not None and hold.is_sole_root_block
+
+
 def derive_closure_reason(case: "Case") -> str:
     """Engine-only derivation of closure_reason from case state.
 
@@ -441,6 +468,17 @@ def derive_closure_reason(case: "Case") -> str:
       relieved and RCA was deferred BY CHOICE, the cause still reachable if
       anyone returns to it. The one closure here that is not a failure of any
       kind, which is why it is not folded into a generic bucket.
+    - ``closed_restatement_held`` — the evidence supported a cause, but the §7.1
+      restatement guard held EVERY unsettled root: the statement never added
+      anything over the problem, so the case ends holding a cause it could not
+      promote for want of a distinct MECHANISM (#1195). Ranked immediately above
+      the generic bucket and nowhere higher — a verified mitigation or a
+      declared-infeasible RCA is the more informative fact where either holds,
+      and a case whose cause WAS promoted never reaches this predicate. Keyed on
+      the structural hold rather than on the ``RESTATEMENT_HELD`` status cell,
+      for the reason recorded below: the cell additionally requires a stall, and
+      a user may close before one, which would drop the case into a bucket that
+      misdescribes it.
     - ``closed_insufficient_evidence`` — the default for any other close from
       INVESTIGATING: what was needed was never established, at the SYMPTOM level
       (the problem could not be verified) or at the CAUSE level (verified, but
@@ -472,6 +510,9 @@ def derive_closure_reason(case: "Case") -> str:
 
     if _mitigation_verified(case):
         return "mitigation_sufficient"
+
+    if _restatement_held_close(case):
+        return "closed_restatement_held"
 
     return "closed_insufficient_evidence"
 
