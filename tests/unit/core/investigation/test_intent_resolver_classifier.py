@@ -110,6 +110,7 @@ class TestClassifierSettingsResolution:
     async def test_resolved_classifier_model_reaches_the_router(
         self, production_shaped_settings, monkeypatch
     ):
+        monkeypatch.setenv("CLASSIFIER_PROVIDER", "openai")
         monkeypatch.setenv("OPENAI_CLASSIFIER_MODEL", "gpt-5.4-mini")
         production_shaped_settings.llm = LLMSettings()
 
@@ -122,14 +123,31 @@ class TestClassifierSettingsResolution:
     async def test_no_override_kwarg_at_all_when_classifier_provider_unset(
         self, production_shaped_settings
     ):
-        """With no CLASSIFIER_PROVIDER the call must be byte-identical to the
-        pre-role-routing shape: the kwarg is ABSENT, not None — duck-typed
+        """With CLASSIFIER_PROVIDER unset the call must be byte-identical to
+        the pre-role-routing shape: the kwarg is ABSENT, not None — duck-typed
         routers whose route() lacks the parameter (integration test doubles,
-        custom LLM_ROUTER_CLASS implementations) must keep working."""
+        custom LLM_ROUTER_CLASS implementations) must keep working.
+
+        Unset is passed explicitly: the key SHIPS pinned to gemini, and this
+        test is about the shape of the call when an operator comments it out.
+        """
+        production_shaped_settings.llm = LLMSettings(classifier_provider=None)
         router = _router_returning("none")
         await IntentResolver(router)._classify("whatever", CHOICES)
 
         assert "provider_override" not in router.route.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_shipped_pin_sends_gemini_as_override(
+        self, production_shaped_settings
+    ):
+        """Conversely, the shipped default DOES route the classifier to gemini
+        even though CHAT_PROVIDER is openai here — the pin is static."""
+        router = _router_returning("none")
+        await IntentResolver(router)._classify("whatever", CHOICES)
+
+        assert router.route.await_args.kwargs["provider_override"] == "gemini"
+        assert router.route.await_args.kwargs["model"] == "gemini-3.5-flash-lite"
 
     @pytest.mark.asyncio
     async def test_classifier_provider_reaches_router_as_override(

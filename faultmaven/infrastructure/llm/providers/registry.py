@@ -158,7 +158,7 @@ PROVIDER_SCHEMA = {
         "model_var": "GEMINI_MODEL",
         "base_url_var": "GEMINI_API_BASE",
         "default_base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "default_model": "gemini-3.5-flash",
+        "default_model": "gemini-3.7-flash",
         "available_models": [
             "gemini-3.5-flash",
             "gemini-3.5-flash-lite",

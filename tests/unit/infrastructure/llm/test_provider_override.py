@@ -54,14 +54,28 @@ class TestStructuredOutputProviderSetting:
     def test_override_independent_of_other_capability_overrides(self):
         """Setting STRUCTURED_OUTPUT_PROVIDER doesn't affect synthesis /
         classifier / code overrides — each capability override is
-        independent and falls back to CHAT_PROVIDER on its own."""
+        independent and falls back to CHAT_PROVIDER on its own.
+
+        synthesis/classifier are passed None explicitly because they ship
+        PINNED to gemini; None is the "unset" state whose fallback this test
+        is about, and is what commenting the key out in .env produces."""
         s = LLMSettings(
             CHAT_PROVIDER="fireworks",
             structured_output_provider=LLMProvider.GEMINI,
+            synthesis_provider=None,
+            classifier_provider=None,
         )
         assert s.get_structured_output_provider() == LLMProvider.GEMINI
         assert s.get_synthesis_provider() == LLMProvider.FIREWORKS  # unchanged
         assert s.get_classifier_provider() == LLMProvider.FIREWORKS  # unchanged
+
+    def test_shipped_classifier_synthesis_pins_survive_a_chat_flip(self):
+        """The shipped pins are static: flipping CHAT_PROVIDER moves the
+        anchor-following roles and leaves these two on gemini."""
+        s = LLMSettings(CHAT_PROVIDER="fireworks")
+        assert s.get_classifier_provider() == LLMProvider.GEMINI
+        assert s.get_synthesis_provider() == LLMProvider.GEMINI
+        assert s.get_structured_output_provider() == LLMProvider.FIREWORKS
 
     def test_get_structured_output_model_resolves_via_provider(self):
         """get_structured_output_model() looks up the *override* provider's

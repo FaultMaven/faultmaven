@@ -85,8 +85,8 @@ Create a `.env` file in your project directory:
 
 ```bash
 # Minimal configuration for standalone
-CHAT_PROVIDER=fireworks
-FIREWORKS_API_KEY=your_fireworks_api_key_here
+CHAT_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key_here
 
 # Optional: Use OpenAI instead
 # CHAT_PROVIDER=openai
@@ -164,7 +164,7 @@ The settings that back this infrastructure still exist in the codebase (see [Con
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CHAT_PROVIDER` | `fireworks` | LLM provider: `fireworks`, `openai`, `anthropic`, `gemini`, `groq` |
+| `CHAT_PROVIDER` | `gemini` | LLM provider: `gemini`, `openai`, `anthropic`, `fireworks`, `groq`, … (required: must be set explicitly with its API key) |
 | `FIREWORKS_API_KEY` | - | Fireworks AI API key |
 | `OPENAI_API_KEY` | - | OpenAI API key |
 | `ANTHROPIC_API_KEY` | - | Anthropic API key |

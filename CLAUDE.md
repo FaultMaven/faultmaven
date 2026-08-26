@@ -293,7 +293,7 @@ modules/auth/
 |----------|---------------------|--------|-------------------|-------|
 | Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema enforced via forced tool use; recommended for logic |
 | OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | **STRICT** (gpt-4o+) | Reasoning model; `reasoning_effort` capped to `low` on structured calls (starvation guard); only a declared `INFERENCE` intent raises it; recommended default |
-| Google Gemini | `GEMINI_API_KEY` | gemini-3.5-flash | **STRICT** (1.5+) | Fast multimodal; baseline. `gemini-3.7-flash` also supported — the adapter version-gates its reduced 3.7+ API surface (no sampling params, `thinkingLevel`-only, id-carrying function responses); intro pricing through 2026-12-31 (see `pricing.py`) |
+| Google Gemini | `GEMINI_API_KEY` | gemini-3.7-flash | **STRICT** (1.5+) | **Shipped default provider + model.** Fast multimodal. The adapter version-gates the reduced 3.6/3.7 API surfaces (no sampling params, `thinkingLevel`-only, user-role function responses carrying the call id); `gemini-3.5-flash*` remain supported on the classic surface |
 | Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v4-flash | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
 | Groq | `GROQ_API_KEY` | llama-3.3-70b-versatile | BEST_EFFORT (STRICT on gpt-oss) | Ultra-fast inference |
 | HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | BEST_EFFORT | Open models — NOT recommended (no tool calling) |
@@ -349,7 +349,7 @@ output on deep-context turns (truncation to `MAX_TOKENS` → 500). The Gemini
 provider caps thinking on structured calls for **Gemini 3.x only** via
 `thinkingConfig.thinkingLevel: "low"` (3.x dropped the 2.5-era integer
 `thinkingBudget`). This is scoped to 3.x because that's where the starvation was
-observed (gemini-3.5-flash, the default); Gemini 2.5 is left at native dynamic
+observed (gemini-3.5-flash, the then-default); Gemini 2.5 is left at native dynamic
 thinking — it ran clean, and capping it would change a working reasoning path
 without evidence.
 
@@ -470,8 +470,17 @@ reasoning path the caller sizes `max_tokens` above the floor itself.
 
 Different LLM providers can be assigned to specific tasks:
 
+The shipped defaults are Gemini-anchored: `CHAT_PROVIDER=gemini` with
+`GEMINI_MODEL=gemini-3.7-flash`, and `classifier`/`synthesis`/`multimodal`
+pinned to gemini (the two small-output roles on `gemini-3.5-flash-lite`).
+`da`/`knowledge`/`structured_output` ship unset, so they follow
+`CHAT_PROVIDER` — flipping the anchor moves them and leaves the pins put,
+which is what makes an A/B comparison of the anchor a controlled one.
+
+Any role can be reassigned:
+
 ```bash
-CHAT_PROVIDER=anthropic      # Default for all tasks
+CHAT_PROVIDER=anthropic      # the anchor: unset roles follow it
 CODE_PROVIDER=openai         # Code generation tasks
 MULTIMODAL_PROVIDER=gemini   # Image analysis
 SYNTHESIS_PROVIDER=fireworks # Fast JSON generation

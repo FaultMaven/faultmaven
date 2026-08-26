@@ -59,7 +59,12 @@ nano .env
 **Minimal configuration** (choose one):
 
 ```bash
-# Option 1: OpenAI (recommended for beginners)
+# Option 1: Google Gemini (the shipped default — every other default in
+# .env.example is tuned for it, so this is the shortest path to a working setup)
+CHAT_PROVIDER=gemini
+GEMINI_API_KEY=your-gemini-key-here
+
+# Option 1b: OpenAI
 CHAT_PROVIDER=openai
 OPENAI_API_KEY=sk-your-openai-key-here
 
