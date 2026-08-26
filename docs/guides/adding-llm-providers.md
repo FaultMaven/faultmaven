@@ -52,13 +52,13 @@ CHAT_PROVIDER="fireworks"
 ```bash
 # Environment Configuration
 OPENAI_API_KEY="sk-your_openai_key"
-OPENAI_MODEL="gpt-5.4-mini"
+OPENAI_MODEL="gpt-5.6-luna"
 CHAT_PROVIDER="openai"
 ```
 
 **Available Models**:
-- `gpt-5.4-mini` (Default — `settings.openai_model`)
-- `gpt-5.x` family (reasoning models; see below)
+- `gpt-5.6-luna` (Default — `settings.openai_model`; reasons by default, see below)
+- `gpt-5.4-mini`, and the rest of the `gpt-5.x` family (reasoning models; see below)
 - `o1` / `o3` / `o4` series (reasoning models; see below)
 - `gpt-4o`, `gpt-4o-mini` (non-reasoning, still supported)
 

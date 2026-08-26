@@ -76,16 +76,29 @@ class TestEstimateCostUsd:
         assert rates is not None
         assert rates.input == 3.0
 
-    def test_openai_family_cache_read_cheaper_than_input(self):
+    @pytest.mark.parametrize(
+        "model", ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-4.1-mini", "gpt-4o"]
+    )
+    def test_openai_family_cache_read_cheaper_than_input(self, model):
+        """The property, asserted per model rather than as arithmetic on one
+        hardcoded rate — this test previously encoded gpt-5.4-mini's input as
+        0.15, which was gpt-4o-mini's number, and kept passing while the rate
+        it asserted was wrong."""
+        rates = lookup_rates("openai", model)
+        assert rates is not None
+        assert 0 < rates.cache_read < rates.input
+
+    def test_cost_sums_disjoint_buckets(self):
+        """The arithmetic the parametrized test above no longer pins: buckets
+        are disjoint and simply sum."""
         cost, priced = estimate_cost_usd(
             "openai",
-            "gpt-5.4-mini",
+            "gpt-5.6-luna",
             input_tokens=1_000_000,
             cache_read_tokens=1_000_000,
         )
         assert priced is True
-        # 0.15 (input) + 0.075 (cache_read)
-        assert cost == pytest.approx(0.225)
+        assert cost == pytest.approx(0.20 + 0.02)
 
     def test_gemini_3_1_flash_lite_is_priced(self):
         cost, priced = estimate_cost_usd(
@@ -219,9 +232,39 @@ class TestEstimateCostUsd:
         assert priced is True
         assert cost == pytest.approx(3.0 + 15.0 + 0.30 + 3.75)
 
-    def test_default_openai_model_gpt_5_4_mini_is_priced(self):
-        # gpt-5.4-mini is the default OpenAI model; it must be priced so real
-        # runs don't report 100% unpriced calls (cost silently ~$0).
+    def test_default_openai_model_gpt_5_6_luna_is_priced(self):
+        """gpt-5.6-luna is the shipped OpenAI default; an unpriced default is
+        the worst case for the module's guarantee (every call on it would
+        report $0 with priced=True nowhere to be seen). Short-context rates
+        per developers.openai.com/api/docs/pricing."""
+        rates = lookup_rates("openai", "gpt-5.6-luna")
+        assert rates is not None
+        assert rates.input == 0.20 and rates.output == 1.20
+        assert rates.cache_read == 0.02 and rates.cache_write == 0.25
+        cost, priced = estimate_cost_usd(
+            "openai",
+            "gpt-5.6-luna",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+            cache_write_tokens=1_000_000,
+        )
+        assert priced is True
+        assert cost == pytest.approx(0.20 + 1.20 + 0.02 + 0.25)
+
+    def test_gpt_5_4_mini_uses_its_own_rate_not_gpt_4o_minis(self):
+        """Regression: the gpt-5.4-mini row carried gpt-4o-mini's numbers
+        (0.15/0.60), under-reporting it 5x on input and 7.5x on output.
+        The two models must not share a rate."""
+        five = lookup_rates("openai", "gpt-5.4-mini")
+        four = lookup_rates("openai", "gpt-4o-mini")
+        assert five is not None and four is not None
+        assert five.input == 0.75 and five.output == 4.50
+        assert (five.input, five.output) != (four.input, four.output)
+
+    def test_supported_openai_model_gpt_5_4_mini_is_priced(self):
+        # gpt-5.4-mini remains a supported (non-default) OpenAI model and must
+        # stay priced so a deployment that pins it doesn't report ~$0.
         _, priced = estimate_cost_usd(
             "openai",
             "gpt-5.4-mini",
