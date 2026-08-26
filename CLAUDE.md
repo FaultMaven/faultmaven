@@ -293,7 +293,7 @@ modules/auth/
 |----------|---------------------|--------|-------------------|-------|
 | Anthropic | `ANTHROPIC_API_KEY` | claude-sonnet-4-6 | **FUNCTION_CALLING** | Schema enforced via forced tool use; recommended for logic |
 | OpenAI | `OPENAI_API_KEY` | gpt-5.4-mini | **STRICT** (gpt-4o+) | Reasoning model; `reasoning_effort` capped to `low` on structured calls (starvation guard); only a declared `INFERENCE` intent raises it; recommended default |
-| Google Gemini | `GEMINI_API_KEY` | gemini-3.5-flash | **STRICT** (1.5+) | Fast multimodal; baseline |
+| Google Gemini | `GEMINI_API_KEY` | gemini-3.5-flash | **STRICT** (1.5+) | Fast multimodal; baseline. `gemini-3.7-flash` also supported — the adapter version-gates its reduced 3.7+ API surface (no sampling params, `thinkingLevel`-only, id-carrying function responses); intro pricing through 2026-12-31 (see `pricing.py`) |
 | Fireworks AI | `FIREWORKS_API_KEY` | accounts/fireworks/models/deepseek-v4-flash | BEST_EFFORT | Strong open weights, but schema not enforced — see note |
 | Groq | `GROQ_API_KEY` | llama-3.3-70b-versatile | BEST_EFFORT (STRICT on gpt-oss) | Ultra-fast inference |
 | HuggingFace | `HUGGINGFACE_API_KEY` | Mistral-Large-Instruct-2411 | BEST_EFFORT | Open models — NOT recommended (no tool calling) |
@@ -353,11 +353,29 @@ observed (gemini-3.5-flash, the default); Gemini 2.5 is left at native dynamic
 thinking — it ran clean, and capping it would change a working reasoning path
 without evidence.
 
+On the **Gemini 3.7+ API surface** (`gemini-3.7-flash` onward; version-gated in
+the adapter as `(major, minor) >= (3, 7)`) the cap widens to **every call
+shape**, plain chat included: `thinkingLevel` is the only reasoning knob left
+there, the server default is `medium`, thinking bills at the full output rate,
+and the product profile for this path is little/no reasoning at low latency.
+The same surface gate also strips the removed sampling params
+(`temperature`/`topP`/`topK`). A second, EARLIER gate (`>= (3, 6)`) versions
+the tool-result shape: 3.6 rejects the classic `role: "function"` turn
+outright, so from 3.6 the adapter sends function responses as `role: "user"`
+turns carrying `id` + `name` (paired with the `functionCall.id` the API
+issues, which the adapter adopts as `ToolCall.id`; mandatory per the 3.7
+migration guide). Requests to 3.5-generation models are byte-for-byte
+unchanged — the classic shape measured working end-to-end (2026-08-26).
+Details: `docs/reference/llm-model-capabilities.md` §"Gemini 3.6/3.7 API
+surfaces".
+
 That shape-based rule is the **default**, and a caller can now refine it per
 call with a **reasoning intent** (`#1118`, below): `EXTRACTION` extends the cap
 to plain 3.x calls as well, and `INFERENCE` *lifts* it on structured calls —
 but only when the same call also declares an output floor, without which the
-provider refuses the lift and warns. So "3.x structured calls are capped" holds
+provider refuses the lift and warns. (On the 3.7+ surface `INFERENCE` also
+lifts the all-shape default on plain calls, floor or no floor — plain-call
+starvation is non-fatal.) So "3.x structured calls are capped" holds
 for every call that does not declare an intent, which is every call shipped
 today.
 

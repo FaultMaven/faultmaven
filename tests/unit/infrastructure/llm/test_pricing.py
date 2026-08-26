@@ -99,6 +99,88 @@ class TestEstimateCostUsd:
         # 0.25 (input) + 1.50 (output) + 0.025 (cache_read)
         assert cost == pytest.approx(1.775)
 
+    def test_gemini_3_7_flash_priced_at_introductory_rate(self):
+        # Google's introductory rate ($0.75 in / $3.75 out / $0.075 cache read
+        # per 1M) runs through 2026-12-31; the table entry documents the
+        # 2027-01-01 standard rate it must be bumped to.
+        cost, priced = estimate_cost_usd(
+            "gemini",
+            "gemini-3.7-flash",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+        )
+        assert priced is True
+        assert cost == pytest.approx(0.75 + 3.75 + 0.075)
+
+    def test_gemini_3_5_flash_lite_specific_rate_wins_over_3_5_flash(self):
+        # "gemini-3.5-flash" is a substring of "gemini-3.5-flash-lite" — the
+        # substring scan is longest-match-wins, so the specific -lite key
+        # beats the flash key it contains for dated variants too, or the
+        # classifier/synthesis model prices at the 5x-higher flash rate.
+        rates = lookup_rates("gemini", "gemini-3.5-flash-lite")
+        assert rates is not None
+        assert rates.input == 0.30 and rates.output == 2.50
+        dated = lookup_rates("gemini", "gemini-3.5-flash-lite-001")
+        assert dated is not None and dated.input == 0.30
+
+    def test_longest_match_wins_for_operator_override_variants(self, monkeypatch):
+        # LLM_PRICING_OVERRIDES merges via dict.update, appending operator
+        # keys AFTER every built-in — no ordering discipline can make a more
+        # specific operator key precede a built-in in the scan. Longest-match
+        # is what makes the override's dated variant price at the override
+        # rate instead of substring-matching the built-in gemini-3.7-flash.
+        monkeypatch.setenv(
+            pricing._OVERRIDES_ENV,
+            '{"gemini": {"gemini-3.7-flash-lite": {"input": 0.1, "output": 0.4}}}',
+        )
+        reload_rates()
+        try:
+            dated = lookup_rates("gemini", "gemini-3.7-flash-lite-preview-01")
+            assert dated is not None
+            assert dated.input == 0.1 and dated.output == 0.4
+        finally:
+            monkeypatch.delenv(pricing._OVERRIDES_ENV)
+            reload_rates()
+
+    def test_gemini_3_7_flash_standard_rate_applies_from_2027(self):
+        # The introductory→standard switch is mechanized: _build_rates
+        # resolves _SCHEDULED_RATE_CHANGES against today's date, so a process
+        # started in January 2027 prices at $1.50/$7.50 with no code edit —
+        # and stays priced=True either way (the unpriced counter can't catch
+        # a stale-but-present entry, which is why this is date-driven).
+        from datetime import date
+
+        before = pricing._build_rates(date(2026, 12, 31))
+        assert before["gemini"]["gemini-3.7-flash"].input == 0.75
+        after = pricing._build_rates(date(2027, 1, 1))
+        entry = after["gemini"]["gemini-3.7-flash"]
+        assert entry.input == 1.50 and entry.output == 7.50
+        assert entry.cache_read == 0.15
+
+    def test_operator_override_beats_scheduled_rate_change(self, monkeypatch):
+        # An operator pin wins before AND after the scheduled date — the
+        # schedule applies over defaults, overrides apply over both.
+        from datetime import date
+
+        monkeypatch.setenv(
+            pricing._OVERRIDES_ENV,
+            '{"gemini": {"gemini-3.7-flash": {"input": 9.9, "output": 9.9}}}',
+        )
+        try:
+            after = pricing._build_rates(date(2027, 6, 1))
+            assert after["gemini"]["gemini-3.7-flash"].input == 9.9
+        finally:
+            monkeypatch.delenv(pricing._OVERRIDES_ENV)
+        reload_rates()
+
+    def test_gemini_3_5_flash_official_rates(self):
+        # Corrected 2026-08-26 from a stale 0.15/0.60 to Google's published
+        # $1.50 in / $9.00 out / $0.15 cache read per 1M.
+        rates = lookup_rates("gemini", "gemini-3.5-flash")
+        assert rates is not None
+        assert rates.input == 1.50 and rates.output == 9.0
+
     def test_deepseek_v4_flash_full_path_uses_specific_rate_not_generic(self):
         # The served id is a full path; the specific deepseek-v4-flash rate must
         # win over the generic "deepseek" ($0.90) substring fallback.

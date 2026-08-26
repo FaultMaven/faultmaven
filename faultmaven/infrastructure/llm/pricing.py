@@ -31,6 +31,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
@@ -76,16 +77,31 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "gpt-4o": TokenRates(2.50, 10.0, 1.25, 0.0),
     },
     "gemini": {
+        # Gemini output rates INCLUDE thinking tokens (the provider folds
+        # thoughtsTokenCount into output_tokens), so uncapped thinking bills at
+        # the full output rate — one more reason thinkingLevel stays at "low".
+        #
+        # gemini-3.7-flash: Google's INTRODUCTORY rate ($0.75 in / $3.75 out,
+        # cache read $0.075), valid through 2026-12-31. The switch to standard
+        # pricing on 2027-01-01 is MECHANIZED in _SCHEDULED_RATE_CHANGES below
+        # — resolved against today's date at load, so a process started in
+        # 2027 prices correctly without a code change. (A process running
+        # across the boundary keeps the load-time rate until restart or
+        # reload_rates().)
+        "gemini-3.7-flash": TokenRates(0.75, 3.75, 0.075, 0.0),
+        "gemini-3.5-flash-lite": TokenRates(0.30, 2.50, 0.03, 0.0),
+        "gemini-3.5-flash": TokenRates(1.50, 9.0, 0.15, 0.0),
         "gemini-3.1-flash-lite": TokenRates(0.25, 1.50, 0.025, 0.0),
-        "gemini-3.5-flash": TokenRates(0.15, 0.60, 0.0375, 0.0),
         "gemini-1.5-flash": TokenRates(0.075, 0.30, 0.01875, 0.0),
         "gemini-1.5-pro": TokenRates(1.25, 5.0, 0.3125, 0.0),
     },
     "fireworks": {
-        # Order matters: the specific deepseek-v4-flash key must precede the
-        # generic "deepseek" fallback, or the substring match returns the v3
-        # rate for the served model id "…/deepseek-v4-flash". Standard serverless
-        # tier ($0.14 in / $0.28 out / $0.03 cached in per 1M; Priority is higher).
+        # Specific deepseek-v4-flash key beside the generic "deepseek"
+        # fallback — the substring scan is LONGEST-match-wins (see
+        # lookup_rates), so the specific key beats the generic one regardless
+        # of dict order, including when an operator override appends keys
+        # after all built-ins. Standard serverless tier
+        # ($0.14 in / $0.28 out / $0.03 cached in per 1M; Priority is higher).
         "deepseek-v4-flash": TokenRates(0.14, 0.28, 0.03, 0.0),
         "deepseek-v3": TokenRates(0.90, 0.90, 0.0, 0.0),
         "deepseek": TokenRates(0.90, 0.90, 0.0, 0.0),
@@ -104,6 +120,19 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "claude-sonnet-4-6": TokenRates(3.0, 15.0, 0.30, 3.75),
     },
 }
+
+# Rates with a KNOWN future change date, applied by _build_rates the moment
+# ``date.today()`` reaches ``effective``. This keeps a published price change
+# from depending on someone editing DEFAULT_RATES in the right month — the
+# failure the module docstring calls out ("this table will drift"): the model
+# stays priced=True, so the unpriced counter (the designed drift alarm) never
+# fires for a stale-but-present entry. Entries are (provider, model,
+# effective, rates); pure literals, stdlib date only.
+_SCHEDULED_RATE_CHANGES: tuple = (
+    # gemini-3.7-flash introductory pricing ends 2026-12-31; standard rate
+    # from 2027-01-01 ($1.50 in / $7.50 out / $0.15 cache read per 1M).
+    ("gemini", "gemini-3.7-flash", date(2027, 1, 1), TokenRates(1.50, 7.50, 0.15, 0.0)),
+)
 
 # Providers with no per-token cost (self-hosted). These are KNOWN to be free, so
 # they price to $0 with priced=True — distinct from an unknown model, which is
@@ -139,8 +168,14 @@ def _load_overrides() -> dict[str, dict[str, TokenRates]]:
     return result
 
 
-def _build_rates() -> dict[str, dict[str, TokenRates]]:
+def _build_rates(today: date | None = None) -> dict[str, dict[str, TokenRates]]:
+    today = today or date.today()
     rates = {p: dict(models) for p, models in DEFAULT_RATES.items()}
+    # Scheduled changes apply over the defaults, operator overrides over both
+    # — an operator pin always wins, before and after a scheduled date.
+    for provider, model, effective, new_rates in _SCHEDULED_RATE_CHANGES:
+        if today >= effective:
+            rates.setdefault(provider, {})[model] = new_rates
     for provider, models in _load_overrides().items():
         rates.setdefault(provider, {})
         rates[provider].update(models)
@@ -174,11 +209,19 @@ def lookup_rates(provider: str | None, model: str | None) -> TokenRates | None:
     model_l = (model or "").lower()
     if model_l in table:
         return table[model_l]
-    # Substring match handles provider-prefixed or dated model ids.
+    # Substring match handles provider-prefixed or dated model ids. LONGEST
+    # matching key wins, so a specific key ("gemini-3.5-flash-lite",
+    # "deepseek-v4-flash") beats the shorter key it contains
+    # ("gemini-3.5-flash", "deepseek") regardless of dict order — which no
+    # ordering discipline could guarantee anyway: LLM_PRICING_OVERRIDES merges
+    # via dict.update, appending operator keys after every built-in.
+    best_key = None
+    best_rates = None
     for key, rates in table.items():
-        if key and key in model_l:
-            return rates
-    return None
+        if key and key in model_l and (best_key is None or len(key) > len(best_key)):
+            best_key = key
+            best_rates = rates
+    return best_rates
 
 
 def estimate_cost_usd(
