@@ -160,9 +160,14 @@ async def remove_org_member(
     finish_interrupted: bool = False,
 ) -> int:
     """Run the paired removal. Returns the process exit code."""
+    from sqlalchemy.exc import DBAPIError
+
     from faultmaven.config.tenant_context import set_current_org_id
     from faultmaven.container import container
     from faultmaven.exceptions import UserLookupFailed
+    from faultmaven.infrastructure.persistence.organization_repository import (
+        is_last_admin_violation,
+    )
     from faultmaven.infrastructure.persistence.sessionless_organization_repository import (
         SessionlessOrganizationRepository,
     )
@@ -304,6 +309,27 @@ async def remove_org_member(
     except MembershipRemovalIncomplete as exc:
         print(f"\n❌ {exc}")
         return EXIT_REVOCATION_INCOMPLETE
+    except DBAPIError as exc:
+        if not is_last_admin_violation(exc):
+            raise
+        # The last-admin constraint trigger refused the delete (#1161). This
+        # command is one of the writers that constraint exists to cover — it
+        # never goes near the Cloud service's own check — so without this the
+        # operator would get a traceback where a refusal belongs. The delete is
+        # what raised and the revocation runs only after it returns, so nothing
+        # was written: no half-state, and re-running changes nothing until the
+        # organization has another admin.
+        print(
+            f"\n❌ {user.username} is the last admin of this organization, so "
+            "removing them would leave it unmanageable — nobody could grant a "
+            "role or invite a member.\n"
+            "   NOTHING was written: the membership survives and the tokens "
+            "were not revoked.\n"
+            "   Give someone else the admin role first, then re-run this. "
+            "`fm-promote-platform-admin` grants the org admin alongside the "
+            "operator role if there is no one else to promote."
+        )
+        return 1
 
     if not result.membership_removed and current_role_id is not None:
         # This command read the membership as present moments ago and the delete

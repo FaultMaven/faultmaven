@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import List, Optional, Union
 
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from faultmaven.infrastructure.persistence.db_compat import dialect_insert
@@ -26,6 +27,47 @@ from faultmaven.models.interfaces_user import (
 from faultmaven.models.rbac import Permission
 
 logger = logging.getLogger(__name__)
+
+#: The constraint trigger migration 044 (``c7d8e9f0a1b2``) installs on
+#: ``organization_members``: it refuses any write that would leave an
+#: organization with no admin (fm#1161). PostgreSQL reports it as SQLSTATE
+#: ``23514`` carrying this name in the error's ``constraint_name`` field.
+#:
+#: The migration holds a frozen copy of this string, per the convention that a
+#: migration states the values it was written against rather than importing
+#: runtime code. ``tests/unit/infrastructure/persistence/test_last_admin_guard.py``
+#: asserts the two agree.
+LAST_ADMIN_CONSTRAINT = "organization_members_last_admin"
+
+#: SQLSTATE 23514, ``check_violation``.
+_CHECK_VIOLATION = "23514"
+
+
+def is_last_admin_violation(exc: BaseException) -> bool:
+    """Is ``exc`` the last-admin constraint trigger refusing a write?
+
+    Callers that already refuse this in application code — the Cloud
+    org-management service — use this to turn the database's refusal into the
+    same friendly error, so the rare path where the trigger is the one that
+    catches it does not surface as an unhandled database fault.
+
+    Identified by the structured fields PostgreSQL sends rather than by message
+    text: matching the message would break the day someone rewords it, and
+    matching only the error class would swallow every other constraint on the
+    table. ``exc.orig`` is SQLAlchemy's DBAPI wrapper; the driver exception
+    carrying the fields is its ``__cause__``.
+
+    Returns ``False`` for anything else, including on SQLite, where the trigger
+    does not exist — Standalone is single-tenant and has no organizations to
+    orphan.
+    """
+    if not isinstance(exc, DBAPIError):
+        return False
+    cause = getattr(exc.orig, "__cause__", None)
+    return (
+        getattr(cause, "sqlstate", None) == _CHECK_VIOLATION
+        and getattr(cause, "constraint_name", None) == LAST_ADMIN_CONSTRAINT
+    )
 
 
 def _parse_settings(raw) -> dict:

@@ -21,10 +21,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.exc import DBAPIError
 
 from faultmaven.cli import remove_org_member
 from faultmaven.config import tenant_context
 from faultmaven.exceptions import UserLookupFailed
+from faultmaven.infrastructure.persistence.organization_repository import (
+    LAST_ADMIN_CONSTRAINT,
+)
 from faultmaven.modules.auth.domain.services.organization_membership_service import (
     MembershipRemovalIncomplete,
 )
@@ -474,3 +478,85 @@ def test_membership_removal_incomplete_is_the_documented_failure():
     """The CLI's half-state exit code is tied to the service's half-state exception."""
     assert issubclass(MembershipRemovalIncomplete, Exception)
     assert remove_org_member.EXIT_REVOCATION_INCOMPLETE == 3
+
+
+# --- the last-admin constraint trigger refusing the delete (#1161) ----------
+
+
+class _PgError(Exception):
+    """Stand-in for the driver error SQLAlchemy wraps.
+
+    A real exception object rather than a ``Mock``, which answers every
+    attribute with a truthy value and would make the recogniser "match"
+    regardless of what it asked for.
+    """
+
+    def __init__(self, sqlstate: str, constraint_name: str) -> None:
+        super().__init__("would be left with no admin")
+        self.sqlstate = sqlstate
+        self.constraint_name = constraint_name
+
+
+def _db_error(sqlstate: str, constraint_name: str) -> DBAPIError:
+    orig = _PgError(sqlstate, constraint_name)
+    orig.__cause__ = _PgError(sqlstate, constraint_name)
+    return DBAPIError("DELETE FROM organization_members", {}, orig)
+
+
+async def test_last_admin_refusal_is_reported_not_raised(wiring, capsys):
+    """This command is one of the writers the constraint trigger exists to cover.
+
+    It never goes near the Cloud service's own last-admin check, so before
+    migration 044 nothing stopped it and after 044 nothing explained it — the
+    operator would have got a traceback where a refusal belongs.
+    """
+    wiring.orgs.remove_member.side_effect = _db_error("23514", LAST_ADMIN_CONSTRAINT)
+
+    code = await remove_org_member.remove_org_member(
+        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+    )
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "last admin" in out
+    assert "NOTHING was written" in out
+    # A refusal is not the half-state: those codes mean an operator must come
+    # back, and this one means nothing happened.
+    assert code != remove_org_member.EXIT_REVOCATION_INCOMPLETE
+    assert code != remove_org_member.EXIT_MEMBERSHIP_NOT_REMOVED
+
+
+async def test_last_admin_refusal_revokes_nothing(wiring):
+    """Nothing was written, so no session is ended.
+
+    The delete is what raised and the core service revokes only after it
+    returns — worth asserting rather than reasoning about, because signing a
+    user out of an organization they are still in looks like nothing at all
+    from the exit code.
+    """
+    wiring.orgs.remove_member.side_effect = _db_error("23514", LAST_ADMIN_CONSTRAINT)
+
+    await remove_org_member.remove_org_member(
+        organization_id=ORG_ID, user_identifier="alice", dry_run=False
+    )
+
+    wiring.auth_service.revoke_user_tokens.assert_not_awaited()
+
+
+async def test_an_unrelated_database_error_is_not_reported_as_last_admin(wiring):
+    """Only this guard's refusal gets the friendly message.
+
+    A recogniser matching on the error class alone would tell an operator their
+    last admin is protected when the real fault was a foreign key or a dead
+    connection, and the real failure would never be reported.
+    """
+    wiring.orgs.remove_member.side_effect = _db_error(
+        "23503", "organization_members_user_id_fkey"
+    )
+
+    with pytest.raises(DBAPIError):
+        await remove_org_member.remove_org_member(
+            organization_id=ORG_ID, user_identifier="alice", dry_run=False
+        )
+
+    wiring.auth_service.revoke_user_tokens.assert_not_awaited()
