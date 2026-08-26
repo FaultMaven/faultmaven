@@ -268,14 +268,19 @@ OPIK_URL=http://localhost:5555
 
 ### Supported LLM Providers
 
-FaultMaven supports 7 LLM providers with automatic fallback:
+FaultMaven supports 9 LLM providers. The **default is Google Gemini on
+`gemini-3.7-flash`** — set `GEMINI_API_KEY` and nothing else is required.
+Models below are each provider's default first; the full picker list lives in
+[adding-llm-providers.md](../guides/adding-llm-providers.md).
 
-- **Fireworks AI**: `llama-v3p1-8b-instruct`, `llama-v3p1-70b-instruct`, `mixtral-8x7b-instruct`
-- **OpenAI**: `gpt-4o`, `gpt-4o-mini`, `gpt-3.5-turbo`
-- **Anthropic**: `claude-3-5-sonnet-20241022`, `claude-3-haiku-20240307`
-- **Google Gemini**: `gemini-1.5-pro`, `gemini-1.5-flash`
-- **HuggingFace**: Various open-source models
-- **OpenRouter**: Multi-provider access
+- **Google Gemini** (default): `gemini-3.7-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`
+- **OpenAI**: `gpt-5.6-luna`, `gpt-5.4-mini`
+- **Anthropic**: `claude-sonnet-4-6`, `claude-opus-4-6`, `claude-haiku-4-5-20251001`
+- **Fireworks AI**: `deepseek-v4-flash`, `deepseek-v3`
+- **Groq**: `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`
+- **Cohere**: `command-r-plus`, `command-r`
+- **HuggingFace**: open-source models (no tool calling — not recommended for the investigation role)
+- **OpenRouter**: multi-provider access
 - **Local**: Ollama, vLLM, or any OpenAI-compatible server
 
 ## 10. Troubleshooting

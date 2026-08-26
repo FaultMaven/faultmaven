@@ -19,20 +19,23 @@ Provider capability matrix for FaultMaven's LLM routing system. These capabiliti
 ## Role Routing
 
 Every LLM-calling role can be pinned to its own (provider, model). The role
-provider falls back to `CHAT_PROVIDER` when unset; the role's model resolves
+provider follows `CHAT_PROVIDER` when unset — though `CLASSIFIER_PROVIDER`,
+`SYNTHESIS_PROVIDER` and `MULTIMODAL_PROVIDER` now SHIP set (to `gemini`), so
+in the default configuration only `DA_PROVIDER`, `KNOWLEDGE_PROVIDER` and
+`STRUCTURED_OUTPUT_PROVIDER` follow the anchor. The role's model resolves
 `{PROVIDER}_{ROLE}_MODEL` → that provider's `{PROVIDER}_MODEL` — so two roles
 on the SAME provider can run different models (e.g. `OPENAI_MODEL` for chat,
 a cheaper `OPENAI_CLASSIFIER_MODEL` for the classifier).
 
-| Role env key | Routes which function | Falls back to | Notes |
+| Role env key | Routes which function | Ships as | Notes |
 |---|---|---|---|
-| `CHAT_PROVIDER` | Everything by default: investigation engine turns, all conversation | — | Required; boot refuses without it and its API key |
+| `CHAT_PROVIDER` | Everything by default: investigation engine turns, all conversation | `gemini` (the anchor) | A provider ships as the default; a CREDENTIAL never does — boot refuses when the resolved provider's API key is missing |
 | `DA_PROVIDER` | Directed Analysis tool loop — the evidence-gathering iterations (`search_file`, `deep_analysis`, KB lookups) inside investigation turns | `CHAT_PROVIDER` | The startup tool-calling gate validates the resolved DA→CHAT (provider, model) |
 | `STRUCTURED_OUTPUT_PROVIDER` | Schema-bound engine calls (the response-schema tool / structured output) | `CHAT_PROVIDER` | The escape hatch for a best-effort chat provider: force just the schema-bound calls onto a STRICT-capable provider. A DA override gets first dibs on the tool path |
-| `CLASSIFIER_PROVIDER` | Intent resolver (typed replies vs. offered suggestions) + document triage in knowledge preprocessing | `CHAT_PROVIDER` | Best-effort models are acceptable here (small, enum-like outputs) |
-| `SYNTHESIS_PROVIDER` | QA sub-agent answer synthesis — `kb_qa` / `global_kb_qa` / `user_kb_qa` / `case_evidence_qa` / `document_qa` answers | `CHAT_PROVIDER` | Best-effort acceptable here too |
+| `CLASSIFIER_PROVIDER` | Intent resolver (typed replies vs. offered suggestions) + document triage in knowledge preprocessing | **`gemini`** (pinned, on `gemini-3.5-flash-lite`) | Best-effort models are acceptable here (small, enum-like outputs). A static pin: it does NOT move with `CHAT_PROVIDER`, and needs `GEMINI_API_KEY` regardless of the anchor |
+| `SYNTHESIS_PROVIDER` | QA sub-agent answer synthesis — `kb_qa` / `global_kb_qa` / `user_kb_qa` / `case_evidence_qa` / `document_qa` answers | **`gemini`** (pinned, on `gemini-3.5-flash-lite`) | Best-effort acceptable here too. Static pin, as above. The call declares `reasoning_intent=EXTRACTION`, which caps thinking on any Gemini tier — the shape default alone would not on a pre-3.7 model |
 | `KNOWLEDGE_PROVIDER` | Document→runbook conversion (failure-mode analysis + runbook drafting) | `CHAT_PROVIDER` | |
-| `MULTIMODAL_PROVIDER` | Visual extractor (image/screenshot analysis in preprocessing) | `CHAT_PROVIDER` | Builds its own client from provider+key+model; does not go through the router |
+| `MULTIMODAL_PROVIDER` | Visual extractor (image/screenshot analysis in preprocessing) | **`gemini`** (pinned; model = `GEMINI_MODEL`) | Static pin, as above. Needs no model key of its own — every shipped base model is vision-capable. Builds its own client from provider+key+model; does not go through the router. (The extractor itself is a Phase-2 placeholder making no LLM calls yet) |
 | `CODE_PROVIDER` | **Nothing — unwired.** The setting, getter and per-task model fields exist, but no code path consumes them | — | Wire it or remove it; until then it is dead config surface |
 
 Two per-role **model** keys need a caveat the table above does not carry:
@@ -50,6 +53,12 @@ Two per-role **model** keys need a caveat the table above does not carry:
   requests the per-task chat model, so a value here never reaches a provider.
   The boot enforcement-class check judges the chat role by the base
   `{PROVIDER}_MODEL` for exactly this reason.
+
+Comment a pinned key out to make that role follow `CHAT_PROVIDER` again;
+`DA_PROVIDER`, `KNOWLEDGE_PROVIDER` and `STRUCTURED_OUTPUT_PROVIDER` ship unset
+and already do. Flipping only `CHAT_PROVIDER` therefore moves the
+anchor-following roles and leaves the three pins put — which is what makes an
+A/B comparison of the anchor a controlled one.
 
 Role routing is **static assignment**, not fallback: an explicitly-set role
 provider is routed deterministically (no fallback chain for that call) and
