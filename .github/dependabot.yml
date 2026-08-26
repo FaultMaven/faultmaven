@@ -24,11 +24,13 @@
 # NOTIFICATION, not necessarily a mergeable change — regenerate the lockfiles
 # properly and bump the `pyproject.toml` floor.
 #
-# This watch covers the CLIENT ONLY. The vulnerable artifact in production is
-# the SERVER (ghcr.io/chroma-core/chroma), and it is not merely unwatched —
-# there is nothing to watch: no image/tag/repository key exists in any tracked
-# manifest in faultmaven-enterprise-infra. The running 1.0.10 is the chart's
-# own default. See the exception entry's escalation triggers.
+# This watch covers the CLIENT pin directly. The vulnerable artifact in
+# production is the SERVER (ghcr.io/chroma-core/chroma), pinned since infra#256
+# at `chromadb.apiVersion` in kubernetes/data/chromadb/values.yaml
+# (faultmaven-enterprise-infra). One upstream release moves both pins, so a PR
+# from this watch is the release signal for the server too — closing the
+# exception bumps the lockfile pin AND that value. See the exception entry's
+# escalation triggers.
 #
 # CONVENTION — do not park PRs from this watch. 1.5.9 already exists and is
 # inside all four vulnerable ranges, so the first run raises a

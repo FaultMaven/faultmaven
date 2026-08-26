@@ -717,14 +717,16 @@ jobs:
             # two cross-tenant authorization failures in the server's authz
             # layer (GHSA-2wm9, GHSA-xph7, High). Same containment as above —
             # the vulnerable HTTP server never starts in standalone, and in
-            # cloud it is ClusterIP with no Ingress, reachable only from four
-            # first-party pods via the allow-chromadb-ingress NetworkPolicy.
-            # That policy is the ONLY control: there is no ChromaDB auth in
-            # force (fm#1173) — do not restate the retracted token-auth claim
-            # here. The two authorization CVEs additionally describe a control
-            # FaultMaven does not use: a single ChromaDB tenant/database with
-            # no authn or authz layer at all — not one principal, none —
-            # tenancy enforced above ChromaDB and never delegated to it.
+            # cloud it sits behind TWO independent, live-verified controls
+            # (2026-08-25, infra#253 / fm#1173): the NetworkPolicy pair
+            # (ClusterIP only, ingress restricted to the auth proxy, which
+            # admits four first-party pods; egress default-denied) and the
+            # token-enforcing chromadb-auth-proxy — required because the
+            # ChromaDB 1.x server itself has no auth to enable. The two
+            # authorization CVEs stay moot: the proxy's single-token gate
+            # creates one all-access principal, no ChromaDB tenants or RBAC —
+            # tenancy is enforced above ChromaDB and never delegated to it.
+            # The exception entry is the authoritative containment record.
             # Reported under CVE aliases (CVE-2026-45833 / -45830 / -45831);
             # as above, ignore by GHSA id — do not "correct" these to the ids
             # the log prints.
