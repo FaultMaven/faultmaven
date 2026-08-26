@@ -84,7 +84,12 @@ repos:
           "$@"; then echo "ERROR - API key pattern detected!"; exit 1; fi' --
         language: system
         pass_filenames: true
-        files: \.(py|js|ts|jsx|tsx|md|txt|yml|yaml|json|env)$
+        # The extension alternation alone misses dotenv variants: ".env" ends
+        # in "env" and matches, but ".env-back" / ".env.backup" / ".env.bak" do
+        # not -- and those are precisely the files that leaked live provider
+        # keys into this repo's history. The second branch catches an
+        # ".env"/"env" basename with a ".", "-" or "~" suffix, at any depth.
+        files: (\.(py|js|ts|jsx|tsx|md|txt|yml|yaml|json|env)$|(^|/)\.?env[.~-])
         exclude: |
           (?x)^(
             \.git/.*|
