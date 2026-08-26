@@ -17,11 +17,32 @@ Design: see docs/architecture/investigation-engine/choice-response-resolution.md
 import logging
 from typing import Any, Dict, List, Optional
 
+from faultmaven.infrastructure.llm.providers import ReasoningIntent
+
 logger = logging.getLogger(__name__)
 
 # Maximum message length to consider for choice matching.
 # Longer messages are almost certainly conversational, not short answers.
 MAX_MESSAGE_LENGTH = 200
+
+# The classifier answers with a single digit, so the VISIBLE output it needs is
+# one token — but hidden reasoning bills against the same budget on every
+# provider, and the documented default (gpt-5.4-mini) reasons at its server
+# default on a plain call. At the original cap of 10 the reasoning consumed the
+# whole budget, the body came back empty, and ``_parse_response("")`` returned
+# None — the tier paying for a real API call it could never use, landing on the
+# same "no match" as an outright failure. The cap therefore has to leave room
+# for the reasoning the intent below asks the provider to minimise, not just
+# for the digit.
+CLASSIFIER_MAX_TOKENS = 512
+
+# What makes the starvation LOUD instead of silent. Below this floor on a
+# ``MAX_TOKENS`` stop the router raises rather than returning a body the caller
+# already knows is unusable; the raise lands in the ``except Exception`` below
+# and is logged with a traceback. Without it a starved call is indistinguishable
+# from "the user typed something unrelated" — which is how the tier stayed dead
+# without anyone noticing.
+CLASSIFIER_MIN_OUTPUT_TOKENS = 1
 
 
 class IntentResolver:
@@ -118,13 +139,40 @@ class IntentResolver:
             from faultmaven.config.settings import get_settings
 
             settings = get_settings()
-            classifier_model = settings.get_classifier_model()
+            # ``settings.llm``, not ``settings`` — the getter lives on
+            # LLMSettings. The previous ``settings.get_classifier_model()``
+            # raised AttributeError on every call, and the blanket
+            # except-below turned that into "classifier failed, default to
+            # conversation": the LLM path of this resolver had never actually
+            # run (tests passed because they mock settings, and a Mock
+            # auto-creates the missing attribute).
+            classifier_model = settings.llm.get_classifier_model()
+
+            # Land on CLASSIFIER_PROVIDER when the operator set one —
+            # without the override the role model name arrives at
+            # CHAT_PROVIDER, which won't be configured for it. The kwarg is
+            # added ONLY when a role provider is set, so the unset case is
+            # byte-identical to before role routing — and duck-typed routers
+            # without the parameter (test doubles, custom LLM_ROUTER_CLASS
+            # implementations) keep working.
+            route_kwargs = {}
+            override = settings.llm.explicit_role_provider("classifier")
+            if override:
+                route_kwargs["provider_override"] = override
 
             response = await self.llm_router.route(
                 messages=[{"role": "user", "content": prompt}],
                 model=classifier_model,
-                max_tokens=10,
+                # See CLASSIFIER_MAX_TOKENS / CLASSIFIER_MIN_OUTPUT_TOKENS:
+                # EXTRACTION asks each provider for its verified MINIMUM
+                # reasoning ("none" where that is verified, "low" otherwise) —
+                # this call transforms a supplied list of choices, it does not
+                # reason over candidates.
+                max_tokens=CLASSIFIER_MAX_TOKENS,
+                min_output_tokens=CLASSIFIER_MIN_OUTPUT_TOKENS,
+                reasoning_intent=ReasoningIntent.EXTRACTION,
                 temperature=0.0,
+                **route_kwargs,
             )
 
             return self._parse_response(response.content, choices)

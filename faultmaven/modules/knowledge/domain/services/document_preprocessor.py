@@ -511,6 +511,19 @@ class DocumentPreprocessor:
                 max_tokens=256,
                 temperature=0.1,
                 response_format={"type": "json_object"},
+                # Land on CLASSIFIER_PROVIDER when the operator set one — the
+                # model alone doesn't route; see intent_resolver for the same
+                # pattern (kwarg only when set, so duck-typed routers keep
+                # working).
+                **(
+                    {"provider_override": override}
+                    if (
+                        override := self._settings.llm.explicit_role_provider(
+                            "classifier"
+                        )
+                    )
+                    else {}
+                ),
             )
 
             if response.is_truncated:

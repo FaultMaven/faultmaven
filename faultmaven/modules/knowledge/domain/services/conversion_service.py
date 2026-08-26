@@ -800,6 +800,15 @@ class ConversionService:
     # Analysis Phase
     # =========================================================================
 
+    def _knowledge_route_kwargs(self) -> dict:
+        """``{"provider_override": <name>}`` when KNOWLEDGE_PROVIDER is set,
+        else ``{}`` — the kwarg is added only when the role provider is
+        explicitly configured, so the unset case is byte-identical to before
+        role routing and duck-typed routers without the parameter keep
+        working."""
+        override = self._settings.llm.explicit_role_provider("knowledge")
+        return {"provider_override": override} if override else {}
+
     async def _analyze_document(self, text: str, filename: str) -> AnalysisResult:
         """Analyze document for failure modes using KNOWLEDGE_PROVIDER."""
         knowledge_model = self._settings.llm.get_knowledge_model()
@@ -814,6 +823,10 @@ class ConversionService:
                 max_tokens=cap,
                 temperature=0.2,
                 response_format={"type": "json_object"},
+                # Land on KNOWLEDGE_PROVIDER when the operator set one — the
+                # model alone doesn't route (kwarg only when set, so
+                # duck-typed routers keep working).
+                **self._knowledge_route_kwargs(),
             )
 
         # A document with many failure modes can genuinely outgrow the budget.
@@ -972,6 +985,8 @@ class ConversionService:
                     model=knowledge_model,
                     max_tokens=cap,
                     temperature=0.3,
+                    # Same KNOWLEDGE_PROVIDER routing as _analyze_document.
+                    **self._knowledge_route_kwargs(),
                 )
 
             response = await generate_with_truncation_retry(

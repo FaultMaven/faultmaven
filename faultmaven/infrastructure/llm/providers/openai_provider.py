@@ -245,6 +245,108 @@ class OpenAIProvider(BaseLLMProvider):
             return cls._DEFAULT_REASONING_PLAIN_EFFORT
         return None
 
+    def _operator_reasoning_effort(
+        self,
+        model: str,
+        *,
+        has_response_format: bool,
+        defaults_reasoning: bool,
+    ) -> Optional[str]:
+        """The operator-configured effort for this call shape, or ``None``.
+
+        ``OPENAI_REASONING_EFFORT`` replaces the SHAPE default (the value
+        ``_shape_default_effort`` would pick), nothing stronger: per-call
+        ``reasoning_intent`` (#1118) and an explicit ``reasoning_effort``
+        kwarg are applied later and still win, and the caller only consults
+        this on shapes where the parameter is sendable at all
+        (``_caps_reasoning_effort``, no function tools).
+
+        Starve-protection is not operator-overridable, and degradation is
+        always toward LESS reasoning, never silent:
+
+        - structured calls (``response_format``): "medium"/"high" degrade to
+          the "low" floor — hidden reasoning starving the schema body is the
+          documented failure this floor exists for (#625);
+        - "none" degrades to "low" wherever "none" is unverified — it is
+          verified only for PLAIN calls on the
+          ``_DEFAULT_REASONING_MODEL_FAMILIES`` families (the capability map
+          to extend when a new family is verified).
+
+        "Less" is measured against what the call would otherwise do, not
+        against the absence of a parameter. On a plain call to a reasoning
+        family the shape default is ``None``, so today's payload carries no
+        ``reasoning_effort`` at all — and a model that accepts the parameter
+        reasons at the API's own default ("medium") when none is sent. Sending
+        ``"low"`` therefore ADDS a key while REDUCING the reasoning, which is
+        the direction this helper promises; ``_DEFAULT_REASONING_MODEL_FAMILIES``
+        is the "requires ``none`` alongside tools / rejects non-default
+        temperature" axis, not a list of the models that reason.
+        """
+        configured = self.config.reasoning_effort
+        if configured is None:
+            return None
+
+        if has_response_format and configured in ("medium", "high"):
+            self.logger.warning(
+                f"OPENAI_REASONING_EFFORT='{configured}' would let hidden "
+                f"reasoning starve the structured-output body on {model} "
+                f"(#625) — degrading to the 'low' floor for this call"
+            )
+            return self._STRUCTURED_REASONING_EFFORT
+
+        if configured == "none" and (has_response_format or not defaults_reasoning):
+            self.logger.warning(
+                f"OPENAI_REASONING_EFFORT='none' is unverified for this call "
+                f"shape on {model} ('none' is verified only for plain calls "
+                f"on the {self._DEFAULT_REASONING_MODEL_FAMILIES} families) — "
+                f"sending the broadly-valid 'low' instead; extend "
+                f"_DEFAULT_REASONING_MODEL_FAMILIES once a family is verified"
+            )
+            return self._STRUCTURED_REASONING_EFFORT
+
+        return configured
+
+    def _log_operator_effort_suppressed(self, model: str, *, has_tools: bool) -> None:
+        """Report ONCE per provider instance that ``OPENAI_REASONING_EFFORT``
+        did not reach a call.
+
+        ``reasoning_intent`` has ``_log_unhonoured_intent`` for exactly this
+        class of drop; the operator knob had no equivalent, and its blind spot
+        is the dominant path: the investigation tool loop always sends
+        ``tools``, so an operator who sets the knob to make investigations
+        reason harder saw no warning, no INFO and no behavior change — with
+        ``.env.example`` describing it as the operator default that only hard
+        model constraints override.
+
+        Once per instance rather than per call, because the suppressed shapes
+        are the HOT ones (every tool-loop iteration of every turn) and the
+        condition cannot change between calls on one provider instance —
+        per-call logging would be warning volume proportional to request rate.
+        """
+        if getattr(self, "_operator_effort_suppression_logged", False):
+            return
+        self._operator_effort_suppression_logged = True
+
+        if has_tools:
+            why = (
+                "this model 400s on reasoning_effort alongside function tools "
+                "on /v1/chat/completions (the gpt-5.6 family additionally "
+                "requires 'none' there), so no operator value can be sent"
+            )
+        else:
+            why = (
+                "this provider/model does not accept reasoning_effort at all "
+                "(gpt-4o/gpt-4.1, o1-mini/o1-preview, or a gateway subclass "
+                "that opts out)"
+            )
+        self.logger.warning(
+            f"OPENAI_REASONING_EFFORT='{self.config.reasoning_effort}' is not "
+            f"applied on {model} for this call shape: {why}. The model reasons "
+            f"at its own default and hidden reasoning still bills against the "
+            f"output budget. Logged once per provider instance; the "
+            f"investigation tool loop is the shape this most often affects."
+        )
+
     def _log_unhonoured_intent(self, intent: ReasoningIntent, message: str) -> None:
         """Report an intent this call could not apply.
 
@@ -496,8 +598,22 @@ class OpenAIProvider(BaseLLMProvider):
             shape_effort = self._shape_default_effort(
                 defaults_reasoning, bool(response_format)
             )
-            if shape_effort is not None:
-                payload["reasoning_effort"] = shape_effort
+            # Operator default (OPENAI_REASONING_EFFORT) replaces the shape
+            # default when set — clamped by the starve guards, and still
+            # subordinate to reasoning_intent below and to an explicit
+            # reasoning_effort kwarg in the merge.
+            operator_effort = self._operator_reasoning_effort(
+                effective_model,
+                has_response_format=bool(response_format),
+                defaults_reasoning=defaults_reasoning,
+            )
+            effort = operator_effort if operator_effort is not None else shape_effort
+            if effort is not None:
+                payload["reasoning_effort"] = effort
+        elif self.config.reasoning_effort is not None:
+            # The operator set the knob and this call shape cannot carry it.
+            # Never silent: see _log_operator_effort_suppressed.
+            self._log_operator_effort_suppressed(effective_model, has_tools=bool(tools))
 
         # Caller-declared intent (#1118) refines the shape-based defaults
         # above; the hard constraints (tools, models that reject the param)

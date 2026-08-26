@@ -647,6 +647,7 @@ async def lifespan(app: FastAPI):
             from .config.investigation_capability import (
                 validate_investigation_tooling,
                 validate_structured_output_capacity,
+                warn_best_effort_enforcement,
             )
             from .infrastructure.llm.providers.registry import get_registry
 
@@ -661,6 +662,14 @@ async def lifespan(app: FastAPI):
             # unmeasured; no opt-out flag, because there is no degraded mode that
             # still records investigation state.
             validate_structured_output_capacity(settings, get_registry())
+
+            # Third, ADVISORY axis: schema-enforcement class per resolved role.
+            # Warns (never blocks) when investigation/chat resolve to a model
+            # whose response schemas are only requested in-prompt
+            # (BEST_EFFORT) — the degraded-state failure is otherwise silent
+            # and discovered from broken investigations, not from boot.
+            # Classifier/synthesis roles are exempt by design.
+            warn_best_effort_enforcement(settings, get_registry())
 
         # Validate workers configuration for in-memory storage
         workers = settings.server.workers

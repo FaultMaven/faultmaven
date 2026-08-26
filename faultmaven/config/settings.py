@@ -154,6 +154,33 @@ class ServerSettings(BaseSettings):
 # a validator reads it.
 ANTHROPIC_THINKING_MODES = ("off", "adaptive", "enabled")
 
+# Accepted values for OPENAI_REASONING_EFFORT — the levels OpenAI's
+# ``reasoning_effort`` parameter takes. Module-level for the same pydantic
+# reason as ANTHROPIC_THINKING_MODES above.
+OPENAI_REASONING_EFFORTS = ("none", "low", "medium", "high")
+
+# The task axis of the {PROVIDER}_{TASK}_MODEL matrix — every task that
+# `_get_model_for_provider_and_task` can be asked to resolve. Module-level for
+# the same pydantic reason as ANTHROPIC_THINKING_MODES above. The registry uses
+# this to enumerate every model a provider instance must accept per-call
+# (`configured_task_models`): a per-task model that is not in the provider's
+# ``config.models`` is silently replaced by the base model at call time
+# (``BaseLLMProvider.get_effective_model``), which is exactly how the per-task
+# matrix went unhonoured. `structured_output` is listed even though no
+# per-provider field exists for it yet — `getattr(..., None)` makes it a no-op
+# until one is added, and forgetting to extend this tuple then would
+# reintroduce the silent swallow for just that task.
+LLM_MODEL_TASKS = (
+    "chat",
+    "multimodal",
+    "synthesis",
+    "classifier",
+    "code",
+    "da",
+    "knowledge",
+    "structured_output",
+)
+
 
 class LLMSettings(BaseSettings):
     """LLM provider configuration with flexible multi-model support"""
@@ -283,6 +310,28 @@ class LLMSettings(BaseSettings):
     # max_tokens or the call is downgraded to no-thinking.
     anthropic_thinking_budget_tokens: int = Field(
         default=4096, validation_alias="ANTHROPIC_THINKING_BUDGET_TOKENS"
+    )
+
+    # Operator default for OpenAI ``reasoning_effort`` (none|low|medium|high).
+    # The OpenAI analog of ANTHROPIC_THINKING_MODE, with the same contract:
+    # DEFAULT UNSET (None) sends exactly what today's shape-based policy sends
+    # ("none" for plain chat on default-reasoning families, the "low"
+    # starvation floor on structured calls — #625), so existing deployments
+    # are byte-identical. When set, it replaces the SHAPE DEFAULT only; the
+    # precedence is
+    #   shape default < OPENAI_REASONING_EFFORT < per-call reasoning_intent
+    #   (#1118) < explicit reasoning_effort kwarg
+    # — call sites that declared semantic intent keep it (INFERENCE is
+    # floor-paired and load-bearing). Starve-protection is not operator-
+    # overridable: on structured calls "medium"/"high" degrade to the "low"
+    # floor with a warning (hidden reasoning starving the schema body is the
+    # documented failure this floor exists for), and "none" degrades to "low"
+    # with a warning on families where "none" is unverified
+    # (_DEFAULT_REASONING_MODEL_FAMILIES is the verified list). Degradation is
+    # always toward LESS reasoning and never silent. Hard model constraints
+    # still win (tools alongside reasoning, models that reject the parameter).
+    openai_reasoning_effort: Optional[str] = Field(
+        default=None, validation_alias="OPENAI_REASONING_EFFORT"
     )
 
     # Fireworks
@@ -468,6 +517,32 @@ class LLMSettings(BaseSettings):
         )
         return "off"
 
+    @field_validator("openai_reasoning_effort")
+    @classmethod
+    def normalize_openai_reasoning_effort(cls, v):
+        """Normalize case/whitespace; fail closed to UNSET on anything else.
+
+        Same rationale as ``normalize_anthropic_thinking_mode`` above: an
+        unrecognized value must warn and disable the knob, never abort settings
+        construction and refuse to boot. Fails closed to ``None`` (= the knob
+        is unset and today's shape-based defaults apply), NOT to ``"none"`` —
+        a typo must not accidentally ENGAGE the override.
+        """
+        if v is None:
+            return None
+        normalized = str(v).strip().lower()
+        if normalized == "":
+            return None
+        if normalized in OPENAI_REASONING_EFFORTS:
+            return normalized
+        logging.getLogger(__name__).warning(
+            "Unrecognized OPENAI_REASONING_EFFORT %r — ignoring it (valid "
+            "values: %s). The shape-based reasoning defaults apply.",
+            v,
+            ", ".join(OPENAI_REASONING_EFFORTS),
+        )
+        return None
+
     @field_validator("max_tokens")
     @classmethod
     def validate_max_tokens(cls, v, info):
@@ -502,6 +577,49 @@ class LLMSettings(BaseSettings):
             task: Task type ('chat', 'multimodal', 'synthesis', 'classifier', 'code', 'da', 'knowledge')
         """
         return self._get_model_for_provider_and_task(self.provider, task)
+
+    def explicit_role_provider(self, role: str) -> Optional[str]:
+        """The provider NAME a role was explicitly routed to, or ``None``.
+
+        ``None`` means "the operator did not set {ROLE}_PROVIDER" — the role
+        follows CHAT_PROVIDER through the normal routing chain, exactly as
+        before. A name means the call site must pass it as
+        ``provider_override`` so the router lands the call on that provider
+        deterministically (no fallback chain — role routing is static
+        assignment, not fallback). One helper instead of an inline
+        ``x.value if x is not None else None`` at every role call site, so the
+        "explicit only" semantics cannot drift between them.
+
+        ``role`` uses the task vocabulary of :data:`LLM_MODEL_TASKS`
+        ("classifier", "synthesis", "da", …).
+        """
+        field = "provider" if role == "chat" else f"{role}_provider"
+        value = getattr(self, field, None)
+        if value is None:
+            return None
+        return value.value if hasattr(value, "value") else str(value)
+
+    def configured_task_models(self, provider: "LLMProvider | str") -> List[str]:
+        """Every distinct per-task model configured for *provider*.
+
+        The registry folds these into the provider's ``config.models`` so a
+        per-call model override (``OPENAI_DA_MODEL``, ``GEMINI_CLASSIFIER_MODEL``,
+        …) survives ``BaseLLMProvider.get_effective_model`` — which only honours
+        a requested model it can find in that list. Without this, every
+        per-task override was silently replaced by the base model at call time.
+
+        Returns de-duplicated values in ``LLM_MODEL_TASKS`` order; excludes the
+        base ``{PROVIDER}_MODEL`` (the registry already leads with it, keeping
+        it ``models[0]``/``default_model``). ``local`` has no per-task fields
+        and returns [].
+        """
+        provider_name = provider.value if hasattr(provider, "value") else str(provider)
+        seen: List[str] = []
+        for task in LLM_MODEL_TASKS:
+            value = getattr(self, f"{provider_name}_{task}_model", None)
+            if value and value not in seen:
+                seen.append(value)
+        return seen
 
     def get_multimodal_provider(self) -> LLMProvider:
         """Get multimodal provider (falls back to chat provider if not set)"""
