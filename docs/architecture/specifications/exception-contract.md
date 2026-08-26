@@ -262,7 +262,8 @@ a different, older shape than the table above:
 }
 ```
 
-Two invariants govern it, both learned from fm#1048:
+Three invariants govern it — the first two learned from fm#1048, the
+third from fm#1156:
 
 1. **Serialization must be total.** A pydantic error's `input` is
    whatever object the framework fed to validation — raw `bytes` for a
@@ -277,6 +278,21 @@ Two invariants govern it, both learned from fm#1048:
    A body-level error's `input` is the entire request body, so an
    unbounded echo would mirror up to `MAX_UPLOAD_SIZE_MB` back at an
    unauthenticated caller.
+3. **`input` is echoed only when it names one field's value** — in the
+   response *and* in the ERROR log, which carry the same sanitized
+   errors. `input` is otherwise the caller's whole payload, and on
+   `/auth/refresh`, `/auth/login` or `PUT /admin/llm/config` that
+   payload is a refresh token, a password or a provider API key. Two
+   cases are not one field's value: `loc == ("body",)`, where the whole
+   body failed to bind; and the `missing*` error types, where no value
+   exists at `loc` so pydantic substitutes the object the field is
+   missing *from* (`loc` reads field-level while `input` is the
+   enclosing object — this is what fm#1156 was). The log adds only
+   `describe_request_body`'s content-free shape (`<dict: 2 keys>`,
+   `<bytes: 57 bytes>`); it must never carry `exc.body` itself, because
+   there is no redaction processor in the structlog chain to catch it
+   downstream. Field-level errors of every other type keep their
+   `input` — it is what makes a 422 actionable.
 
 ## Route Pattern
 
