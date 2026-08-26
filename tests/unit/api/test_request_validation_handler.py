@@ -360,6 +360,14 @@ class _Capture(logging.Handler):
 
 @pytest.fixture
 def logs():
+    """Capture the handler's ERROR records, and refuse to capture none.
+
+    Every test using this fixture provokes a 422, and a 422 always logs. So an
+    empty capture means the record never reached the handler — a logger silenced
+    somewhere, an exception swallowed — and the "the secret is not in the log"
+    assertions would all pass on nothing. Failing here keeps a vacuous pass from
+    reading as a security guarantee.
+    """
     capture = _Capture()
     handler_logger = logging.getLogger("faultmaven.api.exception_handlers")
     handler_logger.addHandler(capture)
@@ -367,6 +375,10 @@ def logs():
         yield capture
     finally:
         handler_logger.removeHandler(capture)
+    assert capture.records, (
+        "no ERROR record was captured, so every assertion about what the log "
+        "does not contain was vacuous"
+    )
 
 
 @pytest.fixture
