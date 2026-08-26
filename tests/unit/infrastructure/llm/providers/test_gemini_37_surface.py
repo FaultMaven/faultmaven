@@ -27,7 +27,7 @@ temperature/topP/topK, no ids) measured working end-to-end on 2026-08-26.
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel
@@ -51,20 +51,6 @@ def _config(model):
     )
 
 
-def _mock_aiohttp_session(response_data: dict):
-    mock_response = AsyncMock()
-    mock_response.status = 200
-    mock_response.json = AsyncMock(return_value=response_data)
-    mock_response.text = AsyncMock(return_value="")
-    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-    mock_response.__aexit__ = AsyncMock(return_value=False)
-    mock_session = MagicMock()
-    mock_session.post = MagicMock(return_value=mock_response)
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=False)
-    return mock_session
-
-
 _OK_RESP = {
     "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}],
     "usageMetadata": {"candidatesTokenCount": 5},
@@ -82,8 +68,10 @@ def _response_format():
     }
 
 
-async def _sent_body(provider, **generate_kwargs):
-    mock_session = _mock_aiohttp_session(_OK_RESP)
+async def _sent_body(mock_factory, provider, **generate_kwargs):
+    """*mock_factory* is the shared ``mock_aiohttp_session`` conftest fixture
+    (tests/unit/infrastructure/llm/conftest.py) — never a local copy."""
+    mock_session = mock_factory(_OK_RESP)
     with patch("aiohttp.ClientSession", return_value=mock_session):
         await provider.generate("Test", **generate_kwargs)
     call_kwargs = mock_session.post.call_args
@@ -140,10 +128,15 @@ class TestSurfaceGate:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestSamplingParams:
-    async def test_37_omits_temperature_top_p_top_k(self):
+    async def test_37_omits_temperature_top_p_top_k(self, mock_aiohttp_session):
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         body = await _sent_body(
-            provider, max_tokens=500, temperature=0.7, top_p=0.9, top_k=40
+            mock_aiohttp_session,
+            provider,
+            max_tokens=500,
+            temperature=0.7,
+            top_p=0.9,
+            top_k=40,
         )
         gen = body["generationConfig"]
         assert "temperature" not in gen
@@ -151,18 +144,25 @@ class TestSamplingParams:
         assert "topK" not in gen
         assert gen["maxOutputTokens"] == 500
 
-    async def test_37_still_sends_stop_sequences(self):
+    async def test_37_still_sends_stop_sequences(self, mock_aiohttp_session):
         provider = GeminiProvider(_config("gemini-3.7-flash"))
-        body = await _sent_body(provider, max_tokens=500, stop_sequences=["END"])
+        body = await _sent_body(
+            mock_aiohttp_session, provider, max_tokens=500, stop_sequences=["END"]
+        )
         assert body["generationConfig"]["stopSequences"] == ["END"]
 
     @pytest.mark.parametrize("model", ["gemini-3.5-flash", "gemini-3.6-flash"])
-    async def test_pre_37_request_unchanged(self, model):
+    async def test_pre_37_request_unchanged(self, model, mock_aiohttp_session):
         """3.5/3.6 accept the classic params (measured 2026-08-26) and must
         keep receiving the exact pre-migration generationConfig."""
         provider = GeminiProvider(_config(model))
         body = await _sent_body(
-            provider, max_tokens=500, temperature=0.7, top_p=0.9, top_k=40
+            mock_aiohttp_session,
+            provider,
+            max_tokens=500,
+            temperature=0.7,
+            top_p=0.9,
+            top_k=40,
         )
         gen = body["generationConfig"]
         assert gen["temperature"] == 0.7
@@ -173,18 +173,24 @@ class TestSamplingParams:
         assert list(gen)[:2] == ["temperature", "maxOutputTokens"]
 
     @pytest.mark.parametrize("model", ["gemini-3.5-flash", "gemini-3.7-flash"])
-    async def test_candidate_count_never_sent(self, model):
+    async def test_candidate_count_never_sent(self, model, mock_aiohttp_session):
         """The adapter has never sent candidateCount; 3.7 removed it — pin the
         absence on both surfaces."""
         provider = GeminiProvider(_config(model))
-        body = await _sent_body(provider, max_tokens=500)
+        body = await _sent_body(mock_aiohttp_session, provider, max_tokens=500)
         assert "candidateCount" not in body["generationConfig"]
 
-    async def test_drop_note_logged_once_per_instance(self, caplog):
+    async def test_drop_note_logged_once_per_instance(
+        self, mock_aiohttp_session, caplog
+    ):
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         with caplog.at_level("INFO"):
-            await _sent_body(provider, max_tokens=500, temperature=0.3)
-            await _sent_body(provider, max_tokens=500, temperature=0.3)
+            await _sent_body(
+                mock_aiohttp_session, provider, max_tokens=500, temperature=0.3
+            )
+            await _sent_body(
+                mock_aiohttp_session, provider, max_tokens=500, temperature=0.3
+            )
         notes = [r for r in caplog.records if "sampling parameters" in r.message]
         assert len(notes) == 1
 
@@ -267,20 +273,29 @@ class TestThinkingLevel37:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestThinkingLevel37Wiring:
-    async def test_37_plain_generate_sends_thinking_level_low(self):
+    async def test_37_plain_generate_sends_thinking_level_low(
+        self, mock_aiohttp_session
+    ):
         provider = GeminiProvider(_config("gemini-3.7-flash"))
-        body = await _sent_body(provider, max_tokens=500)
+        body = await _sent_body(mock_aiohttp_session, provider, max_tokens=500)
         assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
 
-    async def test_35_plain_generate_sends_no_thinking_config(self):
+    async def test_35_plain_generate_sends_no_thinking_config(
+        self, mock_aiohttp_session
+    ):
         provider = GeminiProvider(_config("gemini-3.5-flash"))
-        body = await _sent_body(provider, max_tokens=500)
+        body = await _sent_body(mock_aiohttp_session, provider, max_tokens=500)
         assert "thinkingConfig" not in body["generationConfig"]
 
-    async def test_37_structured_generate_sends_thinking_level_low(self):
+    async def test_37_structured_generate_sends_thinking_level_low(
+        self, mock_aiohttp_session
+    ):
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         body = await _sent_body(
-            provider, max_tokens=500, response_format=_response_format()
+            mock_aiohttp_session,
+            provider,
+            max_tokens=500,
+            response_format=_response_format(),
         )
         assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
 
@@ -393,7 +408,10 @@ class TestFunctionResponseShape:
     def test_37_saved_assistant_parts_still_echoed_verbatim(self):
         """The verbatim-parts path is how Gemini's own functionCall id (and
         every thoughtSignature) round-trips — the surface gates must not
-        disturb it."""
+        disturb it. Expected is a pre-call deep copy, so the assertion catches
+        in-place mutation instead of comparing a mutated list to itself."""
+        import copy
+
         provider = GeminiProvider(_config("gemini-3.7-flash"))
         saved = [
             {
@@ -405,6 +423,7 @@ class TestFunctionResponseShape:
                 "thoughtSignature": "sig-1",
             }
         ]
+        expected_parts = copy.deepcopy(saved)
         messages = [
             {"role": "user", "content": "check"},
             {
@@ -429,9 +448,75 @@ class TestFunctionResponseShape:
         result = provider._convert_messages_to_gemini(
             messages, model="gemini-3.7-flash"
         )
-        assert result["contents"][1] == {"role": "model", "parts": saved}
+        assert result["contents"][1] == {"role": "model", "parts": expected_parts}
+        # Fully-id'd parts take the no-copy fast path: the echo stays the
+        # caller's own list, byte-identical.
+        assert result["contents"][1]["parts"] is saved
         fr = result["contents"][2]["parts"][0]["functionResponse"]
         assert fr["id"] == "fc-from-api"
+
+    def test_36_plus_idless_saved_function_call_backfilled_from_tool_calls(self):
+        """When the API sent an id-less functionCall, the parser synthesized a
+        ToolCall.id and the functionResponse will carry it — the verbatim echo
+        must agree or the FR names a call that carries no id. The synthesized
+        id is back-filled into a COPY; the caller's saved parts are never
+        mutated, and API-issued ids on sibling parts are untouched."""
+        import copy
+
+        provider = GeminiProvider(_config("gemini-3.7-flash"))
+        saved = [
+            {"text": "thinking...", "thoughtSignature": "sig-0"},
+            {
+                # API sent no id here — parser minted call_synth1.
+                "functionCall": {"name": "search_file", "args": {"query": "x"}},
+                "thoughtSignature": "sig-1",
+            },
+            {
+                # API DID issue this one — must not be overwritten.
+                "functionCall": {
+                    "id": "call_api2",
+                    "name": "kb_qa",
+                    "args": {"query": "y"},
+                }
+            },
+        ]
+        original = copy.deepcopy(saved)
+        messages = [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_synth1",
+                        "type": "function",
+                        "function": {"name": "search_file", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_api2",
+                        "type": "function",
+                        "function": {"name": "kb_qa", "arguments": "{}"},
+                    },
+                ],
+                "provider_metadata": {"assistant_parts": saved},
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_synth1",
+                "name": "search_file",
+                "content": "r1",
+            },
+        ]
+        result = provider._convert_messages_to_gemini(
+            messages, model="gemini-3.7-flash"
+        )
+        echoed = result["contents"][1]["parts"]
+        assert echoed[1]["functionCall"]["id"] == "call_synth1"  # back-filled
+        assert echoed[1]["thoughtSignature"] == "sig-1"  # signature preserved
+        assert echoed[2]["functionCall"]["id"] == "call_api2"  # untouched
+        assert saved == original  # caller state never mutated
+        fr = result["contents"][2]["parts"][0]["functionResponse"]
+        assert fr["id"] == "call_synth1"  # pair matches
 
     def test_37_tool_message_without_id_omits_field(self):
         """A tool message with no tool_call_id (degraded cross-provider
@@ -449,7 +534,7 @@ class TestFunctionResponseShape:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestFunctionCallIdAdoption:
-    async def test_gemini_issued_id_adopted_as_tool_call_id(self):
+    async def test_gemini_issued_id_adopted_as_tool_call_id(self, mock_aiohttp_session):
         """3.7 populates functionCall.id; it must become ToolCall.id so the
         engine's tool_call_id plumbing echoes it back on the
         functionResponse."""
@@ -473,12 +558,12 @@ class TestFunctionCallIdAdoption:
             "usageMetadata": {"candidatesTokenCount": 5},
         }
         provider = GeminiProvider(_config("gemini-3.7-flash"))
-        mock_session = _mock_aiohttp_session(resp)
+        mock_session = mock_aiohttp_session(resp)
         with patch("aiohttp.ClientSession", return_value=mock_session):
             response = await provider.generate("q", max_tokens=500)
         assert response.tool_calls[0].id == "fc-api-1"
 
-    async def test_absent_id_still_synthesized(self):
+    async def test_absent_id_still_synthesized(self, mock_aiohttp_session):
         """Pre-3.7 responses carry no functionCall.id — the synthetic call_*
         id keeps the engine's plumbing non-empty, exactly as before."""
         resp = {
@@ -493,7 +578,7 @@ class TestFunctionCallIdAdoption:
             "usageMetadata": {"candidatesTokenCount": 5},
         }
         provider = GeminiProvider(_config("gemini-3.5-flash"))
-        mock_session = _mock_aiohttp_session(resp)
+        mock_session = mock_aiohttp_session(resp)
         with patch("aiohttp.ClientSession", return_value=mock_session):
             response = await provider.generate("q", max_tokens=500)
         assert response.tool_calls[0].id.startswith("call_")
@@ -540,7 +625,7 @@ class TestPrefillGuard:
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestGenerate37EndToEnd:
-    async def test_full_tool_roundtrip_body_shape(self):
+    async def test_full_tool_roundtrip_body_shape(self, mock_aiohttp_session):
         """One request carrying the whole loop: no sampling params, thinking
         capped low, functionCall/functionResponse id pair intact."""
         provider = GeminiProvider(_config("gemini-3.7-flash"))
@@ -558,6 +643,7 @@ class TestGenerate37EndToEnd:
             }
         ]
         body = await _sent_body(
+            mock_aiohttp_session,
             provider,
             max_tokens=500,
             temperature=0.7,
@@ -576,7 +662,7 @@ class TestGenerate37EndToEnd:
         assert fr["id"] == "fc-abc123"
         assert fr["name"] == "get_weather"
 
-    async def test_35_full_tool_roundtrip_body_unchanged(self):
+    async def test_35_full_tool_roundtrip_body_unchanged(self, mock_aiohttp_session):
         """The same call on 3.5 keeps the classic body: temperature present,
         no ids anywhere, thinkingConfig only because tools make it a
         structured call (the pre-existing 3.x starvation cap)."""
@@ -595,6 +681,7 @@ class TestGenerate37EndToEnd:
             }
         ]
         body = await _sent_body(
+            mock_aiohttp_session,
             provider,
             max_tokens=500,
             temperature=0.7,
@@ -610,3 +697,99 @@ class TestGenerate37EndToEnd:
         assert fn_turn["role"] == "function"  # classic role, measured working
         fr = fn_turn["parts"][0]["functionResponse"]
         assert set(fr) == {"name", "response"}
+
+
+# --- every cap decision is reported (finding: floored INFERENCE on 3.7 plain) -
+
+
+@pytest.mark.unit
+class TestThinkingCapDecisionLogging:
+    def test_37_inference_with_floor_on_plain_call_logs_the_lift(self, caplog):
+        """On the 3.7+ surface a plain call has a cap to lift too — the lift
+        must be reported like every sibling combination, or spend audits read
+        the call as capped when it ran at native thinking."""
+        provider = GeminiProvider(_config("gemini-3.7-flash"))
+        with caplog.at_level("INFO"):
+            result = provider._structured_thinking_config(
+                "gemini-3.7-flash",
+                False,
+                intent=ReasoningIntent.INFERENCE,
+                has_output_floor=True,
+            )
+        assert result is None
+        assert any("lifting the 3.7-surface" in r.message for r in caplog.records)
+
+    def test_pre_37_inference_with_floor_on_plain_call_stays_quiet(self, caplog):
+        """Pre-3.7 a plain call never had a cap — nothing is lifted, so
+        logging a lift there would report an event that did not happen."""
+        provider = GeminiProvider(_config("gemini-3.5-flash"))
+        with caplog.at_level("INFO"):
+            result = provider._structured_thinking_config(
+                "gemini-3.5-flash",
+                False,
+                intent=ReasoningIntent.INFERENCE,
+                has_output_floor=True,
+            )
+        assert result is None
+        assert not any("lifting" in r.message for r in caplog.records)
+
+
+# --- unparseable model ids fail open loudly ----------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+class TestUnparseableVersionWarning:
+    async def test_tool_call_on_versionless_alias_warns_once(
+        self, mock_aiohttp_session, caplog
+    ):
+        """gemini-flash-latest parses to no version, so both surface gates
+        fail open to the legacy shape; if the alias is served by a 3.6+
+        backend the legacy tool-result turn is a deterministic 400 — the
+        fail-open must be named once, or that 400 is unattributable."""
+        provider = GeminiProvider(_config("gemini-flash-latest"))
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "t", "parameters": {"type": "object"}},
+            }
+        ]
+        with caplog.at_level("WARNING"):
+            await _sent_body(
+                mock_aiohttp_session, provider, max_tokens=500, tools=tools
+            )
+            await _sent_body(
+                mock_aiohttp_session, provider, max_tokens=500, tools=tools
+            )
+        warns = [
+            r for r in caplog.records if "Cannot parse a Gemini version" in r.message
+        ]
+        assert len(warns) == 1
+
+    async def test_plain_call_on_versionless_alias_does_not_warn(
+        self, mock_aiohttp_session, caplog
+    ):
+        """Plain chat is unaffected by the fail-open (sampling params are
+        merely tolerated) — warning there would be noise."""
+        provider = GeminiProvider(_config("gemini-flash-latest"))
+        with caplog.at_level("WARNING"):
+            await _sent_body(mock_aiohttp_session, provider, max_tokens=500)
+        assert not any(
+            "Cannot parse a Gemini version" in r.message for r in caplog.records
+        )
+
+    async def test_versioned_model_never_warns(self, mock_aiohttp_session, caplog):
+        provider = GeminiProvider(_config("gemini-3.7-flash"))
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "t", "parameters": {"type": "object"}},
+            }
+        ]
+        with caplog.at_level("WARNING"):
+            await _sent_body(
+                mock_aiohttp_session, provider, max_tokens=500, tools=tools
+            )
+        assert not any(
+            "Cannot parse a Gemini version" in r.message for r in caplog.records
+        )

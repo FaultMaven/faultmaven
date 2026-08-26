@@ -55,6 +55,13 @@ class GeminiProvider(BaseLLMProvider):
     # DIAGNOSIS schema — 31,403 bytes, object depth 3, ~102 leaf fields, 18 enums:
     #   gemini-2.5-flash  6/6 rejected, deterministic
     #   gemini-3.5-flash  accepted (same bytes, same schema)
+    # Re-measured 2026-08-26 against the grown schema (34,752 bytes):
+    #   gemini-3.5-flash-lite  accepted (200 in 4s, schema-valid JSON) — the
+    #   lite tier does NOT inherit 2.5-flash's capacity ceiling, so listing it
+    #   in the dashboard picker is safe.
+    #   gemini-3.7-flash       accepted (200, schema-valid JSON carrying the
+    #   engine's top-level keys) — the Set A anchor serves the largest stage
+    #   schema.
     # Smaller stage schemas (Mitigation 23 KB, Treatment 27 KB) and INQUIRY
     # (6 KB) are accepted by both, which is why the failure only surfaces once a
     # case reaches DIAGNOSIS — several turns into a live investigation.
@@ -297,6 +304,19 @@ class GeminiProvider(BaseLLMProvider):
                         f"against maxOutputTokens, and the declared output "
                         f"floor is what will catch a starved body"
                     )
+                elif uses_37_surface:
+                    # On the 3.7+ surface a PLAIN call also had a cap to lift
+                    # (the widened all-shape default) — report it like every
+                    # other cap decision, or spend audits read this call as
+                    # capped when it ran at native "medium".
+                    self.logger.info(
+                        f"reasoning_intent='inference' on a plain call to "
+                        f"{model}: lifting the 3.7-surface thinkingLevel "
+                        f"default at the caller's request — native dynamic "
+                        f"thinking stands, billing against maxOutputTokens at "
+                        f"the output rate; the declared floor catches a "
+                        f"starved body"
+                    )
                 return None
             # Refusing the intent must restore the SHAPE DEFAULT, not impose a
             # restriction the default never applied. A structured call has a
@@ -489,6 +509,31 @@ class GeminiProvider(BaseLLMProvider):
         tools_param = kwargs.pop("tools", None)
         tool_choice = kwargs.pop("tool_choice", None)
 
+        # Both surface gates FAIL OPEN to the legacy wire shape when the model
+        # id carries no parseable "major.minor" (GEMINI_MODEL is free-form:
+        # "gemini-flash-latest", "gemini-exp-NNNN", …). Harmless for plain
+        # chat, but if such an alias is served by a 3.6+ backend, the legacy
+        # role:"function" tool-result turn is a deterministic 400 — so a
+        # tool-shaped call on an unparseable id gets one warning naming the
+        # gate, or the failure surfaces as an unattributable mid-loop 400.
+        if (tools_param or messages) and self._gemini_version(selected_model) is None:
+            warned = getattr(self, "_unparseable_version_warned", None)
+            if warned is None:
+                warned = set()
+                self._unparseable_version_warned = warned
+            if selected_model not in warned:
+                warned.add(selected_model)
+                self.logger.warning(
+                    f"Cannot parse a Gemini version from model id "
+                    f"'{selected_model}' — the 3.6/3.7 API-surface gates fail "
+                    f"open to the legacy wire shape (role 'function' tool "
+                    f"results, classic sampling params). If this alias is "
+                    f"served by a 3.6+ backend, tool round-trips will be "
+                    f"rejected (400 \"Role 'function' is not supported\"). "
+                    f"Pin a versioned model id (e.g. gemini-3.7-flash). "
+                    f"(Logged once per provider instance per model.)"
+                )
+
         # Caller-declared reasoning intent (#1118), translated into
         # thinkingConfig below. ``min_output_tokens`` (#1117) is enforced at
         # the router (budget bump + floor check); Gemini 3.x has no integer
@@ -662,13 +707,14 @@ class GeminiProvider(BaseLLMProvider):
                         fc = part["functionCall"]
                         tool_calls.append(
                             ToolCall(
-                                # Adopt Gemini's own functionCall id when the
-                                # API issued one (the 3.7+ surface does; it
-                                # must be echoed on the matching
-                                # functionResponse). Absent — every pre-3.7
-                                # response — synthesize one exactly as before,
-                                # so the engine's tool_call_id plumbing keeps
-                                # a non-empty id either way.
+                                # Adoption is DATA-driven, not version-driven:
+                                # whenever the API issued a functionCall id it
+                                # becomes ToolCall.id (measured issued from
+                                # 3.5 onward, ``call_<digits>``-style; echoed
+                                # back on the functionResponse from the 3.6+
+                                # surface only). Absent or empty, synthesize
+                                # one so the engine's tool_call_id plumbing
+                                # keeps a non-empty id either way.
                                 id=fc.get("id") or f"call_{uuid4().hex[:12]}",
                                 type="function",
                                 function={
@@ -867,6 +913,51 @@ class GeminiProvider(BaseLLMProvider):
         # Ensure confidence is within valid range
         return min(1.0, max(0.0, model_confidence))
 
+    @staticmethod
+    def _backfill_function_call_ids(
+        saved_parts: List[Dict[str, Any]], tool_calls: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Fill id-less ``functionCall`` parts with the ToolCall ids the parser
+        minted for them, without mutating the caller's saved parts.
+
+        The response parser synthesizes a ToolCall.id whenever the API sent a
+        functionCall with no (or an empty) id; the engine's tool messages then
+        carry that synthetic id, and on the 3.6+ surface the functionResponse
+        echoes it. The verbatim assistant_parts echo must agree, or the FR
+        names a call that carries no id. Pairing is BY ORDER: the parser built
+        the ToolCall list by iterating the same parts array, so the i-th
+        functionCall part corresponds to the i-th tool_call entry. API-issued
+        ids are never overwritten — only genuinely missing ones are filled —
+        and when nothing is missing the original list is returned unchanged
+        (no copy, byte-identical echo).
+        """
+        missing = [
+            p
+            for p in saved_parts
+            if isinstance(p, dict)
+            and isinstance(p.get("functionCall"), dict)
+            and not p["functionCall"].get("id")
+        ]
+        if not missing or not tool_calls:
+            return saved_parts
+
+        import copy
+
+        filled = copy.deepcopy(saved_parts)
+        fc_index = 0
+        for part in filled:
+            if not (
+                isinstance(part, dict) and isinstance(part.get("functionCall"), dict)
+            ):
+                continue
+            if fc_index >= len(tool_calls):
+                break
+            tc_id = (tool_calls[fc_index] or {}).get("id")
+            if not part["functionCall"].get("id") and tc_id:
+                part["functionCall"]["id"] = tc_id
+            fc_index += 1
+        return filled
+
     def _convert_messages_to_gemini(
         self, messages: list, model: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -934,6 +1025,18 @@ class GeminiProvider(BaseLLMProvider):
                 msg_pmeta = msg.get("provider_metadata") or {}
                 saved_parts = msg_pmeta.get("assistant_parts")
                 if saved_parts:
+                    # 3.6+ surface: the functionResponse built below carries
+                    # the ToolCall id — which is SYNTHESIZED when the API
+                    # sent an id-less functionCall part. Echoing such a part
+                    # verbatim would break the pair invariant (an FR id
+                    # naming a call that carries none), so the synthesized
+                    # ids are back-filled into a deep copy first. Parts whose
+                    # ids the API did issue are untouched, and the caller's
+                    # provider_metadata is never mutated.
+                    if new_fr_surface:
+                        saved_parts = self._backfill_function_call_ids(
+                            saved_parts, msg.get("tool_calls") or []
+                        )
                     contents.append({"role": "model", "parts": saved_parts})
                     continue
 

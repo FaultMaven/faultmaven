@@ -18,7 +18,9 @@ Pins:
   1. structured call on a 3.x model sets ``thinkingLevel: low``;
   2. Gemini 2.5 structured calls get NO thinkingConfig (left native);
   3. non-thinking models (1.5/2.0) never get thinkingConfig (they 400 on it);
-  4. non-structured calls never get thinkingConfig (partial text is fine);
+  4. non-structured calls never get thinkingConfig (partial text is fine) —
+     PRE-3.7 ONLY: the 3.7+ surface deliberately caps every call shape, plain
+     chat included (see test_gemini_37_surface.py::TestThinkingLevel37);
   5. the function-calling (tools) path is treated as structured too.
 """
 
