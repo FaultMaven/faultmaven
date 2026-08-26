@@ -6888,8 +6888,9 @@ class MilestoneEngine:
                 # invocation contract? Same label bounding as the budget
                 # metrics below — a hallucinated name folds into "unknown"
                 # so an inventive model can't mint a label per invention.
-                # execution_error is applied after the call, further down.
-                _attempt_tool = (
+                # execution_error is applied by the dispatch below, which
+                # always records the attempt (see the try/finally).
+                metric_tool = (
                     func_name if func_name in offered_tool_names else "unknown"
                 )
                 if func_name not in offered_tool_names:
@@ -6899,53 +6900,73 @@ class MilestoneEngine:
                 else:
                     _attempt_outcome = "ok"
 
-                # Enforce deep_analysis limit
-                if (
-                    func_name == "deep_analysis"
-                    and deep_analysis_count >= self.MAX_DEEP_ANALYSIS
-                ):
-                    result_text = (
-                        "deep_analysis is limited to 1 call per turn. "
-                        "Use search_file for additional searches."
-                    )
-                else:
-                    tool_result = await self.investigation_tools.execute_tool(
-                        func_name,
-                        args,
-                        tool_context,
-                    )
-                    if func_name == "deep_analysis":
-                        deep_analysis_count += 1
-                    if _attempt_outcome == "ok" and not getattr(
-                        tool_result, "success", True
+                # Counted no matter how the dispatch below ends. The
+                # increment used to sit AFTER it, so an exception from
+                # execute_tool or _track_da_result dropped the invocation
+                # from both the numerator and the denominator — the
+                # well-formed-invocation rate then reads cleaner the more
+                # the infrastructure fails, which is exactly backwards. A
+                # raise is a tool-side failure, the same class as a tool
+                # returning success=False, so it folds into
+                # execution_error instead of minting a new label — and
+                # only from "ok", because a model that named a tool that
+                # does not exist failed the contract first.
+                try:
+                    # Enforce deep_analysis limit
+                    if (
+                        func_name == "deep_analysis"
+                        and deep_analysis_count >= self.MAX_DEEP_ANALYSIS
                     ):
-                        # Well-formed call, tool-side failure: infrastructure
-                        # noise, not the model failing the contract.
-                        _attempt_outcome = "execution_error"
+                        result_text = (
+                            "deep_analysis is limited to 1 call per turn. "
+                            "Use search_file for additional searches."
+                        )
+                    else:
+                        tool_result = await self.investigation_tools.execute_tool(
+                            func_name,
+                            args,
+                            tool_context,
+                        )
+                        if func_name == "deep_analysis":
+                            deep_analysis_count += 1
+                        if _attempt_outcome == "ok" and not getattr(
+                            tool_result, "success", True
+                        ):
+                            # Well-formed call, tool-side failure: infrastructure
+                            # noise, not the model failing the contract.
+                            _attempt_outcome = "execution_error"
 
-                    result_text = self._format_tool_result(
-                        tool_result, tool_name=func_name
-                    )
-
-                    # --- Per-evidence DA failure tracking (v5.2) ---
-                    # Track search_file empty results and check vectorization
-                    # triggers. Same pattern as deep_analysis_count above.
-                    evidence_id = args.get("evidence_id", "")
-                    if evidence_id and func_name in ("search_file", "deep_analysis"):
-                        result_text = await self._track_da_result(
-                            func_name=func_name,
-                            evidence_id=evidence_id,
-                            tool_result=tool_result,
-                            result_text=result_text,
-                            case=case,
-                            tool_context=tool_context,
-                            da_empty_search_counts=da_empty_search_counts,
-                            proactive_tasks=proactive_tasks,
+                        result_text = self._format_tool_result(
+                            tool_result, tool_name=func_name
                         )
 
-                tool_call_attempts_total.labels(
-                    tool=_attempt_tool, outcome=_attempt_outcome
-                ).inc()
+                        # --- Per-evidence DA failure tracking (v5.2) ---
+                        # Track search_file empty results and check vectorization
+                        # triggers. Same pattern as deep_analysis_count above.
+                        evidence_id = args.get("evidence_id", "")
+                        if evidence_id and func_name in (
+                            "search_file",
+                            "deep_analysis",
+                        ):
+                            result_text = await self._track_da_result(
+                                func_name=func_name,
+                                evidence_id=evidence_id,
+                                tool_result=tool_result,
+                                result_text=result_text,
+                                case=case,
+                                tool_context=tool_context,
+                                da_empty_search_counts=da_empty_search_counts,
+                                proactive_tasks=proactive_tasks,
+                            )
+
+                except Exception:
+                    if _attempt_outcome == "ok":
+                        _attempt_outcome = "execution_error"
+                    raise
+                finally:
+                    tool_call_attempts_total.labels(
+                        tool=metric_tool, outcome=_attempt_outcome
+                    ).inc()
 
                 # Redact PII in tool results before sending to LLM.
                 # Tool results contain raw file content (search_file,
@@ -6974,9 +6995,10 @@ class MilestoneEngine:
                 # the context. The ONE exception is a kb_qa answer the
                 # formatter already trimmed -- see below.
                 original_chars = len(result_text)
-                metric_tool = (
-                    func_name if func_name in offered_tool_names else "unknown"
-                )
+                # ``metric_tool`` is the same bounded label computed once for
+                # this tool call, above — both counters must agree on which
+                # tool an invocation belongs to, and two copies of the folding
+                # rule is how they stop agreeing.
                 tool_result_relayed_total.labels(tool=metric_tool).inc()
 
                 # #1086 gave kb_qa a SECOND, earlier cut: _format_tool_result
@@ -7829,6 +7851,18 @@ class MilestoneEngine:
         self._log_dropped_fields(content_obj, parsed, schema_model)
         return parsed
 
+    def _record_schema_validation(self, schema_model, outcome: str) -> None:
+        """One increment on ``schema_validation_total``.
+
+        Shared by the degradation ladder and the non-tool structured
+        single-shot path so both dispositions land in the same population —
+        the A/B schema-validity rate is only meaningful over a denominator
+        that includes every body the engine validated.
+        """
+        schema_validation_total.labels(
+            schema=schema_model.__name__, outcome=outcome
+        ).inc()
+
     def _validate_with_degradation(self, content_obj, schema_model):
         """Validate LLM structured output, degrading gracefully instead of 500ing.
 
@@ -7857,9 +7891,7 @@ class MilestoneEngine:
         from pydantic import ValidationError
 
         def _record(outcome: str):
-            schema_validation_total.labels(
-                schema=schema_model.__name__, outcome=outcome
-            ).inc()
+            self._record_schema_validation(schema_model, outcome)
 
         try:
             parsed = schema_model.model_validate_json(json.dumps(content_obj))
@@ -7957,7 +7989,11 @@ class MilestoneEngine:
                                 "state_updates_dropped": state_dropped,
                             },
                         )
-                        _record("response_synthesized")
+                        _record(
+                            "response_synthesized_state_dropped"
+                            if state_dropped
+                            else "response_synthesized"
+                        )
                         return parsed
                     except ValidationError:
                         continue
@@ -8856,7 +8892,25 @@ class MilestoneEngine:
                 # Convert back to JSON string for Pydantic validation
                 content = json.dumps(content_obj)
 
-                return schema_model.model_validate_json(content)
+                # Counted here too, not only in the degradation ladder: this
+                # path validates DIRECTLY, so leaving it out made
+                # ``schema_validation_total`` a partial population — the A/B
+                # schema-validity rate would be read over a denominator that
+                # excludes every body the non-tool structured path served (a
+                # tool-incapable model, the ToolCallingUnsupportedError
+                # fallback, a FUNCTION_CALLING single shot), reporting a rate
+                # for a path it never observed. One increment per BODY, so a
+                # retried generation contributes one per attempt — the same
+                # unit the ladder counts in.
+                from pydantic import ValidationError as _ValidationError
+
+                try:
+                    parsed = schema_model.model_validate_json(content)
+                except _ValidationError:
+                    self._record_schema_validation(schema_model, "failed")
+                    raise
+                self._record_schema_validation(schema_model, "clean")
+                return parsed
             except Exception as validation_error:
                 # A body that ran out is the recoverable case: raise the cap and
                 # retry. Decided POSITIONALLY against the content we just tried
@@ -9116,9 +9170,7 @@ class MilestoneEngine:
             from faultmaven.modules.case.domain.models import (
                 PreliminaryUrgency as DomainPreliminaryUrgency,
             )
-            from faultmaven.modules.case.domain.models import (
-                UrgencyLevel,
-            )
+            from faultmaven.modules.case.domain.models import UrgencyLevel
 
             case.inquiry.preliminary_urgency = DomainPreliminaryUrgency(
                 level=UrgencyLevel(

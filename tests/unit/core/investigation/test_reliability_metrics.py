@@ -22,6 +22,10 @@ from pydantic import BaseModel
 
 from faultmaven.core.investigation import milestone_engine as me
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.reliability_metrics import (
+    SCHEMA_VALIDATION_OUTCOMES,
+    TOOL_CALL_OUTCOMES,
+)
 from faultmaven.infrastructure.llm.providers.base import LLMResponse, ToolCall
 from faultmaven.models.interfaces import ToolResult
 
@@ -216,6 +220,20 @@ class TestSchemaValidationLadder:
             {"schema": "_LadderSchema", "outcome": "response_synthesized"}
         ]
 
+    def test_response_synthesized_state_dropped_is_its_own_outcome(self):
+        """A body that needed BOTH the placeholder AND a full state drop lost
+        strictly more than one that only needed the placeholder. Recording it
+        as plain ``response_synthesized`` (the log line already distinguishes
+        the two) makes the state-loss rate under-report exactly the turns that
+        lost the most."""
+        labels = self._validate({"state_updates": {"k": "not-an-int"}})
+        assert labels == [
+            {
+                "schema": "_LadderSchema",
+                "outcome": "response_synthesized_state_dropped",
+            }
+        ]
+
     def test_failed_when_unrecoverable(self):
         """A non-prunable defect outside state_updates with a valid
         agent_response exhausts every rung — counted, then re-raised."""
@@ -228,6 +246,151 @@ class TestSchemaValidationLadder:
         for body in (
             {"agent_response": "ok"},
             {"state_updates": {"k": 1}},
+            {"state_updates": {"k": "not-an-int"}},
             {"agent_response": "ok", "title": 123},
         ):
             assert len(self._validate(body)) == 1
+
+
+@pytest.mark.asyncio
+class TestAttemptSurvivesDispatchFailure:
+    """The attempt counter is the DENOMINATOR of the well-formed-invocation
+    rate. Incrementing it after the dispatch dropped an invocation from both
+    numerator and denominator whenever the dispatch raised — so the rate read
+    cleaner the more the infrastructure failed."""
+
+    async def test_attempt_counted_when_execute_tool_raises(self):
+        engine = _engine(
+            _response_with_calls(_tool_call("search_file", json.dumps({"q": "x"}))),
+            ToolResult(success=True, data="found"),
+        )
+        engine.investigation_tools.execute_tool = AsyncMock(
+            side_effect=RuntimeError("provider socket closed")
+        )
+        with patch.object(me, "tool_call_attempts_total") as attempts:
+            with pytest.raises(RuntimeError):
+                await _run(engine)
+        assert _attempt_labels(attempts) == [
+            {"tool": "search_file", "outcome": "execution_error"}
+        ]
+
+    async def test_contract_failure_is_not_relabelled_by_a_later_raise(self):
+        """A hallucinated name failed the MODEL's contract before any tool ran;
+        an exception from the dispatch must not overwrite that with the
+        infrastructure-noise label."""
+        engine = _engine(
+            _response_with_calls(_tool_call("kubectl_delete_prod", "{}")),
+            ToolResult(success=False, data=None, error="Tool not found"),
+        )
+        engine.investigation_tools.execute_tool = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        with patch.object(me, "tool_call_attempts_total") as attempts:
+            with pytest.raises(RuntimeError):
+                await _run(engine)
+        assert _attempt_labels(attempts) == [
+            {"tool": "unknown", "outcome": "unknown_tool"}
+        ]
+
+
+def test_outcome_vocabularies_match_the_engine_call_sites():
+    """The tuples are the label contract, and nothing enforced it: every
+    outcome is re-spelled as a literal at its call site, so a typo mints a new
+    Prometheus label silently and the tuples drift stale unnoticed. Read the
+    literals out of the engine's AST and require exact agreement in both
+    directions."""
+    import ast
+    import pathlib as _pathlib
+
+    tree = ast.parse(_pathlib.Path(me.__file__).read_text())
+
+    recorded: set[str] = set()
+    attempted: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name in ("_record", "_record_schema_validation"):
+                for arg in node.args:
+                    for sub in ast.walk(arg):
+                        if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                            recorded.add(sub.value)
+        elif isinstance(node, ast.Assign):
+            if any(
+                isinstance(t, ast.Name) and t.id == "_attempt_outcome"
+                for t in node.targets
+            ) and isinstance(node.value, ast.Constant):
+                attempted.add(node.value.value)
+
+    # Non-empty first: a refactor that renames the recorder or the variable
+    # must fail loudly here rather than make this test vacuously true.
+    assert recorded, "found no schema-validation outcome literals to pin"
+    assert attempted, "found no tool-call outcome literals to pin"
+    assert recorded == set(SCHEMA_VALIDATION_OUTCOMES)
+    assert attempted == set(TOOL_CALL_OUTCOMES)
+
+
+class TestNonToolStructuredPathIsCounted:
+    """The engine validates in TWO places. ``_validate_with_degradation`` (the
+    ladder) was counted; ``_generate_structured_output_inner`` validates
+    directly with ``model_validate_json`` and was not — so on any turn served
+    by the non-tool structured path (a tool-incapable model, the
+    ToolCallingUnsupportedError fallback, a FUNCTION_CALLING single shot) the
+    A/B schema-validity rate was read over a denominator that excluded the very
+    calls being measured."""
+
+    @staticmethod
+    def _provider(content: str):
+        from faultmaven.infrastructure.llm.structured_output_capability import (
+            StructuredOutputCapability,
+            StructuredOutputMode,
+            StructuredOutputStrategy,
+        )
+
+        provider = MagicMock()
+        provider.generate = AsyncMock(
+            return_value=LLMResponse(
+                content=content,
+                confidence=0.9,
+                provider="test",
+                model="test-model",
+                tokens_used=10,
+                response_time_ms=5,
+            )
+        )
+        provider.get_structured_output_strategy = MagicMock(
+            return_value=StructuredOutputStrategy(
+                capability=StructuredOutputCapability.BEST_EFFORT,
+                mode=StructuredOutputMode.JSON_OBJECT,
+                include_schema_in_prompt=True,
+                response_format={"type": "json_object"},
+            )
+        )
+        return provider
+
+    def _engine_for(self, content: str) -> MilestoneEngine:
+        repo = MagicMock()
+        repo.save = AsyncMock()
+        return MilestoneEngine(
+            llm_provider=self._provider(content),
+            repository=repo,
+            investigation_tools=MagicMock(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_valid_body_counts_clean(self):
+        engine = self._engine_for(json.dumps({"agent_response": "hi"}))
+        with patch.object(me, "schema_validation_total") as validations:
+            await engine._generate_structured_output_inner("p", SampleResponse)
+        assert [c.kwargs for c in validations.labels.call_args_list] == [
+            {"schema": "SampleResponse", "outcome": "clean"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_schema_violation_counts_failed(self):
+        engine = self._engine_for(json.dumps({"agent_response": 123}))
+        with patch.object(me, "schema_validation_total") as validations:
+            with pytest.raises(Exception):
+                await engine._generate_structured_output_inner("p", SampleResponse)
+        assert [c.kwargs for c in validations.labels.call_args_list] == [
+            {"schema": "SampleResponse", "outcome": "failed"}
+        ]

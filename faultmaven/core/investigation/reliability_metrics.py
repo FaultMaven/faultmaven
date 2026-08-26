@@ -27,20 +27,39 @@ Read as rates, never the numerator alone:
   The schema tool is deliberately NOT counted here — it is the response
   channel, measured by the schema counter below.
 
-- ``faultmaven_schema_validation_total``: every structured response body that
-  entered the validation ladder (``_validate_with_degradation`` — the
-  tool-augmented path and the structured single-shot path that shares it), by
-  ``schema`` and ``outcome``, one increment at the ladder's final disposition:
-  ``clean`` (validated as-is), ``pruned`` (invalid sub-records quarantined),
-  ``state_dropped`` (state_updates unrecoverable, conversational fallback),
-  ``response_synthesized`` (required agent_response missing, placeholder
-  filled), ``failed`` (unrecoverable, re-raised). The A/B "schema-validity"
-  metric is ``clean / total``; everything below ``clean`` is state the model
-  put at risk, in increasing order of loss.
+- ``faultmaven_schema_validation_total``: every structured response body the
+  engine validated, by ``schema`` and ``outcome``, one increment per body.
+  Two sites feed it and BOTH must, or the denominator silently excludes a
+  whole class of turn: the degradation ladder (``_validate_with_degradation``,
+  reached from the tool-augmented path and from ``_parse_text_as_schema``) and
+  the non-tool structured single-shot path, which validates directly with
+  ``model_validate_json`` and is what a tool-incapable model, the
+  ``ToolCallingUnsupportedError`` fallback and a FUNCTION_CALLING single shot
+  all run.
+
+  Outcomes: ``clean`` (validated as-is), ``pruned`` (invalid sub-records
+  quarantined), ``state_dropped`` (state_updates unrecoverable, conversational
+  fallback), ``response_synthesized`` (required agent_response missing,
+  placeholder filled, state_updates KEPT),
+  ``response_synthesized_state_dropped`` (the placeholder validated only after
+  dropping every state update as well), ``failed`` (unrecoverable, re-raised).
+
+  The A/B "schema-validity" metric is ``clean / total``. Read state loss as
+  ``(state_dropped + response_synthesized_state_dropped) / total`` — the
+  synthesized-and-dropped rung is deliberately NOT folded into
+  ``response_synthesized``: it loses everything that rung loses AND the turn's
+  state, and counting the worse disposition as the lesser one is how a
+  state-loss rate under-reports. The outcomes are not claimed to form a total
+  order of severity; each names a specific loss, and a consumer sums the ones
+  it cares about.
 """
 
 from faultmaven.infrastructure.shims.metrics import Counter
 
+# Pinned by tests for the same reason as SCHEMA_VALIDATION_OUTCOMES below.
+# ``execution_error`` covers both a tool that returned success=False and a
+# tool whose dispatch RAISED — the attempt is recorded either way, so the
+# denominator does not shrink on the worst turns.
 TOOL_CALL_OUTCOMES = ("ok", "execution_error", "invalid_args", "unknown_tool")
 
 tool_call_attempts_total = Counter(
@@ -52,19 +71,25 @@ tool_call_attempts_total = Counter(
     ["tool", "outcome"],
 )
 
+# The label vocabulary, pinned by tests: a call site that spells an outcome
+# not in this tuple mints a new label silently, and the rates above are then
+# computed over a population that quietly changed shape.
 SCHEMA_VALIDATION_OUTCOMES = (
     "clean",
     "pruned",
     "state_dropped",
     "response_synthesized",
+    "response_synthesized_state_dropped",
     "failed",
 )
 
 schema_validation_total = Counter(
     "faultmaven_schema_validation_total",
-    "Structured response bodies through the engine's validation ladder, "
-    "labeled by ``schema`` and final ``outcome`` (clean | pruned | "
-    "state_dropped | response_synthesized | failed). Schema-validity rate = "
-    "clean / total.",
+    "Structured response bodies the engine validated (degradation ladder and "
+    "non-tool single-shot path), labeled by ``schema`` and final ``outcome`` "
+    "(clean | pruned | state_dropped | response_synthesized | "
+    "response_synthesized_state_dropped | failed). Schema-validity rate = "
+    "clean / total; state-loss rate = (state_dropped + "
+    "response_synthesized_state_dropped) / total.",
     ["schema", "outcome"],
 )
