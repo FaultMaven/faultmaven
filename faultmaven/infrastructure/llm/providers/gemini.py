@@ -125,21 +125,22 @@ class GeminiProvider(BaseLLMProvider):
         # Gemini 1.0 (and any unrecognized model string) uses BEST_EFFORT
         return StructuredOutputCapability.BEST_EFFORT
 
-    # Thinking level for structured-output calls on Gemini 3.x+ models.
-    # 3.x thinking models bill hidden reasoning against maxOutputTokens; uncapped
-    # thinking starves the actual JSON output (see _structured_thinking_config).
+    # Thinking level sent when this provider caps thinking (structured calls on
+    # Gemini 3.x, every call shape on the 3.7+ surface — see
+    # _structured_thinking_config). 3.x thinking models bill hidden reasoning
+    # against maxOutputTokens; uncapped thinking starves the actual output.
     # 3.x dropped the 2.5-era integer ``thinkingBudget`` for a string
-    # ``thinkingLevel``; "low" is the lowest broadly-valid level — it bypasses
-    # the heavy reasoning loop so output isn't starved, without depending on
-    # whether "minimal" is in a given model's enum.
+    # ``thinkingLevel``; "low" is the lowest level the API accepts — 3.7
+    # documents low/medium/high, and "minimal" is rejected — and it bypasses
+    # the heavy reasoning loop so output isn't starved.
     #
-    # Scope note: this is deliberately 3.x-ONLY. Gemini 2.5 also bills thinking
-    # against maxOutputTokens, but the truncation→500 was only ever observed on
-    # 3.x flash; 2.5-pro ran clean (the .env default during validation). Capping
-    # 2.5 would change a working, reasoning-heavy path with no evidence of need,
-    # so 2.5 is intentionally left at its native dynamic thinking. Revisit only
-    # if 2.5 starvation is actually observed.
-    _GEMINI_3X_STRUCTURED_THINKING_LEVEL = "low"
+    # Scope note: 2.5 is deliberately NOT capped. Gemini 2.5 also bills
+    # thinking against maxOutputTokens, but the truncation→500 was only ever
+    # observed on 3.x flash; 2.5-pro ran clean (the .env default during
+    # validation). Capping 2.5 would change a working, reasoning-heavy path
+    # with no evidence of need, so 2.5 is intentionally left at its native
+    # dynamic thinking. Revisit only if 2.5 starvation is actually observed.
+    _GEMINI_THINKING_CAP_LEVEL = "low"
 
     @staticmethod
     def _gemini_major_version(model: str) -> Optional[int]:
@@ -147,6 +148,31 @@ class GeminiProvider(BaseLLMProvider):
         3), or None if not parseable. Used to scope the thinking cap to 3.x+."""
         m = re.search(r"gemini-(\d+)\.", model.lower())
         return int(m.group(1)) if m else None
+
+    # First generation on the reduced "3.7" API surface (2026-08). Starting at
+    # gemini-3.7-*, the API removed the classic sampling surface: it no longer
+    # honours ``temperature`` / ``topP`` / ``topK``, requires every
+    # ``functionResponse`` part to carry the matching functionCall ``id``
+    # alongside ``name``, and no longer supports prefilled (trailing) model
+    # turns. ``>=`` on (major, minor), not equality: the surface is the new
+    # baseline going forward (3.8, 4.0, …), while 3.5/3.6 stay on the old one
+    # — measured 2026-08-26: gemini-3.5-flash and gemini-3.6-flash both return
+    # 200 for temperature/topP/topK, so requests to them must stay
+    # byte-for-byte unchanged. Version-gated here exactly like the 3.x
+    # thinking cap above — one adapter, not a fork.
+    _GEMINI_37_API_SURFACE_MIN = (3, 7)
+
+    @staticmethod
+    def _gemini_version(model: str) -> Optional[tuple]:
+        """(major, minor) from a gemini model id, or None if not parseable."""
+        m = re.search(r"gemini-(\d+)\.(\d+)", model.lower())
+        return (int(m.group(1)), int(m.group(2))) if m else None
+
+    @classmethod
+    def _uses_37_api_surface(cls, model: str) -> bool:
+        """True when *model* speaks the reduced 3.7+ API surface (see above)."""
+        version = cls._gemini_version(model)
+        return version is not None and version >= cls._GEMINI_37_API_SURFACE_MIN
 
     def _structured_thinking_config(
         self,
@@ -157,19 +183,30 @@ class GeminiProvider(BaseLLMProvider):
     ) -> Optional[Dict[str, Any]]:
         """``thinkingConfig`` payload for this call, or None to leave it unset.
 
-        With no caller intent (the default), preserves the shape-based rule:
-        caps thinking ONLY on Gemini 3.x+ structured calls, where dynamic
-        thinking starved the structured JSON output and truncated to a
-        MAX_TOKENS 500 (observed on gemini-3.5-flash, the shipped Gemini
-        default). Returns ``{"thinkingLevel": "low"}`` there.
+        With no caller intent (the default), preserves the shape-based rule
+        for the pre-3.7 surface: caps thinking ONLY on Gemini 3.x structured
+        calls, where dynamic thinking starved the structured JSON output and
+        truncated to a MAX_TOKENS 500 (observed on gemini-3.5-flash, the
+        shipped Gemini default). Returns ``{"thinkingLevel": "low"}`` there.
 
-        Returns None everywhere else:
+        Returns None everywhere else on that surface:
         - non-structured calls (partial text is still usable, so starvation is
           not fatal);
         - Gemini 1.5/2.0 (reject ``thinkingConfig`` with a 400);
         - Gemini 2.5 — bills thinking against maxOutputTokens too, but was not
           observed to starve; left at native dynamic thinking rather than
           changing a working, reasoning-heavy path without evidence.
+
+        On the 3.7+ API surface the SHAPE DEFAULT widens: every call — plain
+        chat included — is capped at the lowest accepted level ("low"; 3.7
+        documents low/medium/high and rejects "minimal", defaulting to
+        "medium"). Two reasons, both product requirements for the
+        chat/investigation path: little/no reasoning at low latency, and
+        thinking tokens bill at the full OUTPUT rate on these models, so the
+        model-default "medium" spends real money on reasoning no caller asked
+        for. 3.x structured calls keep the original starvation rationale
+        unchanged, and 3.x plain calls remain uncapped exactly as before —
+        the wider default is versioned to the 3.7+ surface only.
 
         A caller-declared :class:`ReasoningIntent` (#1118) refines the rule on
         3.x+ only — ``thinkingLevel`` is 3.x vocabulary, and pre-3.x models
@@ -187,14 +224,18 @@ class GeminiProvider(BaseLLMProvider):
           On a STRUCTURED call that lifts a real starvation guard, and the
           output floor is what makes lifting it safe — so without a declared
           floor the structured shape FAILS CLOSED: the cap stays and a warning
-          says the intent was refused.
+          says the intent was refused. This holds on both API surfaces: a
+          starved structured body is unusable, so the floor stays the price of
+          lifting the cap.
 
-          On a PLAIN call there is no cap to lift (the shape default is no
-          ``thinkingConfig`` at all), so there is nothing to fail closed about:
-          the result is ``None`` with or without a floor, which is exactly what
-          INFERENCE asked for. Refusal must never impose a restriction the
-          shape default did not apply, or declaring the intent would buy LESS
-          thinking than declaring nothing.
+          On a PLAIN call the intent is honoured without requiring a floor,
+          on both surfaces — but for surface-specific reasons. Pre-3.7 the
+          shape default is no cap at all, so there is nothing to lift and
+          None IS the default. On 3.7+ there is a cap, and it is LIFTED:
+          starvation on a plain call is non-fatal (the partial body returns,
+          flagged with stop_reason) — the same rationale that always exempted
+          plain calls from the guard — so refusing the caller's explicit
+          request for reasoning here would protect nothing.
 
           The router raises on INFERENCE-without-floor, but the router is not
           the only door: ``milestone_engine`` binds a concrete provider and
@@ -214,6 +255,8 @@ class GeminiProvider(BaseLLMProvider):
                 )
             return None
 
+        uses_37_surface = self._uses_37_api_surface(model)
+
         if intent is ReasoningIntent.INFERENCE:
             if has_output_floor:
                 if is_structured:
@@ -227,17 +270,19 @@ class GeminiProvider(BaseLLMProvider):
                 return None
             # Refusing the intent must restore the SHAPE DEFAULT, not impose a
             # restriction the default never applied. A structured call has a
-            # cap to keep; a plain call never had one, so capping it here would
-            # mean declaring INFERENCE bought LESS thinking than declaring
-            # nothing — the opposite of what the caller asked for.
+            # cap to keep — on either surface. A plain call is granted the
+            # lift: pre-3.7 because there is no cap (None IS the default),
+            # on 3.7+ because plain-call starvation is non-fatal (partial
+            # prose returns, flagged), so the guard being lifted was never
+            # protecting anything the caller can't recover from.
             #
-            # The two shapes therefore get different reports, because different
-            # things happened. Only the structured shape actually refuses
-            # anything; on a plain call the outcome is identical to a floored
-            # INFERENCE, so announcing a REFUSAL — at WARNING, which the
-            # runbook's LOG_LEVEL leaves visible — would alert an operator to a
-            # call that got precisely what it asked for, and advise a floor
-            # that would change nothing.
+            # The shapes get different reports because different things
+            # happen. Only the structured shape refuses anything; a plain
+            # call gets what it asked for, so announcing a REFUSAL — at
+            # WARNING, which the runbook's LOG_LEVEL leaves visible — would
+            # alert an operator to a call that got precisely what it asked
+            # for, and advise a floor that would change nothing about the
+            # thinking decision.
             if is_structured:
                 self.logger.warning(
                     f"reasoning_intent='inference' REFUSED on {model}: no "
@@ -247,28 +292,76 @@ class GeminiProvider(BaseLLMProvider):
                     f"alongside the intent to reason here."
                 )
             else:
-                self.logger.info(
-                    f"reasoning_intent='inference' on a plain call to {model}: "
-                    f"no thinkingLevel cap applies to this shape, so nothing is "
-                    f"lifted and the model's native dynamic thinking stands — "
-                    f"the intent is satisfied by the shape default. Hidden "
-                    f"reasoning still bills against maxOutputTokens; declare "
-                    f"min_output_tokens if a starved body must be caught."
-                )
-            # Fall through to the shape-default return below.
+                if uses_37_surface:
+                    self.logger.info(
+                        f"reasoning_intent='inference' on a plain call to "
+                        f"{model}: lifting the 3.7-surface thinkingLevel "
+                        f"default at the caller's request — native dynamic "
+                        f"thinking stands. Hidden reasoning bills against "
+                        f"maxOutputTokens at the output rate; declare "
+                        f"min_output_tokens if a starved body must be caught."
+                    )
+                else:
+                    self.logger.info(
+                        f"reasoning_intent='inference' on a plain call to "
+                        f"{model}: no thinkingLevel cap applies to this shape, "
+                        f"so nothing is lifted and the model's native dynamic "
+                        f"thinking stands — the intent is satisfied by the "
+                        f"shape default. Hidden reasoning still bills against "
+                        f"maxOutputTokens; declare min_output_tokens if a "
+                        f"starved body must be caught."
+                    )
+                return None
+            # Structured, refused → fall through to the capped default below.
             intent = None
 
         # Everything that still wants the cap, in one construction site (so a
         # companion key such as ``includeThoughts`` is added once, not to two
         # dicts six lines apart). Reaching here means one of:
         #   - EXTRACTION            → cap on every shape;
-        #   - INFERENCE, no floor   → refused above, demoted to the shape default;
-        #   - no intent             → the shape decides, as before #1118.
-        if intent is not None or is_structured:
+        #   - INFERENCE, no floor   → structured only: refused above, demoted
+        #                             to the shape default;
+        #   - no intent             → the shape decides: structured calls on
+        #                             3.x+, every shape on the 3.7+ surface.
+        if intent is not None or is_structured or uses_37_surface:
             # 3.x+ uses the string thinkingLevel; the 2.5-era integer
             # thinkingBudget 400s on these models.
-            return {"thinkingLevel": self._GEMINI_3X_STRUCTURED_THINKING_LEVEL}
+            return {"thinkingLevel": self._GEMINI_THINKING_CAP_LEVEL}
         return None
+
+    def _note_sampling_params_dropped(
+        self,
+        model: str,
+        temperature: float,
+        top_p: Any = None,
+        top_k: Any = None,
+    ) -> None:
+        """Record (once per provider instance) that 3.7-surface calls drop the
+        classic sampling params.
+
+        ``temperature`` arrives on every call (it is a ``generate()`` parameter
+        with a default), so this is expected on every single 3.7-surface
+        request — per-call logging would be volume proportional to request
+        rate for a fact that cannot change between calls. Once per instance,
+        INFO, mirroring the ``_discarded_requested_models`` warn-once pattern.
+        ``top_p``/``top_k`` are popped by the caller so they can never reach
+        the request body; they are named here only to make the first log line
+        state exactly what was discarded.
+        """
+        if getattr(self, "_sampling_drop_noted", False):
+            return
+        self._sampling_drop_noted = True
+        dropped = [f"temperature={temperature}"]
+        if top_p is not None:
+            dropped.append(f"top_p={top_p}")
+        if top_k is not None:
+            dropped.append(f"top_k={top_k}")
+        self.logger.info(
+            f"{model} uses the Gemini 3.7+ API surface, which removed the "
+            f"classic sampling parameters — omitting {', '.join(dropped)} from "
+            f"this and all future requests to it (logged once per provider "
+            f"instance)"
+        )
 
     def _log_unhonoured(self, intent: ReasoningIntent, message: str) -> None:
         """Log an intent this provider could not apply.
@@ -313,17 +406,36 @@ class GeminiProvider(BaseLLMProvider):
         if not selected_model:
             selected_model = "gemini-1.5-pro"
 
-        # Prepare generation config for Gemini API
-        generation_config = {
-            "temperature": temperature,
-            "maxOutputTokens": max_tokens,
-        }
+        # One resolution, used by every 3.7-surface gate below — the gate must
+        # judge the same string that reaches the wire (see
+        # supports_engine_response_schemas for why that matters).
+        uses_37_surface = self._uses_37_api_surface(selected_model)
 
-        # Add optional parameters
-        if "top_p" in kwargs:
-            generation_config["topP"] = kwargs["top_p"]
-        if "top_k" in kwargs:
-            generation_config["topK"] = kwargs["top_k"]
+        # Prepare generation config for Gemini API.
+        #
+        # The 3.7+ surface removed the classic sampling parameters —
+        # ``temperature`` / ``topP`` / ``topK`` are not honoured there, so they
+        # are omitted entirely (per Google's 3.7 migration guidance: strip
+        # them, don't send-and-hope). Pre-3.7 models keep the exact
+        # construction below, field order included — requests to 3.5/3.6 must
+        # stay byte-for-byte what they were before the 3.7 surface existed.
+        if uses_37_surface:
+            generation_config = {"maxOutputTokens": max_tokens}
+            self._note_sampling_params_dropped(
+                selected_model,
+                temperature=temperature,
+                top_p=kwargs.pop("top_p", None),
+                top_k=kwargs.pop("top_k", None),
+            )
+        else:
+            generation_config = {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+            }
+            if "top_p" in kwargs:
+                generation_config["topP"] = kwargs["top_p"]
+            if "top_k" in kwargs:
+                generation_config["topK"] = kwargs["top_k"]
         if "stop_sequences" in kwargs:
             generation_config["stopSequences"] = kwargs["stop_sequences"]
 
@@ -371,7 +483,9 @@ class GeminiProvider(BaseLLMProvider):
 
         # Prepare request body for Gemini API format
         if messages:
-            converted = self._convert_messages_to_gemini(messages)
+            converted = self._convert_messages_to_gemini(
+                messages, uses_37_surface=uses_37_surface
+            )
             request_body = {
                 "contents": converted["contents"],
                 "generationConfig": generation_config,
@@ -520,7 +634,14 @@ class GeminiProvider(BaseLLMProvider):
                         fc = part["functionCall"]
                         tool_calls.append(
                             ToolCall(
-                                id=f"call_{uuid4().hex[:12]}",
+                                # Adopt Gemini's own functionCall id when the
+                                # API issued one (the 3.7+ surface does; it
+                                # must be echoed on the matching
+                                # functionResponse). Absent — every pre-3.7
+                                # response — synthesize one exactly as before,
+                                # so the engine's tool_call_id plumbing keeps
+                                # a non-empty id either way.
+                                id=fc.get("id") or f"call_{uuid4().hex[:12]}",
                                 type="function",
                                 function={
                                     "name": fc["name"],
@@ -718,7 +839,9 @@ class GeminiProvider(BaseLLMProvider):
         # Ensure confidence is within valid range
         return min(1.0, max(0.0, model_confidence))
 
-    def _convert_messages_to_gemini(self, messages: list) -> Dict[str, Any]:
+    def _convert_messages_to_gemini(
+        self, messages: list, uses_37_surface: bool = False
+    ) -> Dict[str, Any]:
         """Convert OpenAI-format messages to Gemini API format.
 
         Handles:
@@ -726,6 +849,19 @@ class GeminiProvider(BaseLLMProvider):
         - user messages → role: user with text parts
         - assistant messages → role: model with text/functionCall parts
         - tool messages → role: function with functionResponse parts
+
+        ``uses_37_surface`` versions the tool-response shape. The 3.7+ surface
+        requires every ``functionResponse`` to carry the matching
+        functionCall ``id`` alongside ``name`` (REST field ``id`` — the
+        migration guide's "call_id" concept). The id travels as the OpenAI
+        ``tool_call_id`` the engine already writes on every tool message
+        (milestone_engine's tool loop), which under this provider is Gemini's
+        own functionCall id whenever the API issued one (see the response
+        parser). The rebuilt-assistant path mirrors the same id into the
+        fabricated ``functionCall`` part so the pair always matches — in a
+        stateless generateContent request the whole history is client-authored
+        and internal consistency is the contract. Pre-3.7 requests are
+        byte-for-byte unchanged: no ``id`` anywhere.
 
         Returns:
             Dict with 'contents' list and optional 'system_instruction' string.
@@ -755,7 +891,9 @@ class GeminiProvider(BaseLLMProvider):
                 # exactly where Gemini placed it, regardless of part type.
                 # The api_response itself is the source of truth for the next
                 # turn; rebuilding from `content` + `tool_calls` would drop
-                # signatures attached to text/thought parts.
+                # signatures attached to text/thought parts. (On the 3.7+
+                # surface this verbatim echo also preserves each
+                # functionCall's ``id`` exactly where the API issued it.)
                 msg_pmeta = msg.get("provider_metadata") or {}
                 saved_parts = msg_pmeta.get("assistant_parts")
                 if saved_parts:
@@ -778,6 +916,11 @@ class GeminiProvider(BaseLLMProvider):
                         "name": func.get("name", ""),
                         "args": args,
                     }
+                    # 3.7+ surface: the fabricated functionCall carries the
+                    # tool call's id so the functionResponse built below can
+                    # name a call that exists in the history it responds to.
+                    if uses_37_surface and tc.get("id"):
+                        function_call["id"] = tc["id"]
                     # Per-tool-call signature passthrough — used when the
                     # orchestrator preserves only ToolCall.provider_metadata
                     # (e.g. test fixtures, or providers that don't preserve
@@ -802,12 +945,19 @@ class GeminiProvider(BaseLLMProvider):
                 except (json.JSONDecodeError, TypeError):
                     response_content = {"result": content}
 
-                fn_response_part = {
-                    "functionResponse": {
-                        "name": tool_name,
-                        "response": response_content,
-                    }
+                function_response: Dict[str, Any] = {
+                    "name": tool_name,
+                    "response": response_content,
                 }
+                # 3.7+ surface: mandatory id+name on every functionResponse.
+                # ``tool_call_id`` is Gemini's own functionCall id when the
+                # API issued one (adopted by the response parser), else the
+                # provider-synthesized id also present on the rebuilt
+                # functionCall part above — matched either way.
+                if uses_37_surface and msg.get("tool_call_id"):
+                    function_response["id"] = msg["tool_call_id"]
+
+                fn_response_part = {"functionResponse": function_response}
 
                 # Group consecutive function responses into one turn
                 if (
@@ -820,6 +970,18 @@ class GeminiProvider(BaseLLMProvider):
                     contents[-1]["parts"].append(fn_response_part)
                 else:
                     contents.append({"role": "function", "parts": [fn_response_part]})
+
+        # The 3.7+ surface removed prefilled model turns: a conversation may
+        # not END on a model turn (the old "seed the reply" trick). Nothing in
+        # the engine produces one — turns always end user/tool — so this is a
+        # caller bug worth naming before the API 400s it, not something to
+        # silently rewrite.
+        if uses_37_surface and contents and contents[-1].get("role") == "model":
+            self.logger.warning(
+                "Conversation sent to a Gemini 3.7+ model ends on a model "
+                "turn (prefill). The 3.7 API surface removed prefilled model "
+                "turns — expect the API to reject this request."
+            )
 
         result: Dict[str, Any] = {"contents": contents}
         if system_parts:

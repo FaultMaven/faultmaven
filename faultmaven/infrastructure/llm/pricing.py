@@ -76,8 +76,23 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "gpt-4o": TokenRates(2.50, 10.0, 1.25, 0.0),
     },
     "gemini": {
+        # Gemini output rates INCLUDE thinking tokens (the provider folds
+        # thoughtsTokenCount into output_tokens), so uncapped thinking bills at
+        # the full output rate — one more reason thinkingLevel stays at "low".
+        #
+        # gemini-3.7-flash: Google's INTRODUCTORY rate ($0.75 in / $3.75 out,
+        # cache read $0.075), valid through 2026-12-31. Standard pricing
+        # ($1.50 in / $7.50 out, cache read $0.15) applies from 2027-01-01 —
+        # update this entry (or set LLM_PRICING_OVERRIDES) in January 2027 or
+        # cost dashboards silently under-report by 2x.
+        "gemini-3.7-flash": TokenRates(0.75, 3.75, 0.075, 0.0),
+        # -lite key precedes the plain key: exact-match wins for the bare ids,
+        # but dated/suffixed variants fall to the substring scan, where
+        # "gemini-3.5-flash" is also a substring of "gemini-3.5-flash-lite-001"
+        # — same first-match-wins ordering as the deepseek keys above.
+        "gemini-3.5-flash-lite": TokenRates(0.30, 2.50, 0.03, 0.0),
+        "gemini-3.5-flash": TokenRates(1.50, 9.0, 0.15, 0.0),
         "gemini-3.1-flash-lite": TokenRates(0.25, 1.50, 0.025, 0.0),
-        "gemini-3.5-flash": TokenRates(0.15, 0.60, 0.0375, 0.0),
         "gemini-1.5-flash": TokenRates(0.075, 0.30, 0.01875, 0.0),
         "gemini-1.5-pro": TokenRates(1.25, 5.0, 0.3125, 0.0),
     },

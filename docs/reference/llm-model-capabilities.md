@@ -136,6 +136,40 @@ loop like any other model. This section previously claimed
 `supports_tool_calling()` returned `False` for all DeepSeek models on
 Fireworks — that has not been true since the V2/R1-era block was lifted.
 
+### Gemini 3.7+ API surface (version-gated in the adapter)
+
+Starting at `gemini-3.7-*` (first shipped model: `gemini-3.7-flash`,
+2026-08), the Gemini API removed part of the classic `generateContent`
+surface. `GeminiProvider` applies the new surface by model version —
+`(major, minor) >= (3, 7)`, the same prefix-parse gate as the 3.x thinking
+cap — so requests to 3.5/3.6 models are byte-for-byte unchanged (both
+measured accepting the classic params, 2026-08-26):
+
+- **Sampling params removed** — `temperature` / `topP` / `topK` are omitted
+  from 3.7+ requests (logged once per provider instance). `stopSequences`
+  and `maxOutputTokens` remain.
+- **`thinkingLevel` is the only reasoning knob** and server-defaults to
+  `medium`. The adapter pins the lowest accepted level (`low`; `minimal` is
+  rejected) on **every** 3.7+ call shape — plain chat included, unlike the
+  3.x cap which is structured-only. Rationale: the chat/investigation path
+  wants high intelligence with little/no reasoning at low latency, and
+  thinking tokens bill at the full output rate. A caller-declared
+  `reasoning_intent=INFERENCE` lifts the cap (structured calls still require
+  `min_output_tokens`, same as 3.x).
+- **Function responses carry the call id** — 3.7 populates
+  `functionCall.id`; the adapter adopts it as `ToolCall.id`, and every
+  `functionResponse` part sent back carries matching `id` + `name` (the
+  migration guide's "call_id"). Pre-3.7 requests still omit `id` entirely.
+- **No prefilled model turns** — a conversation ending on a model turn is
+  warned about and left for the API to reject (nothing in the engine
+  produces one).
+- **`candidateCount`** was never sent by the adapter; 3.7 removed it (pinned
+  by test).
+
+`gemini-3.7-flash` pricing is INTRODUCTORY through 2026-12-31 ($0.75/$3.75
+per 1M in/out; standard $1.50/$7.50 from 2027-01-01) — see the dated comment
+in `infrastructure/llm/pricing.py`.
+
 ### HuggingFace Inference API
 - Does not support OpenAI-compatible tool calling
 - `supports_tool_calling()` always returns `False`
