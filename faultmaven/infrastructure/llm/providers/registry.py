@@ -556,8 +556,26 @@ class ProviderRegistry:
 
         self._fallback_chain = chain
 
-        # Initialize provider health states for all providers in chain
-        self._provider_states = {name: ProviderState(name=name) for name in chain}
+        # Health state for every INITIALIZED provider, not just the chain.
+        #
+        # ``route_request`` skips any provider with no state (``if not state:
+        # continue``), and ``provider_override`` legitimately names providers
+        # outside the chain — that is the whole point of a static role pin. In
+        # strict mode the chain is one provider, so a role pinned anywhere else
+        # matched no state, was skipped, and the loop fell out to "All
+        # providers failed with no error details" — a hard failure with no
+        # attempt made and nothing naming the cause. Reachable from the shipped
+        # defaults the moment CHAT_PROVIDER is flipped for a comparison, since
+        # classifier/synthesis/multimodal stay pinned to gemini.
+        #
+        # Chain membership still governs FALLBACK: _get_routing_order builds
+        # from _fallback_chain, so an off-chain provider is reachable only when
+        # a caller names it explicitly.
+        self._provider_states = {
+            name: ProviderState(name=name) for name in self._providers
+        }
+        for name in chain:
+            self._provider_states.setdefault(name, ProviderState(name=name))
 
         if strict_mode and len(chain) == 1:
             self.logger.info(f"Provider chain (strict mode): {chain[0]} ONLY")
@@ -620,8 +638,22 @@ class ProviderRegistry:
         3. Skips UNHEALTHY providers until recovery cooldown expires
         4. Falls back to original chain order for tie-breaking
         """
-        if self._sticky_provider and self._sticky_provider in self._provider_states:
-            state = self._provider_states[self._sticky_provider]
+        # The CHAIN is the authority for normal routing. _provider_states also
+        # carries off-chain providers so an explicitly pinned role can be
+        # routed to (see _setup_fallback_chain), and those must never leak into
+        # the order built here: a pinned call that succeeds sets
+        # _sticky_provider, so without this restriction one classifier call to
+        # a pinned provider would front-run the chain for every subsequent CHAT
+        # call — silently defeating STRICT_PROVIDER_MODE. (The health sort also
+        # indexes into the chain, so an off-chain entry raised ValueError.)
+        chain_states = {
+            name: state
+            for name, state in self._provider_states.items()
+            if name in self._fallback_chain
+        }
+
+        if self._sticky_provider and self._sticky_provider in chain_states:
+            state = chain_states[self._sticky_provider]
             if state.should_attempt():
                 # Sticky provider is still viable — put it first
                 rest = [p for p in self._fallback_chain if p != self._sticky_provider]
@@ -630,7 +662,7 @@ class ProviderRegistry:
         # No sticky or sticky is down — route by health
         attemptable = [
             (name, state)
-            for name, state in self._provider_states.items()
+            for name, state in chain_states.items()
             if state.should_attempt()
         ]
 
