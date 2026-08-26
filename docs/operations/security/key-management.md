@@ -537,9 +537,44 @@ aws secretsmanager update-secret-version-stage \
     - Enhance pre-commit hooks
     - Automate key rotation
 
-### Template Incident Report
+### Past incident: RSA key in git history (2026-01-23)
 
-See: [INCIDENT-2026-01-23-RSA-KEY-EXPOSURE.md](./INCIDENT-2026-01-23-RSA-KEY-EXPOSURE.md)
+A 2048-bit RSA private key was committed to
+`tests/unit/modules/auth/domain/services/test_jwt_token_generator.py` in
+`1e50943d1` and removed from the tip the same day in `1a234c8de`. The write-up
+that used to be linked here was deleted on 2026-07-07; this section replaces it,
+because two of its conclusions were wrong.
+
+**The blob is still reachable from `main`, in a public repo.** The write-up
+recorded the incident as REMEDIATED with history cleaned. History was never
+rewritten. It also named two commits as carrying the key; neither does, and it
+did not name the one that does.
+
+**The key was test-only. Verified 2026-08-26, by measurement rather than
+inference:**
+
+- It appears in exactly one blob out of ~17,000 in the object database, and in
+  none of the sibling repositories.
+- Its SPKI-SHA256 is `035888a6…`. The live cluster's
+  `faultmaven-secrets.JWT_PRIVATE_KEY` is `65e8b68a…` — a different key.
+- RS256 signing keys have no hardcoded default anywhere:
+  `AuthService._load_keys` resolves `JWT_PRIVATE_KEY`, then
+  `JWT_PRIVATE_KEY_PATH`, then an ephemeral runtime pair, and every RS256 field
+  defaults to `None`.
+
+Nothing was rotated, and nothing needs to be: rotation severs a trust
+relationship, and this key never had one. It was never in a JWKS, never
+configured as a verifier, and grants no access. Secret-scanning alert #15 is
+resolved as `used_in_tests` on that basis.
+
+**Why it self-certified.** The remediation script that accompanied the incident
+verified its own work by grepping `git log --all --pretty=format: --name-only`
+for the key. That command emits *paths*, never file contents, so the check could
+never match and always reported success — it would have reported clean even if
+the rewrite had done nothing, which is what happened. The script was removed in
+the same change as this note. If a history rewrite is ever genuinely required,
+write a fresh one and verify it against blob contents (`git cat-file`), not
+against the path listing.
 
 ---
 

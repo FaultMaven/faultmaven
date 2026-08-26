@@ -593,9 +593,6 @@ python scripts/auth/create_user.py         # Create a new user
 python scripts/auth/list_users.py          # List all users
 python scripts/auth/list_users_fast.py     # Fast user listing
 
-# Security (scripts/security/)
-./scripts/security/cleanup_exposed_keys_from_history.sh  # Clean secrets from git history
-
 # Local LLM
 ./scripts/local_llm_service.sh             # Manage local LLM service (Ollama/vLLM)
 ```
