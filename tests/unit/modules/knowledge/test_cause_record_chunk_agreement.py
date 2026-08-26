@@ -186,6 +186,9 @@ def _document(content: str) -> KnowledgeBaseDocument:
         document_type="runbook",
         tags=[],
         source_url=None,
+        # Required since #1166 — this fixture is not about the tier;
+        # "global" keeps it exercising exactly what it did before.
+        scope="global",
         created_at="2026-01-01T00:00:00Z",
         updated_at="2026-01-01T00:00:00Z",
     )
@@ -476,6 +479,8 @@ async def test_ingest_runbook_hands_its_record_to_the_check():
             title="Node drain stalls",
             content=_RUNBOOK,
             organization_id=None,
+            # Required since #1166; this test is about the causes record.
+            scope="global",
             causes=causes,
         )
 

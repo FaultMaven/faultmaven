@@ -443,7 +443,18 @@ class KnowledgeBaseDocument(BaseModel):
     status: str = "processed"
     tags: List[str] = Field(default_factory=list)
     source_url: Optional[str] = None
-    scope: str = "global"
+    # REQUIRED — deliberately no default (#1166). "global" is the platform
+    # corpus: every tenant reads it. While this defaulted to "global", a
+    # publish path that simply neglected to set a scope published
+    # tenant-authored content platform-wide, and the omission appeared
+    # nowhere in the diff — the one failure shape review is worst at seeing.
+    # The read side already fails CLOSED on the same omission (an
+    # unidentifiable principal collapses to {"scope": "global"}, i.e. reads
+    # LESS); the write side now does too, by refusing to be silent. The
+    # dangerous tier is still reachable — it is just no longer reachable by
+    # accident. `_index_document_in_vector_store` re-checks at the choke
+    # point, for documents that reach it without passing through this model.
+    scope: str
     owner_id: Optional[str] = None
     created_at: str
     updated_at: str

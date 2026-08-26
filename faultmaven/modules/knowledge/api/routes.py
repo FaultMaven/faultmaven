@@ -263,9 +263,11 @@ async def upload_document(
     logger = logging.getLogger(__name__)
     logger.info(f"Uploading document: {file.filename}")
 
-    # This route publishes at global scope (KnowledgeService.upload_document
-    # default) — the platform tier, never authorable from a tenant session
-    # under multi (#770).
+    # This route publishes at global scope — the platform tier, never
+    # authorable from a tenant session under multi (#770). The tier is stated
+    # at the call to upload_document below rather than inherited from a
+    # default (#1166), so this gate and the scope it guards are visible in the
+    # same file.
     require_global_authoring_allowed()
 
     try:
@@ -362,6 +364,9 @@ async def upload_document(
             content=content_str,
             title=title,
             document_type=document_type,
+            # The platform tier, stated (#1166) — gated by the
+            # require_global_authoring_allowed() above.
+            scope="global",
             category=category,
             tags=tag_list,
             source_url=source_url,
@@ -1254,9 +1259,10 @@ async def approve_suggestion(
     """
     logger = logging.getLogger(__name__)
 
-    # Approval publishes at global scope (KnowledgeService.upload_document
-    # default) — the platform tier, never authorable from a tenant session
-    # under multi (#770).
+    # Approval publishes at global scope — the platform tier, never
+    # authorable from a tenant session under multi (#770). The tier is stated
+    # by SuggestionService.approve_suggestion's call to upload_document rather
+    # than inherited from a default (#1166).
     require_global_authoring_allowed()
 
     organization_id = require_actor_organization(current_user)

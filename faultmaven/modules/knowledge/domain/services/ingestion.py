@@ -875,6 +875,15 @@ class KnowledgeIngester:
                                 else []
                             ),
                             source_url=metadata.get("source_url"),
+                            # Read back from what the chunk was stamped with;
+                            # `scope` is required on the model now (#1166) and
+                            # the stamp is the only thing here that knows the
+                            # tier. A chunk written before the stamp existed
+                            # reports the narrower tier rather than the
+                            # platform one — this is a read reconstruction, so
+                            # the choice affects what a caller is TOLD, never
+                            # what is stored.
+                            scope=metadata.get("scope") or "personal",
                         )
                         documents.append(doc)
 
@@ -919,6 +928,8 @@ class KnowledgeIngester:
                     metadata.get("tags", "").split(",") if metadata.get("tags") else []
                 ),
                 source_url=metadata.get("source_url"),
+                # From the chunk stamp — see list_documents above (#1166).
+                scope=metadata.get("scope") or "personal",
             )
 
             return doc

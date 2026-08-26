@@ -30,6 +30,16 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 2.1.0 — MINOR. `KnowledgeBaseDocument.scope` became REQUIRED and lost its
+# `"global"` default (#1166). This is a write-side hardening surfacing in a
+# read-side schema: the default meant a publish path that omitted its knowledge
+# tier published to the platform corpus every tenant reads, so the field is now
+# a decision every construction has to make. Existing clients survive it — the
+# schema is response-only (GET /knowledge/documents/{document_id}) and the
+# server already sent `scope` on every real response, because the DTO builder
+# reads it off the row. A response field going from optional-with-default to
+# required is a strengthened guarantee, not a new obligation on the caller.
+#
 # 2.0.1 — PATCH. `revoke()` was annotated `-> Any` while it still returned a
 # JSONResponse for errors; once those moved to a raised exception the
 # annotation was merely inaccurate, and it erased `type: object` from the
@@ -47,4 +57,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.0.1"
+API_CONTRACT_VERSION = "2.1.0"

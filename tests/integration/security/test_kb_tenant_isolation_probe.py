@@ -72,7 +72,9 @@ predicate
                                                                 params) + ``test_the_standalone_sentinel_...``
 ``_enforce_scope_invariant`` returns immediately                ``test_the_guard_does_refuse_...`` (all four
                                                                 params)
-``_meta_scope`` stamps ``personal`` rather than deriving        ``test_a_document_with_no_scope_...``
+``_meta_scope`` stamps ``personal`` rather than deriving        ``test_the_platform_tier_is_still_reachable_...``
+the indexer's scope guard is removed                            ``test_the_indexer_refuses_a_document_...``
+``KnowledgeBaseDocument.scope`` regains a default                ``test_a_publish_path_cannot_omit_the_tier_...``
 ``ensure_global_authoring_allowed`` loses its multi arm         ``test_global_authoring_is_refused_...``
 a new KB read site passing a literal ``where`` clause           ``test_every_kb_read_filter_originates_...``
 a new KB read site forwarding an unpinned variable              ``test_every_kb_read_filter_originates_...``
@@ -103,9 +105,11 @@ sites (pinned by ``test_every_kb_read_filter_originates_from_build_kb_scope_filt
 and every global-authoring entry point refuses a tenant session. There is
 exactly one live read with no filter at all — the boot-time reconcile
 enumeration, which returns ids and nothing else and is pinned separately by
-``test_the_unfiltered_kb_readers_stay_id_only``. The three findings below
+``test_the_unfiltered_kb_readers_stay_id_only``. F1 and F2 below
 are *latent* — each is a property nothing enforces, recorded here as an
-executable description of what breaks if it stops holding:
+executable description of what breaks if it stops holding. F3 was latent when
+this probe was written and has since been fixed (#1166); its tests now pin the
+fix rather than the defect:
 
 * **F1 — the guard cannot see tenancy.** ``{"scope": {"$ne": "x"}}`` and
   ``{"owner_id": {"$nin": ["x"]}}`` satisfy ``_enforce_scope_invariant`` and
@@ -115,11 +119,17 @@ executable description of what breaks if it stops holding:
 * **F2 — the shared-id arm is unauthenticated at the vector layer.** Any item id
   that reaches ``shared_kb_ids`` is read verbatim, foreign tenant or not
   (Attack 2). The single tenant predicate protecting it is one SQL ``WHERE``.
-* **F3 — every write-side scope default is ``global``.**
+* **F3 — every write-side scope default was ``global``. FIXED (#1166).**
   ``KnowledgeBaseDocument.scope``, ``ingest_runbook``, ``upload_document`` and
   ``_index_document_in_vector_store``'s ``getattr(document, "scope", "global")``
-  all default to the tier readable by every tenant, so a new publish path leaks
-  by *omission* rather than by commission (Attack 4).
+  all defaulted to the tier readable by every tenant, so a new publish path
+  would have leaked by *omission* rather than by commission (Attack 4). All
+  four now REQUIRE the tier, and the indexer refuses a document that reaches it
+  without one — the write side fails closed on an omission the way the read
+  side already did. This was never exploitable (the gates below held); what
+  changed is the shape of the failure the next publish path can have. Attack 4
+  now pins the refusal, with both tiers measured at read time so the change is
+  demonstrably a change and not a relabelling.
 """
 
 from __future__ import annotations
@@ -133,6 +143,7 @@ from unittest.mock import patch
 import chromadb
 import pytest
 from chromadb.config import Settings as ChromaSettings
+from pydantic import ValidationError
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.exceptions import AuthorizationError
@@ -144,6 +155,7 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
 )
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
 from faultmaven.models.api import KnowledgeBaseDocument
+from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.kb_qa import AnswerFromKB
 from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter
@@ -796,15 +808,8 @@ def test_the_guards_key_set_is_the_read_filters_key_set():
 # =============================================================================
 
 
-@pytest.mark.asyncio
-async def test_a_document_with_no_scope_is_published_to_every_tenant(store):
-    """F3: the write-side default is the tier everyone reads.
-
-    ``KnowledgeBaseDocument.scope`` defaults to ``"global"``, and the indexer
-    reads it with ``getattr(document, "scope", "global") or "global"`` — three
-    ways to arrive at global: pass it, omit it, or pass a falsy value. A publish
-    path that simply neglects to set a scope therefore leaks by omission.
-    """
+def _capturing_service() -> tuple[Any, list[list[dict[str, Any]]]]:
+    """A ``KnowledgeService`` whose only live part is the real indexer."""
     captured: list[list[dict[str, Any]]] = []
 
     class _CapturingStore:
@@ -816,19 +821,98 @@ async def test_a_document_with_no_scope_is_published_to_every_tenant(store):
 
     service = KnowledgeService.__new__(KnowledgeService)
     service._vector_store = _CapturingStore()
+    return service, captured
 
-    async def _embed_texts(texts, **_kwargs):
-        return [list(_VEC) for _ in texts]
+
+async def _embed_texts(texts, **_kwargs):
+    return [list(_VEC) for _ in texts]
+
+
+def test_a_publish_path_cannot_omit_the_tier_it_publishes_to():
+    """F3, fixed (#1166): the write side now fails CLOSED on an omission.
+
+    This test used to be ``test_a_document_with_no_scope_is_published_to_every
+    _tenant`` and pinned the defect on purpose: ``KnowledgeBaseDocument.scope``
+    defaulted to ``"global"``, so a scope-less document was stamped with the
+    tier every tenant reads and the leak appeared nowhere in the diff.
+
+    ``scope`` is now REQUIRED on the model, so the omission is refused where it
+    is made rather than resolved to the most dangerous answer. Note what is
+    NOT claimed: nothing here was ever exploitable — every global-authoring
+    entry point refuses a tenant session (the two tests below). What changed is
+    the shape of the failure the next publish path will have.
+    """
+    with pytest.raises(ValidationError) as exc:
+        KnowledgeBaseDocument(
+            document_id="tenant-authored-0001",
+            title="Tenant runbook",
+            content="# Tenant runbook\nInternal-only remediation for " + SECRET_B,
+            document_type="runbook",
+            created_at="2026-08-23T00:00:00Z",
+            updated_at="2026-08-23T00:00:00Z",
+        )
+
+    missing = {e["loc"][0] for e in exc.value.errors() if e["type"] == "missing"}
+    assert "scope" in missing, f"scope is no longer required: {exc.value.errors()}"
+
+
+@pytest.mark.asyncio
+async def test_the_indexer_refuses_a_document_that_reaches_it_without_a_tier():
+    """The belt to the model's brace: the choke point re-checks.
+
+    Every KB vector write funnels through ``_index_document_in_vector_store``.
+    It used to read ``getattr(document, "scope", "global") or "global"`` —
+    three ways to arrive at the platform corpus: pass it, omit it, or pass a
+    falsy value. The two that are not a decision are now refused, for anything
+    reaching the indexer without having gone through the required-``scope``
+    model: a duck-typed stand-in, a Mock, a future DTO.
+    """
+    for absent in ("omitted", None, ""):
+        service, captured = _capturing_service()
+
+        class _Duck:
+            document_id = "tenant-authored-0002"
+            title = "Tenant runbook"
+            content = "# Tenant runbook\n" + SECRET_B
+            document_type = "runbook"
+            tags: list[str] = []
+            source_url = None
+            owner_id = None
+            created_at = "2026-08-23T00:00:00Z"
+            updated_at = "2026-08-23T00:00:00Z"
+
+        if absent != "omitted":
+            _Duck.scope = absent
+
+        with patch(
+            "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise",
+            new=_embed_texts,
+        ):
+            with pytest.raises(KnowledgeBaseError) as exc:
+                await service._index_document_in_vector_store(_Duck())
+
+        assert exc.value.error_code == "KNOWLEDGE_SCOPE_REQUIRED", absent
+        assert captured == [], f"chunks were written for scope={absent!r}"
+
+
+@pytest.mark.asyncio
+async def test_the_platform_tier_is_still_reachable_when_it_is_stated(store):
+    """The positive control. A refusal that refused everything would pass the
+    two tests above while breaking the shipped-runbook bootstrap, so measure
+    that an EXPLICIT ``global`` still lands in the platform corpus and is still
+    read by a tenant that did not author it — which is what global means.
+    """
+    service, captured = _capturing_service()
 
     document = KnowledgeBaseDocument(
-        document_id="tenant-authored-0001",
-        title="Tenant runbook",
-        content="# Tenant runbook\nInternal-only remediation for " + SECRET_B,
+        document_id="platform-authored-0001",
+        title="Platform runbook",
+        content="# Platform runbook\nShipped remediation.",
         document_type="runbook",
+        scope="global",
         created_at="2026-08-23T00:00:00Z",
         updated_at="2026-08-23T00:00:00Z",
     )
-    assert document.scope == "global", "the model's own default moved"
 
     with patch(
         "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise",
@@ -837,16 +921,44 @@ async def test_a_document_with_no_scope_is_published_to_every_tenant(store):
         chunks = await service._index_document_in_vector_store(document)
 
     assert chunks == 1
-    stamped = captured[0][0]["metadata"]
-    assert stamped["scope"] == "global"
+    assert captured[0][0]["metadata"]["scope"] == "global"
 
-    # And what "global" means, measured rather than asserted: seed that exact
-    # metadata and read it with a filter belonging to a DIFFERENT tenant.
     await store.add_documents([captured[0][0]], embeddings=[list(_VEC)])
     got = await _ids(store, build_kb_scope_filter(USER_B, []))
-    assert (
-        captured[0][0]["id"] in got
-    ), "a scope-less document is readable by a tenant that did not author it"
+    assert captured[0][0]["id"] in got
+
+
+@pytest.mark.asyncio
+async def test_a_stated_tenant_tier_is_read_by_nobody_else(store):
+    """The other half of the control: stating ``personal`` keeps the same
+    content out of the corpus a foreign tenant reads. Paired with the test
+    above, this is what makes "the default moved" a meaningful change rather
+    than a relabelling — the two tiers demonstrably differ at read time."""
+    service, captured = _capturing_service()
+
+    document = KnowledgeBaseDocument(
+        document_id="tenant-authored-0003",
+        title="Tenant runbook",
+        content="# Tenant runbook\nInternal-only remediation for " + SECRET_B,
+        document_type="runbook",
+        scope="personal",
+        owner_id=USER_A,
+        created_at="2026-08-23T00:00:00Z",
+        updated_at="2026-08-23T00:00:00Z",
+    )
+
+    with patch(
+        "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise",
+        new=_embed_texts,
+    ):
+        await service._index_document_in_vector_store(document)
+
+    assert captured[0][0]["metadata"]["scope"] == "personal"
+    await store.add_documents([captured[0][0]], embeddings=[list(_VEC)])
+
+    chunk_id = captured[0][0]["id"]
+    assert chunk_id not in await _ids(store, build_kb_scope_filter(USER_B, []))
+    assert chunk_id in await _ids(store, build_kb_scope_filter(USER_A, []))
 
 
 @pytest.mark.parametrize("is_platform_admin", [True, False])

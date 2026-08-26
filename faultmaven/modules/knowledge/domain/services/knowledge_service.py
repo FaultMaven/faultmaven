@@ -566,6 +566,13 @@ class KnowledgeService:
             ValueError: If validation fails
             RuntimeError: If ingestion fails
         """
+        # Lazy, like ingest_runbook's — the runtime import of the knowledge
+        # domain models stays out of module load to avoid the service↔
+        # persistence cycle.
+        from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+            KnowledgeScope,
+        )
+
         with self._tracer.trace("knowledge_service_ingest_document"):
             logger.info(f"Ingesting document: {title}")
 
@@ -623,6 +630,20 @@ class KnowledgeService:
                     document_type=document_type,
                     tags=tags or [],
                     source_url=source_url,
+                    # This path takes no scope and no owner from its caller,
+                    # so it has no tenancy information to publish with. It
+                    # used to inherit "global" from the model default and put
+                    # tenant content in front of every tenant (#1166), with no
+                    # gate and no RLS row to refuse it — this writer reaches
+                    # ChromaDB without writing knowledge_items at all. The
+                    # narrowest tier is the only honest answer: paired with
+                    # owner_id=None the chunks match no read filter's arm, so
+                    # nothing is published to anyone. The method has no live
+                    # caller (pinned by
+                    # test_the_unguarded_chroma_only_writer_still_has_no_live_caller);
+                    # reviving it means routing it through ingest_runbook,
+                    # which takes a real scope.
+                    scope=KnowledgeScope.PERSONAL.value,
                     created_at=datetime.now(timezone.utc),
                     updated_at=datetime.now(timezone.utc),
                 )
@@ -752,6 +773,11 @@ class KnowledgeService:
         Raises:
             ValidationException: If document_id is invalid or no updates provided
         """
+        # Lazy for the same cycle reason as ingest_document / ingest_runbook.
+        from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+            KnowledgeScope,
+        )
+
         with self._tracer.trace("knowledge_service_update_document"):
             logger.info(f"Updating document {document_id}")
 
@@ -796,6 +822,16 @@ class KnowledgeService:
                         content=update_data.get("content", ""),
                         document_type="updated",
                         tags=tags or [],
+                        # Same reasoning as ingest_document above (#1166):
+                        # this path is handed no scope and re-indexes from a
+                        # model it rebuilds from scratch, so it cannot know
+                        # the row's real tier. It used to inherit "global"
+                        # and re-stamp an edited document into the platform
+                        # corpus whatever tier it started in. The live edit
+                        # path is update_document_metadata, which re-indexes
+                        # via _build_index_model and so carries the row's own
+                        # scope.
+                        scope=KnowledgeScope.PERSONAL.value,
                         updated_at=datetime.now(timezone.utc),
                         created_at=datetime.now(
                             timezone.utc
@@ -1082,7 +1118,29 @@ class KnowledgeService:
                 healthy to every later consistency check (#945). A raise makes
                 every caller fail closed by default; tolerating it is now
                 opt-IN and visible at the call site.
+            KnowledgeBaseError: If ``document`` carries no usable ``scope``
+                (``KNOWLEDGE_SCOPE_REQUIRED``). See the guard below.
         """
+        # Every KB vector write funnels through here, so this is where the
+        # write side is made to fail CLOSED on an omitted tier (#1166).
+        # ``KnowledgeBaseDocument.scope`` is required, which stops an omission
+        # at construction; this is the belt to that brace, for anything that
+        # reaches the indexer without having gone through the model — a
+        # duck-typed stand-in, a Mock, a future DTO. Ahead of the
+        # ``_vector_store`` check on purpose: whether a store happens to be
+        # configured says nothing about whether the caller made a tier
+        # decision, and a refusal that only fires in some deployments is not
+        # a guard.
+        _raw_scope = getattr(document, "scope", None)
+        if not _raw_scope:
+            raise KnowledgeBaseError(
+                f"Refusing to index document {getattr(document, 'document_id', '?')} "
+                "with no scope: the knowledge tier is an explicit decision, and "
+                "the absent one used to resolve to 'global' — the platform "
+                "corpus every tenant reads.",
+                error_code="KNOWLEDGE_SCOPE_REQUIRED",
+            )
+
         if not self._vector_store:
             return 0
 
@@ -1159,8 +1217,13 @@ class KnowledgeService:
             # 'personal'. Team visibility lives in the share table and is
             # resolved to an id allowlist at query time — never written here
             # (a 'team'/'global' tag would orphan-on-unshare or leak). ADR-013 §D4.
-            _raw_scope = getattr(document, "scope", "global") or "global"
-            _meta_scope = "global" if _raw_scope == "global" else "personal"
+            #
+            # The document's own scope is read WITHOUT a fallback and was
+            # validated at the top of this method (#1166): this line used to
+            # read ``getattr(document, "scope", "global") or "global"``, which
+            # reached the platform tier three separate ways — pass it, omit
+            # it, or pass a falsy value.
+            _meta_scope = "global" if document.scope == "global" else "personal"
 
             # Build per-chunk document dicts
             doc_dicts = []
@@ -1550,10 +1613,10 @@ class KnowledgeService:
         title: str,
         content: str,
         organization_id: str,
+        scope: str,
         document_type: str = "runbook",
         tags: Optional[List[str]] = None,
         source_url: Optional[str] = None,
-        scope: str = "global",
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
         verified_by: Optional[str] = None,
@@ -1576,6 +1639,14 @@ class KnowledgeService:
             organization_id: Owning org for the org-owned tiers (personal/team).
                 Ignored for global scope — global rows are the org-free
                 platform tier (#770) and are stored with organization_id NULL.
+            scope: REQUIRED knowledge tier — ``global`` | ``team`` |
+                ``personal``. No default (#1166): ``global`` is the platform
+                corpus every tenant reads, so publishing into it must be a
+                decision the call site states, not one it inherits by staying
+                quiet. Global authoring is gated separately (route-layer
+                ``require_global_authoring_allowed`` /
+                ``ensure_global_authoring_allowed``); this parameter is about
+                the tier being *named*, not about who may name it.
             verified_by: A REAL user_id (from verify_draft) or None. Never a
                 sentinel string — it is an FK to users.user_id. When None and
                 no explicit verification_level is given, the item is
@@ -1987,15 +2058,21 @@ class KnowledgeService:
         content: str,
         title: str,
         document_type: str,
+        scope: str,
         tags: Optional[List[str]] = None,
         source_url: Optional[str] = None,
         category: Optional[str] = None,
         description: Optional[str] = None,
-        scope: str = "global",
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Upload document: create SQLite record + ingest into ChromaDB."""
+        """Upload document: create SQLite record + ingest into ChromaDB.
+
+        Args:
+            scope: REQUIRED knowledge tier — ``global`` | ``team`` |
+                ``personal``. No default (#1166); see
+                :meth:`ingest_runbook`, which this delegates to.
+        """
         try:
             import uuid as _uuid
 
