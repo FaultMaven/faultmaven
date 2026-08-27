@@ -764,49 +764,51 @@ class TestOneNamePerFileAcrossRenders:
 
 
 def test_the_tripwire_still_drives_something_real():
-    """Guards the xfail below, which is the #1207 dependency's teeth.
+    """Guards the invariant test below.
 
-    That test drives a repository through the public ``add_uploaded_file``
-    and asserts a column. If any of those disappear -- renamed, resplit,
-    moved -- the test raises instead of asserting, pytest records the raise
-    as the expected failure, ``strict`` never fires, and the marker survives
-    a fix it was supposed to catch. A tripwire that cannot fail loudly is
-    prose with extra steps, so its dependencies are checked HERE, outside
-    the xfail, where a break is a plain red test.
+    #1207 IS FIXED (the engine no longer appends a duplicate row for a
+    ``file_id`` the case already holds), so the test below is a plain
+    assertion rather than an ``xfail`` -- see its docstring for why the
+    original form could not have detected that fix.
+
+    It still drives real collaborators, so their disappearance would make it
+    die by ``AttributeError`` rather than assert. Checked here so that a break
+    is a plain red test.
     """
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
     from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
         SQLiteCaseRepository,
     )
 
-    assert callable(getattr(SQLiteCaseRepository, "add_uploaded_file", None)), (
-        "SQLiteCaseRepository.add_uploaded_file is gone -- "
+    assert callable(getattr(SQLiteCaseRepository, "_upsert_uploaded_files", None)), (
+        "SQLiteCaseRepository._upsert_uploaded_files is gone -- "
         "test_uploaded_at_turn_is_immutable_across_a_deduped_reupload can no "
-        "longer detect the #1207 fix; re-point it before deleting this"
+        "longer detect a #1207 regression; re-point it before deleting this"
     )
+    assert callable(
+        getattr(MilestoneEngine, "_process_response_structured", None)
+    ), "the engine entry point that produced the duplicate is gone -- re-point"
     # The column the identifier is keyed on.
     assert "uploaded_at_turn" in UploadedFile.model_fields
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "#1207: milestone_engine appends a duplicate UploadedFile stamped with "
-        "the CURRENT turn, and _upsert_uploaded_files assigns "
-        "uploaded_at_turn = EXCLUDED.uploaded_at_turn with no COALESCE, so a "
-        "deduped re-upload rewrites the row's turn. display_name is keyed on "
-        "that column, so the citable name moves. WHEN #1207 LANDS this xpasses "
-        "-- remove the marker; do not resolve #1207 in a way that leaves this "
-        "failing (skipping the append, or COALESCE-ing the column, both work)."
-    ),
-)
 async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
-    """The invariant ``display_name``'s stability rests on.
+    """The invariant ``display_name``'s stability rests on, driven END TO END.
 
-    Deliberately public-API only: ``add_uploaded_file`` for the write and a
-    hand-built row for the engine's duplicate, so that a #1207 fix which
-    renames or resplits the engine's private constructor cannot make this die
-    by AttributeError and be scored as the expected failure. See
-    ``test_the_tripwire_still_drives_something_real``.
+    Previously an ``xfail(strict=True)`` against #1207, on the reasoning that it
+    would xpass the moment that issue was fixed. It would not have. It drove
+    ``add_uploaded_file`` twice by hand, so it measured the REPOSITORY's
+    ``ON CONFLICT`` column list and nothing else -- and #1207 was fixed in the
+    ENGINE, by not appending the duplicate row that the second call stood in
+    for. The marker would have survived its own fix, still announcing a live
+    defect. (Its reason text asserted that "skipping the append" would flip it;
+    that was the error.)
+
+    So it now drives the real path: the engine processes an attachment carrying
+    a ``file_id`` the case already holds, and the aggregate it produces is
+    upserted. The scenario is the one that actually occurs -- a byte-identical
+    re-submission, deduped upstream by ``_preprocess_attachment`` -- rather than
+    a hand-built stand-in for it.
     """
     from sqlalchemy import text as sa_text
     from sqlalchemy.ext.asyncio import (
@@ -815,36 +817,58 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
         create_async_engine,
     )
 
+    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    from faultmaven.core.investigation.schemas import InquiryResponse
     from faultmaven.infrastructure.persistence.models import Base
+    from faultmaven.modules.case.contracts import Case, CaseState
     from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
         SQLiteCaseRepository,
     )
 
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with engine.begin() as conn:
+    row = _pasted_file(turn=3).model_copy(update={"content_hash": "a" * 64})
+    case = Case(
+        case_id="case_aabb11223344",
+        organization_id="org_123",
+        title="t",
+        description="d",
+        state=CaseState.INQUIRY,
+    )
+    case.uploaded_files = [row]
+    case.current_turn = 5
+
+    # The metadata dict the turn route builds for a DEDUPED re-submission: the
+    # existing row's file_id, and none of content_hash / content_type /
+    # uploaded_by.
+    attachment = {
+        "file_id": FILE_ID,
+        "filename": row.filename,
+        "data_type": "logs",
+        "size": row.size_bytes,
+        "source_type": "text_paste",
+        "summary": row.summary,
+        "storage_ref": row.storage_ref,
+    }
+    engine = MilestoneEngine.__new__(MilestoneEngine)
+    await engine._process_response_structured(
+        case,
+        "same content again",
+        InquiryResponse(
+            agent_response="ack",
+            state_updates=InquiryResponse.InquiryStateUpdate(),
+        ),
+        [attachment],
+    )
+
+    db = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with db.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    factory = async_sessionmaker(db, class_=AsyncSession, expire_on_commit=False)
     try:
         async with factory() as session:
             repo = SQLiteCaseRepository(session)
-            row = _pasted_file(turn=3).model_copy(update={"content_hash": "a" * 64})
-            await repo.add_uploaded_file("case_aabb11223344", row, "org_123")
-
-            # What the engine appends for the same file_id on the re-upload
-            # turn: same id, CURRENT turn, and the columns its metadata dict
-            # does not carry left None. Built by hand rather than through the
-            # engine's private constructor -- the shape is the point, not the
-            # code path that produces it.
-            engine_dup = UploadedFile(
-                file_id=FILE_ID,
-                filename=row.filename,
-                size_bytes=row.size_bytes,
-                uploaded_at_turn=5,
-                upload_source="paste",
-                storage_ref=row.storage_ref,
+            await repo._upsert_uploaded_files(
+                case.case_id, case.uploaded_files, "org_123"
             )
-            await repo.add_uploaded_file("case_aabb11223344", engine_dup, "org_123")
-
             persisted = (
                 await session.execute(
                     sa_text(
@@ -858,7 +882,7 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
             "every citation naming 'pasted text (turn 3)' now names nothing"
         )
     finally:
-        await engine.dispose()
+        await db.dispose()
 
 
 class TestPlaceholderWordingIsShared:

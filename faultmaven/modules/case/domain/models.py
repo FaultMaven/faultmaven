@@ -2111,7 +2111,7 @@ class UploadedFile(BaseModel):
         turn — ``pasted_content`` is a single form field, so a turn carries
         one paste or one capture, never two.
 
-        **Stable — conditional on #1207.** ``data_type`` is rewritten by
+        **Stable.** ``data_type`` is rewritten by
         reclassification (see ``_handle_file_reclassification``), so a name
         built from it renames the item mid-case: cited as "pasted logs" on
         turn 3, gone by turn 4 when the user corrects it to command output —
@@ -2119,16 +2119,20 @@ class UploadedFile(BaseModel):
         ``summary`` is rewritten by the same flow and is not unique either,
         which is why neither is used here.
 
-        ``uploaded_at_turn`` is written once at ingestion and *should* never
-        be revised — but today it is, by #1207: the engine appends a duplicate
-        row carrying the CURRENT turn, and ``_upsert_uploaded_files`` assigns
+        ``uploaded_at_turn`` is written once at ingestion and is not revised.
+        It was, until #1207: the engine appended a duplicate row carrying the
+        CURRENT turn, and ``_upsert_uploaded_files`` assigns
         ``uploaded_at_turn = EXCLUDED.uploaded_at_turn`` with no COALESCE, so
-        a deduped re-paste on turn 5 rewrites a turn-3 row to 5. This
-        identifier is stable exactly when that stops — which #1207 must do
-        anyway, since the same append also destroys ``content_hash`` and
-        breaks dedup outright. See ``test_uploaded_at_turn_is_immutable`` in
-        tests/unit/test_synthetic_filename_leak.py, which pins the
-        requirement and fails until #1207 lands.
+        a deduped re-paste on turn 5 rewrote a turn-3 row to 5. The engine no
+        longer appends that row, so this identifier is stable as designed.
+        Pinned by ``test_uploaded_at_turn_is_immutable_across_a_deduped_reupload``
+        in tests/unit/test_synthetic_filename_leak.py, which drives the engine
+        and the upsert end to end.
+
+        Note the repository upsert itself is unchanged: it still assigns those
+        columns rather than COALESCE-ing them, so a FUTURE caller handing it a
+        partial row would reintroduce the drift. #1207 removed the only known
+        producer, not the possibility.
 
         The data type is not lost: it rides on the ``data_type`` attribute
         beside the name, and the summary on ``<summary>``. This slot's job
