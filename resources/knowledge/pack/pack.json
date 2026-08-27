@@ -40322,7 +40322,7 @@
         {
           "cause_letter": "G",
           "cause_name": "OIDC provider mismatch for federated assumption",
-          "cause_statement": "No OIDC provider is registered in the account owning the web-identity target role, or its issuer URL or audience does not match the token the federated caller presents, rejecting `AssumeRoleWithWebIdentity`.",
+          "cause_statement": "No OIDC provider is registered in the account owning the web-identity target role, or its issuer URL or thumbprint does not match the token the federated caller presents, rejecting `AssumeRoleWithWebIdentity`. (Audience mismatch is Cause I.)",
           "chain_edges": [
             {
               "cause_ref": "root",
@@ -40337,7 +40337,7 @@
             {
               "node_type": "root",
               "ref": "root",
-              "statement": "no provider is registered in the account owning the role the web-identity call targets, or its URL, thumbprint, `ClientIDList`, or the trust policy `sub`/`aud` condition does not match the token the federated caller presents."
+              "statement": "no provider is registered in the account owning the role the web-identity call targets, or its URL, thumbprint, or the trust policy `sub` condition does not match the token the federated caller presents."
             },
             {
               "node_type": "intermediate",
@@ -40365,10 +40365,63 @@
           "is_fallback_cause": false,
           "rung_indicators": {
             "root": [
-              "[Step 8] no provider in that account has a `URL` matching the token issuer, or its `ClientIDList` omits `sts.amazonaws.com`"
+              "[Step 8] no provider in that account has a `URL` matching the token issuer, or its thumbprint does not match the certificate served there"
             ],
             "s1": [
-              "[Step 2] Trust policy `Condition` `StringEquals` subject/audience values differ from what the provider token contains"
+              "[Step 2] Trust policy `Condition` `StringEquals` subject values differ from what the provider token contains"
+            ]
+          }
+        },
+        {
+          "cause_letter": "I",
+          "cause_name": "OIDC provider audience does not match the token's `aud` claim",
+          "cause_statement": "The OIDC provider is registered with the correct issuer URL, but its `ClientIDList` does not contain the value the presented token carries in `aud`, so AWS rejects the token before the target role's trust policy is consulted.",
+          "chain_edges": [
+            {
+              "cause_ref": "root",
+              "effect_ref": "s1"
+            },
+            {
+              "cause_ref": "s1",
+              "effect_ref": "D"
+            }
+          ],
+          "chain_nodes": [
+            {
+              "node_type": "root",
+              "ref": "root",
+              "statement": "the provider's registered audience is something other than the value the token actually carries \u2014 most often a partition-qualified `sts.amazonaws.com.cn` where the token says `sts.amazonaws.com`."
+            },
+            {
+              "node_type": "intermediate",
+              "ref": "s1",
+              "statement": "for IRSA the `aud` claim names the token's RECIPIENT \u2014 the STS service \u2014 not a regional endpoint, so it is `sts.amazonaws.com` in every partition, AWS China (`aws-cn`) included, where the EKS identity webhook stamps that same value."
+            },
+            {
+              "node_type": "problem",
+              "ref": "D",
+              "statement": "`AssumeRoleWithWebIdentity` is rejected with `InvalidIdentityToken: Incorrect token audience` (points at Symptom Recognition)."
+            }
+          ],
+          "interventions": [
+            {
+              "quadrant": "remediation",
+              "ref": "root",
+              "text": "- **remediation** (root): add the audience the token actually carries to the existing provider, rather than re-registering it.\n\n  ```bash\n  # Run in the account identified in Step 8.\n  aws iam add-client-id-to-open-id-connect-provider \\\n    --open-id-connect-provider-arn arn:aws:iam::<provider-account>:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \\\n    --client-id sts.amazonaws.com\n  ```\n\n  **Verification:** Re-run the `get-open-id-connect-provider` query from Step 8 and confirm `Audiences` contains `sts.amazonaws.com`, then confirm the pod obtains credentials."
+            },
+            {
+              "quadrant": "mitigation",
+              "ref": "root",
+              "text": "- **mitigation** (root): read-only \u2014 decode the presented token to see the `aud` it actually carries before changing the provider.\n\n  ```bash\n  kubectl exec -n <ns> <pod> -- \\\n    cat /var/run/secrets/eks.amazonaws.com/serviceaccount/token \\\n    | cut -d. -f2 | base64 -d 2>/dev/null\n  ```\n\n  **Risk:** None \u2014 read-only, but the token is a live credential: do not persist or share the decoded output. **Duration:** Diagnostic only. **Verification:** Compare the decoded `aud` against the `Audiences` list from Step 8; they must match exactly."
+            }
+          ],
+          "is_fallback_cause": false,
+          "rung_indicators": {
+            "root": [
+              "[Step 8] the provider's `Audiences` list does not contain `sts.amazonaws.com`"
+            ],
+            "s1": [
+              "[Symptom] the error names the audience specifically (`Incorrect token audience`) rather than the generic `AccessDenied` that a trust-policy or provider-registration failure produces"
             ]
           }
         },
@@ -40495,12 +40548,12 @@
         },
         {
           "chunk_index": 11,
-          "text": "### Cause G: OIDC provider mismatch for federated assumption\n\n**Statement:** No OIDC provider is registered in the account owning the web-identity target role, or its issuer URL or audience does not match the token the federated caller presents, rejecting `AssumeRoleWithWebIdentity`.\n\n**Chain:**\n- root: no provider is registered in the account owning the role the web-identity call targets, or its URL, thumbprint, `ClientIDList`, or the trust policy `sub`/`aud` condition does not match the token the federated caller presents.\n- s1: AWS validates the token against that account's provider *before* the target role's trust policy is consulted, so a correct-looking far-side trust policy does not exonerate the provider.\n- D: `AssumeRoleWithWebIdentity` is denied with `AccessDenied` or `InvalidIdentityToken` (points at Symptom Recognition).\n\n**Indicators:**\n- root: [Step 8] no provider in that account has a `URL` matching the token issuer, or its `ClientIDList` omits `sts.amazonaws.com`\n- s1: [Step 2] Trust policy `Condition` `StringEquals` subject/audience values differ from what the provider token contains\n\nFor IRSA the audience is partition-invariant: the `aud` claim names the token's recipient \u2014 the STS service \u2014 not a regional endpoint, so it is `sts.amazonaws.com` in every partition, AWS China (`aws-cn`) included, where the EKS identity webhook stamps that same value. `sts.amazonaws.com.cn` is the plausible-looking wrong value: registering it as the provider audience produces `InvalidIdentityToken: Incorrect token audience`.\n\n**Interventions:**\n- **remediation** (root): correct the OIDC provider thumbprint, or re-register the provider with the right URL/audience.\n\n  ```bash\n  # Run all three in the account identified in Step 8.\n\n  # Update OIDC provider thumbprint if the certificate has rotated\n  aws iam update-open-id-connect-provider-thumbprint \\\n    --open-id-connect-provider-arn arn:aws:iam::<provider-account>:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \\\n    --thumbprint-list NEWTHUMBPRINT1234567890\n\n  # Re-register the provider if the URL is wrong\n  aws iam delete-open-id-connect-provider \\\n    --open-id-connect-provider-arn arn:aws:iam::<provider-account>:oidc-provider/wrong.issuer.url\n\n  aws iam create-open-id-connect-provider \\\n    --url https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \\\n    --client-id-list sts.amazonaws.com \\\n    --thumbprint-list THUMBPRINT1234567890\n  ```\n\n  **Verification:** Run `aws sts assume-role-with-web-identity --role-arn ... --web-identity-token file://token.jwt --role-session-name verify` and confirm credentials are returned. For EKS, verify the ServiceAccount annotation matches the updated role ARN and the pod can obtain credentials.\n- **mitigation** (root): read-only \u2014 retrieve the actual EKS OIDC issuer to compare against the registered provider before changing anything.\n\n  ```bash\n  aws eks describe-cluster --name my-cluster \\\n    --query 'cluster.identity.oidc.issuer' --output text\n  ```",
+          "text": "### Cause G: OIDC provider mismatch for federated assumption\n\n**Statement:** No OIDC provider is registered in the account owning the web-identity target role, or its issuer URL or thumbprint does not match the token the federated caller presents, rejecting `AssumeRoleWithWebIdentity`. (Audience mismatch is Cause I.)\n\n**Chain:**\n- root: no provider is registered in the account owning the role the web-identity call targets, or its URL, thumbprint, or the trust policy `sub` condition does not match the token the federated caller presents.\n- s1: AWS validates the token against that account's provider *before* the target role's trust policy is consulted, so a correct-looking far-side trust policy does not exonerate the provider.\n- D: `AssumeRoleWithWebIdentity` is denied with `AccessDenied` or `InvalidIdentityToken` (points at Symptom Recognition).\n\n**Indicators:**\n- root: [Step 8] no provider in that account has a `URL` matching the token issuer, or its thumbprint does not match the certificate served there\n- s1: [Step 2] Trust policy `Condition` `StringEquals` subject values differ from what the provider token contains\n\n**Interventions:**\n- **remediation** (root): correct the OIDC provider thumbprint, or re-register the provider with the right URL/audience.\n\n  ```bash\n  # Run all three in the account identified in Step 8.\n\n  # Update OIDC provider thumbprint if the certificate has rotated\n  aws iam update-open-id-connect-provider-thumbprint \\\n    --open-id-connect-provider-arn arn:aws:iam::<provider-account>:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \\\n    --thumbprint-list NEWTHUMBPRINT1234567890\n\n  # Re-register the provider if the URL is wrong\n  aws iam delete-open-id-connect-provider \\\n    --open-id-connect-provider-arn arn:aws:iam::<provider-account>:oidc-provider/wrong.issuer.url\n\n  aws iam create-open-id-connect-provider \\\n    --url https://oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \\\n    --client-id-list sts.amazonaws.com \\\n    --thumbprint-list THUMBPRINT1234567890\n  ```\n\n  **Verification:** Run `aws sts assume-role-with-web-identity --role-arn ... --web-identity-token file://token.jwt --role-session-name verify` and confirm credentials are returned. For EKS, verify the ServiceAccount annotation matches the updated role ARN and the pod can obtain credentials.\n- **mitigation** (root): read-only \u2014 retrieve the actual EKS OIDC issuer to compare against the registered provider before changing anything.\n\n  ```bash\n  aws eks describe-cluster --name my-cluster \\\n    --query 'cluster.identity.oidc.issuer' --output text\n  ```\n\n  **Risk:** None \u2014 read-only; later updates to trust policy `Condition` values may block other federated callers relying on the old value. **Duration:** Diagnostic only; use the output to correct the trust policy or OIDC provider registration. **Verification:** Confirm the returned issuer matches (or reveals the mismatch with) the `URL` from Step 8.",
           "vector_row": 1169
         },
         {
           "chunk_index": 12,
-          "text": "\n  **Risk:** None \u2014 read-only; later updates to trust policy `Condition` values may block other federated callers relying on the old value. **Duration:** Diagnostic only; use the output to correct the trust policy or OIDC provider registration. **Verification:** Confirm the returned issuer matches (or reveals the mismatch with) the `URL` from Step 8.",
+          "text": "### Cause I: OIDC provider audience does not match the token's `aud` claim\n\n**Statement:** The OIDC provider is registered with the correct issuer URL, but its `ClientIDList` does not contain the value the presented token carries in `aud`, so AWS rejects the token before the target role's trust policy is consulted.\n\n**Chain:**\n- root: the provider's registered audience is something other than the value the token actually carries \u2014 most often a partition-qualified `sts.amazonaws.com.cn` where the token says `sts.amazonaws.com`.\n- s1: for IRSA the `aud` claim names the token's RECIPIENT \u2014 the STS service \u2014 not a regional endpoint, so it is `sts.amazonaws.com` in every partition, AWS China (`aws-cn`) included, where the EKS identity webhook stamps that same value.\n- D: `AssumeRoleWithWebIdentity` is rejected with `InvalidIdentityToken: Incorrect token audience` (points at Symptom Recognition).\n\n**Indicators:**\n- root: [Step 8] the provider's `Audiences` list does not contain `sts.amazonaws.com`\n- s1: [Symptom] the error names the audience specifically (`Incorrect token audience`) rather than the generic `AccessDenied` that a trust-policy or provider-registration failure produces\n\n**Interventions:**\n- **remediation** (root): add the audience the token actually carries to the existing provider, rather than re-registering it.\n\n  ```bash\n  # Run in the account identified in Step 8.\n  aws iam add-client-id-to-open-id-connect-provider \\\n    --open-id-connect-provider-arn arn:aws:iam::<provider-account>:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCDEF1234 \\\n    --client-id sts.amazonaws.com\n  ```\n\n  **Verification:** Re-run the `get-open-id-connect-provider` query from Step 8 and confirm `Audiences` contains `sts.amazonaws.com`, then confirm the pod obtains credentials.\n- **mitigation** (root): read-only \u2014 decode the presented token to see the `aud` it actually carries before changing the provider.\n\n  ```bash\n  kubectl exec -n <ns> <pod> -- \\\n    cat /var/run/secrets/eks.amazonaws.com/serviceaccount/token \\\n    | cut -d. -f2 | base64 -d 2>/dev/null\n  ```\n\n  **Risk:** None \u2014 read-only, but the token is a live credential: do not persist or share the decoded output. **Duration:** Diagnostic only. **Verification:** Compare the decoded `aud` against the `Audiences` list from Step 8; they must match exactly.",
           "vector_row": 1170
         },
         {
@@ -40524,7 +40577,7 @@
           "vector_row": 1174
         }
       ],
-      "content_hash": "e63bbdc5a0b43a710e8e3c5ca13c0bc9426b9d9ccf502e096f1520bdf47310df",
+      "content_hash": "e6cc860905b84fa2ac5f5cd9e471a751ee9299b7dffa0bab6027495204e9eeb0",
       "item_id": "kb_13b2c57069b7",
       "owner_id": null,
       "relpath": "global/security/aws-iam-role-assumption-failure.md",
@@ -44512,5 +44565,5 @@
     }
   ],
   "total_chunks": 1297,
-  "version": "2026-08-26"
+  "version": "2026-08-27"
 }
