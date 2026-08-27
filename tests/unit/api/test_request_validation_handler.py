@@ -23,16 +23,22 @@ from __future__ import annotations
 import json
 import logging
 from typing import List, Optional
+from urllib.parse import urlencode
 
 import pytest
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.datastructures import FormData
 
 from faultmaven.api.exception_handlers import (
+    _AGGREGATE_ECHO,
+    _AGGREGATE_INPUT_TYPES,
     _NO_VALUE_AT_LOC_TYPES,
     _NO_VALUE_ECHO,
+    _UNDECLARED_ECHO,
+    _UNDECLARED_FIELD_TYPES,
     MAX_VALIDATION_ERRORS,
     MAX_VALIDATION_INPUT_BYTES,
     describe_request_body,
@@ -44,6 +50,7 @@ from faultmaven.modules.auth.domain.models.api_auth import (
     DevLoginRequest,
     TokenRefreshRequest,
 )
+from faultmaven.utils.serialization import to_json_safe
 
 
 class LoginBody(BaseModel):
@@ -328,6 +335,38 @@ class NestedBody(BaseModel):
     credentials: NestedCredentials
 
 
+class CheckedCredentials(BaseModel):
+    """A sub-object with a cross-field check, which fails as a whole.
+
+    `@model_validator` reports the whole object as `input`, so one check that
+    names no field discloses every field in it.
+    """
+
+    refresh_token: str
+    password: str
+
+    @model_validator(mode="after")
+    def check(self):
+        raise ValueError("credentials are inconsistent")
+
+
+class CheckedBody(BaseModel):
+    credentials: CheckedCredentials
+
+
+class StrictRefreshBody(BaseModel):
+    """`/auth/refresh`'s shape, with `extra="forbid"` added.
+
+    No credential model in the repo forbids extras today, so this is what one
+    would look like the day someone tightens one — which is when the
+    `extra_forbidden` echo would activate, silently.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    refresh_token: str
+
+
 class _Capture(logging.Handler):
     """Collect records off the handler's own logger.
 
@@ -344,7 +383,20 @@ class _Capture(logging.Handler):
         self.records.append(record)
 
     def everything(self) -> str:
-        """Every channel of every record, as one searchable string."""
+        """Every channel of every record, as one searchable string.
+
+        Asserts here rather than in the fixture's teardown. Every test using
+        this provokes a 422, and a 422 always logs, so an empty capture means
+        the record never reached the handler — and every "the secret is not in
+        the log" assertion below would then pass on nothing. In teardown that
+        surfaces as an ERROR against the fixture, after the test it was
+        protecting has already reported success; here it fails the assertion
+        that relied on it, which is what a reader needs to see.
+        """
+        assert self.records, (
+            "no ERROR record was captured, so this assertion about what the "
+            "log does not contain would be vacuous"
+        )
         return json.dumps(
             [
                 {
@@ -360,13 +412,10 @@ class _Capture(logging.Handler):
 
 @pytest.fixture
 def logs():
-    """Capture the handler's ERROR records, and refuse to capture none.
+    """Capture the handler's own ERROR records.
 
-    Every test using this fixture provokes a 422, and a 422 always logs. So an
-    empty capture means the record never reached the handler — a logger silenced
-    somewhere, an exception swallowed — and the "the secret is not in the log"
-    assertions would all pass on nothing. Failing here keeps a vacuous pass from
-    reading as a security guarantee.
+    The anti-vacuity check lives in :meth:`_Capture.everything`, not here — see
+    the note there.
     """
     capture = _Capture()
     handler_logger = logging.getLogger("faultmaven.api.exception_handlers")
@@ -375,10 +424,6 @@ def logs():
         yield capture
     finally:
         handler_logger.removeHandler(capture)
-    assert capture.records, (
-        "no ERROR record was captured, so every assertion about what the log "
-        "does not contain was vacuous"
-    )
 
 
 @pytest.fixture
@@ -404,6 +449,22 @@ def auth_client() -> TestClient:
     @app.post("/nested")
     async def nested_endpoint(request_body: NestedBody) -> dict:
         return {"ok": True}
+
+    @app.post("/checked")
+    async def checked_endpoint(request_body: CheckedBody) -> dict:
+        return {"ok": True}
+
+    @app.post("/strict-refresh")
+    async def strict_refresh_endpoint(request_body: StrictRefreshBody) -> dict:
+        return {"ok": True}
+
+    @app.get("/search")
+    async def search_endpoint(user_id: str, api_key: str) -> dict:
+        return {"ok": user_id}
+
+    @app.post("/upload")
+    async def upload_endpoint(token: str = Form(...)) -> dict:
+        return {"ok": token}
 
     return TestClient(app, raise_server_exceptions=False)
 
@@ -503,7 +564,7 @@ def test_error_log_does_not_carry_the_request_body(auth_client, logs):
     assert "openai,groq" in logs.everything()
 
     # The body's shape survives, which is the part that was diagnostic.
-    assert getattr(logs.records[0], "body") == "<dict: 2 keys>"
+    assert getattr(logs.records[0], "body") == "<dict: 2 items>"
 
 
 @pytest.mark.unit
@@ -522,29 +583,156 @@ def test_error_log_does_not_carry_a_form_encoded_body(auth_client, logs):
     assert SECRET_REFRESH not in logs.everything()
 
     # Still distinguishable from a JSON body at a glance, which is what the
-    # logged body was actually good for when #1048 was diagnosed.
-    assert getattr(logs.records[0], "body") == "<bytes: 57 bytes>"
+    # logged body was actually good for when #1048 was diagnosed. The length is
+    # computed, not written down: hard-coding it couples this assertion to
+    # SECRET_REFRESH, so editing that constant breaks this test with a message
+    # naming neither it nor the coupling.
+    encoded = urlencode({"refresh_token": SECRET_REFRESH}).encode()
+    assert getattr(logs.records[0], "body") == f"<bytes: {len(encoded)} bytes>"
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.api
+def test_model_validator_on_a_sub_object_does_not_echo_its_fields(auth_client, logs):
+    """A cross-field check on a sub-object discloses every field inside it.
+
+    `@model_validator` raising reports the whole sub-object as `input`, at the
+    sub-object's own `loc`. So `loc` is field-level, `input` is not that
+    field's value but an object of named fields, and the #1156 shape reopens on
+    a type outside the missing family. Both credentials in one echo, from one
+    validator that mentions neither.
+    """
+    response = auth_client.post(
+        "/checked",
+        json={
+            "credentials": {"refresh_token": SECRET_REFRESH, "password": "PW-SECRET"}
+        },
+    )
+
+    errors = _errors(response)
+    assert SECRET_REFRESH not in response.text
+    assert "PW-SECRET" not in response.text
+    assert SECRET_REFRESH not in logs.everything()
+    assert "PW-SECRET" not in logs.everything()
+
+    # The diagnosis survives: which object failed, and the validator's reason.
+    assert errors[0]["type"] == "value_error"
+    assert errors[0]["loc"] == ["body", "credentials"]
+    assert "inconsistent" in errors[0]["msg"]
+    assert errors[0]["input"] == _AGGREGATE_ECHO
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.api
+def test_an_undeclared_field_does_not_echo_its_value(auth_client, logs):
+    """The mis-key case, half-closed: `missing` was guarded, `extra` was not.
+
+    One camelCase key against a forbidding model produces *two* errors. The
+    `missing` on `refresh_token` is withheld by the aggregate rule; the
+    `extra_forbidden` on `refreshToken` carries the live token as its own
+    value, so none of the shape-based rules fire. The endpoint never declared
+    that field, so the API has no schema for it and cannot know it is not a
+    credential — and an undeclared field is most often a mis-keyed declared
+    one, which is exactly how the token got there.
+    """
+    response = auth_client.post(
+        "/strict-refresh", json={"refreshToken": SECRET_REFRESH}
+    )
+
+    errors = _errors(response)
+    assert SECRET_REFRESH not in response.text
+    assert SECRET_REFRESH not in logs.everything()
+
+    by_type = {e["type"]: e for e in errors}
+    assert set(by_type) == {"missing", "extra_forbidden"}, errors
+    assert by_type["missing"]["input"] == _NO_VALUE_ECHO
+
+    # The key is named — that IS the diagnosis, and it is what the caller fixes.
+    extra = by_type["extra_forbidden"]
+    assert extra["loc"] == ["body", "refreshToken"]
+    assert extra["input"] == _UNDECLARED_ECHO
+
+
+@pytest.mark.unit
+@pytest.mark.api
+def test_a_field_validator_error_still_echoes_its_value(auth_client):
+    """The aggregate rule is scoped to Mapping inputs so this survives.
+
+    `value_error` is raised by *field* validators too, and there the input is
+    that field's own scalar — exactly the echo #1048 kept deliberately.
+    `DevLoginRequest.validate_username` is a real published one, so widening
+    the rule from "Mapping" to "any value_error" would make a live 422 stop
+    telling the caller which username it rejected.
+    """
+    response = auth_client.post("/auth/login", json={"username": "bad user!!"})
+
+    errors = _errors(response)
+    assert errors[0]["type"] == "value_error"
+    assert errors[0]["loc"] == ["body", "username"]
+    assert errors[0]["input"] == "bad user!!"
+
+
+@pytest.mark.unit
+@pytest.mark.api
+def test_missing_non_body_params_keep_their_null_input(auth_client):
+    """The guard must not rewrite `input` where nothing was ever enclosed.
+
+    FastAPI hard-codes `input=None` for a missing query, header, cookie, path
+    or form field, so there is no enclosing object and nothing to withhold.
+    Rewriting that `null` into a sentence would change the published shape of
+    the single commonest client error across the whole API, and pad every such
+    response by up to `MAX_VALIDATION_ERRORS` x the sentence.
+    """
+    query = _errors(auth_client.get("/search"))
+    assert [e["loc"] for e in query] == [["query", "user_id"], ["query", "api_key"]]
+    assert all(e["type"] == "missing" for e in query)
+    assert all(e["input"] is None for e in query), query
+
+    form = _errors(auth_client.post("/upload", data={"wrong": "1"}))
+    assert form[0]["loc"] == ["body", "token"]
+    assert form[0]["input"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.security
+@pytest.mark.api
+def test_the_log_line_does_not_carry_the_query_string(auth_client, logs):
+    """`request.url` would put a query-string credential on an ERROR record.
+
+    Every sibling handler in the module logs `request.url.path`. This one
+    logged the full URL, so the one channel #1156 was about — the ERROR
+    record — still carried request content the response never echoed.
+    """
+    # `user_id` is omitted so the request actually fails validation; the
+    # credential rides along in the query string of the very same request.
+    response = auth_client.get("/search?api_key=" + SECRET_API_KEY)
+
+    assert _errors(response)[0]["loc"] == ["query", "user_id"]
+    assert SECRET_API_KEY not in logs.everything()
+    assert "/search" in logs.records[0].getMessage()
 
 
 @pytest.mark.unit
 @pytest.mark.security
 def test_input_identical_to_the_body_is_withheld_at_any_loc():
-    """Defence in depth for an error type that has not turned up yet.
+    """Defence in depth for a type the type-keyed rules do not name.
 
-    No shape FastAPI builds today reports the whole body at a field-level `loc`
-    with a type outside the missing family — the type-keyed rule covers every
-    measured case. This one is belt to that braces: if pydantic grows such a
-    type, the identity check catches it without anyone noticing first.
+    The rules above cover the shapes measured to aggregate; they are not a
+    complete classification (see `_withheld_input`). If some other error type
+    reports the whole body at a field-level `loc`, identity catches it. The
+    type here is deliberately outside `_AGGREGATE_INPUT_TYPES`, so identity is
+    what does the work rather than rule 3 masking it.
 
     The second half is the mutation: drop `body` and the same error echoes the
-    credential, which is what shows the check is load-bearing rather than
-    decorative.
+    credential, which is what shows the check is load-bearing.
     """
     body = {"refreshToken": SECRET_REFRESH}
     error = {
-        "type": "value_error",
+        "type": "list_type",
         "loc": ("body", "refresh_token"),
-        "msg": "Value error, hypothetical",
+        "msg": "Input should be a valid list",
         "input": body,
     }
 
@@ -557,27 +745,104 @@ def test_input_identical_to_the_body_is_withheld_at_any_loc():
 
 @pytest.mark.unit
 @pytest.mark.security
-def test_missing_family_names_still_exist_in_pydantic():
-    """A rename upstream would empty the guard silently.
+def test_a_null_body_does_not_swallow_a_legitimate_null_input():
+    """`exc.body` is None for a GET and for a JSON `null` body.
 
-    `_NO_VALUE_AT_LOC_TYPES` is a set of pydantic's own error-type strings. If
-    one is renamed the guard stops firing for that type and nothing fails —
-    the 422 just starts echoing again. Pin the names against the catalogue.
+    Guarding identity with a sentinel that production never passes left the
+    check as `raw is None`, which rewrote every honest `input: null` into a
+    message about a request body it was not.
+    """
+    error = {
+        "type": "string_type",
+        "loc": ("query", "user_id"),
+        "msg": "Input should be a valid string",
+        "input": None,
+    }
 
-    `missing_sentinel_error` is deliberately absent from the set: it is the one
+    assert sanitize_validation_error(error, None)["input"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_a_withheld_input_is_never_walked():
+    """The value is discarded, so converting it first is pure cost.
+
+    `to_json_safe` used to run over the whole error — including an `input` that
+    can be the entire request body — and the result was then overwritten. A
+    20,000-key body producing 60 errors paid for that walk 50 times.
+    """
+    walked = []
+
+    class CountingDict(dict):
+        def items(self):
+            walked.append(1)
+            return super().items()
+
+    payload = CountingDict({"refreshToken": SECRET_REFRESH})
+    withheld = {
+        "type": "missing",
+        "loc": ("body", "refresh_token"),
+        "msg": "Field required",
+        "input": payload,
+    }
+    sanitize_validation_error(withheld)
+    assert walked == [], "the withheld input was converted before being discarded"
+
+    # The counter is real: an echoed input IS walked.
+    echoed = {
+        "type": "list_type",
+        "loc": ("body", "tags"),
+        "msg": "Input should be a valid list",
+        "input": payload,
+    }
+    sanitize_validation_error(echoed)
+    assert walked, "CountingDict never recorded a walk, so the check proves nothing"
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_missing_family_is_pinned_in_both_directions():
+    """A rename empties the guard; a new upstream type leaves it incomplete.
+
+    `_NO_VALUE_AT_LOC_TYPES` is a set of pydantic's own error-type strings, and
+    both directions fail silently: a renamed type stops firing and a newly
+    added `missing_*` type is simply not covered, while every other assertion
+    in this file still passes. That is the same fail-by-omission shape as the
+    bug this file is about, so pin the set against the catalogue both ways.
+
+    `missing_sentinel_error` is the deliberate exclusion: it is the one
     "missing*" type that reports the supplied value rather than the enclosing
-    object, so prefix-matching would over-strip.
+    object, which is why the guard enumerates instead of prefix-matching.
     """
     from pydantic_core import _pydantic_core
 
     catalogue = {entry["type"] for entry in _pydantic_core.list_all_errors()}
-
     missing_family = {name for name in catalogue if name.startswith("missing")}
+
     assert _NO_VALUE_AT_LOC_TYPES <= catalogue, (
         f"pydantic no longer defines {_NO_VALUE_AT_LOC_TYPES - catalogue}; "
         f"the missing* types it does define are {sorted(missing_family)}"
     )
+    assert missing_family - {"missing_sentinel_error"} <= _NO_VALUE_AT_LOC_TYPES, (
+        "pydantic defines missing* types the guard does not cover: "
+        f"{sorted(missing_family - {'missing_sentinel_error'} - _NO_VALUE_AT_LOC_TYPES)}"
+    )
     assert "missing_sentinel_error" not in _NO_VALUE_AT_LOC_TYPES
+
+
+@pytest.mark.unit
+@pytest.mark.security
+def test_model_validator_types_are_pinned_against_pydantic():
+    """Same fail-by-omission risk on the other set."""
+    from pydantic_core import _pydantic_core
+
+    catalogue = {entry["type"] for entry in _pydantic_core.list_all_errors()}
+    assert (
+        _AGGREGATE_INPUT_TYPES <= catalogue
+    ), f"pydantic no longer defines {_AGGREGATE_INPUT_TYPES - catalogue}"
+    assert (
+        _UNDECLARED_FIELD_TYPES <= catalogue
+    ), f"pydantic no longer defines {_UNDECLARED_FIELD_TYPES - catalogue}"
 
 
 @pytest.mark.unit
@@ -585,10 +850,21 @@ def test_missing_family_names_still_exist_in_pydantic():
 def test_describe_request_body_names_shapes_without_content():
     """It runs inside an exception handler, so it must be total and quiet."""
 
-    class Hostile:
-        def __len__(self):  # pragma: no cover - exercised via describe only
+    class HostileLen(dict):
+        """Sized, so it reaches `len()` — and raises there.
+
+        A plain object would return from the catch-all without ever calling
+        `len()`, leaving the `except` branch uncovered. A raise there is a 500
+        in place of a 422, which is #1048 exactly.
+        """
+
+        def __len__(self):
             raise RuntimeError("no")
 
+        def __repr__(self):  # pragma: no cover - must never be called
+            return f"secret={SECRET_API_KEY}"
+
+    class Opaque:
         def __repr__(self):  # pragma: no cover - must never be called
             return f"secret={SECRET_API_KEY}"
 
@@ -597,10 +873,23 @@ def test_describe_request_body_names_shapes_without_content():
     assert describe_request_body(bytearray(b"ab")) == "<bytearray: 2 bytes>"
     assert describe_request_body(memoryview(b"abc")) == "<memoryview: 3 bytes>"
     assert describe_request_body("a" * 9) == "<str: 9 characters>"
-    assert describe_request_body({"api_key": SECRET_API_KEY}) == "<dict: 1 key>"
     assert describe_request_body([1, 2]) == "<list: 2 items>"
 
-    # An unknown type is named, never repr'd: a repr is content.
-    described = describe_request_body(Hostile())
-    assert described == "<Hostile>"
+    # Containers share `to_json_safe`'s spelling, because both can land on one
+    # ERROR record and two spellings of one fact read as two facts.
+    assert describe_request_body({"api_key": SECRET_API_KEY}) == "<dict: 1 items>"
+    assert to_json_safe({"outer": {"a": 1}}, max_depth=1)["outer"] == "<dict: 1 items>"
+
+    # Form-encoded shape is the reason this function exists, so the type that
+    # carries it must not fall through to the unnamed catch-all.
+    assert describe_request_body(FormData([("a", "1"), ("b", "2")])) == (
+        "<FormData: 2 items>"
+    )
+
+    # A raise inside is caught, and no repr leaks through it.
+    described = describe_request_body(HostileLen())
+    assert described == "<unrepresentable request body>"
     assert SECRET_API_KEY not in described
+
+    # An unknown type is named, never repr'd: a repr is content.
+    assert describe_request_body(Opaque()) == "<Opaque>"
