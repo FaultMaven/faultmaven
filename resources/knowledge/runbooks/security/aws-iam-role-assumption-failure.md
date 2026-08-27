@@ -6,8 +6,8 @@ service: aws-iam
 symptom_class: [auth_failure]
 severity: high
 scope: global
-version: "2.1.1"
-last_updated: "2026-08-17"
+version: "2.1.2"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [sts, assume-role, trust-policy, external-id, cross-account, role-chaining, irsa, scp]
@@ -501,6 +501,6 @@ For IRSA the audience is partition-invariant: the `aud` claim names the token's 
 - [Troubleshoot IAM roles — AWS IAM User Guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/troubleshoot_roles.html) — primary troubleshooting reference; used for all "I can't assume a role" causes and role chaining limit
 - [AssumeRole API Reference — AWS STS](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html) — DurationSeconds constraints, ExternalId parameter, error codes (ExpiredToken, MalformedPolicyDocument, PackedPolicyTooLarge, RegionDisabled), request/response structure
 - [The confused deputy problem — AWS IAM User Guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/confused-deputy.html) — ExternalId design rationale, cross-account and cross-service confused deputy prevention patterns
-- [Access to AWS accounts owned by third parties — AWS IAM User Guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html) — ExternalId best practices, multi-tenant external ID uniqueness, when to require ExternalId
+- [Access to AWS accounts owned by third parties — AWS IAM User Guide](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_common-scenarios_third-party.html) — ExternalId best practices, multi-tenant external ID uniqueness, when to require ExternalId
 - [IAM roles for service accounts (IRSA) — AWS EKS User Guide](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html) — OIDC provider setup, ServiceAccount annotation, trust policy condition keys for EKS
 - [Create an IAM OIDC provider for your cluster — AWS China EKS User Guide](https://docs.amazonaws.cn/en_us/eks/latest/userguide/enable-iam-roles-for-service-accounts.html) — the `aws-cn` partition's own EKS guide instructs the same `sts.amazonaws.com` audience as the commercial partition; grounds Step 8's partition-invariance note

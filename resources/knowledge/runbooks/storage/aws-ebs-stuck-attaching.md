@@ -6,8 +6,8 @@ service: aws-ec2
 symptom_class: [service_unavailable]
 severity: high
 scope: global
-version: "2.0.1"
-last_updated: "2026-08-17"
+version: "2.0.2"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [aws, ebs, volume, attaching, detaching, stuck, ec2, nvme, nitro, force-detach]
@@ -405,7 +405,9 @@ Expected output: `AttachVolume` or `DetachVolume` events; inspect the `CloudTrai
 
 ## Sources
 
-- [Detach an Amazon EBS volume — AWS EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-detaching-volume.html) — unmount procedure, `busy` state description, force detach guidance (Priority 1)
-- [Attach an Amazon EBS volume — AWS EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-attaching-volume.html) — attachment considerations, device naming, `AttachmentLimitExceeded` (Priority 1)
-- [Amazon EBS volume status checks — AWS EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/monitoring-volume-status.html) — `VolumeQueueLength`, status check failures (Priority 1)
-- [Amazon EBS and NVMe on Linux — AWS EC2 User Guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/nvme-ebs-volumes.html) — NVMe device naming, serial number to volume ID mapping (Priority 1)
+- [Detach an Amazon EBS volume — AWS EBS User Guide](https://docs.aws.amazon.com/ebs/latest/userguide/ebs-detaching-volume.html) — unmount procedure, `busy` state description, force detach guidance (Priority 1)
+- [Attach an Amazon EBS volume — AWS EBS User Guide](https://docs.aws.amazon.com/ebs/latest/userguide/ebs-attaching-volume.html) — attachment considerations, device naming, `AttachmentLimitExceeded` (Priority 1)
+- [Amazon EBS volume status checks — AWS EBS User Guide](https://docs.aws.amazon.com/ebs/latest/userguide/monitoring-volume-checks.html) — volume status-check states and `impaired` semantics (Priority 1)
+- [Amazon CloudWatch metrics for Amazon EBS — AWS EBS User Guide](https://docs.aws.amazon.com/ebs/latest/userguide/using_cloudwatch_ebs.html) — `VolumeQueueLength` (read/write requests waiting to complete), used in Symptom Recognition and the Prevention alarm (Priority 1)
+- [Amazon EBS and NVMe on Linux — AWS EBS User Guide](https://docs.aws.amazon.com/ebs/latest/userguide/nvme-ebs-volumes.html) — NVMe device naming (`/dev/nvme[0-26]n1`) and reordering vs the block device mapping (Priority 1)
+- [Map Amazon EBS volumes to NVMe device names — AWS EBS User Guide](https://docs.aws.amazon.com/ebs/latest/userguide/identify-nvme-ebs-device.html) — the volume ID is the NVMe serial number; `nvme id-ctrl` / `ebsnvme-id` / `lsblk -o +SERIAL`, used in Step 5 (Priority 1)

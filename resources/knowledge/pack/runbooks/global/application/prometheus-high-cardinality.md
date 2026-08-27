@@ -8,8 +8,8 @@ symptom_class:
   - latency
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-26"
 verified_by: kb-researcher
 status: draft
 tags:
@@ -585,5 +585,5 @@ Expected output: JSON report listing metrics scraped vs. metrics referenced by d
 - [Prometheus — Configuration](https://prometheus.io/docs/prometheus/latest/configuration/configuration/) — Priority 1. `metric_relabel_configs` action vocabulary (drop, keep, labeldrop, labelkeep, replace); `sample_limit`, `label_limit`, `label_value_length_limit`, `target_limit` semantics.
 - [Prometheus — Recording Rules](https://prometheus.io/docs/prometheus/latest/configuration/recording_rules/) — Priority 1. Pre-aggregation pattern, `limit` per rule group, `promtool check rules` validation, SIGHUP reload.
 - [Prometheus — Storage](https://prometheus.io/docs/prometheus/latest/storage/) — Priority 1. TSDB head block, WAL, ~1–2 bytes/sample compressed cost, why reducing series count is more effective than reducing scrape interval.
-- [Grafana Labs — Managing High Cardinality in Prometheus and Kubernetes](https://grafana.com/blog/2024/06/05/how-to-manage-high-cardinality-metrics-in-prometheus-and-kubernetes/) — Priority 2. Histogram bucket-drop pattern, recording-rule aggregation idiom, mimirtool for unused metrics, scrape-interval-vs-series-count trade-off.
-- [Grafana Labs — What Are Cardinality Spikes](https://grafana.com/blog/2022/02/15/what-are-cardinality-spikes-and-why-do-they-matter/) — Priority 2. `user_id` as canonical anti-pattern, active-series semantics, cardinality-management tooling references.
+- [Grafana Labs — Managing High Cardinality in Prometheus and Kubernetes](https://grafana.com/blog/how-to-manage-high-cardinality-metrics-in-prometheus-and-kubernetes/) — Priority 2. Histogram bucket-drop pattern, recording-rule aggregation idiom, mimirtool for unused metrics, scrape-interval-vs-series-count trade-off.
+- [Grafana Labs — What Are Cardinality Spikes](https://grafana.com/blog/what-are-cardinality-spikes-and-why-do-they-matter/) — Priority 2. `user_id` as canonical anti-pattern, active-series semantics, cardinality-management tooling references.

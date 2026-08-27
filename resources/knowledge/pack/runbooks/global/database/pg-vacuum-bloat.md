@@ -6,8 +6,8 @@ service: postgresql
 symptom_class: [disk_full, latency]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [autovacuum, vacuum, dead-tuples, bloat, mvcc, wraparound, pg-repack]
@@ -436,6 +436,6 @@ Expected output: Cross-reference total size against `n_live_tup`. A table with 5
 ## Sources
 
 - [PostgreSQL Documentation: Routine Vacuuming](https://www.postgresql.org/docs/current/routine-vacuuming.html) — Priority 1. VACUUM mechanics, MVCC dead tuple retention, transaction ID wraparound thresholds (150M/200M), emergency behavior, VACUUM FREEZE semantics, and autovacuum anti-wraparound trigger. Primary reference for Causes A, D, F.
-- [PostgreSQL Documentation: Autovacuum Configuration](https://www.postgresql.org/docs/current/runtime-config-autovacuum.html) — Priority 1. All autovacuum GUC parameters with exact defaults: `autovacuum_max_workers=3`, `autovacuum_vacuum_scale_factor=0.2`, `autovacuum_vacuum_cost_delay=2ms`, `autovacuum_freeze_max_age=200M`. Used in Step 5 and Causes A, C, D.
+- [PostgreSQL Documentation: Vacuuming (autovacuum parameters)](https://www.postgresql.org/docs/current/runtime-config-vacuum.html) — Priority 1. All autovacuum GUC parameters with exact defaults: `autovacuum_max_workers=3`, `autovacuum_vacuum_scale_factor=0.2`, `autovacuum_vacuum_cost_delay=2ms`, `autovacuum_freeze_max_age=200M`. Used in Step 5 and Causes A, C, D.
 - [PostgreSQL Documentation: Monitoring Statistics](https://www.postgresql.org/docs/current/monitoring-stats.html) — Priority 1. `pg_stat_user_tables` column definitions (`n_dead_tup`, `n_live_tup`, `last_autovacuum`, `autovacuum_count`) and `pg_stat_progress_vacuum` columns (`heap_blks_scanned`, `heap_blks_vacuumed`, `num_dead_tuples`). Used in Steps 1 and 2.
 - [pg_repack Documentation](https://reorg.github.io/pg_repack/) — Priority 2. Online table and index compaction without `AccessExclusiveLock`. Referenced in Prevention and Cause Z mitigation.

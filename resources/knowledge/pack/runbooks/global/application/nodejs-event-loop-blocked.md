@@ -6,8 +6,8 @@ service: nodejs
 symptom_class: [latency]
 severity: high
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [nodejs, event-loop, latency, performance, cpu, worker-threads, clinic]
@@ -464,7 +464,7 @@ Expected output: Any pattern printed as `VULNERABLE` is a ReDoS risk when applie
 
 ## Sources
 
-- [Node.js — Don't Block the Event Loop](https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop) — Official guide covering dangerous APIs, JSON thresholds (0.7 s / 1.3 s at 50 MB), ReDoS patterns, partitioning, and Worker Pool task-time bounding; Priority 1
+- [Node.js — Don't Block the Event Loop](https://nodejs.org/learn/asynchronous-work/dont-block-the-event-loop) — Official guide covering dangerous APIs, JSON thresholds (0.7 s / 1.3 s at 50 MB), ReDoS patterns, partitioning, and Worker Pool task-time bounding; Priority 1
 - [Node.js — Performance Hooks: monitorEventLoopDelay](https://nodejs.org/api/perf_hooks.html) — Official API reference for `IntervalHistogram`, resolution parameter, percentile access, and nanosecond-to-millisecond conversion; Priority 1
 - [Clinic.js](https://clinicjs.org/) — Open-source performance profiling suite for Node.js: Doctor (automated event loop / I/O / memory diagnosis), Flame (CPU flame graphs), Bubbleprof (async flow visualization); Priority 2
 - [NodeSource — Debugging the Event Loop](https://nodesource.com/blog/node-js-performance-monitoring-part-3-debugging-the-event-loop) — CPU profiling techniques, `--prof` flag workflow, and flame graph interpretation for event loop issues; Priority 3

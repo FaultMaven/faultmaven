@@ -6,8 +6,8 @@ service: general
 symptom_class: [auth_failure, service_unavailable]
 severity: critical
 scope: global
-version: "2.0.0"
-last_updated: "2026-06-25"
+version: "2.0.1"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [tls, ssl, certificates, x509, expiry, openssl, certbot, cert-manager, acme, lets-encrypt]
@@ -491,5 +491,5 @@ Expected output: HTTP-01 path returns any response (even 404) without connection
 - [cert-manager ACME Troubleshooting](https://cert-manager.io/docs/troubleshooting/acme/) — Order and Challenge debugging for ACME-based issuers, DNS and HTTP solver diagnostics. Priority 2.
 - [Let's Encrypt Documentation](https://letsencrypt.org/docs/) — ACME protocol, challenge types, rate limits, chain of trust, and certificate lifecycle. Priority 1.
 - [Certbot User Guide](https://eff-certbot.readthedocs.io/en/stable/using.html) — Certificate issuance, renewal, deploy hooks, and troubleshooting. Priority 1.
-- [OpenSSL s_client Manual](https://www.openssl.org/docs/man3.0/man1/openssl-s_client.html) — Official reference for TLS connection testing, certificate chain inspection, and verification flags. Priority 1.
+- [OpenSSL s_client Manual](https://docs.openssl.org/3.0/man1/openssl-s_client/) — Official reference for TLS connection testing, certificate chain inspection, and verification flags. Priority 1.
 - [Prometheus blackbox_exporter](https://github.com/prometheus/blackbox_exporter) — TLS certificate expiry monitoring via `probe_ssl_earliest_cert_expiry` metric. Priority 2.

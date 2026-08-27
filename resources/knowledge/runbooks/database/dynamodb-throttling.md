@@ -6,8 +6,8 @@ service: aws-dynamodb
 symptom_class: [throughput_degradation, latency]
 severity: high
 scope: global
-version: "1.0.1"
-last_updated: "2026-08-17"
+version: "1.0.2"
+last_updated: "2026-08-26"
 verified_by: "kb-researcher"
 status: draft
 tags: [provisioned-throughput-exceeded, hot-partition, gsi-throttling, adaptive-capacity, exponential-backoff]
@@ -276,6 +276,6 @@ Expected output: `ContributorInsightsStatus` transitions to `ENABLED`; the resul
 - [CloudWatch throttling metrics](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TroubleshootingThrottling-cloudwatch.html) — `ThrottledRequests`, `ReadThrottleEvents`, `WriteThrottleEvents` semantics and the GSI dimension requirement.
 - [DynamoDB burst and adaptive capacity](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/burst-adaptive-capacity.html) — adaptive capacity behavior and the 3000 RCU/sec, 1000 WCU/sec per-partition limits.
 - [Monitoring metrics in DynamoDB with Amazon CloudWatch](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Monitoring-metrics-with-Amazon-CloudWatch.html) — `get-metric-statistics` command form used in Steps 1-3.
-- [Creating CloudWatch alarms to monitor DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/creating-alarms.html) — `put-metric-alarm` form used in Prevention.
+- [Creating CloudWatch alarms in DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Monitoring-metrics-creating-cloudwatch-alarms.html) — `put-metric-alarm` form used in Prevention.
 - [CloudWatch Contributor Insights for DynamoDB: How it works](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/contributorinsights_HowItWorks.html) — most-throttled-keys graphs and `THROTTLED_KEYS` mode used in Step 5.
 - [describe-contributor-insights — AWS CLI Reference](https://docs.aws.amazon.com/cli/latest/reference/dynamodb/describe-contributor-insights.html) — `update-contributor-insights` / `describe-contributor-insights` command forms used in Step 5.
