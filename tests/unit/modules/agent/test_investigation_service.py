@@ -825,9 +825,15 @@ class TestInvestigationServiceProcessTurn:
             pasted_content
         ), "size must match original content bytes"
         assert meta["size"] > 0, "size must be > 0 (CHECK constraint)"
-        assert (
-            meta["source_type"] == "paste"
-        ), "pasted content should have source_type='paste'"
+        assert meta["source_type"] == "text_paste", (
+            # Was "paste" until #1201. The value is now derived from the ROW
+            # (``UploadedFile.input_origin``) rather than from the shape of the
+            # submitted filename, and it reports the CANONICAL spelling the
+            # turns route writes. Both spellings live in
+            # ``_PASTE_UPLOAD_SOURCES``, so every consumer reads either; this
+            # asserts the one the row actually carries.
+            "pasted content should have source_type='text_paste'"
+        )
         # Post-010: attachment metadata no longer carries evidence_id —
         # Evidence is born only when the LLM extracts a claim-anchored
         # slice during INVESTIGATING. The UploadedFile is the file-of-

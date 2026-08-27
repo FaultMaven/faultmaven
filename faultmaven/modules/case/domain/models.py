@@ -1835,8 +1835,11 @@ _MINTED_PREFIX_TO_KIND = {"pasted-content": "paste", "page-capture": "capture"}
 #   3. neither                  -> the tag was not fabricated from the name, so
 #                                  it is the genuine provenance ("Untitled")
 #
-# Rule 2 is also what keeps #1201 from mattering here: a capture mis-tagged
-# ``file_upload`` still matches rule 1 on its filename.
+# Rule 2 is also what kept #1201 from mattering here while it was live: a
+# capture mis-tagged ``file_upload`` still matched rule 1 on its filename. That
+# mis-tagging is fixed — the engine-dispatch metadata now carries
+# ``input_origin`` — but the rule stays, both for rows written before the fix
+# and because it is right on its own terms.
 _MINTED_PREFIXES = ("pasted-content-", "page-capture-")
 
 
@@ -2080,6 +2083,35 @@ class UploadedFile(BaseModel):
     def is_page_capture(self) -> bool:
         """True when the browser extension captured this from a web page."""
         return self._minted_kind == "capture"
+
+    @property
+    def input_origin(self) -> str:
+        """How this content ARRIVED: ``text_paste`` | ``page_capture`` |
+        ``file_upload``.
+
+        The single reconciled answer, built on ``_minted_kind`` so it applies
+        the same precedence every other consumer does — provenance tag first,
+        minted-filename shape as the fallback for rows whose tag predates the
+        current values, and rule 2's carve-out for a user's own
+        prefix-colliding filename.
+
+        Exists because the engine-dispatch path derived this fact a SECOND way
+        (``att.filename.startswith("pasted-content-")``), which reported every
+        page capture as ``file_upload`` — the primary Copilot channel, arriving
+        indistinguishable from a file the user chose (#1201). One derivation,
+        one answer.
+
+        Normalises the two ``upload_source`` paste spellings: the turns route
+        writes ``text_paste`` and older rows carry ``paste``, and no caller
+        should have to know that. The value returned is always the canonical
+        one, matching what the route sets today.
+        """
+        kind = self._minted_kind
+        if kind == "paste":
+            return "text_paste"
+        if kind == "capture":
+            return "page_capture"
+        return "file_upload"
 
     @property
     def has_synthetic_filename(self) -> bool:
