@@ -425,7 +425,12 @@ class _CapturingRouter:
 
     prompts: list[str]
 
-    async def route(self, *, model, messages, max_tokens, temperature):
+    # ``**kwargs`` models the REAL router, which takes a superset of these
+    # (provider_override, response_format, tools, case_id, …). A double that
+    # rejects a kwarg the real thing accepts fails the test for a reason that
+    # has nothing to do with what it is probing — here it turned a role-routing
+    # default into a fake tenant-isolation failure.
+    async def route(self, *, model, messages, max_tokens, temperature, **kwargs):
         self.prompts.append(messages[-1]["content"])
         return LLMResponse(
             content="stub answer",

@@ -675,9 +675,63 @@ MAX_VALIDATION_ERRORS = 50
 # rather than the whole payload.
 _WHOLE_BODY_LOC = ("body",)
 
+# ...except when there is no value at `loc` to name. `input` is documented as
+# "the value pydantic was given at this location", and every rule above reads it
+# that way — but for a *missing* field no such value exists, so pydantic
+# substitutes the object the field is missing FROM. `loc` then looks field-level
+# while `input` is a whole object of the caller's other fields, and the
+# whole-body guard does not fire (fm#1156): `POST /auth/refresh` with
+# `{"refreshToken": ...}` — camelCase, the commonest client mistake and the one
+# most likely to carry a live credential — echoed the token straight back.
+#
+# Keyed on the error type rather than on identity with `exc.body`, because
+# identity only catches the flat case. Measured on the four body shapes FastAPI
+# builds, `input is exc.body` held for exactly one:
+#
+#   body model, missing field          loc ("body", "refresh_token")     True
+#   nested model, missing field        loc ("body", "inner", "…")        False
+#   Body(embed=True), missing field    loc ("body", "b", "…")            False
+#   two body params, missing field     loc ("body", "a", "…")            False
+#
+# The three False rows still echo a whole object of the caller's fields — a
+# sub-object rather than the body, which is no better if that sub-object is
+# where the credential is. The type is what actually distinguishes the case.
+#
+# Enumerated, not prefix-matched: pydantic's fifth "missing*" type,
+# `missing_sentinel_error`, reports the supplied value like every other type and
+# must keep its `input`. `test_missing_family_names_still_exist_in_pydantic`
+# fails if a rename silently empties this set.
+_NO_VALUE_AT_LOC_TYPES = frozenset(
+    {
+        "missing",
+        "missing_argument",
+        "missing_keyword_only_argument",
+        "missing_positional_only_argument",
+    }
+)
 
-def sanitize_validation_error(error: Mapping[str, Any]) -> Dict[str, Any]:
-    """Make one pydantic error dict renderable, and bound its echoed input."""
+# Withholding it costs nothing: for a missing field `input` is not the field's
+# value, and `loc` + `msg` ("Field required") already say everything the caller
+# needs to fix the request.
+_NO_VALUE_ECHO = "<input not echoed: no value was supplied at this location>"
+
+#: Distinguishes "no body was passed" from "the body happened to be None".
+_BODY_UNSET = object()
+
+
+def sanitize_validation_error(
+    error: Mapping[str, Any], body: Any = _BODY_UNSET
+) -> Dict[str, Any]:
+    """Make one pydantic error dict renderable, and bound its echoed input.
+
+    Args:
+        error: One entry from ``RequestValidationError.errors()``.
+        body: ``exc.body``, when the caller has it. Supplying it adds the
+            identity check below — defence in depth against a future error type
+            that reports the whole body at a field-level ``loc``, which is the
+            shape that made #1156 reachable. Omitting it leaves the type- and
+            loc-keyed rules, which are what catch the known cases.
+    """
     safe = to_json_safe(error)
     if not isinstance(safe, dict):  # pragma: no cover - errors() yields dicts
         return {"msg": str(safe)}
@@ -685,7 +739,13 @@ def sanitize_validation_error(error: Mapping[str, Any]) -> Dict[str, Any]:
     if "input" not in safe:
         return safe
 
-    if tuple(error.get("loc") or ()) == _WHOLE_BODY_LOC:
+    if error.get("type") in _NO_VALUE_AT_LOC_TYPES:
+        safe["input"] = _NO_VALUE_ECHO
+        return safe
+
+    if tuple(error.get("loc") or ()) == _WHOLE_BODY_LOC or (
+        body is not _BODY_UNSET and error.get("input") is body
+    ):
         raw = error.get("input")
         size = f": {len(raw)} bytes" if isinstance(raw, (bytes, bytearray)) else ""
         safe["input"] = f"<request body not echoed{size}>"
@@ -700,6 +760,54 @@ def sanitize_validation_error(error: Mapping[str, Any]) -> Dict[str, Any]:
             f"{MAX_VALIDATION_INPUT_BYTES}-byte echo budget>"
         )
     return safe
+
+
+def _plural(count: int, noun: str) -> str:
+    """`1 key` / `2 keys` — these strings are read by operators in a log."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def describe_request_body(body: Any) -> Optional[str]:
+    """Name the *shape* of a request body without echoing any of its content.
+
+    What the ERROR log needs from the body is its shape, not its bytes. That is
+    what the body was diagnostic for in #1048 — a form-encoded POST arriving at
+    a JSON endpoint is visible as ``<bytes: 57 bytes>`` where a JSON one is
+    ``<dict: 1 key>`` — and the shape is the half that carries no credential.
+
+    Logging it verbatim was the other half of #1156: the response guard withheld
+    a refresh token from the 422 while this line wrote it to an ERROR record, and
+    logs are retained, aggregated and read by people who were not party to the
+    request. The two channels disagreeing about whether a value was sensitive is
+    what marked it as an oversight rather than a decision.
+
+    Key names are deliberately not reported either. They would be useful (they
+    are what makes a camelCase mistake obvious) and they are *usually* not
+    secret — but "this part of the body is never sensitive" is exactly the
+    assumption that produced #1156, and the sanitized ``validation_errors`` on
+    the same record already name every offending ``loc``.
+
+    Total, like everything else on this path: it runs inside an exception
+    handler, so it must not raise, and it must not copy a body of unbounded size
+    just to measure it.
+    """
+    if body is None:
+        return None
+    try:
+        if isinstance(body, (bytes, bytearray)):
+            return f"<{type(body).__name__}: {len(body)} bytes>"
+        if isinstance(body, memoryview):
+            return f"<memoryview: {body.nbytes} bytes>"
+        if isinstance(body, str):
+            # Characters, not bytes: encoding to count would copy the whole body.
+            return f"<str: {len(body)} characters>"
+        if isinstance(body, dict):
+            return f"<dict: {_plural(len(body), 'key')}>"
+        if isinstance(body, (list, tuple, set, frozenset)):
+            return f"<{type(body).__name__}: {_plural(len(body), 'item')}>"
+        return f"<{type(body).__name__}>"
+    except Exception:  # pragma: no cover - len()/nbytes on a hostile object
+        return "<unrepresentable request body>"
 
 
 async def request_validation_exception_handler(
@@ -737,15 +845,21 @@ async def request_validation_exception_handler(
 
     Three ceilings bound what a 422 costs, because restoring the response is
     what makes them reachable: ``MAX_VALIDATION_INPUT_BYTES`` per echoed value,
-    ``MAX_VALIDATION_ERRORS`` on the count, and no echo at all for a whole-body
-    error. Note ``exc.body`` still reaches the log in full-ish (bounded to 512
-    characters by :func:`to_json_safe`) — that predates #1048 and is unchanged
-    here, but it does mean an auth endpoint's credentials land in an ERROR log
-    line.
+    ``MAX_VALIDATION_ERRORS`` on the count, and no echo at all for an error whose
+    ``input`` is not one field's value (:func:`sanitize_validation_error`).
+
+    The log line carries exactly what the response carries — the same sanitized
+    errors — plus :func:`describe_request_body`'s content-free shape. It used to
+    carry ``exc.body`` verbatim, which put an auth endpoint's credentials in an
+    ERROR record even on the requests where the response deliberately withheld
+    them (fm#1156). There is no redaction processor in the structlog chain to
+    catch that downstream, so it is caught here.
     """
     raw_errors = exc.errors()
+    body = getattr(exc, "body", None)
     errors = [
-        sanitize_validation_error(error) for error in raw_errors[:MAX_VALIDATION_ERRORS]
+        sanitize_validation_error(error, body)
+        for error in raw_errors[:MAX_VALIDATION_ERRORS]
     ]
     if len(raw_errors) > MAX_VALIDATION_ERRORS:
         errors.append(
@@ -766,7 +880,7 @@ async def request_validation_exception_handler(
         errors,
         extra={
             "validation_errors": errors,
-            "body": to_json_safe(getattr(exc, "body", None)),
+            "body": describe_request_body(body),
         },
     )
 

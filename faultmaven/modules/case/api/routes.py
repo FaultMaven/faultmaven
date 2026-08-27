@@ -241,7 +241,11 @@ def _resolve_agent_timeout(settings) -> tuple[float, str]:
 
     See ISS-058.
     """
-    provider_name = getattr(settings.llm, "chat_provider", None) or os.getenv(
+    # ``provider`` is the field; CHAT_PROVIDER is only its env alias (see the
+    # same fix in infrastructure/llm/router.py) — the getattr for
+    # ``chat_provider`` always missed, so a deployment relying on the shipped
+    # default rather than exporting the var lost its per-provider timeout.
+    provider_name = getattr(settings.llm, "provider", None) or os.getenv(
         "CHAT_PROVIDER"
     )
     if provider_name is not None and not isinstance(provider_name, str):

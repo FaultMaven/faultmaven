@@ -67,9 +67,21 @@ DEFAULT_RATES: dict[str, dict[str, TokenRates]] = {
         "claude-haiku": TokenRates(0.80, 4.0, 0.08, 1.0),
     },
     "openai": {
-        # gpt-5.4-mini is FaultMaven's default OpenAI model (reasoning; #644).
-        # Public rates: $0.15 input / $0.60 output per 1M, cached input $0.075/1M.
-        "gpt-5.4-mini": TokenRates(0.15, 0.60, 0.075, 0.0),
+        # gpt-5.6-luna is FaultMaven's default OpenAI model. SHORT-CONTEXT
+        # rates ($0.20 in / $1.20 out / $0.02 cache read / $0.25 cache write
+        # per 1M). OpenAI bills a LONG-CONTEXT tier (2x in / 1.5x out) on
+        # requests whose input exceeds 272K tokens; the flat rate here is the
+        # short tier because PROMPT_TARGET_TOKENS defaults to 32K — an order of
+        # magnitude below the threshold even after the tool loop accumulates.
+        # A deployment that raises the budget near 272K should override via
+        # LLM_PRICING_OVERRIDES rather than trust this row.
+        "gpt-5.6-luna": TokenRates(0.20, 1.20, 0.02, 0.25),
+        # gpt-5.4-mini stays a supported non-default (reasoning; #644).
+        # Corrected 2026-08-26 against developers.openai.com/api/docs/pricing:
+        # the entry read 0.15/0.60/0.075, which is gpt-4o-mini's row — a
+        # copy-paste that under-reported this model 5x on input and 7.5x on
+        # output. Real rates: $0.75 in / $4.50 out, cached input $0.075/1M.
+        "gpt-5.4-mini": TokenRates(0.75, 4.50, 0.075, 0.0),
         # gpt-4.1-mini stays a supported non-default (non-reasoning) option.
         # Public rates: $0.40 input / $1.60 output per 1M, cached input $0.10/1M.
         "gpt-4.1-mini": TokenRates(0.40, 1.60, 0.10, 0.0),

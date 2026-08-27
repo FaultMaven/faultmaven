@@ -270,7 +270,15 @@ class LLMRouter(BaseExternalClient, ILLMProvider):
         local Ollama on CPU) exceed the global 30-90s ceiling without
         widening it for everyone.
         """
-        provider_name = getattr(self.settings.llm, "chat_provider", None) or os.getenv(
+        # ``provider`` is the field; CHAT_PROVIDER is only its env alias, and
+        # there has never been a ``chat_provider`` attribute — the getattr
+        # always missed, leaving the env var as the sole source. That was
+        # survivable while an unset CHAT_PROVIDER could not boot; now that the
+        # field carries a usable default, a deployment that never exports the
+        # var resolved to None here and silently lost its per-provider timeout
+        # override. Read the resolved field, keeping the env var as the
+        # fallback for settings doubles that lack it.
+        provider_name = getattr(self.settings.llm, "provider", None) or os.getenv(
             "CHAT_PROVIDER"
         )
         # str enums need .value; raw strings pass through unchanged.

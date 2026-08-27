@@ -104,11 +104,30 @@ class TestConfiguredTaskModels:
 @pytest.mark.unit
 @pytest.mark.llm
 class TestExplicitRoleProvider:
-    def test_none_when_role_provider_unset(self, clean_env):
+    def test_none_for_roles_that_follow_chat_by_default(self, clean_env):
+        """da / knowledge / structured_output ship UNSET, so they follow
+        CHAT_PROVIDER — ``None`` is what tells the call site not to pass a
+        provider_override."""
         settings = LLMSettings(_env_file=None)
-        assert settings.explicit_role_provider("classifier") is None
-        assert settings.explicit_role_provider("synthesis") is None
         assert settings.explicit_role_provider("da") is None
+        assert settings.explicit_role_provider("knowledge") is None
+        assert settings.explicit_role_provider("structured_output") is None
+
+    def test_shipped_pins_report_their_provider(self, clean_env):
+        """classifier / synthesis / multimodal ship PINNED to gemini: they are
+        static assignments that stay put when CHAT_PROVIDER is flipped, which
+        is what makes an A/B comparison of the anchor a controlled one."""
+        settings = LLMSettings(_env_file=None)
+        assert settings.explicit_role_provider("classifier") == "gemini"
+        assert settings.explicit_role_provider("synthesis") == "gemini"
+        assert settings.explicit_role_provider("multimodal") == "gemini"
+
+    def test_explicitly_unset_pin_falls_back_to_chat(self, clean_env):
+        """The fallback MECHANISM is unchanged by the shipped pins: a role
+        provider set to None follows CHAT_PROVIDER, which is what commenting
+        the key out in .env does."""
+        settings = LLMSettings(_env_file=None, classifier_provider=None)
+        assert settings.explicit_role_provider("classifier") is None
 
     def test_name_when_role_provider_set(self, clean_env):
         clean_env.setenv("CLASSIFIER_PROVIDER", "groq")

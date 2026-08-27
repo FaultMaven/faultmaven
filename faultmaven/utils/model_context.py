@@ -110,6 +110,13 @@ _REGISTRY: Dict[str, ModelWindow] = {
     "claude-3-opus": ModelWindow(200_000, 8_000),
     "claude": ModelWindow(200_000, 8_000),  # family fallback (all ≥200K)
     # --- OpenAI (only the ≥128K models; legacy gpt-4 8K / gpt-3.5 16K omitted) ---
+    # gpt-5.6 publishes a 1,050,000 TOTAL window but caps input at 922,000, and
+    # this number is consumed as a prompt ceiling (budget = window - reserve),
+    # so the max-INPUT bound is the correct one to record: using the total
+    # would authorise a prompt the API rejects. Listed before the "gpt-5"
+    # family entry, which would otherwise claim it by prefix and under-report
+    # its window by 2.3x.
+    "gpt-5.6": ModelWindow(922_000, 16_000),
     "gpt-5": ModelWindow(400_000, 16_000),
     "gpt-4.1": ModelWindow(1_000_000, 16_000),
     "gpt-4o": ModelWindow(128_000, 8_000),
@@ -140,8 +147,13 @@ _REGISTRY: Dict[str, ModelWindow] = {
 # deliberately ABSENT → unknown model → trust the operator's target.
 _PROVIDER_FALLBACK_KEY: Dict[str, str] = {
     "anthropic": "claude",
-    "openai": "gpt-4o",
-    "openrouter": "gpt-4o",
+    # Each entry names the provider's own shipped default family, so a blank or
+    # brand-new model id inherits a representative window rather than a legacy
+    # one. These drifted when the defaults moved: openai pointed at gpt-4o
+    # (128K) while shipping a 922K model, and openrouter pointed at gpt-4o
+    # while defaulting to anthropic/claude-sonnet-4-6.
+    "openai": "gpt-5.6",
+    "openrouter": "claude",
     "google": "gemini",
     "gemini": "gemini",
     "fireworks": "deepseek-v3",
