@@ -22,7 +22,7 @@ from uuid import uuid4
 # hard delete on the next bootstrap), authored items are *hard-deleted*.
 #
 # The anchor is EXACTLY 12 hex chars on purpose: the manual-create path
-# (``KnowledgeService._generate_document_id``) emits ``kb_<16-hex>``, so a
+# (``authored_item_id`` below) emits ``kb_<16-hex>``, so a
 # loose prefix match would misclassify manually-authored items as built-ins.
 _BUILTIN_ITEM_ID_RE = re.compile(r"^kb_[0-9a-f]{12}$")
 

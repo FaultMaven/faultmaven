@@ -76,6 +76,23 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 #: though the wheel excludes it.
 _PUBLISHING_ROOTS = ("faultmaven", "scripts")
 
+#: Callees the walk must FIND calls to, so a pin cannot report "no violations"
+#: when it in fact scanned nothing. One is enough to prove the walk works; the
+#: floors stay at 1 so that legitimately deleting a call site does not fail a
+#: test about scanner health. See
+#: ``test_the_ast_pins_are_actually_scanning_something``.
+#:
+#: ``ingest_document`` is deliberately ABSENT: it has zero calls by design (both
+#: were deleted in #1166), and that zero is pinned by the probe's
+#: ``test_the_unguarded_chroma_only_writer_still_has_no_live_caller``. Demanding
+#: >=1 here would assert the opposite of what the codebase should hold. It stays
+#: in the call-site pin below, which is what catches a NEW tierless caller.
+_EXPECTED_AT_LEAST = {
+    "KnowledgeBaseDocument": 1,
+    "ingest_runbook": 1,
+    "upload_document": 1,
+}
+
 _NOW = "2026-08-26T00:00:00Z"
 
 #: "The attribute is absent entirely", distinct from any falsy value it could
@@ -229,6 +246,44 @@ async def test_the_second_chroma_writer_refuses_a_document_with_no_tier(scope):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "shape"),
+    [
+        ("   \n\t  \n", "whitespace-only, so it never reaches the chunk loop"),
+        ("# Tenant runbook\n\nRemediation.", "content-bearing, the ordinary case"),
+    ],
+)
+async def test_the_second_writer_refuses_before_chunking_or_embedding(content, shape):
+    """The refusal must not depend on the document having survived this far.
+
+    The guard originally sat AFTER ``if not chunks: return`` and after the embed,
+    which meant it did not guard: a tierless document with whitespace-only
+    content was ACCEPTED — returning None, writing nothing, raising nothing — and
+    where the embedder was unavailable the caller got ``RuntimeError('BGE-M3
+    model unavailable')`` instead of the scope refusal. Only the content-bearing
+    case was pinned, so the hole was invisible.
+
+    ``model_cache`` is left unpatched on purpose: reaching it at all means the
+    guard ran too late, and this test would then either load BGE-M3 for real
+    (~17s, live network) or raise the wrong error. Both are failures, and both
+    are louder than an assertion.
+    """
+    ingester = KnowledgeIngester.__new__(KnowledgeIngester)
+    ingester.logger = MagicMock()
+    collection = MagicMock()
+    ingester._collection = collection  # `collection` is a read-only property
+
+    document = _tierless_document()
+    type(document).content = content
+
+    with pytest.raises(KnowledgeBaseError) as exc:
+        await ingester._process_and_store(document)
+
+    assert exc.value.error_code == "KNOWLEDGE_SCOPE_REQUIRED", shape
+    collection.add.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_the_indexer_refuses_before_it_looks_for_a_vector_store():
     """The refusal is about the document, not the deployment.
 
@@ -363,10 +418,28 @@ async def test_a_stated_tier_is_stamped_exactly_as_before(stated, stamped):
 # ---------------------------------------------------------------------------
 
 
-def test_a_pack_entry_without_a_tier_is_refused_rather_than_published_globally(
-    tmp_path, caplog
+@pytest.mark.parametrize(
+    "bad_scope",
+    [
+        # Absent: the omission this issue is about.
+        None,
+        # Present but not a tier. Checking only presence let this load cleanly
+        # and fail later inside ingest_runbook at KnowledgeScope('Global'),
+        # where bootstrap_kb's per-runbook `except` records it in
+        # `result.failed` and CONTINUES with the rest of the pack — the
+        # opposite of the "ignore the whole pack" contract this guard states,
+        # and the opposite of what the sibling vector_row guard does.
+        "Global",
+        "platform",
+        " ",
+    ],
+)
+def test_a_pack_entry_without_a_valid_tier_is_refused_rather_than_published(
+    tmp_path, bad_scope
 ):
     """``kb_pack.py`` defaulted a pack entry's tier to ``"global"``.
+
+    Presence AND validity — see the parametrization for why the second matters.
 
     This is the site that mattered in production: the pack is built by a
     different repository (faultmaven-kb-toolkit), so an entry that omitted
@@ -383,8 +456,8 @@ def test_a_pack_entry_without_a_tier_is_refused_rather_than_published_globally(
 
     from faultmaven.bootstrap.kb_pack import KbPack
 
-    def _write_pack(include_scope: bool) -> pathlib.Path:
-        d = tmp_path / ("with" if include_scope else "without")
+    def _write_pack(scope_value: Any) -> pathlib.Path:
+        d = tmp_path / ("good" if scope_value == "global" else "bad")
         (d / "runbooks" / "global").mkdir(parents=True)
         (d / "runbooks" / "global" / "rb.md").write_text("# RB\n\nBody.\n")
         entry = {
@@ -395,8 +468,8 @@ def test_a_pack_entry_without_a_tier_is_refused_rather_than_published_globally(
             "tags": [],
             "chunks": [{"chunk_index": 0, "text": "Body.", "vector_row": 0}],
         }
-        if include_scope:
-            entry["scope"] = "global"
+        if scope_value is not None:
+            entry["scope"] = scope_value
         (d / "pack.json").write_text(
             json.dumps(
                 {
@@ -413,14 +486,16 @@ def test_a_pack_entry_without_a_tier_is_refused_rather_than_published_globally(
         return d
 
     # Positive control FIRST: this fixture really does load when the tier is
-    # present, so the refusal below cannot be a malformed-fixture artefact.
-    ok = KbPack.load(_write_pack(include_scope=True))
+    # valid, so the refusal below cannot be a malformed-fixture artefact.
+    ok = KbPack.load(_write_pack("global"))
     assert ok is not None and len(ok.runbooks) == 1
     assert ok.runbooks[0].scope == "global"
 
-    assert KbPack.load(_write_pack(include_scope=False)) is None, (
-        "a pack entry with no scope was accepted — it would be ingested into "
-        "the platform corpus by omission"
+    assert KbPack.load(_write_pack(bad_scope)) is None, (
+        f"a pack entry with scope={bad_scope!r} was accepted — an absent tier "
+        "would be ingested into the platform corpus by omission, and an "
+        "unrecognised one would fail per-runbook while the rest of the pack "
+        "still ingested"
     )
 
 
@@ -452,8 +527,16 @@ def _walk_calls(callee: str) -> Iterator[tuple[str, int, ast.Call]]:
     """
     for root_name in _PUBLISHING_ROOTS:
         root = _REPO_ROOT / root_name
-        if not root.is_dir():  # pragma: no cover - both exist in this repo
-            continue
+        # NOT `continue`. A mis-resolved _REPO_ROOT (this file moving a level,
+        # a packaging change) would otherwise make every pin below scan zero
+        # files and pass — reporting "no violations" when it means "nothing
+        # scanned". That is the silent-omission failure this whole PR exists to
+        # close, so the pins must not be able to have it themselves.
+        assert root.is_dir(), (
+            f"AST pin cannot find {root} — _REPO_ROOT resolved to {_REPO_ROOT}, "
+            "which is not this repository. The pin would pass while scanning "
+            "nothing; fix the anchor rather than the assertion."
+        )
         for path in sorted(root.rglob("*.py")):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -466,6 +549,24 @@ def _walk_calls(callee: str) -> Iterator[tuple[str, int, ast.Call]]:
                 name = getattr(func, "attr", None) or getattr(func, "id", None)
                 if name == callee:
                     yield path.relative_to(_REPO_ROOT).as_posix(), node.lineno, node
+
+
+@pytest.mark.parametrize("callee", sorted(_EXPECTED_AT_LEAST))
+def test_the_ast_pins_are_actually_scanning_something(callee):
+    """The pins' own positive control: they must FIND the calls they judge.
+
+    Every pin below is an assertion that a filtered list is empty, and an empty
+    list is exactly what a broken walk produces. Asserting the walk finds at
+    least the calls known to exist today is what separates "nothing violates
+    this" from "nothing was looked at" — a distinction the rest of this file is
+    about, and one the pins were previously unable to make.
+    """
+    found = list(_walk_calls(callee))
+    assert len(found) >= _EXPECTED_AT_LEAST[callee], (
+        f"the AST walk found only {len(found)} call(s) to {callee}, expected at "
+        f"least {_EXPECTED_AT_LEAST[callee]} — the walk is broken, so every pin "
+        "keyed on it is passing vacuously"
+    )
 
 
 def test_no_publishing_construction_of_the_document_model_omits_its_tier():

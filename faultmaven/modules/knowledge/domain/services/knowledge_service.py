@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     )
 
 from faultmaven.config.tenant_context import usable_tenant_id
-from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
 )
@@ -792,47 +792,6 @@ class KnowledgeService:
             except Exception as e:
                 logger.error(f"Failed to get statistics: {e}")
                 raise
-
-    def _generate_document_id(self, title: str, document_type: str) -> str:
-        """
-        Generate unique document ID based on title and type
-
-        Args:
-            title: Document title
-            document_type: Type of document
-
-        Returns:
-            Unique document identifier
-        """
-        content = (
-            f"{title}:{document_type}:{to_json_compatible(datetime.now(timezone.utc))}"
-        )
-        hash_object = hashlib.sha256(content.encode("utf-8"))
-        return f"kb_{hash_object.hexdigest()[:16]}"
-
-    def _validate_document_data(self, title: str, content: str) -> None:
-        """
-        Validate document data before processing
-
-        Args:
-            title: Document title to validate
-            content: Document content to validate
-
-        Raises:
-            ValueError: If validation fails
-        """
-        if not isinstance(title, str) or not isinstance(content, str):
-            raise ValueError("Title and content must be strings")
-
-        if len(title.strip()) == 0:
-            raise ValueError("Title cannot be empty")
-
-        if len(content.strip()) == 0:
-            raise ValueError("Content cannot be empty")
-
-        # Additional validation rules can be added here
-        if len(title) > 500:
-            raise ValueError("Title cannot exceed 500 characters")
 
     @staticmethod
     def _extract_frontmatter_for_rag(content: str) -> Dict[str, str]:

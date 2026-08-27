@@ -448,6 +448,27 @@ class KnowledgeIngester:
         Args:
             document: Document to process and store
         """
+        # THE SECOND ChromaDB writer (#1166): ``collection.add`` directly — no
+        # ``knowledge_items`` row, so no RLS write policy either. It carried the
+        # same three-ways-to-global read the live indexer did,
+        # ``getattr(document, "scope", None) or "global"``. Dead today (nothing
+        # routes here; see the module note on fm#1035), guarded because #1166 is
+        # about the shape the NEXT publish path has and a revived dead writer is
+        # that path.
+        #
+        # FIRST statement, exactly as in ``_index_document_in_vector_store``.
+        # This sat after the chunk guard and the embed, which meant it did not
+        # guard: a tierless document with whitespace-only content returned at
+        # ``if not chunks`` having been ACCEPTED with no refusal, and where the
+        # embedder was unavailable the caller got ``RuntimeError('BGE-M3 model
+        # unavailable')`` instead of the scope refusal. A refusal that fires
+        # only in some conditions is not a guard. It also made a tierless
+        # document pay for a full BGE-M3 load and embed before being told no.
+        _scope = require_write_scope(
+            getattr(document, "document_id", None), getattr(document, "scope", None)
+        )
+        _meta_scope = metadata_scope_floor(_scope)
+
         # Extract frontmatter metadata for RAG enrichment (domain, service, etc.)
         frontmatter_meta = self._extract_frontmatter_metadata(document.content)
 
@@ -474,20 +495,6 @@ class KnowledgeIngester:
         # Prepare metadata for each chunk
         metadatas = []
         ids = []
-
-        # THE SECOND ChromaDB writer (#1166). This one reaches the store with
-        # ``collection.add`` — no ``knowledge_items`` row, so no RLS write
-        # policy either — and it carried the same three-ways-to-global read the
-        # live indexer did: ``getattr(document, "scope", None) or "global"``.
-        # It is dead today (nothing routes here; see the module note on
-        # fm#1035), which is exactly why it is worth guarding: #1166 is about
-        # the shape the NEXT publish path has, and a dead writer that someone
-        # revives is that path. Validated once, outside the loop, so every
-        # chunk of a document is stamped from one decision.
-        _scope = require_write_scope(
-            getattr(document, "document_id", None), getattr(document, "scope", None)
-        )
-        _meta_scope = metadata_scope_floor(_scope)
 
         for i, chunk in enumerate(chunks):
             chunk_id = f"{document.document_id}_chunk_{i}"
@@ -526,8 +533,10 @@ class KnowledgeIngester:
         # directly and does NOT consult the ``VectorMetadata`` allowlist — the
         # ``document_id`` key above is undeclared there, and only this class's
         # own read/delete methods filter on it. Tolerable solely because this
-        # subsystem has no production caller (nothing reaches
-        # ``KnowledgeService.ingest_document``/``update_document``). Reviving
+        # subsystem has no production caller. Its former entry points
+        # ``KnowledgeService.ingest_document``/``update_document`` were DELETED
+        # in #1166; ``ingest_document`` and ``ingest_document_object`` on this
+        # class remain, and nothing calls either. Reviving
         # it means routing this write through a guarded writer
         # (``KnowledgeVectorStore.add_documents``) or deciding the key's fate
         # in the schema first.

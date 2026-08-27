@@ -49,10 +49,14 @@ class VectorMetadata(BaseModel):
     # ``KnowledgeIngester._process_and_store`` writes the same collection
     # directly (stamping ``document_id``, which only its own read/delete
     # methods filter on) and bypasses this guard — that whole subsystem has no
-    # production caller today (fm#1035 review; verified route→service→ingester:
-    # nothing reaches ``KnowledgeService.ingest_document``/``update_document``,
-    # its only entry points). Reviving it without routing it through a guarded
-    # writer reopens the silent-key gap this schema exists to close.
+    # production caller today (fm#1035 review; verified route→service→ingester).
+    # Its former entry points ``KnowledgeService.ingest_document``/
+    # ``update_document`` were DELETED in #1166; what remains is
+    # ``KnowledgeIngester.ingest_document`` and ``ingest_document_object``,
+    # neither of which anything calls. Reviving it without routing it through a
+    # guarded writer reopens the silent-key gap this schema exists to close.
+    # (Its knowledge-tier gap is closed separately: ``_process_and_store`` now
+    # refuses a document that names no tier, #1166.)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     # RAG-enrichment fields: extracted from runbook frontmatter at ingestion

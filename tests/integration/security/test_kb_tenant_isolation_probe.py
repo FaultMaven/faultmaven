@@ -149,7 +149,6 @@ from unittest.mock import patch
 import chromadb
 import pytest
 from chromadb.config import Settings as ChromaSettings
-from pydantic import ValidationError
 
 from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.exceptions import AuthorizationError
@@ -161,7 +160,6 @@ from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
 )
 from faultmaven.infrastructure.llm.providers.base import LLMResponse
 from faultmaven.models.api import KnowledgeBaseDocument
-from faultmaven.models.exceptions import KnowledgeBaseError
 from faultmaven.modules.agent.tools.base import ToolContext
 from faultmaven.modules.agent.tools.kb_qa import AnswerFromKB
 from faultmaven.modules.agent.tools.kb_tool_adapter import KBToolAdapter

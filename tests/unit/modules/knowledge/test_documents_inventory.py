@@ -77,7 +77,7 @@ class TestIsBuiltinItemId:
         assert is_builtin_item_id("kb_0123456789ab") is True
 
     def test_manual_create_16_hex_is_not_builtin(self):
-        # KnowledgeService._generate_document_id emits kb_<16 hex>; must NOT
+        # runbook_id.authored_item_id emits kb_<16 hex>; must NOT
         # be misclassified as a bootstrap built-in.
         assert is_builtin_item_id("kb_0123456789abcdef") is False
 

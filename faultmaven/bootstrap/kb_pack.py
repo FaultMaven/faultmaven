@@ -102,6 +102,19 @@ def resolve_pack_dir(project_root: Path, configured: str) -> Path:
     return baseline_pack_dir(project_root)
 
 
+#: The knowledge tiers a pack entry may declare. Derived from the enum rather
+#: than spelled out, so a new tier cannot be accepted by the writers and refused
+#: here (or the reverse). Imported lazily at module scope is not possible here —
+#: the domain models pull in persistence — so the values are read at import of
+#: this module's first use instead.
+def _pack_scopes() -> frozenset:
+    from faultmaven.modules.knowledge.domain.models.knowledge_item import (
+        KnowledgeScope,
+    )
+
+    return frozenset(member.value for member in KnowledgeScope)
+
+
 class KbPack:
     """Read-only view over a loaded KB pack."""
 
@@ -299,16 +312,31 @@ class KbPack:
                 # every other malformed-pack case here is handled: an
                 # already-populated KB keeps its last-good content instead of
                 # gaining a mis-tiered row.
-                if not rb.get("scope"):
+                #
+                # Presence AND validity. Checking only presence let
+                # ``"scope": "Global"`` load cleanly and fail later at
+                # ``KnowledgeScope('Global')`` inside ``ingest_runbook``, where
+                # ``bootstrap_kb``'s per-runbook ``except`` records it in
+                # ``result.failed`` and CONTINUES with the rest of the pack —
+                # the opposite of the contract stated above, and the opposite of
+                # what the sibling ``vector_row`` guard 60 lines up does with a
+                # malformed value. ``require_write_scope`` rejects a
+                # present-but-invalid tier for the same reason; this is the same
+                # value class and now gets the same answer.
+                if rb.get("scope") not in _pack_scopes():
                     logger.error(
-                        "KB pack at %s: runbook %r names no scope. The tier is "
-                        "not defaulted — an omitted one used to mean 'global', "
-                        "the platform corpus readable by every tenant. Ignoring "
-                        "the pack; no runbooks are ingested from it (an already-"
-                        "populated KB keeps its last-good content). Rebuild the "
-                        "pack with an explicit scope on every runbook.",
+                        "KB pack at %s: runbook %r has scope=%r, not a knowledge "
+                        "tier (expected one of %s). The tier is not defaulted and "
+                        "not guessed — an omitted or unrecognised one used to mean "
+                        "'global', the platform corpus readable by every tenant. "
+                        "Ignoring the pack; no runbooks are ingested from it (an "
+                        "already-populated KB keeps its last-good content). "
+                        "Rebuild the pack with an explicit, valid scope on every "
+                        "runbook.",
                         pack_dir,
                         rb.get("item_id"),
+                        rb.get("scope"),
+                        sorted(_pack_scopes()),
                     )
                     return None
                 runbooks.append(
