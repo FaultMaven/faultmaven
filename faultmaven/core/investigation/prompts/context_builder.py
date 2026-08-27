@@ -1631,10 +1631,13 @@ def _build_evidence_context(
         # Rerank page capture sections by query relevance before truncation
         # so the most pertinent panels/messages survive the per-item char cap.
         # ``uf.is_page_capture``, not a hand-comparison against
-        # ``upload_source``: that column is fabricated downstream and is
-        # ``file_upload`` for captures reaching the engine (#1201), so the
-        # hand-comparison silently stops the rerank running on exactly the
-        # inputs it exists for.
+        # ``upload_source``. That column USED to be fabricated downstream and
+        # arrived as ``file_upload`` for captures reaching the engine, which
+        # silently stopped this rerank running on exactly the inputs it exists
+        # for; #1201 fixed the fabrication. The property is still the right
+        # call: it reconciles the tag with the minted filename in one place, so
+        # this holds for rows written before that fix and for any row whose tag
+        # is absent or stale.
         is_page_capture = ev_file_meta is not None and ev_file_meta.is_page_capture
         if user_query and is_page_capture:
             file_extract = _rerank_page_capture_sections(file_extract, user_query)
