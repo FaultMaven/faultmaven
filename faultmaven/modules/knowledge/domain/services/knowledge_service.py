@@ -52,6 +52,10 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
+from faultmaven.modules.knowledge.domain.write_scope import (
+    metadata_scope_floor,
+    require_write_scope,
+)
 from faultmaven.utils.serialization import decode_json_blob, to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -526,6 +530,12 @@ class KnowledgeService:
                 "and it is what binds the RLS tenant scope per transaction."
             )
 
+        # Retained as a constructor dependency (the container wires it, and
+        # the interface is part of the service's declared surface) but no
+        # longer called: its only two callers were KnowledgeService's own
+        # ingest_document/update_document, deleted in #1166. Publishing
+        # goes through ingest_runbook, which writes the SQL row first and
+        # so lands under the RLS write policies.
         self._ingester = knowledge_ingester
         self._sanitizer = sanitizer
         self._tracer = tracer
@@ -540,124 +550,6 @@ class KnowledgeService:
 
         # Enhanced capabilities
         self._llm = llm_provider
-
-    async def ingest_document(
-        self,
-        title: str,
-        content: str,
-        document_type: str,
-        tags: Optional[List[str]] = None,
-        source_url: Optional[str] = None,
-    ) -> KnowledgeBaseDocument:
-        """
-        Ingest document using interface dependencies
-
-        Args:
-            title: Document title
-            content: Document content
-            document_type: Type of document (e.g., 'manual', 'troubleshooting')
-            tags: Optional tags for categorization
-            source_url: Optional source URL
-
-        Returns:
-            KnowledgeBaseDocument model
-
-        Raises:
-            ValueError: If validation fails
-            RuntimeError: If ingestion fails
-        """
-        # Lazy, like ingest_runbook's — the runtime import of the knowledge
-        # domain models stays out of module load to avoid the service↔
-        # persistence cycle.
-        from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-            KnowledgeScope,
-        )
-
-        with self._tracer.trace("knowledge_service_ingest_document"):
-            logger.info(f"Ingesting document: {title}")
-
-            # Validate input
-            self._validate_document_data(title, content)
-
-            # Sanitize content for privacy compliance
-            sanitized_content = await self._sanitizer.asanitize(content)
-            sanitized_title = await self._sanitizer.asanitize(title)
-
-            # Generate unique document ID
-            document_id = self._generate_document_id(sanitized_title, document_type)
-
-            # Prepare metadata
-            metadata = {
-                "tags": tags or [],
-                "source_url": source_url,
-                "document_type": document_type,
-                "created_at": to_json_compatible(datetime.now(timezone.utc)),
-            }
-
-            try:
-                # Ingest via interface with tracing
-                with self._tracer.trace("knowledge_document_ingestion"):
-                    result_id = await self._ingester.ingest_document(
-                        title=sanitized_title,
-                        content=sanitized_content,
-                        document_type=document_type,
-                        metadata=metadata,
-                    )
-            except ValidationException:
-                # Re-raise validation exceptions
-                raise
-            except RuntimeError:
-                # Re-raise runtime exceptions
-                raise
-            except Exception as e:
-                # Wrap external ingester exceptions in ServiceException
-                logger.error(f"Knowledge ingestion failed: {e}")
-                raise ServiceException(
-                    f"Document ingestion failed: {str(e)}",
-                    details={
-                        "operation": "ingest_document",
-                        "title": sanitized_title,
-                        "error": str(e),
-                    },
-                ) from e
-
-            # Create response model with proper error handling
-            try:
-                document = KnowledgeBaseDocument(
-                    document_id=result_id,
-                    title=sanitized_title,
-                    content=sanitized_content,
-                    document_type=document_type,
-                    tags=tags or [],
-                    source_url=source_url,
-                    # This path takes no scope and no owner from its caller,
-                    # so it has no tenancy information to publish with. It
-                    # used to inherit "global" from the model default and put
-                    # tenant content in front of every tenant (#1166), with no
-                    # gate and no RLS row to refuse it — this writer reaches
-                    # ChromaDB without writing knowledge_items at all. The
-                    # narrowest tier is the only honest answer: paired with
-                    # owner_id=None the chunks match no read filter's arm, so
-                    # nothing is published to anyone. The method has no live
-                    # caller (pinned by
-                    # test_the_unguarded_chroma_only_writer_still_has_no_live_caller);
-                    # reviving it means routing it through ingest_runbook,
-                    # which takes a real scope.
-                    scope=KnowledgeScope.PERSONAL.value,
-                    created_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc),
-                )
-            except Exception as model_error:
-                raise RuntimeError(
-                    f"Failed to create document model: {str(model_error)}"
-                ) from model_error
-
-            # Index in vector store if available
-            if self._vector_store:
-                await self._index_document_in_vector_store(document)
-
-            logger.info(f"Successfully ingested document {result_id}")
-            return document
 
     async def search_knowledge(
         self, query: str, limit: int = 10, filters: Optional[Dict[str, Any]] = None
@@ -750,114 +642,6 @@ class KnowledgeService:
             except Exception as e:
                 logger.error(f"Search failed: {e}")
                 raise
-
-    async def update_document(
-        self,
-        document_id: str,
-        title: Optional[str] = None,
-        content: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-    ) -> KnowledgeBaseDocument:
-        """
-        Update document using interface dependencies
-
-        Args:
-            document_id: Document identifier
-            title: Optional new title
-            content: Optional new content
-            tags: Optional new tags
-
-        Returns:
-            Updated KnowledgeBaseDocument
-
-        Raises:
-            ValidationException: If document_id is invalid or no updates provided
-        """
-        # Lazy for the same cycle reason as ingest_document / ingest_runbook.
-        from faultmaven.modules.knowledge.domain.models.knowledge_item import (
-            KnowledgeScope,
-        )
-
-        with self._tracer.trace("knowledge_service_update_document"):
-            logger.info(f"Updating document {document_id}")
-
-            if not document_id or not document_id.strip():
-                raise ValueError("Document ID cannot be empty")
-
-            # Prepare update data
-            update_data = {}
-            metadata = {}
-
-            if title:
-                sanitized_title = await self._sanitizer.asanitize(title)
-                update_data["title"] = sanitized_title
-                metadata["title"] = sanitized_title
-
-            if content:
-                sanitized_content = await self._sanitizer.asanitize(content)
-                update_data["content"] = sanitized_content
-
-            if tags is not None:
-                update_data["tags"] = tags
-                metadata["tags"] = tags
-
-            if not update_data:
-                raise ValueError("At least one field must be provided for update")
-
-            metadata["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
-
-            try:
-                # Update via interface
-                await self._ingester.update_document(
-                    document_id=document_id,
-                    content=update_data.get("content", ""),
-                    metadata=metadata,
-                )
-
-                # Return updated document model with proper error handling
-                try:
-                    updated_document = KnowledgeBaseDocument(
-                        document_id=document_id,
-                        title=update_data.get("title", "Updated Document"),
-                        content=update_data.get("content", ""),
-                        document_type="updated",
-                        tags=tags or [],
-                        # Same reasoning as ingest_document above (#1166):
-                        # this path is handed no scope and re-indexes from a
-                        # model it rebuilds from scratch, so it cannot know
-                        # the row's real tier. It used to inherit "global"
-                        # and re-stamp an edited document into the platform
-                        # corpus whatever tier it started in. The live edit
-                        # path is update_document_metadata, which re-indexes
-                        # via _build_index_model and so carries the row's own
-                        # scope.
-                        scope=KnowledgeScope.PERSONAL.value,
-                        updated_at=datetime.now(timezone.utc),
-                        created_at=datetime.now(
-                            timezone.utc
-                        ),  # Would normally fetch from storage
-                    )
-                except Exception as model_error:
-                    raise RuntimeError(
-                        f"Failed to create updated document model: {str(model_error)}"
-                    ) from model_error
-
-                # Re-index in vector store if content was updated
-                if content and self._vector_store:
-                    await self._index_document_in_vector_store(updated_document)
-
-                logger.info(f"Successfully updated document {document_id}")
-                return updated_document
-
-            except ValidationException:
-                # Re-raise validation exceptions without wrapping
-                raise
-            except RuntimeError:
-                # Re-raise runtime exceptions without wrapping
-                raise
-            except Exception as e:
-                logger.error(f"Failed to update document {document_id}: {e}")
-                raise RuntimeError(f"Document update failed: {str(e)}") from e
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
         """Remove a published runbook from the inventory (provenance-gated).
@@ -1118,28 +902,26 @@ class KnowledgeService:
                 healthy to every later consistency check (#945). A raise makes
                 every caller fail closed by default; tolerating it is now
                 opt-IN and visible at the call site.
-            KnowledgeBaseError: If ``document`` carries no usable ``scope``
-                (``KNOWLEDGE_SCOPE_REQUIRED``). See the guard below.
+                Also raised when ``document`` names no knowledge tier
+                (``KNOWLEDGE_SCOPE_REQUIRED``) or names one that does not exist
+                (``KNOWLEDGE_SCOPE_INVALID``) — see :func:`require_write_scope`.
         """
-        # Every KB vector write funnels through here, so this is where the
-        # write side is made to fail CLOSED on an omitted tier (#1166).
-        # ``KnowledgeBaseDocument.scope`` is required, which stops an omission
-        # at construction; this is the belt to that brace, for anything that
-        # reaches the indexer without having gone through the model — a
-        # duck-typed stand-in, a Mock, a future DTO. Ahead of the
+        # The live KB writer's tier check (#1166). ``KnowledgeBaseDocument.scope``
+        # is required, which stops an omission at construction; this is the belt
+        # to that brace, for anything reaching the indexer without having gone
+        # through the model — a duck-typed stand-in, a future DTO. Ahead of the
         # ``_vector_store`` check on purpose: whether a store happens to be
-        # configured says nothing about whether the caller made a tier
-        # decision, and a refusal that only fires in some deployments is not
-        # a guard.
-        _raw_scope = getattr(document, "scope", None)
-        if not _raw_scope:
-            raise KnowledgeBaseError(
-                f"Refusing to index document {getattr(document, 'document_id', '?')} "
-                "with no scope: the knowledge tier is an explicit decision, and "
-                "the absent one used to resolve to 'global' — the platform "
-                "corpus every tenant reads.",
-                error_code="KNOWLEDGE_SCOPE_REQUIRED",
-            )
+        # configured says nothing about whether the caller made a tier decision,
+        # and a refusal that only fires in some deployments is not a guard.
+        #
+        # The document's ``scope`` is read exactly ONCE, here, and the stamp
+        # below is derived from the value this returns. Re-reading
+        # ``document.scope`` at stamping time would be a second evaluation —
+        # and for the property-backed stand-ins this guard exists to catch, the
+        # second one is the unchecked one.
+        _scope = require_write_scope(
+            getattr(document, "document_id", None), getattr(document, "scope", None)
+        )
 
         if not self._vector_store:
             return 0
@@ -1213,17 +995,12 @@ class KnowledgeService:
             # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)
 
-            # Metadata scope carries only the immutable floor: 'global' vs
-            # 'personal'. Team visibility lives in the share table and is
-            # resolved to an id allowlist at query time — never written here
-            # (a 'team'/'global' tag would orphan-on-unshare or leak). ADR-013 §D4.
-            #
-            # The document's own scope is read WITHOUT a fallback and was
-            # validated at the top of this method (#1166): this line used to
-            # read ``getattr(document, "scope", "global") or "global"``, which
-            # reached the platform tier three separate ways — pass it, omit
-            # it, or pass a falsy value.
-            _meta_scope = "global" if document.scope == "global" else "personal"
+            # Derived from the tier validated at the top of this method — not
+            # from a second read of ``document.scope`` (#1166). This line used
+            # to be ``getattr(document, "scope", "global") or "global"``, which
+            # reached the platform tier three separate ways: pass it, omit it,
+            # or pass a falsy value.
+            _meta_scope = metadata_scope_floor(_scope)
 
             # Build per-chunk document dicts
             doc_dicts = []

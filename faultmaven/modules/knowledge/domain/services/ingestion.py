@@ -52,6 +52,10 @@ from faultmaven.infrastructure.persistence.chromadb_store import (
 )
 from faultmaven.infrastructure.security.redaction import DataSanitizer
 from faultmaven.models import KnowledgeBaseDocument
+from faultmaven.modules.knowledge.domain.write_scope import (
+    metadata_scope_floor,
+    require_write_scope,
+)
 
 
 def _call_with_timeout(fn: Callable[[], Any], timeout_s: float, what: str) -> Any:
@@ -284,7 +288,8 @@ class KnowledgeIngester:
         tags: Optional[List[str]] = None,
         source_url: Optional[str] = None,
         document_id: Optional[str] = None,
-        scope: str = "global",
+        *,
+        scope: str,
         owner_id: Optional[str] = None,
     ) -> str:
         """
@@ -297,7 +302,10 @@ class KnowledgeIngester:
             tags: Optional tags for categorization
             source_url: Optional source URL
             document_id: Optional document ID to use (generates new if not provided)
-            scope: Visibility scope (global, personal, team). Team visibility is
+            scope: REQUIRED, keyword-only. Visibility tier — ``global`` |
+                ``team`` | ``personal``. No default (#1166): it used to be
+                ``"global"``, the platform corpus every tenant reads, so a
+                caller that said nothing published there. Team visibility is
                 carried by the share table (resource_shares), not here — this
                 path only tags the immutable metadata floor (owner/global).
             owner_id: Owner user ID (required for personal scope)
@@ -467,16 +475,22 @@ class KnowledgeIngester:
         metadatas = []
         ids = []
 
+        # THE SECOND ChromaDB writer (#1166). This one reaches the store with
+        # ``collection.add`` — no ``knowledge_items`` row, so no RLS write
+        # policy either — and it carried the same three-ways-to-global read the
+        # live indexer did: ``getattr(document, "scope", None) or "global"``.
+        # It is dead today (nothing routes here; see the module note on
+        # fm#1035), which is exactly why it is worth guarding: #1166 is about
+        # the shape the NEXT publish path has, and a dead writer that someone
+        # revives is that path. Validated once, outside the loop, so every
+        # chunk of a document is stamped from one decision.
+        _scope = require_write_scope(
+            getattr(document, "document_id", None), getattr(document, "scope", None)
+        )
+        _meta_scope = metadata_scope_floor(_scope)
+
         for i, chunk in enumerate(chunks):
             chunk_id = f"{document.document_id}_chunk_{i}"
-            # Metadata scope carries only the immutable floor: 'global' (platform)
-            # vs 'personal' (owner-only). A team item is tagged 'personal' here —
-            # its team visibility lives in the share table and is resolved into an
-            # id allowlist at query time. Writing 'team'/team_id here would orphan
-            # the chunk on unshare, and writing 'global' would leak it to everyone
-            # (ADR-013 §D4 / ADR-011 D3).
-            _raw_scope = getattr(document, "scope", None) or "global"
-            _meta_scope = "global" if _raw_scope == "global" else "personal"
             metadata = {
                 "document_id": document.document_id,
                 "parent_document_id": document.document_id,
@@ -875,15 +889,26 @@ class KnowledgeIngester:
                                 else []
                             ),
                             source_url=metadata.get("source_url"),
-                            # Read back from what the chunk was stamped with;
-                            # `scope` is required on the model now (#1166) and
-                            # the stamp is the only thing here that knows the
-                            # tier. A chunk written before the stamp existed
-                            # reports the narrower tier rather than the
-                            # platform one — this is a read reconstruction, so
-                            # the choice affects what a caller is TOLD, never
-                            # what is stored.
+                            # Reconstructed from what the chunks were stamped
+                            # with. `scope`, `created_at` and `updated_at` are
+                            # all required on the model; this builder omitted
+                            # the timestamps, so it raised ValidationError on
+                            # every call and the surrounding `except` turned
+                            # that into an empty list — a reader that could
+                            # only ever answer "nothing" (#1166 review). The
+                            # stamp is the only thing here that knows the tier,
+                            # and a chunk written before the stamp existed
+                            # reports the narrow floor rather than the platform
+                            # one: this is a READ reconstruction, so the choice
+                            # affects what a caller is told, never what is
+                            # stored.
                             scope=metadata.get("scope") or "personal",
+                            created_at=str(metadata.get("created_at") or ""),
+                            updated_at=str(
+                                metadata.get("updated_at")
+                                or metadata.get("created_at")
+                                or ""
+                            ),
                         )
                         documents.append(doc)
 
@@ -928,8 +953,13 @@ class KnowledgeIngester:
                     metadata.get("tags", "").split(",") if metadata.get("tags") else []
                 ),
                 source_url=metadata.get("source_url"),
-                # From the chunk stamp — see list_documents above (#1166).
+                # From the chunk stamp — see list_documents above (#1166),
+                # including why the timestamps are here at all.
                 scope=metadata.get("scope") or "personal",
+                created_at=str(metadata.get("created_at") or ""),
+                updated_at=str(
+                    metadata.get("updated_at") or metadata.get("created_at") or ""
+                ),
             )
 
             return doc

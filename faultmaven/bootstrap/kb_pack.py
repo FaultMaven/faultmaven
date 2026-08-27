@@ -288,12 +288,35 @@ class KbPack:
                             embedding=vectors[row].tolist(),
                         )
                     )
+                # The tier is REQUIRED in the manifest (#1166). It used to be
+                # ``rb.get("scope", "global")``, so a pack entry that simply
+                # omitted the key was published to the platform corpus — the
+                # tier every tenant reads — by exactly the omission this issue
+                # is about. The pack is built in a different repository
+                # (faultmaven-kb-toolkit), which makes the omission a
+                # cross-repo one nobody reviews in the same diff. Refusing the
+                # whole pack, rather than defaulting the entry, matches how
+                # every other malformed-pack case here is handled: an
+                # already-populated KB keeps its last-good content instead of
+                # gaining a mis-tiered row.
+                if not rb.get("scope"):
+                    logger.error(
+                        "KB pack at %s: runbook %r names no scope. The tier is "
+                        "not defaulted — an omitted one used to mean 'global', "
+                        "the platform corpus readable by every tenant. Ignoring "
+                        "the pack; no runbooks are ingested from it (an already-"
+                        "populated KB keeps its last-good content). Rebuild the "
+                        "pack with an explicit scope on every runbook.",
+                        pack_dir,
+                        rb.get("item_id"),
+                    )
+                    return None
                 runbooks.append(
                     PackRunbook(
                         item_id=rb["item_id"],
                         content_hash=rb["content_hash"],
                         title=rb["title"],
-                        scope=rb.get("scope", "global"),
+                        scope=rb["scope"],
                         relpath=relpath,
                         content=content,
                         tags=list(rb.get("tags") or []),
