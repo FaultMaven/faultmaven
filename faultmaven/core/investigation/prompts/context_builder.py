@@ -1257,7 +1257,7 @@ def _observed_attr(ev) -> str:
     return f' observed_through="{end_ts.isoformat()}" age="{age}"'
 
 
-def _evidence_label(ev, case=None) -> str:
+def _evidence_label(ev, case=None, ev_file_meta=None) -> str:
     """Build the citable label for evidence.
 
     Used in the XML ``label`` attribute so the LLM can reference evidence
@@ -1265,7 +1265,10 @@ def _evidence_label(ev, case=None) -> str:
     internal ``ev_`` ID. Priority: the source file's ``display_name`` →
     ``source_type`` → fallback.
 
-    Resolution goes through ``case.find_uploaded_file`` and nowhere else.
+    ``ev_file_meta`` is the already-resolved row when the caller has one —
+    the Tier A/B loops resolve it a line earlier, and re-resolving here made
+    it O(E x F) with the constant doubled. Resolution otherwise goes through
+    ``case.find_uploaded_file`` and nowhere else.
     It previously ALSO had a ``file_lookup`` dict to fall back on, and the
     two disagreed: the engine appends a second ``UploadedFile`` row with the
     same ``file_id`` on every attachment turn, the dict was built last-wins
@@ -1274,8 +1277,10 @@ def _evidence_label(ev, case=None) -> str:
     read ``uf.filename`` before #666, which made the overwrite invisible.
     One resolver, one answer.
     """
-    if ev.source_file_id and case is not None:
-        uf = case.find_uploaded_file(ev.source_file_id)
+    if ev.source_file_id:
+        uf = ev_file_meta
+        if uf is None and case is not None:
+            uf = case.find_uploaded_file(ev.source_file_id)
         if uf is not None:
             return uf.display_name
     # Source type as readable label — handles USER_DESCRIPTION for
@@ -1625,9 +1630,12 @@ def _build_evidence_context(
 
         # Rerank page capture sections by query relevance before truncation
         # so the most pertinent panels/messages survive the per-item char cap.
-        is_page_capture = (
-            ev_file_meta is not None and ev_file_meta.upload_source == "page_capture"
-        )
+        # ``uf.is_page_capture``, not a hand-comparison against
+        # ``upload_source``: that column is fabricated downstream and is
+        # ``file_upload`` for captures reaching the engine (#1201), so the
+        # hand-comparison silently stops the rerank running on exactly the
+        # inputs it exists for.
+        is_page_capture = ev_file_meta is not None and ev_file_meta.is_page_capture
         if user_query and is_page_capture:
             file_extract = _rerank_page_capture_sections(file_extract, user_query)
 
@@ -1673,7 +1681,7 @@ def _build_evidence_context(
         data_type_attr = (
             f' data_type="{ev.source_type.value}"' if ev.source_type else ""
         )
-        label = _evidence_label(ev, case)
+        label = _evidence_label(ev, case, ev_file_meta)
         label_attr = f' label="{label}"'
         file_id_attr = ""
         if ev.source_file_id and ev_file_meta is not None:
@@ -1733,7 +1741,7 @@ def _build_evidence_context(
     # Tier B: Older data evidence (summary only)
     for ev in tier_b:
         ev_file_meta = case.find_uploaded_file(ev.source_file_id)
-        label = _evidence_label(ev, case)
+        label = _evidence_label(ev, case, ev_file_meta)
         label_attr = f' label="{label}"'
         file_id_attr = ""
         if ev.source_file_id and ev_file_meta is not None:

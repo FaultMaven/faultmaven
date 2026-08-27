@@ -51,8 +51,19 @@ The two constants ending in `_BLOCK` and injected via placeholders (`_EVIDENCE_G
 
 | Element | Phase | Attributes | Notes |
 | --- | --- | --- | --- |
-| `<uploaded_file …>` | INQUIRY (and INVESTIGATING when no Evidence rows exist yet) | `file_id="file_…"`, `filename`, `data_type`, `searchable="true"` | Surfaced when `case.evidence` is empty but `case.uploaded_files` carry a non-trivial `structural_index`. The file id is exposed under `file_id`, matching the attribute name used on `<evidence>` so the source_file_id rule is phase-uniform. |
-| `<evidence …>` | INVESTIGATING | `id="ev_…"` (evidence id), `file_id="file_…"` (source file FK), `data_type`, `searchable`, `confidence` | The `id=` attribute is the evidence id; `file_id=` is the FK back to `uploaded_files`. The LLM passes either value into `search_file`'s `evidence_id` parameter — the tool resolves both forms via `search_file_tool`'s dual-resolution path. |
+| `<uploaded_file …>` | INQUIRY (and INVESTIGATING when no Evidence rows exist yet) | `file_id="file_…"`, `label`, `data_type`, `searchable="true"` | Surfaced when `case.evidence` is empty but `case.uploaded_files` carry a non-trivial `structural_index`. The file id is exposed under `file_id`, matching the attribute name used on `<evidence>` so the source_file_id rule is phase-uniform. |
+| `<evidence …>` | INVESTIGATING | `id="ev_…"` (evidence id), `label`, `file_id="file_…"` (source file FK), `data_type`, `searchable`, `confidence` | The `id=` attribute is the evidence id; `file_id=` is the FK back to `uploaded_files`. The LLM passes either value into `search_file`'s `evidence_id` parameter — the tool resolves both forms via `search_file_tool`'s dual-resolution path. |
+
+**Rule (naming, #666):** every item carries exactly one name, in a `label`
+attribute holding `UploadedFile.display_name`. There is **no `filename`
+attribute on either element.** For a file the user chose, `label` *is* the
+filename, extension included. For pasted text or a captured page there is no
+filename to give — the route mints `pasted-content-<ts>.txt` as a storage key,
+which is meaningless to the user and was being cited back at them — so the
+label is a name describing how the item arrived and when: `pasted text (turn
+3)`, `captured page (turn 2)`. Templates instruct the model to cite the label
+verbatim and never to invent a filename; emitting a second, filename-shaped
+name slot is what let it do so.
 
 **Rule:** when the LLM is asked to populate `evidence_to_add.source_file_id`, the templates instruct it to copy verbatim from the `file_id` attribute on either element. The pre-existing `evidence_id` parameter name on `search_file` is a naming artifact; the tool accepts both an `ev_…` and a `file_…` value, so the templates can speak in `file_id` terms uniformly without renaming the tool API.
 

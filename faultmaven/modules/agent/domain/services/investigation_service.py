@@ -23,7 +23,10 @@ from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
-from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
+from faultmaven.core.investigation.turn_pipeline import (
+    generate_implicit_query,
+    submitted_name,
+)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -702,7 +705,10 @@ class InvestigationService:
             # Determine query (explicit or implicit)
             query = payload.query
             if not payload.has_query and payload.has_attachments:
-                query = generate_implicit_query(uploaded_files_this_turn)
+                query = generate_implicit_query(
+                    uploaded_files_this_turn,
+                    [a.filename for a in payload.attachments],
+                )
 
             # 2. Build user message and update case in-memory (NOT persisted yet).
             #    What the deferral actually buys: nothing is committed BEFORE the
@@ -1073,16 +1079,18 @@ class InvestigationService:
                 attachments_processed=[
                     AttachmentResult(
                         file_id=res.uploaded_file.file_id,
-                        # display_name, not the minted filename: this is the
-                        # chip the Copilot renders on the very turn the user
-                        # pasted, so it is #666's most immediate surface.
+                        # The chip the Copilot renders on the very turn
+                        # the user pasted — #666's most immediate surface.
                         # ``file_id`` is the documented handle the frontend
                         # references an attachment by, so this field is
-                        # display-only. (att.filename and
-                        # uploaded_file.filename are the same string here;
-                        # reading the row makes the display/storage split
-                        # explicit.)
-                        filename=res.uploaded_file.display_name,
+                        # display-only.
+                        #
+                        # ``submitted_name``, not ``uploaded_file.display_name``:
+                        # dedup matches on content_hash ALONE, so the row can
+                        # be one the user named differently on an earlier turn,
+                        # and naming the chip from it reports a filename they
+                        # never sent.
+                        filename=submitted_name(att.filename, res.uploaded_file),
                         source_type=res.uploaded_file.data_type or "",
                         file_size=res.uploaded_file.size_bytes,
                         processing_status=(
@@ -1864,7 +1872,11 @@ class InvestigationService:
                 {
                     "label": "Analyze it now",
                     "action_type": "DECIDE",
-                    "payload": f"Analyze {subject}.",
+                    # The identifier, not ``subject``: this payload is
+                    # replayed as a standalone turn, where "the text you
+                    # pasted" has no antecedent. The sentence above it is in
+                    # conversation and keeps the prose form.
+                    "payload": f'Analyze "{file_meta.display_name}".',
                     "body": "Run the analysis with the corrected classification.",
                 }
             ],

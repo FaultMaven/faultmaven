@@ -1225,6 +1225,40 @@ class TestPageCaptureRerankingIntegration:
             cpu_pos < network_pos
         ), f"CPU Usage (pos={cpu_pos}) should appear before Network (pos={network_pos})"
 
+    def test_capture_mis_tagged_file_upload_is_still_reranked(self):
+        """#1201 tags captures reaching the engine ``upload_source=
+        "file_upload"``. The rerank used to hand-compare that column, so it
+        silently stopped running on exactly the inputs it exists for; it now
+        asks ``uf.is_page_capture``, which reads the minted filename shape
+        (#1198 review).
+        """
+        file_id = "file_aaccccccdd12"
+        ev = _make_evidence(
+            summary="Grafana dashboard capture",
+            extract=_PAGE_CAPTURE_CONTENT,
+            source_type=EvidenceSourceType.TEXT,
+            source_file_id=file_id,
+        )
+        case = _make_case_with_evidence([ev])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id=file_id,
+                filename="page-capture-20260709T105531.txt",
+                size_bytes=len(_PAGE_CAPTURE_CONTENT),
+                uploaded_at_turn=1,
+                # The wrong value #1201 persists for a capture.
+                upload_source="file_upload",
+                structural_index=_PAGE_CAPTURE_CONTENT,
+            )
+        ]
+        result = _build_evidence_context(case, user_query="CPU usage high")
+        cpu_pos = result.find("## CPU Usage")
+        network_pos = result.find("## Network")
+        assert cpu_pos < network_pos, (
+            f"rerank did not run on a capture tagged file_upload "
+            f"(CPU pos={cpu_pos}, Network pos={network_pos})"
+        )
+
     def test_non_page_capture_not_reranked(self):
         """Evidence whose backing UploadedFile is not a page capture is not
         reranked regardless of user_query."""

@@ -1782,11 +1782,40 @@ _SYNTHETIC_FILENAME_RE = re.compile(
 # actually named "pasted-notes.txt" keeps its own name.
 _MINTED_PREFIX_TO_KIND = {"pasted-content": "paste", "page-capture": "capture"}
 
-# ``upload_source`` spellings that mean "the user pasted/captured this".
-# Both spellings occur in the wild: the turns route writes ``text_paste`` /
-# ``page_capture`` (resolve_paste_source_meta), and ``paste`` appears on
-# older rows. Checked ahead of the filename pattern so a correctly tagged
-# row is recognised even if its name never matched the minted shape.
+# Detection is a three-way rule, because NEITHER signal is trustworthy alone.
+#
+# ``upload_source`` looks authoritative and is partly fabricated:
+# ``investigation_service`` derives what it hands the engine as
+# ``"paste" if att.filename.startswith("pasted-content-")``, and the upsert
+# persists that over the real column (not COALESCE'd). So a user's own file
+# named ``pasted-content-notes.txt`` comes back tagged ``paste``, and trusting
+# the tag would erase their filename from every prompt, tool result, report
+# citation and clarification card.
+#
+# The minted filename shape is not sufficient either: a paste can legitimately
+# arrive named ``Untitled`` (the Copilot's older paste path, still present on
+# staging cases), which matches no minted pattern. Trusting only the shape
+# would call that a file the user chose and quote "Untitled" at them.
+#
+# What makes the two decidable together is that the fabrication has a
+# signature: it fires only on the ``pasted-content-``/``page-capture-``
+# PREFIX, which is strictly looser than the full minted SHAPE. So:
+#
+#   1. full minted shape        -> synthetic, conclusively (the route minted it)
+#   2. prefix but not the shape -> a name the user chose that merely collides
+#                                  with the prefix; the tag on such a row was
+#                                  computed FROM that prefix, so it carries no
+#                                  independent information and is ignored
+#   3. neither                  -> the tag was not fabricated from the name, so
+#                                  it is the genuine provenance ("Untitled")
+#
+# Rule 2 is also what keeps #1201 from mattering here: a capture mis-tagged
+# ``file_upload`` still matches rule 1 on its filename.
+_MINTED_PREFIXES = ("pasted-content-", "page-capture-")
+
+# ``upload_source`` spellings that mean "the user pasted/captured this". Both
+# paste spellings occur: the turns route writes ``text_paste``, the documented
+# enum value is ``paste``.
 _PASTE_UPLOAD_SOURCES = frozenset({"paste", "text_paste"})
 _CAPTURE_UPLOAD_SOURCES = frozenset({"page_capture"})
 
@@ -1966,39 +1995,43 @@ class UploadedFile(BaseModel):
 
     @property
     def _minted_kind(self) -> Optional[str]:
-        """``"paste"`` / ``"capture"`` when ``filename`` has the minted shape.
+        """``"paste"`` / ``"capture"`` / ``None`` — see the three-way rule above.
 
-        The fallback signal for rows whose ``upload_source`` predates the
-        current values, and the reason the check is a full-shape match rather
-        than a prefix: a file the user named ``pasted-notes.txt`` is theirs.
+        Returns ``None`` both for an ordinary file and for one whose name
+        merely collides with a minted prefix; the caller cannot tell those
+        apart and does not need to, since both keep their filename.
         """
         match = _SYNTHETIC_FILENAME_RE.match(self.filename)
-        return _MINTED_PREFIX_TO_KIND[match.group(1)] if match else None
+        if match:
+            return _MINTED_PREFIX_TO_KIND[match.group(1)]  # rule 1
+        if self.filename.startswith(_MINTED_PREFIXES):
+            return None  # rule 2 — the tag was computed from this name
+        source = self.upload_source or ""  # rule 3
+        if source in _PASTE_UPLOAD_SOURCES:
+            return "paste"
+        if source in _CAPTURE_UPLOAD_SOURCES:
+            return "capture"
+        return None
 
     @property
     def is_pasted(self) -> bool:
         """True when the user pasted this content rather than choosing a file."""
-        if (self.upload_source or "") in _PASTE_UPLOAD_SOURCES:
-            return True
         return self._minted_kind == "paste"
 
     @property
     def is_page_capture(self) -> bool:
         """True when the browser extension captured this from a web page."""
-        if (self.upload_source or "") in _CAPTURE_UPLOAD_SOURCES:
-            return True
         return self._minted_kind == "capture"
 
     @property
     def has_synthetic_filename(self) -> bool:
         """True when ``filename`` was minted by us, not supplied by the user.
 
-        Callers use this to decide whether the row HAS a filename worth
-        showing at all — a synthesized display name is not a filename, and
-        rendering it in a ``filename=`` slot invites the same mis-citation
-        the real name did.
+        The predicate behind ``display_name``'s branch and behind
+        ``submission_phrase``; callers wanting a name should ask for one of
+        those rather than branch on this themselves.
         """
-        return self.is_pasted or self.is_page_capture
+        return self._minted_kind is not None
 
     @property
     def display_name(self) -> str:
@@ -2020,14 +2053,24 @@ class UploadedFile(BaseModel):
         turn — ``pasted_content`` is a single form field, so a turn carries
         one paste or one capture, never two.
 
-        **Stable.** ``data_type`` is rewritten by reclassification (see
-        ``_handle_file_reclassification``), so a name built from it renames
-        the item mid-case: cited as "pasted logs" on turn 3, gone by turn 4
-        when the user corrects it to command output — and the transcript's
-        own back-reference then names nothing in context. ``summary`` is
-        rewritten by the same flow and is not unique either, which is why
-        neither is used here. ``uploaded_at_turn`` is written once at
-        ingestion and never revised.
+        **Stable — conditional on #1207.** ``data_type`` is rewritten by
+        reclassification (see ``_handle_file_reclassification``), so a name
+        built from it renames the item mid-case: cited as "pasted logs" on
+        turn 3, gone by turn 4 when the user corrects it to command output —
+        and the transcript's own back-reference then names nothing in context.
+        ``summary`` is rewritten by the same flow and is not unique either,
+        which is why neither is used here.
+
+        ``uploaded_at_turn`` is written once at ingestion and *should* never
+        be revised — but today it is, by #1207: the engine appends a duplicate
+        row carrying the CURRENT turn, and ``_upsert_uploaded_files`` assigns
+        ``uploaded_at_turn = EXCLUDED.uploaded_at_turn`` with no COALESCE, so
+        a deduped re-paste on turn 5 rewrites a turn-3 row to 5. This
+        identifier is stable exactly when that stops — which #1207 must do
+        anyway, since the same append also destroys ``content_hash`` and
+        breaks dedup outright. See ``test_uploaded_at_turn_is_immutable`` in
+        tests/unit/test_synthetic_filename_leak.py, which pins the
+        requirement and fails until #1207 lands.
 
         The data type is not lost: it rides on the ``data_type`` attribute
         beside the name, and the summary on ``<summary>``. This slot's job

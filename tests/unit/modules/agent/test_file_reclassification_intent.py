@@ -25,7 +25,11 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     _build_classification_clarification_suggestions,
     _PreprocessedAttachment,
 )
-from faultmaven.modules.case.domain.models import CaseState, EvidenceSourceType
+from faultmaven.modules.case.domain.models import (
+    CaseState,
+    EvidenceSourceType,
+    UploadedFile,
+)
 
 from .conftest import (
     MockCaseRepository,
@@ -576,6 +580,74 @@ class TestPageCaptureClarification:
         assert [a.intent["data_type"] for a in clar][:1] != ["command_output"]
 
         assert response.attachments_processed[0].filename == "captured page (turn 1)"
+
+
+class TestDedupHitChipNamesTheSubmittedFile:
+    """Content-hash dedup matches on the hash ALONE. The chip the Copilot
+    renders describes what the user JUST submitted, so it must carry the
+    name they just gave — not the name on the row dedup happened to return
+    (#1198 review)."""
+
+    @pytest.mark.asyncio
+    async def test_renamed_reupload_reports_the_new_name(
+        self, repo_with_case, preprocessing_service, file_storage
+    ):
+        repo, case = repo_with_case
+
+        # The row already on the case, submitted earlier under the OLD name.
+        stored = UploadedFile(
+            file_id="file_bbbbbbbbbbbb",
+            filename="nginx-2026-07-09.log",
+            size_bytes=64,
+            content_type="text/plain",
+            content_hash="e" * 64,
+            uploaded_at_turn=1,
+            uploaded_by="user_owner",
+            upload_source="file_upload",
+            storage_ref="evidence/case_x/old.log",
+            data_type="logs",
+            summary="nginx 502s",
+            structural_index="ERROR upstream timed out",
+        )
+        case.uploaded_files.append(stored)
+        repo.find_uploaded_file_by_content_hash = AsyncMock(return_value=stored)
+
+        classify_result = make_preprocessing_result()
+        classify_result.content_hash = "e" * 64
+        preprocessing_service.classify_and_extract = AsyncMock(
+            return_value=classify_result
+        )
+
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+
+        payload = TurnPayload(
+            query="same logs again",
+            attachments=[
+                Attachment(
+                    content=b"ERROR upstream timed out\n",
+                    # The user named it differently THIS time.
+                    filename="nginx-2026-07-10.log",
+                    content_type="text/plain",
+                    source_metadata={"source_type": "file_upload"},
+                )
+            ],
+        )
+        response = await service.process_turn(
+            case_id=case.case_id, user_id="user_owner", payload=payload
+        )
+
+        chip = response.attachments_processed[0]
+        # Dedup did fire — this is the path under test.
+        assert chip.processing_status == "duplicate"
+        assert chip.duplicate_of == "file_bbbbbbbbbbbb"
+        # ...and the chip names what the user sent, not what dedup returned.
+        assert chip.filename == "nginx-2026-07-10.log"
+        assert chip.filename != stored.filename
 
 
 class TestTerminalCaseGuard:

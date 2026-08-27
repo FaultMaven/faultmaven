@@ -11,8 +11,27 @@ if TYPE_CHECKING:
     from faultmaven.modules.case.domain.models import UploadedFile
 
 
-def _name_in_users_voice(uf: "UploadedFile") -> str:
-    """How this string refers to one submitted item.
+def submitted_name(submitted_filename: "str | None", uf: "UploadedFile") -> str:
+    """The name to show for THIS submission — not simply ``uf.display_name``.
+
+    Content-hash dedup reuses an existing row, and it matches on the hash
+    ALONE, not the filename. So a user who re-uploads identical bytes as
+    ``nginx-2026-07-10.log`` gets back the row they first submitted as
+    ``nginx-2026-07-09.log``, and naming the submission from that row tells
+    them they sent a file they did not send. The name the user chose is the
+    right answer for anything describing what they just did.
+
+    A minted name is the one case where the row wins: there the submitted
+    filename is the storage artifact #666 is about, and the row's
+    ``display_name`` is the only user-meaningful name either side has.
+    """
+    if uf.has_synthetic_filename:
+        return uf.display_name
+    return submitted_filename or uf.display_name
+
+
+def _name_in_users_voice(submitted_filename: "str | None", uf: "UploadedFile") -> str:
+    """How the implicit query refers to one submitted item.
 
     Sentence register, not the citable-identifier register: this text is
     written as the USER's turn and shown back to them, so a paste is "the
@@ -21,10 +40,13 @@ def _name_in_users_voice(uf: "UploadedFile") -> str:
     #666's most literal form (the user reads that they submitted a file
     they never had).
     """
-    return uf.submission_phrase or uf.filename
+    return uf.submission_phrase or submitted_name(submitted_filename, uf)
 
 
-def generate_implicit_query(uploaded_files: List["UploadedFile"]) -> str:
+def generate_implicit_query(
+    uploaded_files: List["UploadedFile"],
+    submitted_filenames: "list[str | None] | None" = None,
+) -> str:
     """Generate a system query when data is submitted without a question.
 
     When a user submits attachments but no query text, this function
@@ -32,37 +54,44 @@ def generate_implicit_query(uploaded_files: List["UploadedFile"]) -> str:
     data. Post-010: reads classification from ``UploadedFile.data_type``
     (was on the auto-Evidence row in the dual-path model).
 
-    Takes only the file rows. It previously also took the raw attachments
-    and read names off those; the two lists are parallel, but only the rows
-    carry the provenance the naming turns on, and preprocessing can drop an
-    attachment (content-hash dedup) while the count came from the rows.
+    ``submitted_filenames`` is positionally parallel to ``uploaded_files``
+    (the caller builds both from one pass over the turn's attachments) and
+    carries the name the user actually gave each item. It is needed because
+    dedup can hand back a row the user named differently — see
+    ``submitted_name``. Omitted, every item falls back to its row's name,
+    which is right for pastes and stale for a re-named re-upload.
 
     Args:
         uploaded_files: UploadedFile rows created from preprocessing
+        submitted_filenames: parallel list of the names the user submitted
 
     Returns:
         Implicit query string for the LLM
     """
+    given = list(submitted_filenames or [None] * len(uploaded_files))
+    if len(given) != len(uploaded_files):
+        given = [None] * len(uploaded_files)
+
     if len(uploaded_files) == 1:
         uf = uploaded_files[0]
+        data_type_label = uf.data_type or "unclassified data"
         if uf.submission_phrase is not None:
             # "I've submitted the text you pasted" is not English. A paste
             # is something the user DID, so the verb carries it.
-            verb = "captured" if uf.is_page_capture else "pasted"
-            subject = "a page" if uf.is_page_capture else "some text"
-            data_type_label = uf.data_type or "unclassified data"
+            verb = "captured a page" if uf.is_page_capture else "pasted some text"
             return (
-                f"I've {verb} {subject} "
+                f"I've {verb} "
                 f"(classified as {data_type_label}). "
                 f"Analyze this data and tell me what you find."
             )
-        data_type_label = uf.data_type or "unclassified data"
         return (
-            f"I've submitted {uf.filename} "
+            f"I've submitted {submitted_name(given[0], uf)} "
             f"(classified as {data_type_label}). "
             f"Analyze this data and tell me what you find."
         )
-    names = ", ".join(_name_in_users_voice(uf) for uf in uploaded_files)
+    names = ", ".join(
+        _name_in_users_voice(g, uf) for g, uf in zip(given, uploaded_files)
+    )
     return (
         f"I've submitted {len(uploaded_files)} items: {names}. "
         f"Analyze this data and tell me what you find."

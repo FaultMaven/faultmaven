@@ -39,7 +39,10 @@ from faultmaven.core.investigation.prompts.context_builder import (
 from faultmaven.core.investigation.prompts.templates import (
     _fallback_current_turn_evidence,
 )
-from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
+from faultmaven.core.investigation.turn_pipeline import (
+    generate_implicit_query,
+    submitted_name,
+)
 from faultmaven.models.interfaces import ToolResult
 from faultmaven.modules.agent.domain.services.investigation_service import (
     _clarification_subject,
@@ -458,6 +461,37 @@ class TestCitationInstructions:
         # otherwise invite.
         assert "Never invent a filename" in text
 
+    def test_no_template_commands_filename_citation(self):
+        """The DA system instruction is not the only standing one — three
+        more strings spread across `_DIAGNOSTIC_REASONING_BLOCK`,
+        `INVESTIGATION_BASE` and `SCHEMA_INSTRUCTIONS` run on every
+        INVESTIGATING turn, and `filename` is now emitted on no element
+        (#1198 review). Asserted over the module source so a fourth one
+        added anywhere in the file is caught too.
+        """
+        import inspect
+
+        from faultmaven.core.investigation.prompts import templates
+
+        source = inspect.getsource(templates)
+        for banned in (
+            "cite the filename",
+            "label (filename, description)",
+            "filename or data_type",
+            "Reference evidence by filename",
+        ):
+            assert banned not in source, banned
+
+    def test_investigating_templates_say_what_to_cite_instead(self):
+        from faultmaven.core.investigation.prompts.templates import (
+            INVESTIGATION_BASE,
+            SCHEMA_INSTRUCTIONS,
+        )
+
+        assert "cite its label or data_type" in INVESTIGATION_BASE
+        assert "Reference evidence by its label attribute" in SCHEMA_INSTRUCTIONS
+        assert "Never invent a filename" in SCHEMA_INSTRUCTIONS
+
     def test_per_result_guidance_quotes_the_label_the_tool_reported(self):
         result = ToolResult(
             success=True,
@@ -481,7 +515,35 @@ class TestCitationInstructions:
         )
         content = MilestoneEngine._format_tool_result(result, "search_file")
         assert "unknown" not in content
-        assert json.loads(content.split("\n\nCITATION:")[0])["label"] == "app.log"
+        body = content.split("\n\n", 1)[1]
+        assert json.loads(body)["label"] == "app.log"
+
+    def test_guidance_leads_so_truncation_cannot_remove_it(self):
+        """``_truncate_tool_result`` protects a tail only for kb_qa; every
+        other tool takes a head-first ``text[:cap]``. A tail-appended
+        citation rule is therefore deleted on exactly the results large
+        enough to need it — a search_file excerpts call over a big paste
+        (#1198 review)."""
+        big = [
+            {"line": i, "content": "ERROR CrashLoopBackOff " + "x" * 200}
+            for i in range(200)
+        ]
+        result = ToolResult(
+            success=True,
+            data={
+                "evidence_id": "ev_000000000001",
+                "label": "pasted text (turn 3)",
+                "results_count": len(big),
+                "results": big,
+            },
+        )
+        content = MilestoneEngine._format_tool_result(result, "search_file")
+        assert (
+            len(content) > MilestoneEngine.TOOL_RESULT_MAX_CHARS
+        ), "fixture must exceed the cap or it proves nothing"
+        cut, _dropped = MilestoneEngine._truncate_tool_result(content, "search_file")
+        assert "CITATION" in cut
+        assert "In pasted text (turn 3), line 42" in cut
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +625,188 @@ class TestClarificationSeedsStayPasteOnly:
         uf = _pasted_file(filename=CAPTURE_NAME, upload_source="page_capture")
         assert _is_paste_upload(_FakeTarget(uf)) is False
         assert _is_paste_upload(_FakeTarget(_pasted_file())) is True
+
+
+class TestDetectionCannotBeDefeatedByTheFabricatedTag:
+    """``upload_source`` is partly fabricated: ``investigation_service``
+    computes what it hands the engine as
+    ``"paste" if att.filename.startswith("pasted-content-")``, and the upsert
+    persists that over the real column. Neither signal is sufficient alone
+    (#1198 review)."""
+
+    def test_a_users_own_file_survives_a_fabricated_paste_tag(self):
+        """The exact row the pipeline produces for a file the user named
+        ``pasted-content-notes.txt``: prefix matches, so the tag was
+        rewritten to ``paste``. Their filename must still be what everyone
+        shows."""
+        uf = _pasted_file(filename="pasted-content-notes.txt", upload_source="paste")
+        assert uf.is_pasted is False
+        assert uf.has_synthetic_filename is False
+        assert uf.display_name == "pasted-content-notes.txt"
+        assert uf.submission_phrase is None
+        assert _upload_subject(uf) == '"pasted-content-notes.txt"'
+        assert _clarification_subject(_FakeTarget(uf)) == (
+            'the file you shared ("pasted-content-notes.txt")'
+        )
+
+    def test_the_users_own_file_keeps_its_name_in_the_prompt(self):
+        uf = _pasted_file(filename="pasted-content-notes.txt", upload_source="paste")
+        result = _build_evidence_context(_case([uf], [_evidence()]))
+        assert 'label="pasted-content-notes.txt"' in result
+
+    @pytest.mark.parametrize("source", ["text_paste", "paste"])
+    def test_a_paste_named_untitled_is_still_a_paste(self, source):
+        """The Copilot's older paste path sends ``Untitled``, which matches
+        no minted shape. The tag is genuine there — it was not computed from
+        the filename — so it is trusted."""
+        uf = _pasted_file(filename="Untitled", upload_source=source, turn=2)
+        assert uf.is_pasted is True
+        assert uf.display_name == "pasted text (turn 2)"
+        assert uf.submission_phrase == "the text you pasted"
+
+    def test_a_capture_mis_tagged_file_upload_is_still_a_capture(self):
+        """#1201 tags captures reaching the engine ``file_upload``; the
+        minted filename shape decides regardless."""
+        uf = _pasted_file(filename=CAPTURE_NAME, upload_source="file_upload")
+        assert uf.is_page_capture is True
+        assert uf.display_name == "captured page (turn 1)"
+
+
+class TestDedupHitNamesTheSubmittedFile:
+    """Content-hash dedup matches on the hash ALONE, so the row it returns
+    can be one the user named differently on an earlier turn. Anything
+    describing what the user JUST did has to use the name they just gave
+    (#1198 review)."""
+
+    def _renamed_reupload(self):
+        # Stored from an earlier turn under the old name; the user re-uploads
+        # identical bytes today under a new one.
+        stored = _real_file()  # nginx-error.log
+        return "nginx-2026-07-10.log", stored
+
+    def test_implicit_query_names_what_the_user_submitted(self):
+        given, stored = self._renamed_reupload()
+        query = generate_implicit_query([stored], [given])
+        assert "nginx-2026-07-10.log" in query
+        assert "nginx-error.log" not in query
+
+    def test_implicit_query_falls_back_to_the_row_without_a_submitted_name(self):
+        stored = _real_file()
+        assert "nginx-error.log" in generate_implicit_query([stored])
+
+    def test_a_paste_still_takes_its_name_from_the_row(self):
+        """There the submitted filename IS the storage artifact."""
+        uf = _pasted_file()
+        query = generate_implicit_query([uf], [LEAKED_NAME])
+        assert LEAKED_NAME not in query
+        assert "I've pasted some text" in query
+
+    def test_submitted_name_helper_prefers_the_users_name(self):
+        given, stored = self._renamed_reupload()
+        assert submitted_name(given, stored) == "nginx-2026-07-10.log"
+        assert submitted_name(None, stored) == "nginx-error.log"
+        assert submitted_name(LEAKED_NAME, _pasted_file()) == "pasted text (turn 1)"
+
+
+class TestOneNamePerFileAcrossRenders:
+    """The fallback stub selected its row by ``uploaded_at_turn ==
+    current_turn`` — which picks the engine's duplicate — while
+    ``_evidence_label`` resolves via ``find_uploaded_file``, which is
+    first-wins. Two names for one file in one prompt (#1198 review)."""
+
+    def _case_with_engine_duplicate(self):
+        original = _pasted_file(turn=3)
+        duplicate = UploadedFile(
+            file_id=FILE_ID,
+            filename=LEAKED_NAME,
+            size_bytes=512,
+            uploaded_at_turn=5,  # engine stamps the CURRENT turn
+            upload_source="paste",
+            data_type=None,
+            summary=None,
+        )
+        return _case([original, duplicate], [_evidence(turn=3)], turn=5)
+
+    def test_fallback_and_evidence_label_agree(self):
+        case = self._case_with_engine_duplicate()
+        evidence_block = _build_evidence_context(case)
+        stub = _fallback_current_turn_evidence(case)
+        assert 'label="pasted text (turn 3)"' in evidence_block
+        assert 'label="pasted text (turn 3)"' in stub
+        assert "turn 5" not in stub
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "#1207: milestone_engine appends a duplicate UploadedFile stamped with "
+        "the CURRENT turn, and _upsert_uploaded_files assigns "
+        "uploaded_at_turn = EXCLUDED.uploaded_at_turn with no COALESCE, so a "
+        "deduped re-upload rewrites the row's turn. display_name is keyed on "
+        "that column, so the citable name moves. WHEN #1207 LANDS this xpasses "
+        "-- remove the marker; do not resolve #1207 in a way that leaves this "
+        "failing (skipping the append, or COALESCE-ing the column, both work)."
+    ),
+)
+async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
+    """The invariant ``display_name``'s stability rests on."""
+    from sqlalchemy import text as sa_text
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from faultmaven.infrastructure.persistence.models import Base
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        SQLiteCaseRepository,
+    )
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            repo = SQLiteCaseRepository(session)
+            row = _pasted_file(turn=3)
+            row = row.model_copy(update={"content_hash": "a" * 64})
+            await repo._upsert_uploaded_files("case_aabb11223344", [row], "org_123")
+            await session.commit()
+
+            engine_dup = MilestoneEngine.__new__(
+                MilestoneEngine
+            )._create_uploaded_file_from_attachment(
+                case=None,
+                attachment={
+                    "file_id": FILE_ID,
+                    "filename": row.filename,
+                    "data_type": "logs",
+                    "size": 512,
+                    "source_type": "paste",
+                    "storage_ref": row.storage_ref,
+                },
+                turn_number=5,
+            )
+            await repo._upsert_uploaded_files(
+                "case_aabb11223344", [row, engine_dup], "org_123"
+            )
+            await session.commit()
+
+            persisted = (
+                await session.execute(
+                    sa_text(
+                        "SELECT uploaded_at_turn FROM uploaded_files WHERE file_id=:f"
+                    ),
+                    {"f": FILE_ID},
+                )
+            ).scalar()
+        assert persisted == 3, (
+            f"a deduped re-upload on turn 5 moved the row to turn {persisted}; "
+            "every citation naming 'pasted text (turn 3)' now names nothing"
+        )
+    finally:
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------

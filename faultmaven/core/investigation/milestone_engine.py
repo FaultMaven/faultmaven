@@ -8352,10 +8352,18 @@ class MilestoneEngine:
             results_count = result.data.get("results_count", 0)
             content = json.dumps(result.data)
             if results_count > 0:
-                content += (
-                    f"\n\nCITATION: When referencing these results, cite the "
-                    f'source and line numbers exactly as named here (e.g., "In '
-                    f'{source_name}, line 42: ...").'
+                # HEAD, not tail. ``_truncate_tool_result`` protects a tail
+                # only for kb_qa (#1088); every other tool takes a plain
+                # ``text[:cap] + marker``, which is head-first. A search_file
+                # excerpts result over a large paste routinely exceeds the cap,
+                # so a tail-appended instruction is deleted exactly on the
+                # results big enough to need it — and this is the one line that
+                # hands the model the correct name to cite. Leading it also
+                # reads better: the rule arrives before the data it governs.
+                content = (
+                    f"CITATION: When referencing these results, cite the source "
+                    f'and line numbers exactly as named here (e.g., "In '
+                    f'{source_name}, line 42: ...").\n\n' + content
                 )
             return content
 
