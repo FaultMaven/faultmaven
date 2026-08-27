@@ -1,4 +1,13 @@
-"""Deterministic knowledge-item id derivation for pre-deployed runbooks.
+"""Runbook identifier and on-disk-name minting.
+
+Two related jobs, kept together because both answer "what is this runbook
+called": deterministic knowledge-item **id** derivation for pre-deployed
+runbooks, and the safe on-disk **filename**/path components a runbook is
+written under (``runbook_filename`` / ``safe_path_component``, #1213). The
+latter are consumed by ``KnowledgeService.upload_document`` and
+``ConversionService._scope_dir``.
+
+Id derivation:
 
 Shared single source of truth so the startup KB bootstrap
 (``faultmaven.bootstrap.kb_init``) and the on-disk scan
@@ -61,3 +70,76 @@ def authored_item_id() -> str:
     keeps authored ids out of that pattern.
     """
     return f"kb_{uuid4().hex[:16]}"
+
+
+# Everything outside the allowlist collapses to a single hyphen. This is an
+# ALLOWLIST on purpose (#1213): a denylist here would have to anticipate
+# ``../``, ``..\``, ``....//``, absolute paths, NUL and control bytes, and
+# whatever the filesystem normalises next. An allowlist has to anticipate
+# nothing — a character either survives or it does not.
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+#: Per-part bound. Both parts plus a hyphen and ``.md`` stay well inside the
+#: 255-byte NAME_MAX of every filesystem we target, AND inside
+#: ``uploaded_files.filename`` (``String(255)``), which a too-long name would
+#: otherwise fail on at INSERT rather than at the write.
+_MAX_SLUG_CHARS = 60
+_MAX_SUFFIX_CHARS = 40
+
+
+def _slug(value: str | None) -> str:
+    """Lowercase, allowlist-filtered, hyphen-collapsed. May return ``""``."""
+    return _SLUG_RE.sub("-", (value or "").lower()).strip("-")
+
+
+def safe_path_component(value: str | None, *, fallback: str = "unknown") -> str:
+    """One directory-name component, guaranteed to be a single safe segment.
+
+    For the identifiers interpolated into scope directories
+    (``team_{team_id}`` / ``user_{owner_id}``). Those are auth-context values
+    rather than request bodies, so they are a lower-risk source than a title —
+    but they are still interpolated into a path, and #1213's review showed the
+    containment check is worthless if the DIRECTORY has already escaped: an
+    ``owner_id`` of ``../../../../escaped`` sent the write to ``<cwd>/escaped``
+    while every filename-level guard passed.
+    """
+    return _slug(value)[:_MAX_SLUG_CHARS] or fallback
+
+
+def runbook_filename(title: str | None, document_id: str | None) -> str:
+    """Safe on-disk filename for a runbook, derived from its ``title``.
+
+    ``title`` is caller-supplied — a form field on ``POST /knowledge/documents``
+    and, on the suggestion-approval path, an LLM-generated ``suggested_title`` —
+    so it is untrusted input that used to reach ``Path`` unfiltered. A title of
+    ``../../../etc/pwned`` produced
+    ``data/knowledge/global/../../../etc/pwned-75e6.md``, which resolves outside
+    the knowledge tree, and the content was written there (#1213).
+
+    **Invariant: the result always matches ``[a-z0-9][a-z0-9-]*\.md``** — one
+    path component, no separator, no traversal sequence, no NUL, no leading dot,
+    no device name. Both parts are filtered and bounded independently, and the
+    uuid fallback is applied AFTER filtering: applying it before meant a
+    ``document_id`` that filtered to nothing produced the bare name ``".md"`` —
+    a hidden dotfile that also collided with every other such document.
+
+    ``document_id`` is appended rather than a fresh random suffix so the file is
+    traceable to the row that owns it, and so two runbooks sharing a title do
+    not collide. It is filtered and bounded too: it is an id today, but nothing
+    in the signature enforces that, and the review that produced this docstring
+    found a 412-character name from a long one.
+
+    A title with no allowlisted characters — punctuation-only, or a non-latin
+    script — yields the suffix alone. Less readable, and the right trade:
+    admitting non-latin characters means reasoning about unicode separator
+    look-alikes (FULLWIDTH SOLIDUS and friends) and normalization form, which is
+    the analysis this design avoids. This is a storage name; the human-readable
+    title is on the row.
+    """
+    slug = _slug(title)[:_MAX_SLUG_CHARS].strip("-")
+    suffix = _slug(document_id)[:_MAX_SUFFIX_CHARS].strip("-")
+    if not suffix:
+        # AFTER filtering, never before — see the docstring.
+        suffix = uuid4().hex[:16]
+    stem = f"{slug}-{suffix}" if slug else suffix
+    return f"{stem}.md"
