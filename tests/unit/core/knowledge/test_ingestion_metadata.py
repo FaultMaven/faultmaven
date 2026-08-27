@@ -320,6 +320,8 @@ class TestEmptyDocumentGuard:
             title="Empty",
             content=content,
             document_type="runbook",
+            # Required since #1166 — this test is about the empty-chunk guard.
+            scope="global",
             created_at=now,
             updated_at=now,
         )

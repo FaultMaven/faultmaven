@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     )
 
 from faultmaven.config.tenant_context import usable_tenant_id
-from faultmaven.exceptions import ServiceException, ValidationException
+from faultmaven.exceptions import ValidationException
 from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
     KB_COLLECTION,
 )
@@ -52,6 +52,10 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
+from faultmaven.modules.knowledge.domain.write_scope import (
+    metadata_scope_floor,
+    require_write_scope,
+)
 from faultmaven.utils.serialization import decode_json_blob, to_json_compatible
 
 logger = logging.getLogger(__name__)
@@ -526,6 +530,12 @@ class KnowledgeService:
                 "and it is what binds the RLS tenant scope per transaction."
             )
 
+        # Retained as a constructor dependency (the container wires it, and
+        # the interface is part of the service's declared surface) but no
+        # longer called: its only two callers were KnowledgeService's own
+        # ingest_document/update_document, deleted in #1166. Publishing
+        # goes through ingest_runbook, which writes the SQL row first and
+        # so lands under the RLS write policies.
         self._ingester = knowledge_ingester
         self._sanitizer = sanitizer
         self._tracer = tracer
@@ -540,103 +550,6 @@ class KnowledgeService:
 
         # Enhanced capabilities
         self._llm = llm_provider
-
-    async def ingest_document(
-        self,
-        title: str,
-        content: str,
-        document_type: str,
-        tags: Optional[List[str]] = None,
-        source_url: Optional[str] = None,
-    ) -> KnowledgeBaseDocument:
-        """
-        Ingest document using interface dependencies
-
-        Args:
-            title: Document title
-            content: Document content
-            document_type: Type of document (e.g., 'manual', 'troubleshooting')
-            tags: Optional tags for categorization
-            source_url: Optional source URL
-
-        Returns:
-            KnowledgeBaseDocument model
-
-        Raises:
-            ValueError: If validation fails
-            RuntimeError: If ingestion fails
-        """
-        with self._tracer.trace("knowledge_service_ingest_document"):
-            logger.info(f"Ingesting document: {title}")
-
-            # Validate input
-            self._validate_document_data(title, content)
-
-            # Sanitize content for privacy compliance
-            sanitized_content = await self._sanitizer.asanitize(content)
-            sanitized_title = await self._sanitizer.asanitize(title)
-
-            # Generate unique document ID
-            document_id = self._generate_document_id(sanitized_title, document_type)
-
-            # Prepare metadata
-            metadata = {
-                "tags": tags or [],
-                "source_url": source_url,
-                "document_type": document_type,
-                "created_at": to_json_compatible(datetime.now(timezone.utc)),
-            }
-
-            try:
-                # Ingest via interface with tracing
-                with self._tracer.trace("knowledge_document_ingestion"):
-                    result_id = await self._ingester.ingest_document(
-                        title=sanitized_title,
-                        content=sanitized_content,
-                        document_type=document_type,
-                        metadata=metadata,
-                    )
-            except ValidationException:
-                # Re-raise validation exceptions
-                raise
-            except RuntimeError:
-                # Re-raise runtime exceptions
-                raise
-            except Exception as e:
-                # Wrap external ingester exceptions in ServiceException
-                logger.error(f"Knowledge ingestion failed: {e}")
-                raise ServiceException(
-                    f"Document ingestion failed: {str(e)}",
-                    details={
-                        "operation": "ingest_document",
-                        "title": sanitized_title,
-                        "error": str(e),
-                    },
-                ) from e
-
-            # Create response model with proper error handling
-            try:
-                document = KnowledgeBaseDocument(
-                    document_id=result_id,
-                    title=sanitized_title,
-                    content=sanitized_content,
-                    document_type=document_type,
-                    tags=tags or [],
-                    source_url=source_url,
-                    created_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc),
-                )
-            except Exception as model_error:
-                raise RuntimeError(
-                    f"Failed to create document model: {str(model_error)}"
-                ) from model_error
-
-            # Index in vector store if available
-            if self._vector_store:
-                await self._index_document_in_vector_store(document)
-
-            logger.info(f"Successfully ingested document {result_id}")
-            return document
 
     async def search_knowledge(
         self, query: str, limit: int = 10, filters: Optional[Dict[str, Any]] = None
@@ -729,99 +642,6 @@ class KnowledgeService:
             except Exception as e:
                 logger.error(f"Search failed: {e}")
                 raise
-
-    async def update_document(
-        self,
-        document_id: str,
-        title: Optional[str] = None,
-        content: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-    ) -> KnowledgeBaseDocument:
-        """
-        Update document using interface dependencies
-
-        Args:
-            document_id: Document identifier
-            title: Optional new title
-            content: Optional new content
-            tags: Optional new tags
-
-        Returns:
-            Updated KnowledgeBaseDocument
-
-        Raises:
-            ValidationException: If document_id is invalid or no updates provided
-        """
-        with self._tracer.trace("knowledge_service_update_document"):
-            logger.info(f"Updating document {document_id}")
-
-            if not document_id or not document_id.strip():
-                raise ValueError("Document ID cannot be empty")
-
-            # Prepare update data
-            update_data = {}
-            metadata = {}
-
-            if title:
-                sanitized_title = await self._sanitizer.asanitize(title)
-                update_data["title"] = sanitized_title
-                metadata["title"] = sanitized_title
-
-            if content:
-                sanitized_content = await self._sanitizer.asanitize(content)
-                update_data["content"] = sanitized_content
-
-            if tags is not None:
-                update_data["tags"] = tags
-                metadata["tags"] = tags
-
-            if not update_data:
-                raise ValueError("At least one field must be provided for update")
-
-            metadata["updated_at"] = to_json_compatible(datetime.now(timezone.utc))
-
-            try:
-                # Update via interface
-                await self._ingester.update_document(
-                    document_id=document_id,
-                    content=update_data.get("content", ""),
-                    metadata=metadata,
-                )
-
-                # Return updated document model with proper error handling
-                try:
-                    updated_document = KnowledgeBaseDocument(
-                        document_id=document_id,
-                        title=update_data.get("title", "Updated Document"),
-                        content=update_data.get("content", ""),
-                        document_type="updated",
-                        tags=tags or [],
-                        updated_at=datetime.now(timezone.utc),
-                        created_at=datetime.now(
-                            timezone.utc
-                        ),  # Would normally fetch from storage
-                    )
-                except Exception as model_error:
-                    raise RuntimeError(
-                        f"Failed to create updated document model: {str(model_error)}"
-                    ) from model_error
-
-                # Re-index in vector store if content was updated
-                if content and self._vector_store:
-                    await self._index_document_in_vector_store(updated_document)
-
-                logger.info(f"Successfully updated document {document_id}")
-                return updated_document
-
-            except ValidationException:
-                # Re-raise validation exceptions without wrapping
-                raise
-            except RuntimeError:
-                # Re-raise runtime exceptions without wrapping
-                raise
-            except Exception as e:
-                logger.error(f"Failed to update document {document_id}: {e}")
-                raise RuntimeError(f"Document update failed: {str(e)}") from e
 
     async def delete_document(self, document_id: str) -> Dict[str, Any]:
         """Remove a published runbook from the inventory (provenance-gated).
@@ -973,47 +793,6 @@ class KnowledgeService:
                 logger.error(f"Failed to get statistics: {e}")
                 raise
 
-    def _generate_document_id(self, title: str, document_type: str) -> str:
-        """
-        Generate unique document ID based on title and type
-
-        Args:
-            title: Document title
-            document_type: Type of document
-
-        Returns:
-            Unique document identifier
-        """
-        content = (
-            f"{title}:{document_type}:{to_json_compatible(datetime.now(timezone.utc))}"
-        )
-        hash_object = hashlib.sha256(content.encode("utf-8"))
-        return f"kb_{hash_object.hexdigest()[:16]}"
-
-    def _validate_document_data(self, title: str, content: str) -> None:
-        """
-        Validate document data before processing
-
-        Args:
-            title: Document title to validate
-            content: Document content to validate
-
-        Raises:
-            ValueError: If validation fails
-        """
-        if not isinstance(title, str) or not isinstance(content, str):
-            raise ValueError("Title and content must be strings")
-
-        if len(title.strip()) == 0:
-            raise ValueError("Title cannot be empty")
-
-        if len(content.strip()) == 0:
-            raise ValueError("Content cannot be empty")
-
-        # Additional validation rules can be added here
-        if len(title) > 500:
-            raise ValueError("Title cannot exceed 500 characters")
-
     @staticmethod
     def _extract_frontmatter_for_rag(content: str) -> Dict[str, str]:
         """Extract RAG-relevant metadata from YAML frontmatter."""
@@ -1082,7 +861,27 @@ class KnowledgeService:
                 healthy to every later consistency check (#945). A raise makes
                 every caller fail closed by default; tolerating it is now
                 opt-IN and visible at the call site.
+                Also raised when ``document`` names no knowledge tier
+                (``KNOWLEDGE_SCOPE_REQUIRED``) or names one that does not exist
+                (``KNOWLEDGE_SCOPE_INVALID``) — see :func:`require_write_scope`.
         """
+        # The live KB writer's tier check (#1166). ``KnowledgeBaseDocument.scope``
+        # is required, which stops an omission at construction; this is the belt
+        # to that brace, for anything reaching the indexer without having gone
+        # through the model — a duck-typed stand-in, a future DTO. Ahead of the
+        # ``_vector_store`` check on purpose: whether a store happens to be
+        # configured says nothing about whether the caller made a tier decision,
+        # and a refusal that only fires in some deployments is not a guard.
+        #
+        # The document's ``scope`` is read exactly ONCE, here, and the stamp
+        # below is derived from the value this returns. Re-reading
+        # ``document.scope`` at stamping time would be a second evaluation —
+        # and for the property-backed stand-ins this guard exists to catch, the
+        # second one is the unchecked one.
+        _scope = require_write_scope(
+            getattr(document, "document_id", None), getattr(document, "scope", None)
+        )
+
         if not self._vector_store:
             return 0
 
@@ -1155,12 +954,12 @@ class KnowledgeService:
             # Extract RAG-enrichment fields from frontmatter
             fm_meta = self._extract_frontmatter_for_rag(document.content)
 
-            # Metadata scope carries only the immutable floor: 'global' vs
-            # 'personal'. Team visibility lives in the share table and is
-            # resolved to an id allowlist at query time — never written here
-            # (a 'team'/'global' tag would orphan-on-unshare or leak). ADR-013 §D4.
-            _raw_scope = getattr(document, "scope", "global") or "global"
-            _meta_scope = "global" if _raw_scope == "global" else "personal"
+            # Derived from the tier validated at the top of this method — not
+            # from a second read of ``document.scope`` (#1166). This line used
+            # to be ``getattr(document, "scope", "global") or "global"``, which
+            # reached the platform tier three separate ways: pass it, omit it,
+            # or pass a falsy value.
+            _meta_scope = metadata_scope_floor(_scope)
 
             # Build per-chunk document dicts
             doc_dicts = []
@@ -1550,10 +1349,10 @@ class KnowledgeService:
         title: str,
         content: str,
         organization_id: str,
+        scope: str,
         document_type: str = "runbook",
         tags: Optional[List[str]] = None,
         source_url: Optional[str] = None,
-        scope: str = "global",
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
         verified_by: Optional[str] = None,
@@ -1576,6 +1375,14 @@ class KnowledgeService:
             organization_id: Owning org for the org-owned tiers (personal/team).
                 Ignored for global scope — global rows are the org-free
                 platform tier (#770) and are stored with organization_id NULL.
+            scope: REQUIRED knowledge tier — ``global`` | ``team`` |
+                ``personal``. No default (#1166): ``global`` is the platform
+                corpus every tenant reads, so publishing into it must be a
+                decision the call site states, not one it inherits by staying
+                quiet. Global authoring is gated separately (route-layer
+                ``require_global_authoring_allowed`` /
+                ``ensure_global_authoring_allowed``); this parameter is about
+                the tier being *named*, not about who may name it.
             verified_by: A REAL user_id (from verify_draft) or None. Never a
                 sentinel string — it is an FK to users.user_id. When None and
                 no explicit verification_level is given, the item is
@@ -1987,15 +1794,21 @@ class KnowledgeService:
         content: str,
         title: str,
         document_type: str,
+        scope: str,
         tags: Optional[List[str]] = None,
         source_url: Optional[str] = None,
         category: Optional[str] = None,
         description: Optional[str] = None,
-        scope: str = "global",
         owner_id: Optional[str] = None,
         team_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Upload document: create SQLite record + ingest into ChromaDB."""
+        """Upload document: create SQLite record + ingest into ChromaDB.
+
+        Args:
+            scope: REQUIRED knowledge tier — ``global`` | ``team`` |
+                ``personal``. No default (#1166); see
+                :meth:`ingest_runbook`, which this delegates to.
+        """
         try:
             import uuid as _uuid
 

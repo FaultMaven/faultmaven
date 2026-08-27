@@ -3178,7 +3178,6 @@
             "title": "Owner Id"
           },
           "scope": {
-            "default": "global",
             "title": "Scope",
             "type": "string"
           },
@@ -3263,6 +3262,7 @@
           "title",
           "content",
           "document_type",
+          "scope",
           "created_at",
           "updated_at"
         ],
@@ -6234,7 +6234,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "2.0.1"
+    "version": "2.1.0"
   },
   "openapi": "3.1.0",
   "paths": {

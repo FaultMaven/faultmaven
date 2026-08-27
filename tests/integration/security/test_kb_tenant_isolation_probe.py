@@ -72,7 +72,8 @@ predicate
                                                                 params) + ``test_the_standalone_sentinel_...``
 ``_enforce_scope_invariant`` returns immediately                ``test_the_guard_does_refuse_...`` (all four
                                                                 params)
-``_meta_scope`` stamps ``personal`` rather than deriving        ``test_a_document_with_no_scope_...``
+``_meta_scope`` stamps ``personal`` rather than deriving        ``test_what_each_stated_tier_means_...``
+a write-side tier default returns (any of the six sites)        ``test_kb_write_scope_is_explicit.py`` (unit)
 ``ensure_global_authoring_allowed`` loses its multi arm         ``test_global_authoring_is_refused_...``
 a new KB read site passing a literal ``where`` clause           ``test_every_kb_read_filter_originates_...``
 a new KB read site forwarding an unpinned variable              ``test_every_kb_read_filter_originates_...``
@@ -103,9 +104,11 @@ sites (pinned by ``test_every_kb_read_filter_originates_from_build_kb_scope_filt
 and every global-authoring entry point refuses a tenant session. There is
 exactly one live read with no filter at all — the boot-time reconcile
 enumeration, which returns ids and nothing else and is pinned separately by
-``test_the_unfiltered_kb_readers_stay_id_only``. The three findings below
+``test_the_unfiltered_kb_readers_stay_id_only``. F1 and F2 below
 are *latent* — each is a property nothing enforces, recorded here as an
-executable description of what breaks if it stops holding:
+executable description of what breaks if it stops holding. F3 was latent when
+this probe was written and has since been fixed (#1166); its tests now pin the
+fix rather than the defect:
 
 * **F1 — the guard cannot see tenancy.** ``{"scope": {"$ne": "x"}}`` and
   ``{"owner_id": {"$nin": ["x"]}}`` satisfy ``_enforce_scope_invariant`` and
@@ -115,11 +118,24 @@ executable description of what breaks if it stops holding:
 * **F2 — the shared-id arm is unauthenticated at the vector layer.** Any item id
   that reaches ``shared_kb_ids`` is read verbatim, foreign tenant or not
   (Attack 2). The single tenant predicate protecting it is one SQL ``WHERE``.
-* **F3 — every write-side scope default is ``global``.**
+* **F3 — every write-side scope default was ``global``. FIXED (#1166).**
   ``KnowledgeBaseDocument.scope``, ``ingest_runbook``, ``upload_document`` and
   ``_index_document_in_vector_store``'s ``getattr(document, "scope", "global")``
-  all default to the tier readable by every tenant, so a new publish path leaks
-  by *omission* rather than by commission (Attack 4).
+  all defaulted to the tier readable by every tenant, so a new publish path
+  would have leaked by *omission* rather than by commission (Attack 4). Review
+  of the fix found the count was wrong in both directions: there are **six**
+  sites, not four — ``KnowledgeIngester.ingest_document`` and
+  ``KnowledgeIngester._process_and_store`` are a SECOND ChromaDB writer (dead,
+  but the revivable kind this finding is about), and ``kb_pack.py`` defaulted
+  the tier of a pack entry built in another repository, which is the one that
+  was live. All six now REQUIRE the tier through one shared refusal
+  (``domain/write_scope.require_write_scope``), and the two service methods
+  that could not name one were deleted. This was never exploitable (the gates
+  below held); what changed is the shape of the failure the next publish path
+  can have. The refusals are pinned as units in
+  ``tests/unit/modules/knowledge/test_kb_write_scope_is_explicit.py``; Attack 4
+  keeps the half that needs a real store — what each stated tier MEANS to a
+  tenant that did not author it.
 """
 
 from __future__ import annotations
@@ -802,13 +818,35 @@ def test_the_guards_key_set_is_the_read_filters_key_set():
 
 
 @pytest.mark.asyncio
-async def test_a_document_with_no_scope_is_published_to_every_tenant(store):
-    """F3: the write-side default is the tier everyone reads.
+@pytest.mark.parametrize(
+    ("stated_tier", "foreign_tenant_reads_it"),
+    [("global", True), ("team", False), ("personal", False)],
+)
+async def test_what_each_stated_tier_means_to_a_tenant_that_did_not_author_it(
+    store, stated_tier, foreign_tenant_reads_it
+):
+    """F3, fixed (#1166) — measured at the READ, which is what only this file can do.
 
-    ``KnowledgeBaseDocument.scope`` defaults to ``"global"``, and the indexer
-    reads it with ``getattr(document, "scope", "global") or "global"`` — three
-    ways to arrive at global: pass it, omit it, or pass a falsy value. A publish
-    path that simply neglects to set a scope therefore leaks by omission.
+    This replaces ``test_a_document_with_no_scope_is_published_to_every_tenant``,
+    which pinned the defect deliberately and said so: ``KnowledgeBaseDocument.scope``
+    defaulted to ``"global"``, so a scope-less document was stamped with the tier
+    every tenant reads and the leak appeared nowhere in the diff.
+
+    The *refusals* that replaced that default are pinned as units, once, in
+    ``tests/unit/modules/knowledge/test_kb_write_scope_is_explicit.py`` — all six
+    write sites, both ChromaDB writers, and the AST pins. Duplicating them here
+    would mean every future change to the guard had to be made twice or the two
+    files would disagree. What is left here is the half that needs a real store:
+    what a stated tier actually *means* when a different tenant queries.
+
+    Both arms matter. ``global`` still reaching a foreign tenant is what keeps
+    the shipped-runbook bootstrap honest — a guard that refused everything would
+    pass every refusal test while breaking the platform corpus. The two tenant
+    tiers not reaching them is what makes the change a change rather than a
+    relabelling.
+
+    Note what is NOT claimed: none of this was exploitable. Every
+    global-authoring entry point refuses a tenant session (the two tests below).
     """
     captured: list[list[dict[str, Any]]] = []
 
@@ -819,39 +857,43 @@ async def test_a_document_with_no_scope_is_published_to_every_tenant(store):
         async def add_documents(self, documents, embeddings=None):
             captured.append(documents)
 
-    service = KnowledgeService.__new__(KnowledgeService)
-    service._vector_store = _CapturingStore()
-
     async def _embed_texts(texts, **_kwargs):
         return [list(_VEC) for _ in texts]
 
+    service = KnowledgeService.__new__(KnowledgeService)
+    service._vector_store = _CapturingStore()
+
     document = KnowledgeBaseDocument(
-        document_id="tenant-authored-0001",
-        title="Tenant runbook",
-        content="# Tenant runbook\nInternal-only remediation for " + SECRET_B,
+        document_id=f"authored-as-{stated_tier}",
+        title="A runbook",
+        content="# A runbook\nRemediation for " + SECRET_B,
         document_type="runbook",
+        scope=stated_tier,
+        owner_id=USER_A,
         created_at="2026-08-23T00:00:00Z",
         updated_at="2026-08-23T00:00:00Z",
     )
-    assert document.scope == "global", "the model's own default moved"
 
     with patch(
         "faultmaven.infrastructure.embedding_guard.embed_texts_or_raise",
         new=_embed_texts,
     ):
-        chunks = await service._index_document_in_vector_store(document)
+        assert await service._index_document_in_vector_store(document) == 1
 
-    assert chunks == 1
-    stamped = captured[0][0]["metadata"]
-    assert stamped["scope"] == "global"
-
-    # And what "global" means, measured rather than asserted: seed that exact
-    # metadata and read it with a filter belonging to a DIFFERENT tenant.
     await store.add_documents([captured[0][0]], embeddings=[list(_VEC)])
-    got = await _ids(store, build_kb_scope_filter(USER_B, []))
-    assert (
-        captured[0][0]["id"] in got
-    ), "a scope-less document is readable by a tenant that did not author it"
+    chunk_id = captured[0][0]["id"]
+
+    seen_by_foreign = chunk_id in await _ids(store, build_kb_scope_filter(USER_B, []))
+    assert seen_by_foreign is foreign_tenant_reads_it, (
+        f"a {stated_tier!r} document is "
+        f"{'not ' if foreign_tenant_reads_it else ''}visible to a tenant that "
+        "did not author it"
+    )
+
+    # The paired positive: whatever the foreign tenant can or cannot see, the
+    # AUTHOR can always see it. Without this, a write that landed nowhere at all
+    # would satisfy every negative arm above.
+    assert chunk_id in await _ids(store, build_kb_scope_filter(USER_A, []))
 
 
 @pytest.mark.parametrize("is_platform_admin", [True, False])
@@ -1118,25 +1160,35 @@ def test_the_unfiltered_kb_readers_stay_id_only():
 
 
 def test_the_unguarded_chroma_only_writer_still_has_no_live_caller():
-    """``KnowledgeService.ingest_document`` writes vectors with no SQL row.
+    """``KnowledgeIngester`` reaches ChromaDB with no ``knowledge_items`` row.
 
-    Every other publish path writes ``knowledge_items`` first, which puts the
-    insert under the RLS write policies (migration 033) — the database's own
-    refusal of a tenant-authored global row. This one goes straight to
-    ChromaDB, from a ``KnowledgeBaseDocument`` built with neither ``scope`` nor
-    ``owner_id``: default global, no owner, no gate, no RLS. It is dead code
-    today. Reviving it without routing it through ``ingest_runbook`` publishes
-    tenant content to every tenant, so the death is pinned rather than trusted.
+    Every live publish path writes the SQL row FIRST, which puts the insert
+    under the RLS write policies (migration 033) — the database's own refusal
+    of a tenant-authored global row. ``KnowledgeIngester._process_and_store``
+    calls ``collection.add`` directly: no row, no policy, no gate.
+
+    When this probe was written the path was reached through
+    ``KnowledgeService.ingest_document``/``update_document``, which built a
+    ``KnowledgeBaseDocument`` with neither ``scope`` nor ``owner_id`` — default
+    global, no owner. **Both service methods were deleted in #1166**: they could
+    not name a tier (nothing passed them one), and ``update_document`` would
+    have deleted a document's real chunks and replaced them with chunks matching
+    no arm of ``build_kb_scope_filter``. So the expected caller set is now
+    EMPTY, and the writer that remains no longer defaults its tier — it calls
+    ``require_write_scope`` like the live one
+    (``tests/unit/modules/knowledge/test_kb_write_scope_is_explicit.py``).
+
+    The death is still pinned rather than trusted: reviving this path without
+    routing it through ``ingest_runbook`` puts content in ChromaDB that no RLS
+    policy ever saw.
     """
     callers = {
         (rel, scope)
         for rel, scope, name, _node in _walk_calls()
-        if name == "ingest_document"
+        if name in {"ingest_document", "update_document"}
         and not rel.endswith("models/interfaces.py")  # docstring examples
     }
 
-    assert callers == {
-        # The service method's own delegation to the (equally caller-less)
-        # KnowledgeIngester. Nothing calls the service method itself.
-        ("modules/knowledge/domain/services/knowledge_service.py", "ingest_document"),
-    }, f"a caller reached the unguarded Chroma-only write path: {sorted(callers)}"
+    assert callers == set(), (
+        "a caller reached the unguarded Chroma-only write path: " f"{sorted(callers)}"
+    )

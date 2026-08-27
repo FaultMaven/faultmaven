@@ -485,6 +485,13 @@ Format as Markdown with these sections:
                     content=suggestion.suggested_content,
                     title=suggestion.suggested_title,
                     document_type=suggestion.suggested_type,
+                    # The platform tier, stated rather than inherited from a
+                    # default (#1166). Gated at the approve route by
+                    # require_global_authoring_allowed(); an approved
+                    # suggestion becomes platform-shipped knowledge, which is
+                    # why that gate is there and why this says "global" out
+                    # loud instead of taking whatever the service assumed.
+                    scope="global",
                     category="extracted",
                     tags=["extracted", "case-derived"],
                     source_url=None,

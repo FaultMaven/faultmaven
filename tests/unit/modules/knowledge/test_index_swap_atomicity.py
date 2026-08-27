@@ -50,6 +50,9 @@ def _document() -> KnowledgeBaseDocument:
         document_type="runbook",
         tags=[],
         source_url=None,
+        # Required since #1166 — this fixture is not about the tier;
+        # "global" keeps it exercising exactly what it did before.
+        scope="global",
         created_at="2026-01-01T00:00:00Z",
         updated_at="2026-01-01T00:00:00Z",
     )

@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 2.0.1
+**Version:** 2.1.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -5470,7 +5470,7 @@ Response model for knowledge base document operations.
 - `document_type` (string, required)
 - `metadata` (object, optional)
 - `owner_id` (object, optional)
-- `scope` (string, optional)
+- `scope` (string, required)
 - `source_suggestion_id` (object, optional)
 - `source_url` (object, optional)
 - `status` (string, optional)
