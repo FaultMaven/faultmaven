@@ -2600,15 +2600,22 @@ def _fallback_current_turn_evidence(case: Case) -> str:
     full-budget turn.
 
     De-duplicated by ``file_id``, and every row is re-resolved through
-    ``case.find_uploaded_file`` before it is named. ``milestone_engine``
-    appends a second ``UploadedFile`` row for the same id on every attachment
-    turn (#1207); this render has no ``structural_index`` filter to hide it,
-    so it was stubbing the same upload twice. Worse, the scan below selects by
-    ``uploaded_at_turn == current_turn``, which picks the DUPLICATE, while
+    ``case.find_uploaded_file`` before it is named.
+
+    Both guards were written for #1207, which is now FIXED: ``milestone_engine``
+    used to append a second ``UploadedFile`` row for the same id on every
+    attachment turn, and this render has no ``structural_index`` filter to hide
+    it, so it stubbed the same upload twice. Worse, the scan below selects by
+    ``uploaded_at_turn == current_turn``, which picked the DUPLICATE, while
     ``_evidence_label`` resolves via ``find_uploaded_file``, which is
-    first-wins and picks the original — two names for one file in one prompt.
-    Re-resolving makes this render agree with every other one: one resolver,
-    one answer.
+    first-wins and picked the original — two names for one file in one prompt.
+
+    They are KEPT deliberately rather than removed with that fix. Neither
+    depends on the duplicate existing: de-duplicating by ``file_id`` and
+    resolving through one resolver are the properties this render wants
+    regardless, and they are what make it agree with every other render — one
+    resolver, one answer. Removing them would re-couple this render's naming to
+    however the aggregate happens to be ordered.
     """
     current_turn = getattr(case, "current_turn", 0)
     find = getattr(case, "find_uploaded_file", None)

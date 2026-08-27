@@ -163,28 +163,120 @@ class TestTheMetadataContractIsUnchanged:
         assert metadata.get("novel_files_uploaded", []) == []
 
 
-class TestANovelFileIsStillRecorded:
-    """The gate is on the id being KNOWN. A first upload must be unaffected —
-    a fix that stopped appending altogether would pass every test above."""
+class TestTheProductionOrdering:
+    """The ordering the engine actually runs under.
 
-    async def test_a_new_id_is_appended(self, engine):
-        case = _case([_complete_row()])
+    ``investigation_service`` appends the authoritative row to the SAME ``case``
+    object inside ``_preprocess_attachment``, then builds the attachment
+    metadata from it and calls ``process_turn``. There is no reload in between.
+
+    An earlier draft of these tests seeded the aggregate WITHOUT the row and
+    handed the engine a "novel" id — a state production never reaches. That
+    made the novel branch look reachable and would have let the whole
+    ``if attachments:`` block be deleted with every test still green. These
+    drive the real sequence instead.
+    """
+
+    async def test_a_brand_new_upload_produces_exactly_one_row(self, engine):
+        """The row `_preprocess_attachment` committed, and no second one."""
         novel = "file_ffffffffff99"
-
-        metadata = await _run(engine, case, [_attachment(file_id=novel)])
-
-        assert [f.file_id for f in case.uploaded_files] == [FILE_ID, novel]
-        assert metadata["files_uploaded"] == [novel]
-        assert metadata.get("novel_files_uploaded", []) == [novel]
-
-    async def test_the_appended_novel_row_carries_the_current_turn(self, engine):
-        case = _case([_complete_row()])
-        novel = "file_ffffffffff99"
+        case = _case([])
+        case.uploaded_files.append(
+            _complete_row(file_id=novel).model_copy(
+                update={"uploaded_at_turn": REUPLOAD_TURN}
+            )
+        )
 
         await _run(engine, case, [_attachment(file_id=novel)])
 
-        row = next(f for f in case.uploaded_files if f.file_id == novel)
-        assert row.uploaded_at_turn == REUPLOAD_TURN
+        rows = [f for f in case.uploaded_files if f.file_id == novel]
+        assert len(rows) == 1
+        assert rows[0].content_hash == "a" * 64
+        assert rows[0].uploaded_by == "user_123"
+
+    async def test_files_uploaded_names_a_brand_new_upload(self, engine):
+        novel = "file_ffffffffff99"
+        case = _case([])
+        case.uploaded_files.append(
+            _complete_row(file_id=novel).model_copy(
+                update={"uploaded_at_turn": REUPLOAD_TURN}
+            )
+        )
+
+        metadata = await _run(engine, case, [_attachment(file_id=novel)])
+
+        assert metadata["files_uploaded"] == [novel]
+
+    async def test_novel_files_uploaded_is_empty_even_for_a_new_upload(self, engine):
+        """Documents a PRE-EXISTING defect, not one introduced by the gate.
+
+        ``known_ids`` already holds the id under the real ordering, so the
+        novelty condition — which gated this metadata key before the fix too —
+        is False for a genuinely new file. #1136's stall-net arm therefore
+        never sees an upload as progress.
+
+        Pinned here so the next reader does not mistake it for fallout of this
+        change: measured on both sides of the fix, this value is identical.
+        Tracked separately.
+        """
+        novel = "file_ffffffffff99"
+        case = _case([])
+        case.uploaded_files.append(
+            _complete_row(file_id=novel).model_copy(
+                update={"uploaded_at_turn": REUPLOAD_TURN}
+            )
+        )
+
+        metadata = await _run(engine, case, [_attachment(file_id=novel)])
+
+        assert metadata.get("novel_files_uploaded") is None
+
+
+class TestProvenanceSurvives:
+    """``upload_source`` is the FIFTH column the duplicate destroyed, and the
+    one other modules branch on.
+
+    ``investigation_service`` fabricates the metadata dict's ``source_type``
+    from the filename prefix — ``"paste" if filename.startswith(
+    "pasted-content-") else "file_upload"`` — so a PAGE CAPTURE arrives tagged
+    ``file_upload``. The engine's duplicate carried that fabrication into
+    ``upload_source``, and the non-COALESCE'd upsert made it win over the
+    genuine tag ``_preprocess_attachment`` had set from ``source_metadata``.
+
+    Not appending the duplicate leaves the genuine value in place, which fixes
+    the PERSISTED half of #1201. The derivation at source is still wrong and
+    stays with that issue.
+    """
+
+    async def test_a_page_captures_tag_is_not_overwritten_by_the_fabrication(
+        self, engine
+    ):
+        capture = _complete_row().model_copy(
+            update={
+                "filename": "page-capture-20260709T105531.txt",
+                "upload_source": "page_capture",
+            }
+        )
+        case = _case([capture])
+
+        await _run(
+            engine,
+            case,
+            [
+                _attachment()
+                | {
+                    "filename": "page-capture-20260709T105531.txt",
+                    # What investigation_service actually sends for a capture.
+                    "source_type": "file_upload",
+                }
+            ],
+        )
+
+        rows = [f for f in case.uploaded_files if f.file_id == FILE_ID]
+        assert [r.upload_source for r in rows] == ["page_capture"], (
+            "the fabricated file_upload tag is upserted over the genuine "
+            "page_capture one; #1201's persisted half"
+        )
 
 
 class TestThePersistedConsequence:

@@ -9301,38 +9301,55 @@ class MilestoneEngine:
                     case=case, attachment=attachment, turn_number=case.current_turn
                 )
                 is_novel = uploaded_file.file_id not in known_ids
-                # #1207: the row is only APPENDED when the id is novel.
+                # #1207: the row is APPENDED only when the id is novel.
                 #
-                # The attachment-metadata dict carries file_id, filename,
-                # data_type, size, source_type, summary and storage_ref -- and
-                # NOT content_hash, content_type or uploaded_by. So the row
-                # built above is a strict subset of the one
-                # ``_preprocess_attachment`` already committed for a known id,
-                # and it is stamped with the CURRENT turn rather than the
-                # turn the file actually arrived on.
+                # On the production path it never is. ``investigation_service``
+                # appends the authoritative row to THIS SAME ``case`` object
+                # inside ``_preprocess_attachment``, and only then builds the
+                # attachment metadata from it and calls ``process_turn``; there
+                # is no reload in between. So the id is already in
+                # ``known_ids`` for a brand-new upload as well as a deduped
+                # one, and this append is now never taken. That is the point:
+                # the row the engine builds here is a strict SUBSET of the one
+                # already committed, and appending it was destructive.
                 #
+                # The metadata dict carries file_id, filename, data_type, size,
+                # source_type, summary and storage_ref -- and NOT content_hash,
+                # content_type or uploaded_by -- and stamps the CURRENT turn.
                 # ``_upsert_uploaded_files`` walks this aggregate in order and
                 # its ON CONFLICT (file_id) DO UPDATE does not COALESCE those
-                # four columns, so appending the subset row upserted it SECOND
-                # and it won: content_hash nulled (per-case dedup matches on
-                # that column, and ``identical_to_prior_upload_at_turn`` keys
-                # off it), uploaded_by nulled (indistinguishable from a system
-                # upload), content_type nulled, and uploaded_at_turn moved to
-                # the re-upload's turn (which is the key #1198's citable name
-                # is derived from).
+                # columns, so the subset row was upserted SECOND and won:
+                # content_hash nulled (per-case dedup matches on it),
+                # uploaded_by nulled (reads as a system upload), content_type
+                # nulled, uploaded_at_turn moved to the re-upload's turn (the
+                # key #1198's citable name is derived from), and upload_source
+                # replaced by the value ``investigation_service`` fabricates
+                # from the filename prefix -- which is ``file_upload`` for a
+                # page capture (#1201).
                 #
                 # Skipping the append is the fix rather than completing the
                 # row: a complete row would still carry the current turn and
-                # still win ``uploaded_at_turn``. The case already holds the
-                # authoritative row -- that is what ``known_ids`` measured.
+                # still win ``uploaded_at_turn``.
+                #
+                # The gate is kept rather than deleting the block outright
+                # because it is the narrow, behaviour-preserving change; the
+                # block is vestigial and removing it belongs with moving the
+                # novelty signal to ``_PreprocessedAttachment.duplicate_of``,
+                # which already computes it upstream.
                 if is_novel:
                     case.uploaded_files.append(uploaded_file)
-                # Unchanged either way: this is every attachment ON the turn,
-                # deduped re-submissions included. Only the NOVEL list (#1136,
-                # which arms the stall net) is the subset.
+                # Every attachment ON the turn, deduped re-submissions
+                # included.
                 metadata["files_uploaded"] = metadata.get("files_uploaded", []) + [
                     uploaded_file.file_id
                 ]
+                # NOTE: for the ordering reason above, this is never populated
+                # on the production path -- ``known_ids`` already holds the id.
+                # That PREDATES this change (the same condition gated it
+                # before) and is a live defect in #1136's stall-net arm, filed
+                # separately. Measured on both sides of the fix, a brand-new
+                # upload yields ``novel_files_uploaded=None`` and
+                # ``progress_made=False`` identically.
                 if is_novel:
                     metadata["novel_files_uploaded"] = metadata.get(
                         "novel_files_uploaded", []
