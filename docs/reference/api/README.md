@@ -5786,7 +5786,7 @@ See: docs/architecture/investigation-engine/progress-transparency.md
 - `milestone_description` (object, optional) — Human-readable description of what the pending milestone requires
 - `pending_milestone` (object, optional) — Milestone that progress is stalled on (e.g., 'root_cause_identified')
 - `repair_type` (object, optional) — Agent state repair pattern detected, if any: hypothesis_anchoring, hypothesis_deadlock, exhausted, fix_failure_cycle, action_loop
-- `verification_status` (object, optional) — Engine-derived verification status this turn — the grounding × progress join (healthy | treatment_blocked | open | not_yet_productive | insufficient_evidence). Lets the frontend show the honest partial outcome (e.g. insufficient_evidence) alongside the stalled-milestone surfacing.
+- `verification_status` (object, optional) — Engine-derived verification status this turn — the grounding × progress join (healthy | treatment_blocked | open | not_yet_productive | insufficient_evidence | restatement_held). Lets the frontend show the honest partial outcome (e.g. insufficient_evidence) alongside the stalled-milestone surfacing.
 
 ---
 

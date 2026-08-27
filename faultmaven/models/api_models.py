@@ -873,9 +873,9 @@ class ProgressTransparencyInfo(BaseModel):
         default=None,
         description="Engine-derived verification status this turn — the "
         "grounding × progress join (healthy | treatment_blocked | open | "
-        "not_yet_productive | insufficient_evidence). Lets the frontend show the "
-        "honest partial outcome (e.g. insufficient_evidence) alongside the "
-        "stalled-milestone surfacing.",
+        "not_yet_productive | insufficient_evidence | restatement_held). Lets "
+        "the frontend show the honest partial outcome (e.g. "
+        "insufficient_evidence) alongside the stalled-milestone surfacing.",
     )
     cause_assurance: Optional[str] = Field(
         default=None,

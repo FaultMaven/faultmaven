@@ -353,6 +353,14 @@ class InvestigationStrategy(str, Enum):
 #     relieved and RCA was deferred BY CHOICE, with the cause still reachable if
 #     anyone returns to it. This is the one closure in the set that is not a
 #     failure of any kind, which is why it is not folded into a generic bucket.
+#   - closed_restatement_held: the evidence DID support a cause, and the §7.1
+#     restatement guard held every unsettled root because its statement never
+#     added anything over the problem — so the case ended with a cause it could
+#     not promote for want of a distinct MECHANISM, not for want of data
+#     (#1195). Ranked immediately above the generic bucket, which it only ever
+#     displaces: routing it there would head the closure summary "insufficient
+#     evidence to establish the problem or its cause" over a case that gathered
+#     enough, and would bucket it with genuine data walls in the flywheel.
 #   - closed_insufficient_evidence: the default for any other close from
 #     INVESTIGATING — what was needed was never established, whether at the
 #     SYMPTOM level (the problem could not be verified) or at the CAUSE level
@@ -379,6 +387,7 @@ VALID_CLOSURE_REASONS: set[str] = {
     "solution_deferred",
     "closed_rca_infeasible",
     "mitigation_sufficient",
+    "closed_restatement_held",
     "closed_insufficient_evidence",
 }
 
@@ -447,6 +456,22 @@ class VerificationStatus(str, Enum):
     structured handoff. A model-declared obtainability judgment can refine into
     this *within* the gate; the judgment can never bypass the work gate, and its
     absence defaults to keep-engaging."""
+
+    RESTATEMENT_HELD = "restatement_held"
+    """Not grounded × stalled where the block is LEXICAL, not evidential (#1195):
+    a ROOT that clears every validation bar — causally grounded, net supporting,
+    AND-gate satisfied, not refuted — is held at INCONCLUSIVE by the §7.1
+    restatement guard ALONE (``causal_graph.restatement_held_root_ids``) because
+    its statement adds no content beyond the problem and the other hypotheses.
+
+    Carved out of ``INSUFFICIENT_EVIDENCE``, whose claim — "no cause can be
+    grounded from currently available data" — is FALSE on this shape and whose
+    handoff asks for discriminating data that cannot move the hold. The engine
+    already tells the MODEL so ("MORE SUPPORTING EVIDENCE WILL NOT VALIDATE IT",
+    the restatement recovery note in ``context_builder``); this cell is what
+    stops it telling the USER the opposite in the same turn. The recovery is to
+    state the cause DISTINCTLY — name the mechanism, or settle the overlapping
+    alternative — never to fetch more evidence."""
 
 
 class CauseAssuranceGrade(str, Enum):
@@ -638,7 +663,8 @@ class InvestigationProgress(BaseModel):
         description=(
             "Engine-derived verification status — the grounding × progress join "
             "(HEALTHY | TREATMENT_BLOCKED | OPEN | NOT_YET_PRODUCTIVE | "
-            "INSUFFICIENT_EVIDENCE). Recomputed each turn from case state "
+            "INSUFFICIENT_EVIDENCE | RESTATEMENT_HELD). Recomputed each turn "
+            "from case state "
             "alongside cause_state (never path-stripped) and persisted in the "
             "progress blob, so the model-declared obtainability signal it reads "
             "survives across turns. Drives the code-guarded insufficient-evidence "

@@ -4182,7 +4182,7 @@
                 "type": "null"
               }
             ],
-            "description": "Engine-derived verification status this turn \u2014 the grounding \u00d7 progress join (healthy | treatment_blocked | open | not_yet_productive | insufficient_evidence). Lets the frontend show the honest partial outcome (e.g. insufficient_evidence) alongside the stalled-milestone surfacing.",
+            "description": "Engine-derived verification status this turn \u2014 the grounding \u00d7 progress join (healthy | treatment_blocked | open | not_yet_productive | insufficient_evidence | restatement_held). Lets the frontend show the honest partial outcome (e.g. insufficient_evidence) alongside the stalled-milestone surfacing.",
             "title": "Verification Status"
           }
         },

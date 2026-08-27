@@ -794,6 +794,7 @@ def register_graph_hooks(
     mechanism_for_chain,
     project_hypothesis_states_from_roots,
     conjuncts_for_chain,
+    summarize_restatement_hold,
 ) -> None:
     """Called once from ``causal_graph`` at module import."""
     _GRAPH_HOOKS["count_held"] = support_count_held_root_ids
@@ -802,12 +803,25 @@ def register_graph_hooks(
     _GRAPH_HOOKS["mechanism"] = mechanism_for_chain
     _GRAPH_HOOKS["project_hyp_states"] = project_hypothesis_states_from_roots
     _GRAPH_HOOKS["and_conjuncts"] = conjuncts_for_chain
+    # #1195: read by ``verification_status.assess_verification_status``,
+    # ``milestone_engine`` and ``terminal_transitions.derive_closure_reason``,
+    # none of which can import ``causal_graph`` directly — that edge closes the
+    # cycle causal_graph -> hypothesis_manager -> terminal_transitions ->
+    # verification_status. Same seam, same reason as ``project_hyp_states``.
+    _GRAPH_HOOKS["restatement_hold"] = summarize_restatement_hold
 
 
 def _graph_hooks() -> dict:
     """The registered hooks; cold-start fallback loads ``causal_graph`` by
     name (call-time, both modules long initialized — no init-order hazard)
-    for any entry point that reaches the stamp without the engine stack."""
+    for any entry point that reaches the stamp without the engine stack.
+
+    The fallback covers a genuine cold start (``causal_graph`` never imported).
+    It does NOT re-register a dict that was EMPTIED after import — ``import_module``
+    returns the cached module without re-executing it — so a caller that patches
+    ``_GRAPH_HOOKS`` to ``{}`` gets ``None`` from every ``.get`` until the patch
+    lifts. Every consumer reads with ``.get`` and degrades rather than raising,
+    which is what makes that safe; none may treat the fallback as self-healing."""
     if not _GRAPH_HOOKS:
         import importlib
 

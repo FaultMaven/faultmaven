@@ -1283,6 +1283,28 @@ class TestBuildProgressTransparencyVerificationStatus:
         # OPEN is not the honest-partial; without transparent mode, stay silent.
         assert svc._build_progress_transparency({}, case) is None
 
+    def test_restatement_held_surfaced_without_transparent_mode(self):
+        """#1195: ``RESTATEMENT_HELD`` is carved OUT of ``INSUFFICIENT_EVIDENCE``,
+        so it must reach this channel for the same reason its parent does. Omit
+        it and the carve-out silences, in the user-facing transparency block,
+        exactly the cases that block used to (wrongly) report — suppression
+        without replacement, which is the failure #1195 exists to avoid."""
+        svc = self._service()
+        case = self._case("RESTATEMENT_HELD")
+        info = svc._build_progress_transparency({}, case)
+        assert info is not None
+        assert info.active is False
+        assert info.verification_status == "restatement_held"
+
+    def test_treatment_blocked_surfaced_without_transparent_mode(self):
+        """#1136's honest partial, pinned alongside — a fix-blocked stall is
+        conversational, so transparent mode may never activate on it."""
+        svc = self._service()
+        case = self._case("TREATMENT_BLOCKED")
+        info = svc._build_progress_transparency({}, case)
+        assert info is not None
+        assert info.verification_status == "treatment_blocked"
+
     def test_transparent_mode_still_active_and_carries_status(self):
         svc = self._service()
         case = self._case("INSUFFICIENT_EVIDENCE")
