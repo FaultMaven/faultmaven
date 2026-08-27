@@ -233,8 +233,8 @@ Stop copying errors between browser tabs. The **[FaultMaven Copilot](https://git
 Most troubleshooting knowledge is lost once the incident is closed. FaultMaven turns that lost data into a growing asset through a "Seed & Grow" lifecycle:
 
 - **Seed with Runbooks:** You don't start from zero. Pre-load your existing runbooks and documentation into the Knowledge Base so the AI knows your standard operating procedures from Day 1.
-- **Grow with Incidents:** As you troubleshoot, the AI learns. When a case is resolved, FaultMaven extracts the successful steps and root cause to automatically update the knowledge base.
-- **Result:** Your static documentation becomes a dynamic, self-improving engine. The solution to today's incident becomes the automated fix for tomorrow's.
+- **Grow with Incidents:** As you troubleshoot, the AI learns. When a case is resolved, FaultMaven offers to turn it into a runbook — but only if the case clears an explicit bar: a verified problem definition, a **confirmed** root cause (one that was counterfactually borne out, not merely plausible), and an actionable solution. A case that doesn't clear that bar is never written to the Knowledge Base, so a wrong or half-finished conclusion can't become the guidance someone follows next time.
+- **Result:** Your static documentation becomes a living asset. The solution to today's incident becomes the starting point for tomorrow's.
 
 ### 4. Opportunistic Investigation Framework
 
