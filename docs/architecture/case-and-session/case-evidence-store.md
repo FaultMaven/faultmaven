@@ -64,9 +64,12 @@ Concise Answer with Citations
 ```bash
 # Synthesis provider for QA sub-agent (answer_from_case_evidence tool)
 # Used for RAG-based question answering on uploaded documents
-# If not specified, falls back to CHAT_PROVIDER
-# Recommended: Fast, cost-effective models (gpt-4o-mini, claude-3-haiku, llama-3.1-8b)
-SYNTHESIS_PROVIDER=openai
+# SHIPS SET to gemini (with GEMINI_SYNTHESIS_MODEL=gemini-3.5-flash-lite) —
+# a static pin, so it does NOT move when CHAT_PROVIDER changes. Comment it out
+# to follow CHAT_PROVIDER instead.
+# Suited to fast, cost-effective models: this role synthesises an answer from
+# retrieved chunks and needs no tool calling.
+SYNTHESIS_PROVIDER=gemini
 
 # ChromaDB Configuration (used by CaseVectorStore)
 CHROMADB_HOST=chromadb.faultmaven.local

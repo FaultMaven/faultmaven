@@ -27,23 +27,26 @@ FaultMaven supports 7 LLM providers out of the box with automatic registration:
 | **OpenRouter** | Aggregator | Multi-provider access | User-configurable primary |
 | **Local** | Self-Hosted | Privacy, customization | ♥3rd (always available) |
 
-### 1. Fireworks AI (Recommended)
+### 1. Fireworks AI
 
 **Best for**: Fast inference, cost-effective, open source models
 
 ```bash
 # Environment Configuration
 FIREWORKS_API_KEY="fw_your_api_key"
-FIREWORKS_MODEL="accounts/fireworks/models/llama-v3p1-8b-instruct"
+FIREWORKS_MODEL="accounts/fireworks/models/deepseek-v4-flash"
 CHAT_PROVIDER="fireworks"
 ```
 
-**Available Models**:
-- `accounts/fireworks/models/llama-v3p1-8b-instruct` (Default)
-- `accounts/fireworks/models/llama-v3p1-70b-instruct`
-- `accounts/fireworks/models/mixtral-8x7b-instruct`
+**Available Models** (the dashboard picker's list; any model id may still be
+pinned via `FIREWORKS_MODEL`, it just prices as unpriced if the table has no
+rate for it):
+- `accounts/fireworks/models/deepseek-v4-flash` (Default)
+- `accounts/fireworks/models/deepseek-v3`
 
-**Features**: High performance, competitive pricing, good for production workloads.
+**Features**: High performance, competitive pricing. Structured output is
+BEST_EFFORT here — fine for cheap classifier/synthesis roles, not for the
+primary CHAT/investigation role.
 
 ### 2. OpenAI
 
@@ -60,7 +63,9 @@ CHAT_PROVIDER="openai"
 - `gpt-5.6-luna` (Default — `settings.openai_model`; reasons by default, see below)
 - `gpt-5.4-mini`, and the rest of the `gpt-5.x` family (reasoning models; see below)
 - `o1` / `o3` / `o4` series (reasoning models; see below)
-- `gpt-4o`, `gpt-4o-mini` (non-reasoning, still supported)
+- `gpt-4o`, `gpt-4o-mini`, `gpt-4.1-mini` remain PRICED and usable if
+  pinned explicitly, but were removed from the dashboard picker as
+  superseded — the picker offers `gpt-5.6-luna` and `gpt-5.4-mini`.
 
 **Features**: Best response quality, extensive capabilities, higher cost.
 
@@ -117,15 +122,14 @@ self._merge_extra_kwargs(payload, kwargs, model=effective_model)
 ```bash
 # Environment Configuration
 ANTHROPIC_API_KEY="sk-ant-your_key"
-ANTHROPIC_MODEL="claude-3-5-sonnet-20241022"  # Latest model (default)
+ANTHROPIC_MODEL="claude-sonnet-4-6"  # Default
 CHAT_PROVIDER="anthropic"
 ```
 
 **Available Models**:
-- `claude-3-5-sonnet-20241022` (Default, latest with improved capabilities)
-- `claude-3-5-sonnet-20240620` (Previous version)
-- `claude-3-haiku-20240307` (Fastest, most cost-effective)
-- `claude-3-opus-20240229` (Highest capability, most expensive)
+- `claude-sonnet-4-6` (Default)
+- `claude-opus-4-6` (Highest capability, most expensive)
+- `claude-haiku-4-5-20251001` (Fastest, most cost-effective)
 
 **Features**:
 - Exceptional reasoning and analysis capabilities
@@ -141,14 +145,19 @@ CHAT_PROVIDER="anthropic"
 ```bash
 # Environment Configuration
 GEMINI_API_KEY="your_google_ai_key"
-GEMINI_MODEL="gemini-1.5-pro"
+GEMINI_MODEL="gemini-3.7-flash"
 CHAT_PROVIDER="gemini"
 ```
 
+**This is the shipped default provider and model** — the configuration above
+is what runs when a deployment sets only `GEMINI_API_KEY`.
+
 **Available Models**:
-- `gemini-1.5-pro` (Default)
-- `gemini-1.5-flash` (Faster, cheaper)
-- `gemini-pro-vision` (Multimodal)
+- `gemini-3.7-flash` (Default; native vision, tool calling, STRICT structured
+  output. Runs the reduced 3.7 API surface — the adapter applies it
+  automatically by model version)
+- `gemini-3.5-flash`
+- `gemini-3.5-flash-lite` (cheapest; the shipped classifier/synthesis model)
 
 **Features**: Large context windows, multimodal input, competitive pricing.
 
@@ -294,7 +303,7 @@ PROVIDER_SCHEMA = {
     "anthropic": {
         "api_key_var": "ANTHROPIC_API_KEY",
         "model_var": "ANTHROPIC_MODEL",
-        "default_model": "claude-3-5-sonnet-20241022",
+        "default_model": "claude-sonnet-4-6",
         "provider_class": AnthropicProvider,  # Implements ILLMProvider
         "confidence_score": 0.85,
         "max_retries": 3,
@@ -378,10 +387,10 @@ for name, info in status.items():
 **Example Health Output**:
 ```
 Provider Health Status:
-✅ fireworks    | Models: llama-v3p1-8b-instruct, llama-v3p1-70b | Confidence: 0.9  | ⚡
-✅ openai       | Models: gpt-4o, gpt-4o-mini                    | Confidence: 0.85 | ⚡
-✅ anthropic    | Models: claude-3-5-sonnet-20241022, claude-3-h | Confidence: 0.85 | ⚡
-❌ gemini       | Models: gemini-1.5-pro, gemini-1.5-flash       | Confidence: 0.8  | ⏸️
+✅ fireworks    | Models: deepseek-v4-flash, deepseek-v3        | Confidence: 0.9  | ⚡
+✅ openai       | Models: gpt-5.6-luna, gpt-5.4-mini             | Confidence: 0.85 | ⚡
+✅ anthropic    | Models: claude-sonnet-4-6, claude-opus-4-6     | Confidence: 0.85 | ⚡
+✅ gemini       | Models: gemini-3.7-flash, gemini-3.5-flash     | Confidence: 0.8  | ⚡
 ✅ local        | Models: Phi-3-mini-128k-instruct-onnx           | Confidence: 0.6  | ⚡
 
 Fallback Chain: anthropic → fireworks → openai → local
@@ -1011,10 +1020,10 @@ Each provider has specific model naming conventions:
 
 ```bash
 # Provider-Specific Model Formats
-FIREWORKS_MODEL="accounts/fireworks/models/llama-v3p1-8b-instruct"  # Full path required
-OPENAI_MODEL="gpt-4o"                                              # Simple name
-ANTHROPIC_MODEL="claude-3-5-sonnet-20241022"                      # Version-specific
-GEMINI_MODEL="gemini-1.5-pro"                                     # Product-version
+FIREWORKS_MODEL="accounts/fireworks/models/deepseek-v4-flash"      # Full path required
+OPENAI_MODEL="gpt-5.6-luna"                                        # Simple name
+ANTHROPIC_MODEL="claude-sonnet-4-6"                                # Version-specific
+GEMINI_MODEL="gemini-3.7-flash"                                    # Product-version
 HUGGINGFACE_MODEL="tiiuae/falcon-7b-instruct"                    # org/model format
 OPENROUTER_MODEL="anthropic/claude-3-sonnet"                      # provider/model
 LOCAL_LLM_MODEL="Phi-3-mini-128k-instruct-onnx"                  # Server-dependent

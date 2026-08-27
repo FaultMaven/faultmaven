@@ -61,7 +61,9 @@ When the last turn offered choices with intent metadata and the user types a sho
 
 ### P4: Cheap and fast classifier, only when needed
 
-The classifier runs only when: (a) the last turn had DECIDE suggestions with intent metadata, (b) the user typed text instead of clicking, and (c) the message is short (under 200 characters). Long messages are almost always conversational. The classifier uses `CLASSIFIER_PROVIDER` (Groq/Fireworks — fast, cheap).
+The classifier runs only when: (a) the last turn had DECIDE suggestions with intent metadata, (b) the user typed text instead of clicking, and (c) the message is short (under 200 characters). Long messages are almost always conversational. The classifier uses `CLASSIFIER_PROVIDER`, which ships pinned to `gemini` on
+`gemini-3.5-flash-lite` — fast and cheap, and a static pin, so it stays put
+when `CHAT_PROVIDER` changes.
 
 ### P5: Default to conversation
 
@@ -147,7 +149,7 @@ Single token: `1`, `2`, ..., `N`, or `none`.
 - **Tiny prompt**: Only the choices and the user message. No case history, no investigation context.
 - **Trivial output**: One token. No structured JSON parsing needed.
 - **Bounded**: The classifier picks from a known, small set — not open-ended classification.
-- **Cheap**: `CLASSIFIER_PROVIDER` (Groq/Fireworks). Estimated <50 tokens total, <100ms latency.
+- **Cheap**: `CLASSIFIER_PROVIDER` (ships on `gemini-3.5-flash-lite`). Estimated <50 tokens total, <100ms latency.
 
 ### When NOT to Run the Classifier
 
