@@ -559,6 +559,25 @@ class TestRestatementHeldHandoff:
         case.state = CaseState.INQUIRY
         assert _restatement_held_pending(case) is False
 
+    def test_a_gateless_non_investigating_turn_computes_no_join(self):
+        """``engine_owned_affordances`` hoists the INVESTIGATING guard out of the
+        four predicates so it can compute the join once. That must not make a
+        gate-less INQUIRY or terminal turn newly pay a join it previously
+        short-circuited past — all four predicates rejected it on state before
+        touching the graph."""
+        case = _restatement_held_case()
+        case.state = CaseState.INQUIRY
+        calls = {"n": 0}
+        real = cause_assurance._GRAPH_HOOKS["restatement_hold"]
+
+        def counting(c):
+            calls["n"] += 1
+            return real(c)
+
+        with patch.dict(cause_assurance._GRAPH_HOOKS, {"restatement_hold": counting}):
+            assert engine_owned_affordances(case) is None
+        assert calls["n"] == 0
+
     def test_state_machine_gates_take_precedence(self):
         """Ordered with its peers, BELOW any pending state-machine handshake."""
         case = _restatement_held_case()

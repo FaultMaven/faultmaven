@@ -2854,10 +2854,18 @@ def engine_owned_affordances(
     # causal-graph tokenization sweep (#1195 review). Compute it ONCE here and
     # hand it down: cheaper, and it makes the mutual exclusivity structural
     # rather than merely argued — the four branches read one value. The
-    # predicates keep their own cheap pre-checks (state, stall, hypothesis
-    # count), which still short-circuit before the status is consulted, and each
-    # still computes the status itself when called directly (tests, and any
-    # future caller that has not got one).
+    # predicates keep their own cheap pre-checks (stall, hypothesis count),
+    # which still short-circuit before the status is consulted, and each still
+    # computes the status itself when called directly (tests, and any future
+    # caller that has not got one).
+    #
+    # The INVESTIGATING guard is hoisted out of the four predicates rather than
+    # dropped: all four require it, and without it here a gate-less INQUIRY or
+    # terminal turn would newly pay a join it previously short-circuited past.
+    # Each predicate still enforces the guard itself for its direct callers.
+    if case.state != CaseState.INVESTIGATING:
+        return None
+
     status = assess_verification_status(case)
 
     if _insufficient_evidence_handoff_pending(case, status=status):
