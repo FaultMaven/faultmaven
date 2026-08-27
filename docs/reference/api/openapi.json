@@ -12490,7 +12490,7 @@
     },
     "/api/v1/knowledge/suggestions/{suggestion_id}/approve": {
       "post": {
-        "description": "Approve a suggestion and create a knowledge item.\n\nValidates that PII scan is complete and clean/remediated before approval.\nCreates a new KnowledgeItem with verification_level=2 (admin verified).\nEstablishes bidirectional link between suggestion and knowledge item.\n\nArgs:\n    suggestion_id: Suggestion to approve\n    request_body: Optional review notes\n\nReturns:\n    Approval result with new knowledge_item_id",
+        "description": "Approve a suggestion and create a knowledge item.\n\nValidates that PII scan is complete and clean/remediated before approval,\nand refuses a suggestion that is already approved (409).\n\nCreates a new KnowledgeItem at global scope with verification level\nEXPERIMENTAL, and establishes the bidirectional link between suggestion and\nknowledge item.\n\nArgs:\n    suggestion_id: Suggestion to approve\n    request_body: Optional review notes\n\nReturns:\n    Approval result with new knowledge_item_id",
         "operationId": "approve_suggestion_api_v1_knowledge_suggestions__suggestion_id__approve_post",
         "parameters": [
           {
