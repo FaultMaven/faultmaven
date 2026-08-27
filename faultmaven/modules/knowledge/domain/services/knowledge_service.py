@@ -24,6 +24,7 @@ Key Improvements over Original:
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -1813,7 +1814,10 @@ class KnowledgeService:
             import uuid as _uuid
 
             from faultmaven.utils.frontmatter import extract_frontmatter_metadata
-            from faultmaven.utils.runbook_id import authored_item_id
+            from faultmaven.utils.runbook_id import (
+                authored_item_id,
+                runbook_filename,
+            )
 
             # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
             # the bootstrap orphan-prune would delete this user runbook on redeploy.
@@ -1865,10 +1869,32 @@ class KnowledgeService:
                 target_dir = data_dir / "global"
             target_dir.mkdir(parents=True, exist_ok=True)
 
-            filename = (
-                f"{title.lower().replace(' ', '-')[:60]}-{_uuid.uuid4().hex[:4]}.md"
-            )
+            # #1213: ``title`` is caller-supplied — a form field on
+            # ``POST /knowledge/documents``, and an LLM-generated
+            # ``suggested_title`` on the suggestion-approval path. It used to
+            # be interpolated with only spaces replaced, so a title of
+            # ``../../../etc/pwned`` produced a path resolving OUTSIDE
+            # ``data/knowledge`` and the content was written there.
+            filename = runbook_filename(title, document_id)
             file_path = target_dir / filename
+
+            # Second, independent guard. ``runbook_filename`` already returns a
+            # single allowlisted component, so this cannot fire today — that is
+            # the point: it keeps holding if that rule is later loosened, if a
+            # caller mints its own name, or if ``target_dir`` gains a component
+            # built from something caller-influenced. Containment is the
+            # property that matters, and it is cheap to assert directly rather
+            # than infer from the slug rule.
+            resolved = file_path.resolve()
+            resolved_dir = target_dir.resolve()
+            if resolved != resolved_dir / resolved.name or not str(resolved).startswith(
+                str(resolved_dir) + os.sep
+            ):
+                raise ValueError(
+                    f"refusing to write runbook outside the knowledge tree: "
+                    f"{resolved} is not directly inside {resolved_dir}"
+                )
+
             file_path.write_text(content, encoding="utf-8")
 
             async with self._db_session_factory() as session:

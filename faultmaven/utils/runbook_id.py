@@ -61,3 +61,51 @@ def authored_item_id() -> str:
     keeps authored ids out of that pattern.
     """
     return f"kb_{uuid4().hex[:16]}"
+
+
+# Everything outside the allowlist collapses to a single hyphen. This is an
+# ALLOWLIST on purpose (#1213): a denylist here would have to anticipate
+# ``../``, ``..\``, ``....//``, absolute paths, NUL and control bytes, and
+# whatever the filesystem normalises next. An allowlist has to anticipate
+# nothing — a character either survives or it does not.
+_FILENAME_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+# Bounded so the total name stays comfortably inside every filesystem's
+# per-component limit once the id and extension are appended.
+_MAX_SLUG_CHARS = 60
+
+
+def runbook_filename(title: str, document_id: str) -> str:
+    """Safe on-disk filename for a runbook, derived from its ``title``.
+
+    ``title`` is caller-supplied — a form field on ``POST /knowledge/documents``
+    and an LLM-generated ``suggested_title`` on the suggestion-approval path —
+    so it is untrusted input that used to reach ``Path`` unfiltered. A title of
+    ``../../../etc/pwned`` produced
+    ``data/knowledge/global/../../../etc/pwned-75e6.md``, which resolves outside
+    the knowledge tree, and the content was then written there (#1213).
+
+    The result is always a SINGLE path component matching ``[a-z0-9][a-z0-9-]*``
+    plus ``.md``, so it cannot carry a separator, a traversal sequence, a NUL, a
+    leading dot, or a device name.
+
+    ``document_id`` is appended rather than a fresh random suffix so the file is
+    traceable to the row that owns it, and so two runbooks sharing a title do
+    not collide.
+
+    A title with no characters in the allowlist — punctuation-only, or a
+    non-latin script — yields the id alone. That is less readable and it is the
+    right trade: admitting non-latin characters would mean reasoning about
+    unicode separator look-alikes (FULLWIDTH SOLIDUS and friends) and about
+    normalization form, which is the analysis this design avoids having to do.
+    Callers that need the human-readable title have it on the row; this is a
+    storage name, not a display name.
+    """
+    slug = _FILENAME_SLUG_RE.sub("-", (title or "").lower()).strip("-")
+    slug = slug[:_MAX_SLUG_CHARS].strip("-")
+    suffix = document_id.strip() or uuid4().hex[:16]
+    # The suffix goes through the same filter: it is an id today, but nothing in
+    # the signature stops a caller passing something dirtier.
+    suffix = _FILENAME_SLUG_RE.sub("-", suffix.lower()).strip("-")
+    stem = f"{slug}-{suffix}" if slug else suffix
+    return f"{stem}.md"
