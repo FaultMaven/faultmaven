@@ -36,6 +36,7 @@ from faultmaven.infrastructure.observability.evidence_metrics import (
     PREPROCESSING_EXTRACTION_YIELD_RATIO,
 )
 from faultmaven.models.api import DataType, SourceMetadata
+from faultmaven.modules.case.contracts import minted_filename_phrase
 from faultmaven.modules.preprocessing.classifier import DataClassifier
 from faultmaven.modules.preprocessing.entities import (
     extract_entities_for_data_type,
@@ -419,8 +420,17 @@ class PreprocessingService:
             # the placeholder text alone has no concrete data for the agent to
             # cite — it can only repeat the suggested types.
             preview_block = _build_content_preview(filename, content)
+            # This text is not internal: it lands on ``summary`` and
+            # ``structural_index``, so it is rendered into <summary> and
+            # <file_extract> for the model AND appended verbatim to
+            # ``agent_response`` by ``_handle_file_reclassification``. Naming
+            # a minted ``pasted-content-<ts>.txt`` here put it beside a
+            # sentence that had just called it "the text you pasted" (#666,
+            # #1198 review). ``filename`` itself is untouched -- only how it
+            # is SPOKEN changes.
+            subject = minted_filename_phrase(filename) or f"'{filename}'"
             placeholder_text = (
-                f"[Classification uncertain for '{filename}' — "
+                f"[Classification uncertain for {subject} — "
                 f"requesting user input]\nSuggested types: {suggested}"
             )
             if preview_block:

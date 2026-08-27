@@ -25,7 +25,11 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     _build_classification_clarification_suggestions,
     _PreprocessedAttachment,
 )
-from faultmaven.modules.case.domain.models import CaseState, EvidenceSourceType
+from faultmaven.modules.case.domain.models import (
+    CaseState,
+    EvidenceSourceType,
+    UploadedFile,
+)
 
 from .conftest import (
     MockCaseRepository,
@@ -494,6 +498,156 @@ class TestClarificationTurnWiring:
         for a in clar:
             assert "the text you pasted" in a.payload
             assert "pasted-content-" not in a.payload
+
+        # #666: the attachment chip the Copilot renders for this very turn.
+        # `file_id` is the handle the frontend references an attachment by,
+        # so `filename` is display-only — and the minted name was going
+        # straight back to the user on the primary channel.
+        assert len(response.attachments_processed) == 1
+        assert response.attachments_processed[0].filename == "pasted text (turn 1)"
+        assert "pasted-content-" not in response.attachments_processed[0].filename
+        assert response.attachments_processed[0].file_id
+
+
+class TestPageCaptureClarification:
+    """A capture whose classification falls below threshold reaches the
+    clarification card BEFORE the page_capture passthrough runs, so the copy
+    has to name it too — it read `the file you shared
+    ("page-capture-…txt")` until the #1198 review caught it."""
+
+    @pytest.mark.asyncio
+    async def test_capture_turn_speaks_in_the_users_terms(
+        self, repo_with_case, preprocessing_service, file_storage
+    ):
+        repo, case = repo_with_case
+
+        classify_result = MagicMock()
+        classify_result.summary = "preview summary"
+        classify_result.structural_index = "index"
+        classify_result.data_type = UnifiedDataType.TEXT
+        classify_result.detailed_data_type = DataType.UNSTRUCTURED_TEXT
+        classify_result.content_hash = "d" * 64
+        classify_result.extraction_method = "classification_failed"
+        classify_result.extraction_metadata = {"suggested_types": ["documentation"]}
+        classify_result.coverage_start_ts = None
+        classify_result.coverage_end_ts = None
+        preprocessing_service.classify_and_extract = AsyncMock(
+            return_value=classify_result
+        )
+        file_storage.store_file = AsyncMock(
+            return_value={"file_path": "evidence/case_x/blob3.txt"}
+        )
+        file_storage.mark_linked = AsyncMock(return_value=True)
+
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+
+        payload = TurnPayload(
+            query="grabbed the runbook page, is this relevant?",
+            attachments=[
+                Attachment(
+                    content=b"## Runbook\nStep 1: restart the pod\n",
+                    filename="page-capture-20260713T083214.txt",
+                    content_type="text/plain",
+                    source_metadata={"source_type": "page_capture"},
+                )
+            ],
+        )
+        response = await service.process_turn(
+            case_id=case.case_id, user_id="user_owner", payload=payload
+        )
+
+        assert "the page you captured" in response.agent_response
+        assert "page-capture-" not in response.agent_response
+
+        clar = [
+            a
+            for a in response.suggested_actions
+            if a.intent
+            and a.intent.get("type") == IntentType.FILE_RECLASSIFICATION.value
+        ]
+        assert clar, "expected clarification suggestions for a failed capture"
+        for a in clar:
+            assert "the page you captured" in a.payload
+            assert "page-capture-" not in a.payload
+
+        # A capture is NOT seeded with the war-room paste priors (command
+        # output / logs) — that prior is about pasted terminal text.
+        assert [a.intent["data_type"] for a in clar][:1] != ["command_output"]
+
+        assert response.attachments_processed[0].filename == "captured page (turn 1)"
+
+
+class TestDedupHitChipNamesTheSubmittedFile:
+    """Content-hash dedup matches on the hash ALONE. The chip the Copilot
+    renders describes what the user JUST submitted, so it must carry the
+    name they just gave — not the name on the row dedup happened to return
+    (#1198 review)."""
+
+    @pytest.mark.asyncio
+    async def test_renamed_reupload_reports_the_new_name(
+        self, repo_with_case, preprocessing_service, file_storage
+    ):
+        repo, case = repo_with_case
+
+        # The row already on the case, submitted earlier under the OLD name.
+        stored = UploadedFile(
+            file_id="file_bbbbbbbbbbbb",
+            filename="nginx-2026-07-09.log",
+            size_bytes=64,
+            content_type="text/plain",
+            content_hash="e" * 64,
+            uploaded_at_turn=1,
+            uploaded_by="user_owner",
+            upload_source="file_upload",
+            storage_ref="evidence/case_x/old.log",
+            data_type="logs",
+            summary="nginx 502s",
+            structural_index="ERROR upstream timed out",
+        )
+        case.uploaded_files.append(stored)
+        repo.find_uploaded_file_by_content_hash = AsyncMock(return_value=stored)
+
+        classify_result = make_preprocessing_result()
+        classify_result.content_hash = "e" * 64
+        preprocessing_service.classify_and_extract = AsyncMock(
+            return_value=classify_result
+        )
+
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+
+        payload = TurnPayload(
+            query="same logs again",
+            attachments=[
+                Attachment(
+                    content=b"ERROR upstream timed out\n",
+                    # The user named it differently THIS time.
+                    filename="nginx-2026-07-10.log",
+                    content_type="text/plain",
+                    source_metadata={"source_type": "file_upload"},
+                )
+            ],
+        )
+        response = await service.process_turn(
+            case_id=case.case_id, user_id="user_owner", payload=payload
+        )
+
+        chip = response.attachments_processed[0]
+        # Dedup did fire — this is the path under test.
+        assert chip.processing_status == "duplicate"
+        assert chip.duplicate_of == "file_bbbbbbbbbbbb"
+        # ...and the chip names what the user sent, not what dedup returned.
+        assert chip.filename == "nginx-2026-07-10.log"
+        assert chip.filename != stored.filename
 
 
 class TestTerminalCaseGuard:

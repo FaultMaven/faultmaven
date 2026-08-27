@@ -7685,8 +7685,8 @@ class MilestoneEngine:
             'searchable="true" in <evidence_collected>. These are uploaded '
             "files with raw content on disk. Evidence WITHOUT this attribute "
             "are investigation notes — they have no file to search. If you "
-            "need to search a file, check the evidence id and filename from "
-            "the searchable entries.\n\n"
+            "need to search a file, take its id and its label from the "
+            "searchable entries.\n\n"
             "EVIDENCE vs KNOWLEDGE — These are fundamentally different data types:\n"
             "- EVIDENCE is case-specific data submitted by the user: log files, "
             "metrics, configs, pasted text, screenshots, user statements about "
@@ -7696,12 +7696,20 @@ class MilestoneEngine:
             "NEVER recorded as evidence. Do NOT create evidence_to_add entries "
             "from kb_qa results, web_search results, or your own knowledge.\n\n"
             "RESPONSE FORMAT — Ground your response in evidence:\n"
-            "- For case questions, cite the filename and line numbers from "
-            "search results (e.g., 'In data_6-1.log, line 42: ...') and "
-            "explain the significance using causal language.\n"
+            "- Every item in <evidence_collected> carries a label attribute. "
+            "That label is its name — use it verbatim and use nothing else. "
+            "Not every item is a file the user named: text they pasted is "
+            'labelled like "pasted text (turn 3)", and that IS its name. '
+            "Never invent a filename for one, and never reach for a "
+            "file-looking name from inside a file's contents.\n"
+            "- For case questions, cite the label and line numbers from "
+            "search results (e.g., 'In data_6-1.log, line 42: ...' or "
+            "'In pasted text (turn 3), line 42: ...') and explain the "
+            "significance using causal language.\n"
             "- For knowledge questions, state the relevant facts and relate "
             "them to the user's investigation context when possible.\n"
-            "- Reference evidence by filename or description, never by ev_ IDs."
+            "- Reference evidence by its label or by description, never by "
+            "ev_ IDs."
         )
 
     async def _resolve_shared_kb_ids(self, user_id: str, organization_id: Any) -> list:
@@ -8329,16 +8337,33 @@ class MilestoneEngine:
             return prefix + content + suffix
 
         # search_file results: append citation guidance so the LLM cites
-        # filename and line numbers in its response.
+        # the source and line numbers in its response.
+        #
+        # #666: this instruction is the mechanism that put
+        # "pasted-content-20260709T105531.txt (line 20)" in front of Beta
+        # users — it tells the model to cite a name and hands it one. The
+        # tool supplies ``UploadedFile.display_name`` under that key, which
+        # is the same string the item's ``label`` attribute carries in
+        # <evidence_collected>, so the name the model is told to cite here
+        # designates something it can also see there. "source", not
+        # "filename": a paste has no filename to cite.
         if tool_name == "search_file" and isinstance(result.data, dict):
-            filename = result.data.get("filename", "unknown")
+            source_name = result.data.get("label", "unknown")
             results_count = result.data.get("results_count", 0)
             content = json.dumps(result.data)
             if results_count > 0:
-                content += (
-                    f"\n\nCITATION: When referencing these results, cite the "
-                    f'filename and line numbers (e.g., "In {filename}, '
-                    f'line 42: ...").'
+                # HEAD, not tail. ``_truncate_tool_result`` protects a tail
+                # only for kb_qa (#1088); every other tool takes a plain
+                # ``text[:cap] + marker``, which is head-first. A search_file
+                # excerpts result over a large paste routinely exceeds the cap,
+                # so a tail-appended instruction is deleted exactly on the
+                # results big enough to need it — and this is the one line that
+                # hands the model the correct name to cite. Leading it also
+                # reads better: the rule arrives before the data it governs.
+                content = (
+                    f"CITATION: When referencing these results, cite the source "
+                    f'and line numbers exactly as named here (e.g., "In '
+                    f'{source_name}, line 42: ...").\n\n' + content
                 )
             return content
 

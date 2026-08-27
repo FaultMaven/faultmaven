@@ -23,7 +23,10 @@ from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
-from faultmaven.core.investigation.turn_pipeline import generate_implicit_query
+from faultmaven.core.investigation.turn_pipeline import (
+    generate_implicit_query,
+    submitted_name,
+)
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -260,11 +263,6 @@ _CLARIFICATION_FRIENDLY_NAMES: Dict[str, Dict[str, str]] = {
 _CLARIFICATION_FALLBACK_LABEL = "Something else"
 _CLARIFICATION_FALLBACK_LONG = "unstructured text"
 
-# Upload provenances that mean "the user pasted text" rather than picked a
-# file. Both spellings occur on UploadedFile.upload_source (the turns route
-# tags pasted_content as "text_paste"; the documented enum value is "paste").
-_PASTE_SOURCES = {"paste", "text_paste"}
-
 # Choice seeds for paste-provenance clarifications. Pasted text in an incident
 # thread is overwhelmingly command output or logs (product guidance: command
 # output, regardless of content, is usually pasted) — and a paste that reached
@@ -275,28 +273,50 @@ _PASTE_CLARIFICATION_SEEDS = ["command_output", "logs_and_errors"]
 
 
 def _is_paste_upload(target: "_PreprocessedAttachment") -> bool:
-    """True when the clarification target was pasted text, not a chosen file.
+    """True when the clarification target was pasted TEXT, not a chosen file.
 
-    Provenance tag first; the synthetic ``pasted-content-*`` filename is the
-    fallback signal for rows whose tag predates the current values.
+    Deliberately paste-only, not "paste or capture": its second caller seeds
+    the clarification choices with ``_PASTE_CLARIFICATION_SEEDS`` (command
+    output / logs), which is a prior about war-room pastes and would be wrong
+    for a captured web page. Detection itself lives on ``UploadedFile`` —
+    provenance tag first, minted-filename shape as the fallback for rows
+    whose tag predates the current values.
     """
-    uf = target.uploaded_file
-    if (uf.upload_source or "") in _PASTE_SOURCES:
-        return True
-    return (uf.filename or "").startswith("pasted-content-")
+    return target.uploaded_file.is_pasted
 
 
 def _clarification_subject(target: "_PreprocessedAttachment") -> str:
     """How the clarification copy names the thing being classified.
 
-    A paste's synthetic name ("Untitled", "pasted-content-…") refers to the
-    transport format, not anything the user recognizes — call it what they
-    did: text they pasted. Real files keep their filename.
+    A minted name ("pasted-content-…", "page-capture-…") refers to the
+    transport, not anything the user recognizes — call it what they did.
+    Real files keep their filename.
+
+    The capture arm is not hypothetical: classification_failed is decided
+    BEFORE the page_capture passthrough in ``classify_and_extract``, so a
+    capture the classifier is unsure about lands here, and without this it
+    read ``the file you shared ("page-capture-20260709T105531.txt")`` —
+    #666 on the Copilot's own channel, with no LLM in the loop (#1198
+    review).
     """
-    if _is_paste_upload(target):
-        return "the text you pasted"
+    phrase = target.uploaded_file.submission_phrase
+    if phrase is not None:
+        return phrase
     filename = target.attachment_filename or "the uploaded file"
     return f'the file you shared ("{filename}")'
+
+
+def _upload_subject(uf) -> str:
+    """How agent copy names an ``UploadedFile`` back to the user.
+
+    Same rule as ``_clarification_subject``, reached from the other side:
+    that one starts from a preprocessing result, this one from the stored
+    file row. Sentence register, so no turn number — see
+    ``UploadedFile.submission_phrase``.
+    """
+    if uf is None or not getattr(uf, "filename", None):
+        return "the uploaded file"
+    return uf.submission_phrase or f'"{uf.filename}"'
 
 
 def _build_classification_clarification_suggestions(
@@ -686,7 +706,8 @@ class InvestigationService:
             query = payload.query
             if not payload.has_query and payload.has_attachments:
                 query = generate_implicit_query(
-                    payload.attachments, uploaded_files_this_turn
+                    uploaded_files_this_turn,
+                    [a.filename for a in payload.attachments],
                 )
 
             # 2. Build user message and update case in-memory (NOT persisted yet).
@@ -1058,7 +1079,18 @@ class InvestigationService:
                 attachments_processed=[
                     AttachmentResult(
                         file_id=res.uploaded_file.file_id,
-                        filename=att.filename,
+                        # The chip the Copilot renders on the very turn
+                        # the user pasted — #666's most immediate surface.
+                        # ``file_id`` is the documented handle the frontend
+                        # references an attachment by, so this field is
+                        # display-only.
+                        #
+                        # ``submitted_name``, not ``uploaded_file.display_name``:
+                        # dedup matches on content_hash ALONE, so the row can
+                        # be one the user named differently on an earlier turn,
+                        # and naming the chip from it reports a filename they
+                        # never sent.
+                        filename=submitted_name(att.filename, res.uploaded_file),
                         source_type=res.uploaded_file.data_type or "",
                         file_size=res.uploaded_file.size_bytes,
                         processing_status=(
@@ -1826,11 +1858,11 @@ class InvestigationService:
             trigger="clarification",
         ).inc()
 
-        filename = file_meta.filename or "the uploaded file"
+        subject = _upload_subject(file_meta)
         friendly = _CLARIFICATION_FRIENDLY_NAMES.get(data_type.value, {}).get(
             "long"
         ) or data_type.value.replace("_", " ")
-        agent_response = f'Got it — I\'ve recorded "{filename}" as {friendly}.'
+        agent_response = f"Got it — I've recorded {subject} as {friendly}."
         if preprocessing_result.summary:
             agent_response += f"\n\n{preprocessing_result.summary}"
 
@@ -1840,7 +1872,11 @@ class InvestigationService:
                 {
                     "label": "Analyze it now",
                     "action_type": "DECIDE",
-                    "payload": f'Analyze the file "{filename}".',
+                    # The identifier, not ``subject``: this payload is
+                    # replayed as a standalone turn, where "the text you
+                    # pasted" has no antecedent. The sentence above it is in
+                    # conversation and keeps the prose form.
+                    "payload": f'Analyze "{file_meta.display_name}".',
                     "body": "Run the analysis with the corrected classification.",
                 }
             ],

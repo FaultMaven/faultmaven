@@ -164,6 +164,10 @@ class ReadFileTool(AgentTool):
             file_meta = case.find_uploaded_file(evidence.source_file_id)
             storage_ref = file_meta.storage_ref if file_meta else None
             filename = (file_meta.filename if file_meta else None) or evidence_id
+            # The name the LLM sees. Split from ``filename`` because the
+            # latter drives extension sniffing and has to stay the stored
+            # one (#666).
+            shown_name = (file_meta.display_name if file_meta else None) or evidence_id
             if not storage_ref:
                 return ToolResult(
                     success=False,
@@ -201,6 +205,7 @@ class ReadFileTool(AgentTool):
                 mime_type=mime_type,
                 max_lines=max_lines,
                 offset=offset,
+                display_name=shown_name,
             )
 
             logger.info(
@@ -212,7 +217,7 @@ class ReadFileTool(AgentTool):
                 success=True,
                 data={
                     "content": content,
-                    "filename": filename,
+                    "label": shown_name,
                     "mime_type": mime_type,
                     "file_size": len(file_data),
                     "evidence_id": evidence_id,
@@ -235,22 +240,30 @@ class ReadFileTool(AgentTool):
         mime_type: str,
         max_lines: Optional[int] = None,
         offset: int = 0,
+        display_name: Optional[str] = None,
     ) -> str:
         """Process file content based on type.
 
         Args:
             file_data: Raw file bytes
-            filename: Original filename
+            filename: Original filename — the STORED name. Drives the
+                text-vs-binary decision, which reads the extension, so it
+                has to stay the real one.
             mime_type: File MIME type
             max_lines: Maximum lines to return
             offset: Line offset to start from
+            display_name: Name to put in the returned placeholders, which
+                the LLM reads. Defaults to ``filename``; the caller passes
+                ``UploadedFile.display_name`` so a minted
+                ``pasted-content-<ts>.txt`` never reaches the model (#666).
 
         Returns:
             Processed content as string
         """
+        shown = display_name or filename
         # Check if file is too large
         if len(file_data) > MAX_TEXT_SIZE and max_lines is None:
-            return self._handle_large_file(file_data, filename, mime_type)
+            return self._handle_large_file(file_data, shown, mime_type)
 
         # Check if it's a text file
         if self._is_text_file(mime_type, filename):
@@ -258,23 +271,21 @@ class ReadFileTool(AgentTool):
 
         # Check if it's an image
         if mime_type.startswith("image/"):
-            return self._summarize_image(filename, mime_type, len(file_data))
+            return self._summarize_image(shown, mime_type, len(file_data))
 
         # Check if it's a PDF
         if mime_type == "application/pdf":
-            return self._summarize_pdf(filename, len(file_data))
+            return self._summarize_pdf(shown, len(file_data))
 
         # For other binary files, return base64 with warning
         if len(file_data) <= 10000:  # Only encode small binary files
             encoded = base64.b64encode(file_data).decode("utf-8")
             return (
-                f"[Binary file: {filename}, {len(file_data)} bytes]\n"
+                f"[Binary file: {shown}, {len(file_data)} bytes]\n"
                 f"Base64 encoded content:\n{encoded}"
             )
 
-        return (
-            f"[Binary file: {filename}, {len(file_data)} bytes, content not displayed]"
-        )
+        return f"[Binary file: {shown}, {len(file_data)} bytes, content not displayed]"
 
     def _is_text_file(self, mime_type: str, filename: str) -> bool:
         """Check if file is a text file."""

@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.prompts.context_builder import (
+    _label_attr,
     build_investigation_context,
 )
 
@@ -298,7 +299,7 @@ you MUST ground it in evidence. Use this reasoning structure internally
 3. Conclusion — What is your answer, finding, or recommended next step?
 
 Write your response in natural conversational prose. Weave evidence references
-into your explanation — refer to evidence by its label (filename, description),
+into your explanation — refer to evidence by its label attribute,
 never by internal IDs.
 
 Even a single sentence of reasoning is sufficient when the evidence and reasoning
@@ -1083,7 +1084,7 @@ KEY PRINCIPLES:
 - VERIFY BEFORE ACKNOWLEDGING "ALREADY PROVIDED": When the user claims data was already
   submitted ("I already sent that", "see the file from earlier", "the output hasn't
   changed"), scan <evidence_collected> for a match BEFORE agreeing. If a matching file
-  exists, acknowledge specifically (cite the filename or data_type) and proceed. If no
+  exists, acknowledge specifically (cite its label or data_type) and proceed. If no
   match exists, do not agree — name what's missing and ask for it ("I see the envoy
   logs and pod status, but the DR YAML hasn't come through yet; could you re-paste
   it?"). A reflexive apology that validates a false "already sent" claim strands the
@@ -1194,7 +1195,11 @@ SCHEMA_INSTRUCTIONS = """
 You MUST respond with valid JSON matching these fields:
 - **agent_response**: Your natural conversational response to the user.
   * Ground diagnostic claims in evidence (see DIAGNOSTIC REASONING above)
-  * Reference evidence by its label (filename, description) — NEVER by ev_ IDs
+  * Reference evidence by its label attribute, verbatim — NEVER by ev_ IDs.
+    Not every item is a file the user named: pasted text is labelled like
+    "pasted text (turn 3)", and that IS its name.
+    Never invent a filename for one, and never take a file-looking name
+    from inside a file's contents
 - **suggested_follow_ups**: 2-4 suggestions guiding the user's next action.
   * DECIDE: click sends your pre-written message (user-voiced label, complete payload, optional body)
   * RUN: click copies your exact command (user-voiced label, command payload, optional body)
@@ -2588,19 +2593,40 @@ def _fallback_current_turn_evidence(case: Case) -> str:
 
     The fallback fires at the tightest budget — precisely when a fresh upload
     must not be dropped. Renders just the addressable essentials (file_id +
-    filename + searchable) so the agent can `search_file` it. Empty when no
-    current-turn upload exists.
+    label + searchable) so the agent can `search_file` it. Empty when no
+    current-turn upload exists. The label carries
+    ``UploadedFile.display_name`` — the same citable name every other render
+    uses (#666), so a stub the agent cites reads the same here as in a
+    full-budget turn.
+
+    De-duplicated by ``file_id``, and every row is re-resolved through
+    ``case.find_uploaded_file`` before it is named. ``milestone_engine``
+    appends a second ``UploadedFile`` row for the same id on every attachment
+    turn (#1207); this render has no ``structural_index`` filter to hide it,
+    so it was stubbing the same upload twice. Worse, the scan below selects by
+    ``uploaded_at_turn == current_turn``, which picks the DUPLICATE, while
+    ``_evidence_label`` resolves via ``find_uploaded_file``, which is
+    first-wins and picks the original — two names for one file in one prompt.
+    Re-resolving makes this render agree with every other one: one resolver,
+    one answer.
     """
     current_turn = getattr(case, "current_turn", 0)
+    find = getattr(case, "find_uploaded_file", None)
     stubs = []
-    for uf in getattr(case, "uploaded_files", None) or []:
-        if getattr(uf, "uploaded_at_turn", None) == current_turn and getattr(
-            uf, "file_id", None
+    seen_file_ids = set()
+    for row in getattr(case, "uploaded_files", None) or []:
+        if getattr(row, "file_id", None) in seen_file_ids:
+            continue
+        if getattr(row, "uploaded_at_turn", None) == current_turn and getattr(
+            row, "file_id", None
         ):
+            seen_file_ids.add(row.file_id)
+            # Canonical row for this id, so the name matches <evidence>.
+            uf = (find(row.file_id) if find is not None else None) or row
             head = (uf.structural_index or "")[:200].replace("\n", " ")
             stubs.append(
-                f'<uploaded_file file_id="{uf.file_id}" '
-                f'filename="{uf.filename or "data"}" searchable="true">'
+                f'<uploaded_file file_id="{uf.file_id}"'
+                f'{_label_attr(uf)} searchable="true">'
                 f"{head}</uploaded_file>"
             )
         if len(stubs) >= 3:

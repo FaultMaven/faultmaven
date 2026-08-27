@@ -1765,6 +1765,93 @@ class EvidenceStance(str, Enum):
 # =============================================================================
 
 
+# Pasted text and captured pages arrive with no filename, so the turns route
+# mints one at ingestion (``resolve_paste_source_meta`` +
+# ``f"{prefix}{ts}.txt"`` in modules/case/api/routes.py). That name is a
+# storage/transport artifact: the user never typed it and it says nothing
+# about the content. It is still a real ``filename`` — dedup, the storage
+# backend, extension sniffing and the classifier all consume it — so the fix
+# for #666 is not to stop minting it, but to keep it out of anything a model
+# or a user reads. ``display_name`` is that separation: the name to SHOW,
+# distinct from the name it is STORED under.
+_SYNTHETIC_FILENAME_RE = re.compile(
+    r"^(pasted-content|page-capture)-\d{8}T\d{6}Z?\.txt$"
+)
+
+# Anchored on the minted shape, not just the prefix, so a file the user
+# actually named "pasted-notes.txt" keeps its own name.
+_MINTED_PREFIX_TO_KIND = {"pasted-content": "paste", "page-capture": "capture"}
+
+# Detection is a three-way rule, because NEITHER signal is trustworthy alone.
+#
+# ``upload_source`` looks authoritative and is partly fabricated:
+# ``investigation_service`` derives what it hands the engine as
+# ``"paste" if att.filename.startswith("pasted-content-")``, and the upsert
+# persists that over the real column (not COALESCE'd). So a user's own file
+# named ``pasted-content-notes.txt`` comes back tagged ``paste``, and trusting
+# the tag would erase their filename from every prompt, tool result, report
+# citation and clarification card.
+#
+# The minted filename shape is not sufficient either: a paste can legitimately
+# arrive named ``Untitled`` (the Copilot's older paste path, still present on
+# staging cases), which matches no minted pattern. Trusting only the shape
+# would call that a file the user chose and quote "Untitled" at them.
+#
+# What makes the two decidable together is that the fabrication has a
+# signature: it fires only on the ``pasted-content-``/``page-capture-``
+# PREFIX, which is strictly looser than the full minted SHAPE. So:
+#
+#   1. full minted shape        -> synthetic, conclusively (the route minted it)
+#   2. prefix but not the shape -> a name the user chose that merely collides
+#                                  with the prefix; the tag on such a row was
+#                                  computed FROM that prefix, so it carries no
+#                                  independent information and is ignored
+#   3. neither                  -> the tag was not fabricated from the name, so
+#                                  it is the genuine provenance ("Untitled")
+#
+# Rule 2 is also what keeps #1201 from mattering here: a capture mis-tagged
+# ``file_upload`` still matches rule 1 on its filename.
+_MINTED_PREFIXES = ("pasted-content-", "page-capture-")
+
+
+def is_minted_filename(filename: Optional[str]) -> bool:
+    """True when this NAME was minted by the turns route, not typed by a user.
+
+    Takes the name, not the row, because the two can disagree and the caller
+    usually means the name. Content-hash dedup matches on bytes ALONE, so a
+    paste can be handed back an ``UploadedFile`` for a real file the user
+    uploaded earlier: the row is not synthetic, and the submitted name still
+    is. Asking the row there answers the wrong question and re-emits the
+    minted name (#1198 review) -- the exact defect #666 is about.
+
+    Only rule 1 of the three-way rule applies to a bare name: there is no
+    ``upload_source`` to weigh, and rule 2 (a user's own file whose name
+    merely collides with the prefix) is the default anyway.
+    """
+    return bool(filename) and bool(_SYNTHETIC_FILENAME_RE.match(filename))
+
+
+def minted_filename_phrase(filename: Optional[str]) -> Optional[str]:
+    """Prose for a minted NAME, or None when the name is the user's own.
+
+    The bare-name twin of ``UploadedFile.submission_phrase``, for the layers
+    that hold a filename and no row -- preprocessing builds user-visible text
+    before any ``UploadedFile`` exists. Same wording, one definition.
+    """
+    match = _SYNTHETIC_FILENAME_RE.match(filename or "")
+    if not match:
+        return None
+    kind = _MINTED_PREFIX_TO_KIND[match.group(1)]
+    return "the page you captured" if kind == "capture" else "the text you pasted"
+
+
+# ``upload_source`` spellings that mean "the user pasted/captured this". Both
+# paste spellings occur: the turns route writes ``text_paste``, the documented
+# enum value is ``paste``.
+_PASTE_UPLOAD_SOURCES = frozenset({"paste", "text_paste"})
+_CAPTURE_UPLOAD_SOURCES = frozenset({"page_capture"})
+
+
 class UploadedFile(BaseModel):
     """
     File the user submitted to a case (upload, paste, page capture).
@@ -1921,6 +2008,129 @@ class UploadedFile(BaseModel):
             "the file has no parseable timestamps."
         ),
     )
+
+    # ------------------------------------------------------------------
+    # Display identity (#666)
+    #
+    # ``filename`` is the name the file is STORED under. The properties
+    # below are the name it is SHOWN under. Plain properties, not pydantic
+    # fields: they are derived, never persisted, and never serialised into
+    # an API response.
+    #
+    # Two registers, one rule. ``display_name`` is the IDENTIFIER — it goes
+    # wherever a name is shown *as a name* (prompt attributes, tool results,
+    # report citations) and the model is told to cite it, so it must pick
+    # this item out of this case and keep doing so. ``submission_phrase``
+    # is the PROSE form for sentences addressed to the user, where the
+    # referent is already unambiguous.
+    # ------------------------------------------------------------------
+
+    @property
+    def _minted_kind(self) -> Optional[str]:
+        """``"paste"`` / ``"capture"`` / ``None`` — see the three-way rule above.
+
+        Returns ``None`` both for an ordinary file and for one whose name
+        merely collides with a minted prefix; the caller cannot tell those
+        apart and does not need to, since both keep their filename.
+        """
+        match = _SYNTHETIC_FILENAME_RE.match(self.filename)
+        if match:
+            return _MINTED_PREFIX_TO_KIND[match.group(1)]  # rule 1
+        if self.filename.startswith(_MINTED_PREFIXES):
+            return None  # rule 2 — the tag was computed from this name
+        source = self.upload_source or ""  # rule 3
+        if source in _PASTE_UPLOAD_SOURCES:
+            return "paste"
+        if source in _CAPTURE_UPLOAD_SOURCES:
+            return "capture"
+        return None
+
+    @property
+    def is_pasted(self) -> bool:
+        """True when the user pasted this content rather than choosing a file."""
+        return self._minted_kind == "paste"
+
+    @property
+    def is_page_capture(self) -> bool:
+        """True when the browser extension captured this from a web page."""
+        return self._minted_kind == "capture"
+
+    @property
+    def has_synthetic_filename(self) -> bool:
+        """True when ``filename`` was minted by us, not supplied by the user.
+
+        The predicate behind ``display_name``'s branch and behind
+        ``submission_phrase``; callers wanting a name should ask for one of
+        those rather than branch on this themselves.
+        """
+        return self._minted_kind is not None
+
+    @property
+    def display_name(self) -> str:
+        """The citable name: what the model is told to reference this by.
+
+        Real uploads keep their filename — the user chose it and recognises
+        it. Pastes and page captures are named by HOW they arrived and WHEN,
+        because the minted ``pasted-content-<ts>.txt`` is meaningless to the
+        person who typed the text and reads as a file they never had (#666).
+
+        Two properties of the minted name had to survive the substitution,
+        and only one of them is obvious:
+
+        **Unique.** Citation is the whole point — "In pasted logs, line 42"
+        has to designate one item. A name derived from ``data_type`` does
+        not: two pastes classified ``logs`` in one case share it, and every
+        page capture would be "captured page". The turn number separates
+        them, because the turns route mints at most one synthetic name per
+        turn — ``pasted_content`` is a single form field, so a turn carries
+        one paste or one capture, never two.
+
+        **Stable — conditional on #1207.** ``data_type`` is rewritten by
+        reclassification (see ``_handle_file_reclassification``), so a name
+        built from it renames the item mid-case: cited as "pasted logs" on
+        turn 3, gone by turn 4 when the user corrects it to command output —
+        and the transcript's own back-reference then names nothing in context.
+        ``summary`` is rewritten by the same flow and is not unique either,
+        which is why neither is used here.
+
+        ``uploaded_at_turn`` is written once at ingestion and *should* never
+        be revised — but today it is, by #1207: the engine appends a duplicate
+        row carrying the CURRENT turn, and ``_upsert_uploaded_files`` assigns
+        ``uploaded_at_turn = EXCLUDED.uploaded_at_turn`` with no COALESCE, so
+        a deduped re-paste on turn 5 rewrites a turn-3 row to 5. This
+        identifier is stable exactly when that stops — which #1207 must do
+        anyway, since the same append also destroys ``content_hash`` and
+        breaks dedup outright. See ``test_uploaded_at_turn_is_immutable`` in
+        tests/unit/test_synthetic_filename_leak.py, which pins the
+        requirement and fails until #1207 lands.
+
+        The data type is not lost: it rides on the ``data_type`` attribute
+        beside the name, and the summary on ``<summary>``. This slot's job
+        is to designate, not to describe.
+        """
+        if not self.has_synthetic_filename:
+            return self.filename
+        kind = "captured page" if self.is_page_capture else "pasted text"
+        return f"{kind} (turn {self.uploaded_at_turn})"
+
+    @property
+    def submission_phrase(self) -> Optional[str]:
+        """How prose addressed to the user names this, or None for a real file.
+
+        The sentence register: "I've recorded the text you pasted as command
+        output". No turn number, because a sentence carries its own referent
+        — this is only ever used about a file the sentence is already about.
+        ``None`` means "this has a filename; quote that instead", which the
+        caller decides because the quoting style differs per surface.
+        """
+        if self.is_page_capture:
+            return "the page you captured"
+        if self.is_pasted:
+            return "the text you pasted"
+        return None
+
+    # NOTE: ``minted_filename_phrase`` (module level) is the same wording for
+    # callers holding only a name. Keep the two in step.
 
 
 # =============================================================================

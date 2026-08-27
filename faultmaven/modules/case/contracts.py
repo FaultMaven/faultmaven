@@ -445,7 +445,9 @@ from faultmaven.modules.case.domain.models import (  # noqa: E402
     WorkingConclusion,
     classify_solution_outcome,
     established_by_for_display,
+    is_minted_filename,
     mechanism_for_display,
+    minted_filename_phrase,
     normalize_stored_report_content,
 )
 

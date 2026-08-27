@@ -809,10 +809,18 @@ class TestMixedForms:
 
 
 class TestFilenameAttribution:
-    """Test that evidence XML tags include filename when source_file_id maps to an UploadedFile."""
+    """Evidence XML tags name their source file when source_file_id resolves.
+
+    #666: the name lives in ONE attribute, ``label``, carrying
+    ``UploadedFile.display_name``. For a file the user chose that IS the
+    filename; for a paste it is "pasted text (turn N)". The separate
+    ``filename`` attribute was removed — it could only ever be absent or
+    invented for a paste, which left the model told to cite a filename that
+    is missing from half its context.
+    """
 
     def test_tier_a_evidence_includes_filename(self):
-        """Tier A evidence with source_file_id → filename attribute in XML."""
+        """Tier A evidence with source_file_id → label attribute in XML."""
         ev = _make_evidence(
             summary="Nginx access log errors",
             extract="ERROR: 503 at /api/health",
@@ -831,10 +839,11 @@ class TestFilenameAttribution:
         ]
         result = _build_evidence_context(case)
 
-        assert 'filename="nginx-access.log"' in result
+        assert 'label="nginx-access.log"' in result
+        assert "filename=" not in result
 
     def test_tier_b_evidence_includes_filename(self):
-        """Tier B (older) evidence with source_file_id → filename in XML."""
+        """Tier B (older) evidence with source_file_id → label in XML."""
         # Create 4 items: first 1 is older (Tier B), last 3 are recent (Tier A)
         evidence = [
             _make_evidence(
@@ -863,11 +872,13 @@ class TestFilenameAttribution:
         ]
         result = _build_evidence_context(case)
 
-        assert 'filename="app-server.log"' in result
+        assert 'label="app-server.log"' in result
+        assert "filename=" not in result
 
     def test_no_filename_when_no_source_file_id(self):
-        """Evidence without source_file_id (chat-extracted) → no
-        filename attribute. Post-010: source_file_id=None requires
+        """Evidence without source_file_id (chat-extracted) → the label
+        falls back to the source type, and there is no filename attribute
+        anywhere. Post-010: source_file_id=None requires
         source_type=USER_DESCRIPTION to satisfy the source-invariant.
         """
         ev = _make_evidence(
@@ -880,9 +891,10 @@ class TestFilenameAttribution:
         result = _build_evidence_context(case)
 
         assert "filename=" not in result
+        assert 'label="user description"' in result
 
     def test_multiple_files_distinguished_by_filename(self):
-        """Two evidence items from different files → distinct filenames in XML."""
+        """Two evidence items from different files → distinct labels in XML."""
         ev1 = _make_evidence(
             summary="Nginx errors",
             extract="503 errors",
@@ -914,8 +926,8 @@ class TestFilenameAttribution:
         ]
         result = _build_evidence_context(case)
 
-        assert 'filename="nginx-access.log"' in result
-        assert 'filename="app-server.log"' in result
+        assert 'label="nginx-access.log"' in result
+        assert 'label="app-server.log"' in result
 
 
 # ============================================================
@@ -1213,6 +1225,40 @@ class TestPageCaptureRerankingIntegration:
             cpu_pos < network_pos
         ), f"CPU Usage (pos={cpu_pos}) should appear before Network (pos={network_pos})"
 
+    def test_capture_mis_tagged_file_upload_is_still_reranked(self):
+        """#1201 tags captures reaching the engine ``upload_source=
+        "file_upload"``. The rerank used to hand-compare that column, so it
+        silently stopped running on exactly the inputs it exists for; it now
+        asks ``uf.is_page_capture``, which reads the minted filename shape
+        (#1198 review).
+        """
+        file_id = "file_aaccccccdd12"
+        ev = _make_evidence(
+            summary="Grafana dashboard capture",
+            extract=_PAGE_CAPTURE_CONTENT,
+            source_type=EvidenceSourceType.TEXT,
+            source_file_id=file_id,
+        )
+        case = _make_case_with_evidence([ev])
+        case.uploaded_files = [
+            UploadedFile(
+                file_id=file_id,
+                filename="page-capture-20260709T105531.txt",
+                size_bytes=len(_PAGE_CAPTURE_CONTENT),
+                uploaded_at_turn=1,
+                # The wrong value #1201 persists for a capture.
+                upload_source="file_upload",
+                structural_index=_PAGE_CAPTURE_CONTENT,
+            )
+        ]
+        result = _build_evidence_context(case, user_query="CPU usage high")
+        cpu_pos = result.find("## CPU Usage")
+        network_pos = result.find("## Network")
+        assert cpu_pos < network_pos, (
+            f"rerank did not run on a capture tagged file_upload "
+            f"(CPU pos={cpu_pos}, Network pos={network_pos})"
+        )
+
     def test_non_page_capture_not_reranked(self):
         """Evidence whose backing UploadedFile is not a page capture is not
         reranked regardless of user_query."""
@@ -1461,9 +1507,17 @@ class TestIdenticalToPriorUploadAttribute:
 
 
 class TestSemanticLabelForPastedContent:
-    """``_evidence_label`` synthesizes a semantic label from data_type +
-    summary when the filename is the auto-generated pasted-content pattern.
-    Real filenames pass through unchanged."""
+    """``_evidence_label`` labels minted-filename rows with
+    ``UploadedFile.display_name``. Real filenames pass through unchanged.
+
+    The label is the bare display name and nothing else. It used to be
+    enriched with the summary head, which read better but failed the two
+    tests a CITED name has to pass: the summary is rewritten by
+    reclassification (so the name moved mid-case) and is not unique across
+    similar pastes (so the citation designated either). What the summary was
+    contributing — what this item IS — is already in the element, on
+    ``data_type`` and in ``<summary>``.
+    """
 
     def test_pasted_content_label_uses_data_type_and_summary(self):
         file_id = "file_0e0e0e0e0e05"
@@ -1492,15 +1546,15 @@ class TestSemanticLabelForPastedContent:
             )
         ]
         result = _build_evidence_context(case)
-        # Label uses semantic content, not the timestamped filename.
-        assert "configuration: DestinationRule" in result
-        # The raw filename is still present on the filename attribute, but
-        # not as the label.
         ev_line = next(line for line in result.splitlines() if ev.evidence_id in line)
-        assert (
-            'label="configuration: DestinationRule'
-            in ev_line[: ev_line.find('filename="')]
-        )
+        # Named by how it arrived and when — stable under reclassification,
+        # unique within the case.
+        assert 'label="pasted text (turn 1)"' in ev_line
+        # #666: the minted name does not ride along on a filename attribute
+        # next to the label — the element has no filename at all, because
+        # the file has none the user would recognise.
+        assert "filename=" not in ev_line
+        assert "pasted-content-" not in result
 
     def test_real_filename_passes_through(self):
         file_id = "file_0f0f0f0f0f06"
@@ -1542,7 +1596,7 @@ class TestSemanticLabelForPastedContent:
             )
         ]
         result = _build_evidence_context(case)
-        assert 'label="logs (pasted)"' in result
+        assert 'label="pasted text (turn 1)"' in result
 
 
 class TestRule5NewDataClaimedButNotAttached:
