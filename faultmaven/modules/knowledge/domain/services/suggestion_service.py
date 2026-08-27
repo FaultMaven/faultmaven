@@ -480,33 +480,57 @@ Format as Markdown with these sections:
         # Create knowledge item
         knowledge_item_id = None
         if self._knowledge_service:
-            try:
-                result = await self._knowledge_service.upload_document(
-                    content=suggestion.suggested_content,
-                    title=suggestion.suggested_title,
-                    document_type=suggestion.suggested_type,
-                    # The platform tier, stated rather than inherited from a
-                    # default (#1166). Gated at the approve route by
-                    # require_global_authoring_allowed(); an approved
-                    # suggestion becomes platform-shipped knowledge, which is
-                    # why that gate is there and why this says "global" out
-                    # loud instead of taking whatever the service assumed.
-                    scope="global",
-                    category="extracted",
-                    tags=["extracted", "case-derived"],
-                    source_url=None,
-                    description=f"Extracted from case {suggestion.case_id}",
-                    metadata={
-                        "source_suggestion_id": suggestion_id,
-                        "source_case_id": suggestion.case_id,
-                        "extracted_by": suggestion.extracted_by,
-                        "verification_level": 2,  # Admin verified
-                    },
-                )
-                knowledge_item_id = result.get("document_id")
-            except Exception as e:
-                self.logger.error(f"Failed to create knowledge item: {e}")
-                return None
+            # NO try/except around this call (#1200).
+            #
+            # It used to pass ``metadata={...}`` — a parameter
+            # ``upload_document`` has never had. The resulting ``TypeError``
+            # was caught by a broad ``except Exception`` here, logged, and
+            # turned into ``return None``, which the approve route renders as
+            # ``400 "Cannot approve: PII scan not complete"``. That claim is
+            # false by construction: the scan had to be CLEAN or REMEDIATED to
+            # get past ``is_ready_for_review`` above. So the approval step of
+            # the knowledge flywheel created nothing and misreported why, and
+            # the failure was shaped exactly like "nothing to approve".
+            #
+            # A ``TypeError`` from a call this service makes to its own
+            # collaborator is a programming error, and a failed ingestion is a
+            # server-side fault. Neither is a client error and neither is a
+            # statement about PII. Both now propagate: the route's own
+            # ``except Exception`` logs them and answers 500. ``return None``
+            # is left to mean one thing only — the suggestion is not ready —
+            # which is the one case that 400 is actually about.
+            result = await self._knowledge_service.upload_document(
+                content=suggestion.suggested_content,
+                title=suggestion.suggested_title,
+                document_type=suggestion.suggested_type,
+                # The platform tier, stated rather than inherited from a
+                # default (#1166). Gated at the approve route by
+                # require_global_authoring_allowed(); an approved
+                # suggestion becomes platform-shipped knowledge, which is
+                # why that gate is there and why this says "global" out
+                # loud instead of taking whatever the service assumed.
+                scope="global",
+                category="extracted",
+                tags=["extracted", "case-derived"],
+                source_url=None,
+                # The lineage the dropped ``metadata=`` was trying to record,
+                # carried on the parameter that exists. It was being lost
+                # twice over before: the call raised, so nothing was recorded
+                # at all.
+                #
+                # ``verification_level: 2`` is deliberately NOT reconstructed
+                # here. There is no honest home for it yet —
+                # verification_status/level is already muddled and a KB
+                # snippet reports ``experimental`` regardless (#878). Writing
+                # it into free text would look like provenance while carrying
+                # none, so it waits for that issue rather than being faked.
+                description=(
+                    f"Extracted from case {suggestion.case_id} "
+                    f"by {suggestion.extracted_by} "
+                    f"(suggestion {suggestion_id})"
+                ),
+            )
+            knowledge_item_id = result.get("document_id")
         else:
             # Mock id (no knowledge_service) — still must not match the 12-hex
             # built-in prune pattern, so route through the shared authored-id mint.
