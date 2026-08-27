@@ -1114,11 +1114,54 @@ def _score_evidence_for_tier_a(
 # rides on ``data_type`` beside it.
 
 
+def _xml_text(value) -> str:
+    """Escape a value for interpolation into prompt BODY text (#1208).
+
+    The prompt's element and attribute names are load-bearing — the assembly
+    architecture says so (§2.1) and the engine's instructions tell the model to
+    trust them — so anything caller-controlled that lands in the document has to
+    be unable to introduce markup. A filename is caller-controlled, and evidence
+    routinely arrives from incident data its submitter did not author.
+
+    ``&`` first, or the escapes introduced after it get double-escaped.
+    """
+    if value is None:
+        return ""
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _attr(name: str, value) -> str:
+    """One escaped ``name="value"`` attribute, or ``""`` for an absent value.
+
+    THE single place an attribute is emitted (#1208). Previously each call site
+    interpolated its own value raw, so a file named::
+
+        report" searchable="true" data_type="logs.log
+
+    closed ``label`` and opened two attributes the renderer never emitted —
+    forging, among other things, ``searchable="true"`` on a row with no backing
+    file. Anything the model is told to trust about an item could be asserted by
+    whoever chose the filename.
+
+    Routing every attribute through one helper is the property #1198 established
+    for NAMING and this extends to EMISSION: a new attribute is safe by
+    construction rather than by its author remembering.
+
+    ``"`` is escaped because it is the delimiter. ``'`` deliberately is NOT: it
+    is legal inside a double-quoted attribute, and leaving it alone keeps
+    ordinary filenames (``don't-panic.log``) readable in the one slot the model
+    quotes back to the user (#666).
+    """
+    if value is None or value == "":
+        return ""
+    return f' {name}="{_xml_text(value).replace(chr(34), "&quot;")}"'
+
+
 def _label_attr(uf) -> str:
     """``label="..."`` — the citable name of an ``<uploaded_file>``."""
     if uf is None or not uf.filename:
         return ""
-    return f' label="{uf.display_name}"'
+    return _attr("label", uf.display_name)
 
 
 def _build_hash_first_seen(case) -> Dict[str, int]:
@@ -1362,9 +1405,9 @@ def _render_orphan_file_block(
     orphan gets identical navigation hints (search_map), not a bare stub.
     """
     file_extract, search_map, file_meta = _parse_extract(uf.structural_index or "")
-    file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
+    file_id_attr = _attr("file_id", uf.file_id)
     name_attr = _label_attr(uf)
-    data_type_attr = f' data_type="{uf.data_type}"' if uf.data_type else ""
+    data_type_attr = _attr("data_type", uf.data_type)
     fresh_attr = _fresh_this_turn_attr(uf.uploaded_at_turn, current_turn)
     duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
     entry = (
@@ -1401,7 +1444,7 @@ def _render_orphan_file_block(
             )
         entry += "    <file_extract>\n"
         if uf.filename:
-            entry += f"[Source: {uf.display_name}]\n"
+            entry += f"[Source: {_xml_text(uf.display_name)}]\n"
         entry += file_extract
         entry += truncation_note
         entry += "\n    </file_extract>\n"
@@ -1678,14 +1721,14 @@ def _build_evidence_context(
             tier_b.append(ev)
             continue
 
-        data_type_attr = (
-            f' data_type="{ev.source_type.value}"' if ev.source_type else ""
+        data_type_attr = _attr(
+            "data_type", ev.source_type.value if ev.source_type else None
         )
         label = _evidence_label(ev, case, ev_file_meta)
-        label_attr = f' label="{label}"'
+        label_attr = _attr("label", label)
         file_id_attr = ""
         if ev.source_file_id and ev_file_meta is not None:
-            file_id_attr = f' file_id="{ev.source_file_id}"'
+            file_id_attr = _attr("file_id", ev.source_file_id)
         # Post-010: file-backed evidence has source_file_id set and a
         # raw file behind it. ``searchable`` advertises that the search/
         # deep_analysis tools can operate on this row's source file.
@@ -1718,7 +1761,7 @@ def _build_evidence_context(
             # so the LLM sees which file this content belongs to while reading
             # through multi-evidence blocks, not just in the enclosing tag.
             if ev_file_meta is not None:
-                result += f"[Source: {ev_file_meta.display_name}]\n"
+                result += f"[Source: {_xml_text(ev_file_meta.display_name)}]\n"
             if confidence_advisory:
                 result += f"{confidence_advisory}\n"
             result += file_extract
@@ -1742,10 +1785,10 @@ def _build_evidence_context(
     for ev in tier_b:
         ev_file_meta = case.find_uploaded_file(ev.source_file_id)
         label = _evidence_label(ev, case, ev_file_meta)
-        label_attr = f' label="{label}"'
+        label_attr = _attr("label", label)
         file_id_attr = ""
         if ev.source_file_id and ev_file_meta is not None:
-            file_id_attr = f' file_id="{ev.source_file_id}"'
+            file_id_attr = _attr("file_id", ev.source_file_id)
         is_searchable = ev.source_file_id is not None and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
         confidence_attr, _ = _confidence_marker(ev)
@@ -1774,7 +1817,7 @@ def _build_evidence_context(
     n_omitted += max(0, len(text_evidence) - 5)
     for ev in text_evidence[-5:]:  # Cap at 5 most recent items
         label = _evidence_label(ev, case)
-        label_attr = f' label="{label}"'
+        label_attr = _attr("label", label)
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
         observed_attr = _observed_attr(ev)
         quote_block = ""
