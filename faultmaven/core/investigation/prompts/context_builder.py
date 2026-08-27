@@ -1097,63 +1097,28 @@ def _score_evidence_for_tier_a(
     return score
 
 
+# ONE citable name per item, in one attribute: ``label``.
+#
 # Pasted content and page captures get an auto-generated timestamped filename
-# at ingestion (see UploadedFile.display_name). The name carries no semantic
-# signal, so when the LLM cites it ("see pasted-content-20260524T043237.txt")
-# the reference is information-free AND names a file the user never had (#666).
-# UploadedFile.display_name owns the storage-name/display-name split; the two
-# helpers below apply it to this module's two rendering slots.
+# at ingestion, and citing it back ("see pasted-content-20260524T043237.txt")
+# names a file the user never had (#666). ``UploadedFile.display_name`` owns
+# the storage-name/display-name split and guarantees the two properties a
+# cited name needs — unique within the case, stable across the case's life.
+#
+# The ``filename`` attribute is NOT emitted on either element. A paste has no
+# filename, so it could only ever be filled with an invented one; and while it
+# was emitted for real files only, the model was left being told to cite a
+# filename that is absent from half its context — free to reach for any
+# filename-shaped token it can find. Nothing is lost by dropping it: for a
+# chosen file ``label`` IS the filename, extension included, and the data type
+# rides on ``data_type`` beside it.
 
 
-def _displayable_filename(uf) -> str:
-    """Return a human-readable label for an uploaded file.
-
-    Real filenames pass through unchanged. For pasted/captured content the
-    base comes from ``UploadedFile.display_name`` ("pasted logs", "captured
-    page") and is enriched with the ``summary`` head, which is what actually
-    tells the LLM which item this is when several pastes are in play.
-    """
+def _label_attr(uf) -> str:
+    """``label="..."`` — the citable name of an ``<uploaded_file>``."""
     if uf is None or not uf.filename:
         return ""
-    if not uf.has_synthetic_filename:
-        return uf.filename
-    base = uf.display_name
-    summary = (uf.summary or "").strip()
-    if summary:
-        # First sentence (up to 60 chars) — keeps the label citation-friendly.
-        snippet = summary.split(".")[0][:60].strip()
-        return f"{base}: {snippet}"
-    return base
-
-
-def _filename_attr(uf) -> str:
-    """``filename="..."`` — emitted only for files that HAVE a filename.
-
-    A minted ``pasted-content-<ts>.txt`` is a storage key, not a name the
-    user would recognise, and putting it in a ``filename`` slot is what got
-    it cited back at them (#666). Substituting the display name there would
-    just swap one invented filename for another, so the attribute is omitted
-    entirely: the ``label`` attribute names the item and ``file_id``
-    addresses it, which is everything the LLM needs.
-    """
-    if uf is None or not uf.filename or uf.has_synthetic_filename:
-        return ""
-    return f' filename="{uf.filename}"'
-
-
-def _uploaded_file_name_attr(uf) -> str:
-    """Name attribute for an ``<uploaded_file>`` element.
-
-    ``filename="app.log"`` when the user chose the file; ``label="pasted
-    logs"`` when we minted the name. Same split as ``<evidence>``, which has
-    carried both attributes since the label was introduced — the element
-    always names its item, it just stops claiming the name is a filename.
-    """
-    if uf is None or not uf.filename:
-        return ""
-    if uf.has_synthetic_filename:
-        return f' label="{uf.display_name}"'
-    return f' filename="{uf.filename}"'
+    return f' label="{uf.display_name}"'
 
 
 def _build_hash_first_seen(case) -> Dict[str, int]:
@@ -1292,30 +1257,30 @@ def _observed_attr(ev) -> str:
     return f' observed_through="{end_ts.isoformat()}" age="{age}"'
 
 
-def _evidence_label(ev, file_lookup: dict, case=None) -> str:
-    """Build a short user-facing label for evidence.
+def _evidence_label(ev, case=None) -> str:
+    """Build the citable label for evidence.
 
     Used in the XML ``label`` attribute so the LLM can reference evidence
     by a human-readable name (e.g., "nginx-error.log") instead of the
-    internal ``ev_`` ID.  The label is chosen from the best available
-    source in priority order: filename → source_type → fallback.
+    internal ``ev_`` ID. Priority: the source file's ``display_name`` →
+    ``source_type`` → fallback.
 
-    When ``case`` is provided and the evidence's source file is pasted
-    content with a timestamped auto-filename, the label is synthesized
-    from the file's ``data_type`` and ``summary`` (see
-    ``_displayable_filename``).
+    Resolution goes through ``case.find_uploaded_file`` and nowhere else.
+    It previously ALSO had a ``file_lookup`` dict to fall back on, and the
+    two disagreed: the engine appends a second ``UploadedFile`` row with the
+    same ``file_id`` on every attachment turn, the dict was built last-wins
+    and ``find_uploaded_file`` is first-wins, so one element could be
+    labelled from one row and its ``[Source: …]`` line from the other. Both
+    read ``uf.filename`` before #666, which made the overwrite invisible.
+    One resolver, one answer.
     """
-    # 1. Filename from uploaded files lookup (synthesized label for pasted
-    #    content when case is available)
-    if ev.source_file_id and str(ev.source_file_id) in file_lookup:
-        if case is not None:
-            uf = case.find_uploaded_file(ev.source_file_id)
-            if uf is not None:
-                return _displayable_filename(uf)
-        return file_lookup[str(ev.source_file_id)]
-    # 2. Source type as readable label (handles USER_DESCRIPTION for
-    #    chat-extracted evidence and LOGS / METRICS / etc. for files
-    #    whose filename wasn't in the lookup)
+    if ev.source_file_id and case is not None:
+        uf = case.find_uploaded_file(ev.source_file_id)
+        if uf is not None:
+            return uf.display_name
+    # Source type as readable label — handles USER_DESCRIPTION for
+    # chat-extracted evidence, and file-backed rows whose file is missing
+    # from the aggregate.
     if ev.source_type:
         return ev.source_type.value.replace("_", " ")
     return "uploaded data"
@@ -1375,10 +1340,11 @@ def _render_orphan_file_block(
     ``file_extract`` (per-item capped, with a search_file truncation pointer),
     ``search_map``, and ``file_meta``.
 
-    The name attribute is ``filename`` for a chosen file and ``label`` for a
-    paste/capture, per ``_uploaded_file_name_attr`` (#666).
+    The item is named by a single ``label`` attribute carrying
+    ``UploadedFile.display_name`` — the filename for a chosen file, "pasted
+    text (turn N)" for a paste (#666).
 
-    ``summary_only=True`` emits just the opening/closing tag (id, name,
+    ``summary_only=True`` emits just the opening/closing tag (id, label,
     data_type, freshness, ``searchable``) without the ``file_extract`` body —
     the graceful-degradation render used when a current-turn file can't fit its
     full structural index within the reserve. The file stays present and
@@ -1392,7 +1358,7 @@ def _render_orphan_file_block(
     """
     file_extract, search_map, file_meta = _parse_extract(uf.structural_index or "")
     file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
-    name_attr = _uploaded_file_name_attr(uf)
+    name_attr = _label_attr(uf)
     data_type_attr = f' data_type="{uf.data_type}"' if uf.data_type else ""
     fresh_attr = _fresh_this_turn_attr(uf.uploaded_at_turn, current_turn)
     duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
@@ -1489,55 +1455,17 @@ def _build_evidence_context(
                 if structural_index_is_searchable(uf.structural_index)
             ]
             if files_with_content:
+                # Same render as the current-turn floor and the Tier-D fill:
+                # _render_orphan_file_block, not a third hand-rolled copy of
+                # it. The copy that used to live here was verbatim, which is
+                # exactly why it was a liability — every change to the
+                # <uploaded_file> markup had to be made twice, and the #666
+                # naming change was the second time that bill came due.
                 result = "<evidence_collected>\n"
                 for uf in files_with_content:
-                    file_extract, search_map, file_meta = _parse_extract(
-                        uf.structural_index or ""
+                    result += _render_orphan_file_block(
+                        uf, hash_first_seen, case.current_turn
                     )
-                    # Emit file_id under the same attribute name used on
-                    # <evidence file_id="..."> so the source_file_id rule is
-                    # phase-uniform. The LLM passes this value into
-                    # search_file's evidence_id parameter (the tool accepts
-                    # either an ev_xxx or a file_xxx during INQUIRY).
-                    file_id_attr = f' file_id="{uf.file_id}"' if uf.file_id else ""
-                    name_attr = _uploaded_file_name_attr(uf)
-                    data_type_attr = (
-                        f' data_type="{uf.data_type}"' if uf.data_type else ""
-                    )
-                    fresh_attr = _fresh_this_turn_attr(
-                        uf.uploaded_at_turn, case.current_turn
-                    )
-                    duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
-                    result += (
-                        f"  <uploaded_file{file_id_attr}{name_attr}"
-                        f"{data_type_attr}{fresh_attr}{duplicate_attr}"
-                        f' searchable="true">\n'
-                    )
-                    if file_extract.strip():
-                        truncation_note = ""
-                        if len(file_extract) > EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM:
-                            remaining_chars = (
-                                len(file_extract) - EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
-                            )
-                            file_extract = file_extract[
-                                :EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM
-                            ]
-                            truncation_note = (
-                                f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
-                                "Use search_file with the file_id above for specific lookups.]"
-                            )
-                        result += "    <file_extract>\n"
-                        if uf.filename:
-                            result += f"[Source: {uf.display_name}]\n"
-                        result += file_extract
-                        result += truncation_note
-                        result += "\n    </file_extract>\n"
-                    if search_map and search_map.strip():
-                        result += f"    <search_map>\n{search_map}\n    </search_map>\n"
-                    if file_meta:
-                        meta_lines = _format_file_meta(file_meta)
-                        result += f"    <file_meta>{meta_lines}</file_meta>\n"
-                    result += "  </uploaded_file>\n"
                 result += "</evidence_collected>"
                 return result
         return (
@@ -1545,17 +1473,6 @@ def _build_evidence_context(
             "No formal evidence collected yet.\n"
             "</evidence_collected>"
         )
-
-    # Display-name lookup, keyed by file_id. Holds ``display_name``, not
-    # ``filename``: this feeds _evidence_label, and a minted
-    # ``pasted-content-<ts>.txt`` reaching a label is the leak in #666. The
-    # ``filename`` attribute is emitted separately via _filename_attr, which
-    # omits itself for minted names.
-    file_lookup = {}
-    if hasattr(case, "uploaded_files") and case.uploaded_files:
-        for uf in case.uploaded_files:
-            if uf.file_id and uf.filename:
-                file_lookup[str(uf.file_id)] = uf.display_name
 
     # Separate evidence by source for tiered treatment. Post-010: the
     # ``form`` column was dropped; source_file_id IS NOT NULL is the
@@ -1756,12 +1673,10 @@ def _build_evidence_context(
         data_type_attr = (
             f' data_type="{ev.source_type.value}"' if ev.source_type else ""
         )
-        label = _evidence_label(ev, file_lookup, case)
+        label = _evidence_label(ev, case)
         label_attr = f' label="{label}"'
-        filename_attr = ""
         file_id_attr = ""
-        if ev.source_file_id and str(ev.source_file_id) in file_lookup:
-            filename_attr = _filename_attr(ev_file_meta)
+        if ev.source_file_id and ev_file_meta is not None:
             file_id_attr = f' file_id="{ev.source_file_id}"'
         # Post-010: file-backed evidence has source_file_id set and a
         # raw file behind it. ``searchable`` advertises that the search/
@@ -1772,7 +1687,7 @@ def _build_evidence_context(
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
         observed_attr = _observed_attr(ev)
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
-        result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}>\n'
+        result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{searchable_attr}{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}>\n'
         result += f"    <summary>{ev.summary}</summary>\n"
         if file_extract.strip() and suppress_extract:
             # DA index-only: elide the extract body, keep the file addressable.
@@ -1794,8 +1709,8 @@ def _build_evidence_context(
             # Content-level source attribution: reinforces the XML attribute
             # so the LLM sees which file this content belongs to while reading
             # through multi-evidence blocks, not just in the enclosing tag.
-            if ev.source_file_id and str(ev.source_file_id) in file_lookup:
-                result += f"[Source: {file_lookup[str(ev.source_file_id)]}]\n"
+            if ev_file_meta is not None:
+                result += f"[Source: {ev_file_meta.display_name}]\n"
             if confidence_advisory:
                 result += f"{confidence_advisory}\n"
             result += file_extract
@@ -1817,13 +1732,11 @@ def _build_evidence_context(
 
     # Tier B: Older data evidence (summary only)
     for ev in tier_b:
-        label = _evidence_label(ev, file_lookup, case)
-        label_attr = f' label="{label}"'
         ev_file_meta = case.find_uploaded_file(ev.source_file_id)
-        filename_attr = ""
+        label = _evidence_label(ev, case)
+        label_attr = f' label="{label}"'
         file_id_attr = ""
-        if ev.source_file_id and str(ev.source_file_id) in file_lookup:
-            filename_attr = _filename_attr(ev_file_meta)
+        if ev.source_file_id and ev_file_meta is not None:
             file_id_attr = f' file_id="{ev.source_file_id}"'
         is_searchable = ev.source_file_id is not None and ev_file_meta is not None
         searchable_attr = ' searchable="true"' if is_searchable else ""
@@ -1831,7 +1744,7 @@ def _build_evidence_context(
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
         observed_attr = _observed_attr(ev)
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
-        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{filename_attr}{searchable_attr}{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}>'
+        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{searchable_attr}{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}>'
         entry += f"<summary>{ev.summary}</summary></evidence>\n"
         # Skip (not break) over-budget summaries so a single large item never
         # drops every lower-ranked item behind it (INV-EC-2).
@@ -1852,7 +1765,7 @@ def _build_evidence_context(
     # them).
     n_omitted += max(0, len(text_evidence) - 5)
     for ev in text_evidence[-5:]:  # Cap at 5 most recent items
-        label = _evidence_label(ev, file_lookup, case)
+        label = _evidence_label(ev, case)
         label_attr = f' label="{label}"'
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
         observed_attr = _observed_attr(ev)

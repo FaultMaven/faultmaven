@@ -260,11 +260,6 @@ _CLARIFICATION_FRIENDLY_NAMES: Dict[str, Dict[str, str]] = {
 _CLARIFICATION_FALLBACK_LABEL = "Something else"
 _CLARIFICATION_FALLBACK_LONG = "unstructured text"
 
-# Upload provenances that mean "the user pasted text" rather than picked a
-# file. Both spellings occur on UploadedFile.upload_source (the turns route
-# tags pasted_content as "text_paste"; the documented enum value is "paste").
-_PASTE_SOURCES = {"paste", "text_paste"}
-
 # Choice seeds for paste-provenance clarifications. Pasted text in an incident
 # thread is overwhelmingly command output or logs (product guidance: command
 # output, regardless of content, is usually pasted) — and a paste that reached
@@ -275,26 +270,35 @@ _PASTE_CLARIFICATION_SEEDS = ["command_output", "logs_and_errors"]
 
 
 def _is_paste_upload(target: "_PreprocessedAttachment") -> bool:
-    """True when the clarification target was pasted text, not a chosen file.
+    """True when the clarification target was pasted TEXT, not a chosen file.
 
-    Provenance tag first; the synthetic ``pasted-content-*`` filename is the
-    fallback signal for rows whose tag predates the current values.
+    Deliberately paste-only, not "paste or capture": its second caller seeds
+    the clarification choices with ``_PASTE_CLARIFICATION_SEEDS`` (command
+    output / logs), which is a prior about war-room pastes and would be wrong
+    for a captured web page. Detection itself lives on ``UploadedFile`` —
+    provenance tag first, minted-filename shape as the fallback for rows
+    whose tag predates the current values.
     """
-    uf = target.uploaded_file
-    if (uf.upload_source or "") in _PASTE_SOURCES:
-        return True
-    return (uf.filename or "").startswith("pasted-content-")
+    return target.uploaded_file.is_pasted
 
 
 def _clarification_subject(target: "_PreprocessedAttachment") -> str:
     """How the clarification copy names the thing being classified.
 
-    A paste's synthetic name ("Untitled", "pasted-content-…") refers to the
-    transport format, not anything the user recognizes — call it what they
-    did: text they pasted. Real files keep their filename.
+    A minted name ("pasted-content-…", "page-capture-…") refers to the
+    transport, not anything the user recognizes — call it what they did.
+    Real files keep their filename.
+
+    The capture arm is not hypothetical: classification_failed is decided
+    BEFORE the page_capture passthrough in ``classify_and_extract``, so a
+    capture the classifier is unsure about lands here, and without this it
+    read ``the file you shared ("page-capture-20260709T105531.txt")`` —
+    #666 on the Copilot's own channel, with no LLM in the loop (#1198
+    review).
     """
-    if _is_paste_upload(target):
-        return "the text you pasted"
+    phrase = target.uploaded_file.submission_phrase
+    if phrase is not None:
+        return phrase
     filename = target.attachment_filename or "the uploaded file"
     return f'the file you shared ("{filename}")'
 
@@ -304,17 +308,12 @@ def _upload_subject(uf) -> str:
 
     Same rule as ``_clarification_subject``, reached from the other side:
     that one starts from a preprocessing result, this one from the stored
-    file row. A paste's minted ``pasted-content-<ts>.txt`` names nothing the
-    user recognises, and quoting it at them is #666 in its most literal form
-    — the leak here is not via the LLM at all, this copy is emitted directly.
+    file row. Sentence register, so no turn number — see
+    ``UploadedFile.submission_phrase``.
     """
     if uf is None or not getattr(uf, "filename", None):
         return "the uploaded file"
-    if uf.is_page_capture:
-        return "the page you captured"
-    if uf.is_pasted:
-        return "the text you pasted"
-    return f'"{uf.filename}"'
+    return uf.submission_phrase or f'"{uf.filename}"'
 
 
 def _build_classification_clarification_suggestions(
@@ -703,9 +702,7 @@ class InvestigationService:
             # Determine query (explicit or implicit)
             query = payload.query
             if not payload.has_query and payload.has_attachments:
-                query = generate_implicit_query(
-                    payload.attachments, uploaded_files_this_turn
-                )
+                query = generate_implicit_query(uploaded_files_this_turn)
 
             # 2. Build user message and update case in-memory (NOT persisted yet).
             #    What the deferral actually buys: nothing is committed BEFORE the
@@ -1076,7 +1073,16 @@ class InvestigationService:
                 attachments_processed=[
                     AttachmentResult(
                         file_id=res.uploaded_file.file_id,
-                        filename=att.filename,
+                        # display_name, not the minted filename: this is the
+                        # chip the Copilot renders on the very turn the user
+                        # pasted, so it is #666's most immediate surface.
+                        # ``file_id`` is the documented handle the frontend
+                        # references an attachment by, so this field is
+                        # display-only. (att.filename and
+                        # uploaded_file.filename are the same string here;
+                        # reading the row makes the display/storage split
+                        # explicit.)
+                        filename=res.uploaded_file.display_name,
                         source_type=res.uploaded_file.data_type or "",
                         file_size=res.uploaded_file.size_bytes,
                         processing_status=(

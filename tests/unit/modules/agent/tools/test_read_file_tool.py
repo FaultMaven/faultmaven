@@ -146,7 +146,7 @@ class TestReadFileExecution:
             )
         assert result.success is True
         assert "Connection timeout" in result.data["content"]
-        assert result.data["filename"] == "error.log"
+        assert result.data["label"] == "error.log"
         assert result.data["evidence_id"] == "ev_test123"
 
     @pytest.mark.asyncio
@@ -367,26 +367,61 @@ class TestSyntheticFilenameNotReported:
                 context=context,
             )
         assert result.success is True
-        assert result.data["filename"] == "pasted logs"
+        assert result.data["label"] == "pasted text (turn 1)"
         assert self.MINTED not in str(result.data)
 
+    def test_text_detection_still_uses_the_stored_name(self, read_file_tool):
+        """The display name has no extension; the text-vs-binary decision has
+        to keep reading the STORED one or a paste stops decoding as text.
+
+        Driven directly rather than through ``execute``, because ``execute``
+        hardcodes ``mime_type="text/plain"`` — which short-circuits
+        ``_is_text_file`` before the extension is consulted, so the split is
+        not observable from there. This pins the method's own contract: the
+        name it sniffs and the name it prints are different arguments.
+        """
+        content = read_file_tool._process_file_content(
+            file_data=b"line one\nline two\n",
+            filename=self.MINTED,  # stored: ends .txt
+            mime_type="application/octet-stream",  # mime says binary
+            display_name="pasted text (turn 1)",  # shown: no extension
+        )
+        # Extension on the stored name wins → decoded as text.
+        assert "line one" in content
+        assert "Binary file" not in content
+
+    def test_binary_placeholder_names_the_display_name(self, read_file_tool):
+        """When it IS binary, the placeholder the LLM reads must not carry
+        the minted name."""
+        content = read_file_tool._process_file_content(
+            file_data=b"\x00\x01\x02binary",
+            filename="pasted-content-20260709T105531.bin",
+            mime_type="application/octet-stream",
+            display_name="pasted text (turn 1)",
+        )
+        assert "[Binary file: pasted text (turn 1)" in content
+        assert "pasted-content-" not in content
+
     @pytest.mark.asyncio
-    async def test_text_detection_still_uses_the_stored_name(self, read_file_tool):
-        """The display name has no extension; the text-vs-binary decision must
-        keep reading the stored one or a paste stops decoding as text."""
+    async def test_large_file_placeholder_names_the_display_name(self, read_file_tool):
+        """The large-file preview IS reachable through ``execute`` (size
+        alone triggers it), and its header names the file."""
         ev = _make_evidence(
             original_filename=self.MINTED,
             upload_source="text_paste",
             data_type="logs",
         )
         context = _make_context(evidence_items=[ev])
-        with _patch_storage(b"line one\nline two\n"):
+        big = b"a line of log text\n" * ((MAX_TEXT_SIZE // 19) + 10)
+        assert len(big) > MAX_TEXT_SIZE
+        with _patch_storage(big):
             result = await read_file_tool.execute_with_context(
                 params={"evidence_id": "ev_test123"},
                 context=context,
             )
-        assert "line one" in result.data["content"]
-        assert "Binary file" not in result.data["content"]
+        assert result.success is True
+        assert "[Large file: pasted text (turn 1)" in result.data["content"]
+        assert self.MINTED not in result.data["content"]
 
 
 class TestConstants:

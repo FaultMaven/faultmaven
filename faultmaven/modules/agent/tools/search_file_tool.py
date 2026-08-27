@@ -72,7 +72,10 @@ class SearchFileTool(AgentTool):
             "shown in the context — no need to call list_evidence first. "
             "Two output formats: 'excerpts' (default) returns context windows for "
             "detailed investigation; 'count' returns compact matched lines for "
-            "counting and aggregation queries (e.g. 'how many unique IPs?')."
+            "counting and aggregation queries (e.g. 'how many unique IPs?'). "
+            "Results carry a 'label' — the item's name, matching the label "
+            "attribute in the context. Cite it verbatim; not every item is a "
+            "file the user named."
         )
 
     @property
@@ -155,13 +158,19 @@ class SearchFileTool(AgentTool):
                 evidence_id,
                 context,
             )
-            # ISS-025: helper now returns either a (content, filename, ev_obj)
-            # tuple on success or a human-readable error string on failure that
-            # already enumerates file-backed alternatives the LLM should retry
-            # against. Surface that string verbatim so the LLM can redirect.
+            # ISS-025: helper now returns either a
+            # (content, filename, display_name, ev_obj) tuple on success or a
+            # human-readable error string on failure that already enumerates
+            # file-backed alternatives the LLM should retry against. Surface
+            # that string verbatim so the LLM can redirect.
+            #
+            # #666: two names, deliberately. ``filename`` is the STORED name
+            # and is what the operator log records, so a log line still
+            # correlates to a blob on disk and several pastes stay apart in
+            # it. ``display_name`` is what goes in the result the LLM reads.
             if isinstance(resolved, str):
                 return ToolResult(success=False, data=None, error=resolved)
-            content, filename, evidence_obj = resolved
+            content, filename, display_name, evidence_obj = resolved
 
             # Phase 2c — triage-to-escalation counter. Fires when this
             # tool call targets an evidence whose structural_index was
@@ -187,6 +196,7 @@ class SearchFileTool(AgentTool):
                 return self._execute_count_format(
                     content,
                     filename,
+                    display_name,
                     evidence_id,
                     query,
                     search_type,
@@ -227,7 +237,7 @@ class SearchFileTool(AgentTool):
                     success=True,
                     data={
                         "evidence_id": evidence_id,
-                        "filename": filename,
+                        "label": display_name,
                         "search_type": search_type,
                         "query": query,
                         "output_format": "excerpts",
@@ -247,7 +257,7 @@ class SearchFileTool(AgentTool):
 
             data = {
                 "evidence_id": evidence_id,
-                "filename": filename,
+                "label": display_name,
                 "search_type": search_type,
                 "query": query,
                 "output_format": "excerpts",
@@ -277,6 +287,7 @@ class SearchFileTool(AgentTool):
         self,
         content: str,
         filename: str,
+        display_name: str,
         evidence_id: str,
         query: str,
         search_type: str,
@@ -287,6 +298,9 @@ class SearchFileTool(AgentTool):
         Returns matched lines as "LINE: CONTENT" strings — no context windows.
         ~7x more compact than excerpts, fits far more results within the
         milestone engine's TOOL_RESULT_MAX_CHARS budget.
+
+        ``filename`` is the stored name (operator log); ``display_name`` is
+        what the LLM-facing result reports (#666).
         """
         all_matches = self._count_search(content, query, search_type)
         match_count = len(all_matches)
@@ -314,7 +328,7 @@ class SearchFileTool(AgentTool):
                 success=True,
                 data={
                     "evidence_id": evidence_id,
-                    "filename": filename,
+                    "label": display_name,
                     "search_type": search_type,
                     "query": query,
                     "output_format": "count",
@@ -337,7 +351,7 @@ class SearchFileTool(AgentTool):
 
         data: dict[str, Any] = {
             "evidence_id": evidence_id,
-            "filename": filename,
+            "label": display_name,
             "search_type": search_type,
             "query": query,
             "output_format": "count",
@@ -387,7 +401,7 @@ class SearchFileTool(AgentTool):
         self,
         evidence_id: str,
         context: ToolContext,
-    ) -> tuple[str, str, Any] | str:
+    ) -> tuple[str, str, str, Any] | str:
         """Resolve evidence content from the case-embedded evidence list.
 
         Storage redesign 2026-04 phase 2 deleted the standalone
@@ -396,7 +410,10 @@ class SearchFileTool(AgentTool):
         Case (`case.evidence`) with `content_ref` pointing to the stored file.
 
         Returns:
-            On success: (content_str, filename, evidence_obj)
+            On success: (content_str, stored_filename, display_name, evidence_obj).
+                The two names differ only for pasted/captured content — see
+                ``UploadedFile.display_name`` (#666). Logs take the stored
+                one, the LLM-facing result takes the display one.
             On failure: a human-readable error string. When other file-backed
             evidence exists in the case, the error enumerates those evidence_ids
             so the LLM can retry against the correct one (ISS-025).
@@ -446,10 +463,10 @@ class SearchFileTool(AgentTool):
                         file_data = await self.storage_service.retrieve_file(
                             storage_ref
                         )
-                        # display_name, not filename: this string is
-                        # echoed to the LLM in the tool result and gets
-                        # cited back at the user (#666).
                         filename = (
+                            getattr(matching_upload, "filename", None) or evidence_id
+                        )
+                        display_name = (
                             getattr(matching_upload, "display_name", None)
                             or evidence_id
                         )
@@ -458,7 +475,7 @@ class SearchFileTool(AgentTool):
                             "search_file: resolved %s via uploaded_files (INQUIRY phase)",
                             evidence_id,
                         )
-                        return content, filename, matching_upload
+                        return content, filename, display_name, matching_upload
                     except Exception as e:
                         logger.warning(
                             "search_file: uploaded_file %s storage retrieval failed: %s",
@@ -510,12 +527,12 @@ class SearchFileTool(AgentTool):
         ):
             try:
                 file_data = await self.storage_service.retrieve_file(storage_ref)
-                # display_name, not filename — see the note above.
-                filename = (
+                filename = (file_meta.filename if file_meta else None) or evidence_id
+                display_name = (
                     file_meta.display_name if file_meta else None
                 ) or evidence_id
                 content = file_data.decode("utf-8", errors="replace")
-                return content, filename, case_evidence
+                return content, filename, display_name, case_evidence
             except Exception as e:
                 logger.warning(
                     "search_file: storage_service.retrieve_file failed for %s: %s",

@@ -217,7 +217,7 @@ class ReadFileTool(AgentTool):
                 success=True,
                 data={
                     "content": content,
-                    "filename": shown_name,
+                    "label": shown_name,
                     "mime_type": mime_type,
                     "file_size": len(file_data),
                     "evidence_id": evidence_id,

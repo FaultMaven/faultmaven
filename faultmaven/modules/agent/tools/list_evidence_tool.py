@@ -31,9 +31,10 @@ class ListEvidenceTool(AgentTool):
     def description(self) -> str:
         return (
             "List all evidence artifacts uploaded for the current case. "
-            "Returns metadata about each file including ID, filename, type, "
-            "size, and description. Use the evidence_id with read_file to "
-            "access file contents."
+            "Returns metadata about each file including ID, label, type, "
+            "size, and description. The label is the item's name — cite it "
+            "verbatim; not every item is a file the user named. Use the "
+            "evidence_id with read_file to access file contents."
         )
 
     @property
@@ -195,7 +196,7 @@ class ListEvidenceTool(AgentTool):
             formatted.append(
                 {
                     "evidence_id": getattr(evidence, "evidence_id", None),
-                    "filename": filename,
+                    "label": filename,
                     "type": type_value,
                     # mime_type is not on the domain Evidence model; the future
                     # normalized evidence table will reintroduce it (see

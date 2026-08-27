@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from faultmaven.core.investigation.prompts.context_builder import (
-    _uploaded_file_name_attr,
+    _label_attr,
     build_investigation_context,
 )
 
@@ -2589,20 +2589,32 @@ def _fallback_current_turn_evidence(case: Case) -> str:
 
     The fallback fires at the tightest budget — precisely when a fresh upload
     must not be dropped. Renders just the addressable essentials (file_id +
-    name + searchable) so the agent can `search_file` it. Empty when no
-    current-turn upload exists. The name is ``filename`` for a chosen file and
-    ``label`` for a paste/capture, per ``_uploaded_file_name_attr`` (#666).
+    label + searchable) so the agent can `search_file` it. Empty when no
+    current-turn upload exists. The label carries
+    ``UploadedFile.display_name`` — the same citable name every other render
+    uses (#666), so a stub the agent cites reads the same here as in a
+    full-budget turn.
+
+    De-duplicated by ``file_id``: ``milestone_engine`` appends a second
+    ``UploadedFile`` row for the same id on every attachment turn, and unlike
+    the evidence-context renders this one has no ``structural_index`` filter
+    to hide it — the same upload was being stubbed twice, and once the label
+    stopped varying with the row, the two stubs were byte-identical.
     """
     current_turn = getattr(case, "current_turn", 0)
     stubs = []
+    seen_file_ids = set()
     for uf in getattr(case, "uploaded_files", None) or []:
+        if getattr(uf, "file_id", None) in seen_file_ids:
+            continue
         if getattr(uf, "uploaded_at_turn", None) == current_turn and getattr(
             uf, "file_id", None
         ):
+            seen_file_ids.add(uf.file_id)
             head = (uf.structural_index or "")[:200].replace("\n", " ")
             stubs.append(
                 f'<uploaded_file file_id="{uf.file_id}"'
-                f'{_uploaded_file_name_attr(uf)} searchable="true">'
+                f'{_label_attr(uf)} searchable="true">'
                 f"{head}</uploaded_file>"
             )
         if len(stubs) >= 3:

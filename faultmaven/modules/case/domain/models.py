@@ -1951,10 +1951,17 @@ class UploadedFile(BaseModel):
     # ------------------------------------------------------------------
     # Display identity (#666)
     #
-    # ``filename`` is the name the file is STORED under. These two
-    # properties are the name it is SHOWN under. Plain properties, not
-    # pydantic fields: they are derived, never persisted, and never
-    # serialised into an API response.
+    # ``filename`` is the name the file is STORED under. The properties
+    # below are the name it is SHOWN under. Plain properties, not pydantic
+    # fields: they are derived, never persisted, and never serialised into
+    # an API response.
+    #
+    # Two registers, one rule. ``display_name`` is the IDENTIFIER — it goes
+    # wherever a name is shown *as a name* (prompt attributes, tool results,
+    # report citations) and the model is told to cite it, so it must pick
+    # this item out of this case and keep doing so. ``submission_phrase``
+    # is the PROSE form for sentences addressed to the user, where the
+    # referent is already unambiguous.
     # ------------------------------------------------------------------
 
     @property
@@ -1995,23 +2002,57 @@ class UploadedFile(BaseModel):
 
     @property
     def display_name(self) -> str:
-        """The name to show a user, or put in front of a model.
+        """The citable name: what the model is told to reference this by.
 
         Real uploads keep their filename — the user chose it and recognises
-        it. Pastes and page captures get a short phrase describing what they
-        are ("pasted logs", "captured page"), because the minted
-        ``pasted-content-<ts>.txt`` is meaningless to the person who typed
-        the text and reads as a file they never had (#666).
+        it. Pastes and page captures are named by HOW they arrived and WHEN,
+        because the minted ``pasted-content-<ts>.txt`` is meaningless to the
+        person who typed the text and reads as a file they never had (#666).
 
-        Deliberately short and noun-shaped: this lands in prompt attributes
-        and in agent copy, where it has to survive being quoted back.
+        Two properties of the minted name had to survive the substitution,
+        and only one of them is obvious:
+
+        **Unique.** Citation is the whole point — "In pasted logs, line 42"
+        has to designate one item. A name derived from ``data_type`` does
+        not: two pastes classified ``logs`` in one case share it, and every
+        page capture would be "captured page". The turn number separates
+        them, because the turns route mints at most one synthetic name per
+        turn — ``pasted_content`` is a single form field, so a turn carries
+        one paste or one capture, never two.
+
+        **Stable.** ``data_type`` is rewritten by reclassification (see
+        ``_handle_file_reclassification``), so a name built from it renames
+        the item mid-case: cited as "pasted logs" on turn 3, gone by turn 4
+        when the user corrects it to command output — and the transcript's
+        own back-reference then names nothing in context. ``summary`` is
+        rewritten by the same flow and is not unique either, which is why
+        neither is used here. ``uploaded_at_turn`` is written once at
+        ingestion and never revised.
+
+        The data type is not lost: it rides on the ``data_type`` attribute
+        beside the name, and the summary on ``<summary>``. This slot's job
+        is to designate, not to describe.
         """
         if not self.has_synthetic_filename:
             return self.filename
+        kind = "captured page" if self.is_page_capture else "pasted text"
+        return f"{kind} (turn {self.uploaded_at_turn})"
+
+    @property
+    def submission_phrase(self) -> Optional[str]:
+        """How prose addressed to the user names this, or None for a real file.
+
+        The sentence register: "I've recorded the text you pasted as command
+        output". No turn number, because a sentence carries its own referent
+        — this is only ever used about a file the sentence is already about.
+        ``None`` means "this has a filename; quote that instead", which the
+        caller decides because the quoting style differs per surface.
+        """
         if self.is_page_capture:
-            return "captured page"
-        kind = (self.data_type or "data").replace("_", " ")
-        return f"pasted {kind}"
+            return "the page you captured"
+        if self.is_pasted:
+            return "the text you pasted"
+        return None
 
 
 # =============================================================================

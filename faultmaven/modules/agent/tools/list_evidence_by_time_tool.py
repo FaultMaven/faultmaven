@@ -197,7 +197,7 @@ def _format_evidence_summaries(
         formatted.append(
             {
                 "evidence_id": getattr(ev, "evidence_id", None),
-                "filename": filename,
+                "label": filename,
                 "data_type": source_type.value if source_type else None,
                 "coverage_start_ts": start.isoformat() if start else None,
                 "coverage_end_ts": end.isoformat() if end else None,

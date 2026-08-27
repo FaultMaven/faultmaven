@@ -1032,7 +1032,7 @@ class TestSyntheticFilenameNotReported:
             context=self._paste_context(),
         )
         assert result.success is True
-        assert result.data["filename"] == "pasted logs"
+        assert result.data["label"] == "pasted text (turn 1)"
         assert self.MINTED not in json.dumps(result.data)
 
     @pytest.mark.asyncio
@@ -1046,7 +1046,7 @@ class TestSyntheticFilenameNotReported:
             context=self._paste_context(),
         )
         assert result.success is True
-        assert result.data["filename"] == "pasted logs"
+        assert result.data["label"] == "pasted text (turn 1)"
         assert self.MINTED not in json.dumps(result.data)
 
     @pytest.mark.asyncio
@@ -1079,4 +1079,4 @@ class TestSyntheticFilenameNotReported:
 
         assert result.success is False
         assert self.MINTED not in result.error
-        assert "ev_paste (pasted logs)" in result.error
+        assert "ev_paste (pasted text (turn 1))" in result.error
