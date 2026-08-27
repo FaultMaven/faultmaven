@@ -230,3 +230,88 @@ class TestClassificationFailedContentPreviewIsAdditive:
             f"Expected an explicit preview/columns marker in:\n"
             f"{result.structural_index}"
         )
+
+
+class TestClassificationFailedPlaceholderNaming:
+    """#666 / #1198 review: the placeholder is NOT internal text.
+
+    ``_build_placeholder_result`` writes it to both ``summary`` and
+    ``structural_index``, so it is rendered into ``<summary>`` and
+    ``<file_extract>`` for the model, and ``_handle_file_reclassification``
+    appends it verbatim to ``agent_response``. Naming a route-minted
+    ``pasted-content-<ts>.txt`` here put the leaked filename beside a
+    sentence that had just called it "the text you pasted".
+
+    The classifier is forced to fail rather than coaxed: a minted name ends
+    in ``.txt``, which gives the real classifier enough confidence that no
+    content in reach of a unit test drives it down the failed path — while
+    in production an ambiguous paste does exactly that (see the staging case
+    cited in tests/unit/modules/agent/test_file_reclassification_intent.py).
+    Forcing the flag exercises the placeholder-building code under test and
+    nothing else.
+    """
+
+    MINTED_PASTE = "pasted-content-20260709T105531.txt"
+    MINTED_CAPTURE = "page-capture-20260709T105531.txt"
+
+    @staticmethod
+    def _service_that_always_fails_classification(mock_logs_extractor):
+        real = DataClassifier()
+
+        class _AlwaysUncertain(DataClassifier):
+            def classify(self, *args, **kwargs):
+                result = real.classify(*args, **kwargs)
+                result.classification_failed = True
+                result.confidence = 0.10
+                return result
+
+        return PreprocessingService(
+            classifier=_AlwaysUncertain(),
+            logs_extractor=mock_logs_extractor,
+        )
+
+    @pytest.mark.asyncio
+    async def test_paste_placeholder_does_not_name_the_minted_file(
+        self, mock_logs_extractor
+    ):
+        svc = self._service_that_always_fails_classification(mock_logs_extractor)
+        result = await svc.classify_and_extract(
+            content=AMBIGUOUS_CSV, filename=self.MINTED_PASTE
+        )
+        assert result.extraction_method == "classification_failed"
+        assert self.MINTED_PASTE not in result.structural_index
+        assert self.MINTED_PASTE not in (result.summary or "")
+        assert "the text you pasted" in result.structural_index
+
+    @pytest.mark.asyncio
+    async def test_capture_placeholder_does_not_name_the_minted_file(
+        self, mock_logs_extractor
+    ):
+        svc = self._service_that_always_fails_classification(mock_logs_extractor)
+        result = await svc.classify_and_extract(
+            content=AMBIGUOUS_CSV, filename=self.MINTED_CAPTURE
+        )
+        assert result.extraction_method == "classification_failed"
+        assert self.MINTED_CAPTURE not in result.structural_index
+        assert "the page you captured" in result.structural_index
+
+    @pytest.mark.asyncio
+    async def test_a_real_filename_is_still_quoted(self, real_classifier_service):
+        """Unforced — this one reaches the failed path on its own."""
+        result = await real_classifier_service.classify_and_extract(
+            content=AMBIGUOUS_CSV, filename="ambiguous-service-data.csv"
+        )
+        assert result.extraction_method == "classification_failed"
+        assert "'ambiguous-service-data.csv'" in result.structural_index
+
+    @pytest.mark.asyncio
+    async def test_a_users_prefix_colliding_file_is_still_quoted(
+        self, mock_logs_extractor
+    ):
+        """Rule 2 of the detection rule: the user named this one."""
+        svc = self._service_that_always_fails_classification(mock_logs_extractor)
+        result = await svc.classify_and_extract(
+            content=AMBIGUOUS_CSV, filename="pasted-content-notes.txt"
+        )
+        assert result.extraction_method == "classification_failed"
+        assert "'pasted-content-notes.txt'" in result.structural_index

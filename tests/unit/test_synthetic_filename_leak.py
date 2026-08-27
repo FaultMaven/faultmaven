@@ -701,6 +701,33 @@ class TestDedupHitNamesTheSubmittedFile:
         assert LEAKED_NAME not in query
         assert "I've pasted some text" in query
 
+    def test_a_paste_that_dedups_onto_a_real_file_does_not_leak(self):
+        """The quadrant the first version of these tests missed. Upload
+        deployment.yaml on turn 1, paste the same YAML on turn 5: dedup
+        matches on bytes, so the STORED row is a real file while the
+        SUBMITTED name is minted. Branching on the row asks the wrong
+        question and hands the minted name straight back (#1198 review)."""
+        stored_real = _real_file()  # nginx-error.log, not synthetic
+        assert stored_real.has_synthetic_filename is False
+
+        assert submitted_name(LEAKED_NAME, stored_real) == "nginx-error.log"
+        query = generate_implicit_query([stored_real], [LEAKED_NAME])
+        assert LEAKED_NAME not in query
+        assert "nginx-error.log" in query
+
+    def test_a_real_file_that_dedups_onto_a_paste_keeps_the_users_name(self):
+        """The mirror quadrant: the row is synthetic, the submitted name is
+        the user's. Theirs wins — they named it."""
+        stored_paste = _pasted_file()
+        assert submitted_name("deployment.yaml", stored_paste) == "deployment.yaml"
+
+    @pytest.mark.parametrize("minted", [LEAKED_NAME, CAPTURE_NAME])
+    def test_no_quadrant_emits_a_minted_submitted_name(self, minted):
+        """All four dedup quadrants, swept."""
+        for stored in (_real_file(), _pasted_file()):
+            assert minted not in submitted_name(minted, stored)
+            assert minted not in generate_implicit_query([stored], [minted])
+
     def test_submitted_name_helper_prefers_the_users_name(self):
         given, stored = self._renamed_reupload()
         assert submitted_name(given, stored) == "nginx-2026-07-10.log"
@@ -736,6 +763,30 @@ class TestOneNamePerFileAcrossRenders:
         assert "turn 5" not in stub
 
 
+def test_the_tripwire_still_drives_something_real():
+    """Guards the xfail below, which is the #1207 dependency's teeth.
+
+    That test drives a repository through the public ``add_uploaded_file``
+    and asserts a column. If any of those disappear -- renamed, resplit,
+    moved -- the test raises instead of asserting, pytest records the raise
+    as the expected failure, ``strict`` never fires, and the marker survives
+    a fix it was supposed to catch. A tripwire that cannot fail loudly is
+    prose with extra steps, so its dependencies are checked HERE, outside
+    the xfail, where a break is a plain red test.
+    """
+    from faultmaven.modules.case.infrastructure.sqlite_case_repository import (
+        SQLiteCaseRepository,
+    )
+
+    assert callable(getattr(SQLiteCaseRepository, "add_uploaded_file", None)), (
+        "SQLiteCaseRepository.add_uploaded_file is gone -- "
+        "test_uploaded_at_turn_is_immutable_across_a_deduped_reupload can no "
+        "longer detect the #1207 fix; re-point it before deleting this"
+    )
+    # The column the identifier is keyed on.
+    assert "uploaded_at_turn" in UploadedFile.model_fields
+
+
 @pytest.mark.xfail(
     strict=True,
     reason=(
@@ -749,7 +800,14 @@ class TestOneNamePerFileAcrossRenders:
     ),
 )
 async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
-    """The invariant ``display_name``'s stability rests on."""
+    """The invariant ``display_name``'s stability rests on.
+
+    Deliberately public-API only: ``add_uploaded_file`` for the write and a
+    hand-built row for the engine's duplicate, so that a #1207 fix which
+    renames or resplits the engine's private constructor cannot make this die
+    by AttributeError and be scored as the expected failure. See
+    ``test_the_tripwire_still_drives_something_real``.
+    """
     from sqlalchemy import text as sa_text
     from sqlalchemy.ext.asyncio import (
         AsyncSession,
@@ -769,29 +827,23 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
     try:
         async with factory() as session:
             repo = SQLiteCaseRepository(session)
-            row = _pasted_file(turn=3)
-            row = row.model_copy(update={"content_hash": "a" * 64})
-            await repo._upsert_uploaded_files("case_aabb11223344", [row], "org_123")
-            await session.commit()
+            row = _pasted_file(turn=3).model_copy(update={"content_hash": "a" * 64})
+            await repo.add_uploaded_file("case_aabb11223344", row, "org_123")
 
-            engine_dup = MilestoneEngine.__new__(
-                MilestoneEngine
-            )._create_uploaded_file_from_attachment(
-                case=None,
-                attachment={
-                    "file_id": FILE_ID,
-                    "filename": row.filename,
-                    "data_type": "logs",
-                    "size": 512,
-                    "source_type": "paste",
-                    "storage_ref": row.storage_ref,
-                },
-                turn_number=5,
+            # What the engine appends for the same file_id on the re-upload
+            # turn: same id, CURRENT turn, and the columns its metadata dict
+            # does not carry left None. Built by hand rather than through the
+            # engine's private constructor -- the shape is the point, not the
+            # code path that produces it.
+            engine_dup = UploadedFile(
+                file_id=FILE_ID,
+                filename=row.filename,
+                size_bytes=row.size_bytes,
+                uploaded_at_turn=5,
+                upload_source="paste",
+                storage_ref=row.storage_ref,
             )
-            await repo._upsert_uploaded_files(
-                "case_aabb11223344", [row, engine_dup], "org_123"
-            )
-            await session.commit()
+            await repo.add_uploaded_file("case_aabb11223344", engine_dup, "org_123")
 
             persisted = (
                 await session.execute(
@@ -807,6 +859,58 @@ async def test_uploaded_at_turn_is_immutable_across_a_deduped_reupload():
         )
     finally:
         await engine.dispose()
+
+
+class TestPlaceholderWordingIsShared:
+    """``minted_filename_phrase`` and ``UploadedFile.submission_phrase`` are
+    the same wording in two places; drift makes one turn say two different
+    things about one item. The placeholder text itself is driven end-to-end
+    through ``classify_and_extract`` in
+    tests/unit/modules/preprocessing/test_classification_failed_preview.py —
+    reconstructing the string here proved nothing (it survived mutation)."""
+
+    def test_paste_wording_matches_the_row_property(self):
+        from faultmaven.modules.case.contracts import minted_filename_phrase
+
+        assert minted_filename_phrase(LEAKED_NAME) == _pasted_file().submission_phrase
+
+    def test_capture_wording_matches_the_row_property(self):
+        from faultmaven.modules.case.contracts import minted_filename_phrase
+
+        capture = _pasted_file(filename=CAPTURE_NAME, upload_source="page_capture")
+        assert minted_filename_phrase(CAPTURE_NAME) == capture.submission_phrase
+
+    def test_a_users_own_prefix_colliding_file_is_not_paraphrased(self):
+        from faultmaven.modules.case.contracts import minted_filename_phrase
+
+        assert minted_filename_phrase("pasted-content-notes.txt") is None
+
+
+class TestMintedFilenamePredicate:
+    """``is_minted_filename`` takes a NAME, because the name and the row can
+    disagree — see the dedup quadrants above."""
+
+    @pytest.mark.parametrize("name", [LEAKED_NAME, CAPTURE_NAME])
+    def test_minted_names_are_recognised(self, name):
+        from faultmaven.modules.case.contracts import is_minted_filename
+
+        assert is_minted_filename(name) is True
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            None,
+            "",
+            "nginx-error.log",
+            "pasted-content-notes.txt",
+            "page-capture-summary.txt",
+            "pasted-content-20260709T105531.log",
+        ],
+    )
+    def test_everything_else_is_the_users_name(self, name):
+        from faultmaven.modules.case.contracts import is_minted_filename
+
+        assert is_minted_filename(name) is False
 
 
 # ---------------------------------------------------------------------------

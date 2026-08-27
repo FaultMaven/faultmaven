@@ -7,6 +7,8 @@ Step 2 (LLM): Handled by MilestoneEngine
 
 from typing import TYPE_CHECKING, List
 
+from faultmaven.modules.case.contracts import is_minted_filename
+
 if TYPE_CHECKING:
     from faultmaven.modules.case.domain.models import UploadedFile
 
@@ -24,10 +26,16 @@ def submitted_name(submitted_filename: "str | None", uf: "UploadedFile") -> str:
     A minted name is the one case where the row wins: there the submitted
     filename is the storage artifact #666 is about, and the row's
     ``display_name`` is the only user-meaningful name either side has.
+
+    The branch is on the SUBMITTED NAME, not on ``uf.has_synthetic_filename``.
+    Those differ exactly when dedup crosses kinds -- paste the contents of a
+    file you uploaded earlier and the stored row is a real file while the
+    submitted name is minted -- and asking the row there returned the minted
+    name verbatim, in the user's own voice (#1198 review).
     """
-    if uf.has_synthetic_filename:
-        return uf.display_name
-    return submitted_filename or uf.display_name
+    if submitted_filename and not is_minted_filename(submitted_filename):
+        return submitted_filename
+    return uf.display_name
 
 
 def _name_in_users_voice(submitted_filename: "str | None", uf: "UploadedFile") -> str:

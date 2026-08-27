@@ -1813,6 +1813,38 @@ _MINTED_PREFIX_TO_KIND = {"pasted-content": "paste", "page-capture": "capture"}
 # ``file_upload`` still matches rule 1 on its filename.
 _MINTED_PREFIXES = ("pasted-content-", "page-capture-")
 
+
+def is_minted_filename(filename: Optional[str]) -> bool:
+    """True when this NAME was minted by the turns route, not typed by a user.
+
+    Takes the name, not the row, because the two can disagree and the caller
+    usually means the name. Content-hash dedup matches on bytes ALONE, so a
+    paste can be handed back an ``UploadedFile`` for a real file the user
+    uploaded earlier: the row is not synthetic, and the submitted name still
+    is. Asking the row there answers the wrong question and re-emits the
+    minted name (#1198 review) -- the exact defect #666 is about.
+
+    Only rule 1 of the three-way rule applies to a bare name: there is no
+    ``upload_source`` to weigh, and rule 2 (a user's own file whose name
+    merely collides with the prefix) is the default anyway.
+    """
+    return bool(filename) and bool(_SYNTHETIC_FILENAME_RE.match(filename))
+
+
+def minted_filename_phrase(filename: Optional[str]) -> Optional[str]:
+    """Prose for a minted NAME, or None when the name is the user's own.
+
+    The bare-name twin of ``UploadedFile.submission_phrase``, for the layers
+    that hold a filename and no row -- preprocessing builds user-visible text
+    before any ``UploadedFile`` exists. Same wording, one definition.
+    """
+    match = _SYNTHETIC_FILENAME_RE.match(filename or "")
+    if not match:
+        return None
+    kind = _MINTED_PREFIX_TO_KIND[match.group(1)]
+    return "the page you captured" if kind == "capture" else "the text you pasted"
+
+
 # ``upload_source`` spellings that mean "the user pasted/captured this". Both
 # paste spellings occur: the turns route writes ``text_paste``, the documented
 # enum value is ``paste``.
@@ -2096,6 +2128,9 @@ class UploadedFile(BaseModel):
         if self.is_pasted:
             return "the text you pasted"
         return None
+
+    # NOTE: ``minted_filename_phrase`` (module level) is the same wording for
+    # callers holding only a name. Keep the two in step.
 
 
 # =============================================================================
