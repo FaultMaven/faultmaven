@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from faultmaven.exceptions import ConflictError
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
     PIIScanStatus,
@@ -461,7 +462,21 @@ Format as Markdown with these sections:
                 resolves to None, exactly like an absent one
 
         Returns:
-            Dict with new knowledge_item_id or None if failed
+            Dict with the new ``knowledge_item_id``, or ``None`` when the
+            suggestion is absent, out of tenant, or not ready for review.
+            ``None`` means ONLY that — it is no longer the catch-all it was.
+
+        Raises:
+            ConflictError: the suggestion is already approved
+                (``conflict_reason="already_approved"``) — checked before
+                anything is published, so a repeat writes nothing. The global
+                handler maps this to HTTP 409.
+            Exception: anything ``upload_document`` raises now PROPAGATES
+                rather than being swallowed into ``None`` (#1200). A
+                ``TypeError`` from that call is a programming error and an
+                ingestion failure is a server-side fault; neither is a client
+                error and neither is a statement about PII. The route's own
+                handler logs and answers 500.
         """
         suggestion = await self.get_suggestion_visible(
             suggestion_id, organization_id=organization_id
@@ -476,6 +491,27 @@ Format as Markdown with these sections:
                 f"(pii_scan_status={suggestion.pii_scan_status})"
             )
             return None
+
+        # Refuse a SECOND approval BEFORE anything is published.
+        #
+        # ``is_ready_for_review`` inspects ``pii_scan_status`` only, never
+        # ``status``, so nothing here used to stop a repeat. That was harmless
+        # only because the call below always raised — every approval created
+        # nothing. Now that it succeeds, a repeat publishes ANOTHER item into
+        # the global corpus and overwrites ``knowledge_item_id``, orphaning the
+        # previous one with no back-link. Measured before this guard: three
+        # calls gave three knowledge items, three files and three ChromaDB
+        # chunk sets, with only the last one linked.
+        #
+        # ``approve()`` carries the same check as a defence, but it runs AFTER
+        # the publish, so the guard has to be here to prevent the write.
+        if suggestion.is_approved():
+            raise ConflictError(
+                "Suggestion has already been approved",
+                resource_type="suggestion",
+                resource_id=suggestion_id,
+                conflict_reason="already_approved",
+            )
 
         # Create knowledge item
         knowledge_item_id = None
@@ -513,17 +549,32 @@ Format as Markdown with these sections:
                 category="extracted",
                 tags=["extracted", "case-derived"],
                 source_url=None,
-                # The lineage the dropped ``metadata=`` was trying to record,
-                # carried on the parameter that exists. It was being lost
-                # twice over before: the call raised, so nothing was recorded
-                # at all.
+                # ATTRIBUTION, on the one parameter that actually persists.
                 #
-                # ``verification_level: 2`` is deliberately NOT reconstructed
-                # here. There is no honest home for it yet —
-                # verification_status/level is already muddled and a KB
-                # snippet reports ``experimental`` regardless (#878). Writing
-                # it into free text would look like provenance while carrying
-                # none, so it waits for that issue rather than being faked.
+                # ``owner_id`` reaches four real columns —
+                # ``uploaded_files.uploaded_by``, ``conversion_jobs.user_id``,
+                # ``conversion_drafts.verified_by``, and ``ingest_runbook``'s
+                # own ``owner_id`` — so the approving admin is recorded in the
+                # database. For an approved suggestion the approver IS the
+                # verifier, which is what ``verified_by`` means.
+                #
+                # Safe at this scope: the only other use of ``owner_id`` is the
+                # ``scope == "personal"`` directory branch, which cannot fire
+                # under ``scope="global"``.
+                owner_id=reviewed_by,
+                # ⚠️ ``description`` is accepted by ``upload_document`` and then
+                # IGNORED — referenced zero times in that method's body, so it
+                # reaches no column and no ChromaDB metadata. ``category`` is
+                # the same, surviving only in the transient return dict.
+                #
+                # Passed anyway because it is the natural sink and a future one
+                # would read it, but it records NOTHING today. The
+                # case/extractor/suggestion lineage the dropped ``metadata=``
+                # was carrying still has no home, and neither does
+                # ``verification_level: 2`` (the derive yields EXPERIMENTAL).
+                # That pair IS the "where does the metadata belong" decision
+                # this issue names, and #878 owns it. Do not read this argument
+                # as provenance.
                 description=(
                     f"Extracted from case {suggestion.case_id} "
                     f"by {suggestion.extracted_by} "
@@ -531,6 +582,14 @@ Format as Markdown with these sections:
                 ),
             )
             knowledge_item_id = result.get("document_id")
+            if not knowledge_item_id:
+                # Never mark a suggestion approved against an id we did not
+                # get: the point of this fix is that approval stops claiming
+                # success it cannot back.
+                raise RuntimeError(
+                    "upload_document returned no document_id for suggestion "
+                    f"{suggestion_id}; nothing was linked"
+                )
         else:
             # Mock id (no knowledge_service) — still must not match the 12-hex
             # built-in prune pattern, so route through the shared authored-id mint.

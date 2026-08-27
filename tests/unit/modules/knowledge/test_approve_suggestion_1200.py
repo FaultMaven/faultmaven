@@ -122,6 +122,18 @@ class TestApprovalActuallyCreatesSomething:
         )
 
     async def test_the_suggestion_is_marked_approved(self, service):
+        """Asserts the STATUS, which is the thing the name claims.
+
+        An earlier draft only re-checked ``knowledge_item_id`` — a duplicate of
+        the test above that would pass unchanged if ``approve()`` stopped
+        setting the status, or set REJECTED. ``result["status"]`` does not
+        cover it either: that is a hardcoded literal in the service, not the
+        suggestion's state.
+        """
+        from faultmaven.modules.knowledge.domain.models.suggestion import (
+            SuggestionStatus,
+        )
+
         await service.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
             reviewed_by="user_admin",
@@ -129,6 +141,8 @@ class TestApprovalActuallyCreatesSomething:
         )
 
         stored = service._suggestions_store[SUGGESTION_ID]
+        assert stored.status == SuggestionStatus.APPROVED
+        assert stored.reviewed_by == "user_admin"
         assert stored.knowledge_item_id == "kb_abcdef0123456789"
 
 
@@ -196,17 +210,33 @@ class TestProgrammingErrorsAreNotSwallowed:
     that catches an ingestion failure is what made this invisible for as long as
     it was."""
 
-    async def test_a_signature_mismatch_is_not_reported_as_not_ready(self, service):
-        service._knowledge_service.upload_document = AsyncMock(
-            side_effect=TypeError("upload_document() got an unexpected keyword")
+    async def test_every_kwarg_is_a_real_parameter_of_the_collaborator(self):
+        """The signature check, done by BINDING rather than by a stub.
+
+        An earlier draft replaced the autospecced attribute with
+        ``AsyncMock(side_effect=TypeError)`` and asserted a TypeError came
+        back — which is true of any exception and any argument list, and would
+        pass against the unfixed code. It proved nothing about the signature.
+        The real coverage is ``inspect.signature`` binding, below and at
+        ``test_the_call_binds_to_the_real_signature``.
+        """
+        import inspect
+
+        svc = SuggestionService(knowledge_service=_knowledge_service_double())
+        suggestion = _ready_suggestion()
+        svc._suggestions_store[SUGGESTION_ID] = suggestion
+        svc.get_suggestion_visible = AsyncMock(return_value=suggestion)
+
+        await svc.approve_suggestion(
+            suggestion_id=SUGGESTION_ID,
+            reviewed_by="user_admin",
+            organization_id=ORG,
         )
 
-        with pytest.raises(TypeError):
-            await service.approve_suggestion(
-                suggestion_id=SUGGESTION_ID,
-                reviewed_by="user_admin",
-                organization_id=ORG,
-            )
+        kwargs = svc._knowledge_service.upload_document.await_args.kwargs
+        # Binding is the assertion: it raises TypeError on an unsupported
+        # keyword exactly as the real call does.
+        inspect.signature(KnowledgeService.upload_document).bind(None, **kwargs)
 
     async def test_a_genuine_ingestion_failure_still_raises_rather_than_lying(
         self, service
@@ -239,3 +269,132 @@ class TestProgrammingErrorsAreNotSwallowed:
         )
 
         assert result is None
+
+
+class TestAttributionIsPersisted:
+    """``description`` reaches no column — it is referenced ZERO times in
+    ``upload_document``'s body, so the lineage it appears to carry is not
+    recorded anywhere. ``owner_id`` is the parameter that does persist, into
+    ``uploaded_files.uploaded_by``, ``conversion_jobs.user_id`` and
+    ``conversion_drafts.verified_by``."""
+
+    async def test_the_approving_admin_is_passed_as_owner_id(self, service):
+        await service.approve_suggestion(
+            suggestion_id=SUGGESTION_ID,
+            reviewed_by="user_admin",
+            organization_id=ORG,
+        )
+
+        kwargs = service._knowledge_service.upload_document.await_args.kwargs
+        assert kwargs["owner_id"] == "user_admin", (
+            "without this the approving platform admin is recorded nowhere in "
+            "the database; description= persists nothing"
+        )
+
+    def test_description_really_is_ignored_by_the_collaborator(self):
+        """Pins the premise the comment rests on, so it cannot rot silently.
+
+        If ``upload_document`` ever grows a real use for ``description``, this
+        fails and the comment beside the call must be corrected.
+        """
+        import ast
+        import inspect
+
+        from faultmaven.modules.knowledge.domain.services import knowledge_service
+
+        source = inspect.getsource(KnowledgeService.upload_document)
+        tree = ast.parse(source.lstrip())
+        names = [n.id for n in ast.walk(tree) if isinstance(n, ast.Name)]
+        assert names.count("description") == 0, (
+            "upload_document now references `description`; the #1200 comment "
+            "saying it records nothing is stale"
+        )
+        assert knowledge_service is not None
+
+
+class TestReApprovalIsRefused:
+    """``is_ready_for_review`` inspects ``pii_scan_status`` only, never
+    ``status``. That was harmless while every approval raised; now that they
+    succeed, a repeat would publish a SECOND item into the global corpus and
+    orphan the first."""
+
+    async def test_a_second_approval_raises_rather_than_publishing_again(self, service):
+        from faultmaven.exceptions import ConflictError
+
+        await service.approve_suggestion(
+            suggestion_id=SUGGESTION_ID,
+            reviewed_by="user_admin",
+            organization_id=ORG,
+        )
+
+        with pytest.raises(ConflictError):
+            await service.approve_suggestion(
+                suggestion_id=SUGGESTION_ID,
+                reviewed_by="user_admin",
+                organization_id=ORG,
+            )
+
+    async def test_the_second_attempt_publishes_nothing(self, service):
+        """The guard runs BEFORE upload_document, so the await count holds."""
+        from faultmaven.exceptions import ConflictError
+
+        await service.approve_suggestion(
+            suggestion_id=SUGGESTION_ID,
+            reviewed_by="user_admin",
+            organization_id=ORG,
+        )
+        with pytest.raises(ConflictError):
+            await service.approve_suggestion(
+                suggestion_id=SUGGESTION_ID,
+                reviewed_by="user_admin",
+                organization_id=ORG,
+            )
+
+        assert service._knowledge_service.upload_document.await_count == 1
+
+    async def test_the_original_link_is_not_overwritten(self, service):
+        from faultmaven.exceptions import ConflictError
+
+        first = await service.approve_suggestion(
+            suggestion_id=SUGGESTION_ID,
+            reviewed_by="user_admin",
+            organization_id=ORG,
+        )
+        with pytest.raises(ConflictError):
+            await service.approve_suggestion(
+                suggestion_id=SUGGESTION_ID,
+                reviewed_by="user_admin",
+                organization_id=ORG,
+            )
+
+        stored = service._suggestions_store[SUGGESTION_ID]
+        assert stored.knowledge_item_id == first["knowledge_item_id"]
+
+
+class TestApprovalNeverClaimsAnIdItDoesNotHave:
+    async def test_a_response_without_document_id_raises(self, service):
+        service._knowledge_service.upload_document.return_value = {"status": "queued"}
+
+        with pytest.raises(RuntimeError):
+            await service.approve_suggestion(
+                suggestion_id=SUGGESTION_ID,
+                reviewed_by="user_admin",
+                organization_id=ORG,
+            )
+
+    async def test_the_suggestion_is_not_marked_approved_without_an_id(self, service):
+        from faultmaven.modules.knowledge.domain.models.suggestion import (
+            SuggestionStatus,
+        )
+
+        service._knowledge_service.upload_document.return_value = {"status": "queued"}
+
+        with pytest.raises(RuntimeError):
+            await service.approve_suggestion(
+                suggestion_id=SUGGESTION_ID,
+                reviewed_by="user_admin",
+                organization_id=ORG,
+            )
+
+        stored = service._suggestions_store[SUGGESTION_ID]
+        assert stored.status != SuggestionStatus.APPROVED

@@ -3551,9 +3551,12 @@ Returns:
 
 Approve a suggestion and create a knowledge item.
 
-Validates that PII scan is complete and clean/remediated before approval.
-Creates a new KnowledgeItem with verification_level=2 (admin verified).
-Establishes bidirectional link between suggestion and knowledge item.
+Validates that PII scan is complete and clean/remediated before approval,
+and refuses a suggestion that is already approved (409).
+
+Creates a new KnowledgeItem at global scope with verification level
+EXPERIMENTAL, and establishes the bidirectional link between suggestion and
+knowledge item.
 
 Args:
     suggestion_id: Suggestion to approve

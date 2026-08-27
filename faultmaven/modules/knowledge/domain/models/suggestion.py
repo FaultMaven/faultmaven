@@ -219,6 +219,11 @@ class KnowledgeSuggestion:
                 suggestion is not eligible for approval. The global
                 handler maps this to HTTP 409 with
                 ``conflict_reason="not_ready_for_review"``.
+            ConflictError: the suggestion is ALREADY approved. The documented
+                lifecycle is ``PENDING_REVIEW -> APPROVED``; approving twice
+                is not a re-run, it publishes a SECOND knowledge item and
+                overwrites ``knowledge_item_id``, orphaning the first with no
+                back-link. ``conflict_reason="already_approved"``.
         """
         if not self.is_ready_for_review():
             raise ConflictError(
@@ -226,6 +231,13 @@ class KnowledgeSuggestion:
                 resource_type="suggestion",
                 resource_id=self.suggestion_id,
                 conflict_reason="not_ready_for_review",
+            )
+        if self.is_approved():
+            raise ConflictError(
+                "Suggestion has already been approved",
+                resource_type="suggestion",
+                resource_id=self.suggestion_id,
+                conflict_reason="already_approved",
             )
 
         self.status = SuggestionStatus.APPROVED

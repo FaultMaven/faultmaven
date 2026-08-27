@@ -1235,6 +1235,13 @@ async def update_suggestion(
         raise HTTPException(status_code=500, detail="Failed to update suggestion")
 
 
+# NOTE (#1200): this docstring is the source for the published OpenAPI
+# description (scripts/generate_api_docs.py), so keep it to what the endpoint
+# does. It previously claimed "verification_level=2 (admin verified)", which was
+# never true of what gets written — `upload_document` takes no verification
+# level and the derive yields EXPERIMENTAL — so the published contract was
+# advertising admin-verified trust for experimental content. Giving the level a
+# real home is #878.
 @router.post("/suggestions/{suggestion_id}/approve", status_code=201)
 @trace("api_approve_suggestion")
 async def approve_suggestion(
@@ -1246,9 +1253,12 @@ async def approve_suggestion(
     """
     Approve a suggestion and create a knowledge item.
 
-    Validates that PII scan is complete and clean/remediated before approval.
-    Creates a new KnowledgeItem with verification_level=2 (admin verified).
-    Establishes bidirectional link between suggestion and knowledge item.
+    Validates that PII scan is complete and clean/remediated before approval,
+    and refuses a suggestion that is already approved (409).
+
+    Creates a new KnowledgeItem at global scope with verification level
+    EXPERIMENTAL, and establishes the bidirectional link between suggestion and
+    knowledge item.
 
     Args:
         suggestion_id: Suggestion to approve
