@@ -44,6 +44,7 @@ from faultmaven.core.investigation.lifecycle_metrics import (
 )
 from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
+    restatement_hold_governs,
 )
 from faultmaven.infrastructure.knowledge.runbook_kb import RESULTS_UNREADABLE_CODE
 from faultmaven.modules.case.contracts import (
@@ -422,11 +423,16 @@ def _restatement_held_close(case: "Case") -> bool:
     supported a cause and the guard held EVERY unsettled root for want of a
     distinct mechanism statement (#1195).
 
-    Reads the same one-sweep summary the disposition layer reads
-    (``causal_graph.summarize_restatement_hold``, via the graph-hook seam this
-    module already uses for ``project_hyp_states`` — a direct import would close
-    the causal_graph/hypothesis_manager cycle), so the closure reason and
-    ``verification_status`` can never describe the same case differently.
+    Reads the SAME governing predicate the disposition layer reads
+    (``verification_status.restatement_hold_governs``), so the closure reason
+    and the status can never describe one case differently. It used to read the
+    raw graph summary and apply only the sole-block arm, which let two shapes
+    through that the status path was shielded from (#1195 review): a case
+    holding a VALIDATED root — a PROMOTED cause — closed under "a cause was
+    supported but never stated distinctly", contradicting this predicate's own
+    name; and a case whose symptom was never verified closed the same way. Both
+    guards now live in the single predicate, so this consumer cannot apply half
+    of them.
 
     Keyed on the structural hold and NOT on ``verification_status ==
     RESTATEMENT_HELD``: that cell additionally requires a stall, and a user may
@@ -434,14 +440,10 @@ def _restatement_held_close(case: "Case") -> bool:
     one label over, the mistake this function's docstring already records — the
     old ``closed_insufficient_evidence`` was gated on the INSUFFICIENT_EVIDENCE
     cell and so was unreachable for exactly the population it best described.
-    ``.get`` like every other hook consumer: an absent hook degrades to the
-    generic bucket, which is the pre-#1195 behaviour.
+    An absent hook degrades to the generic bucket, which is the pre-#1195
+    behaviour (handled inside the shared predicate).
     """
-    summarize = _graph_hooks().get("restatement_hold")
-    if summarize is None:
-        return False
-    hold = summarize(case)
-    return hold is not None and hold.is_sole_root_block
+    return restatement_hold_governs(case) is not None
 
 
 def derive_closure_reason(case: "Case") -> str:

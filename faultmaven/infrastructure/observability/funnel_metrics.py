@@ -13,7 +13,8 @@ Gauges (no-ops unless ``ENABLE_METRICS=true``; see ``shims/metrics.py``):
 - ``faultmaven_cases{state, closure_reason}`` -- the funnel: count of ONLINE
   cases by workflow state. ``closure_reason`` sub-classifies CLOSED
   (``inquiry_only`` / ``solution_deferred`` / ``closed_rca_infeasible`` /
-  ``mitigation_sufficient`` / ``closed_insufficient_evidence``
+  ``mitigation_sufficient`` / ``closed_restatement_held`` /
+  ``closed_insufficient_evidence``
   / ``unknown`` for closes that reached terminal without a classified reason --
   the integrity gap D4 closes). ``none`` for non-closed states.
 - ``faultmaven_case_resolution_turns_quantile{to_state, quantile}`` -- p50/p95

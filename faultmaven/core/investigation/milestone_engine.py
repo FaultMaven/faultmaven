@@ -137,6 +137,7 @@ from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
     is_progress_stalled,
     is_stalled,
+    restatement_hold_governs,
     work_gate_passed,
 )
 from faultmaven.core.investigation.working_conclusion_generator import (
@@ -2403,7 +2404,27 @@ def _restates_standing_evidence(ev_item, case: "Case") -> bool:
     return any(evidence_datum_key(standing) == key for standing in case.evidence or [])
 
 
-def _insufficient_evidence_handoff_suggestions() -> list:
+#: The recovery that is true of EVERY restatement-held shape: the leading cause
+#: reads as a restatement of the problem, so what moves it is a mechanism, not
+#: another observation. Shared by the restatement-held handoff and by the
+#: composite wall+hold turn, where the insufficient-evidence handoff substitutes
+#: it for its data ask — one string, so the two turns cannot drift apart on the
+#: one piece of advice that is correct on both.
+_MECHANISM_MOVE = {
+    "label": "Ask for the cause to be stated as a mechanism",
+    "action_type": "FREE_SPEECH",
+    "body": (
+        "The leading explanation currently restates the problem rather than "
+        "explaining it. Asking what specifically is misconfigured, exhausted, "
+        "or failing — and how that produces the symptom — is what moves it "
+        "forward. More data will not."
+    ),
+}
+
+
+def _insufficient_evidence_handoff_suggestions(
+    case: "Case | None" = None, *, hold=None
+) -> list:
     """Deterministic structured-handoff affordances for an insufficient-evidence
     case (verification-status Phase 1).
 
@@ -2416,9 +2437,32 @@ def _insufficient_evidence_handoff_suggestions() -> list:
     is the user's call (the prompt's handoff already names it as an option), and
     the engine nudging abandonment would be soft-collapse (D4). Non-clickable
     FREE_SPEECH — the user supplies the content.
+
+    THE COMPOSITE (#1195 review). A case can reach this cell on a model-declared
+    data wall while ALSO carrying a governing §7.1 restatement hold. The status
+    stays ``INSUFFICIENT_EVIDENCE`` there — the wall is a real, user-declared
+    boundary and the close must record it — but the DATA ASK must not survive:
+    the user has already declared that data unobtainable, and the same turn
+    tells the MODEL that more evidence will not validate the held root. Asking
+    anyway is the exact contradiction #1195 exists to remove, reached by a
+    different route. So on a governing hold the data ask is replaced by
+    ``_MECHANISM_MOVE``, the one move that IS actionable there. The fresh-angle
+    move survives unchanged: it asks for a DIRECTION, not a datum, and stays
+    true of a walled case.
+
+    ``case`` is optional so the pair remains constructible without one (the peer
+    builders take no argument and several tests call it bare); every engine call
+    site passes it, and without it the historical data-ask pair is returned.
+    ``hold`` lets the caller hand over the read it already did.
     """
-    return [
-        {
+    # ``hold`` is passed by ``engine_owned_affordances``, which computed it
+    # once for the whole call; deriving it again here would re-sweep the graph.
+    if hold is None and case is not None:
+        hold = restatement_hold_governs(case)
+    first = (
+        _MECHANISM_MOVE
+        if hold is not None
+        else {
             "label": "Share data that would distinguish the causes",
             "action_type": "FREE_SPEECH",
             "body": (
@@ -2426,7 +2470,10 @@ def _insufficient_evidence_handoff_suggestions() -> list:
                 "single cause from the current evidence. New discriminating data "
                 "would let it resume."
             ),
-        },
+        }
+    )
+    return [
+        first,
         {
             "label": "Suggest a diagnostic angle not yet tried",
             "action_type": "FREE_SPEECH",
@@ -2485,7 +2532,7 @@ def _insufficient_evidence_handoff_pending(
     return status == VerificationStatus.INSUFFICIENT_EVIDENCE
 
 
-def _restatement_held_suggestions(case: "Case") -> list:
+def _restatement_held_suggestions(case: "Case", *, hold=None) -> list:
     """Deterministic affordances for a case whose leading cause is held by the
     §7.1 RESTATEMENT guard (#1195) — the fourth peer of the insufficient-evidence
     handoff, the hypothesis-vacuum pull-back and the treatment-blocked handoff:
@@ -2526,24 +2573,16 @@ def _restatement_held_suggestions(case: "Case") -> list:
     engine can describe is not a reason to abandon the case (D4 soft-collapse).
     Non-clickable FREE_SPEECH — the user supplies the content.
     """
-    summarize = _graph_hooks().get("restatement_hold")
-    hold = summarize(case) if summarize is not None else None
-    # Absent hold summary (a cleared hook — see verification_status): keep the
-    # move that is true of every shape and drop the one that needs evidence for
-    # its claim. Degrading toward the smaller, always-true offer is the safe
+    # ``hold`` is passed by ``engine_owned_affordances``, which has already
+    # computed it: recomputing here ran the tokenization sweep a SECOND time per
+    # call and opened a window where the two reads could disagree (#1195
+    # review). Absent (a bare call, or a cleared hook — see verification_status)
+    # it degrades to the move that is true of every shape and drops the one that
+    # needs evidence for its claim: the smaller, always-true offer is the safe
     # direction.
-    moves = [
-        {
-            "label": "Ask for the cause to be stated as a mechanism",
-            "action_type": "FREE_SPEECH",
-            "body": (
-                "The leading explanation currently restates the problem rather "
-                "than explaining it. Asking what specifically is misconfigured, "
-                "exhausted, or failing — and how that produces the symptom — is "
-                "what moves it forward. More data will not."
-            ),
-        },
-    ]
+    if hold is None:
+        hold = restatement_hold_governs(case)
+    moves = [_MECHANISM_MOVE]
     if hold is not None and hold.involves_siblings:
         moves.append(
             {
@@ -2801,6 +2840,30 @@ def _schema_prompt_instruction(schema: dict) -> str:
     )
 
 
+#: Which verification status each mid-investigation gate reports on the turn it
+#: fires. A dict rather than the if/elif chain it replaces: the labels are
+#: produced in ``engine_owned_affordances`` and consumed at the return boundary,
+#: so a gate added in one place and forgotten in the other used to fall through
+#: in SILENCE — the turn simply carried no status. Two gates
+#: (``treatment_blocked``, ``restatement_held``) were added that way before this
+#: map existed. The state-machine gates (``disposition``, ``gate1``) are absent
+#: on purpose: they are handshakes, not readings of the join, and have no status
+#: to report.
+#:
+#: ``insufficient_evidence_restatement_held`` maps to INSUFFICIENT_EVIDENCE
+#: deliberately — it is the same disposition wearing a different affordance
+#: pair, and the turn metadata must agree with the persisted status.
+_GATE_VERIFICATION_STATUS: dict[str, VerificationStatus] = {
+    "insufficient_evidence": VerificationStatus.INSUFFICIENT_EVIDENCE,
+    "insufficient_evidence_restatement_held": (
+        VerificationStatus.INSUFFICIENT_EVIDENCE
+    ),
+    "restatement_held": VerificationStatus.RESTATEMENT_HELD,
+    "not_yet_productive": VerificationStatus.NOT_YET_PRODUCTIVE,
+    "treatment_blocked": VerificationStatus.TREATMENT_BLOCKED,
+}
+
+
 def engine_owned_affordances(
     case: "Case", metadata: dict[str, Any] | None = None
 ) -> tuple[str, list] | None:
@@ -2854,25 +2917,58 @@ def engine_owned_affordances(
     # causal-graph tokenization sweep (#1195 review). Compute it ONCE here and
     # hand it down: cheaper, and it makes the mutual exclusivity structural
     # rather than merely argued — the four branches read one value. The
-    # predicates keep their own cheap pre-checks (stall, hypothesis count),
-    # which still short-circuit before the status is consulted, and each still
-    # computes the status itself when called directly (tests, and any future
-    # caller that has not got one).
+    # predicates keep their own cheap pre-checks, and each still computes the
+    # status itself when called directly (tests, and any future caller that has
+    # not got one).
     #
-    # The INVESTIGATING guard is hoisted out of the four predicates rather than
-    # dropped: all four require it, and without it here a gate-less INQUIRY or
-    # terminal turn would newly pay a join it previously short-circuited past.
-    # Each predicate still enforces the guard itself for its direct callers.
+    # BOTH cheap guards are hoisted with it, not dropped (#1195 review). All
+    # four readings require INVESTIGATING, and all four require a stall — the
+    # two ungrounded ones via the full progress axis, the other two via its time
+    # arm, which it subsumes. Without them here an ordinary PROGRESSING turn
+    # would newly pay ``grade_cause_assurance`` plus a ``work_gate_passed``
+    # rebuild of every evidence datum key, twice a turn, where each predicate
+    # previously returned early. ``is_progress_stalled`` is exactly what
+    # ``_insufficient_evidence_handoff_pending`` already ran first, so this
+    # restores the pre-existing cost profile rather than adding to it.
     if case.state != CaseState.INVESTIGATING:
+        return None
+    if not is_progress_stalled(case):
         return None
 
     status = assess_verification_status(case)
+    # ONE hold read per call, hoisted so neither branch below re-derives it: two
+    # reads of the same fact in one turn is both a second tokenization sweep and
+    # a window where they could disagree. Computed only for the two statuses
+    # that can use it — the other branches would pay a graph sweep for an answer
+    # they never look at. (The join above derives it once more internally on its
+    # way to RESTATEMENT_HELD; threading that back out would mean returning a
+    # tuple from a function whose whole contract is "one value per case", so
+    # that second read stands, and the sweep-count pins record it.)
+    hold = (
+        restatement_hold_governs(case)
+        if status
+        in (
+            VerificationStatus.INSUFFICIENT_EVIDENCE,
+            VerificationStatus.RESTATEMENT_HELD,
+        )
+        else None
+    )
 
     if _insufficient_evidence_handoff_pending(case, status=status):
-        return ("insufficient_evidence", _insufficient_evidence_handoff_suggestions())
+        # The composite (#1195 review): a declared data wall AND a governing
+        # restatement hold. Same status, same disposition — but a different pair
+        # and its own telemetry label, because a turn that silently swaps its
+        # advice is a turn nobody can measure, and #1140's whole lesson was that
+        # an unobservable hold costs a database read to find.
+        gate = (
+            "insufficient_evidence_restatement_held"
+            if hold is not None
+            else "insufficient_evidence"
+        )
+        return (gate, _insufficient_evidence_handoff_suggestions(case, hold=hold))
 
     if _restatement_held_pending(case, status=status):
-        return ("restatement_held", _restatement_held_suggestions(case))
+        return ("restatement_held", _restatement_held_suggestions(case, hold=hold))
 
     if _hypothesis_vacuum_pending(case, status=status):
         return ("not_yet_productive", _hypothesis_vacuum_suggestions())
@@ -3212,6 +3308,12 @@ def _terminal_confirmation_response(case) -> str:
             "Case closed — insufficient evidence to ground a cause. "
             "Residual candidates and the missing data are preserved in the "
             "closure summary."
+        )
+    if closure_reason == "closed_restatement_held":
+        return (
+            "Case closed — a cause was supported by the evidence but never "
+            "stated distinctly from the problem. The candidates and what the "
+            "cause still needs are preserved in the closure summary."
         )
     if closure_reason == "solution_deferred":
         return (
@@ -6176,22 +6278,10 @@ class MilestoneEngine:
                 # the durable reading lives on ``case.progress.verification_status``
                 # (persisted each turn). The affordance-served metric above
                 # already carries the firing count per gate.
-                if gate_name == "insufficient_evidence":
-                    metadata["verification_status"] = (
-                        VerificationStatus.INSUFFICIENT_EVIDENCE.value
-                    )
-                elif gate_name == "not_yet_productive":
-                    metadata["verification_status"] = (
-                        VerificationStatus.NOT_YET_PRODUCTIVE.value
-                    )
-                elif gate_name == "treatment_blocked":
-                    metadata["verification_status"] = (
-                        VerificationStatus.TREATMENT_BLOCKED.value
-                    )
-                elif gate_name == "restatement_held":
-                    metadata["verification_status"] = (
-                        VerificationStatus.RESTATEMENT_HELD.value
-                    )
+                if gate_name in _GATE_VERIFICATION_STATUS:
+                    metadata["verification_status"] = _GATE_VERIFICATION_STATUS[
+                        gate_name
+                    ].value
 
             # Closure-ack turn (LLM-driven path): when generation
             # succeeded, suggestions stay minimal — the rendered summary

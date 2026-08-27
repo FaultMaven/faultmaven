@@ -712,15 +712,24 @@ class RestatementHold(NamedTuple):
     would otherwise re-tokenize the graph (#1195 review).
 
     - ``root_ids`` — the held ROOTs (``restatement_held_root_ids``).
-    - ``is_sole_root_block`` — whether EVERY unsettled ROOT is held this way.
-      This is what licenses the claim "more supporting evidence will not move
-      this forward": it is true of a held root, and false of the case as a whole
-      the moment some OTHER live root is blocked by something evidence *can*
-      move (no causal link yet, the independence count, a hedged support). The
-      semantic form was chosen over a literal "exactly one unsettled root"
-      (``confirm_root_from_resolution_absence``'s spelling): two roots BOTH held
-      by the guard are still a case no amount of data advances, and refusing the
-      carve-out there would re-report it as an evidence deficiency.
+    - ``is_sole_root_block`` — whether EVERY ROOT the case has not put to rest
+      is held this way. This is what licenses the claim "more supporting
+      evidence will not move this forward": it is true of a held root, and false
+      of the case as a whole the moment some OTHER root is blocked by something
+      evidence *can* move (no causal link yet, the independence count, a hedged
+      support). The semantic form was chosen over a literal "exactly one
+      unsettled root" (``confirm_root_from_resolution_absence``'s spelling): two
+      roots BOTH held by the guard are still a case no amount of data advances,
+      and refusing the carve-out there would re-report it as an evidence
+      deficiency.
+
+      Only ``REFUTED`` puts a root to rest for this purpose. A ``VALIDATED``
+      root is emphatically NOT settled-and-irrelevant: it means the case HAS a
+      promoted cause, so the hold on some sibling is not what governs the case
+      at all, and any consumer claiming "a cause was supported but never stated
+      distinctly" would be describing a case that HAS a stated cause. The
+      disposition path is shielded from that by ``_is_grounded``; the closure
+      path was not, and read the hold as governing (#1195 review).
     - ``involves_siblings`` — whether any held root is released by dropping the
       OTHER standing hypotheses from its frame. False means the hold is
       **anchor-only**: the root restates the problem statement itself, and no two
@@ -748,15 +757,16 @@ def summarize_restatement_hold(case: Case) -> "RestatementHold | None":
     held = restatement_held_root_ids(case)
     if not held:
         return None
-    # Cheap and tokenization-free: every ROOT the graph still has an open
-    # question about. ``restatement_held_root_ids`` already excludes
-    # VALIDATED/REFUTED, so ``held`` is a subset of this by construction and the
-    # comparison is really "is anything ELSE still open".
-    unsettled = {
+    # Cheap and tokenization-free: every ROOT the case has NOT put to rest.
+    # REFUTED only — a VALIDATED root is a promoted cause, and its presence is
+    # exactly what must make ``is_sole_root_block`` False (see the docstring).
+    # ``restatement_held_root_ids`` excludes both VALIDATED and REFUTED, so
+    # ``held`` is a subset of this and the comparison reads "is anything else
+    # unresolved, or promoted".
+    unresolved = {
         n.node_id
         for n in case.causal_nodes.values()
-        if n.node_type == NodeType.ROOT
-        and n.node_state not in (NodeState.VALIDATED, NodeState.REFUTED)
+        if n.node_type == NodeType.ROOT and n.node_state != NodeState.REFUTED
     }
     anchors, _hyp_token_sets = _frame_components(case)
     involves_siblings = False
@@ -775,7 +785,7 @@ def summarize_restatement_hold(case: Case) -> "RestatementHold | None":
             break
     return RestatementHold(
         root_ids=frozenset(held),
-        is_sole_root_block=(unsettled == held),
+        is_sole_root_block=(unresolved == held),
         involves_siblings=involves_siblings,
     )
 

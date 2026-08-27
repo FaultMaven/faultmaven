@@ -41,13 +41,14 @@ frames its own root (novelty 1/9 against a 0.30 bar).
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import datetime, timezone
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation import cause_assurance
+from faultmaven.core.investigation import cause_assurance, milestone_engine
 from faultmaven.core.investigation.causal_graph import (
     restatement_held_root_ids,
     summarize_restatement_hold,
@@ -58,10 +59,12 @@ from faultmaven.core.investigation.exhaustion_thresholds import (
     EXHAUSTION_STALL_THRESHOLD,
 )
 from faultmaven.core.investigation.milestone_engine import (
+    _GATE_VERIFICATION_STATUS,
     _insufficient_evidence_handoff_pending,
     _insufficient_evidence_handoff_suggestions,
     _restatement_held_pending,
     _restatement_held_suggestions,
+    _terminal_confirmation_response,
     engine_owned_affordances,
 )
 from faultmaven.core.investigation.terminal_transitions import derive_closure_reason
@@ -70,6 +73,7 @@ from faultmaven.core.investigation.verification_status import (
     assess_verification_status,
     is_progress_stalled,
     is_stalled,
+    restatement_hold_governs,
     work_gate_passed,
 )
 from faultmaven.modules.case.contracts import (
@@ -95,6 +99,7 @@ from faultmaven.modules.case.contracts import (
     NodeState,
     NodeType,
     ProblemVerification,
+    ValidationMethod,
 )
 
 pytestmark = pytest.mark.unit
@@ -443,7 +448,9 @@ def test_declared_data_wall_beats_the_carve_out():
     assert is_progress_stalled(case) is True  # the wall
     assert restatement_held_root_ids(case) == {ROOT_ID}  # still held
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
-    assert engine_owned_affordances(case)[0] == "insufficient_evidence"
+    # The AFFORDANCES are the composite pair (next class) — the status is what
+    # this pin is about, and it stays with the wall.
+    assert engine_owned_affordances(case)[0].startswith("insufficient_evidence")
 
 
 def test_declared_wall_beats_the_carve_out_even_when_also_time_stalled():
@@ -453,6 +460,74 @@ def test_declared_wall_beats_the_carve_out_even_when_also_time_stalled():
     case = _restatement_held_case(declared_wall=True)
     assert is_stalled(case) is True
     assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_a_promoted_cause_defeats_the_carve_out():
+    """A VALIDATED root means the case HAS a cause, so the hold on some sibling
+    is not what governs it — and any consumer saying "a cause was supported but
+    never stated distinctly" would be describing a case with a stated cause.
+
+    The status path was shielded from this by ``_is_grounded``; the closure path
+    was not, and closed such a case as ``closed_restatement_held`` (#1195
+    review). The guard now lives in the shared predicate, so neither can."""
+    case = _restatement_held_case()
+    promoted = CausalNode(
+        node_id="cn_00000000aaaa",
+        statement="the promoted cause: a stale sidecar image tag on the deployment",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.VALIDATED,
+        validation_method=ValidationMethod.EMPIRICAL,
+        actionable=True,
+        generated_at_turn=4,
+        evidence_links=[
+            NodeEvidenceLink(
+                evidence_id=_eid("e1"),
+                stance=EvidenceStance.SUPPORTS,
+                reasoning="observed directly",
+                stance_confidence=0.99,
+            )
+        ],
+    )
+    case.causal_nodes[promoted.node_id] = promoted
+    case.causal_edges.append(
+        CausalEdge(cause_node_id=promoted.node_id, effect_node_id="cn_0000000000d0")
+    )
+    assert restatement_held_root_ids(case) == {ROOT_ID}  # still held
+    assert summarize_restatement_hold(case).is_sole_root_block is False
+    assert restatement_hold_governs(case) is None
+    assert derive_closure_reason(case) != "closed_restatement_held"
+
+
+def test_the_carve_out_requires_a_verified_symptom():
+    """The claim is "the evidence already grounds a cause, so more data will not
+    help". Without ``symptom_verified`` the PROBLEM itself was never established
+    from data, so that claim is about a symptom nobody confirmed — and
+    ``_is_grounded`` demands the same anchor for the same reason. It also keeps
+    the closure report's "the reported problem was never established" arm
+    reachable for this population."""
+    case = _restatement_held_case()
+    case.progress.symptom_verified = False
+    assert restatement_held_root_ids(case) == {ROOT_ID}  # the hold is real
+    assert summarize_restatement_hold(case).is_sole_root_block is True
+    assert restatement_hold_governs(case) is None  # but it does not govern
+    assert assess_verification_status(case) == VerificationStatus.INSUFFICIENT_EVIDENCE
+    assert engine_owned_affordances(case)[0] == "insufficient_evidence"
+    assert derive_closure_reason(case) != "closed_restatement_held"
+
+
+def test_governing_predicate_is_one_read_not_a_checklist():
+    """Both guards are carried by ONE predicate on purpose: this fix twice
+    shipped a consumer that applied some of them and not others. A caller that
+    reads ``restatement_hold_governs`` cannot half-apply it."""
+    assert restatement_hold_governs(_restatement_held_case()) is not None
+    for case in (
+        _restatement_held_case(extra_unsettled_root=True),
+        _restatement_held_case(duplicate_attached=True),
+    ):
+        assert restatement_hold_governs(case) is None
+    unanchored = _restatement_held_case()
+    unanchored.progress.symptom_verified = False
+    assert restatement_hold_governs(unanchored) is None
 
 
 def test_hold_does_not_pre_empt_a_progressing_case():
@@ -578,6 +653,75 @@ class TestRestatementHeldHandoff:
             assert engine_owned_affordances(case) is None
         assert calls["n"] == 0
 
+    def _count_joins(self, case):
+        """Count ``assess_verification_status`` calls made by one dispatch.
+
+        Counting graph SWEEPS would be vacuous here: a progressing case never
+        reaches the hold read inside the join, so the sweep count is 0 whether
+        or not the guard exists. What the guard actually saves is the join
+        itself — ``grade_cause_assurance`` plus a ``work_gate_passed`` rebuild
+        of every evidence datum key — so that is what this counts."""
+        calls = {"n": 0}
+        real = milestone_engine.assess_verification_status
+
+        def counting(c, **kw):
+            calls["n"] += 1
+            return real(c, **kw)
+
+        with patch.object(milestone_engine, "assess_verification_status", counting):
+            result = engine_owned_affordances(case)
+        return result, calls["n"]
+
+    def test_a_progressing_turn_computes_no_join(self):
+        """The ordinary turn. All four readings require a stall, so the cheap
+        stall guard is hoisted alongside the INVESTIGATING one — without it a
+        PROGRESSING turn pays the whole join, twice a turn, where each predicate
+        previously returned early (#1195 review)."""
+        case = _restatement_held_case(current_turn=3, turns_without_progress=0)
+        assert is_progress_stalled(case) is False
+        result, n = self._count_joins(case)
+        assert result is None
+        assert n == 0, f"progressing turn computed the join {n}x"
+
+    def test_a_firing_turn_computes_the_join_once(self):
+        """And the turn that does fire computes it ONCE for all four readings,
+        rather than each predicate recomputing it."""
+        _result, n = self._count_joins(_restatement_held_case())
+        assert n == 1, f"firing turn computed the join {n}x"
+
+    def _count_sweeps(self, case):
+        calls = {"n": 0}
+        real = cause_assurance._GRAPH_HOOKS["restatement_hold"]
+
+        def counting(c):
+            calls["n"] += 1
+            return real(c)
+
+        with patch.dict(cause_assurance._GRAPH_HOOKS, {"restatement_hold": counting}):
+            result = engine_owned_affordances(case)
+        return result, calls["n"]
+
+    def test_a_firing_turn_sweeps_the_graph_a_bounded_number_of_times(self):
+        """The exact cost of a turn that fires, pinned rather than asserted.
+
+        The dispatch reads the hold ONCE and hands it to both suggestion
+        builders; each used to derive its own, which re-swept the graph and
+        opened a window where two reads of one fact could disagree (#1195
+        review). What remains is the join's own internal read on its way to
+        RESTATEMENT_HELD — it returns a single value, so that read cannot be
+        handed back out. Hence 2 on the held turn and 1 on the composite (whose
+        join returns at the wall before ever consulting the hold). A regression
+        to 3+ means a builder started deriving its own again."""
+        (gate, _moves), n = self._count_sweeps(_restatement_held_case())
+        assert gate == "restatement_held"
+        assert n == 2, f"held turn swept {n}x"
+
+        (gate, _moves), n = self._count_sweeps(
+            _restatement_held_case(declared_wall=True)
+        )
+        assert gate == "insufficient_evidence_restatement_held"
+        assert n == 1, f"composite turn swept {n}x"
+
     def test_state_machine_gates_take_precedence(self):
         """Ordered with its peers, BELOW any pending state-machine handshake."""
         case = _restatement_held_case()
@@ -624,6 +768,108 @@ class TestRestatementHeldHandoff:
             )
             is False
         )
+
+
+class TestWallAndHoldComposite:
+    """A declared data wall AND a governing hold, in one case (#1195 review).
+
+    NEITHER cell is true alone: the wall's "no cause can be grounded from
+    currently available data" is false about a root three independent supports
+    already ground, and the hold's "the block is lexical, not evidential" is
+    false about discriminators the model declared unobtainable. What IS true of
+    both is that more data will not help — so the status keeps the wall (a real,
+    user-declared boundary the close must record) while the affordances drop the
+    data ask, which is the channel the contradiction actually reached."""
+
+    def _case(self):
+        return _restatement_held_case(declared_wall=True)
+
+    def test_both_premises_hold(self):
+        case = self._case()
+        assert is_progress_stalled(case) is True
+        assert restatement_hold_governs(case) is not None
+        assert assess_verification_status(case) == (
+            VerificationStatus.INSUFFICIENT_EVIDENCE
+        )
+
+    def test_the_data_ask_is_gone(self):
+        """The defect: the user was told to share data the model had just told
+        the engine would not validate the root — and which the user had already
+        declared unobtainable."""
+        gate, moves = engine_owned_affordances(self._case())
+        blob = " ".join(m["label"] + " " + m["body"] for m in moves).lower()
+        assert "share data that would distinguish" not in blob
+        assert "new discriminating data" not in blob
+        assert "mechanism" in blob
+
+    def test_it_keeps_a_pair_and_its_own_gate_label(self):
+        """Two moves like every peer, and its own telemetry label: a turn that
+        silently swaps its advice is a turn nobody can measure."""
+        gate, moves = engine_owned_affordances(self._case())
+        assert gate == "insufficient_evidence_restatement_held"
+        assert len(moves) == 2
+        assert moves[1]["label"] == "Suggest a diagnostic angle not yet tried"
+
+    def test_a_plain_wall_keeps_the_data_ask(self):
+        """The narrowing is to the composite. A walled case with no governing
+        hold is the canonical insufficient-evidence archetype and is untouched."""
+        case = _restatement_held_case(declared_wall=True, duplicate_attached=True)
+        assert restatement_hold_governs(case) is None
+        gate, moves = engine_owned_affordances(case)
+        assert gate == "insufficient_evidence"
+        assert moves[0]["label"] == "Share data that would distinguish the causes"
+
+    def test_the_gate_label_reports_the_wall_status(self):
+        """The label distinguishes the affordances, not the disposition: the
+        turn metadata must agree with the persisted status."""
+        assert _GATE_VERIFICATION_STATUS["insufficient_evidence_restatement_held"] == (
+            VerificationStatus.INSUFFICIENT_EVIDENCE
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_close_records_the_wall_as_well_as_the_hold(self):
+        """The composite closes on the hold — the more specific and more
+        actionable finding — so the wall would be dropped from the durable
+        record unless the Cause Boundary block names it."""
+        from faultmaven.modules.report.domain.services.report_generation_service import (
+            ReportGenerationService,
+        )
+
+        case = self._case()
+        assert derive_closure_reason(case) == "closed_restatement_held"
+        case = case.model_copy(
+            update={
+                "state": CaseState.CLOSED,
+                "closed_at": datetime.now(timezone.utc),
+                "closure_reason": "closed_restatement_held",
+            }
+        )
+        svc = object.__new__(ReportGenerationService)
+        summary = await svc._generate_closure_summary(case, {})
+        assert "Cause Boundary" in summary
+        assert "not more data" in summary
+        assert "declared unobtainable" in summary.lower()
+        assert "the capture that would separate the candidates" in summary
+
+    @pytest.mark.asyncio
+    async def test_a_plain_hold_close_claims_no_data_wall(self):
+        """And the wall sentence must not appear when there is no wall — that
+        would re-import the evidence framing through the back door."""
+        from faultmaven.modules.report.domain.services.report_generation_service import (
+            ReportGenerationService,
+        )
+
+        case = _restatement_held_case()
+        case = case.model_copy(
+            update={
+                "state": CaseState.CLOSED,
+                "closed_at": datetime.now(timezone.utc),
+                "closure_reason": "closed_restatement_held",
+            }
+        )
+        svc = object.__new__(ReportGenerationService)
+        summary = await svc._generate_closure_summary(case, {})
+        assert "unobtainable" not in summary.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -681,6 +927,42 @@ class TestRestatementHeldClosure:
         case = _restatement_held_case(current_turn=3, turns_without_progress=0)
         assert assess_verification_status(case) == VerificationStatus.OPEN
         assert derive_closure_reason(case) == "closed_restatement_held"
+
+    def test_every_gate_that_reports_a_status_is_in_the_map(self):
+        """The gate labels are produced in ``engine_owned_affordances`` and
+        consumed at the return boundary. A gate added in one place and forgotten
+        in the other used to fall through in SILENCE — the turn carried no
+        status at all, which is how ``treatment_blocked`` and
+        ``restatement_held`` both shipped unmapped. Pin the correspondence."""
+        import inspect
+
+        from faultmaven.core.investigation import milestone_engine
+
+        src = inspect.getsource(milestone_engine.engine_owned_affordances)
+        emitted = set(re.findall(r'return \(\s*"([a-z0-9_]+)"', src))
+        emitted |= set(re.findall(r'gate = \(\s*"([a-z0-9_]+)"', src))
+        emitted |= set(re.findall(r'\s+else "([a-z0-9_]+)"', src))
+        # The state-machine handshakes report no status by design.
+        emitted -= {"disposition", "gate1"}
+        assert emitted, "the scrape found no gate labels — it has rotted"
+        missing = emitted - set(_GATE_VERIFICATION_STATUS)
+        assert not missing, f"gates with no status mapping: {sorted(missing)}"
+
+    def test_the_confirm_turn_names_the_distinction(self):
+        """Every other closure reason gets bespoke prose on the confirm turn;
+        without a branch this one fell through to a bare "Case closed." and the
+        distinction was dropped on the closure turn itself."""
+        case = _restatement_held_case()
+        case = case.model_copy(
+            update={
+                "state": CaseState.CLOSED,
+                "closed_at": datetime.now(timezone.utc),
+                "closure_reason": "closed_restatement_held",
+            }
+        )
+        line = _terminal_confirmation_response(case)
+        assert line != "Case closed."
+        assert "never stated distinctly" in line
 
     def test_the_reason_is_in_the_valid_vocabulary(self):
         from faultmaven.modules.case.domain.models import VALID_CLOSURE_REASONS

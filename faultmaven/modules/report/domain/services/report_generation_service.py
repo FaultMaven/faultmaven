@@ -338,10 +338,23 @@ class ReportGenerationService:
         the data gathered so far" over a case whose data DID ground one, which
         is the contradiction #1195 removes from the turn channel.
 
-        Deliberately makes no claim about obtainability and lists no unmet data
-        need: on this shape there is no missing observation to name, and naming
-        one would re-import the evidence framing through the back door.
+        Claims nothing about obtainability on its own: on the plain shape there
+        is no missing observation to name, and naming one would re-import the
+        evidence framing through the back door. But a case CAN carry both this
+        hold and a model-declared data wall (#1195 review), and that case closes
+        here — the hold is the more specific finding and the more actionable
+        one. Dropping the wall from the record would then lose the honest
+        partial the sibling block exists to capture, so it is named when it is
+        actually present, as an additional fact rather than as the explanation.
         """
+        outstanding_unobtainable = [
+            n
+            for n in (case.evidence_needs or [])
+            if n.purpose == NeedPurpose.CAUSAL_VERIFICATION
+            and n.is_outstanding
+            and n.obtainability == NeedObtainability.UNOBTAINABLE
+        ]
+
         block: List[str] = ["## Cause Boundary — Why This Remains Unresolved\n"]
         block.append(
             "The evidence gathered supported a cause, but its statement never "
@@ -350,6 +363,16 @@ class ReportGenerationService:
             "a specific mechanism (what was misconfigured, exhausted, or "
             "failing), not more data.\n"
         )
+        if outstanding_unobtainable:
+            block.append(
+                "Separately, discriminating data the investigation asked for "
+                "was reported as unobtainable — so the remaining candidates "
+                "could not be told apart either.\n"
+            )
+            block.append("**Discriminating data declared unobtainable:**")
+            for n in outstanding_unobtainable:
+                block.append(f"- {n.request_text}")
+                block.append("")
         residual = [
             h
             for h in hypotheses
@@ -939,7 +962,8 @@ class ReportGenerationService:
         - Leading Hypotheses (top 5 by confidence)
         - Mitigation Status (when a mitigation was inserted)
         - Timeline
-        - Recommendation (for closed_insufficient_evidence only)
+        - Recommendation (closed_insufficient_evidence: where to restart;
+          closed_restatement_held: name the mechanism, do not gather more)
 
         No Causal Map here — the map is a resolution-summary section only
         (product decision): a closed case's graph reads as a conclusion
@@ -1043,10 +1067,13 @@ class ReportGenerationService:
         # Recommendation — fires when investigation ran but didn't conclude.
         # The prior "escalated"/"abandoned" guard was dead code: those
         # values are not in VALID_CLOSURE_REASONS.
-        # Only the insufficient-evidence close leaves an open lead worth
-        # naming. A deferred fix, an unreachable cause, and a sufficient
-        # mitigation each already carry their own next step, so a
-        # "start here next time" block would misdescribe them.
+        # Two closes leave an open lead worth naming, and they need OPPOSITE
+        # advice: insufficient-evidence has a lead worth resuming from, while a
+        # restatement-held close has the lead already and needs it STATED (#1195
+        # — pointing that follow-up at "start from the most promising lead"
+        # repeats the move that did not work). A deferred fix, an unreachable
+        # cause, and a sufficient mitigation each already carry their own next
+        # step, so a "start here next time" block would misdescribe them.
         if closure_reason_raw == "closed_restatement_held":
             # #1195: the lead is not in doubt here — its WORDING is. Pointing a
             # follow-up at "start from the most promising lead" would repeat the

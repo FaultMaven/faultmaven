@@ -144,11 +144,12 @@ Grounding and progress are **orthogonal facts** — "is a cause grounded?" and "
 
 The stalled × not-grounded cell is the one that splits, on the REASON for the stall:
 
-| Reason the case is stalled | Cell |
-|---|---|
-| Model declared the discriminating data unobtainable (`_declared_wall`) | insufficient-evidence |
-| Time thresholds, and some live ROOT is blocked by something evidence can move | insufficient-evidence |
-| Time thresholds, and the §7.1 restatement guard holds **every** unsettled ROOT | **restatement-held** |
+| Reason the case is stalled | Cell | Affordances |
+|---|---|---|
+| Model declared the discriminating data unobtainable (`_declared_wall`) | insufficient-evidence | ask for discriminating data |
+| Model declared it unobtainable **and** the hold governs | insufficient-evidence | **ask for the mechanism** (below) |
+| Time thresholds, and some root is blocked by something evidence can move | insufficient-evidence | ask for discriminating data |
+| Time thresholds, and the hold governs | **restatement-held** | ask for the mechanism |
 
 Insufficient-evidence is specifically the **(not-grounded × stalled)** cell. Two orderings hold inside it:
 
@@ -161,9 +162,12 @@ The cell therefore splits on the *reason* for the stall, and the split is placed
 
 **Three conditions, all necessary.** The carve-out is narrow because a carve-out that is too wide produces the same class of wrong guidance, inverted — telling a user that data will not help when it would:
 
-- **The stall must be a TIME stall.** A model-declared data wall (§5.3) is an *explicit assertion* that the discriminating data cannot be obtained — the canonical insufficient-evidence archetype, and the reason the wall arm exists. It wins over the carve-out, including when the clock has also run out.
-- **The guard must hold a root** — `restatement_held_root_ids` non-empty.
-- **It must hold EVERY unsettled root** (`RestatementHold.is_sole_root_block`). The claim the cell licenses is about the *case*, and it is false while some other live ROOT is blocked by something evidence can move (no causal link yet, the independence count, a hedged support). The semantic form was chosen over a literal "exactly one unsettled root": two roots both held by the guard are still a case no amount of data advances.
+- **The stall must be a TIME stall** *for the status*. A model-declared data wall (§5.3) is an *explicit assertion* that the discriminating data cannot be obtained — the canonical insufficient-evidence archetype, and the reason the wall arm exists. It keeps the status, including when the clock has also run out. See "the composite" below for what happens to the *affordances*.
+- **The hold must GOVERN the case** — `verification_status.restatement_hold_governs`, which is deliberately ONE read rather than a set of facts each consumer must remember to combine (this fix twice shipped a consumer that applied some and not others). It carries:
+  - the guard holds a root, and holds **every root the case has not refuted** (`RestatementHold.is_sole_root_block`). The claim the cell licenses is about the *case*, and it is false while some other root is blocked by something evidence can move (no causal link yet, the independence count, a hedged support). The semantic form was chosen over a literal "exactly one unsettled root": two roots both held by the guard are still a case no amount of data advances. A **VALIDATED** root disqualifies outright — the case then has a promoted cause, and the hold on a sibling is not what governs it.
+  - **`symptom_verified`**, the same anchor `_is_grounded` demands and for the same reason. Without it the problem itself was never established from data, so "the evidence already grounds a cause" is a claim about a symptom nobody confirmed — and it keeps the closure report's *"the reported problem was never established"* arm reachable for that population.
+
+**The composite: a wall AND a hold.** Both can be true of one case, and **neither cell is true alone** — the wall's *"no cause can be grounded from currently available data"* is false about a root three independent supports already ground, and the hold's *"the block is lexical, not evidential"* is false about discriminators the model declared unobtainable. What is true of both is that **more data will not help**. So the two channels are decided separately, on purpose: the **status** keeps the wall (a real, user-declared boundary the close must record), while the **affordances** drop the data ask — asking a user for data they have just declared unobtainable, on a turn that tells the model more evidence will not validate the root, is the very contradiction this issue exists to remove, reached by another route. The composite serves the mechanism move under its own gate label `insufficient_evidence_restatement_held`, so it is measurable rather than a silent swap.
 
 Scoped deliberately at the other edges too: it does **not** pre-empt `OPEN` (a progressing case asserts nothing false) or `NOT_YET_PRODUCTIVE` (a provider-health reading, never a per-case evidence verdict). It changes what the case is *reported* as, what the user is *offered* (§5.6), and how the close is *recorded* (§5.7) — the guard, `ROOT_NOVELTY_MIN_FRACTION` and `_FRAME_OWNER_JACCARD` are untouched, and whether the engine should *release* such a root remains the open product decision in #1122.
 
@@ -237,8 +241,9 @@ The turn channel and the durable record have to agree, or the fix is half done. 
 
 `closed_restatement_held` is therefore its own closure reason, with its own **Cause Boundary** block and its own recommendation (name the mechanism; do not gather more data). Two deliberate choices:
 
-- **Ranked immediately above the generic bucket and nowhere higher.** A verified mitigation or a declared-infeasible RCA says more about how the case ended, and a case whose cause *was* promoted never reaches the predicate at all.
-- **Keyed on the structural hold, not on the `RESTATEMENT_HELD` status cell.** The cell additionally requires a stall, and a user may close before one. Keying on the cell would repeat, one label over, the mistake this function's own docstring records: the old `closed_insufficient_evidence` was gated on the `INSUFFICIENT_EVIDENCE` cell and so was unreachable for exactly the population it best described.
+- **Ranked immediately above the generic bucket and nowhere higher.** A verified mitigation or a declared-infeasible RCA says more about how the case ended.
+- **Keyed on `restatement_hold_governs`, not on the `RESTATEMENT_HELD` status cell.** The cell additionally requires a stall, and a user may close before one. Keying on the cell would repeat, one label over, the mistake this function's own docstring records: the old `closed_insufficient_evidence` was gated on the `INSUFFICIENT_EVIDENCE` cell and so was unreachable for exactly the population it best described. Keying on the *raw* graph summary was the other error — it let a case with a **promoted** cause, and a case with **no verified symptom**, close under "a cause was supported but never stated distinctly". Both guards live in the shared predicate now.
+- **The composite closes here too**, because the hold is the more specific and more actionable finding — so the Cause Boundary block names any declared wall as an additional fact, or the honest partial the sibling block exists to capture would be lost from the record.
 
 ---
 
