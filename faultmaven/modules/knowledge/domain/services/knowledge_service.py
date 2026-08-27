@@ -24,7 +24,6 @@ Key Improvements over Original:
 import hashlib
 import json
 import logging
-import os
 import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -1817,6 +1816,7 @@ class KnowledgeService:
             from faultmaven.utils.runbook_id import (
                 authored_item_id,
                 runbook_filename,
+                safe_path_component,
             )
 
             # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
@@ -1861,40 +1861,57 @@ class KnowledgeService:
             # "personal"/"team" folder would break scan scope-inference,
             # which keys off the user_/team_ prefixes.
             data_dir = Path("data/knowledge")
+            # #1213: ``team_id``/``owner_id`` are interpolated into the
+            # directory name. They come from the auth context rather than a
+            # request body, so they are a lower-risk source than ``title`` — but
+            # a filename-level guard is WORTHLESS if the directory has already
+            # escaped. Measured on the first version of this fix: an
+            # ``owner_id`` of ``../../../../escaped`` sent the write to
+            # ``<cwd>/escaped`` while every filename check passed, because the
+            # containment assertion was anchored on the escaped directory
+            # itself. Both components are now reduced to a single safe segment.
             if scope == "team" and team_id:
-                target_dir = data_dir / f"team_{team_id}"
+                target_dir = data_dir / f"team_{safe_path_component(team_id)}"
             elif scope == "personal" and owner_id:
-                target_dir = data_dir / f"user_{owner_id}"
+                target_dir = data_dir / f"user_{safe_path_component(owner_id)}"
             else:
                 target_dir = data_dir / "global"
-            target_dir.mkdir(parents=True, exist_ok=True)
 
-            # #1213: ``title`` is caller-supplied — a form field on
+            # ``title`` is caller-supplied — a form field on
             # ``POST /knowledge/documents``, and an LLM-generated
-            # ``suggested_title`` on the suggestion-approval path. It used to
-            # be interpolated with only spaces replaced, so a title of
+            # ``suggested_title`` on the suggestion-approval path. It used to be
+            # interpolated with only spaces replaced, so a title of
             # ``../../../etc/pwned`` produced a path resolving OUTSIDE
             # ``data/knowledge`` and the content was written there.
             filename = runbook_filename(title, document_id)
             file_path = target_dir / filename
 
-            # Second, independent guard. ``runbook_filename`` already returns a
-            # single allowlisted component, so this cannot fire today — that is
-            # the point: it keeps holding if that rule is later loosened, if a
-            # caller mints its own name, or if ``target_dir`` gains a component
-            # built from something caller-influenced. Containment is the
-            # property that matters, and it is cheap to assert directly rather
-            # than infer from the slug rule.
-            resolved = file_path.resolve()
-            resolved_dir = target_dir.resolve()
-            if resolved != resolved_dir / resolved.name or not str(resolved).startswith(
-                str(resolved_dir) + os.sep
-            ):
+            # Containment, anchored on the ROOT of the knowledge tree and
+            # checked BEFORE anything is created.
+            #
+            # Anchoring on ``target_dir`` would be circular — that is the
+            # directory the caller-influenced component is IN, so an escaped
+            # ``target_dir`` trivially contains its own child and the assertion
+            # passes. Anchoring on ``data_dir`` is what actually says "inside
+            # the knowledge tree".
+            #
+            # Before ``mkdir`` because ``mkdir(parents=True)`` on an escaped
+            # path materialises attacker-chosen directories outside the tree
+            # whatever the write then does.
+            #
+            # Both guards are belt-and-braces: ``safe_path_component`` and
+            # ``runbook_filename`` already make an escape unconstructible. This
+            # keeps holding if either rule is loosened, or if a new caller
+            # assembles its own path.
+            knowledge_root = data_dir.resolve()
+            resolved = (target_dir / filename).resolve()
+            if not resolved.is_relative_to(knowledge_root):
                 raise ValueError(
-                    f"refusing to write runbook outside the knowledge tree: "
-                    f"{resolved} is not directly inside {resolved_dir}"
+                    f"refusing to write a runbook outside the knowledge tree: "
+                    f"{resolved} is not under {knowledge_root}"
                 )
 
+            target_dir.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content, encoding="utf-8")
 
             async with self._db_session_factory() as session:

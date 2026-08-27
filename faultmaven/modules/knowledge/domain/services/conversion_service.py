@@ -360,12 +360,25 @@ class ConversionService:
         return Path("data/knowledge")
 
     def _scope_dir(self, scope: str, team_id: str = None, user_id: str = None) -> Path:
+        """Scope directory for a draft, with both id components sanitised.
+
+        #1213: these are interpolated into a directory NAME. They come from the
+        auth context rather than a request body, so they are a lower-risk source
+        than a title — but the same shape bit ``KnowledgeService.upload_document``,
+        where a ``user_id`` of ``../../../../escaped`` sent the write outside
+        ``data/knowledge`` entirely. ``safe_path_component`` reduces each to one
+        segment, so the layout (``global/``, ``team_*/``, ``user_*/``) that the
+        scan pass infers scope from is preserved while an escape is
+        unconstructible.
+        """
+        from faultmaven.utils.runbook_id import safe_path_component
+
         if scope == "global":
             return self._data_dir / "global"
         elif scope == "team" and team_id:
-            return self._data_dir / f"team_{team_id}"
+            return self._data_dir / f"team_{safe_path_component(team_id)}"
         elif scope == "personal" and user_id:
-            return self._data_dir / f"user_{user_id}"
+            return self._data_dir / f"user_{safe_path_component(user_id)}"
         return self._data_dir / "global"
 
     async def _ensure_team_publish_allowed(

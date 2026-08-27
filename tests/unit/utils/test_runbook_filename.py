@@ -59,19 +59,13 @@ class TestTheNameIsAlwaysASingleSafeComponent:
         # One component, and one the shell and the filesystem both read plainly.
         assert SAFE.match(name), f"unsafe filename {name!r} from title {title!r}"
 
-    @pytest.mark.parametrize(
-        "title",
-        ["../../../etc/pwned", "/absolute/path", "....//....//evil", ".."],
-    )
-    def test_a_traversal_title_cannot_climb_out_of_its_directory(self, title):
-        from pathlib import Path
-
-        target = Path("data/knowledge/global")
-        resolved = (target / runbook_filename(title, DOC_ID)).resolve()
-
-        assert str(resolved).startswith(
-            str(target.resolve())
-        ), f"title {title!r} resolved to {resolved}, outside the knowledge tree"
+    # NOTE: an earlier draft also asserted that
+    # ``(Path("data/knowledge/global") / runbook_filename(t, ID)).resolve()``
+    # stayed inside that directory. That was tautological — it re-derived the
+    # name from the very function under test, so it could only fail when the
+    # test above already had — and it resolved a RELATIVE path against whatever
+    # directory pytest happened to run in. The real containment coverage is
+    # ``TestTheWriteSiteItself`` below, which drives the actual write.
 
 
 class TestItStaysUsable:
@@ -88,7 +82,7 @@ class TestItStaysUsable:
 
         assert a != b
 
-    def test_a_title_with_no_usable_characters_falls_back_to_the_id(self):
+    def test_a_title_with_no_usable_characters_still_yields_a_valid_name(self):
         """Punctuation-only, or a script the allowlist drops entirely.
 
         The name is then less readable but still valid and still unique, which
@@ -100,7 +94,10 @@ class TestItStaysUsable:
         for title in ["...", "///", "!!!", "日本語のタイトル"]:
             name = runbook_filename(title, DOC_ID)
             assert SAFE.match(name), f"{title!r} -> {name!r}"
-            assert DOC_ID.replace("kb_", "") in name or DOC_ID in name
+            # The id reaches the name in its FILTERED form: `kb_x` -> `kb-x`.
+            # An earlier draft asserted `DOC_ID in name`, which can never be
+            # true for that reason, so the check silently did nothing.
+            assert "kb-abcdef0123456789" in name
 
     def test_a_very_long_title_is_bounded(self):
         name = runbook_filename("x" * 500, DOC_ID)
@@ -111,7 +108,13 @@ class TestItStaysUsable:
     def test_runs_of_separators_collapse(self):
         name = runbook_filename("a   b---c", DOC_ID)
 
-        assert "--" not in name.replace(f"-{DOC_ID}", "")
+        # `--` anywhere would mean a run survived. The regex already forbids
+        # it, which is the point: assert on the whole name rather than trying
+        # to strip the suffix — an earlier draft stripped `-{DOC_ID}`, which
+        # never matched (the id is hyphenated by the filter) and so tested
+        # nothing.
+        assert "--" not in name
+        assert name.startswith("a-b-c-")
         assert SAFE.match(name)
 
 
@@ -128,7 +131,7 @@ class TestTheWriteSiteItself:
         self, tmp_path, monkeypatch
     ):
         from pathlib import Path
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
 
         from faultmaven.modules.knowledge.domain.services.knowledge_service import (
             KnowledgeService,
@@ -143,12 +146,12 @@ class TestTheWriteSiteItself:
         # appears here and the assertion below catches it.)
         (tmp_path / "etc").mkdir()
 
-        svc = KnowledgeService.__new__(KnowledgeService)
-        svc.logger = MagicMock()
         # Fail immediately AFTER the write, so the test exercises the filename
-        # and containment logic without needing a database.
+        # and containment logic without needing a database. Nothing else needs
+        # stubbing: `upload_document` logs through the MODULE-level logger, and
+        # `ingest_runbook` is never reached.
+        svc = KnowledgeService.__new__(KnowledgeService)
         svc._db_session_factory = MagicMock(side_effect=RuntimeError("stop here"))
-        svc.ingest_runbook = AsyncMock(return_value=1)
 
         # The call is stopped deliberately after the write; the FILE is what
         # this test is about, not the return value.
@@ -168,3 +171,139 @@ class TestTheWriteSiteItself:
         assert "/" not in written[0].name
         for part in written[0].relative_to(tmp_path).parts:
             assert part != "..", "a traversal component survived into the path"
+
+
+def _stopping_service():
+    """A ``KnowledgeService`` that reaches the write and then stops."""
+    from unittest.mock import MagicMock
+
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KnowledgeService,
+    )
+
+    svc = KnowledgeService.__new__(KnowledgeService)
+    svc._db_session_factory = MagicMock(side_effect=RuntimeError("stop here"))
+    return svc
+
+
+def _tree_state(root):
+    from pathlib import Path
+
+    root = Path(root)
+    inside = sorted(
+        str(p.relative_to(root)) for p in root.glob("data/knowledge/**/*.md")
+    )
+    outside = sorted(
+        str(p.relative_to(root))
+        for p in root.rglob("*.md")
+        if "data/knowledge" not in str(p)
+    )
+    dirs = sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_dir())
+    return inside, outside, dirs
+
+
+class TestTheScopeDirectoryCannotEscapeEither:
+    """The hole the FIRST version of this fix left open.
+
+    ``team_id``/``owner_id`` are interpolated into the directory name. The
+    original guard anchored containment on ``target_dir`` — the directory those
+    values are IN — so an escaped directory trivially contained its own child
+    and the assertion passed. Measured on that version: the runbook was written
+    to ``<cwd>/escaped/`` with every filename-level check green.
+
+    These are the tests whose absence let that ship. They are worth more than
+    the title cases: a title escape was already impossible once the slug was an
+    allowlist, but nothing constrained the directory.
+    """
+
+    async def test_an_escaping_owner_id_writes_inside_the_tree(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "escaped").mkdir()
+
+        with contextlib.suppress(RuntimeError):
+            await _stopping_service().upload_document(
+                content="# Runbook\n",
+                title="pwned",
+                document_type="runbook",
+                scope="personal",
+                owner_id="../../../../escaped",
+            )
+
+        inside, outside, dirs = _tree_state(tmp_path)
+        assert not outside, f"content written outside the knowledge tree: {outside}"
+        assert len(inside) == 1, inside
+        assert "data/knowledge/user_.." not in dirs, (
+            "mkdir(parents=True) materialised an escaping directory before any "
+            "guard could fire"
+        )
+
+    async def test_an_escaping_team_id_writes_inside_the_tree(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "escaped").mkdir()
+
+        with contextlib.suppress(RuntimeError):
+            await _stopping_service().upload_document(
+                content="# Runbook\n",
+                title="pwned",
+                document_type="runbook",
+                scope="team",
+                team_id="../../../../escaped",
+            )
+
+        inside, outside, dirs = _tree_state(tmp_path)
+        assert not outside, f"content written outside the knowledge tree: {outside}"
+        assert "data/knowledge/team_.." not in dirs
+
+    async def test_an_ordinary_owner_id_still_gets_its_own_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """The sanitiser must not flatten every user into one folder."""
+        monkeypatch.chdir(tmp_path)
+
+        for owner in ("user-abc", "user-def"):
+            with contextlib.suppress(RuntimeError):
+                await _stopping_service().upload_document(
+                    content="# Runbook\n",
+                    title="notes",
+                    document_type="runbook",
+                    scope="personal",
+                    owner_id=owner,
+                )
+
+        dirs = _tree_state(tmp_path)[2]
+        assert "data/knowledge/user_user-abc" in dirs
+        assert "data/knowledge/user_user-def" in dirs
+
+
+class TestTheContainmentGuardIsLive:
+    """The guard cannot fire through the public surface — the sanitisers make
+    an escape unconstructible, which is the design. So it is exercised by
+    defeating one of them, which is exactly the future this guard exists for:
+    a loosened slug rule, or a new caller assembling its own path."""
+
+    async def test_a_filename_that_escapes_is_refused(self, tmp_path, monkeypatch):
+        import faultmaven.utils.runbook_id as runbook_id
+
+        monkeypatch.chdir(tmp_path)
+        # Defeat the filename sanitiser only; the guard is the last line.
+        # Patched on the SOURCE module, because `upload_document` imports the
+        # helper inside the function and so re-reads it on every call.
+        monkeypatch.setattr(
+            runbook_id, "runbook_filename", lambda title, doc_id: "../../../escaped.md"
+        )
+        (tmp_path / "escaped.md").parent.mkdir(parents=True, exist_ok=True)
+
+        with pytest.raises(ValueError, match="outside the knowledge tree"):
+            await _stopping_service().upload_document(
+                content="# Runbook\n",
+                title="anything",
+                document_type="runbook",
+                scope="global",
+            )
+
+        _, outside, _ = _tree_state(tmp_path)
+        assert not outside
