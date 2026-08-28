@@ -9283,77 +9283,70 @@ class MilestoneEngine:
             "outcome": TurnOutcome.CONVERSATION,
         }
 
-        # Handle file uploads (common across all states)
-        # UploadedFile tracks raw file metadata. Evidence classification is
-        # content-based and LLM-driven — the LLM evaluates the data and
-        # creates Evidence via evidence_to_add with the appropriate category.
+        # Report the turn's file uploads. The engine does NOT own the rows:
+        # ``investigation_service._preprocess_attachment`` persists the
+        # authoritative ``UploadedFile`` and appends it to THIS SAME ``case``
+        # object before ``process_turn`` is called, then builds the attachment
+        # metadata from it. There is no reload in between, so the aggregate
+        # already holds every row this turn brought — the engine only reads
+        # what arrived and records it.
+        #
+        # It used to mint a second ``UploadedFile`` per attachment from that
+        # metadata. The minted row was a strict SUBSET of the committed one (no
+        # ``content_hash``, ``content_type`` or ``uploaded_by``, stamped with
+        # the CURRENT turn), and ``_upsert_uploaded_files`` walks the aggregate
+        # in order with an ON CONFLICT DO UPDATE that does not COALESCE those
+        # columns, so the subset row was written second and destroyed them
+        # (#1207/#1209). #1209 gated the append on novelty, which on the
+        # production path is never true — so the row was minted and discarded
+        # on every turn. It is gone now; nothing downstream read it.
         if attachments:
             for attachment in attachments:
-                # #1136: is this attachment data the case did not already hold?
-                # Content-hash dedup already happened upstream
-                # (``investigation_service._preprocess_attachment``): a
-                # byte-identical re-submission REUSES the existing UploadedFile,
-                # so the metadata arrives carrying that row's ``file_id``.
-                # Recognising the id we already hold is therefore exact, and
-                # needs no second hash here. Checked BEFORE the append.
-                known_ids = {f.file_id for f in case.uploaded_files}
-                uploaded_file = self._create_uploaded_file_from_attachment(
-                    case=case, attachment=attachment, turn_number=case.current_turn
-                )
-                is_novel = uploaded_file.file_id not in known_ids
-                # #1207: the row is APPENDED only when the id is novel.
-                #
-                # On the production path it never is. ``investigation_service``
-                # appends the authoritative row to THIS SAME ``case`` object
-                # inside ``_preprocess_attachment``, and only then builds the
-                # attachment metadata from it and calls ``process_turn``; there
-                # is no reload in between. So the id is already in
-                # ``known_ids`` for a brand-new upload as well as a deduped
-                # one, and this append is now never taken. That is the point:
-                # the row the engine builds here is a strict SUBSET of the one
-                # already committed, and appending it was destructive.
-                #
-                # The metadata dict carries file_id, filename, data_type, size,
-                # source_type, summary and storage_ref -- and NOT content_hash,
-                # content_type or uploaded_by -- and stamps the CURRENT turn.
-                # ``_upsert_uploaded_files`` walks this aggregate in order and
-                # its ON CONFLICT (file_id) DO UPDATE does not COALESCE those
-                # columns, so the subset row was upserted SECOND and won:
-                # content_hash nulled (per-case dedup matches on it),
-                # uploaded_by nulled (reads as a system upload), content_type
-                # nulled, uploaded_at_turn moved to the re-upload's turn (the
-                # key #1198's citable name is derived from), and upload_source
-                # replaced by the value ``investigation_service`` fabricates
-                # from the filename prefix -- which is ``file_upload`` for a
-                # page capture (#1201).
-                #
-                # Skipping the append is the fix rather than completing the
-                # row: a complete row would still carry the current turn and
-                # still win ``uploaded_at_turn``.
-                #
-                # The gate is kept rather than deleting the block outright
-                # because it is the narrow, behaviour-preserving change; the
-                # block is vestigial and removing it belongs with moving the
-                # novelty signal to ``_PreprocessedAttachment.duplicate_of``,
-                # which already computes it upstream.
-                if is_novel:
-                    case.uploaded_files.append(uploaded_file)
+                file_id = attachment.get("file_id")
+                if not file_id:
+                    logger.warning(
+                        "Attachment metadata carries no file_id; not reported "
+                        "on turn %s of case %s",
+                        case.current_turn,
+                        case.case_id,
+                    )
+                    continue
                 # Every attachment ON the turn, deduped re-submissions
                 # included.
                 metadata["files_uploaded"] = metadata.get("files_uploaded", []) + [
-                    uploaded_file.file_id
+                    file_id
                 ]
-                # NOTE: for the ordering reason above, this is never populated
-                # on the production path -- ``known_ids`` already holds the id.
-                # That PREDATES this change (the same condition gated it
-                # before) and is a live defect in #1136's stall-net arm, filed
-                # separately. Measured on both sides of the fix, a brand-new
-                # upload yields ``novel_files_uploaded=None`` and
-                # ``progress_made=False`` identically.
+                # #1136's stall-net arm: data the case did not already hold.
+                #
+                # The answer is computed upstream and threaded in, because it
+                # cannot be recovered here. The engine used to re-derive it as
+                # ``file_id not in {f.file_id for f in case.uploaded_files}``,
+                # against the aggregate the service has already appended to —
+                # so it was False for a brand-new upload just as much as for a
+                # deduped one, and the arm was dead on every turn (#1210).
+                # ``_engine_attachment_metadata`` sets ``is_novel`` from
+                # ``_PreprocessedAttachment.duplicate_of``, which is populated
+                # only by the content-hash dedup short-circuit.
+                #
+                # A caller that omits the key gets "not novel" — the honest
+                # reading of "novelty was never determined", and the same
+                # conservative direction as the ``novel_*`` arms elsewhere —
+                # but it is logged, because a silent False here is exactly the
+                # failure mode #1210 was.
+                is_novel = attachment.get("is_novel")
+                if is_novel is None:
+                    logger.warning(
+                        "Attachment %s carries no novelty signal; treating as "
+                        "not novel on turn %s of case %s. #1136's upload "
+                        "progress arm cannot arm for this turn.",
+                        file_id,
+                        case.current_turn,
+                        case.case_id,
+                    )
                 if is_novel:
                     metadata["novel_files_uploaded"] = metadata.get(
                         "novel_files_uploaded", []
-                    ) + [uploaded_file.file_id]
+                    ) + [file_id]
 
         # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)
         # This repairs LLM classification failures before applying state updates
@@ -12332,37 +12325,12 @@ class MilestoneEngine:
     # Helper Methods
     # =========================================================================
 
-    def _create_uploaded_file_from_attachment(
-        self, case: Case, attachment: dict[str, Any], turn_number: int
-    ) -> "UploadedFile":  # noqa: F821
-        """
-        Create uploaded file record from attachment.
-
-        Args:
-            case: Current case
-            attachment: Attachment metadata with file_id, filename, data_type, etc.
-            turn_number: Current turn number
-
-        Returns:
-            UploadedFile object
-        """
-        from faultmaven.modules.case.contracts import UploadedFile
-
-        uploaded_file = UploadedFile(
-            file_id=attachment.get("file_id", f"file_{uuid4().hex[:12]}"),
-            filename=attachment.get("filename", "unknown"),
-            size_bytes=attachment.get("size", 0),
-            content_type=attachment.get("content_type"),
-            content_hash=attachment.get("content_hash"),
-            uploaded_at_turn=turn_number,
-            uploaded_at=datetime.now(UTC),
-            upload_source=attachment.get("source_type", "file_upload"),
-            storage_ref=attachment.get(
-                "storage_ref", attachment.get("file_id", "unknown")
-            ),
-        )
-
-        return uploaded_file
+    # #1210: ``_create_uploaded_file_from_attachment`` is gone. The engine does
+    # not mint ``UploadedFile`` rows — ``investigation_service
+    # ._preprocess_attachment`` persists the authoritative row and appends it to
+    # the case aggregate before ``process_turn`` runs. The row the engine built
+    # from the attachment metadata was a strict subset of that one and was
+    # discarded on every turn once #1209 gated the append.
 
     # Post-010: auto-Evidence creation at file-upload time is gone.
     # Under the strict evidence model, files are data (uploaded_files)

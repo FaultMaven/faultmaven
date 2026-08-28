@@ -272,20 +272,34 @@ _CLARIFICATION_FALLBACK_LONG = "unstructured text"
 _PASTE_CLARIFICATION_SEEDS = ["command_output", "logs_and_errors"]
 
 
-def _engine_attachment_metadata(uf) -> dict:
+def _engine_attachment_metadata(result: "_PreprocessedAttachment") -> dict:
     """The per-attachment dict handed to ``engine.process_turn``.
 
-    Sourced entirely from the ``UploadedFile`` row, which is the record of what
-    was submitted. It used to take ``source_type`` from the shape of the
-    SUBMITTED filename instead — ``"paste" if att.filename.startswith(
-    "pasted-content-") else "file_upload"`` — so a page capture, minted as
-    ``page-capture-<ts>.txt``, reached the engine tagged ``file_upload`` and the
-    engine could not tell a captured page from a chosen file (#1201).
+    The file facts are sourced entirely from the ``UploadedFile`` row, which is
+    the record of what was submitted. ``source_type`` used to be taken from the
+    shape of the SUBMITTED filename instead — ``"paste" if
+    att.filename.startswith("pasted-content-") else "file_upload"`` — so a page
+    capture, minted as ``page-capture-<ts>.txt``, reached the engine tagged
+    ``file_upload`` and the engine could not tell a captured page from a chosen
+    file (#1201). ``uf.input_origin`` is that fact derived once, with the
+    precedence every other consumer uses.
 
-    ``uf.input_origin`` is that fact derived once, with the precedence every
-    other consumer uses. Nothing here consults the attachment, so there is no
-    second derivation to drift.
+    ``is_novel`` is the other fact the engine cannot recover for itself: did
+    this turn bring data the case did not already hold? ``duplicate_of`` is
+    exactly that answer — it is set only by the content-hash dedup
+    short-circuit in ``_preprocess_attachment``, which returns the EXISTING row
+    for a byte-identical re-submission instead of creating one. Anything else
+    minted a new row, so the case did not hold it.
+
+    The engine used to re-derive novelty from the case aggregate
+    (``file_id not in {f.file_id for f in case.uploaded_files}``), but
+    ``_preprocess_attachment`` appends the authoritative row to that same
+    aggregate BEFORE ``process_turn`` is called and there is no reload in
+    between — so the id was always already known, and #1136's stall-net arm for
+    uploads was dead on every turn (#1210). Deriving it here, once, from the
+    field that owns it is the same lesson #1201 pinned: one derivation, not two.
     """
+    uf = result.uploaded_file
     return {
         "file_id": uf.file_id,
         "filename": uf.filename,
@@ -294,6 +308,7 @@ def _engine_attachment_metadata(uf) -> dict:
         "source_type": uf.input_origin,
         "summary": uf.summary or "",
         "storage_ref": uf.storage_ref,
+        "is_novel": result.duplicate_of is None,
     }
 
 
@@ -925,14 +940,18 @@ class InvestigationService:
                 # to the per-intent handler in milestone_engine.
                 # Build attachment metadata for the engine. Post-010:
                 # uploads create only an UploadedFile (no auto-Evidence),
-                # so the metadata is sourced directly from those rows.
-                # One row per attachment (``_preprocess_attachment`` appends
-                # exactly one above), so iterating the rows is the same set the
-                # old ``zip`` walked — and the attachment is no longer consulted
-                # at all, which is the #1201 fix: the row is the record of what
-                # was submitted, its filename is not.
+                # so the file facts are sourced directly from those rows —
+                # the #1201 fix: the row is the record of what was submitted,
+                # its filename is not.
+                #
+                # Walks ``preprocess_results`` rather than
+                # ``uploaded_files_this_turn`` (the same set, in the same
+                # order — one result per attachment, and the list above is
+                # built from ``result.uploaded_file``) because the result also
+                # carries ``duplicate_of``, the only place novelty is still
+                # knowable by the time the engine runs (#1210).
                 attachment_metadata = [
-                    _engine_attachment_metadata(uf) for uf in uploaded_files_this_turn
+                    _engine_attachment_metadata(res) for res in preprocess_results
                 ]
                 # DA evidence search is handled inside MilestoneEngine's
                 # tool loop. The same LLM that tracks hypotheses searches

@@ -19,7 +19,9 @@ hash that per-case dedup matches on, destroying ``uploaded_by`` attribution, and
 moving ``uploaded_at_turn`` to the re-upload's turn.
 
 ``known_ids`` was already being computed one line above the append; it was simply
-never used to gate it. These pin that it is.
+never used to gate it. #1209 gated it — and because the gate is never open on the
+production path, the minting was dead code, so #1210 removed it outright. These
+pin the property either way: the engine adds no ``UploadedFile`` row of its own.
 """
 
 from datetime import datetime, timezone
@@ -71,9 +73,15 @@ def _case(rows) -> Case:
     return case
 
 
-def _attachment(file_id: str = FILE_ID) -> dict:
+def _attachment(file_id: str = FILE_ID, *, is_novel: bool) -> dict:
     """Exactly the shape ``investigation_service`` builds — note the three
-    columns it does NOT carry, which is what made the duplicate destructive."""
+    columns it does NOT carry, which is what made the duplicate destructive.
+
+    ``is_novel`` is required rather than defaulted: it is the turn's answer to
+    "did the case already hold this?", threaded from
+    ``_PreprocessedAttachment.duplicate_of`` (#1210), and every case below has
+    a definite one.
+    """
     return {
         "file_id": file_id,
         "filename": "app.log",
@@ -82,6 +90,7 @@ def _attachment(file_id: str = FILE_ID) -> dict:
         "source_type": "file_upload",
         "summary": "Pod restart loop.",
         "storage_ref": "ref/app.log",
+        "is_novel": is_novel,
     }
 
 
@@ -100,7 +109,7 @@ class TestKnownFileIdIsNotAppendedAgain:
     async def test_the_aggregate_keeps_one_row_for_the_id(self, engine):
         case = _case([_complete_row()])
 
-        await _run(engine, case, [_attachment()])
+        await _run(engine, case, [_attachment(is_novel=False)])
 
         rows = [f for f in case.uploaded_files if f.file_id == FILE_ID]
         assert len(rows) == 1, (
@@ -118,7 +127,7 @@ class TestKnownFileIdIsNotAppendedAgain:
         """
         case = _case([_complete_row()])
 
-        await _run(engine, case, [_attachment()])
+        await _run(engine, case, [_attachment(is_novel=False)])
 
         rows = [f for f in case.uploaded_files if f.file_id == FILE_ID]
         assert [r.content_hash for r in rows] == ["a" * 64], (
@@ -137,7 +146,7 @@ class TestKnownFileIdIsNotAppendedAgain:
         Asserted over every row for the same reason as above."""
         case = _case([_complete_row()])
 
-        await _run(engine, case, [_attachment()])
+        await _run(engine, case, [_attachment(is_novel=False)])
 
         rows = [f for f in case.uploaded_files if f.file_id == FILE_ID]
         assert [r.uploaded_at_turn for r in rows] == [ORIGINAL_TURN]
@@ -151,14 +160,14 @@ class TestTheMetadataContractIsUnchanged:
     async def test_files_uploaded_still_names_the_attachment(self, engine):
         case = _case([_complete_row()])
 
-        metadata = await _run(engine, case, [_attachment()])
+        metadata = await _run(engine, case, [_attachment(is_novel=False)])
 
         assert metadata["files_uploaded"] == [FILE_ID]
 
     async def test_a_known_id_is_not_reported_novel(self, engine):
         case = _case([_complete_row()])
 
-        metadata = await _run(engine, case, [_attachment()])
+        metadata = await _run(engine, case, [_attachment(is_novel=False)])
 
         assert metadata.get("novel_files_uploaded", []) == []
 
@@ -172,9 +181,9 @@ class TestTheProductionOrdering:
 
     An earlier draft of these tests seeded the aggregate WITHOUT the row and
     handed the engine a "novel" id — a state production never reaches. That
-    made the novel branch look reachable and would have let the whole
-    ``if attachments:`` block be deleted with every test still green. These
-    drive the real sequence instead.
+    made the engine's own novelty test look reachable, when under the real
+    sequence it is False for every attachment. These drive the real sequence
+    instead, which is why the fix had to come from upstream (#1210).
     """
 
     async def test_a_brand_new_upload_produces_exactly_one_row(self, engine):
@@ -187,7 +196,7 @@ class TestTheProductionOrdering:
             )
         )
 
-        await _run(engine, case, [_attachment(file_id=novel)])
+        await _run(engine, case, [_attachment(file_id=novel, is_novel=True)])
 
         rows = [f for f in case.uploaded_files if f.file_id == novel]
         assert len(rows) == 1
@@ -203,21 +212,18 @@ class TestTheProductionOrdering:
             )
         )
 
-        metadata = await _run(engine, case, [_attachment(file_id=novel)])
+        metadata = await _run(engine, case, [_attachment(file_id=novel, is_novel=True)])
 
         assert metadata["files_uploaded"] == [novel]
 
-    async def test_novel_files_uploaded_is_empty_even_for_a_new_upload(self, engine):
-        """Documents a PRE-EXISTING defect, not one introduced by the gate.
+    async def test_a_brand_new_upload_is_reported_novel(self, engine):
+        """This pinned ``novel_files_uploaded is None`` until #1210.
 
-        ``known_ids`` already holds the id under the real ordering, so the
-        novelty condition — which gated this metadata key before the fix too —
-        is False for a genuinely new file. #1136's stall-net arm therefore
-        never sees an upload as progress.
-
-        Pinned here so the next reader does not mistake it for fallout of this
-        change: measured on both sides of the fix, this value is identical.
-        Tracked separately.
+        Under the real ordering ``known_ids`` already holds the id, so the
+        engine's own novelty test was False for a genuinely new file and
+        #1136's stall-net arm for uploads never saw one. The answer now comes
+        from upstream (``_PreprocessedAttachment.duplicate_of`` →
+        ``is_novel``), which is the only place it survives the append.
         """
         novel = "file_ffffffffff99"
         case = _case([])
@@ -227,9 +233,9 @@ class TestTheProductionOrdering:
             )
         )
 
-        metadata = await _run(engine, case, [_attachment(file_id=novel)])
+        metadata = await _run(engine, case, [_attachment(file_id=novel, is_novel=True)])
 
-        assert metadata.get("novel_files_uploaded") is None
+        assert metadata["novel_files_uploaded"] == [novel]
 
 
 class TestProvenanceSurvives:
@@ -263,7 +269,7 @@ class TestProvenanceSurvives:
             engine,
             case,
             [
-                _attachment()
+                _attachment(is_novel=False)
                 | {
                     "filename": "page-capture-20260709T105531.txt",
                     # What investigation_service actually sends for a capture.
@@ -305,7 +311,7 @@ class TestThePersistedConsequence:
         )
 
         case = _case([_complete_row()])
-        await _run(engine, case, [_attachment()])
+        await _run(engine, case, [_attachment(is_novel=False)])
 
         db = create_async_engine("sqlite+aiosqlite:///:memory:")
         async with db.begin() as conn:

@@ -29,6 +29,7 @@ import pytest
 
 from faultmaven.modules.agent.domain.services.investigation_service import (
     _engine_attachment_metadata,
+    _PreprocessedAttachment,
 )
 from faultmaven.modules.case.contracts import UploadedFile
 
@@ -52,6 +53,15 @@ def _row(filename: str, upload_source: str, **over) -> UploadedFile:
         data_type="logs",
         summary="Pod restart loop.",
         **over,
+    )
+
+
+def _meta(row: UploadedFile, duplicate_of: str | None = None) -> dict:
+    """``_engine_attachment_metadata`` takes the preprocessing RESULT, not the
+    row: novelty lives on the result (``duplicate_of``) and is derived there
+    exactly once (#1210). Default is a fresh upload."""
+    return _engine_attachment_metadata(
+        _PreprocessedAttachment(uploaded_file=row, duplicate_of=duplicate_of)
     )
 
 
@@ -88,7 +98,7 @@ class TestInputOrigin:
 class TestTheEngineDispatchMetadata:
     def test_a_page_capture_is_not_reported_as_a_file_upload(self):
         """The defect, stated directly. The primary Copilot channel."""
-        meta = _engine_attachment_metadata(_row(MINTED_CAPTURE, "page_capture"))
+        meta = _meta(_row(MINTED_CAPTURE, "page_capture"))
 
         assert meta["source_type"] == "page_capture", (
             "a captured page reaches the engine indistinguishable from a file "
@@ -96,20 +106,21 @@ class TestTheEngineDispatchMetadata:
         )
 
     def test_a_paste_is_reported_as_a_paste(self):
-        meta = _engine_attachment_metadata(_row(MINTED_PASTE, "text_paste"))
+        meta = _meta(_row(MINTED_PASTE, "text_paste"))
 
         assert meta["source_type"] == "text_paste"
 
     def test_a_chosen_file_is_still_a_file_upload(self):
-        meta = _engine_attachment_metadata(_row("nginx-error.log", "file_upload"))
+        meta = _meta(_row("nginx-error.log", "file_upload"))
 
         assert meta["source_type"] == "file_upload"
 
     def test_the_rest_of_the_dict_is_unchanged(self):
-        """The engine reads these keys by name; only source_type is in scope."""
+        """The engine reads these keys by name; only source_type was in scope
+        for #1201. ``is_novel`` joined the dict with #1210."""
         row = _row("nginx-error.log", "file_upload")
 
-        meta = _engine_attachment_metadata(row)
+        meta = _meta(row)
 
         assert meta["file_id"] == row.file_id
         assert meta["filename"] == row.filename
@@ -125,6 +136,7 @@ class TestTheEngineDispatchMetadata:
             "source_type",
             "summary",
             "storage_ref",
+            "is_novel",
         }
 
     def test_absent_optional_fields_still_render_as_empty_strings(self):
@@ -132,7 +144,7 @@ class TestTheEngineDispatchMetadata:
             update={"data_type": None, "summary": None}
         )
 
-        meta = _engine_attachment_metadata(row)
+        meta = _meta(row)
 
         assert meta["data_type"] == ""
         assert meta["summary"] == ""
