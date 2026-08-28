@@ -380,6 +380,19 @@ class DIContainer(BaseDIContainer):
         # visible to the caller, as with every sibling getter.
         return getattr(self, "knowledge_service", None)
 
+    def get_suggestion_service(self):
+        """Get the knowledge suggestion service (#1214).
+
+        Returns None when composition did not produce one, like every sibling
+        getter — the composition root decides whether that is survivable, and
+        the routes answer 503 rather than silently building a store-less
+        replacement (which is exactly how the extract → approve loop came to be
+        broken).
+        """
+        if not self._initialized and not getattr(self, "_initializing", False):
+            self._ensure_initialized_for_getter()
+        return getattr(self, "suggestion_service", None)
+
     def get_llm_provider(self):
         """Get the LLM provider (router) from the container."""
         if not self._initialized and not getattr(self, "_initializing", False):

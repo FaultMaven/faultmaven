@@ -471,6 +471,16 @@ Format as Markdown with these sections:
                 (``conflict_reason="already_approved"``) — checked before
                 anything is published, so a repeat writes nothing. The global
                 handler maps this to HTTP 409.
+            RunbookQualityError: the suggested content does not meet the
+                runbook quality standard (#1214). Raised by ``upload_document``
+                BEFORE it writes anything, so the refusal publishes nothing;
+                the global handler answers 422. LLM-extracted markdown reaches
+                the corpus only after a reviewer edits it into a valid runbook.
+            RuntimeError: no knowledge service is wired, so there is nothing to
+                publish INTO (#1214). This used to mint a fake id and report
+                ``201 {"status": "approved"}`` for an item that was never
+                created — and, with ``app.state.suggestion_service`` unset, it
+                was the branch every production request took.
             Exception: anything ``upload_document`` raises now PROPAGATES
                 rather than being swallowed into ``None`` (#1200). A
                 ``TypeError`` from that call is a programming error and an
@@ -513,96 +523,127 @@ Format as Markdown with these sections:
                 conflict_reason="already_approved",
             )
 
-        # Create knowledge item
-        knowledge_item_id = None
-        if self._knowledge_service:
-            # NO try/except around this call (#1200).
-            #
-            # It used to pass ``metadata={...}`` — a parameter
-            # ``upload_document`` has never had. The resulting ``TypeError``
-            # was caught by a broad ``except Exception`` here, logged, and
-            # turned into ``return None``, which the approve route renders as
-            # ``400 "Cannot approve: PII scan not complete"``. That claim is
-            # false by construction: the scan had to be CLEAN or REMEDIATED to
-            # get past ``is_ready_for_review`` above. So the approval step of
-            # the knowledge flywheel created nothing and misreported why, and
-            # the failure was shaped exactly like "nothing to approve".
-            #
-            # A ``TypeError`` from a call this service makes to its own
-            # collaborator is a programming error, and a failed ingestion is a
-            # server-side fault. Neither is a client error and neither is a
-            # statement about PII. Both now propagate: the route's own
-            # ``except Exception`` logs them and answers 500. ``return None``
-            # is left to mean one thing only — the suggestion is not ready —
-            # which is the one case that 400 is actually about.
-            result = await self._knowledge_service.upload_document(
-                content=suggestion.suggested_content,
-                title=suggestion.suggested_title,
-                document_type=suggestion.suggested_type,
-                # The platform tier, stated rather than inherited from a
-                # default (#1166). Gated at the approve route by
-                # require_global_authoring_allowed(); an approved
-                # suggestion becomes platform-shipped knowledge, which is
-                # why that gate is there and why this says "global" out
-                # loud instead of taking whatever the service assumed.
-                scope="global",
-                category="extracted",
-                tags=["extracted", "case-derived"],
-                source_url=None,
-                # ATTRIBUTION, on the one parameter that actually persists.
-                #
-                # ``owner_id`` reaches four real columns —
-                # ``uploaded_files.uploaded_by``, ``conversion_jobs.user_id``,
-                # ``conversion_drafts.verified_by``, and ``ingest_runbook``'s
-                # own ``owner_id`` — so the approving admin is recorded in the
-                # database. For an approved suggestion the approver IS the
-                # verifier, which is what ``verified_by`` means.
-                #
-                # Safe at this scope: the only other use of ``owner_id`` is the
-                # ``scope == "personal"`` directory branch, which cannot fire
-                # under ``scope="global"``.
-                owner_id=reviewed_by,
-                # ⚠️ ``description`` is accepted by ``upload_document`` and then
-                # IGNORED — referenced zero times in that method's body, so it
-                # reaches no column and no ChromaDB metadata. ``category`` is
-                # the same, surviving only in the transient return dict.
-                #
-                # Passed anyway because it is the natural sink and a future one
-                # would read it, but it records NOTHING today. The
-                # case/extractor/suggestion lineage the dropped ``metadata=``
-                # was carrying still has no home, and neither does
-                # ``verification_level: 2`` (the derive yields EXPERIMENTAL).
-                # That pair IS the "where does the metadata belong" decision
-                # this issue names, and #878 owns it. Do not read this argument
-                # as provenance.
-                description=(
-                    f"Extracted from case {suggestion.case_id} "
-                    f"by {suggestion.extracted_by} "
-                    f"(suggestion {suggestion_id})"
-                ),
+        # Create knowledge item.
+        #
+        # No knowledge service means no corpus to publish into, and the only
+        # honest answer is a failure (#1214). The old ``else`` minted an id from
+        # ``authored_item_id()`` and returned ``{"status": "approved"}`` for a
+        # knowledge item that had never been created — the same class of claim
+        # #1200 exists to remove, standing inside the function that fixes it.
+        # And because ``app.state.suggestion_service`` was written NOWHERE, the
+        # route always built a collaborator-less service, so that branch was the
+        # one 100% of production approvals took.
+        if not self._knowledge_service:
+            raise RuntimeError(
+                "Cannot approve suggestion "
+                f"{suggestion_id}: no knowledge service is configured, so no "
+                "knowledge item can be created. Approval reports success only "
+                "when something was actually published."
             )
-            knowledge_item_id = result.get("document_id")
-            if not knowledge_item_id:
-                # Never mark a suggestion approved against an id we did not
-                # get: the point of this fix is that approval stops claiming
-                # success it cannot back.
-                raise RuntimeError(
-                    "upload_document returned no document_id for suggestion "
-                    f"{suggestion_id}; nothing was linked"
-                )
-        else:
-            # Mock id (no knowledge_service) — still must not match the 12-hex
-            # built-in prune pattern, so route through the shared authored-id mint.
-            from faultmaven.utils.runbook_id import authored_item_id
 
-            knowledge_item_id = authored_item_id()
-
-        # Mark suggestion as approved
-        suggestion.approve(
-            reviewed_by=reviewed_by,
-            knowledge_item_id=knowledge_item_id,
-            review_notes=review_notes,
+        # NO try/except around this call (#1200).
+        #
+        # It used to pass ``metadata={...}`` — a parameter
+        # ``upload_document`` has never had. The resulting ``TypeError``
+        # was caught by a broad ``except Exception`` here, logged, and
+        # turned into ``return None``, which the approve route renders as
+        # ``400 "Cannot approve: PII scan not complete"``. That claim is
+        # false by construction: the scan had to be CLEAN or REMEDIATED to
+        # get past ``is_ready_for_review`` above. So the approval step of
+        # the knowledge flywheel created nothing and misreported why, and
+        # the failure was shaped exactly like "nothing to approve".
+        #
+        # A ``TypeError`` from a call this service makes to its own
+        # collaborator is a programming error, and a failed ingestion is a
+        # server-side fault. Neither is a client error and neither is a
+        # statement about PII. Both now propagate: the route's own
+        # ``except Exception`` logs them and answers 500. ``return None``
+        # is left to mean one thing only — the suggestion is not ready —
+        # which is the one case that 400 is actually about.
+        #
+        # ``upload_document`` also enforces the runbook quality gate (#1214)
+        # before its first side effect, so content that fails it raises
+        # ``RunbookQualityError`` here having published NOTHING.
+        result = await self._knowledge_service.upload_document(
+            content=suggestion.suggested_content,
+            title=suggestion.suggested_title,
+            document_type=suggestion.suggested_type,
+            # The platform tier, stated rather than inherited from a
+            # default (#1166). Gated at the approve route by
+            # require_global_authoring_allowed(); an approved
+            # suggestion becomes platform-shipped knowledge, which is
+            # why that gate is there and why this says "global" out
+            # loud instead of taking whatever the service assumed.
+            scope="global",
+            category="extracted",
+            tags=["extracted", "case-derived"],
+            source_url=None,
+            # ATTRIBUTION, on the one parameter that actually persists.
+            #
+            # ``owner_id`` reaches four real columns —
+            # ``uploaded_files.uploaded_by``, ``conversion_jobs.user_id``,
+            # ``conversion_drafts.verified_by``, and ``ingest_runbook``'s
+            # own ``owner_id`` — so the approving admin is recorded in the
+            # database. For an approved suggestion the approver IS the
+            # verifier, which is what ``verified_by`` means.
+            #
+            # Safe at this scope: the only other use of ``owner_id`` is the
+            # ``scope == "personal"`` directory branch, which cannot fire
+            # under ``scope="global"``.
+            owner_id=reviewed_by,
+            # ⚠️ ``description`` is accepted by ``upload_document`` and then
+            # IGNORED — referenced zero times in that method's body, so it
+            # reaches no column and no ChromaDB metadata. ``category`` is
+            # the same, surviving only in the transient return dict.
+            #
+            # Passed anyway because it is the natural sink and a future one
+            # would read it, but it records NOTHING today. The
+            # case/extractor/suggestion lineage the dropped ``metadata=``
+            # was carrying still has no home, and neither does
+            # ``verification_level: 2`` (the derive yields EXPERIMENTAL).
+            # That pair IS the "where does the metadata belong" decision
+            # this issue names, and #878 owns it. Do not read this argument
+            # as provenance.
+            description=(
+                f"Extracted from case {suggestion.case_id} "
+                f"by {suggestion.extracted_by} "
+                f"(suggestion {suggestion_id})"
+            ),
         )
+        knowledge_item_id = result.get("document_id")
+        if not knowledge_item_id:
+            # Never mark a suggestion approved against an id we did not
+            # get: the point of this fix is that approval stops claiming
+            # success it cannot back.
+            raise RuntimeError(
+                "upload_document returned no document_id for suggestion "
+                f"{suggestion_id}; nothing was linked"
+            )
+
+        # Mark suggestion as approved — COMPENSATED (#1214).
+        #
+        # ``approve()`` re-checks readiness, and ``update_suggestion``
+        # concurrently resets ``pii_scan_status`` on any content edit, so this
+        # can raise AFTER the publish has already written a knowledge_items
+        # row, its ChromaDB chunks and a file on disk. Without compensation the
+        # corpus keeps a published runbook that no suggestion links to, while
+        # the client is told the approval failed — an orphan created by the
+        # error path itself.
+        #
+        # ``ingest_runbook`` already applies exactly this discipline one level
+        # down (SQL row deleted when the vector write fails); this is the same
+        # rule for the step above it. ``delete_document`` hard-deletes an
+        # authored id (``kb_<16 hex>``, which is what ``upload_document``
+        # mints), removing both the row and its vectors.
+        try:
+            suggestion.approve(
+                reviewed_by=reviewed_by,
+                knowledge_item_id=knowledge_item_id,
+                review_notes=review_notes,
+            )
+        except Exception:
+            await self._rollback_published_item(knowledge_item_id, suggestion_id)
+            raise
 
         self.logger.info(
             f"Approved suggestion {suggestion_id}, created knowledge item {knowledge_item_id}"
@@ -613,6 +654,46 @@ Format as Markdown with these sections:
             "knowledge_item_id": knowledge_item_id,
             "status": "approved",
         }
+
+    async def _rollback_published_item(
+        self, knowledge_item_id: str, suggestion_id: str
+    ) -> None:
+        """Delete a knowledge item published for an approval that then failed.
+
+        Best-effort and NEVER raises: it runs inside an ``except`` block whose
+        original exception is what the caller must see. A rollback that itself
+        raised would replace a truthful "approval failed" with an unrelated
+        error and still leave the orphan — so a failed rollback is logged as the
+        operator-actionable event it is (an orphaned KB item, named by id) and
+        swallowed.
+        """
+        try:
+            result = await self._knowledge_service.delete_document(knowledge_item_id)
+            if not (result or {}).get("success"):
+                self.logger.error(
+                    "Rollback of knowledge item %s (suggestion %s) did not "
+                    "delete it: %s. The knowledge base now holds an item with "
+                    "no suggestion back-link.",
+                    knowledge_item_id,
+                    suggestion_id,
+                    (result or {}).get("error", "no reason reported"),
+                )
+            else:
+                self.logger.warning(
+                    "Rolled back knowledge item %s after approval of "
+                    "suggestion %s failed",
+                    knowledge_item_id,
+                    suggestion_id,
+                )
+        except Exception as rollback_error:
+            self.logger.error(
+                "Rollback of knowledge item %s (suggestion %s) FAILED: %s. "
+                "The knowledge base now holds an item with no suggestion "
+                "back-link.",
+                knowledge_item_id,
+                suggestion_id,
+                rollback_error,
+            )
 
     async def reject_suggestion(
         self,

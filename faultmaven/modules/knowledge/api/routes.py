@@ -64,6 +64,9 @@ from faultmaven.modules.knowledge.domain.document_write import (
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    RunbookQualityError,
+)
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
 
@@ -329,7 +332,15 @@ async def upload_document(
                     detail="File encoding not supported. Re-save as UTF-8 and try again.",
                 )
 
-        # Validate runbook content against standards
+        # Validate runbook content against standards.
+        #
+        # Since #1214 the SAME gate is enforced inside ``upload_document``, so
+        # this is no longer the only thing standing between a paste and the
+        # corpus — it is the RICHER message for the same decision (per-error
+        # detail plus the authoring help below), which the service-layer
+        # refusal cannot carry through the generic 422 handler. If they ever
+        # disagree the service wins and the client still gets a 422, via the
+        # ``RunbookQualityError`` pass-through at the bottom of this function.
         from faultmaven.modules.knowledge.domain.services.runbook_validator import (
             RunbookValidator,
         )
@@ -382,6 +393,14 @@ async def upload_document(
         return result
 
     except HTTPException:
+        raise
+    except RunbookQualityError:
+        # The service-layer gate (#1214). Unreachable while the route's own
+        # check above runs the same validator first — kept so that the two
+        # gates can never disagree about the STATUS: without it the blanket
+        # handler below would turn a content refusal into a 500 and log an
+        # outage. Propagated to the registered ValidationException handler,
+        # which answers 422 with the error list.
         raise
     except Exception as e:
         logger.error(f"Document upload failed: {e}")
@@ -1072,16 +1091,26 @@ async def get_search_analytics(
 
 
 async def get_suggestion_service(request: Request):
-    """Get SuggestionService instance from app.state"""
-    if hasattr(request.app.state, "suggestion_service"):
-        return request.app.state.suggestion_service
+    """Get the SuggestionService singleton from app.state.
 
-    # Create temporary service if not in app state
-    from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-        SuggestionService,
-    )
+    Mirrors ``get_knowledge_service``: the composition root owns the instance
+    and an absent one is a 503, not something to substitute for.
 
-    return SuggestionService()
+    It USED to fall back to ``SuggestionService()`` when the slot was missing —
+    and the slot was ALWAYS missing, because nothing ever wrote it (#1214). So
+    every request got a private, empty, collaborator-less service: the
+    suggestion an extract stored was unreachable to the approve that followed
+    (404), and approval had no knowledge service to publish through. A fallback
+    that silently produces a broken service is worse than no service, because
+    the failure surfaces three requests later as a 404 about the wrong thing.
+    """
+    service = getattr(request.app.state, "suggestion_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge suggestions unavailable",
+        )
+    return service
 
 
 @router.get("/suggestions")
@@ -1256,9 +1285,16 @@ async def approve_suggestion(
     Validates that PII scan is complete and clean/remediated before approval,
     and refuses a suggestion that is already approved (409).
 
+    The suggested content must meet the same runbook quality standard as an
+    uploaded runbook — YAML frontmatter plus the required sections — and
+    approval answers **422** when it does not, publishing nothing. Extracted
+    drafts are rarely publishable as-is: edit the suggestion into a valid
+    runbook (PUT), then approve.
+
     Creates a new KnowledgeItem at global scope with verification level
     EXPERIMENTAL, and establishes the bidirectional link between suggestion and
-    knowledge item.
+    knowledge item. If the link cannot be recorded, the published item is
+    deleted so the knowledge base keeps no orphan.
 
     Args:
         suggestion_id: Suggestion to approve

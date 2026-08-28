@@ -52,6 +52,10 @@ from faultmaven.models.interfaces import (
     IVectorStore,
 )
 from faultmaven.models.vector_metadata import VectorMetadata
+from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    RunbookQualityError,
+    enforce_runbook_quality,
+)
 from faultmaven.modules.knowledge.domain.write_scope import (
     metadata_scope_floor,
     require_write_scope,
@@ -1804,10 +1808,25 @@ class KnowledgeService:
     ) -> Dict[str, Any]:
         """Upload document: create SQLite record + ingest into ChromaDB.
 
+        Everything this publishes becomes a ``KnowledgeItemType.RUNBOOK`` (see
+        :meth:`ingest_runbook`) and the ``ConversionDraftModel`` written below
+        claims ``validation_passed=True``. Both were true only by convention:
+        the structural gate lived at the ``POST /knowledge/documents`` route, so
+        the OTHER caller — suggestion approval — published LLM-extracted
+        markdown straight past it. The gate is enforced HERE now (#1214), before
+        the first side effect, so both callers get it and the
+        ``validation_passed`` claim is one this method has actually checked.
+
         Args:
             scope: REQUIRED knowledge tier — ``global`` | ``team`` |
                 ``personal``. No default (#1166); see
                 :meth:`ingest_runbook`, which this delegates to.
+
+        Raises:
+            RunbookQualityError: the content fails the runbook quality gate
+                (422 at the API boundary). Raised BEFORE the file write and
+                before any row is created, so a refusal leaves nothing behind
+                and needs no compensation.
         """
         try:
             import uuid as _uuid
@@ -1818,6 +1837,11 @@ class KnowledgeService:
                 runbook_filename,
                 safe_path_component,
             )
+
+            # The quality gate, FIRST — before the id is minted, before the file
+            # is written, before any row exists. A refusal must leave nothing
+            # behind, which is only free if nothing has happened yet.
+            enforce_runbook_quality(content)
 
             # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
             # the bootstrap orphan-prune would delete this user runbook on redeploy.
@@ -2005,6 +2029,12 @@ class KnowledgeService:
                 },
             }
 
+        except RunbookQualityError:
+            # A refused draft is a client-side outcome (422), not a service
+            # fault. Logged as a warning by the global handler; re-raised here
+            # without the "Failed to upload document" ERROR line, which would
+            # otherwise make every rejected paste look like an outage.
+            raise
         except Exception as e:
             logger.error(f"Failed to upload document: {e}")
             raise

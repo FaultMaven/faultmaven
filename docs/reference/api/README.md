@@ -3554,9 +3554,16 @@ Approve a suggestion and create a knowledge item.
 Validates that PII scan is complete and clean/remediated before approval,
 and refuses a suggestion that is already approved (409).
 
+The suggested content must meet the same runbook quality standard as an
+uploaded runbook — YAML frontmatter plus the required sections — and
+approval answers **422** when it does not, publishing nothing. Extracted
+drafts are rarely publishable as-is: edit the suggestion into a valid
+runbook (PUT), then approve.
+
 Creates a new KnowledgeItem at global scope with verification level
 EXPERIMENTAL, and establishes the bidirectional link between suggestion and
-knowledge item.
+knowledge item. If the link cannot be recorded, the published item is
+deleted so the knowledge base keeps no orphan.
 
 Args:
     suggestion_id: Suggestion to approve

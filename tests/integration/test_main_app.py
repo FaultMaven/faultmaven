@@ -189,6 +189,46 @@ def test_conversion_service_composition_root_wiring():
         assert ks._db_session_factory is get_db_session
 
 
+def test_suggestion_service_composition_root_wiring():
+    """``app.state.suggestion_service`` is SET, and holds the real KB service.
+
+    It was read in two routes and written in none (#1214), so
+    ``get_suggestion_service`` fell through to a bare ``SuggestionService()``
+    every request: an empty private store (extract → approve answered 404) and
+    no knowledge service (approval took the branch that minted a fake id and
+    reported 201 for an item never created).
+
+    Identity, not truthiness: the point is that the ONE instance the routes see
+    is the ONE the container composed, holding the SAME KnowledgeService the
+    rest of the app publishes through. Two ``SuggestionService`` objects would
+    satisfy an ``is not None`` assertion and reproduce the bug exactly.
+    """
+    from faultmaven.modules.knowledge.domain.services.suggestion_service import (
+        SuggestionService,
+    )
+
+    with TestClient(app):
+        svc = app.state.suggestion_service
+        assert svc is not None, "the suggestion service slot is empty again"
+        assert isinstance(
+            svc, SuggestionService
+        ), f"lifespan published a {type(svc).__name__}"
+        assert (
+            svc._knowledge_service is app.state.knowledge_service
+        ), "the suggestion service publishes through a different KnowledgeService"
+        # The collaborator the PII scan needs. Without it every suggestion is
+        # marked CLEAN unscanned, which is a policy the deployment should choose
+        # rather than inherit from a missing wire.
+        assert svc._sanitizer is not None
+
+        # The container hands back the same object every time — the routes read
+        # app.state, but a getter that rebuilt per call would restore the bug
+        # for anything sourcing it from the container.
+        from faultmaven.container import container
+
+        assert container.get_suggestion_service() is svc
+
+
 def test_capabilities_team_flags_gate_on_team_service():
     """``teamSharing``/``managementConsole`` follow the live TeamService signal.
 

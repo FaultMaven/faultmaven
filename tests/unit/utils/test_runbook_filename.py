@@ -25,10 +25,17 @@ import re
 import pytest
 
 from faultmaven.utils.runbook_id import runbook_filename
+from tests.runbook_samples import valid_runbook
 
 pytestmark = pytest.mark.unit
 
 DOC_ID = "kb_abcdef0123456789"
+
+# Since #1214 ``upload_document`` runs the runbook quality gate BEFORE the file
+# write, so a body that fails it never reaches the naming and containment logic
+# these tests are about. The title under test is still the traversal string —
+# the gate reads content, not the ``title`` argument.
+_GATE_PASSING_RUNBOOK = valid_runbook()
 SAFE = re.compile(r"^[a-z0-9][a-z0-9-]*\.md$")
 
 
@@ -157,7 +164,7 @@ class TestTheWriteSiteItself:
         # this test is about, not the return value.
         with contextlib.suppress(RuntimeError):
             await svc.upload_document(
-                content="# Runbook\n",
+                content=_GATE_PASSING_RUNBOOK,
                 title="../../../etc/pwned",
                 document_type="runbook",
                 scope="global",
@@ -224,7 +231,7 @@ class TestTheScopeDirectoryCannotEscapeEither:
 
         with contextlib.suppress(RuntimeError):
             await _stopping_service().upload_document(
-                content="# Runbook\n",
+                content=_GATE_PASSING_RUNBOOK,
                 title="pwned",
                 document_type="runbook",
                 scope="personal",
@@ -247,7 +254,7 @@ class TestTheScopeDirectoryCannotEscapeEither:
 
         with contextlib.suppress(RuntimeError):
             await _stopping_service().upload_document(
-                content="# Runbook\n",
+                content=_GATE_PASSING_RUNBOOK,
                 title="pwned",
                 document_type="runbook",
                 scope="team",
@@ -267,7 +274,7 @@ class TestTheScopeDirectoryCannotEscapeEither:
         for owner in ("user-abc", "user-def"):
             with contextlib.suppress(RuntimeError):
                 await _stopping_service().upload_document(
-                    content="# Runbook\n",
+                    content=_GATE_PASSING_RUNBOOK,
                     title="notes",
                     document_type="runbook",
                     scope="personal",
@@ -299,7 +306,7 @@ class TestTheContainmentGuardIsLive:
 
         with pytest.raises(ValueError, match="outside the knowledge tree"):
             await _stopping_service().upload_document(
-                content="# Runbook\n",
+                content=_GATE_PASSING_RUNBOOK,
                 title="anything",
                 document_type="runbook",
                 scope="global",

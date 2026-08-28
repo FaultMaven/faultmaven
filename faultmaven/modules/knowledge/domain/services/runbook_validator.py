@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from faultmaven.exceptions import ValidationException
 from faultmaven.modules.knowledge.domain.models.conversion import (
     QualityScore,
     ValidationResult,
@@ -1135,6 +1136,65 @@ class RunbookValidator:
         sec_errors, sec_warnings = find_security_hazards(content)
         errors.extend(sec_errors)
         warnings.extend(sec_warnings)
+
+
+# =============================================================================
+# The publication gate (#1214)
+# =============================================================================
+#
+# The gate above used to be enforced only at the ``POST /knowledge/documents``
+# ROUTE. Everything published to the KB becomes a
+# ``KnowledgeItemType.RUNBOOK`` (``ingest_runbook`` hard-codes it) and
+# ``upload_document`` writes a ``ConversionDraftModel`` with
+# ``validation_passed=True`` — a claim the method itself never checked. The
+# suggestion-approval path calls the service directly, so LLM-extracted
+# markdown shaped ``## Problem / ## Root Cause / ## Solution / ## Prevention``
+# would have been published as a runbook with the claim attached and none of
+# the frontmatter the retrieval side filters on.
+#
+# So the gate moves DOWN to the service, where both callers meet, and the
+# route keeps its own richer 422 (errors + warnings + authoring help). The
+# route's copy is now a better message for the same decision rather than the
+# only place the decision is made.
+
+
+class RunbookQualityError(ValidationException):
+    """Content was refused by the runbook quality gate.
+
+    A ``ValidationException`` so the registered global handler answers **422** —
+    the same status the upload route already answers by hand, reached from the
+    service layer without the route having to translate anything.
+
+    ``errors`` / ``warnings`` are kept as structured attributes for callers that
+    want to render them; the flattened message carries them too, because
+    ``validation_exception_handler`` renders ``str(exc)`` and a bare "does not
+    meet quality standards" tells a reviewer nothing about what to fix.
+    """
+
+    def __init__(self, errors: List[str], warnings: Optional[List[str]] = None):
+        self.errors = list(errors)
+        self.warnings = list(warnings or [])
+        joined = "; ".join(self.errors) if self.errors else "unspecified"
+        super().__init__(
+            f"Content does not meet runbook quality standards: {joined}",
+            details={"errors": self.errors, "warnings": self.warnings},
+        )
+
+
+def enforce_runbook_quality(content: str) -> None:
+    """Refuse content that would not pass the runbook quality gate.
+
+    The single enforcement point for "may this text enter the KB as a runbook".
+    Called by :meth:`KnowledgeService.upload_document`, which is the choke point
+    both publish paths (the upload route and suggestion approval) go through.
+
+    Raises:
+        RunbookQualityError: the content fails structural validation. Nothing is
+            written — the gate runs before the first side effect.
+    """
+    result = RunbookValidator().validate_content(content)
+    if not result.passed:
+        raise RunbookQualityError(errors=result.errors, warnings=result.warnings)
 
 
 # =============================================================================

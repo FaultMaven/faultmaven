@@ -4308,6 +4308,10 @@ async def extract_knowledge_from_case(
     The suggestion is automatically scanned for PII and placed in a
     "pending_review" state for admin approval in the Dashboard Review Inbox.
 
+    Answers 503 when no suggestion service is composed for this process — the
+    extraction cannot be stored, and a suggestion id that resolves to nothing is
+    worse than a refusal.
+
     Args:
         case_id: Case to extract knowledge from
         request_body: Optional configuration:
@@ -4336,18 +4340,23 @@ async def extract_knowledge_from_case(
             include_evidence = request_body.get("include_evidence", True)
             title_suggestion = request_body.get("title_suggestion")
 
-        # Get suggestion service from app state
-        suggestion_service = None
-        if request and hasattr(request.app, "state"):
-            suggestion_service = getattr(request.app.state, "suggestion_service", None)
-
-        if not suggestion_service:
-            # Create a temporary service for extraction
-            from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-                SuggestionService,
+        # The SuggestionService singleton from the composition root (#1214).
+        #
+        # This used to fall back to a fresh ``SuggestionService()`` whenever the
+        # slot was empty — which was ALWAYS, because nothing wrote it. The
+        # suggestion was stored in that throwaway instance's private dict, the
+        # instance was garbage-collected with the request, and the approve call
+        # that followed could never find it (404). A 503 is the honest answer:
+        # the extract genuinely cannot be completed, and saying so here beats
+        # handing back a suggestion id that resolves to nothing.
+        suggestion_service = (
+            getattr(request.app.state, "suggestion_service", None) if request else None
+        )
+        if suggestion_service is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Knowledge suggestions unavailable",
             )
-
-            suggestion_service = SuggestionService()
 
         # Extract knowledge
         suggestion = await suggestion_service.extract_knowledge_from_case(
