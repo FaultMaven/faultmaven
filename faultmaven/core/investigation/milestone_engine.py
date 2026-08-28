@@ -9283,23 +9283,11 @@ class MilestoneEngine:
             "outcome": TurnOutcome.CONVERSATION,
         }
 
-        # Report the turn's file uploads. The engine does NOT own the rows:
-        # ``investigation_service._preprocess_attachment`` persists the
-        # authoritative ``UploadedFile`` and appends it to THIS SAME ``case``
-        # object before ``process_turn`` is called, then builds the attachment
-        # metadata from it. There is no reload in between, so the aggregate
-        # already holds every row this turn brought — the engine only reads
-        # what arrived and records it.
-        #
-        # It used to mint a second ``UploadedFile`` per attachment from that
-        # metadata. The minted row was a strict SUBSET of the committed one (no
-        # ``content_hash``, ``content_type`` or ``uploaded_by``, stamped with
-        # the CURRENT turn), and ``_upsert_uploaded_files`` walks the aggregate
-        # in order with an ON CONFLICT DO UPDATE that does not COALESCE those
-        # columns, so the subset row was written second and destroyed them
-        # (#1207/#1209). #1209 gated the append on novelty, which on the
-        # production path is never true — so the row was minted and discarded
-        # on every turn. It is gone now; nothing downstream read it.
+        # Report the turn's file uploads. The service owns the rows — it
+        # persists each ``UploadedFile`` and appends it to THIS SAME ``case``
+        # object before ``process_turn`` is called — and the engine only reads
+        # what arrived and records it. See the tombstone at
+        # ``_create_uploaded_file_from_attachment``'s former site (#1210).
         if attachments:
             for attachment in attachments:
                 file_id = attachment.get("file_id")
@@ -9313,40 +9301,37 @@ class MilestoneEngine:
                     continue
                 # Every attachment ON the turn, deduped re-submissions
                 # included.
-                metadata["files_uploaded"] = metadata.get("files_uploaded", []) + [
-                    file_id
-                ]
+                metadata.setdefault("files_uploaded", []).append(file_id)
                 # #1136's stall-net arm: data the case did not already hold.
                 #
-                # The answer is computed upstream and threaded in, because it
-                # cannot be recovered here. The engine used to re-derive it as
-                # ``file_id not in {f.file_id for f in case.uploaded_files}``,
-                # against the aggregate the service has already appended to —
-                # so it was False for a brand-new upload just as much as for a
-                # deduped one, and the arm was dead on every turn (#1210).
-                # ``_engine_attachment_metadata`` sets ``is_novel`` from
-                # ``_PreprocessedAttachment.duplicate_of``, which is populated
-                # only by the content-hash dedup short-circuit.
+                # Threaded in as a TRI-STATE by
+                # ``investigation_service._engine_attachment_metadata``, because
+                # the engine cannot recover any of it: the authoritative row is
+                # on ``case.uploaded_files`` before this runs, so the old
+                # ``file_id not in {f.file_id for f in case.uploaded_files}``
+                # was False for a brand-new upload as much as for a deduped one
+                # and the arm was dead on every turn (#1210).
                 #
-                # A caller that omits the key gets "not novel" — the honest
-                # reading of "novelty was never determined", and the same
-                # conservative direction as the ``novel_*`` arms elsewhere —
-                # but it is logged, because a silent False here is exactly the
-                # failure mode #1210 was.
+                # True = dedup ran and found nothing. False = it found the
+                # bytes. None (or absent) = it never ran, so nobody knows —
+                # and "unknown" is scored as NOT novel, the same conservative
+                # direction as the other ``novel_*`` arms. Logged either way: a
+                # silent False is exactly the failure mode #1210 was, and a
+                # silent True on an undetermined signal is that failure
+                # inverted, arming the stall net on a re-submission.
                 is_novel = attachment.get("is_novel")
                 if is_novel is None:
                     logger.warning(
-                        "Attachment %s carries no novelty signal; treating as "
-                        "not novel on turn %s of case %s. #1136's upload "
-                        "progress arm cannot arm for this turn.",
+                        "Attachment %s carries no novelty signal (undetermined "
+                        "or absent); treating as not novel on turn %s of case "
+                        "%s. #1136's upload progress arm cannot arm for this "
+                        "turn.",
                         file_id,
                         case.current_turn,
                         case.case_id,
                     )
                 if is_novel:
-                    metadata["novel_files_uploaded"] = metadata.get(
-                        "novel_files_uploaded", []
-                    ) + [file_id]
+                    metadata.setdefault("novel_files_uploaded", []).append(file_id)
 
         # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)
         # This repairs LLM classification failures before applying state updates

@@ -58,10 +58,16 @@ def _row(filename: str, upload_source: str, **over) -> UploadedFile:
 
 def _meta(row: UploadedFile, duplicate_of: str | None = None) -> dict:
     """``_engine_attachment_metadata`` takes the preprocessing RESULT, not the
-    row: novelty lives on the result (``duplicate_of``) and is derived there
-    exactly once (#1210). Default is a fresh upload."""
+    row: novelty lives on the result and is derived there exactly once (#1210).
+
+    Default is a fresh upload whose dedup lookup RAN — ``dedup_ran=True`` is
+    what separates that from "the lookup never happened", which is undetermined
+    rather than novel.
+    """
     return _engine_attachment_metadata(
-        _PreprocessedAttachment(uploaded_file=row, duplicate_of=duplicate_of)
+        _PreprocessedAttachment(
+            uploaded_file=row, duplicate_of=duplicate_of, dedup_ran=True
+        )
     )
 
 

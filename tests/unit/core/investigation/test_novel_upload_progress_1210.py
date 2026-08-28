@@ -22,12 +22,12 @@ turns where real data arrived, which is the input ``is_stalled``, the exhaustion
 detector, ``INSUFFICIENT_EVIDENCE``, ``TREATMENT_BLOCKED`` and the LOW/BLOCKED
 momentum bands all key on.
 
-The novelty answer exists upstream and only upstream: ``_preprocess_attachment``
-returns the EXISTING row on a content-hash hit and records that as
-``duplicate_of``. It is threaded in as ``is_novel``. These pin the engine half —
-see ``tests/unit/modules/agent/test_novel_upload_thread_1210.py`` for the
-service half, which pins that the flag is set from ``duplicate_of`` and that the
-row really is on the aggregate by the time the engine runs.
+The novelty answer exists upstream and only upstream, and it is threaded in as
+a tri-state ``is_novel``: True (dedup ran, found nothing), False (dedup found
+the bytes), None (dedup could not run — undetermined, scored conservatively).
+These pin the engine half; see
+``tests/unit/modules/agent/test_novel_upload_thread_1210.py`` for the service
+half, including which of the three each path produces.
 """
 
 import logging
@@ -79,12 +79,17 @@ def _case(rows) -> Case:
     return case
 
 
+_ABSENT = object()
+
+
 def _attachment(is_novel, file_id: str = FILE_ID) -> dict:
     """The dict ``_engine_attachment_metadata`` builds.
 
-    ``is_novel`` is passed positionally-by-name at every call site so each test
-    states which turn shape it is driving. ``None`` models a caller that never
-    set the key at all.
+    ``is_novel`` is stated at every call site so each test names the turn shape
+    it drives. It is tri-state: ``True`` (dedup ran, found nothing), ``False``
+    (dedup found the bytes), ``None`` (dedup could not run — undetermined).
+    ``_ABSENT`` is the fourth case: a caller that never set the key at all,
+    which is a contract violation rather than a turn shape.
     """
     meta = {
         "file_id": file_id,
@@ -95,7 +100,7 @@ def _attachment(is_novel, file_id: str = FILE_ID) -> dict:
         "summary": "Pod restart loop.",
         "storage_ref": "ref/app.log",
     }
-    if is_novel is not None:
+    if is_novel is not _ABSENT:
         meta["is_novel"] = is_novel
     return meta
 
@@ -197,25 +202,50 @@ class TestTheArmInIsolation:
         )
 
 
-class TestAMissingNoveltySignal:
-    """A caller that omits the key gets "not novel" — but loudly. A silent
-    False here is precisely the failure mode this issue was."""
+class TestANoveltySignalThatIsNotAnAnswer:
+    """Undetermined (``None``) and absent are both scored as NOT novel — and
+    both are logged.
 
-    async def test_it_is_not_reported_novel(self, engine):
+    Not novel because the alternative is worse: a turn whose dedup lookup could
+    not run is exactly a turn that might be a re-submission, and calling it
+    novel arms the stall net on data the case may already hold. #1210 in
+    reverse. Logged because a silent answer either way is what made #1210
+    invisible for as long as it was.
+
+    ``None`` is the shape production actually produces — the service threads it
+    when the content-hash lookup was skipped or raised. Absent is a caller that
+    never set the key.
+    """
+
+    @pytest.mark.parametrize(
+        "signal,label",
+        [(None, "undetermined"), (_ABSENT, "absent")],
+        ids=["undetermined", "absent"],
+    )
+    async def test_it_is_not_reported_novel(self, engine, signal, label):
         case = _case([_row()])
 
-        metadata = await _run(engine, case, [_attachment(None)])
+        metadata = await _run(engine, case, [_attachment(signal)])
 
-        assert metadata.get("novel_files_uploaded") is None
+        assert metadata.get("novel_files_uploaded") is None, label
         assert metadata["files_uploaded"] == [FILE_ID]
 
-    async def test_it_is_logged(self, engine, caplog):
+    @pytest.mark.parametrize("signal", [None, _ABSENT], ids=["undetermined", "absent"])
+    async def test_it_is_not_progress(self, engine, signal):
+        case = _case([_row()])
+
+        metadata = await _run(engine, case, [_attachment(signal)])
+
+        assert engine._check_if_progress_made(metadata) is False
+
+    @pytest.mark.parametrize("signal", [None, _ABSENT], ids=["undetermined", "absent"])
+    async def test_it_is_logged(self, engine, caplog, signal):
         case = _case([_row()])
 
         with caplog.at_level(
             logging.WARNING, logger="faultmaven.core.investigation.milestone_engine"
         ):
-            await _run(engine, case, [_attachment(None)])
+            await _run(engine, case, [_attachment(signal)])
 
         assert any(
             FILE_ID in r.getMessage() and "novelty" in r.getMessage()
