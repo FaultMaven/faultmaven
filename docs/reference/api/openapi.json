@@ -845,10 +845,12 @@
         "properties": {
           "files": {
             "default": [],
+            "description": "At most ONE file per turn. Submit each additional file as its own turn. `pasted_content` is a separate field and does not count toward this limit, so a turn may carry one file *and* a paste.",
             "items": {
               "contentMediaType": "application/octet-stream",
               "type": "string"
             },
+            "maxItems": 1,
             "title": "Files",
             "type": "array"
           },
@@ -6234,7 +6236,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "2.1.0"
+    "version": "2.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -10842,7 +10844,7 @@
     },
     "/api/v1/cases/{case_id}/turns": {
       "post": {
-        "description": "Submit a turn to a case investigation.\n\nA turn consists of an optional query and/or optional attachments.\nAttachments are preprocessed through Tier 0+1 before the LLM sees them.\nIf no query is provided with attachments, an implicit query is generated.\n\n**One file per turn.** `files` accepts at most one item; more than one is\nrejected with 422. Submit each additional file as its own turn.\n`pasted_content` is a separate field and does not count against this limit,\nso a turn may legitimately carry one file *and* a paste.\n\n**Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`\nplaceholder is named from its own content as part of processing the turn, if\nit now has enough substance to name \u2014 so the name is already in place when\nthis responds. Clients do not need to call `POST /cases/{case_id}/title` for\nthis; that endpoint remains for user-initiated (re)naming. A case is\nauto-titled at most once \u2014 the moment a real title lands, later turns leave\nit alone. Naming is best-effort and time-bounded: it can never fail or\ndelay the turn itself.",
+        "description": "Submit a turn to a case investigation.\n\nA turn consists of an optional query and/or optional attachments.\nAttachments are preprocessed through Tier 0+1 before the LLM sees them.\nIf no query is provided with attachments, an implicit query is generated.\n\n**One file per turn.** `files` accepts at most one item (`maxItems: 1`);\nmore than one is rejected with 422. Submit each additional file as its own\nturn. `pasted_content` is a separate field and does not count against this\nlimit, so a turn may legitimately carry one file *and* a paste.\n\n**Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`\nplaceholder is named from its own content as part of processing the turn, if\nit now has enough substance to name \u2014 so the name is already in place when\nthis responds. Clients do not need to call `POST /cases/{case_id}/title` for\nthis; that endpoint remains for user-initiated (re)naming. A case is\nauto-titled at most once \u2014 the moment a real title lands, later turns leave\nit alone. Naming is best-effort and time-bounded: it can never fail or\ndelay the turn itself.",
         "operationId": "submit_turn_api_v1_cases__case_id__turns_post",
         "parameters": [
           {

@@ -501,6 +501,8 @@ Each extractor's internal fallback chain ensures no extractor propagates errors 
 ```
 User submits turn via POST /cases/{id}/turns
   │  {query?, files[]?, pasted_content?}
+  │  files[] holds AT MOST ONE item (maxItems: 1, fm#694); a paste is a
+  │  separate field, so a turn can still yield two attachments
   ▼
 investigation_service.process_turn(payload: TurnPayload)
   │
@@ -545,7 +547,7 @@ investigation_service.process_turn(payload: TurnPayload)
 
 | Aspect | File Upload | Pasted Text |
 |--------|-------------|-------------|
-| **Entry point** | `files[]` form field | `pasted_content` form field |
+| **Entry point** | `files[]` form field — at most ONE item per turn (`maxItems: 1`, fm#694) | `pasted_content` form field — separate, does not count toward the file cap |
 | **Filename** | Real filename (e.g., `app.log`) | Synthetic: `pasted-content-{ts}.txt` |
 | **Extension hints** | Available (`.log`, `.yaml`, `.csv`) | Not available — classifier relies on content patterns |
 | **Raw file storage** | Stored via `content_ref` | Stored via `content_ref` |

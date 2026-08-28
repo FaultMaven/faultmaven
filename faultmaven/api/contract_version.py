@@ -30,6 +30,21 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 2.2.0 — MINOR. `POST /cases/{case_id}/turns` publishes `maxItems: 1` on its
+# `files` field (#694). The one-file-per-turn rule was always the supported
+# contract — it is what the clarification emitter is written against — but it
+# lived as convention plus client-side discipline, so nothing in the document
+# said so and a new client could exceed it silently.
+#
+# MINOR rather than MAJOR because every existing client already sends at most
+# one file, verified by reading them: the Copilot builds its payload as
+# `payload.files = [selectedFile!]` (UnifiedInputBar.tsx), the Slack agent's
+# `download_message_content` returns "at most one real file upload" and routes
+# the rest to `skipped_names`, and the Dashboard posts no files to this route.
+# No client sends a request this newly refuses. A caller that DID send two was
+# already outside the supported contract and getting undefined behaviour —
+# only the first attachment's failed classification was ever clarifiable.
+#
 # 2.1.0 — MINOR. `KnowledgeBaseDocument.scope` became REQUIRED and lost its
 # `"global"` default (#1166). This is a write-side hardening surfacing in a
 # read-side schema: the default meant a publish path that omitted its knowledge
@@ -57,4 +72,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.1.0"
+API_CONTRACT_VERSION = "2.2.0"
