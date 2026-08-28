@@ -2065,12 +2065,18 @@ class TestScanReleasesLiveCaseKey:
         return _make_live_case_service(session_factory)
 
     async def _run_scan(self, svc: ConversionService, tmp_path: Path):
-        # Point the disk walk at an empty location — these tests exercise only
-        # the DB reconciliation sweep.
+        # Point the knowledge root at the tmp dir the surviving draft files were
+        # written into. It was ``tmp_path / "kb-empty"`` — an empty location, so
+        # the walk found nothing — until the reconciliation probe gained a
+        # containment check (#1213 follow-up): a draft whose ``file_path`` is
+        # outside the root is now treated as absent, so every surviving file
+        # has to be under the root the service is actually using. The files
+        # here are all tracked, so the walk still discovers nothing new and
+        # these tests still exercise only the DB reconciliation sweep.
         with patch.object(
             type(svc),
             "_data_dir",
-            new_callable=lambda: property(lambda self: tmp_path / "kb-empty"),
+            new_callable=lambda: property(lambda self: tmp_path),
         ):
             return await svc.scan_for_runbooks(user_id="u1")
 

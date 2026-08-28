@@ -7,8 +7,6 @@ Defines the data structures for the conversion pipeline:
 - Request/Response models: API contract types
 """
 
-import hashlib
-import re
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -21,6 +19,7 @@ from faultmaven.modules.case.contracts import (
     classify_solution_outcome,
     mechanism_for_display,
 )
+from faultmaven.utils.runbook_id import runbook_id_from_parts
 
 # =============================================================================
 # Enums
@@ -617,12 +616,13 @@ def generate_draft_id() -> str:
 
 
 def generate_runbook_id(failure_mode: FailureModeAnalysis) -> str:
-    """Generate kebab-case ID from service and failure description."""
-    base = f"{failure_mode.service}-{failure_mode.title}"
-    slug = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
-    if len(slug) > 60:
-        # Disambiguating suffix for a truncated slug, not a secret: the input
-        # is the slug, which is the id's own visible prefix.
-        suffix = hashlib.md5(slug.encode(), usedforsecurity=False).hexdigest()[:4]
-        slug = slug[:55] + "-" + suffix
-    return slug
+    """Generate kebab-case ID from service and failure description.
+
+    Delegates to ``runbook_id_from_parts``, the single mint point this and
+    ``ConversionService.create_runbook`` now share (#1213 follow-up). The
+    expression that used to live here is preserved exactly — byte-identical
+    output is pinned by a differential test, because this value is persisted to
+    ``conversion_drafts.runbook_id`` and into runbook frontmatter, so a drift
+    here orphans rows that already exist.
+    """
+    return runbook_id_from_parts(failure_mode.service, failure_mode.title)

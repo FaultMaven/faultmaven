@@ -1,11 +1,18 @@
-"""Runbook identifier and on-disk-name minting.
+"""Runbook identifier, on-disk-name minting, and the runbook write path.
 
-Two related jobs, kept together because both answer "what is this runbook
-called": deterministic knowledge-item **id** derivation for pre-deployed
-runbooks, and the safe on-disk **filename**/path components a runbook is
-written under (``runbook_filename`` / ``safe_path_component``, #1213). The
-latter are consumed by ``KnowledgeService.upload_document`` and
-``ConversionService._scope_dir``.
+Three related jobs, kept together because they all answer "what is this runbook
+called, and where does it live": deterministic knowledge-item **id** derivation
+for pre-deployed runbooks, the safe on-disk **filename**/path components a
+runbook is written under (``runbook_filename`` / ``safe_path_component`` /
+``runbook_id_from_parts``, #1213), and the single containment-checked
+**write/resolve** helper every runbook file operation goes through
+(``knowledge_root`` / ``resolve_runbook_path`` / ``write_runbook_file``).
+
+The containment helper is deliberately in the same module as the name minting.
+#1215's review showed the two cannot be reasoned about apart: a filename guard
+is worthless if the directory has already escaped, and a containment assertion
+anchored on that directory is circular. One module owns both halves so a change
+to either is made where the other is visible.
 
 Id derivation:
 
@@ -22,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from pathlib import Path
 from uuid import uuid4
 
 # A bootstrap-published (platform built-in) runbook has a deterministic
@@ -86,6 +94,17 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _MAX_SLUG_CHARS = 60
 _MAX_SUFFIX_CHARS = 40
 
+#: Bound for a **persisted runbook id** (``runbook_id_from_parts``). Numerically
+#: equal to ``_MAX_SLUG_CHARS`` today and deliberately a SEPARATE constant: that
+#: one bounds a filename component (NAME_MAX / ``uploaded_files.filename``),
+#: this one bounds a value already written into ``conversion_drafts.runbook_id``
+#: and into runbook frontmatter. Tightening the filename bound must not silently
+#: re-mint ids that already exist in the database.
+_MAX_RUNBOOK_ID_CHARS = 60
+#: An over-long id keeps 55 characters of readable slug plus ``-`` plus a 4-hex
+#: disambiguator, landing exactly on ``_MAX_RUNBOOK_ID_CHARS``.
+_RUNBOOK_ID_HASH_CHARS = 4
+
 
 def _slug(value: str | None) -> str:
     """Lowercase, allowlist-filtered, hyphen-collapsed. May return ``""``."""
@@ -143,3 +162,135 @@ def runbook_filename(title: str | None, document_id: str | None) -> str:
         suffix = uuid4().hex[:16]
     stem = f"{slug}-{suffix}" if slug else suffix
     return f"{stem}.md"
+
+
+def runbook_id_from_parts(service: str | None, title: str | None) -> str:
+    """The PERSISTED runbook id for a ``(service, title)`` pair.
+
+    Single mint point for the two call sites that write this value to the
+    database and into runbook frontmatter — ``generate_runbook_id`` (the LLM
+    conversion path) and ``ConversionService.create_runbook_from_template``
+    (the manual path). Both previously carried their own byte-identical copy of
+    this expression; the copies are what #1213's review recorded as "the slug
+    rule now exists in three places".
+
+    **It shares ``_slug`` with the filename helpers and nothing else, on
+    purpose.** The character rule is one rule and a tightening there should
+    reach every consumer. The two *policies* over it must not be merged:
+
+    - **Over-length.** An id keeps 55 slug characters plus an md5 disambiguator
+      so two long titles that share a 60-character prefix still get distinct
+      ids. ``safe_path_component`` just truncates — a filename collision is
+      resolved by the id suffix ``runbook_filename`` appends.
+    - **Empty result.** An id with no allowlisted characters is ``""`` here.
+      ``safe_path_component`` substitutes ``"unknown"``, because an empty
+      *path component* is a write to the parent directory. Substituting here
+      would change ids that already exist in ``conversion_drafts``.
+
+    The md5 is a disambiguator, not a secret: its input is the slug, which is
+    the id's own visible prefix.
+    """
+    slug = _slug(f"{service}-{title}")
+    if len(slug) > _MAX_RUNBOOK_ID_CHARS:
+        suffix = hashlib.md5(slug.encode(), usedforsecurity=False).hexdigest()[
+            :_RUNBOOK_ID_HASH_CHARS
+        ]
+        keep = _MAX_RUNBOOK_ID_CHARS - _RUNBOOK_ID_HASH_CHARS - 1
+        slug = slug[:keep] + "-" + suffix
+    return slug
+
+
+# =============================================================================
+# Where a runbook lives on disk, and the only sanctioned way to touch it
+# =============================================================================
+
+
+def knowledge_root() -> Path:
+    """The one anchor every runbook containment check resolves against.
+
+    ``KnowledgeService.upload_document`` and ``ConversionService._data_dir``
+    each used to spell this literal themselves. Two spellings of an anchor is
+    one spelling too many: the guard is only as good as the agreement that both
+    sides mean the same tree.
+
+    Relative on purpose. Every persisted ``conversion_drafts.file_path`` is
+    relative (``data/knowledge/...``), and the scan pass matches those strings
+    against ``str(md_file)`` from a walk of this same relative root — an
+    absolute root here would make every tracked path a miss and the scan would
+    manufacture duplicate drafts. Anchor and candidate resolve against the same
+    cwd, so containment is unaffected by where the process runs.
+    """
+    return Path("data/knowledge")
+
+
+class RunbookPathEscape(ValueError):
+    """A runbook path resolved outside the knowledge tree.
+
+    Subclasses ``ValueError`` so it stays compatible with the guard #1215
+    shipped inline at the upload write site, and is its own type so a caller
+    that wants to degrade rather than fail (a listing skipping one bad row) can
+    catch precisely this and nothing else.
+    """
+
+
+def resolve_runbook_path(
+    path: str | Path,
+    *,
+    source: str,
+    root: Path | None = None,
+) -> Path:
+    """Resolve ``path``, refusing anything that lands outside the knowledge tree.
+
+    Call this before ANY filesystem operation on a runbook path — read, write,
+    or unlink — and act on the returned resolved path.
+
+    Anchored on the ROOT of the tree, never on the directory the path is in:
+    anchoring on the containing directory is circular, since an escaped
+    directory trivially contains its own child. That circularity is the exact
+    defect #1215's first round shipped, and it passed its own test.
+
+    ``source`` names where the path came from, and is carried into the error.
+    For a value read back from the database that means naming the row — a path
+    persisted before the mint points were sanitised is precisely the case this
+    exists for, and "some draft is bad" is not an actionable message.
+
+    The result is STRICTLY inside the root — the root itself is refused. It is
+    a directory, so a write to it would fail anyway, but ``write_runbook_file``
+    would first ``mkdir`` its *parent*, which is outside the tree.
+
+    Raises:
+        RunbookPathEscape: the resolved path is not strictly under the root.
+    """
+    knowledge = (root if root is not None else knowledge_root()).resolve()
+    resolved = Path(path).resolve()
+    if resolved == knowledge or not resolved.is_relative_to(knowledge):
+        raise RunbookPathEscape(
+            f"refusing to touch a runbook path outside the knowledge tree: "
+            f"{resolved} is not under {knowledge} (source: {source})"
+        )
+    return resolved
+
+
+def write_runbook_file(
+    path: str | Path,
+    content: str,
+    *,
+    source: str,
+    root: Path | None = None,
+    encoding: str = "utf-8",
+) -> Path:
+    """Write ``content`` to ``path``, but only if ``path`` is inside the tree.
+
+    Validation happens BEFORE the ``mkdir``. ``mkdir(parents=True)`` on an
+    escaped path materialises attacker-chosen directories outside the tree
+    whatever the write then does — the second half of #1215's round-1 defect,
+    which left ``escaped/`` on disk even where the file write was refused.
+
+    Returns the resolved path. Callers persisting a path to the database should
+    keep persisting the ORIGINAL (relative) string, not this one; see
+    ``knowledge_root``.
+    """
+    resolved = resolve_runbook_path(path, source=source, root=root)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(content, encoding=encoding)
+    return resolved

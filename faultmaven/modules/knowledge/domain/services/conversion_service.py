@@ -73,6 +73,14 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
 )
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
+from faultmaven.utils.runbook_id import (
+    RunbookPathEscape,
+    knowledge_root,
+    resolve_runbook_path,
+    runbook_id_from_parts,
+    safe_path_component,
+    write_runbook_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -357,7 +365,10 @@ class ConversionService:
 
     @property
     def _data_dir(self) -> Path:
-        return Path("data/knowledge")
+        # Delegates so this service and ``KnowledgeService`` cannot drift apart
+        # on where the knowledge tree is; that agreement is what every
+        # containment check below is anchored on.
+        return knowledge_root()
 
     def _scope_dir(self, scope: str, team_id: str = None, user_id: str = None) -> Path:
         """Scope directory for a draft, with both id components sanitised.
@@ -371,8 +382,6 @@ class ConversionService:
         scan pass infers scope from is preserved while an escape is
         unconstructible.
         """
-        from faultmaven.utils.runbook_id import safe_path_component
-
         if scope == "global":
             return self._data_dir / "global"
         elif scope == "team" and team_id:
@@ -1073,11 +1082,19 @@ class ConversionService:
             # in sync.
             draft_id = generate_draft_id()
 
-            # Write draft to disk
-            scope_dir = self._scope_dir(scope, team_id, user_id)
-            scope_dir.mkdir(parents=True, exist_ok=True)
-            draft_path = scope_dir / f"{runbook_id}.md"
-            draft_path.write_text(runbook_content, encoding="utf-8")
+            # Write draft to disk. Through the shared helper: it validates
+            # containment against the ROOT of the knowledge tree and does so
+            # BEFORE creating the scope directory. ``runbook_id`` is minted
+            # from an allowlist so an escape is unconstructible today — the
+            # guard is what keeps that true if the mint rule is loosened or a
+            # new caller assembles its own name (#1213 follow-up).
+            draft_path = self._scope_dir(scope, team_id, user_id) / f"{runbook_id}.md"
+            write_runbook_file(
+                draft_path,
+                runbook_content,
+                source=f"converted draft (runbook_id={runbook_id})",
+                root=self._data_dir,
+            )
 
             # Validate
             validation = self._validator.validate_content(runbook_content)
@@ -1279,10 +1296,22 @@ class ConversionService:
 
             drafts = []
             for dm in draft_models:
-                # Read content from disk
+                # Read content from disk. Guarded like the write paths — an
+                # escaped row here would put an arbitrary file's contents into
+                # the API response. This is the one caller that degrades rather
+                # than refuses: one bad row must not deny the whole listing, so
+                # the escape is logged and that draft's content is omitted
+                # (which is already what an unreadable file does here).
                 content = None
                 try:
-                    content = Path(dm.file_path).read_text(encoding="utf-8")
+                    resolved = resolve_runbook_path(
+                        dm.file_path,
+                        source=f"conversion_drafts.file_path (draft_id={dm.id})",
+                        root=self._data_dir,
+                    )
+                    content = resolved.read_text(encoding="utf-8")
+                except RunbookPathEscape as exc:
+                    logger.error("refusing to read a draft outside the tree: %s", exc)
                 except Exception:
                     pass
 
@@ -1580,9 +1609,21 @@ class ConversionService:
             if not dm or dm.status == DraftStatus.DISCARDED.value:
                 return None
 
-            # Write updated content to disk
-            file_path = Path(dm.file_path)
-            file_path.write_text(content, encoding="utf-8")
+            # Write updated content to disk.
+            #
+            # ``dm.file_path`` comes straight back out of the database. Every
+            # mint point that produces it is sanitised now, but a row persisted
+            # BEFORE #1215 was written by a mint that could escape, and this
+            # edit path would re-open and rewrite it without ever re-checking.
+            # Re-validate on use: containment is a property of the path at the
+            # moment it is used, not of the code that happened to create it.
+            # Refuses loudly, naming the row (#1213 follow-up).
+            write_runbook_file(
+                dm.file_path,
+                content,
+                source=f"conversion_drafts.file_path (draft_id={dm.id})",
+                root=self._data_dir,
+            )
 
             # Re-validate and re-score
             validation = self._validator.validate_content(content)
@@ -1813,8 +1854,18 @@ class ConversionService:
                     "Draft has validation errors that must be fixed before verification"
                 )
 
-            # Update frontmatter on disk using python-frontmatter
-            file_path = Path(dm.file_path)
+            # Update frontmatter on disk using python-frontmatter.
+            #
+            # Resolved through the shared guard FIRST, before any read or write:
+            # this path is a database value, and on this method it is read back
+            # into the response as well as rewritten, so an escaped row would
+            # both leak an arbitrary file and be overwritten. Refuses loudly,
+            # naming the row (#1213 follow-up).
+            file_path = resolve_runbook_path(
+                dm.file_path,
+                source=f"conversion_drafts.file_path (draft_id={dm.id})",
+                root=self._data_dir,
+            )
             try:
                 import frontmatter
 
@@ -1997,22 +2048,12 @@ class ConversionService:
         """
         await self._ensure_team_publish_allowed(scope, team_id, user_id)
 
-        import re as _re
-
         today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Generate kebab-case ID
-        base = f"{service_name}-{title}"
-        runbook_id = _re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")
-        if len(runbook_id) > 60:
-            import hashlib as _hashlib
-
-            # Disambiguating suffix for a truncated slug, not a secret (see
-            # generate_runbook_id in knowledge/domain/models/conversion.py).
-            suffix = _hashlib.md5(
-                runbook_id.encode(), usedforsecurity=False
-            ).hexdigest()[:4]
-            runbook_id = runbook_id[:55] + "-" + suffix
+        # Generate kebab-case ID. Shared mint point with the LLM conversion
+        # path's ``generate_runbook_id`` (#1213 follow-up); the inline copy this
+        # replaces was byte-identical, which a differential test pins.
+        runbook_id = runbook_id_from_parts(service_name, title)
 
         symptom_str = ", ".join(symptom_class)
         tags_str = ", ".join(tags) if tags else ""
@@ -2054,11 +2095,15 @@ status: draft
 - Manually authored runbook
 """
 
-        # Write to disk
-        scope_dir = self._scope_dir(scope, team_id, user_id)
-        scope_dir.mkdir(parents=True, exist_ok=True)
-        draft_path = scope_dir / f"{runbook_id}.md"
-        draft_path.write_text(content, encoding="utf-8")
+        # Write to disk through the shared containment-checked helper — same
+        # anchor, same before-mkdir ordering as every other runbook write.
+        draft_path = self._scope_dir(scope, team_id, user_id) / f"{runbook_id}.md"
+        write_runbook_file(
+            draft_path,
+            content,
+            source=f"manually created runbook (runbook_id={runbook_id})",
+            root=self._data_dir,
+        )
 
         # Validate and score
         validation_result = self._validator.validate_content(content)
@@ -2211,7 +2256,23 @@ status: draft
                 redundant_discard_ids: list[str] = []
 
                 for draft_model in all_draft_models:
-                    file_exists = Path(draft_model.file_path).exists()
+                    # Same guard, applied to the reconciliation probe. A row
+                    # whose path escapes the tree is not a draft this service
+                    # owns, so it is treated as absent — which soft-discards it
+                    # below, repairing the row rather than letting an arbitrary
+                    # path's existence drive the decision (#1213 follow-up).
+                    try:
+                        file_exists = resolve_runbook_path(
+                            draft_model.file_path,
+                            source=(
+                                "conversion_drafts.file_path "
+                                f"(draft_id={draft_model.id})"
+                            ),
+                            root=self._data_dir,
+                        ).exists()
+                    except RunbookPathEscape as exc:
+                        logger.error("discarding a draft outside the tree: %s", exc)
+                        file_exists = False
 
                     if draft_model.status == DraftStatus.DISCARDED.value:
                         continue
@@ -2620,10 +2681,26 @@ status: draft
             if not dm:
                 return False
 
-            # Remove file from disk
-            file_path = Path(dm.file_path)
-            if file_path.exists():
-                file_path.unlink()
+            # Remove file from disk. Same guard as the write paths, for the
+            # same reason and with more at stake: this is an ``unlink`` driven
+            # by a database value, so an escaping row would delete an arbitrary
+            # file.
+            #
+            # Unlike the write paths this does NOT abort the operation. The
+            # dangerous half is the unlink, and that is refused loudly; the
+            # soft-delete still runs, so a bad row can be cleared rather than
+            # being permanently undeletable. Same treatment as the scan's
+            # reconciliation probe (#1213 follow-up).
+            try:
+                file_path = resolve_runbook_path(
+                    dm.file_path,
+                    source=f"conversion_drafts.file_path (draft_id={dm.id})",
+                    root=self._data_dir,
+                )
+                if file_path.exists():
+                    file_path.unlink()
+            except RunbookPathEscape as exc:
+                logger.error("refusing to unlink outside the tree: %s", exc)
 
             # Soft delete in database
             dm.status = DraftStatus.DISCARDED.value

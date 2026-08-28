@@ -197,12 +197,18 @@ class TestConversionTeamPublishGuard:
 # ===========================================================================
 
 
-def _verify_ready_service(*, team_service, tmp_path, job_team="team_a"):
+def _verify_ready_service(*, team_service, tmp_path, monkeypatch, job_team="team_a"):
     """A ConversionService whose verify_draft reaches the team-share transfer:
     team-scoped user-owned job, valid DRAFT with a real file on disk, a share
     repo answering ``job_team``, and a knowledge service whose ingest_runbook
     records whether publication happened."""
     from faultmaven.modules.knowledge.domain.models.conversion import DraftStatus
+
+    # Pin the knowledge root at the tmp dir the draft is written into.
+    # ``verify_draft`` containment-checks ``conversion_drafts.file_path``
+    # against this root (#1213 follow-up); in production the draft always lives
+    # under it.
+    monkeypatch.setattr(ConversionService, "_data_dir", property(lambda self: tmp_path))
 
     draft_file = tmp_path / "runbook.md"
     draft_file.write_text("---\nstatus: draft\n---\n\n# Runbook\n")
@@ -264,9 +270,13 @@ def _verify_ready_service(*, team_service, tmp_path, job_team="team_a"):
 @pytest.mark.unit
 @pytest.mark.asyncio
 class TestVerifyTimeMembershipRecheck:
-    async def test_non_member_verifier_refused_before_publication(self, tmp_path):
+    async def test_non_member_verifier_refused_before_publication(
+        self, tmp_path, monkeypatch
+    ):
         service, ks = _verify_ready_service(
-            team_service=_team_service(["team_other"]), tmp_path=tmp_path
+            team_service=_team_service(["team_other"]),
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
         )
         with pytest.raises(AuthorizationError, match="team you belong to"):
             await service.verify_draft(
@@ -277,9 +287,11 @@ class TestVerifyTimeMembershipRecheck:
             )
         ks.ingest_runbook.assert_not_awaited()
 
-    async def test_member_verifier_publishes(self, tmp_path):
+    async def test_member_verifier_publishes(self, tmp_path, monkeypatch):
         service, ks = _verify_ready_service(
-            team_service=_team_service(["team_a"]), tmp_path=tmp_path
+            team_service=_team_service(["team_a"]),
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
         )
         result = await service.verify_draft(
             conversion_id="c",
@@ -291,10 +303,14 @@ class TestVerifyTimeMembershipRecheck:
         ks.ingest_runbook.assert_awaited_once()
         assert ks.ingest_runbook.await_args.kwargs["team_id"] == "team_a"
 
-    async def test_stale_share_with_no_team_service_refused(self, tmp_path):
+    async def test_stale_share_with_no_team_service_refused(
+        self, tmp_path, monkeypatch
+    ):
         # A share row exists (e.g. minted before teams were unwired) but no
         # team service: fail-closed — the share must not transfer.
-        service, ks = _verify_ready_service(team_service=None, tmp_path=tmp_path)
+        service, ks = _verify_ready_service(
+            team_service=None, tmp_path=tmp_path, monkeypatch=monkeypatch
+        )
         with pytest.raises(AuthorizationError):
             await service.verify_draft(
                 conversion_id="c",
