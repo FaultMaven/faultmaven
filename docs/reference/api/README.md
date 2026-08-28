@@ -3562,8 +3562,10 @@ runbook (PUT), then approve.
 
 Creates a new KnowledgeItem at global scope with verification level
 EXPERIMENTAL, and establishes the bidirectional link between suggestion and
-knowledge item. If the link cannot be recorded, the published item is
-deleted so the knowledge base keeps no orphan.
+knowledge item. If the link cannot be recorded, everything the publish wrote
+is rolled back — the knowledge item and its vectors, the draft/job/upload
+bookkeeping rows, and the runbook file on disk — and any part that could not
+be removed is logged by id for manual cleanup.
 
 Args:
     suggestion_id: Suggestion to approve

@@ -48,6 +48,9 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
     require_platform_admin,
 )
+from faultmaven.api.v1.dependencies import (
+    get_suggestion_service as _shared_get_suggestion_service,
+)
 from faultmaven.api.v1.utils.parsing import parse_comma_separated_tags
 from faultmaven.exceptions import AuthorizationError, FaultMavenException
 from faultmaven.infrastructure.observability.tracing import trace
@@ -69,6 +72,38 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 )
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge_base"])
+
+
+#: What an author has to produce for the quality gate to pass. Written once and
+#: shared by every route that can refuse content, so upload and suggestion
+#: approval never drift into describing the same standard differently.
+RUNBOOK_QUALITY_HELP = (
+    "The content must be a valid runbook with YAML frontmatter "
+    "(id, title, domain, service, symptom_class, severity, scope, "
+    "version, last_updated, verified_by, status) and required sections "
+    "(Symptom Recognition, Applicability, Diagnostic Steps, Causes, "
+    "Prevention, Sources). "
+    "Use Write Runbook to create one from the template, or "
+    "Convert to Runbook to generate from a source document."
+)
+
+
+def runbook_quality_detail(error: RunbookQualityError) -> dict:
+    """Render a gate refusal as the structured 422 body.
+
+    The gate runs in ONE place (``KnowledgeService.upload_document``) and both
+    routes that can trip it render its exception through here, so the same
+    refusal looks the same whether it came from uploading a file or approving a
+    suggestion. ``RunbookQualityError`` carries ``errors``/``warnings`` for
+    exactly this — the generic ``ValidationException`` handler would flatten
+    them into ``str(exc)`` and lose the per-error structure a client renders.
+    """
+    return {
+        "message": "Runbook does not meet quality standards",
+        "errors": error.errors,
+        "warnings": error.warnings,
+        "help": RUNBOOK_QUALITY_HELP,
+    }
 
 
 # Local dependency function to avoid circular imports
@@ -332,40 +367,19 @@ async def upload_document(
                     detail="File encoding not supported. Re-save as UTF-8 and try again.",
                 )
 
-        # Validate runbook content against standards.
+        # NO pre-validation here.
         #
-        # Since #1214 the SAME gate is enforced inside ``upload_document``, so
-        # this is no longer the only thing standing between a paste and the
-        # corpus — it is the RICHER message for the same decision (per-error
-        # detail plus the authoring help below), which the service-layer
-        # refusal cannot carry through the generic 422 handler. If they ever
-        # disagree the service wins and the client still gets a 422, via the
-        # ``RunbookQualityError`` pass-through at the bottom of this function.
-        from faultmaven.modules.knowledge.domain.services.runbook_validator import (
-            RunbookValidator,
-        )
-
-        validator = RunbookValidator()
-        validation = validator.validate_content(content_str)
-
-        if not validation.passed:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "message": "Runbook does not meet quality standards",
-                    "errors": validation.errors,
-                    "warnings": validation.warnings,
-                    "help": (
-                        "The uploaded file must be a valid runbook with YAML frontmatter "
-                        "(id, title, domain, service, symptom_class, severity, scope, "
-                        "version, last_updated, verified_by, status) and required sections "
-                        "(Symptom Recognition, Applicability, Diagnostic Steps, Causes, "
-                        "Prevention, Sources). "
-                        "Use Write Runbook to create one from the template, or "
-                        "Convert to Runbook to generate from a source document."
-                    ),
-                },
-            )
+        # This route used to run the full ``RunbookValidator`` and then
+        # ``upload_document`` ran it AGAIN — measured at 31.5 ms per pass on the
+        # largest shipped runbook (48 KB), so ~63 ms of event-loop-blocking CPU
+        # for every accepted upload, scaling with content size toward the
+        # MAX_UPLOAD_SIZE_MB cap. Two passes also meant two renderings of the
+        # same refusal.
+        #
+        # The gate now runs ONCE, inside ``upload_document`` — the choke point
+        # both publish paths share — and its ``RunbookQualityError`` is rendered
+        # here (and at the approve route) into the structured 422 this endpoint
+        # has always answered. One decision point, one rendering.
 
         # Parse tags
         tag_list = parse_comma_separated_tags(tags)
@@ -394,14 +408,13 @@ async def upload_document(
 
     except HTTPException:
         raise
-    except RunbookQualityError:
-        # The service-layer gate (#1214). Unreachable while the route's own
-        # check above runs the same validator first — kept so that the two
-        # gates can never disagree about the STATUS: without it the blanket
-        # handler below would turn a content refusal into a 500 and log an
-        # outage. Propagated to the registered ValidationException handler,
-        # which answers 422 with the error list.
-        raise
+    except RunbookQualityError as quality_error:
+        # The single gate's refusal, rendered as the structured 422 this route
+        # has always answered. Without this the blanket handler below would
+        # turn a content refusal into a 500 and log it as an outage.
+        raise HTTPException(
+            status_code=422, detail=runbook_quality_detail(quality_error)
+        ) from quality_error
     except Exception as e:
         logger.error(f"Document upload failed: {e}")
         # No str(e) in the response — the rule for every 500 in this module
@@ -1093,8 +1106,11 @@ async def get_search_analytics(
 async def get_suggestion_service(request: Request):
     """Get the SuggestionService singleton from app.state.
 
-    Mirrors ``get_knowledge_service``: the composition root owns the instance
-    and an absent one is a 503, not something to substitute for.
+    Delegates to the shared ``api.v1.dependencies`` implementation so the
+    knowledge side and the case side answer an absent service identically —
+    one policy, one detail string. The wrapper is kept as this module's own
+    dependency symbol because every route here and the tests that override them
+    are declared against it.
 
     It USED to fall back to ``SuggestionService()`` when the slot was missing —
     and the slot was ALWAYS missing, because nothing ever wrote it (#1214). So
@@ -1104,13 +1120,7 @@ async def get_suggestion_service(request: Request):
     that silently produces a broken service is worse than no service, because
     the failure surfaces three requests later as a 404 about the wrong thing.
     """
-    service = getattr(request.app.state, "suggestion_service", None)
-    if service is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Knowledge suggestions unavailable",
-        )
-    return service
+    return await _shared_get_suggestion_service(request)
 
 
 @router.get("/suggestions")
@@ -1293,8 +1303,10 @@ async def approve_suggestion(
 
     Creates a new KnowledgeItem at global scope with verification level
     EXPERIMENTAL, and establishes the bidirectional link between suggestion and
-    knowledge item. If the link cannot be recorded, the published item is
-    deleted so the knowledge base keeps no orphan.
+    knowledge item. If the link cannot be recorded, everything the publish wrote
+    is rolled back — the knowledge item and its vectors, the draft/job/upload
+    bookkeeping rows, and the runbook file on disk — and any part that could not
+    be removed is logged by id for manual cleanup.
 
     Args:
         suggestion_id: Suggestion to approve
@@ -1346,6 +1358,14 @@ async def approve_suggestion(
 
     except HTTPException:
         raise
+    except RunbookQualityError as quality_error:
+        # BEFORE the FaultMavenException arm below, which this subclasses:
+        # letting it through there would hand the generic handler a flattened
+        # str(exc) and the reviewer would see a different shape for the same
+        # refusal the upload route renders in full. Same gate, same body.
+        raise HTTPException(
+            status_code=422, detail=runbook_quality_detail(quality_error)
+        ) from quality_error
     except FaultMavenException:
         # Typed service exceptions (ConflictError for "not ready for
         # review", etc.) propagate to FastAPI's global handlers which

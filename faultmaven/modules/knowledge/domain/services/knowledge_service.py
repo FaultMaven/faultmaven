@@ -21,6 +21,7 @@ Key Improvements over Original:
 - Standardized tracing and logging patterns
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -738,6 +739,204 @@ class KnowledgeService:
             except Exception as e:
                 logger.error(f"Failed to remove document {document_id}: {e}")
                 raise RuntimeError(f"Document removal failed: {str(e)}") from e
+
+    async def rollback_uploaded_document(self, document_id: str) -> Dict[str, Any]:
+        """Undo EVERYTHING :meth:`upload_document` wrote for ``document_id``.
+
+        ``delete_document`` removes the published item — the ``knowledge_items``
+        row, its team shares and its ChromaDB chunks. That is the whole of what
+        a *deletion* means, and it is not the whole of what an upload *wrote*.
+        ``upload_document`` also writes, in this order: an ``uploaded_files``
+        row, a ``conversion_jobs`` row, a ``conversion_drafts`` row (with
+        ``status="verified"`` and ``validation_passed=True``), and the runbook
+        markdown on disk.
+
+        Measured on the failed-approval path before this method existed: the
+        item was deleted and all four of those survived. The draft row is the
+        damaging one — it keeps ``file_path`` in the reconciliation scan's
+        ``tracked_paths``, so ``scan_for_runbooks`` SKIPS the orphaned file
+        (``discovered=0, skipped=1``; with the row removed the same file is
+        re-discovered, ``discovered=1``). The residue is therefore permanent, not
+        self-healing: a ``status="verified"`` draft pointing at a deleted item,
+        listed by ``GET /knowledge/drafts``, counted by
+        :meth:`get_document_statistics`, and holding a file on disk forever.
+
+        The three rows are HARD-deleted, not flipped to ``status="discarded"``
+        the way ``ConversionService`` retires a draft. That idiom is for a draft
+        a person authored and then abandoned, which stays visible as a decision
+        they made; this row was never user-visible as a draft — it is synthetic
+        bookkeeping born ``verified`` inside ``upload_document`` for a publish
+        that is being undone. Keeping a discarded row pointing at a file this
+        method also deletes would be a worse artifact than removing both.
+
+        Every step is independent and best-effort, and the return value NAMES
+        what survived rather than assuming success — the caller logs residue an
+        operator has to clean up by hand, so it must be true.
+
+        Args:
+            document_id: The id ``upload_document`` returned.
+
+        Returns:
+            ``{"document_id", "residue": [str, ...]}``. Empty ``residue`` means
+            every store this upload touched is clean.
+        """
+        from pathlib import Path
+
+        from sqlalchemy import select as _select
+
+        from faultmaven.infrastructure.persistence.models import (
+            ConversionDraftModel,
+            ConversionJobModel,
+            UploadedFileModel,
+        )
+
+        residue: List[str] = []
+
+        # 1) The published item: SQL row + team shares + ChromaDB chunks.
+        #
+        # On failure, MEASURE which store kept something instead of guessing.
+        # ``delete_document`` deletes the row and only then removes the vectors,
+        # so a raise can mean either "row still there" or — the inverse — "row
+        # gone, chunks still retrievable by kb_qa with no inventory row". A
+        # fixed message would be wrong half the time.
+        try:
+            result = await self.delete_document(document_id)
+            if not (result or {}).get("success"):
+                residue.append(
+                    f"knowledge_items row {document_id} "
+                    f"({(result or {}).get('error', 'no reason reported')})"
+                )
+        except Exception as delete_error:
+            if await self._knowledge_item_exists(document_id):
+                residue.append(
+                    f"knowledge_items row {document_id} (delete failed: "
+                    f"{delete_error})"
+                )
+            else:
+                residue.append(
+                    f"ChromaDB chunks for {document_id} — the inventory row was "
+                    f"deleted but its vectors were not, so retrieval can still "
+                    f"return this content with nothing listing it "
+                    f"(vector removal failed: {delete_error})"
+                )
+
+        # 2) The upload's own bookkeeping. Everything is reachable from the
+        # draft row, which is why it is loaded first: draft.file_path is the
+        # on-disk runbook and draft.conversion_id is the job, whose
+        # source_file_id is the uploaded_files row.
+        draft_id: Optional[str] = None
+        conversion_id: Optional[str] = None
+        source_file_id: Optional[str] = None
+        file_path: Optional[str] = None
+        try:
+            async with self._db_session_factory() as session:
+                draft = (
+                    await session.execute(
+                        _select(ConversionDraftModel).where(
+                            ConversionDraftModel.runbook_id == document_id
+                        )
+                    )
+                ).scalar_one_or_none()
+                if draft is not None:
+                    draft_id = draft.id
+                    conversion_id = draft.conversion_id
+                    file_path = draft.file_path
+                if conversion_id:
+                    job = (
+                        await session.execute(
+                            _select(ConversionJobModel).where(
+                                ConversionJobModel.id == conversion_id
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if job is not None:
+                        source_file_id = job.source_file_id
+        except Exception as lookup_error:
+            residue.append(
+                f"upload bookkeeping for {document_id} (could not be located: "
+                f"{lookup_error})"
+            )
+            return {"document_id": document_id, "residue": residue}
+
+        # Deletion order is forced by the FKs: conversion_jobs.source_file_id is
+        # NOT NULL with ON DELETE RESTRICT, so uploaded_files cannot go first.
+        # draft -> job -> uploaded_file. (conversion_drafts.conversion_id
+        # cascades, but the explicit delete keeps this correct on a backend
+        # where FK enforcement is off.)
+        for model, pk_column, pk_value, label in (
+            (ConversionDraftModel, ConversionDraftModel.id, draft_id, "draft"),
+            (ConversionJobModel, ConversionJobModel.id, conversion_id, "job"),
+            (
+                UploadedFileModel,
+                UploadedFileModel.file_id,
+                source_file_id,
+                "uploaded file",
+            ),
+        ):
+            if not pk_value:
+                continue
+            try:
+                async with self._db_session_factory() as session:
+                    row = (
+                        await session.execute(
+                            _select(model).where(pk_column == pk_value)
+                        )
+                    ).scalar_one_or_none()
+                    if row is not None:
+                        await session.delete(row)
+                        await session.commit()
+            except Exception as row_error:
+                residue.append(
+                    f"{label} row {pk_value} for {document_id} "
+                    f"(delete failed: {row_error})"
+                )
+
+        # 3) The on-disk runbook. Containment is anchored on the knowledge ROOT
+        # (never on the file's own directory, which would be circular) because
+        # file_path is read back out of the database.
+        if file_path:
+            try:
+                knowledge_root = Path("data/knowledge").resolve()
+                resolved = Path(file_path).resolve()
+                if not resolved.is_relative_to(knowledge_root):
+                    residue.append(
+                        f"on-disk runbook {file_path} (refusing to delete a path "
+                        f"outside {knowledge_root})"
+                    )
+                else:
+                    resolved.unlink(missing_ok=True)
+            except Exception as file_error:
+                residue.append(
+                    f"on-disk runbook {file_path} (delete failed: {file_error})"
+                )
+
+        return {"document_id": document_id, "residue": residue}
+
+    async def _knowledge_item_exists(self, item_id: str) -> bool:
+        """Whether a ``knowledge_items`` row is still present.
+
+        Used by :meth:`rollback_uploaded_document` to tell a failed row delete
+        from a failed vector delete, which have opposite residue. Returns True
+        when the check itself fails: an unverifiable row is reported as present
+        so the operator looks, rather than being told a store is clean on the
+        strength of a query that did not run.
+        """
+        from faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository import (  # noqa: E501
+            DatabaseKnowledgeItemRepository,
+        )
+
+        try:
+            async with self._db_session_factory() as session:
+                repo = DatabaseKnowledgeItemRepository(session)
+                return await repo.get_by_id(item_id) is not None
+        except Exception as probe_error:
+            logger.warning(
+                "Could not determine whether knowledge_items row %s survives: "
+                "%s — reporting it as present",
+                item_id,
+                probe_error,
+            )
+            return True
 
     async def get_document_statistics(self) -> Dict[str, Any]:
         """Get knowledge base statistics from SQLite."""
@@ -1841,7 +2040,15 @@ class KnowledgeService:
             # The quality gate, FIRST — before the id is minted, before the file
             # is written, before any row exists. A refusal must leave nothing
             # behind, which is only free if nothing has happened yet.
-            enforce_runbook_quality(content)
+            #
+            # Off the event loop: the validator is pure CPU (compiled regexes +
+            # yaml.safe_load, no shared mutable state, so thread-safe) and
+            # measured at 31.5 ms on the largest shipped runbook (48 KB),
+            # scaling with size toward the upload cap. Blocking the loop for
+            # that long stalls every other in-flight request. This is the ONLY
+            # place the gate runs now — the upload route's second pass was
+            # deleted (#1214 review) — so one hop covers both publish paths.
+            await asyncio.to_thread(enforce_runbook_quality, content)
 
             # 16-hex authored id — must NOT match the 12-hex built-in pattern, or
             # the bootstrap orphan-prune would delete this user runbook on redeploy.

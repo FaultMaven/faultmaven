@@ -644,14 +644,35 @@ precedes the first side effect). The gate used to live only at the
 markdown is not publishable as-is: the extraction prompt produces
 `## Problem / ## Root Cause / ## Solution / ## Prevention`, which carries no
 frontmatter and none of the six required sections, so the reviewer edits it into
-a valid runbook (`PUT`) before approving. If the link cannot be recorded after a
-successful publish, the published item is deleted, mirroring `ingest_runbook`'s
-two-store rollback discipline.
+a valid runbook (`PUT`) before approving.
+
+**Compensation.** If the link cannot be recorded after a successful publish,
+`KnowledgeService.rollback_uploaded_document` removes **everything
+`upload_document` wrote**: the `knowledge_items` row, its team shares and its
+ChromaDB chunks, *and* the `conversion_drafts` / `conversion_jobs` /
+`uploaded_files` rows and the runbook markdown on disk. Deleting only the
+knowledge item is not enough and was measured leaving a permanent artifact — a
+`status="verified"` draft row pointing at a deleted id, which
+`scan_for_runbooks` then SKIPS (its `file_path` is in `tracked_paths`), so the
+orphaned file is never re-discovered while the row stays visible in
+`GET /knowledge/drafts` and counted by `get_document_statistics`. Each step is
+independent and best-effort; the rollback returns the residue it could not
+remove and the caller logs it by id, naming which store kept what (a failed row
+delete and a failed vector delete leave opposite residue, so the message is
+derived from a probe rather than assumed).
 
 ⚠️ **The suggestion store is in-memory**, not the `knowledge_suggestions` table
 (which exists, with an ORM model and no repository behind it). Pending
 suggestions do not survive a restart, and with `WORKERS > 1` or more than one pod
-an extract handled by one worker is invisible to an approve handled by another.
+an extract handled by one worker is invisible to an approve handled by another —
+reported as `suggestion_store_worker_safe` on `GET /admin/config/status`, and
+warned about at startup, because a startup log alone rolls out of `kubectl logs`
+long before anyone investigates an intermittent 404. Because the store is
+process-lifetime-scoped it is also **bounded** (`MAX_STORED_SUGGESTIONS`,
+default 500): at capacity it evicts the oldest *terminal* (approved/rejected)
+entries, and if every entry is still awaiting review, extraction refuses with
+503 rather than silently destroying unreviewed work. The durable,
+worker-shared replacement is #1227.
 
 **Flow & endpoints.** Extraction is initiated from the case side
 (`POST /cases/{case_id}/extract-knowledge` → `SuggestionService.extract_knowledge_from_case`),

@@ -192,10 +192,13 @@ def _publishing_double():
     (``spec=<function>`` does not enforce that — see the #1200 set)."""
     double = create_autospec(KnowledgeService, instance=True)
     double.upload_document.return_value = {"document_id": ITEM_ID}
-    double.delete_document.return_value = {
-        "success": True,
+    # The compensation entry point is rollback_uploaded_document, NOT
+    # delete_document: deleting only the knowledge item leaves the draft/job/
+    # upload rows and the on-disk file behind (measured), and the stale
+    # verified draft row makes that residue permanent.
+    double.rollback_uploaded_document.return_value = {
         "document_id": ITEM_ID,
-        "action": "deleted",
+        "residue": [],
     }
     return double
 
@@ -211,13 +214,17 @@ class TestTheCompensatingDelete:
         with pytest.raises(RuntimeError, match="concurrent edit"):
             await _approve(svc)
 
-        knowledge.delete_document.assert_awaited_once_with(ITEM_ID)
+        knowledge.rollback_uploaded_document.assert_awaited_once_with(ITEM_ID)
+        # Not the item-only delete — that is the partial rollback this replaces.
+        knowledge.delete_document.assert_not_awaited()
 
     async def test_the_original_failure_is_what_the_caller_sees(self):
         """A rollback that raised would replace a truthful failure with an
         unrelated one AND still leave the orphan."""
         knowledge = _publishing_double()
-        knowledge.delete_document.side_effect = RuntimeError("chromadb unreachable")
+        knowledge.rollback_uploaded_document.side_effect = RuntimeError(
+            "chromadb unreachable"
+        )
         svc = _service(knowledge)
         svc._suggestions_store[SUGGESTION_ID].approve = MagicMock(
             side_effect=ValueError("the real problem")
@@ -226,14 +233,17 @@ class TestTheCompensatingDelete:
         with pytest.raises(ValueError, match="the real problem"):
             await _approve(svc)
 
-    async def test_a_rollback_that_deletes_nothing_is_logged_as_an_orphan(self, caplog):
-        """``delete_document`` returns ``{"success": False}`` rather than
-        raising when the row is gone or an RLS policy refused. Silence there
-        would hide a real orphan from the operator."""
+    async def test_reported_residue_is_logged_verbatim(self, caplog):
+        """The rollback returns what it could NOT remove. Silence there would
+        hide a real orphan from the operator, and a fixed sentence would
+        describe the wrong store — a failed row delete and a failed vector
+        delete leave opposite residue."""
         knowledge = _publishing_double()
-        knowledge.delete_document.return_value = {
-            "success": False,
-            "error": f"Document {ITEM_ID} not deleted",
+        knowledge.rollback_uploaded_document.return_value = {
+            "document_id": ITEM_ID,
+            "residue": [
+                f"ChromaDB chunks for {ITEM_ID} — the inventory row was deleted"
+            ],
         }
         svc = _service(knowledge)
         svc._suggestions_store[SUGGESTION_ID].approve = MagicMock(
@@ -246,7 +256,28 @@ class TestTheCompensatingDelete:
 
         assert any(
             ITEM_ID in record.getMessage()
-            and "no suggestion back-link" in record.getMessage()
+            and "ChromaDB chunks" in record.getMessage()
+            and "needs manual cleanup" in record.getMessage()
+            for record in caplog.records
+        )
+
+    async def test_a_rollback_that_blows_up_still_reports_residue(self, caplog):
+        """Both branches emit the SAME sentence, so log-based alerting matches
+        one string rather than two near-identical ones."""
+        knowledge = _publishing_double()
+        knowledge.rollback_uploaded_document.side_effect = RuntimeError("db down")
+        svc = _service(knowledge)
+        svc._suggestions_store[SUGGESTION_ID].approve = MagicMock(
+            side_effect=RuntimeError("boom")
+        )
+
+        with caplog.at_level("ERROR"):
+            with pytest.raises(RuntimeError):
+                await _approve(svc)
+
+        assert any(
+            "needs manual cleanup" in record.getMessage()
+            and ITEM_ID in record.getMessage()
             for record in caplog.records
         )
 
@@ -259,6 +290,7 @@ class TestTheCompensatingDelete:
 
         assert result["knowledge_item_id"] == ITEM_ID
         assert result["status"] == "approved"
+        knowledge.rollback_uploaded_document.assert_not_awaited()
         knowledge.delete_document.assert_not_awaited()
 
 

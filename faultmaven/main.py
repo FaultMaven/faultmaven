@@ -717,6 +717,23 @@ async def lifespan(app: FastAPI):
             logger.info(
                 f"✅ Multi-worker configuration (WORKERS={workers}) with {storage_type} storage"
             )
+            # ...but not everything is worker-safe just because CASE storage is.
+            # The knowledge-suggestion store is an in-process dict on a
+            # per-worker singleton, so extract → approve breaks INTERMITTENTLY
+            # here: whichever worker takes the approve request has never seen
+            # the suggestion and answers 404. Not a boot refusal — the feature
+            # is platform-admin-gated and degraded, not corrupting — and not a
+            # log line alone either, because startup logs roll out of
+            # `kubectl logs`. The durable store is #1227; until then the state
+            # is reportable after the fact on GET /admin/config/status.
+            logger.warning(
+                "⚠️  WORKERS=%d: knowledge suggestions are stored per worker, "
+                "so extracting knowledge from a case and approving the "
+                "suggestion may land on different workers and answer 404. "
+                "Reported as 'suggestion_store_worker_safe' on "
+                "GET /admin/config/status.",
+                workers,
+            )
         else:
             logger.debug(f"Using single worker (WORKERS={workers})")
         logger.info("Configuration validated successfully")

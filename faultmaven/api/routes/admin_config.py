@@ -541,6 +541,28 @@ async def get_env_config_status(
                     r'["^https://<id>\.chromiumapp\.org/?$"]'
                 ),
             ),
+            # Knowledge suggestions live in a per-worker in-memory store
+            # (#1214), so with WORKERS>1 an extract and its approve can land on
+            # different workers and the approve answers 404 for an id the API
+            # just issued. Reported here for the same reason as the consent skip
+            # above: the only other signal is a startup log line, and startup
+            # logs roll out of `kubectl logs` long before anyone investigates an
+            # intermittent 404. `enabled` reads as "safe on this deployment".
+            # The durable, worker-shared store is #1227.
+            "suggestion_store_worker_safe": FeatureStatus(
+                enabled=settings.server.workers <= 1,
+                description=(
+                    "Knowledge suggestions survive across API workers "
+                    "(extract → approve cannot land on different workers). "
+                    "The store is in-memory and per worker, so this is only "
+                    "true with a single worker; it is never durable across a "
+                    "restart."
+                ),
+                config_hint=(
+                    "Set WORKERS=1, or scale out only once the suggestion store "
+                    "is database-backed"
+                ),
+            ),
         }
 
         # Report actual runtime state, not raw setting defaults.

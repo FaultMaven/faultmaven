@@ -1184,9 +1184,17 @@ class RunbookQualityError(ValidationException):
 def enforce_runbook_quality(content: str) -> None:
     """Refuse content that would not pass the runbook quality gate.
 
-    The single enforcement point for "may this text enter the KB as a runbook".
-    Called by :meth:`KnowledgeService.upload_document`, which is the choke point
-    both publish paths (the upload route and suggestion approval) go through.
+    The single enforcement point for the two callers of
+    :meth:`KnowledgeService.upload_document` — the ``POST /knowledge/documents``
+    upload route and suggestion approval. It is deliberately NOT the gate for
+    the whole knowledge base: ``ingest_runbook`` sits one level below and is the
+    real convergence point, reached by three other paths that each bring their
+    own guarantee — the KB pack bootstrap and the ``kb_seed`` maintenance job
+    (validated at pack BUILD time in kb-toolkit, and made cheap by shipping
+    pre-chunked vectors, so re-validating 91 runbooks on every boot would be
+    paid for nothing) and conversion ``verify_draft`` (which validates the draft
+    before promoting it). Moving the gate down would tax those three to cover
+    two callers that are already covered here.
 
     Raises:
         RunbookQualityError: the content fails structural validation. Nothing is

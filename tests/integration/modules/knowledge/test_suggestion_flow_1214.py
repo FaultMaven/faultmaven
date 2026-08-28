@@ -24,8 +24,10 @@ drives the loop over HTTP:
    cannot regress it).
 
 It also reaches the ``400 "PII scan not complete"`` path from #1200, which was
-unreachable while the 404 fired first: with the service wired, a suggestion
-whose scan has not completed is now the one thing that 400 is about.
+unreachable while the 404 fired first. With the service wired it is reachable,
+and it is now reserved for a suggestion that genuinely needs a human: detected
+PII. A *failed* scan is retried on approval instead (a transient PII-engine
+fault is not a verdict about the content), so it is no longer a dead end.
 
 Runs against in-memory SQLite with the ChromaDB half mocked — the two stores'
 divergence is ``ingest_runbook``'s business, not this file's.
@@ -53,6 +55,9 @@ from faultmaven.api.v1.auth_dependencies import (
     require_platform_admin,
 )
 from faultmaven.api.v1.dependencies import get_case_service
+from faultmaven.api.v1.dependencies import (
+    get_suggestion_service as shared_get_suggestion_service,
+)
 from faultmaven.config.constants import STANDALONE_ORG_ID
 from faultmaven.infrastructure.persistence.models import (
     Base,
@@ -256,9 +261,34 @@ class TestTheQualityGate:
 
         assert resp.status_code == 422, resp.text
         detail = resp.json()["detail"]
-        assert "runbook quality standards" in detail
-        assert "No YAML frontmatter found" in detail
+        # The STRUCTURED body, not a flattened string: approval renders the
+        # single gate's refusal through the same helper the upload route uses,
+        # so a reviewer gets per-error detail and the authoring help.
+        assert detail["message"] == "Runbook does not meet quality standards"
+        assert "No YAML frontmatter found" in detail["errors"]
+        assert "Missing required section: Causes" in detail["errors"]
+        assert "YAML frontmatter" in detail["help"]
         assert await _knowledge_rows(session_factory) == []
+
+    async def test_upload_and_approve_render_the_same_refusal(self, wired):
+        """One gate, one rendering. These two routes refuse for the same reason
+        and used to describe it in two different shapes — the upload route's
+        structured body and the global handler's flattened ``str(exc)``."""
+        client = wired[0]
+        suggestion_id = _extract(client)
+
+        approve = client.post(
+            f"/knowledge/suggestions/{suggestion_id}/approve", json={}
+        )
+        upload = client.post(
+            "/knowledge/documents",
+            data={"title": "Not A Runbook", "document_type": "runbook"},
+            files={"file": ("doc.md", b"# just a heading\n", "text/markdown")},
+        )
+
+        assert approve.status_code == upload.status_code == 422
+        assert set(approve.json()["detail"]) == set(upload.json()["detail"])
+        assert approve.json()["detail"]["help"] == upload.json()["detail"]["help"]
 
     async def test_a_refusal_leaves_the_suggestion_approvable(
         self, wired, session_factory
@@ -359,22 +389,26 @@ class TestTheApprovalThatActuallyPublishes:
 
 
 class TestTheNotReadyPathIsNowReachable:
-    def test_an_unscanned_suggestion_is_a_400_about_pii(self, wired):
+    def test_a_suggestion_with_detected_pii_is_a_400_about_pii(self, wired):
         """#1200 documented this 400 as misleading; #1211 made it truthful. It
         was still unreachable — ``get_suggestion_visible`` returned None first
         and the route answered 404. With the service wired it is reachable, and
-        this asserts what it ACTUALLY returns."""
+        this asserts what it ACTUALLY returns.
+
+        PII_DETECTED, not SCAN_FAILED: a failed scan is now retried on approval
+        (a transient engine fault is not a verdict about the content), so it is
+        no longer a state that stays not-ready. Detected PII is — it needs a
+        human to remediate, which is the point of the gate.
+        """
         client, _app, _knowledge, suggestion_service = wired
         suggestion_id = _extract(client)
 
-        # The state a content edit leaves behind before its re-scan lands, and
-        # the state a failed scan leaves permanently.
         from faultmaven.modules.knowledge.domain.models.suggestion import (
             PIIScanStatus,
         )
 
         suggestion_service._suggestions_store[suggestion_id].pii_scan_status = (
-            PIIScanStatus.SCAN_FAILED
+            PIIScanStatus.PII_DETECTED
         )
 
         resp = client.post(f"/knowledge/suggestions/{suggestion_id}/approve", json={})
@@ -460,6 +494,48 @@ class TestAnUnwiredDeploymentSaysSo:
     def test_approve_answers_503(self):
         resp = self._bare_app().post("/knowledge/suggestions/sug_1/approve", json={})
         assert resp.status_code == 503
+
+    def test_the_extract_route_resolves_it_as_an_overridable_dependency(self):
+        """It used to be an inline ``app.state`` lookup guarded by a
+        ``request: Request = None`` default FastAPI never passes, so the route
+        could not be overridden in a test the way every sibling can. Now it
+        takes Depends(get_suggestion_service) — the SAME shared dependency the
+        knowledge-side routes use, so the 503 policy exists once."""
+        app = FastAPI()
+        app.include_router(case_router)
+        case_service = MagicMock()
+        case_service.get_case = AsyncMock(return_value=_Case())
+        app.dependency_overrides[get_case_service] = lambda: case_service
+        app.dependency_overrides[require_authentication] = _admin
+
+        stub = MagicMock()
+        stub.extract_knowledge_from_case = AsyncMock(
+            side_effect=AssertionError("the override was not honoured")
+        )
+        app.dependency_overrides[shared_get_suggestion_service] = lambda: stub
+
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post(f"/cases/{CASE_ID}/extract-knowledge", json={})
+
+        assert resp.status_code == 500  # the override ran and raised
+        stub.extract_knowledge_from_case.assert_awaited_once()
+
+
+class TestAFullReviewInboxRefusesHonestly:
+    """The store is bounded (#1214 review) and never evicts unreviewed work, so
+    a queue full of pending reviews has to refuse rather than silently drop
+    something a reviewer has not seen. #1227 removes the ceiling."""
+
+    def test_extract_answers_503_when_the_queue_is_full_of_pending_reviews(self, wired):
+        client, _app, _knowledge, suggestion_service = wired
+        suggestion_service._max_stored_suggestions = 1
+        _extract(client)  # fills the single slot with a PENDING_REVIEW entry
+
+        resp = client.post(f"/cases/{CASE_ID}/extract-knowledge", json={})
+
+        assert resp.status_code == 503, resp.text
+        assert "queue is full" in resp.json()["detail"]
+        assert len(suggestion_service._suggestions_store) == 1
 
 
 # ---------------------------------------------------------------------------
