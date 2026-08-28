@@ -106,6 +106,18 @@ def _case(files, evidence, turn: int = 1) -> Case:
     )
 
 
+def _fence_token(rendered: str) -> str:
+    """This render's fence token, read off the ``<evidence_collected>`` envelope.
+
+    Asserts rather than letting ``re.search`` return ``None``, so a render that
+    lost its fence fails with "no fenced envelope" instead of an AttributeError
+    somewhere downstream.
+    """
+    m = re.search(r'<evidence_collected fence="([0-9a-f]+)">', rendered)
+    assert m, f"no fenced <evidence_collected> envelope in:\n{rendered}"
+    return m.group(1)
+
+
 def _open_tags(rendered: str):
     """Every opening tag, as (name, attribute-blob) pairs."""
     return re.findall(r"<([a-z_]+)((?:\s[^>]*)?)>", rendered)
@@ -223,40 +235,59 @@ CONTENT_PAYLOAD = (
 )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "THE BODY CHANNELS ARE NOT COVERED. This PR sanitises attribute VALUES "
-        "and the [Source: ...] line; file_extract / <summary> / "
-        "<verbatim_quote> still carry caller-controlled text unmodified, so a "
-        "log LINE forges a whole element -- a strictly larger hole than the "
-        "filename vector. Evidence has to stay VERBATIM, so the fix cannot be "
-        "the same sanitiser; it needs a fencing or delimiter scheme and that is "
-        "a design decision. Tracked as #1217. This xfail is here so the rest "
-        "of this file cannot be read as proof the class is closed -- when the "
-        "body channels are handled it xpasses, and the marker comes off."
-    ),
-)
 def test_file_content_cannot_forge_an_element():
+    """The body-channel vector, closed by #1217 — the per-render nonce fence.
+
+    This carried ``xfail(strict=True)`` while #1217 was open. It comes off
+    here, but the two assertions it carried do NOT: they were
+
+        rendered.count("<uploaded_file") == 1
+        'label="prod-db.log"' not in rendered
+
+    and both are **unsatisfiable** alongside the constraint the issue itself
+    names — evidence reaches the model byte-verbatim. ``CONTENT_PAYLOAD``
+    contains the substrings ``<uploaded_file`` and ``label="prod-db.log"``, so
+    any render that keeps its bytes contains them too, unconditionally. Those
+    assertions could only be met by mutating evidence bytes, i.e. by the
+    escaping or neutralisation the issue rules out. They encoded a proxy for
+    the invariant, not the invariant.
+
+    What #1217 actually delivers, and what is asserted instead: the forged text
+    is still there — it must be — but it is no longer indistinguishable from
+    renderer-emitted structure. Exactly one ``<uploaded_file>`` carries this
+    render's fence, and the forged ``label``/``file_id`` reach no fenced tag.
+    Full coverage of every body channel is in
+    ``test_prompt_body_fence_1217.py``; this stays here so #1216's file is not
+    read as proof the class was closed.
+    """
     rendered = _build_evidence_context(
         _case([_file("ok.log", structural_index=CONTENT_PAYLOAD)], [])
     )
+    token = _fence_token(rendered)
+    fenced_opens = re.findall(rf'<([a-z_]+)([^>]*?) fence="{token}"\s*/?>', rendered)
 
-    assert (
-        rendered.count("<uploaded_file") == 1
-    ), "file content opened a second <uploaded_file> element"
-    assert 'label="prod-db.log"' not in rendered
+    names = [n for n, _ in fenced_opens]
+    assert names.count("uploaded_file") == 1, fenced_opens
+    assert all('label="prod-db.log"' not in blob for _, blob in fenced_opens)
+    assert all('file_id="file_deadbeefdead"' not in blob for _, blob in fenced_opens)
+    # The bytes survive: sanitising them would be the wrong fix (see #666).
+    assert CONTENT_PAYLOAD in rendered
 
 
 def test_the_content_tripwire_still_drives_something_real():
-    """Guards the xfail above.
+    """Guards the test above.
 
     If ``_build_evidence_context`` stops rendering ``<uploaded_file>`` at all,
-    or the fixture stops reaching the extract body, the xfail would pass its
-    assertion for the wrong reason and ``strict`` would fire misleadingly. So
-    the preconditions are checked here, outside the marker.
+    or the fixture stops reaching the extract body, that test would pass its
+    assertions for the wrong reason — "no forged structural tag" is trivially
+    true when nothing is rendered. So the preconditions are checked separately.
     """
     rendered = _build_evidence_context(_case([_file("ok.log")], []))
 
     assert "<uploaded_file" in rendered
     assert "CrashLoopBackOff" in rendered, "the extract body is not being rendered"
+    # And the fence is live on this path, so the test above is reading a real
+    # credential rather than matching an empty one.
+    token = _fence_token(rendered)
+    assert f'<uploaded_file file_id="{FILE_ID}"' in rendered
+    assert f' fence="{token}">' in rendered

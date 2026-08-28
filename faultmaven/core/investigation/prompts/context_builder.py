@@ -42,6 +42,7 @@ from faultmaven.core.investigation.evidence_need_surfacing import (
     is_ask_exhausted,
     select_surfaced_causal_needs,
 )
+from faultmaven.core.investigation.prompts.fence import PromptFence, render_fenced
 from faultmaven.core.preprocessing.evidence_metadata import (
     LOW_CONFIDENCE_THRESHOLD,
     EvidenceMetadata,
@@ -1174,12 +1175,12 @@ def _attr(name: str, value) -> str:
     #1198 established for NAMING: a new attribute is safe by construction rather
     than by its author remembering.
 
-    ⚠️ This covers attribute VALUES only. Body channels — ``file_extract``,
-    ``<summary>``, ``<verbatim_quote>`` — still carry caller-controlled text
-    unmodified, and a log LINE can forge a whole element there. That is a
-    strictly larger hole than this one and it needs a different mechanism
-    (evidence has to stay verbatim, so it cannot simply be sanitised). Tracked
-    as #1217; do not read this helper as closing the class.
+    This covers attribute VALUES only. Body channels — ``file_extract``,
+    ``<summary>``, ``<verbatim_quote>``, ``<search_map>``, ``<file_meta>`` —
+    carry caller-controlled text UNMODIFIED and always will: evidence has to
+    reach the model byte-verbatim, so it cannot be sanitised the way a name
+    can. They are covered instead by the per-render nonce fence on the
+    delimiters around them (#1217) — see :mod:`.fence`.
     """
     if value is None or value == "":
         return ""
@@ -1406,12 +1407,35 @@ def _current_turn_reserve_fraction() -> float:
         return 0.5
 
 
+#: Flat per-item allowance for a Tier-A item's own markup in the budget
+#: estimate — the tags, not the bodies. Was 200 while the tags were bare; the
+#: fence adds ``` fence="xxxxxxxx"``` (17 chars) to each of up to 12 delimiters
+#: on a fully-populated item (evidence / summary / file_extract /
+#: verbatim_quote / search_map / file_meta, open + close), so ~200 more. Still
+#: an approximation, and still bounded upstream by the GAP-3 whole-prompt
+#: overflow backstop, which measures the assembled prompt for real.
+_TIER_A_MARKUP_OVERHEAD_CHARS = 420
+
+
+def _open_evidence_collected(fence: PromptFence) -> str:
+    """Open ``<evidence_collected>`` and declare the fence for this render.
+
+    The declaration names the live token, so the trust rule is checkable
+    against the text the model is holding rather than only stated abstractly in
+    the template (``_EVIDENCE_FENCE_RULE`` in ``templates.py`` carries the
+    mechanism; this carries the value).
+    """
+    return fence.open("evidence_collected") + "\n" + fence.declaration() + "\n"
+
+
 def _render_orphan_file_block(
     uf,
     hash_first_seen: dict,
     current_turn: int,
     summary_only: bool = False,
     elide_extract: bool = False,
+    *,
+    fence: PromptFence,
 ) -> str:
     """Render one orphan ``UploadedFile`` as an ``<uploaded_file>`` block.
 
@@ -1435,6 +1459,11 @@ def _render_orphan_file_block(
     ``file_extract`` body but KEEPS ``search_map`` + ``file_meta`` — the same
     render Evidence-backed Tier-A items get in that mode, so a not-yet-promoted
     orphan gets identical navigation hints (search_map), not a bare stub.
+
+    ``fence`` carries this render's nonce onto every delimiter (#1217): the
+    ``file_extract`` / ``search_map`` / ``file_meta`` bodies below are the
+    file's own content, emitted byte-verbatim, so the delimiters — not the
+    body — are what has to be unforgeable.
     """
     file_extract, search_map, file_meta = _parse_extract(uf.structural_index or "")
     file_id_attr = _attr("file_id", uf.file_id)
@@ -1442,28 +1471,38 @@ def _render_orphan_file_block(
     data_type_attr = _attr("data_type", uf.data_type)
     fresh_attr = _fresh_this_turn_attr(uf.uploaded_at_turn, current_turn)
     duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
-    entry = (
-        f"  <uploaded_file{file_id_attr}{name_attr}"
+    entry = "  " + fence.open(
+        "uploaded_file",
+        f"{file_id_attr}{name_attr}"
         f"{data_type_attr}{fresh_attr}{duplicate_attr}"
-        f' searchable="true">\n'
+        f' searchable="true"',
     )
+    entry += "\n"
     if summary_only:
         # Degraded render: file present + addressable, full index omitted.
         entry += (
-            "    <file_extract>[Full content omitted to fit budget; "
-            "use search_file with the file_id above to read it.]</file_extract>\n"
+            "    "
+            + fence.open("file_extract")
+            + "[Full content omitted to fit budget; "
+            "use search_file with the file_id above to read it.]"
+            + fence.close("file_extract")
+            + "\n"
         )
-        entry += "  </uploaded_file>\n"
+        entry += "  " + fence.close("uploaded_file") + "\n"
         return entry
     if elide_extract and file_extract.strip():
         # DA index+stub: drop the extract body, keep search_map (below). Same
         # marker Evidence-backed items get, so navigation parity holds.
         entry += (
-            '    <file_extract role="orientation" elided="directed_analysis">\n'
+            "    "
+            + fence.open(
+                "file_extract", ' role="orientation" elided="directed_analysis"'
+            )
+            + "\n"
             "[Structural index elided in directed-analysis mode — call "
             "search_file with the file_id above to read specifics from the "
             "raw file.]\n"
-            "    </file_extract>\n"
+            "    " + fence.close("file_extract") + "\n"
         )
     elif file_extract.strip():
         truncation_note = ""
@@ -1474,23 +1513,74 @@ def _render_orphan_file_block(
                 f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
                 "Use search_file with the file_id above for specific lookups.]"
             )
-        entry += "    <file_extract>\n"
+        entry += "    " + fence.open("file_extract") + "\n"
         if uf.filename:
-            entry += f"[Source: {_safe_name(uf.display_name)}]\n"
-        entry += file_extract
+            entry += f"[Source: {fence.data(_safe_name(uf.display_name))}]\n"
+        entry += fence.data(file_extract)
         entry += truncation_note
-        entry += "\n    </file_extract>\n"
+        entry += "\n    " + fence.close("file_extract") + "\n"
     if search_map and search_map.strip():
-        entry += f"    <search_map>\n{search_map}\n    </search_map>\n"
+        entry += (
+            "    "
+            + fence.open("search_map")
+            + "\n"
+            + fence.data(search_map)
+            + "\n    "
+            + fence.close("search_map")
+            + "\n"
+        )
     if file_meta:
         meta_lines = _format_file_meta(file_meta)
-        entry += f"    <file_meta>{meta_lines}</file_meta>\n"
-    entry += "  </uploaded_file>\n"
+        entry += (
+            "    "
+            + fence.open("file_meta")
+            + fence.data(meta_lines)
+            + fence.close("file_meta")
+            + "\n"
+        )
+    entry += "  " + fence.close("uploaded_file") + "\n"
     return entry
 
 
 def _build_evidence_context(
     case: Case,
+    processing_mode: Optional[str] = None,
+    user_query: str = "",
+    provider_name: Optional[str] = None,
+    model_name: Optional[str] = None,
+    char_budget_override: Optional[int] = None,
+    tools_available: bool = False,
+) -> str:
+    """Render ``<evidence_collected>`` behind a per-render nonce fence (#1217).
+
+    Thin wrapper over :func:`_render_evidence_block`. Every body channel in that
+    block — a file's own ``structural_index``, ``ev.summary``, ``ev.extract``,
+    ``search_map``, ``file_meta`` — is caller-controlled text emitted
+    byte-verbatim, so a log LINE could otherwise close the element it sits in
+    and open a forged one carrying an attacker-chosen ``label`` and
+    ``searchable="true"``. :func:`render_fenced` mints the token AFTER the
+    content is known and re-renders on the (astronomically unlikely) collision;
+    see :mod:`.fence` for why fencing, and not escaping or sanitising, is the
+    only mechanism compatible with byte-verbatim evidence.
+    """
+    return render_fenced(
+        lambda fence: _render_evidence_block(
+            case,
+            fence,
+            processing_mode=processing_mode,
+            user_query=user_query,
+            provider_name=provider_name,
+            model_name=model_name,
+            char_budget_override=char_budget_override,
+            tools_available=tools_available,
+        )
+    )
+
+
+def _render_evidence_block(
+    case: Case,
+    fence: PromptFence,
+    *,
     processing_mode: Optional[str] = None,
     user_query: str = "",
     provider_name: Optional[str] = None,
@@ -1541,17 +1631,17 @@ def _build_evidence_context(
                 # exactly why it was a liability — every change to the
                 # <uploaded_file> markup had to be made twice, and the #666
                 # naming change was the second time that bill came due.
-                result = "<evidence_collected>\n"
+                result = _open_evidence_collected(fence)
                 for uf in files_with_content:
                     result += _render_orphan_file_block(
-                        uf, hash_first_seen, case.current_turn
+                        uf, hash_first_seen, case.current_turn, fence=fence
                     )
-                result += "</evidence_collected>"
+                result += fence.close("evidence_collected")
                 return result
         return (
-            "<evidence_collected>\n"
-            "No formal evidence collected yet.\n"
-            "</evidence_collected>"
+            _open_evidence_collected(fence)
+            + "No formal evidence collected yet.\n"
+            + fence.close("evidence_collected")
         )
 
     # Separate evidence by source for tiered treatment. Post-010: the
@@ -1639,7 +1729,7 @@ def _build_evidence_context(
     # The current-turn upload always keeps its full extract (freshness / INV-EC-1).
     da_index_only = processing_mode == "directed_analysis" and tools_available
 
-    result = "<evidence_collected>\n"
+    result = _open_evidence_collected(fence)
     total_chars = 0
     # INV-4: count evidence items skipped for budget (Tiers B/C/D) so their
     # omission is never silent — a marker is emitted before the closing tag.
@@ -1672,7 +1762,9 @@ def _build_evidence_context(
             and structural_index_is_searchable(uf.structural_index)
         ]
         for uf in current_turn_orphans:
-            full_entry = _render_orphan_file_block(uf, hash_first_seen, current_turn)
+            full_entry = _render_orphan_file_block(
+                uf, hash_first_seen, current_turn, fence=fence
+            )
             # First item renders full unconditionally; later items render full
             # only while within the reserve, else degrade to a summary stub.
             # Never dropped — current-turn uploads are always present.
@@ -1683,7 +1775,7 @@ def _build_evidence_context(
                 total_chars += len(full_entry)
             else:
                 summary_entry = _render_orphan_file_block(
-                    uf, hash_first_seen, current_turn, summary_only=True
+                    uf, hash_first_seen, current_turn, summary_only=True, fence=fence
                 )
                 result += summary_entry
                 total_chars += len(summary_entry)
@@ -1744,8 +1836,8 @@ def _build_evidence_context(
             (0 if suppress_extract else len(file_extract))
             + len(ev.summary or "")
             + len(ev.extract or "")
-            + 200
-        )  # overhead for XML tags
+            + _TIER_A_MARKUP_OVERHEAD_CHARS
+        )
         within_reserve = total_chars < current_turn_floor_chars
         exempt_from_downgrade = is_current_turn_ev and within_reserve
         if (
@@ -1773,47 +1865,88 @@ def _build_evidence_context(
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
         observed_attr = _observed_attr(ev)
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
-        result += f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}{searchable_attr}{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}>\n'
-        result += f"    <summary>{ev.summary}</summary>\n"
+        result += (
+            "  "
+            + fence.open(
+                "evidence",
+                f' id="{ev.evidence_id}"{label_attr}{file_id_attr}{data_type_attr}'
+                f"{searchable_attr}{confidence_attr}{fresh_attr}{observed_attr}"
+                f"{duplicate_attr}",
+            )
+            + "\n"
+        )
+        result += (
+            "    "
+            + fence.open("summary")
+            + fence.data(str(ev.summary))
+            + fence.close("summary")
+            + "\n"
+        )
         if file_extract.strip() and suppress_extract:
             # DA index-only: elide the extract body, keep the file addressable.
             # The <search_map> below and the evidence id/file_id on the tag give
             # the agent everything it needs to search_file for specifics (INV-4:
             # the elision is marked, never silent).
             result += (
-                '    <file_extract role="orientation" elided="directed_analysis">\n'
+                "    "
+                + fence.open(
+                    "file_extract", ' role="orientation" elided="directed_analysis"'
+                )
+                + "\n"
                 "[Structural index elided in directed-analysis mode — call "
                 "search_file with the evidence id above to read specifics from "
                 "the raw file.]\n"
-                "    </file_extract>\n"
+                "    " + fence.close("file_extract") + "\n"
             )
         elif file_extract.strip():
             role_attr = (
                 ' role="orientation"' if processing_mode == "directed_analysis" else ""
             )
-            result += f"    <file_extract{role_attr}>\n"
+            result += "    " + fence.open("file_extract", role_attr) + "\n"
             # Content-level source attribution: reinforces the XML attribute
             # so the LLM sees which file this content belongs to while reading
             # through multi-evidence blocks, not just in the enclosing tag.
             if ev_file_meta is not None:
-                result += f"[Source: {_safe_name(ev_file_meta.display_name)}]\n"
+                result += (
+                    f"[Source: {fence.data(_safe_name(ev_file_meta.display_name))}]\n"
+                )
             if confidence_advisory:
                 result += f"{confidence_advisory}\n"
-            result += file_extract
+            result += fence.data(file_extract)
             if truncated:
                 result += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Use search_file with the evidence id above to search for specific content in the raw file.]"
-            result += "\n    </file_extract>\n"
+            result += "\n    " + fence.close("file_extract") + "\n"
         # Post-010: surface the agent's verbatim quote (when present) as a
         # distinct claim-supporting snippet, separate from the file's
         # structural index above.
         if ev.extract and ev.extract.strip():
-            result += f"    <verbatim_quote>{ev.extract.strip()}</verbatim_quote>\n"
+            result += (
+                "    "
+                + fence.open("verbatim_quote")
+                + fence.data(ev.extract.strip())
+                + fence.close("verbatim_quote")
+                + "\n"
+            )
         if search_map and search_map.strip():
-            result += f"    <search_map>\n{search_map}\n    </search_map>\n"
+            result += (
+                "    "
+                + fence.open("search_map")
+                + "\n"
+                + fence.data(search_map)
+                + "\n    "
+                + fence.close("search_map")
+                + "\n"
+            )
         if file_meta:
             meta_lines = _format_file_meta(file_meta)
-            result += f"    <file_meta>{meta_lines}</file_meta>\n"
-        result += "  </evidence>\n"
+            result += (
+                "    "
+                + fence.open("file_meta")
+                + fence.data(meta_lines)
+                + fence.close("file_meta")
+                + "\n"
+            )
+        result += "  " + fence.close("evidence") + "\n"
         total_chars += entry_estimate
 
     # Tier B: Older data evidence (summary only)
@@ -1830,8 +1963,18 @@ def _build_evidence_context(
         fresh_attr = _fresh_this_turn_attr(ev.collected_at_turn, case.current_turn)
         observed_attr = _observed_attr(ev)
         duplicate_attr = _identical_to_prior_attr(ev_file_meta, hash_first_seen)
-        entry = f'  <evidence id="{ev.evidence_id}"{label_attr}{file_id_attr}{searchable_attr}{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}>'
-        entry += f"<summary>{ev.summary}</summary></evidence>\n"
+        entry = "  " + fence.open(
+            "evidence",
+            f' id="{ev.evidence_id}"{label_attr}{file_id_attr}{searchable_attr}'
+            f"{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}",
+        )
+        entry += (
+            fence.open("summary")
+            + fence.data(str(ev.summary))
+            + fence.close("summary")
+            + fence.close("evidence")
+            + "\n"
+        )
         # Skip (not break) over-budget summaries so a single large item never
         # drops every lower-ranked item behind it (INV-EC-2).
         if total_chars + len(entry) > effective_total_chars:
@@ -1857,10 +2000,23 @@ def _build_evidence_context(
         observed_attr = _observed_attr(ev)
         quote_block = ""
         if ev.extract and ev.extract.strip():
-            quote_block = f"<verbatim_quote>{ev.extract.strip()}</verbatim_quote>"
+            quote_block = (
+                fence.open("verbatim_quote")
+                + fence.data(ev.extract.strip())
+                + fence.close("verbatim_quote")
+            )
         entry = (
-            f'  <evidence id="{ev.evidence_id}"{label_attr}{fresh_attr}{observed_attr}>'
-            f"<summary>{ev.summary}</summary>{quote_block}</evidence>\n"
+            "  "
+            + fence.open(
+                "evidence",
+                f' id="{ev.evidence_id}"{label_attr}{fresh_attr}{observed_attr}',
+            )
+            + fence.open("summary")
+            + fence.data(str(ev.summary))
+            + fence.close("summary")
+            + quote_block
+            + fence.close("evidence")
+            + "\n"
         )
         if total_chars + len(entry) > effective_total_chars:
             n_omitted += 1
@@ -1904,7 +2060,11 @@ def _build_evidence_context(
             # a not-yet-promoted file is treated the same as an Evidence-backed one
             # (stub only, addressable via search_file) instead of dumped in full.
             entry = _render_orphan_file_block(
-                uf, hash_first_seen, current_turn, elide_extract=da_index_only
+                uf,
+                hash_first_seen,
+                current_turn,
+                elide_extract=da_index_only,
+                fence=fence,
             )
             # Greedy newest-first fill with skip-not-break (INV-EC-2): one large
             # orphan never drops every smaller orphan behind it. Note this is a
@@ -1922,12 +2082,17 @@ def _build_evidence_context(
     # the shown set is exhaustive.
     if n_omitted:
         result += (
-            f'  <evidence_omitted count="{n_omitted}" '
-            f'reason="prompt_budget" note="More evidence exists but did not fit '
-            f'this turn; use search_file / list_evidence to reach it." />\n'
+            "  "
+            + fence.empty(
+                "evidence_omitted",
+                f' count="{n_omitted}" '
+                f'reason="prompt_budget" note="More evidence exists but did not fit '
+                f'this turn; use search_file / list_evidence to reach it."',
+            )
+            + "\n"
         )
 
-    result += "</evidence_collected>"
+    result += fence.close("evidence_collected")
     return result
 
 

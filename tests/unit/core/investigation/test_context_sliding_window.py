@@ -14,6 +14,7 @@ Design Reference:
 - docs/architecture/data-processing/data-preprocessing-design-specification.md (Section 6)
 """
 
+import re
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -39,6 +40,22 @@ from faultmaven.modules.case.domain.models import Case
 # ============================================================
 # Helpers
 # ============================================================
+
+
+_FENCE_ATTR_RE = re.compile(r' fence="[0-9a-f]+"')
+
+
+def _unfenced(rendered: str) -> str:
+    """``rendered`` with the per-render fence attribute stripped (#1217).
+
+    Every structural delimiter in ``<evidence_collected>`` carries a
+    ``fence="…"`` nonce minted fresh for the render, so a test that pins tag
+    SPELLING (``<file_extract role="orientation">``) has to read the block
+    through this. Tests about the fence itself live in
+    ``test_prompt_body_fence_1217.py``; nothing here should assert on the
+    token, which is random by design.
+    """
+    return _FENCE_ATTR_RE.sub("", rendered)
 
 
 _EV_COUNTER = 0
@@ -190,8 +207,8 @@ class TestNoEvidence:
         case = _make_case_with_evidence([])
         result = _build_evidence_context(case)
         assert "No formal evidence collected yet." in result
-        assert "<evidence_collected>" in result
-        assert "</evidence_collected>" in result
+        assert "<evidence_collected>" in _unfenced(result)
+        assert "</evidence_collected>" in _unfenced(result)
 
 
 # ============================================================
@@ -259,13 +276,13 @@ class TestInquiryUploadedFilesBlock:
         assert "<uploaded_file" in result
         assert 'file_id="file_aabbccdd1122"' in result
         assert 'evidence_id="' not in result
-        assert "<file_extract>" in result
+        assert "<file_extract>" in _unfenced(result)
         assert "ERROR: OOM at 14:03" in result
         # search_map and file_meta also surface so the agent can plan
         # search_file queries from the preprocessed hints.
-        assert "<search_map>" in result
+        assert "<search_map>" in _unfenced(result)
         assert "[search: OOM]" in result
-        assert "<file_meta>" in result
+        assert "<file_meta>" in _unfenced(result)
         assert "line_count=2048" in result
 
     def test_marks_uploaded_file_searchable(self):
@@ -346,9 +363,9 @@ class TestTierA:
         assert f'id="{ev.evidence_id}"' in result
         assert 'file_id="' in result
         assert 'data_type="logs"' in result
-        assert "<file_extract>" in result
+        assert "<file_extract>" in _unfenced(result)
         assert "CRIME SCENE EXTRACTION" in result
-        assert "<summary>" in result
+        assert "<summary>" in _unfenced(result)
 
     def test_recent_submitted_data_is_tier_a(self):
         """SUBMITTED_DATA form is also treated as Tier A (data evidence)."""
@@ -360,7 +377,7 @@ class TestTierA:
         result = _build_evidence_context(case)
 
         assert 'file_id="' in result
-        assert "<file_extract>" in result
+        assert "<file_extract>" in _unfenced(result)
         assert "timeout" in result
 
     def test_three_recent_items_all_tier_a(self):
@@ -392,7 +409,7 @@ class TestTierA:
         result = _build_evidence_context(case)
 
         assert f'id="{ev.evidence_id}"' in result
-        assert "<summary>" in result
+        assert "<summary>" in _unfenced(result)
         # Should NOT include an empty structural_index tag
         # (because structural_index.strip() is empty)
 
@@ -447,7 +464,7 @@ class TestTruncation:
         result = _build_evidence_context(case)
 
         # At least the first items should have structural_index
-        assert "<file_extract>" in result
+        assert "<file_extract>" in _unfenced(result)
         # Total result should be within reasonable bounds
         assert (
             len(result) < EVIDENCE_CONTEXT_MAX_TOTAL_CHARS + 5000
@@ -954,15 +971,17 @@ class TestVerbatimQuoteRendering:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
 
-        assert "<file_extract>" in result
+        assert "<file_extract>" in _unfenced(result)
         assert "Structural index content for service-A.log" in result
         assert (
             "<verbatim_quote>[14:02:15] OOM killer fired, pid=4321 service-a"
-            "</verbatim_quote>" in result
+            "</verbatim_quote>" in _unfenced(result)
         )
         # Ordering: file_extract precedes verbatim_quote so the LLM reads
         # the orientation content first and the claim-grounding quote second.
-        assert result.find("<file_extract>") < result.find("<verbatim_quote>")
+        assert _unfenced(result).find("<file_extract>") < _unfenced(result).find(
+            "<verbatim_quote>"
+        )
 
     def test_tier_a_omits_verbatim_quote_when_extract_is_none(self):
         """File-backed evidence with no LLM quote → no <verbatim_quote>
@@ -974,8 +993,8 @@ class TestVerbatimQuoteRendering:
         )
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)
-        assert "<file_extract>" in result
-        assert "<verbatim_quote>" not in result
+        assert "<file_extract>" in _unfenced(result)
+        assert "<verbatim_quote>" not in _unfenced(result)
 
     def test_tier_c_renders_verbatim_quote_for_chat_extracted(self):
         """Chat-extracted evidence (USER_DESCRIPTION, no source file)
@@ -995,7 +1014,7 @@ class TestVerbatimQuoteRendering:
         assert "HTTP/1.1 503 Service Unavailable" in result
         assert (
             "<verbatim_quote>HTTP/1.1 503 Service Unavailable - "
-            "upstream connect error</verbatim_quote>" in result
+            "upstream connect error</verbatim_quote>" in _unfenced(result)
         )
         # Tier C is never searchable — no file behind it.
         assert 'searchable="true"' not in result
@@ -1037,7 +1056,7 @@ class TestProcessingModeOrientation:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case, processing_mode="directed_analysis")
 
-        assert '<file_extract role="orientation">' in result
+        assert '<file_extract role="orientation">' in _unfenced(result)
         assert "CRIME SCENE: 502 errors" in result
 
     def test_triage_mode_no_role_attribute(self):
@@ -1049,7 +1068,7 @@ class TestProcessingModeOrientation:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case, processing_mode="triage")
 
-        assert "<file_extract>" in result
+        assert "<file_extract>" in _unfenced(result)
         assert 'role="orientation"' not in result
 
     def test_none_mode_no_role_attribute(self):
@@ -1061,7 +1080,7 @@ class TestProcessingModeOrientation:
         case = _make_case_with_evidence([ev])
         result = _build_evidence_context(case)  # no processing_mode arg
 
-        assert "<file_extract>" in result
+        assert "<file_extract>" in _unfenced(result)
         assert 'role="orientation"' not in result
 
     def test_orientation_role_only_on_tier_a(self):
@@ -1078,7 +1097,7 @@ class TestProcessingModeOrientation:
         result = _build_evidence_context(case, processing_mode="directed_analysis")
 
         # Tier A (recent 3): should have role="orientation"
-        assert '<file_extract role="orientation">' in result
+        assert '<file_extract role="orientation">' in _unfenced(result)
         # The older items (Tier B) should be summary-only — no structural_index at all
 
 
