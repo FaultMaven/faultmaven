@@ -1214,11 +1214,17 @@ class TestScanBulkDiscardGuard:
             ConversionService,
         )
 
-        # Three drafts whose files do not exist
+        # Three drafts whose files do not exist. The paths are INSIDE the
+        # knowledge root (``tmp_path``, patched below) and simply missing —
+        # a wiped data directory, which is the failure this guard exists for.
+        # They were ``/nonexistent/*.md``, outside the root, which since the
+        # containment work means "not this service's file" and is SKIPPED
+        # rather than discarded, so the guard could never fire (#1213
+        # follow-up).
         drafts = [
-            self._make_draft_model("d1", "/nonexistent/a.md"),
-            self._make_draft_model("d2", "/nonexistent/b.md"),
-            self._make_draft_model("d3", "/nonexistent/c.md"),
+            self._make_draft_model("d1", str(tmp_path / "a.md")),
+            self._make_draft_model("d2", str(tmp_path / "b.md")),
+            self._make_draft_model("d3", str(tmp_path / "c.md")),
         ]
         db_cm = self._make_db_session(drafts)
 
@@ -1249,7 +1255,8 @@ class TestScanBulkDiscardGuard:
         )
 
         drafts = [
-            self._make_draft_model("d1", "/nonexistent/a.md"),
+            # Inside the root, missing — see test_raises_when_all_files_missing.
+            self._make_draft_model("d1", str(tmp_path / "a.md")),
             self._make_draft_model("d2", str(surviving), status="verified"),
         ]
         # d2 has knowledge_item_id set AND status=verified → kept (tracked)
@@ -1278,7 +1285,7 @@ class TestScanBulkDiscardGuard:
         )
 
         already_gone = self._make_draft_model(
-            "d_old", "/nonexistent/old.md", status="discarded"
+            "d_old", str(tmp_path / "old.md"), status="discarded"
         )
         surviving = tmp_path / "live.md"
         surviving.write_text(
@@ -1770,10 +1777,17 @@ async def _insert_case_job(
         )
         for i, ds in enumerate(draft_statuses):
             present = bool(draft_files_present and draft_files_present[i])
+            # The path is built under ``tmp_path`` whether or not the file is
+            # written: "the file is gone" must be a MISSING path inside the
+            # knowledge root, which is the only shape production produces (every
+            # persisted path is relative under ``data/knowledge``). Expressing it
+            # as ``/nonexistent/...`` — outside the root — means something else
+            # entirely now that the scan skips what it refuses to touch, and the
+            # draft would never be reconciled away (#1213 follow-up).
             d = _make_case_draft(
                 draft_id=f"{conversion_id}-d{i}",
                 status=ds,
-                tmp_path=tmp_path if present else None,
+                tmp_path=tmp_path,
             )
             if present:
                 Path(d.file_path).write_text("# runbook body", encoding="utf-8")
@@ -2054,6 +2068,17 @@ class TestRegenerationAfterDiscard:
         assert await _count_live_case_keys(live_case_session_factory) == 1
 
 
+def _isolated_kb(tmp_path: Path) -> Path:
+    """A knowledge root holding ONLY what the test puts in it.
+
+    The scan walks its root, so a root shared with the rest of ``tmp_path``
+    makes what the walk sees depend on unrelated fixtures.
+    """
+    kb = tmp_path / "kb"
+    kb.mkdir(exist_ok=True)
+    return kb
+
+
 @pytest.mark.unit
 class TestScanReleasesLiveCaseKey:
     """Scan reconciliation also discards drafts (missing file, duplicate with a
@@ -2064,19 +2089,27 @@ class TestScanReleasesLiveCaseKey:
     def _scan_service(self, session_factory) -> ConversionService:
         return _make_live_case_service(session_factory)
 
-    async def _run_scan(self, svc: ConversionService, tmp_path: Path):
-        # Point the knowledge root at the tmp dir the surviving draft files were
-        # written into. It was ``tmp_path / "kb-empty"`` — an empty location, so
-        # the walk found nothing — until the reconciliation probe gained a
-        # containment check (#1213 follow-up): a draft whose ``file_path`` is
-        # outside the root is now treated as absent, so every surviving file
-        # has to be under the root the service is actually using. The files
-        # here are all tracked, so the walk still discovers nothing new and
-        # these tests still exercise only the DB reconciliation sweep.
+    async def _run_scan(self, svc: ConversionService, kb_dir: Path):
+        # Point the knowledge root at the DEDICATED directory the surviving
+        # draft files were written into (``_isolated_kb``), not at the bare
+        # ``tmp_path``.
+        #
+        # It was ``tmp_path / "kb-empty"`` — deliberately empty, so the disk
+        # walk found nothing and these tests exercised only the DB
+        # reconciliation sweep. The containment check added in #1213's
+        # follow-up forced the surviving files to live under the root the
+        # service actually uses, and pointing the root at ``tmp_path`` itself
+        # met that at the cost of the isolation: the walk then saw every file
+        # any part of the test had written. "All tracked" was not true of them
+        # — a duplicate-discarded draft's file is untracked, and only the
+        # 100-character minimum length kept the walk from minting it.
+        #
+        # A dedicated subdirectory restores both properties at once: the
+        # surviving files are inside the root, and nothing else is.
         with patch.object(
             type(svc),
             "_data_dir",
-            new_callable=lambda: property(lambda self: tmp_path),
+            new_callable=lambda: property(lambda self: kb_dir),
         ):
             return await svc.scan_for_runbooks(user_id="u1")
 
@@ -2092,6 +2125,10 @@ class TestScanReleasesLiveCaseKey:
             source_type="case",
             live_case_id="case-scan-1",
             draft_statuses=[DraftStatus.DRAFT],
+            # Inside the knowledge root, file NOT written: the reconciliation
+            # shape this test is about is "tracked runbook whose file is gone".
+            draft_files_present=[False],
+            tmp_path=_isolated_kb(tmp_path),
         )
         # Job B: an unaffected case job (verified draft, file present) so the
         # scan's discard-all abort guard does not trip.
@@ -2103,11 +2140,11 @@ class TestScanReleasesLiveCaseKey:
             live_case_id="case-scan-2",
             draft_statuses=[DraftStatus.VERIFIED],
             draft_files_present=[True],
-            tmp_path=tmp_path,
+            tmp_path=_isolated_kb(tmp_path),
         )
 
         svc = self._scan_service(live_case_session_factory)
-        await self._run_scan(svc, tmp_path)
+        await self._run_scan(svc, _isolated_kb(tmp_path))
 
         job_a = await _job_row(live_case_session_factory, "conv-scan-a")
         assert job_a.live_case_id is None
@@ -2128,11 +2165,11 @@ class TestScanReleasesLiveCaseKey:
             live_case_id="case-scan-3",
             draft_statuses=[DraftStatus.DRAFT, DraftStatus.VERIFIED],
             draft_files_present=[False, True],
-            tmp_path=tmp_path,
+            tmp_path=_isolated_kb(tmp_path),
         )
 
         svc = self._scan_service(live_case_session_factory)
-        await self._run_scan(svc, tmp_path)
+        await self._run_scan(svc, _isolated_kb(tmp_path))
 
         job = await _job_row(live_case_session_factory, "conv-scan-partial")
         assert job.live_case_id == "case-scan-3"
@@ -2153,7 +2190,7 @@ class TestScanReleasesLiveCaseKey:
             live_case_id="case-scan-4",
             draft_statuses=[DraftStatus.DRAFT, DraftStatus.DRAFT],
             draft_files_present=[False, True],
-            tmp_path=tmp_path,
+            tmp_path=_isolated_kb(tmp_path),
         )
         await _insert_case_job(
             live_case_session_factory,
@@ -2163,11 +2200,11 @@ class TestScanReleasesLiveCaseKey:
             live_case_id="case-scan-5",
             draft_statuses=[DraftStatus.VERIFIED],
             draft_files_present=[True],
-            tmp_path=tmp_path,
+            tmp_path=_isolated_kb(tmp_path),
         )
 
         svc = self._scan_service(live_case_session_factory)
-        await self._run_scan(svc, tmp_path)
+        await self._run_scan(svc, _isolated_kb(tmp_path))
 
         drained = await _job_row(live_case_session_factory, "conv-scan-drain")
         assert drained.live_case_id is None

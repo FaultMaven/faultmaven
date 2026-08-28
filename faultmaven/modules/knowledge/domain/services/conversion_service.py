@@ -75,6 +75,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 from faultmaven.providers.tenancy.single_tenant import SingleTenantProvider
 from faultmaven.utils.runbook_id import (
     RunbookPathEscape,
+    draft_filename,
     knowledge_root,
     resolve_runbook_path,
     runbook_id_from_parts,
@@ -369,6 +370,42 @@ class ConversionService:
         # on where the knowledge tree is; that agreement is what every
         # containment check below is anchored on.
         return knowledge_root()
+
+    #: ``conflict_reason`` for a draft row whose ``file_path`` is not inside the
+    #: knowledge tree. Structured so ``verify_batch`` and any client can key on
+    #: the field rather than parse a message (the same rule #784 established for
+    #: ``already_verified``).
+    PATH_ESCAPE_CONFLICT_REASON = "path_outside_knowledge_tree"
+
+    def _refuse_escaping_draft(
+        self, draft_id: str, exc: RunbookPathEscape
+    ) -> ConflictError:
+        """Translate a containment refusal into the module's typed exception.
+
+        Two jobs, and the split between them is the point:
+
+        * the **log** gets ``exc`` in full — the resolved absolute paths are
+          what an operator needs to repair the row; and
+        * the **client** gets a message naming the draft id and the refusal
+          class and nothing else. ``str()`` of this exception reaches a response
+          body two ways — the 409 handler's ``detail``, and ``verify_batch``'s
+          per-item ``error`` — and echoing a server filesystem path into either
+          is the disclosure #866 closed for this module.
+
+        ``ConflictError`` rather than a bare ``ValueError``: the row is in a
+        state the operation cannot proceed from, which is what 409 means, and
+        ``verify_draft`` already documents that every failure shape here is a
+        typed exception (a raw ``ValueError`` would surface as an unmapped 500).
+        """
+        logger.error("refusing a filesystem operation on draft %s: %s", draft_id, exc)
+        return ConflictError(
+            f"Draft {draft_id} references a runbook file outside the knowledge "
+            "tree and cannot be read or modified. The stored path must be "
+            "repaired by an operator; see the server log for details.",
+            resource_type="draft",
+            resource_id=draft_id,
+            conflict_reason=self.PATH_ESCAPE_CONFLICT_REASON,
+        )
 
     def _scope_dir(self, scope: str, team_id: str = None, user_id: str = None) -> Path:
         """Scope directory for a draft, with both id components sanitised.
@@ -1088,7 +1125,9 @@ class ConversionService:
             # from an allowlist so an escape is unconstructible today — the
             # guard is what keeps that true if the mint rule is loosened or a
             # new caller assembles its own name (#1213 follow-up).
-            draft_path = self._scope_dir(scope, team_id, user_id) / f"{runbook_id}.md"
+            draft_path = self._scope_dir(scope, team_id, user_id) / draft_filename(
+                runbook_id
+            )
             write_runbook_file(
                 draft_path,
                 runbook_content,
@@ -1124,6 +1163,13 @@ class ConversionService:
                 quality_warning=quality_warning,
             )
 
+        except RunbookPathEscape:
+            # Never laundered into a generic ConversionError: that would put the
+            # resolved server paths into ``error`` (a 200 response body, see
+            # #866) and would report a containment refusal as a retryable
+            # conversion failure. Today the mint makes this unreachable — which
+            # is exactly why it must not be swallowed if that ever changes.
+            raise
         except Exception as e:
             logger.error(f"Conversion failed for {failure_mode.id}: {e}")
             return ConversionError(
@@ -1311,7 +1357,11 @@ class ConversionService:
                     )
                     content = resolved.read_text(encoding="utf-8")
                 except RunbookPathEscape as exc:
-                    logger.error("refusing to read a draft outside the tree: %s", exc)
+                    logger.error(
+                        "refusing to read draft %s; omitting its content: %s",
+                        dm.id,
+                        exc,
+                    )
                 except Exception:
                     pass
 
@@ -1617,13 +1667,17 @@ class ConversionService:
             # edit path would re-open and rewrite it without ever re-checking.
             # Re-validate on use: containment is a property of the path at the
             # moment it is used, not of the code that happened to create it.
-            # Refuses loudly, naming the row (#1213 follow-up).
-            write_runbook_file(
-                dm.file_path,
-                content,
-                source=f"conversion_drafts.file_path (draft_id={dm.id})",
-                root=self._data_dir,
-            )
+            # Refuses as a typed 409 naming the row; the resolved paths go to
+            # the log, never to the client (#1213 follow-up, see #866).
+            try:
+                write_runbook_file(
+                    dm.file_path,
+                    content,
+                    source=f"conversion_drafts.file_path (draft_id={dm.id})",
+                    root=self._data_dir,
+                )
+            except RunbookPathEscape as exc:
+                raise self._refuse_escaping_draft(dm.id, exc) from exc
 
             # Re-validate and re-score
             validation = self._validator.validate_content(content)
@@ -1858,14 +1912,18 @@ class ConversionService:
             #
             # Resolved through the shared guard FIRST, before any read or write:
             # this path is a database value, and on this method it is read back
-            # into the response as well as rewritten, so an escaped row would
-            # both leak an arbitrary file and be overwritten. Refuses loudly,
-            # naming the row (#1213 follow-up).
-            file_path = resolve_runbook_path(
-                dm.file_path,
-                source=f"conversion_drafts.file_path (draft_id={dm.id})",
-                root=self._data_dir,
-            )
+            # into the response as well as rewritten, so an escaping row would
+            # both leak an arbitrary file and be overwritten. Refuses as a typed
+            # 409 naming the row — the same exception contract every other
+            # failure shape on this method already follows (#1213 follow-up).
+            try:
+                file_path = resolve_runbook_path(
+                    dm.file_path,
+                    source=f"conversion_drafts.file_path (draft_id={dm.id})",
+                    root=self._data_dir,
+                )
+            except RunbookPathEscape as exc:
+                raise self._refuse_escaping_draft(dm.id, exc) from exc
             try:
                 import frontmatter
 
@@ -2097,7 +2155,9 @@ status: draft
 
         # Write to disk through the shared containment-checked helper — same
         # anchor, same before-mkdir ordering as every other runbook write.
-        draft_path = self._scope_dir(scope, team_id, user_id) / f"{runbook_id}.md"
+        draft_path = self._scope_dir(scope, team_id, user_id) / draft_filename(
+            runbook_id
+        )
         write_runbook_file(
             draft_path,
             content,
@@ -2256,11 +2316,32 @@ status: draft
                 redundant_discard_ids: list[str] = []
 
                 for draft_model in all_draft_models:
-                    # Same guard, applied to the reconciliation probe. A row
-                    # whose path escapes the tree is not a draft this service
-                    # owns, so it is treated as absent — which soft-discards it
-                    # below, repairing the row rather than letting an arbitrary
-                    # path's existence drive the decision (#1213 follow-up).
+                    # Cheap status check FIRST: an already-discarded row is not
+                    # reconciled at all, so probing its path was two wasted
+                    # resolve() walks per scan and made a discarded escaping row
+                    # log a refusal on every scan, forever.
+                    if draft_model.status == DraftStatus.DISCARDED.value:
+                        continue
+
+                    # A row whose path is not inside the tree is SKIPPED — not
+                    # discarded, not counted, not touched (#1213 follow-up).
+                    #
+                    # It was treated as "absent" in the first version of this
+                    # change, and that was wrong in two measurable ways. A
+                    # deployment whose only active drafts have escaping paths
+                    # discards all of them, trips the "would discard ALL active
+                    # drafts" abort guard, and gets a deterministic "Restore
+                    # from backup" RuntimeError on EVERY scan — so the repair
+                    # this was supposed to perform never runs. And a knowledge
+                    # tree assembled with symlinks (``team_x -> /mnt/share``)
+                    # worked before containment existed; treating it as absent
+                    # soft-discards every draft under it on the first scan after
+                    # the upgrade.
+                    #
+                    # Refusing to TOUCH such a path is the security posture and
+                    # it stands. Refusing to touch it while deleting the row
+                    # that points at it is just data loss. Skip and warn: an
+                    # operator loses access to those drafts, not the drafts.
                     try:
                         file_exists = resolve_runbook_path(
                             draft_model.file_path,
@@ -2271,10 +2352,13 @@ status: draft
                             root=self._data_dir,
                         ).exists()
                     except RunbookPathEscape as exc:
-                        logger.error("discarding a draft outside the tree: %s", exc)
-                        file_exists = False
-
-                    if draft_model.status == DraftStatus.DISCARDED.value:
+                        logger.warning(
+                            "skipping draft %s during scan reconciliation "
+                            "(not discarded): %s",
+                            draft_model.id,
+                            exc,
+                        )
+                        skipped += 1
                         continue
 
                     if not file_exists:
@@ -2396,6 +2480,24 @@ status: draft
         for md_file in sorted(knowledge_dir.rglob("*.md")):
             # Skip sources directory (retained original uploads)
             if "sources" in md_file.parts:
+                continue
+
+            # The walk starts inside the tree, but ``rglob`` follows symlinks:
+            # a link planted at ``data/knowledge/global/innocent.md`` pointing
+            # at ``/etc/anything`` is yielded here, and before this check it was
+            # read and minted into a draft row — the exact shape every other
+            # path in this service refuses. Both halves of the module must agree
+            # on whether a file is a runbook, so the walk asks the same guard
+            # (#1213 follow-up).
+            try:
+                resolve_runbook_path(
+                    md_file,
+                    source=f"scanned file ({md_file.name})",
+                    root=knowledge_dir,
+                )
+            except RunbookPathEscape as exc:
+                logger.warning("skipping a scanned file outside the tree: %s", exc)
+                skipped += 1
                 continue
 
             file_path_str = str(md_file)
@@ -2700,7 +2802,11 @@ status: draft
                 if file_path.exists():
                     file_path.unlink()
             except RunbookPathEscape as exc:
-                logger.error("refusing to unlink outside the tree: %s", exc)
+                logger.error(
+                    "refusing to unlink for draft %s; discarding the row " "anyway: %s",
+                    dm.id,
+                    exc,
+                )
 
             # Soft delete in database
             dm.status = DraftStatus.DISCARDED.value

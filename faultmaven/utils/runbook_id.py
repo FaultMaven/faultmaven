@@ -200,6 +200,34 @@ def runbook_id_from_parts(service: str | None, title: str | None) -> str:
     return slug
 
 
+def draft_filename(runbook_id: str | None) -> str:
+    """On-disk filename for a draft whose id is ``runbook_id``.
+
+    Normally just ``f"{runbook_id}.md"`` — the draft file is named after its
+    id, and the scan reconciles the two by that name.
+
+    The exception is an id that filtered to ``""``:
+    ``runbook_id_from_parts`` returns empty for a punctuation-only or non-latin
+    ``(service, title)`` pair, and ``scope_dir / ".md"`` passes containment
+    (it is inside the tree) while being a **hidden file that every such runbook
+    in that scope shares**. Measured on the branch that lacked this: two
+    template runbooks in one scope produced one ``.md`` on disk, the second
+    silently overwriting the first, and deleting either unlinked the other's
+    file.
+
+    A uuid stem is substituted instead — the same shape and the same reason as
+    ``runbook_filename``'s suffix fallback. This is a FILENAME decision only: it
+    does not touch ``runbook_id_from_parts``, so nothing already persisted in
+    ``conversion_drafts.runbook_id`` is re-minted. The empty *id* itself remains
+    a defect on the persisted-identifier side, out of scope here and reported
+    separately.
+    """
+    stem = _slug(runbook_id)[:_MAX_SLUG_CHARS].strip("-")
+    if not stem:
+        stem = uuid4().hex[:16]
+    return f"{stem}.md"
+
+
 # =============================================================================
 # Where a runbook lives on disk, and the only sanctioned way to touch it
 # =============================================================================
@@ -224,25 +252,37 @@ def knowledge_root() -> Path:
 
 
 class RunbookPathEscape(ValueError):
-    """A runbook path resolved outside the knowledge tree.
+    """A runbook path that is not, or cannot be shown to be, inside the tree.
+
+    Covers both halves of "this path is not safe to touch": it resolved outside
+    the knowledge root, or it could not be resolved at all (a symlink loop, a
+    permission error, a name too long). Callers act on both the same way —
+    refuse the filesystem operation — so distinguishing them at the type level
+    would buy nothing and invite one of the two to be forgotten.
 
     Subclasses ``ValueError`` so it stays compatible with the guard #1215
     shipped inline at the upload write site, and is its own type so a caller
-    that wants to degrade rather than fail (a listing skipping one bad row) can
-    catch precisely this and nothing else.
+    that must degrade rather than fail (a listing skipping one bad row, the
+    scan skipping one bad file) can catch precisely this and nothing else.
+
+    The message carries the resolved absolute paths, which are useful in a
+    server log and must never reach a client. Service callers translate it to a
+    typed domain exception whose client-facing message names only the row.
     """
 
 
-def resolve_runbook_path(
-    path: str | Path,
-    *,
-    source: str,
-    root: Path | None = None,
-) -> Path:
-    """Resolve ``path``, refusing anything that lands outside the knowledge tree.
+def resolve_runbook_path(path: str | Path, *, source: str, root: Path) -> Path:
+    """Resolve ``path``, refusing anything not strictly inside the tree.
 
     Call this before ANY filesystem operation on a runbook path — read, write,
     or unlink — and act on the returned resolved path.
+
+    ``root`` is REQUIRED, deliberately. It defaulted to ``knowledge_root()``
+    once, and that default was a bypass no test could see: every test redirects
+    the root through ``ConversionService._data_dir``, so a future caller that
+    simply omitted ``root=`` would silently check against the real
+    ``data/knowledge`` and pass every suite while guarding the wrong tree.
+    Making it required turns that mistake into a ``TypeError`` at import time.
 
     Anchored on the ROOT of the tree, never on the directory the path is in:
     anchoring on the containing directory is circular, since an escaped
@@ -258,11 +298,32 @@ def resolve_runbook_path(
     a directory, so a write to it would fail anyway, but ``write_runbook_file``
     would first ``mkdir`` its *parent*, which is outside the tree.
 
+    **Symlinks are resolved, so a link pointing out of the tree is refused.**
+    That is the security property — containment is about where a path *lands*,
+    not what it is named — and it has a deployment consequence worth stating
+    plainly: a knowledge tree assembled out of symlinks (``data/knowledge/team_x
+    -> /mnt/share``) worked before this guard and does not work now. Callers on
+    the destructive paths (the scan) therefore SKIP what they refuse rather than
+    deleting it, so an operator on such a layout loses access, not data.
+
+    ``Path.resolve()`` can also fail outright — ``RuntimeError`` on a symlink
+    loop (measured on CPython 3.11), ``OSError`` for permissions, a too-long
+    name, or a filesystem that is gone. An unresolvable path is not a
+    containable path, so both become ``RunbookPathEscape`` rather than escaping
+    as themselves: letting a bare ``RuntimeError`` through killed
+    ``delete_draft`` before its soft-delete and aborted whole scans.
+
     Raises:
-        RunbookPathEscape: the resolved path is not strictly under the root.
+        RunbookPathEscape: the path is outside the root, or cannot be resolved.
     """
-    knowledge = (root if root is not None else knowledge_root()).resolve()
-    resolved = Path(path).resolve()
+    try:
+        knowledge = root.resolve()
+        resolved = Path(path).resolve()
+    except (RuntimeError, OSError) as exc:
+        raise RunbookPathEscape(
+            f"refusing to touch an unresolvable runbook path: {path!r} "
+            f"({type(exc).__name__}: {exc}) (source: {source})"
+        ) from exc
     if resolved == knowledge or not resolved.is_relative_to(knowledge):
         raise RunbookPathEscape(
             f"refusing to touch a runbook path outside the knowledge tree: "
@@ -276,7 +337,7 @@ def write_runbook_file(
     content: str,
     *,
     source: str,
-    root: Path | None = None,
+    root: Path,
     encoding: str = "utf-8",
 ) -> Path:
     """Write ``content`` to ``path``, but only if ``path`` is inside the tree.
@@ -285,6 +346,8 @@ def write_runbook_file(
     escaped path materialises attacker-chosen directories outside the tree
     whatever the write then does — the second half of #1215's round-1 defect,
     which left ``escaped/`` on disk even where the file write was refused.
+
+    ``root`` is required for the reason given on ``resolve_runbook_path``.
 
     Returns the resolved path. Callers persisting a path to the database should
     keep persisting the ORIGINAL (relative) string, not this one; see
