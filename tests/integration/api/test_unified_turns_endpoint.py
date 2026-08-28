@@ -5,7 +5,10 @@ Tests the complete endpoint flow:
 - File upload → Tier 0+1 preprocessing, implicit query, LLM with evidence context
 - Pasted text → same as file upload (via pasted_content form field)
 - Query + file → preprocessing + explicit query, both in LLM context
-- Multiple files + query → all preprocessed, all in evidence context
+- Multiple attachments → TurnPayload/TurnResponse carry a list; note the ROUTE
+  caps `files` at one per turn (fm#694), so a multi-item payload arises from a
+  file plus a paste, not from two uploads. The model-level tests below stay
+  because the payload shape is what they pin.
 - Intent routing (status_transition, confirmation) with attachments
 - Missing both query and attachments → 400 error
 - Invalid case_id → 400/404 errors

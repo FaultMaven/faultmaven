@@ -2765,6 +2765,11 @@ async def submit_turn(
     Attachments are preprocessed through Tier 0+1 before the LLM sees them.
     If no query is provided with attachments, an implicit query is generated.
 
+    **One file per turn.** `files` accepts at most one item; more than one is
+    rejected with 422. Submit each additional file as its own turn.
+    `pasted_content` is a separate field and does not count against this limit,
+    so a turn may legitimately carry one file *and* a paste.
+
     **Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`
     placeholder is named from its own content as part of processing the turn, if
     it now has enough substance to name — so the name is already in place when
@@ -2793,6 +2798,32 @@ async def submit_turn(
             raise HTTPException(
                 status_code=400,
                 detail="Valid case_id is required",
+                headers={"x-correlation-id": correlation_id},
+            )
+
+        # One file per turn (fm#694). The signature takes a list because that
+        # is how multipart repeats a field, but the *supported* contract has
+        # always been a single file: the Copilot sends exactly one, the Slack
+        # agent forwards at most one, and the engine's clarification emitter
+        # (`_build_classification_clarification_suggestions`) clarifies only
+        # the first classification_failed attachment — so a second file's
+        # failed classification would be silently unrecoverable. Multi-file
+        # semantics (per-file clarification, per-file results, a request-size
+        # budget) are undefined and untested, so the server refuses rather
+        # than half-processing.
+        #
+        # The limit is on `files` ALONE. `pasted_content` rides alongside a
+        # file as a second attachment and is a separate form field; counting
+        # it here would break paste+file turns, which are a shipped path.
+        if len(files) > 1:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Only one file may be attached per turn; received "
+                    f"{len(files)}. Submit each additional file as its own "
+                    "turn. (pasted_content is a separate field and does not "
+                    "count toward this limit.)"
+                ),
                 headers={"x-correlation-id": correlation_id},
             )
 
