@@ -1,8 +1,8 @@
 # Knowledge Base Architecture
 
 **Document Type:** Component Specification
-**Version:** 9.1
-**Last Updated:** 2026-07-15
+**Version:** 9.2
+**Last Updated:** 2026-08-28
 
 ---
 
@@ -605,8 +605,18 @@ subsystem captures free-form knowledge extracted from a resolved case and routes
 it through human review before it becomes a `KnowledgeItem`. It is a
 human-in-the-loop (HITL) queue with a mandatory PII gate.
 
-**Model** (`modules/knowledge/domain/models/suggestion.py`, table
-`knowledge_suggestions`): a `KnowledgeSuggestion` carries the suggested
+**Wiring.** `SuggestionService` is a process singleton composed in the
+composition root (`create_suggestion_service` → `container.get_suggestion_service()`
+→ `app.state.suggestion_service`), holding the real `KnowledgeService` it
+publishes through. Both read sites — the case-side extract route and the
+knowledge-side review routes — resolve it from `app.state` and answer **503**
+when the slot is empty; neither constructs its own. That mattered: the slot was
+read in two places and written in none (#1214), so every request built a
+throwaway service with a private empty store, and a suggestion created by the
+extract request could not be found by the approve request (404).
+
+**Model** (`modules/knowledge/domain/models/suggestion.py`): a
+`KnowledgeSuggestion` carries the suggested
 title/content/type, extraction lineage (source case, who/when, message +
 evidence counts), review metadata, and a bidirectional `knowledge_item_id` link
 set on approval. Two enums drive it:
@@ -624,13 +634,33 @@ clean/remediated; `mark_pii_remediated()` raises 409
 content (`update_content`) resets the scan to `NOT_SCANNED` — any edit re-arms
 the gate.
 
+**Quality gate (corpus invariant).** Everything approval publishes becomes a
+`KnowledgeItemType.RUNBOOK`, so approval enforces the same structural standard
+as a runbook upload: `enforce_runbook_quality` runs inside
+`KnowledgeService.upload_document` — the choke point both publish paths share —
+and a draft that fails it is refused with **422**, publishing nothing (the gate
+precedes the first side effect). The gate used to live only at the
+`POST /knowledge/documents` route, which the approval path bypassed. LLM-extracted
+markdown is not publishable as-is: the extraction prompt produces
+`## Problem / ## Root Cause / ## Solution / ## Prevention`, which carries no
+frontmatter and none of the six required sections, so the reviewer edits it into
+a valid runbook (`PUT`) before approving. If the link cannot be recorded after a
+successful publish, the published item is deleted, mirroring `ingest_runbook`'s
+two-store rollback discipline.
+
+⚠️ **The suggestion store is in-memory**, not the `knowledge_suggestions` table
+(which exists, with an ORM model and no repository behind it). Pending
+suggestions do not survive a restart, and with `WORKERS > 1` or more than one pod
+an extract handled by one worker is invisible to an approve handled by another.
+
 **Flow & endpoints.** Extraction is initiated from the case side
 (`POST /cases/{case_id}/extract-knowledge` → `SuggestionService.extract_knowledge_from_case`),
 producing a `PENDING_REVIEW` suggestion. Review happens over the knowledge
 routes: `GET /knowledge/suggestions` (list), `GET /knowledge/suggestions/{id}`,
 `PUT /knowledge/suggestions/{id}` (edit — resets PII scan),
 `POST /knowledge/suggestions/{id}/approve` (201; creates the `KnowledgeItem` and
-links it), `POST /knowledge/suggestions/{id}/reject`, and
+links it — 422 when the content fails the quality gate, 409 on a second
+approval), `POST /knowledge/suggestions/{id}/reject`, and
 `POST /knowledge/suggestions/{id}/remediate-pii`.
 
 ---
