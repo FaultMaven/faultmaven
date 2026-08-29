@@ -33,6 +33,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     CONVERGES_REF,
     HTML_COMMENT_RE,
     INTERVENTION_RE,
+    mask_html_comments,
     parse_cause_subfields,
 )
 
@@ -54,7 +55,11 @@ def extract_causes(content: str) -> list[dict[str, Any]]:
     if not sec:
         return []
     block = sec.group(1)
-    heads = list(CAUSE_HEADING_RE.finditer(block))
+    # Headings are located in a comment-MASKED copy so a Cause written inside an
+    # authoring comment is not extracted as real knowledge (#1241); bodies are
+    # sliced from the RAW block at those positions (the mask preserves offsets),
+    # and ``parse_cause_subfields`` strips the comments out of each value.
+    heads = list(CAUSE_HEADING_RE.finditer(mask_html_comments(block)))
     causes: list[dict[str, Any]] = []
     for i, h in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else len(block)

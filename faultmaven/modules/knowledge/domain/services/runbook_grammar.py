@@ -36,6 +36,16 @@ fixture exercises) slips both. The third guard closes that: kb-toolkit's
 the shared regex primitives (pattern + flags) and ``CONVERGES_REF`` across the
 two ``runbook_grammar.py`` files. A change to the upstream grammar MUST be
 mirrored here and vice-versa.
+
+COMMENT BLINDNESS (#1241): every grammar regex here matches inside an HTML
+comment as readily as outside one, so a sub-field label or a Cause heading
+written as a commented-out worked example is parsed as real content. Two
+countermeasures live in this module and BOTH need mirroring upstream:
+``parse_cause_subfields`` deletes comments before splitting on labels, and
+``mask_html_comments`` blanks them length-preservingly for the callers that
+enumerate ``CAUSE_HEADING_RE`` (offsets must survive — see its docstring). The
+cross-repo checker compares regex primitives only, so it will NOT catch a
+mirror that lacks them.
 """
 
 import re
@@ -62,6 +72,10 @@ STEP_REF_RE = re.compile(r"\[Step (\d+)\]")
 # rung text — they are authoring annotations, not chain content.
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
+# Every non-newline character of a comment span, for the length-preserving mask
+# below. Kept module-level so it compiles once.
+_COMMENT_BODY_CHAR_RE = re.compile(r"[^\n]")
+
 # A v4 intervention bullet: ``- **<quadrant>** (<ref>): ...`` (indent-tolerant).
 INTERVENTION_RE = re.compile(
     r"^\s*[-*+]\s*\*\*([A-Za-z_]+)\*\*\s*\(([^)]*)\)", re.MULTILINE
@@ -78,6 +92,31 @@ CHAIN_RUNG_RE = re.compile(
 CONVERGES_REF = "converges"
 
 
+def mask_html_comments(text: str) -> str:
+    """Blank every HTML comment span *in place*, preserving length and newlines.
+
+    The grammar's regexes are otherwise blind to comments, so a ``### Cause A:``
+    heading written inside an authoring comment — the natural way to show a
+    worked example in a template — is enumerated as a real Cause and its
+    commented-out body extracted into the corpus as real knowledge (#1241).
+
+    Masking rather than deleting is load-bearing for the ENUMERATION callers:
+    the validator measures each Cause block against ``ContentChunker``'s size
+    bounds and split-boundary pattern, and the chunker sees the raw markdown,
+    comments included. Deleting would shrink the block the gate measures below
+    the block retrieval actually chunks, so an oversize Cause could pass. A mask
+    of the same length keeps every offset and line number identical to the raw
+    text — so callers find heading positions in the masked copy and slice the
+    RAW text at them. On a document with no comments the mask is the identity.
+
+    For a field VALUE, deletion is the right semantic (a comment is not content)
+    and offsets do not matter — that is what ``parse_cause_subfields`` does.
+    """
+    return HTML_COMMENT_RE.sub(
+        lambda m: _COMMENT_BODY_CHAR_RE.sub(" ", m.group(0)), text
+    )
+
+
 def parse_cause_subfields(cause_content: str, field_names: list[str]) -> dict[str, str]:
     """Parse ``**Field:**`` blocks out of a Cause body.
 
@@ -85,7 +124,18 @@ def parse_cause_subfields(cause_content: str, field_names: list[str]) -> dict[st
     ``field_names``) or end of content. Callers pass the schema's sub-field set
     (``required + optional`` from :mod:`cause_grammar`) so the boundary set stays
     in lockstep with the validator's contract.
+
+    HTML comments are removed FIRST, before any label is looked for (#1241).
+    Without that a ``**Statement:**`` written inside a comment is read as the
+    real sub-field: measured, a hint comment spelling the labels as examples
+    made a Cause whose three required sub-fields were all EMPTY pass the
+    publication gate, and the extractor then wrote the commented-out example
+    text into the corpus. The strip belongs here rather than at each call site
+    because both consumers — the gate (``runbook_validator``) and the extractor
+    (``runbook_cause_extractor``) — must agree on where a value begins and ends;
+    a per-call-site repair fixes one and leaves the other exposed.
     """
+    cause_content = HTML_COMMENT_RE.sub("", cause_content)
     fields: dict[str, str] = {}
     for field in field_names:
         others = "|".join(re.escape(f"**{f}:**") for f in field_names if f != field)

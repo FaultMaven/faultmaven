@@ -63,6 +63,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     INTERVENTION_RE,
     STEP_HEADING_RE,
     STEP_REF_RE,
+    mask_html_comments,
     parse_cause_subfields,
 )
 
@@ -437,9 +438,15 @@ def _iter_cause_blocks(content: str, include_heading: bool = False):
     or the causes-section end) — so a length measured on it matches the chunker's
     per-section length. A heading that is not the strict form (``#### Cause``,
     ``### Cause AA``, ``### Cause A :``) is NOT yielded here — the extractor drops
-    it too; it is surfaced separately by ``_flag_malformed_cause_headings``."""
+    it too; it is surfaced separately by ``_flag_malformed_cause_headings``.
+
+    Headings are located in a comment-MASKED copy of the body, so a Cause written
+    inside an authoring comment is not enumerated as real (#1241); the yielded
+    text is sliced from the RAW body at those positions, because the mask
+    preserves every offset and ``include_heading=True`` must hand back exactly
+    what the chunker sees, comments included."""
     body = _causes_section_body(content)
-    heads = list(CAUSE_HEADING_RE.finditer(body))
+    heads = list(CAUSE_HEADING_RE.finditer(mask_html_comments(body)))
     for i, h in enumerate(heads):
         end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
         start = h.start() if include_heading else h.end()
@@ -652,9 +659,13 @@ class RunbookValidator:
         # ## Causes must have at least one ### Cause subsection. Scanned
         # SECTION-SCOPED with the shared strict ``CAUSE_HEADING_RE`` (not a loose
         # whole-content scan) so an example ``### Cause`` heading in another section
-        # cannot satisfy this gate while the extractor parses zero causes.
+        # cannot satisfy this gate while the extractor parses zero causes. Comments
+        # are masked for the same reason (#1241): a section holding only a
+        # commented-out example Cause parses to zero causes, so it must fail here.
         if re.search(r"^##[ \t]+Causes[ \t]*$", content, re.MULTILINE):
-            if not CAUSE_HEADING_RE.search(_causes_section_body(content)):
+            if not CAUSE_HEADING_RE.search(
+                mask_html_comments(_causes_section_body(content))
+            ):
                 errors.append(
                     "## Causes section must contain at least one ### Cause subsection"
                 )
