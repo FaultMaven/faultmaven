@@ -46,6 +46,9 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
     SuggestionService,
 )
+from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+    InMemorySuggestionRepository,
+)
 from tests.runbook_samples import valid_runbook
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
@@ -140,6 +143,7 @@ def _service(provider=None, **kwargs) -> SuggestionService:
         sanitizer=None,
         llm_provider=provider,
         **kwargs,
+        suggestion_repository=InMemorySuggestionRepository(),
     )
 
 
@@ -248,6 +252,7 @@ class TestThePromptAsksForV4:
             knowledge_service=MagicMock(),
             sanitizer=None,
             llm_provider=ScriptedProvider(valid_runbook()),
+            suggestion_repository=InMemorySuggestionRepository(),
         )
         suggestion = await _extract(svc)
 
@@ -272,6 +277,7 @@ class TestThePromptAsksForV4:
             knowledge_service=MagicMock(),
             sanitizer=None,
             llm_provider=ScriptedProvider(valid_runbook()),
+            suggestion_repository=InMemorySuggestionRepository(),
         )
         suggestion = await _extract(svc)
 
@@ -601,6 +607,7 @@ class TestRedactionKeepsTheDraftPublishable:
             knowledge_service=MagicMock(),
             sanitizer=sanitizer,
             llm_provider=ScriptedProvider(self._draft_with_pii()),
+            suggestion_repository=InMemorySuggestionRepository(),
         )
         suggestion = await svc.extract_knowledge_from_case(
             case_id=CASE_ID,
@@ -662,6 +669,7 @@ class TestRedactionKeepsTheDraftPublishable:
             knowledge_service=MagicMock(),
             sanitizer=sanitizer,
             llm_provider=ScriptedProvider(valid_runbook()),
+            suggestion_repository=InMemorySuggestionRepository(),
         )
 
         suggestion = await _extract(svc)
@@ -710,6 +718,7 @@ class TestTheVerdictTracksEveryContentMutation:
             knowledge_service=knowledge,
             sanitizer=sanitizer,
             llm_provider=ScriptedProvider(valid_runbook()),
+            suggestion_repository=InMemorySuggestionRepository(),
         )
         suggestion = await _extract(svc)
         assert suggestion.pii_scan_status is PIIScanStatus.SCAN_FAILED
@@ -720,11 +729,20 @@ class TestTheVerdictTracksEveryContentMutation:
             organization_id=ORG,
         )
 
+        # Read the suggestion back out of the store rather than inspecting the
+        # object extraction returned. Since #1227 the store is a repository and
+        # ``approve_suggestion`` works on its own detached copy of the row, so
+        # the object above is a snapshot of extraction time — and asserting on
+        # it would now measure nothing. Re-reading also makes the assertion
+        # stronger than it was: the re-recorded verdict has to be PERSISTED,
+        # not merely applied in memory and dropped.
+        rescanned = await svc.get_suggestion(suggestion.suggestion_id)
+
         # The re-scan removed a required section, so the verdict MUST have
         # moved with it. Left unpaired this stayed at whatever extraction last
         # recorded.
-        assert suggestion.validation_passed is False
-        assert "Missing required section: Sources" in suggestion.validation_errors
+        assert rescanned.validation_passed is False
+        assert "Missing required section: Sources" in rescanned.validation_errors
 
     def test_every_content_mutation_goes_through_the_paired_helper(self):
         """A structural pin, because the failure mode is forgetting. Any future

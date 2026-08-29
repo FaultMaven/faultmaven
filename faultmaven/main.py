@@ -730,23 +730,22 @@ async def lifespan(app: FastAPI):
             logger.info(
                 f"✅ Multi-worker configuration (WORKERS={workers}) with {storage_type} storage"
             )
-            # ...but not everything is worker-safe just because CASE storage is.
-            # The knowledge-suggestion store is an in-process dict on a
-            # per-worker singleton, so extract → approve breaks INTERMITTENTLY
-            # here: whichever worker takes the approve request has never seen
-            # the suggestion and answers 404. Not a boot refusal — the feature
-            # is platform-admin-gated and degraded, not corrupting — and not a
-            # log line alone either, because startup logs roll out of
-            # `kubectl logs`. The durable store is #1227; until then the state
-            # is reportable after the fact on GET /admin/config/status.
-            logger.warning(
-                "⚠️  WORKERS=%d: knowledge suggestions are stored per worker, "
-                "so extracting knowledge from a case and approving the "
-                "suggestion may land on different workers and answer 404. "
-                "Reported as 'suggestion_store_worker_safe' on "
-                "GET /admin/config/status.",
-                workers,
-            )
+            # The knowledge-suggestion store used to be warned about here: it
+            # was an in-process dict on a per-worker singleton, so extract →
+            # approve broke INTERMITTENTLY — whichever worker took the approve
+            # request had never seen the suggestion and answered 404 (#1214).
+            #
+            # Nothing is logged about it now, and nothing should be. This code
+            # runs BEFORE ``compose_application``, so at this point the store
+            # does not exist yet and any statement here — reassuring or
+            # otherwise — would be a guess about a decision that has not been
+            # taken. ``create_suggestion_service`` makes that decision (keyed
+            # off ``persistent_database_configured``) and warns there if it
+            # lands on the non-durable store, and the standing answer is on
+            # GET /admin/config/status as 'suggestion_store_worker_safe',
+            # which reads the composed repository. That is also where it
+            # belongs: a startup log line has rolled out of `kubectl logs`
+            # long before anyone investigates an intermittent 404.
         else:
             logger.debug(f"Using single worker (WORKERS={workers})")
         logger.info("Configuration validated successfully")

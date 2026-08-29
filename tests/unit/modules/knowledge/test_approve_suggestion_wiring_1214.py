@@ -43,6 +43,10 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
     SuggestionService,
 )
+from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+    DatabaseSuggestionRepository,
+    InMemorySuggestionRepository,
+)
 from tests.runbook_samples import valid_runbook
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
@@ -68,9 +72,31 @@ def _ready_suggestion(
 
 
 def _service(knowledge_service, content: str = "## Problem\nPool exhausted.\n"):
-    svc = SuggestionService(knowledge_service=knowledge_service)
-    svc._suggestions_store[SUGGESTION_ID] = _ready_suggestion(content)
-    return svc
+    repository = InMemorySuggestionRepository()
+    repository.seed(_ready_suggestion(content))
+    return SuggestionService(
+        knowledge_service=knowledge_service, suggestion_repository=repository
+    )
+
+
+def _fail_approve_with(monkeypatch, exc: Exception) -> None:
+    """Make ``KnowledgeSuggestion.approve`` blow up, on the CLASS.
+
+    It used to be patched on the stored instance. Since #1227 the store hands
+    the service a DETACHED COPY of the row (the database repository opens a new
+    session per call, so there is no identity map across calls, and the
+    in-memory double copies to match) — an attribute set on the seeded object
+    is simply not on the object the approval is holding, so the patch would
+    silently do nothing and the test would assert against the happy path.
+    Patching the class reaches whichever instance the load produced, which is
+    the only seam that survives the store being real.
+    """
+    monkeypatch.setattr(
+        KnowledgeSuggestion,
+        "approve",
+        MagicMock(side_effect=exc),
+        raising=True,
+    )
 
 
 async def _approve(svc):
@@ -104,7 +130,7 @@ class TestApprovalWithoutAKnowledgeService:
         with pytest.raises(RuntimeError):
             await _approve(svc)
 
-        stored = svc._suggestions_store[SUGGESTION_ID]
+        stored = svc._repository.peek(SUGGESTION_ID)
         assert stored.status is SuggestionStatus.PENDING_REVIEW
         assert stored.knowledge_item_id is None
         assert stored.reviewed_by is None
@@ -204,12 +230,10 @@ def _publishing_double():
 
 
 class TestTheCompensatingDelete:
-    async def test_a_post_publish_failure_deletes_the_published_item(self):
+    async def test_a_post_publish_failure_deletes_the_published_item(self, monkeypatch):
         knowledge = _publishing_double()
         svc = _service(knowledge)
-        svc._suggestions_store[SUGGESTION_ID].approve = MagicMock(
-            side_effect=RuntimeError("concurrent edit reset the scan")
-        )
+        _fail_approve_with(monkeypatch, RuntimeError("concurrent edit reset the scan"))
 
         with pytest.raises(RuntimeError, match="concurrent edit"):
             await _approve(svc)
@@ -218,7 +242,7 @@ class TestTheCompensatingDelete:
         # Not the item-only delete — that is the partial rollback this replaces.
         knowledge.delete_document.assert_not_awaited()
 
-    async def test_the_original_failure_is_what_the_caller_sees(self):
+    async def test_the_original_failure_is_what_the_caller_sees(self, monkeypatch):
         """A rollback that raised would replace a truthful failure with an
         unrelated one AND still leave the orphan."""
         knowledge = _publishing_double()
@@ -226,14 +250,12 @@ class TestTheCompensatingDelete:
             "chromadb unreachable"
         )
         svc = _service(knowledge)
-        svc._suggestions_store[SUGGESTION_ID].approve = MagicMock(
-            side_effect=ValueError("the real problem")
-        )
+        _fail_approve_with(monkeypatch, ValueError("the real problem"))
 
         with pytest.raises(ValueError, match="the real problem"):
             await _approve(svc)
 
-    async def test_reported_residue_is_logged_verbatim(self, caplog):
+    async def test_reported_residue_is_logged_verbatim(self, caplog, monkeypatch):
         """The rollback returns what it could NOT remove. Silence there would
         hide a real orphan from the operator, and a fixed sentence would
         describe the wrong store — a failed row delete and a failed vector
@@ -246,9 +268,7 @@ class TestTheCompensatingDelete:
             ],
         }
         svc = _service(knowledge)
-        svc._suggestions_store[SUGGESTION_ID].approve = MagicMock(
-            side_effect=RuntimeError("boom")
-        )
+        _fail_approve_with(monkeypatch, RuntimeError("boom"))
 
         with caplog.at_level("ERROR"):
             with pytest.raises(RuntimeError):
@@ -261,15 +281,15 @@ class TestTheCompensatingDelete:
             for record in caplog.records
         )
 
-    async def test_a_rollback_that_blows_up_still_reports_residue(self, caplog):
+    async def test_a_rollback_that_blows_up_still_reports_residue(
+        self, caplog, monkeypatch
+    ):
         """Both branches emit the SAME sentence, so log-based alerting matches
         one string rather than two near-identical ones."""
         knowledge = _publishing_double()
         knowledge.rollback_uploaded_document.side_effect = RuntimeError("db down")
         svc = _service(knowledge)
-        svc._suggestions_store[SUGGESTION_ID].approve = MagicMock(
-            side_effect=RuntimeError("boom")
-        )
+        _fail_approve_with(monkeypatch, RuntimeError("boom"))
 
         with caplog.at_level("ERROR"):
             with pytest.raises(RuntimeError):
@@ -349,6 +369,12 @@ class TestTheRouteDependency:
 # ---------------------------------------------------------------------------
 
 
+def _settings_with_database_url(database_url):
+    settings = MagicMock()
+    settings.database.database_url = database_url
+    return settings
+
+
 def test_the_factory_injects_the_knowledge_service():
     """``create_suggestion_service`` is what makes the no-knowledge-service
     refusal above unreachable in a composed app."""
@@ -364,6 +390,7 @@ def test_the_factory_injects_the_knowledge_service():
         knowledge_service=knowledge,
         sanitizer=sanitizer,
         llm_provider=llm,
+        settings=_settings_with_database_url("sqlite+aiosqlite:///./data/fm.db"),
     )
 
     assert isinstance(svc, SuggestionService)
@@ -371,6 +398,63 @@ def test_the_factory_injects_the_knowledge_service():
     assert svc._sanitizer is sanitizer
     assert svc._case_repository is case_repository
     assert svc._llm_provider is llm
+
+
+class TestTheFactoryPicksTheStoreFromTheDatabaseUrl:
+    """The store choice is keyed off ``persistent_database_configured`` — the
+    one shared predicate (fm#1128), not a re-derivation.
+
+    It matters because the sessionless repository opens a session per
+    operation and SQLite is pooled with ``NullPool``: over an in-memory URL
+    each call would get a brand-new empty database, so every write would vanish
+    before the next read. And ``create_case_repository`` degrades to in-memory
+    on the same configuration, so the suggestion's ``case_id`` foreign key would
+    have no case row to point at and extract would 500 where the dict store
+    worked.
+    """
+
+    @staticmethod
+    def _store_for(database_url):
+        from faultmaven.container.providers.services import create_suggestion_service
+
+        svc = create_suggestion_service(
+            case_repository=MagicMock(),
+            knowledge_service=MagicMock(),
+            sanitizer=MagicMock(),
+            llm_provider=MagicMock(),
+            settings=_settings_with_database_url(database_url),
+        )
+        return svc._repository
+
+    @pytest.mark.parametrize(
+        "database_url",
+        [
+            "sqlite+aiosqlite:///./data/faultmaven.db",
+            "postgresql+asyncpg://u:p@host/db",
+        ],
+    )
+    def test_a_persistent_url_gets_the_database_store(self, database_url):
+        store = self._store_for(database_url)
+        assert isinstance(store, DatabaseSuggestionRepository)
+        assert store.is_durable is True
+
+    @pytest.mark.parametrize(
+        "database_url",
+        [
+            "",
+            None,
+            ":memory:",
+            "sqlite+aiosqlite:///:memory:",
+            "sqlite://",
+        ],
+    )
+    def test_an_ephemeral_or_absent_url_gets_the_in_memory_store(self, database_url):
+        store = self._store_for(database_url)
+        assert isinstance(store, InMemorySuggestionRepository)
+        assert store.is_durable is False, (
+            "the fallback must report itself non-durable, or "
+            "/admin/config/status claims a durability this process does not have"
+        )
 
 
 async def test_the_service_still_scans_for_pii_when_wired():
@@ -386,7 +470,11 @@ async def test_the_service_still_scans_for_pii_when_wired():
     and their arguments is what pins that apart."""
     sanitizer = MagicMock()
     sanitizer.asanitize = AsyncMock(side_effect=lambda text: f"REDACTED::{text[:6]}")
-    svc = SuggestionService(knowledge_service=MagicMock(), sanitizer=sanitizer)
+    svc = SuggestionService(
+        knowledge_service=MagicMock(),
+        sanitizer=sanitizer,
+        suggestion_repository=InMemorySuggestionRepository(),
+    )
     suggestion = _ready_suggestion()
     original_title = suggestion.suggested_title
     original_content = suggestion.suggested_content

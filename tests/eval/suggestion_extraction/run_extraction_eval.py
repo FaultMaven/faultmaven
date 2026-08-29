@@ -242,6 +242,9 @@ async def run_after(
     from faultmaven.modules.knowledge.domain.services.suggestion_service import (
         SuggestionService,
     )
+    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+        InMemorySuggestionRepository,
+    )
 
     rows = []
     for case in cases:
@@ -265,6 +268,7 @@ async def run_after(
             sanitizer=None,
             llm_provider=counting,
             max_extraction_attempts=attempts,
+            suggestion_repository=InMemorySuggestionRepository(),
         )
         started = time.time()
         error = None

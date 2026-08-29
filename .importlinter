@@ -89,6 +89,7 @@ layers =
     faultmaven.modules.knowledge.infrastructure
 ignore_imports =
     faultmaven.modules.knowledge.infrastructure.persistence.knowledge_item_repository -> faultmaven.modules.knowledge.domain.models.knowledge_item
+    faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository -> faultmaven.modules.knowledge.domain.models.suggestion
 
 # ============================================================================
 # CONTRACT 5: Case Module Layer Boundaries

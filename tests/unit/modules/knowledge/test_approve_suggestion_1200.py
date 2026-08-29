@@ -32,6 +32,9 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
     SuggestionService,
 )
+from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+    InMemorySuggestionRepository,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -69,13 +72,26 @@ def _ready_suggestion() -> KnowledgeSuggestion:
     )
 
 
+def _service_with_one_ready_suggestion() -> SuggestionService:
+    """A service whose store holds one review-ready suggestion.
+
+    Since #1227 the store is a repository and the tenant-scoped lookup is a
+    real query against it, so the fixture no longer stubs
+    ``get_suggestion_visible``: seeding the store exercises the same path
+    production takes, and a stub returning one live object would have hidden
+    the detached-copy semantics these tests now rely on.
+    """
+    repository = InMemorySuggestionRepository()
+    repository.seed(_ready_suggestion())
+    return SuggestionService(
+        knowledge_service=_knowledge_service_double(),
+        suggestion_repository=repository,
+    )
+
+
 @pytest.fixture
 def service():
-    svc = SuggestionService(knowledge_service=_knowledge_service_double())
-    suggestion = _ready_suggestion()
-    svc._suggestions_store[SUGGESTION_ID] = suggestion
-    svc.get_suggestion_visible = AsyncMock(return_value=suggestion)
-    return svc
+    return _service_with_one_ready_suggestion()
 
 
 class TestApprovalActuallyCreatesSomething:
@@ -140,7 +156,7 @@ class TestApprovalActuallyCreatesSomething:
             organization_id=ORG,
         )
 
-        stored = service._suggestions_store[SUGGESTION_ID]
+        stored = service._repository.peek(SUGGESTION_ID)
         assert stored.status == SuggestionStatus.APPROVED
         assert stored.reviewed_by == "user_admin"
         assert stored.knowledge_item_id == "kb_abcdef0123456789"
@@ -222,10 +238,7 @@ class TestProgrammingErrorsAreNotSwallowed:
         """
         import inspect
 
-        svc = SuggestionService(knowledge_service=_knowledge_service_double())
-        suggestion = _ready_suggestion()
-        svc._suggestions_store[SUGGESTION_ID] = suggestion
-        svc.get_suggestion_visible = AsyncMock(return_value=suggestion)
+        svc = _service_with_one_ready_suggestion()
 
         await svc.approve_suggestion(
             suggestion_id=SUGGESTION_ID,
@@ -367,7 +380,7 @@ class TestReApprovalIsRefused:
                 organization_id=ORG,
             )
 
-        stored = service._suggestions_store[SUGGESTION_ID]
+        stored = service._repository.peek(SUGGESTION_ID)
         assert stored.knowledge_item_id == first["knowledge_item_id"]
 
 
@@ -396,5 +409,5 @@ class TestApprovalNeverClaimsAnIdItDoesNotHave:
                 organization_id=ORG,
             )
 
-        stored = service._suggestions_store[SUGGESTION_ID]
+        stored = service._repository.peek(SUGGESTION_ID)
         assert stored.status != SuggestionStatus.APPROVED

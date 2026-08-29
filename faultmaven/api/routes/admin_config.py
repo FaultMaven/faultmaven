@@ -456,6 +456,36 @@ def _rate_limiting_installed(app) -> bool:
     )
 
 
+def _suggestion_store_is_durable(app) -> bool:
+    """Is the composed knowledge-suggestion store durable and worker-shared?
+
+    Asks the object that is actually running, not the settings. ``WORKERS`` was
+    the old proxy for this question, and it stopped being one the moment the
+    store could be a database: ``WORKERS=1`` on a dict-backed process is still
+    a process that loses every pending review on restart, and ``WORKERS=4`` on
+    a database-backed one is fine. What an operator needs to know is which
+    store this process holds.
+
+    ``False`` covers both bad answers — a non-durable store is composed (which
+    is CORRECT, not a fault, on a deployment with no database configured), or no
+    suggestion service is composed at all and the routes answer 503. They have
+    the same consequence for scaling out, and the ``config_hint`` names both.
+    """
+    service = getattr(getattr(app, "state", None), "suggestion_service", None)
+    repository = getattr(service, "_repository", None) if service else None
+    if repository is None:
+        return False
+    # The store STATES its own durability (``ISuggestionRepository.is_durable``)
+    # rather than being recognised by type. An ``isinstance`` check would be one
+    # more proxy of the same kind as ``WORKERS`` — true of a class, not of the
+    # deployment — and it would go stale the moment a third implementation
+    # appears or the database one is composed over an ephemeral URL. The
+    # composition root is what keeps the claim honest: it picks the in-memory
+    # repository (``is_durable == False``) whenever
+    # ``persistent_database_configured`` says there is no database to write to.
+    return bool(getattr(repository, "is_durable", False))
+
+
 @router.get("/config/status", response_model=EnvConfigStatusResponse)
 async def get_env_config_status(
     request: Request,
@@ -541,26 +571,36 @@ async def get_env_config_status(
                     r'["^https://<id>\.chromiumapp\.org/?$"]'
                 ),
             ),
-            # Knowledge suggestions live in a per-worker in-memory store
-            # (#1214), so with WORKERS>1 an extract and its approve can land on
-            # different workers and the approve answers 404 for an id the API
-            # just issued. Reported here for the same reason as the consent skip
-            # above: the only other signal is a startup log line, and startup
-            # logs roll out of `kubectl logs` long before anyone investigates an
-            # intermittent 404. `enabled` reads as "safe on this deployment".
-            # The durable, worker-shared store is #1227.
+            # The knowledge-suggestion store, reported as the RUNTIME fact it
+            # is (#1227) rather than inferred from a setting. Reported here for
+            # the same reason as the consent skip above: the only other signal
+            # is a startup log line, and startup logs roll out of
+            # `kubectl logs` long before anyone investigates an intermittent
+            # 404.
+            #
+            # It reads False when the composed store is the in-memory double
+            # (#1214's shape — non-durable and per worker, so with WORKERS>1 or
+            # more than one pod an extract and its approve land on different
+            # processes and the approve 404s on an id the API just issued), and
+            # when no suggestion service was composed at all. It reads True only
+            # when the process actually holds the database-backed store, which
+            # is the point: the field answers "is what is running right now safe
+            # to scale out", and a value derived from WORKERS could not tell
+            # a database-backed deployment from a dict-backed one.
             "suggestion_store_worker_safe": FeatureStatus(
-                enabled=settings.server.workers <= 1,
+                enabled=_suggestion_store_is_durable(request.app),
                 description=(
-                    "Knowledge suggestions survive across API workers "
-                    "(extract → approve cannot land on different workers). "
-                    "The store is in-memory and per worker, so this is only "
-                    "true with a single worker; it is never durable across a "
-                    "restart."
+                    "Knowledge suggestions are stored durably and shared across "
+                    "API workers and pods (extract → approve cannot land on a "
+                    "process that has never seen the suggestion, and a restart "
+                    "does not drop the review inbox)."
                 ),
                 config_hint=(
-                    "Set WORKERS=1, or scale out only once the suggestion store "
-                    "is database-backed"
+                    "True when the process holds the database-backed suggestion "
+                    "store. False means no persistent DATABASE_URL is configured "
+                    "(so the store is in-memory), or no suggestion service is "
+                    "composed at all — configure a database, and until then run "
+                    "WORKERS=1"
                 ),
             ),
         }
