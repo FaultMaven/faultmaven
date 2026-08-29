@@ -851,19 +851,39 @@ class TestTheSkeletonNeedsRealAuthoring:
 
         assert RunbookValidator().validate_content(content).passed
 
-    def test_the_hint_comment_spells_the_subfield_labels(self):
-        """The hint comment shows each sub-field by name — the clearest way to
-        write it, and the shape #1226 could not use.
+    def test_the_hint_comment_emits_no_grammar_token(self):
+        """The hint names each sub-field in prose and writes no grammar token.
 
-        Until #1241 ``parse_cause_subfields`` did not strip HTML comments, so a
-        ``**Statement:**`` written inside the guidance comment was read as the
-        real field and made the empty skeleton PASS. #1226 worked around it by
-        banning the labels from the comment; the grammar now strips comments, so
-        this asserts the opposite of what that workaround did. Paired with
-        ``test_all_three_cause_subfields_start_empty`` above — which runs the
-        gate over this very skeleton — it pins BOTH halves: the labels are back
-        in the comment AND the skeleton is still refused."""
+        NOT the #1226 workaround wearing a new hat. #1226 banned these because
+        THIS repo's parser read a label inside a comment as the real field;
+        #1241 fixed that, and ``test_all_three_cause_subfields_start_empty``
+        above proves it by running the gate over this very skeleton — the labels
+        would now be harmless here.
+
+        What this pins is a PORTABILITY constraint on emitted content. This
+        method returns a runbook document, and a published runbook can be
+        committed to the corpus and built into a KB pack by
+        ``faultmaven-kb-toolkit``, whose ``parse_cause_subfields`` has no
+        comment handling (checked at ``371a517``). A grammar token written in
+        this comment is read there as real content, which would make the empty
+        skeleton pass the UPSTREAM gate.
+
+        Delete this test the day the mirror carries the countermeasure — and
+        not before. ``**Chain:**`` is included because it is a sub-field label
+        upstream splits on even though this skeleton omits the field.
+        """
+        skeleton = SuggestionService.fallback_template("case-example")
+        comment = skeleton[skeleton.index("<!--") : skeleton.index("-->")]
+        for sub in ("Statement", "Indicators", "Interventions", "Chain"):
+            assert f"**{sub}:**" not in comment
+        # Quadrant tags are the other token upstream reads structurally.
+        for quadrant in ("remediation", "defensive_fix", "mitigation", "loop_break"):
+            assert f"**{quadrant}**" not in comment
+
+    def test_the_hint_still_names_every_sub_field_for_the_author(self):
+        """The complement: dropping the markup must not drop the guidance, or
+        the constraint above would be satisfied by an empty comment."""
         skeleton = SuggestionService.fallback_template("case-example")
         comment = skeleton[skeleton.index("<!--") : skeleton.index("-->")]
         for sub in ("Statement", "Indicators", "Interventions"):
-            assert f"**{sub}:**" in comment
+            assert sub in comment

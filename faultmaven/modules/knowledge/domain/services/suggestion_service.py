@@ -767,17 +767,27 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         ``[INSUFFICIENT SOURCE DATA]`` markers are visible to a human reviewer
         and to nothing else.
 
-        The hint comment spells the three sub-field labels as worked examples,
-        which is the clearest way to write it and was NOT possible before #1241:
-        the parser read a label inside a comment as the real field, so the hint
-        itself made this empty skeleton PASS the gate. #1226 worked around that
-        here by forbidding the labels in the comment; the grammar now strips
-        comments before parsing, so the workaround is gone and the repair lives
-        in one place.
+        The hint comment names the sub-fields in PROSE and writes no grammar
+        token — no ``**Statement:**``, no ``**remediation**``. That looks like
+        the #1226 workaround and is not: #1226 forbade them because THIS repo's
+        parser read a label inside a comment as the real field, and that bug is
+        fixed (#1241) and pinned. The constraint that remains is about where
+        this text GOES. What this method returns is a runbook document, and a
+        published runbook can be committed to the corpus and built into a KB
+        pack by ``faultmaven-kb-toolkit`` — whose ``parse_cause_subfields`` has
+        no comment handling at all (checked at ``371a517``). Emitting grammar
+        tokens inside a comment would make this PR the thing that starts
+        producing documents the upstream mirror misparses.
+
+        So the rule is now a PORTABILITY constraint on emitted content, not a
+        workaround for a local defect, and it lifts the day the mirror carries
+        the countermeasure — not before. Until then, prose costs nothing: an
+        author reads "Statement" just as well without the asterisks.
 
         ``tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py``
-        pins all of it: v4-shaped, refused, and still refused after any single
-        sub-field is filled — with the labelled hint comment in place.
+        pins all of it: v4-shaped, refused, still refused after any single
+        sub-field is filled, and emitting no token the upstream parser would
+        read as content.
         """
         return f"""---
 id: {runbook_id}
@@ -818,14 +828,16 @@ level, and the tools needed.]
 ### Cause A: [INSUFFICIENT SOURCE DATA -- name the failure mode]
 <!-- All three sub-fields below are required and all three are empty. Fill in,
      in order:
-     **Statement:** one declarative sentence naming the single root cause.
-     **Indicators:** one bullet per observable, each tagged with the diagnostic
-       step that shows it — e.g. `- root: [Step 1] connections climb and never
-       fall`.
-     **Interventions:** one bullet per fix, each tagged with its quadrant and
-       the rung it targets, each carrying its own verification — e.g.
-       `- **remediation** (root): restart the leaking worker. **Risk:** brief
-       downtime. **Duration:** 2m. **Verification:** connections fall.` -->
+     Statement - one declarative sentence naming the single root cause.
+     Indicators - one bullet per observable, each tagged with the diagnostic
+       step that shows it, for example: - root: [Step 1] connections climb
+       and never fall.
+     Interventions - one bullet per fix, tagged with its quadrant (remediation,
+       defensive_fix, mitigation or loop_break) and the rung it targets, each
+       carrying its own Risk, Duration and Verification.
+     Written without bold markup on purpose: this file can be built into a KB
+     pack by faultmaven-kb-toolkit, whose parser does not skip comments, so a
+     grammar token written here would be read there as real content. -->
 **Statement:**
 **Indicators:**
 **Interventions:**
