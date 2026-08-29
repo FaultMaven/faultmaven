@@ -67,12 +67,16 @@ from faultmaven.infrastructure.persistence.models import (
 )
 from faultmaven.modules.auth.contracts import DevUser
 from faultmaven.modules.case.api.routes import router as case_router
+from faultmaven.modules.knowledge.domain.models.suggestion import KnowledgeSuggestion
 from faultmaven.modules.knowledge.api.routes import router as knowledge_router
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
     SuggestionService,
+)
+from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+    DatabaseSuggestionRepository,
 )
 from tests.runbook_samples import valid_runbook
 
@@ -170,6 +174,11 @@ def wired(session_factory, tmp_path, monkeypatch):
         knowledge_service=knowledge_service,
         sanitizer=None,  # no PII engine in this deployment shape → scan CLEAN
         llm_provider=None,  # extraction falls back to its template
+        # The REAL store, over the same in-memory SQLite the knowledge service
+        # writes to (#1227). A dict here would leave the store the one part of
+        # this flow still proved only by a double — and it is the part the
+        # cross-worker defect lives in.
+        suggestion_repository=DatabaseSuggestionRepository(session_factory),
     )
 
     app = FastAPI()
@@ -221,7 +230,7 @@ class TestTheSuggestionSurvivesTheRequest:
         assert resp.json()["suggestion_id"] == suggestion_id
         assert resp.json()["case_id"] == CASE_ID
 
-    def test_the_route_hands_out_the_composition_roots_instance(self, wired):
+    async def test_the_route_hands_out_the_composition_roots_instance(self, wired):
         """Not merely 'an instance' — the one app.state holds, on every call."""
         client, app, _knowledge, suggestion_service = wired
 
@@ -229,7 +238,8 @@ class TestTheSuggestionSurvivesTheRequest:
         second = _extract(client)
 
         assert app.state.suggestion_service is suggestion_service
-        assert {first, second} <= set(suggestion_service._suggestions_store)
+        assert await suggestion_service.get_suggestion(first) is not None
+        assert await suggestion_service.get_suggestion(second) is not None
 
     def test_it_lists_through_the_review_inbox(self, wired):
         client = wired[0]
@@ -322,7 +332,7 @@ class TestTheQualityGate:
 
         client.post(f"/knowledge/suggestions/{suggestion_id}/approve", json={})
 
-        stored = suggestion_service._suggestions_store[suggestion_id]
+        stored = await suggestion_service.get_suggestion(suggestion_id)
         assert stored.status.value == "pending_review"
         assert stored.knowledge_item_id is None
 
@@ -371,7 +381,7 @@ class TestTheApprovalThatActuallyPublishes:
         assert rows[0].scope == "global"
         assert rows[0].organization_id is None
 
-    def test_the_link_is_recorded_on_the_suggestion(self, wired):
+    async def test_the_link_is_recorded_on_the_suggestion(self, wired):
         client, _app, _knowledge, suggestion_service = wired
         suggestion_id = _extract(client)
         _make_reviewable(client, suggestion_id)
@@ -380,7 +390,7 @@ class TestTheApprovalThatActuallyPublishes:
             f"/knowledge/suggestions/{suggestion_id}/approve", json={}
         ).json()["knowledge_item_id"]
 
-        stored = suggestion_service._suggestions_store[suggestion_id]
+        stored = await suggestion_service.get_suggestion(suggestion_id)
         assert stored.status.value == "approved"
         assert stored.knowledge_item_id == item_id
         assert stored.reviewed_by == ADMIN_ID
@@ -411,7 +421,7 @@ class TestTheApprovalThatActuallyPublishes:
 
 
 class TestTheNotReadyPathIsNowReachable:
-    def test_a_suggestion_with_detected_pii_is_a_400_about_pii(self, wired):
+    async def test_a_suggestion_with_detected_pii_is_a_400_about_pii(self, wired):
         """#1200 documented this 400 as misleading; #1211 made it truthful. It
         was still unreachable — ``get_suggestion_visible`` returned None first
         and the route answered 404. With the service wired it is reachable, and
@@ -429,9 +439,11 @@ class TestTheNotReadyPathIsNowReachable:
             PIIScanStatus,
         )
 
-        suggestion_service._suggestions_store[suggestion_id].pii_scan_status = (
-            PIIScanStatus.PII_DETECTED
-        )
+        # Load, mutate, save — the store is the database now, so poking the
+        # object a read handed back changes nothing (#1227).
+        stored = await suggestion_service.get_suggestion(suggestion_id)
+        stored.pii_scan_status = PIIScanStatus.PII_DETECTED
+        await suggestion_service._repository.save(stored)
 
         resp = client.post(f"/knowledge/suggestions/{suggestion_id}/approve", json={})
 
@@ -455,23 +467,24 @@ class TestTheNotReadyPathIsNowReachable:
 
 class TestTheCompensatingDelete:
     async def test_a_failure_after_publish_rolls_the_knowledge_item_back(
-        self, wired, session_factory
+        self, wired, session_factory, monkeypatch
     ):
         """``suggestion.approve()`` re-checks readiness and a concurrent edit
         resets the scan, so this raises AFTER ``upload_document`` has written a
         row, its vectors and a file. Without compensation the corpus keeps a
         runbook nothing links to while the client is told the approval failed.
         """
-        client, _app, _knowledge, suggestion_service = wired
+        client, _app, _knowledge, _suggestion_service = wired
         suggestion_id = _extract(client)
         _make_reviewable(client, suggestion_id)
 
-        suggestion = suggestion_service._suggestions_store[suggestion_id]
-
-        def _raise(**_kwargs: Any) -> None:
+        def _raise(*_args: Any, **_kwargs: Any) -> None:
             raise RuntimeError("concurrent edit reset the scan")
 
-        suggestion.approve = _raise
+        # On the CLASS: the approval loads its own instance out of the database,
+        # so an attribute set on some other copy of the row would never be seen
+        # and this test would silently assert the happy path (#1227).
+        monkeypatch.setattr(KnowledgeSuggestion, "approve", _raise, raising=True)
 
         resp = client.post(f"/knowledge/suggestions/{suggestion_id}/approve", json={})
 
@@ -546,9 +559,12 @@ class TestAnUnwiredDeploymentSaysSo:
 class TestAFullReviewInboxRefusesHonestly:
     """The store is bounded (#1214 review) and never evicts unreviewed work, so
     a queue full of pending reviews has to refuse rather than silently drop
-    something a reviewer has not seen. #1227 removes the ceiling."""
+    something a reviewer has not seen. Since #1227 the ceiling is per
+    organization, over the durable table."""
 
-    def test_extract_answers_503_when_the_queue_is_full_of_pending_reviews(self, wired):
+    async def test_extract_answers_503_when_the_queue_is_full_of_pending_reviews(
+        self, wired
+    ):
         client, _app, _knowledge, suggestion_service = wired
         suggestion_service._max_stored_suggestions = 1
         _extract(client)  # fills the single slot with a PENDING_REVIEW entry
@@ -557,7 +573,12 @@ class TestAFullReviewInboxRefusesHonestly:
 
         assert resp.status_code == 503, resp.text
         assert "queue is full" in resp.json()["detail"]
-        assert len(suggestion_service._suggestions_store) == 1
+        assert (
+            await suggestion_service._repository.count_for_organization(
+                STANDALONE_ORG_ID
+            )
+            == 1
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -36,6 +36,9 @@ from faultmaven.modules.knowledge.domain.services.knowledge_service import (
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
     SuggestionService,
 )
+from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+    InMemorySuggestionRepository,
+)
 from faultmaven.providers.tenancy.factory import BUILTIN_MULTI, BUILTIN_SINGLE
 
 ORG_A = "org-alpha-11111111"
@@ -79,10 +82,11 @@ def _service() -> SuggestionService:
     knowledge_service.upload_document.return_value = {
         "document_id": "kb_abcdef0123456789"
     }
-    service = SuggestionService(knowledge_service=knowledge_service)
-    service._suggestions_store[SUG_A] = _suggestion(SUG_A, ORG_A)
-    service._suggestions_store[SUG_B] = _suggestion(SUG_B, ORG_B)
-    return service
+    repository = InMemorySuggestionRepository()
+    repository.seed(_suggestion(SUG_A, ORG_A), _suggestion(SUG_B, ORG_B))
+    return SuggestionService(
+        knowledge_service=knowledge_service, suggestion_repository=repository
+    )
 
 
 def _admin(organization_id) -> DevUser:
@@ -160,8 +164,9 @@ def test_another_tenants_suggestion_is_404_on_every_id_route(actor_org, foreign_
         assert resp.status_code == 404, f"{name} answered {resp.status_code}"
         assert resp.json()["detail"] == "Suggestion not found"
 
-    # And nothing was mutated behind the 404s.
-    foreign = service._suggestions_store[foreign_id]
+    # And nothing was mutated behind the 404s — read back OUT of the store,
+    # since since #1227 the service works on detached copies.
+    foreign = service._repository.peek(foreign_id)
     assert foreign.status is SuggestionStatus.PENDING_REVIEW
     assert foreign.reviewed_by is None
     assert foreign.pii_remediated_by is None
@@ -213,7 +218,7 @@ def test_approve_reaches_the_owning_tenants_suggestion():
         client = _client(service, _admin(ORG_A))
         resp = client.post(f"/knowledge/suggestions/{SUG_A}/approve", json={})
     assert resp.status_code == 201
-    assert service._suggestions_store[SUG_A].status is SuggestionStatus.APPROVED
+    assert service._repository.peek(SUG_A).status is SuggestionStatus.APPROVED
 
 
 # =============================================================================
@@ -273,8 +278,9 @@ def test_the_standalone_sentinel_is_a_tenant_under_single():
     """The same id is the legitimate tenant in a Standalone deployment."""
     from faultmaven.config.constants import STANDALONE_ORG_ID
 
-    service = SuggestionService()
-    service._suggestions_store[SUG_A] = _suggestion(SUG_A, STANDALONE_ORG_ID)
+    repository = InMemorySuggestionRepository()
+    repository.seed(_suggestion(SUG_A, STANDALONE_ORG_ID))
+    service = SuggestionService(suggestion_repository=repository)
     client = _client(service, _admin(STANDALONE_ORG_ID))
     with _SINGLE:
         resp = client.get(f"/knowledge/suggestions/{SUG_A}")
@@ -330,14 +336,15 @@ async def test_a_tenantless_actor_cannot_match_a_tenantless_row(row_org, actor_o
     universally readable.
 
     ``KnowledgeSuggestion.__post_init__`` refuses to construct an org-less
-    suggestion, so this row is mutated into existence after construction — the
-    store is a plain mapping, and this is the state the equality check alone
+    suggestion, so this row is mutated into existence after construction and
+    seeded straight into the store — this is the state the equality check alone
     would mishandle.
     """
     orphan = _suggestion("sug_orphan", ORG_A)
     orphan.organization_id = row_org
-    service = SuggestionService()
-    service._suggestions_store["sug_orphan"] = orphan
+    repository = InMemorySuggestionRepository()
+    repository.seed(orphan)
+    service = SuggestionService(suggestion_repository=repository)
     got = await service.get_suggestion_visible("sug_orphan", organization_id=actor_org)
     assert got is None
 

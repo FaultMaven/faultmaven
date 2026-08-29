@@ -430,6 +430,26 @@ class InMemorySuggestionRepository(SuggestionRepository):
     def __init__(self) -> None:
         self._items: Dict[str, KnowledgeSuggestion] = {}
 
+    # -- synchronous affordances, for test setup only ---------------------
+    #
+    # The repository protocol is async because the database one has to be.
+    # These two exist so a test whose setup or assertion is synchronous (a
+    # ``TestClient`` route test, say) does not have to reach into ``_items``
+    # itself. They copy on both sides exactly as ``save``/``get`` do, so a test
+    # using them sees the same detached-copy semantics the service does.
+
+    def seed(self, *suggestions: KnowledgeSuggestion) -> None:
+        """Put suggestions in the store without awaiting."""
+        for suggestion in suggestions:
+            self._items[suggestion.suggestion_id] = deepcopy(suggestion)
+
+    def peek(self, suggestion_id: str) -> Optional[KnowledgeSuggestion]:
+        """Read one back without awaiting; ``None`` if absent."""
+        stored = self._items.get(suggestion_id)
+        return deepcopy(stored) if stored is not None else None
+
+    # -- protocol ---------------------------------------------------------
+
     async def save(self, suggestion: KnowledgeSuggestion) -> KnowledgeSuggestion:
         self._items[suggestion.suggestion_id] = deepcopy(suggestion)
         return deepcopy(suggestion)

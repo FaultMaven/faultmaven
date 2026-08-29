@@ -5,8 +5,17 @@ Three things the singleton made newly important, none of which had coverage:
 1. **The store is unbounded.** Making the service a singleton gave its in-memory
    dict the lifetime of the process, and nothing ever removed an entry —
    approved, rejected and abandoned suggestions accumulated, each holding a full
-   LLM-generated article. The durable replacement is #1227; until then the store
-   is capped and evicts, and it must never evict work a reviewer has not seen.
+   LLM-generated article. The store is capped and evicts, and it must never
+   evict work a reviewer has not seen.
+
+Since #1227 the store is a repository rather than a dict, and the cap is scoped
+per organization (the durable store is one table shared by every tenant, so a
+deployment-wide count would let one tenant's undrained inbox refuse another
+tenant's extraction). These tests drive it through
+``InMemorySuggestionRepository``, which — like the database one — hands back a
+DETACHED COPY on every read: a suggestion mutated in the service is not stored
+until it is saved, so an assertion about state has to re-read the store rather
+than inspect the object it was handed.
 2. **SCAN_FAILED became reachable.** Every pre-#1214 service was built with
    ``sanitizer=None``, so every scan was marked CLEAN and a failed scan could not
    occur in production. Wiring the real sanitizer made it reachable — and it was
@@ -32,6 +41,9 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 )
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
     SuggestionService,
+)
+from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+    InMemorySuggestionRepository,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.knowledge_base]
@@ -62,8 +74,29 @@ def _suggestion(
 
 def _service(capacity: int = 3) -> SuggestionService:
     return SuggestionService(
-        knowledge_service=MagicMock(), max_stored_suggestions=capacity
+        knowledge_service=MagicMock(),
+        max_stored_suggestions=capacity,
+        suggestion_repository=InMemorySuggestionRepository(),
     )
+
+
+async def _seed(svc: SuggestionService, suggestion: KnowledgeSuggestion) -> None:
+    """Put a suggestion in the store the way the service would."""
+    await svc._repository.save(suggestion)
+
+
+async def _stored(svc: SuggestionService, suggestion_id: str):
+    """Read one back OUT of the store — never off a returned object."""
+    return await svc._repository.get(suggestion_id)
+
+
+async def _stored_ids(svc: SuggestionService) -> set:
+    page, _ = await svc._repository.list_for_organization(ORG, limit=1000)
+    return {s.suggestion_id for s in page}
+
+
+async def _stored_count(svc: SuggestionService) -> int:
+    return await svc._repository.count_for_organization(ORG)
 
 
 async def _extract(svc: SuggestionService, case_id: str = "case_aabb11223344"):
@@ -81,49 +114,48 @@ class TestTheStoreIsBounded:
     async def test_it_stops_growing_at_the_cap(self):
         svc = _service(capacity=3)
         for i in range(3):
-            svc._suggestions_store[f"old_{i}"] = _suggestion(
-                f"old_{i}", SuggestionStatus.APPROVED, age_seconds=100 - i
+            await _seed(
+                svc,
+                _suggestion(f"old_{i}", SuggestionStatus.APPROVED, age_seconds=100 - i),
             )
 
         await _extract(svc)
 
-        assert len(svc._suggestions_store) == 3
+        assert await _stored_count(svc) == 3
 
     async def test_the_oldest_decision_is_evicted_first(self):
         svc = _service(capacity=3)
-        svc._suggestions_store["oldest"] = _suggestion(
-            "oldest", SuggestionStatus.APPROVED, age_seconds=900
+        await _seed(
+            svc, _suggestion("oldest", SuggestionStatus.APPROVED, age_seconds=900)
         )
-        svc._suggestions_store["newer"] = _suggestion(
-            "newer", SuggestionStatus.REJECTED, age_seconds=10
+        await _seed(
+            svc, _suggestion("newer", SuggestionStatus.REJECTED, age_seconds=10)
         )
-        svc._suggestions_store["newest"] = _suggestion(
-            "newest", SuggestionStatus.APPROVED, age_seconds=1
+        await _seed(
+            svc, _suggestion("newest", SuggestionStatus.APPROVED, age_seconds=1)
         )
 
         await _extract(svc)
 
-        assert "oldest" not in svc._suggestions_store
-        assert "newer" in svc._suggestions_store
-        assert "newest" in svc._suggestions_store
+        assert await _stored(svc, "oldest") is None
+        assert await _stored(svc, "newer") is not None
+        assert await _stored(svc, "newest") is not None
 
     async def test_rejected_suggestions_are_evictable_too(self):
         """Both terminal states are in the pool — a rejection has nothing left
         to publish, so dropping it from an in-memory inbox loses only history."""
         svc = _service(capacity=1)
-        svc._suggestions_store["rejected"] = _suggestion(
-            "rejected", SuggestionStatus.REJECTED, age_seconds=50
+        await _seed(
+            svc, _suggestion("rejected", SuggestionStatus.REJECTED, age_seconds=50)
         )
 
         await _extract(svc)
 
-        assert "rejected" not in svc._suggestions_store
+        assert await _stored(svc, "rejected") is None
 
     async def test_eviction_is_logged(self, caplog):
         svc = _service(capacity=1)
-        svc._suggestions_store["done"] = _suggestion(
-            "done", SuggestionStatus.APPROVED, age_seconds=50
-        )
+        await _seed(svc, _suggestion("done", SuggestionStatus.APPROVED, age_seconds=50))
 
         with caplog.at_level("WARNING"):
             await _extract(svc)
@@ -139,39 +171,37 @@ class TestPendingWorkIsNeverEvicted:
     async def test_a_full_queue_of_pending_reviews_refuses_the_extract(self):
         svc = _service(capacity=2)
         for i in range(2):
-            svc._suggestions_store[f"pending_{i}"] = _suggestion(f"pending_{i}")
+            await _seed(svc, _suggestion(f"pending_{i}"))
 
         with pytest.raises(ServiceUnavailableException, match="at capacity"):
             await _extract(svc)
 
-        assert set(svc._suggestions_store) == {"pending_0", "pending_1"}
+        assert await _stored_ids(svc) == {"pending_0", "pending_1"}
 
     async def test_a_draft_is_protected_like_a_pending_review(self):
         svc = _service(capacity=1)
-        svc._suggestions_store["draft"] = _suggestion("draft", SuggestionStatus.DRAFT)
+        await _seed(svc, _suggestion("draft", SuggestionStatus.DRAFT))
 
         with pytest.raises(ServiceUnavailableException):
             await _extract(svc)
 
-        assert "draft" in svc._suggestions_store
+        assert await _stored(svc, "draft") is not None
 
     async def test_one_terminal_entry_is_enough_to_make_room(self):
         """The refusal is about having nothing evictable, not about being full."""
         svc = _service(capacity=2)
-        svc._suggestions_store["pending"] = _suggestion("pending")
-        svc._suggestions_store["done"] = _suggestion(
-            "done", SuggestionStatus.APPROVED, age_seconds=50
-        )
+        await _seed(svc, _suggestion("pending"))
+        await _seed(svc, _suggestion("done", SuggestionStatus.APPROVED, age_seconds=50))
 
         suggestion = await _extract(svc)
 
-        assert "pending" in svc._suggestions_store
-        assert "done" not in svc._suggestions_store
-        assert suggestion.suggestion_id in svc._suggestions_store
+        assert await _stored(svc, "pending") is not None
+        assert await _stored(svc, "done") is None
+        assert await _stored(svc, suggestion.suggestion_id) is not None
 
     async def test_the_refusal_is_logged_with_the_counts(self, caplog):
         svc = _service(capacity=1)
-        svc._suggestions_store["pending"] = _suggestion("pending")
+        await _seed(svc, _suggestion("pending"))
 
         with caplog.at_level("ERROR"):
             with pytest.raises(ServiceUnavailableException):
@@ -210,17 +240,26 @@ class TestAFailedScanRecovers:
     async def test_the_first_scan_failing_leaves_scan_failed(self):
         sanitizer = _FlakySanitizer(failures=1)
         svc = SuggestionService(
-            knowledge_service=_knowledge_double(), sanitizer=sanitizer
+            knowledge_service=_knowledge_double(),
+            sanitizer=sanitizer,
+            suggestion_repository=InMemorySuggestionRepository(),
         )
 
         suggestion = await _extract(svc)
 
         assert suggestion.pii_scan_status is PIIScanStatus.SCAN_FAILED
+        # ...and that is what was STORED, not only what was returned.
+        stored = await _stored(svc, suggestion.suggestion_id)
+        assert stored.pii_scan_status is PIIScanStatus.SCAN_FAILED
 
     async def test_approval_rescans_and_proceeds_once_the_engine_recovers(self):
         sanitizer = _FlakySanitizer(failures=1)
         knowledge = _knowledge_double()
-        svc = SuggestionService(knowledge_service=knowledge, sanitizer=sanitizer)
+        svc = SuggestionService(
+            knowledge_service=knowledge,
+            sanitizer=sanitizer,
+            suggestion_repository=InMemorySuggestionRepository(),
+        )
         suggestion = await _extract(svc)
         assert suggestion.pii_scan_status is PIIScanStatus.SCAN_FAILED
 
@@ -232,7 +271,12 @@ class TestAFailedScanRecovers:
 
         assert result is not None, "a recovered scan should let approval proceed"
         assert result["status"] == "approved"
-        assert suggestion.pii_scan_status is PIIScanStatus.CLEAN
+        # Re-read: the recovered scan has to be PERSISTED, not just applied to
+        # the copy the approval was working on. Without the save, the next read
+        # still says SCAN_FAILED and the re-scan is spent again on every visit.
+        stored = await _stored(svc, suggestion.suggestion_id)
+        assert stored.pii_scan_status is PIIScanStatus.CLEAN
+        assert stored.status is SuggestionStatus.APPROVED
         # Three sanitize calls, not two: a scan is now TWO calls (title, then
         # content — #1226 rework), and the first scan aborts on the title call
         # that raises, so it never reaches the content. 1 failed + 2 recovered.
@@ -243,7 +287,11 @@ class TestAFailedScanRecovers:
         SCAN_FAILED and the route's 400 is truthful again."""
         sanitizer = _FlakySanitizer(failures=5)
         knowledge = _knowledge_double()
-        svc = SuggestionService(knowledge_service=knowledge, sanitizer=sanitizer)
+        svc = SuggestionService(
+            knowledge_service=knowledge,
+            sanitizer=sanitizer,
+            suggestion_repository=InMemorySuggestionRepository(),
+        )
         suggestion = await _extract(svc)
 
         result = await svc.approve_suggestion(
@@ -253,7 +301,8 @@ class TestAFailedScanRecovers:
         )
 
         assert result is None
-        assert suggestion.pii_scan_status is PIIScanStatus.SCAN_FAILED
+        stored = await _stored(svc, suggestion.suggestion_id)
+        assert stored.pii_scan_status is PIIScanStatus.SCAN_FAILED
         knowledge.upload_document.assert_not_awaited()
 
     async def test_detected_pii_is_not_rescanned_away(self):
@@ -263,7 +312,11 @@ class TestAFailedScanRecovers:
         sanitizer = MagicMock()
         sanitizer.asanitize = AsyncMock(return_value="REDACTED")
         knowledge = _knowledge_double()
-        svc = SuggestionService(knowledge_service=knowledge, sanitizer=sanitizer)
+        svc = SuggestionService(
+            knowledge_service=knowledge,
+            sanitizer=sanitizer,
+            suggestion_repository=InMemorySuggestionRepository(),
+        )
         suggestion = await _extract(svc)
         assert suggestion.pii_scan_status is PIIScanStatus.PII_DETECTED
         scans_after_extraction = sanitizer.asanitize.await_count
