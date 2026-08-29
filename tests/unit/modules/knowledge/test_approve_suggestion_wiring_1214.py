@@ -376,13 +376,31 @@ def test_the_factory_injects_the_knowledge_service():
 async def test_the_service_still_scans_for_pii_when_wired():
     """The sanitizer the factory threads through is actually used — a wire that
     reaches the constructor and nothing else would look identical here without
-    this."""
+    this.
+
+    TITLE AND CONTENT ARE SCANNED SEPARATELY (#1226 rework), so this is two
+    awaits, not one. It used to scan the concatenation ``title + content`` and
+    assign the whole sanitized buffer back to ``suggested_content``, which put
+    the title in front of the frontmatter and made every redacted draft fail
+    the runbook gate on ``No YAML frontmatter found``. Asserting the two calls
+    and their arguments is what pins that apart."""
     sanitizer = MagicMock()
-    sanitizer.asanitize = AsyncMock(return_value="REDACTED")
+    sanitizer.asanitize = AsyncMock(side_effect=lambda text: f"REDACTED::{text[:6]}")
     svc = SuggestionService(knowledge_service=MagicMock(), sanitizer=sanitizer)
     suggestion = _ready_suggestion()
+    original_title = suggestion.suggested_title
+    original_content = suggestion.suggested_content
 
     await svc._scan_for_pii(suggestion)
 
-    sanitizer.asanitize.assert_awaited_once()
+    assert sanitizer.asanitize.await_count == 2
+    scanned = [c.args[0] for c in sanitizer.asanitize.await_args_list]
+    assert scanned == [original_title, original_content]
+    # Never the concatenation, in either direction.
+    assert not any(
+        "\n\n" in text and text not in (original_content,) for text in scanned
+    )
     assert suggestion.pii_scan_status is PIIScanStatus.PII_DETECTED
+    # Each redacted value lands in its OWN field.
+    assert suggestion.suggested_title == f"REDACTED::{original_title[:6]}"
+    assert suggestion.suggested_content == f"REDACTED::{original_content[:6]}"

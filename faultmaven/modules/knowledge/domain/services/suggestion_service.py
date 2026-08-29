@@ -8,17 +8,57 @@ Design Reference: Source Verification Badges Feature
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import ConflictError, ServiceUnavailableException
+from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
+from faultmaven.modules.knowledge.domain.models.conversion import ValidationResult
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
     PIIScanStatus,
     SuggestionStatus,
 )
+
+# Same-package siblings. The v4 authoring prompt and the frontmatter-id repair
+# are the conversion path's, reused rather than re-declared (#1226): a second
+# copy of the template is a second thing to keep in step with the validator, and
+# ``test_cause_grammar_vocab`` pins exactly one of them against ``cause_grammar``.
+from faultmaven.modules.knowledge.domain.services.conversion_service import (
+    CONVERSION_SYSTEM_PROMPT,
+    RUNBOOK_MAX_TOKENS,
+    RUNBOOK_MAX_TOKENS_CEILING,
+    _force_frontmatter_id,
+)
+from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    VALID_DOMAINS,
+    RunbookValidator,
+)
+from faultmaven.utils.runbook_id import runbook_id_from_parts
 from faultmaven.utils.serialization import to_json_compatible
+
+
+def _as_kebab(runbook_id: str) -> str:
+    """Coerce a minted id into the kebab grammar the validator enforces.
+
+    ``runbook_id_from_parts`` can return a value its own docstring says it does
+    not: for an over-length input it truncates to 55 characters and appends
+    ``"-" + md5[:4]``, so a slug whose 55th character is already a hyphen yields
+    a DOUBLE hyphen — and ``^[a-z0-9]+(-[a-z0-9]+)*$`` rejects that. Measured on
+    the extraction eval: ``tls-outbound-tls-failure-due-to-expired-ca-certificate--7217``
+    was one of eight first drafts, refused by the gate for its id alone.
+
+    Repaired HERE rather than in the shared helper on purpose. That helper is
+    pinned byte-for-byte by ``tests/unit/utils/test_runbook_id_consolidation.py``
+    because its output is a PERSISTED id (``conversion_drafts.runbook_id``,
+    runbook frontmatter), so changing it is a decision about orphaning existing
+    rows — a call for the owner of that seam, not a side effect of this lane.
+    The defect is real and reaches the two conversion call sites as well; it is
+    reported as a residual rather than fixed silently.
+    """
+    return re.sub(r"-{2,}", "-", runbook_id or "").strip("-")
 
 
 class SuggestionService:
@@ -31,34 +71,112 @@ class SuggestionService:
     - Approval workflow with bidirectional linking
     """
 
-    # LLM prompt for knowledge extraction
-    EXTRACTION_PROMPT = """Analyze this incident case and extract reusable knowledge.
+    # Case-specific instructions, LAYERED ON the shared v4 authoring prompt
+    # (#1226). ``CONVERSION_SYSTEM_PROMPT`` carries the template and the rules;
+    # this carries only what the case path adds on top.
+    #
+    # It used to be the whole prompt, and it asked for
+    # ``## Problem / ## Root Cause / ## Solution / ## Prevention``. Since #1214
+    # ``upload_document`` enforces ``RunbookValidator`` before its first side
+    # effect, and that shape fails it with six errors — no frontmatter, and five
+    # of the six required sections missing — so approving an extraction without a
+    # human reshape was ALWAYS a 422. The extractor moves to meet the gate; the
+    # gate does not move (that is the product decision recorded on #1214).
+    EXTRACTION_PROMPT = """
+--- CONVERSION REQUEST ---
+The source material below is a RESOLVED INCIDENT CASE — its transcript and
+evidence summaries — not a document. Convert it into ONE runbook covering the
+single failure mode the case is about, following the template and the rules
+above exactly.
 
+SCOPE: global
+TODAY: {today_iso}
+SOURCE FILENAME: {source_label}
+
+The frontmatter `scope` field MUST be exactly: global
+The frontmatter `id` field is kebab-case derived from the DE-IDENTIFIED title
+you write below — NEVER from the case title, which names an incident. It is
+normalised after you write it, so spend your care on the title.
+`domain`, `service`, `severity` and `symptom_class` are NOT supplied for a case:
+infer each one from the case content, using only the controlled vocabularies.
+`domain` MUST be one of: {domain_vocab}. It is a coarse system-layer label, not
+the technology — a Kubernetes scheduling failure is `compute`, a cache eviction
+is `database`, a resolver timeout is `networking`, a web tier is `application`.
+Put the technology in `service` and `tags`, where it is free text.
+
+Each Indicator carries exactly ONE `[Step N]` token. To cite two steps, write
+two Indicator entries — `[Step 2, Step 3]` is not a token and is rejected.
+
+DE-IDENTIFICATION — mandatory, and applied to every section including code
+blocks. A runbook is reusable knowledge, not an incident record. Remove:
+- absolute timestamps and dates (write relative time: "after ~2 hours")
+- user names, email addresses and account identifiers
+- hostnames, IP addresses, internal URLs, cluster and namespace names
+- customer and organization names
+- ticket, incident and case identifiers
+Replace each with a generic placeholder (`<hostname>`, `<namespace>`) or with a
+description of the role it played. KEEP product names, versions, error strings
+and command shapes — those are what make the runbook usable.
+
+Emit the runbook and nothing else: no preamble, no closing commentary, no
+markdown code fence around the document. The first characters of your output are
+the opening `---` of the frontmatter.
+
+--- SOURCE MATERIAL: CASE ---
 Case Title: {case_title}
 Description: {case_description}
 
 {messages_section}
 
 {evidence_section}
-
-Generate a knowledge article that:
-1. Describes the problem pattern (symptoms, scope, conditions)
-2. Explains the root cause
-3. Provides step-by-step resolution
-4. Includes prevention recommendations
-5. **CRITICAL**: Remove ALL incident-specific details:
-   - Specific timestamps (use relative time like "after X hours")
-   - Specific user names or email addresses
-   - Specific hostnames, IP addresses, or internal URLs
-   - Specific customer or organization names
-   - Any other personally identifiable information
-
-Format as Markdown with these sections:
-## Problem
-## Root Cause
-## Solution
-## Prevention
+--- END SOURCE MATERIAL ---
 """
+
+    #: Appended to the extraction prompt when the previous attempt failed the
+    #: gate. The validator's errors are STRUCTURED
+    #: (``ValidationResult.errors`` — the same list ``RunbookQualityError``
+    #: carries), so the repair turn names the defects instead of re-asking for
+    #: the schema and hoping (#1226).
+    REPAIR_PROMPT = """
+--- REPAIR REQUIRED (attempt {attempt} of {max_attempts}) ---
+Your previous output was REJECTED by the runbook validator. The validator is
+mechanical: every line below is a specific structural violation, and the
+document is refused until all of them are gone.
+
+VALIDATOR ERRORS ({error_count}):
+{errors}
+
+Fix exactly these defects. Do not restructure anything that was not flagged,
+and do not drop content to make an error go away. Re-emit the COMPLETE
+corrected runbook, starting at the opening `---`, and output nothing else.
+
+--- YOUR PREVIOUS OUTPUT ---
+{previous_output}
+--- END PREVIOUS OUTPUT ---
+"""
+
+    #: Total extraction attempts, first try included — so ONE repair turn.
+    #:
+    #: Sized from the measurement in ``tests/eval/suggestion_extraction``, not
+    #: from taste. On that corpus (8 cases, claude-sonnet-4-5, 2026-08-29):
+    #: **5/8 cleared the gate on the first draft and the remaining 3/8 cleared
+    #: it on the repair turn** — 8/8 within the budget, and nothing left for a
+    #: third turn to buy. That is a measurement of when it is ENOUGH, not proof
+    #: that a third turn never helps: the corpus never produced a twice-failing
+    #: draft for one to act on.
+    #:
+    #: The cost side is what makes 2 the right stopping point rather than 3.
+    #: This counts GATE attempts, and each one wraps
+    #: ``generate_with_truncation_retry``, which spends a second generation of
+    #: its own if the body comes back cut — so the budget is up to FOUR
+    #: generations, not two, inside a synchronous HTTP request. At the ~20-60 s
+    #: per generation the eval measured, a speculative third gate attempt is
+    #: bought with reviewer latency on every extraction that was going to fail
+    #: anyway — and a draft that fails twice reaches the reviewer with its
+    #: errors attached, which is the recovery this lane built.
+    #:
+    #: Re-run that driver before changing this.
+    MAX_EXTRACTION_ATTEMPTS = 2
 
     #: Cap on the in-memory store (see #1227 for the durable replacement).
     #:
@@ -79,6 +197,7 @@ Format as Markdown with these sections:
         sanitizer: Optional[Any] = None,
         llm_provider: Optional[Any] = None,
         max_stored_suggestions: Optional[int] = None,
+        max_extraction_attempts: Optional[int] = None,
     ):
         """Initialize the suggestion service.
 
@@ -90,6 +209,11 @@ Format as Markdown with these sections:
             max_stored_suggestions: Cap on the in-memory store; defaults to
                 :attr:`MAX_STORED_SUGGESTIONS`. Injectable so a test can drive
                 the eviction path without minting hundreds of suggestions.
+            max_extraction_attempts: Total runbook-generation attempts per
+                extraction, first try included; defaults to
+                :attr:`MAX_EXTRACTION_ATTEMPTS`. Injectable so a test can pin
+                the retry budget instead of inheriting whatever the shipped
+                number happens to be.
         """
         self.logger = logging.getLogger(__name__)
         self._case_repository = case_repository
@@ -101,6 +225,15 @@ Format as Markdown with these sections:
             if max_stored_suggestions is None
             else max_stored_suggestions
         )
+        self._max_extraction_attempts = max(
+            1,
+            (
+                self.MAX_EXTRACTION_ATTEMPTS
+                if max_extraction_attempts is None
+                else max_extraction_attempts
+            ),
+        )
+        self._validator = RunbookValidator()
 
         # In-memory store. NOT durable and NOT shared across workers — a restart
         # drops every pending suggestion and with WORKERS>1 an extract handled by
@@ -132,6 +265,20 @@ Format as Markdown with these sections:
             Created KnowledgeSuggestion
         """
         self.logger.info(f"Extracting knowledge from case {case_id}")
+
+        # Refuse a full queue BEFORE spending the generation budget, not after
+        # (#1226 rework). This raises ServiceUnavailableException, and running
+        # it last meant a deployment whose review inbox was full burned the
+        # whole budget — up to four LLM generations, 20-60 s each on the
+        # measured path — producing a runbook that was then thrown away, on
+        # every extract request, for as long as the queue stayed full. The
+        # answer does not depend on anything generated below, so there is
+        # nothing to wait for.
+        #
+        # It still makes room for exactly one entry and nothing is stored
+        # between here and the write below, so the cap remains a real ceiling
+        # rather than a ceiling plus one.
+        self._evict_for_capacity()
 
         # Get case details
         case_title = "Unknown Case"
@@ -180,19 +327,42 @@ Format as Markdown with these sections:
                 evidence_summaries.append(f"- [{ev_type}] {ev_name}: {ev_summary}")
             evidence_section = "Evidence Summary:\n" + "\n".join(evidence_summaries)
 
-        prompt = self.EXTRACTION_PROMPT.format(
+        prompt = CONVERSION_SYSTEM_PROMPT + self.EXTRACTION_PROMPT.format(
+            # The document path gets `domain` from its analysis pass and the
+            # prompt tells the model not to change it; a case supplies none, so
+            # the model free-picks — and picked `kubernetes`, `cache` and `web`,
+            # every one of them a hard gate error, in 4 of 8 first drafts before
+            # the vocabulary was named here (see the eval's --attempts 1 mode).
+            domain_vocab=", ".join(VALID_DOMAINS),
+            today_iso=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            source_label=f"Case {case_id}",
             case_title=case_title,
             case_description=case_description,
             messages_section=messages_section or "No messages included.",
             evidence_section=evidence_section or "No evidence included.",
         )
 
-        # Generate knowledge content using LLM
-        suggested_content = await self._generate_knowledge_content(prompt)
+        # Generate the runbook, re-prompting with the validator's own errors if
+        # the first draft is refused (#1226).
+        suggested_content = await self._generate_runbook_draft(prompt, case_id)
 
-        # Generate title if not provided
-        suggested_title = title_suggestion or await self._generate_title(
-            case_title, suggested_content
+        # Title, in preference order: the caller's, then the DRAFT'S OWN
+        # frontmatter title, then the case title with its severity prefixes
+        # stripped.
+        #
+        # The draft's title comes second-but-first-in-practice for the reason
+        # the eval surfaced on the id (#1226): this value is what
+        # ``upload_document`` publishes as the knowledge item's title AND what
+        # ``runbook_filename`` names the file after, and deriving it from the
+        # case title carried the incident into both — "Troubleshooting:
+        # INC-48213: prod-web-07 returning 502 for customer Contoso from
+        # 2026-03-14 02:11 UTC". The draft's frontmatter title is the
+        # de-identified one, and it names the failure mode rather than the
+        # incident, which is what a corpus entry should be called.
+        suggested_title = (
+            title_suggestion
+            or self._title_from_draft(suggested_content)
+            or await self._generate_title(case_title, suggested_content)
         )
 
         # Create suggestion
@@ -215,12 +385,24 @@ Format as Markdown with these sections:
             evidence_count=len(evidence),
         )
 
-        # Trigger PII scan
-        await self._scan_for_pii(suggestion)
+        # Scan for PII, then record the gate's verdict on whatever the scan
+        # left behind (#1226). Never reuse ``validation`` from the generation
+        # loop: redaction rewrites the very text approval will publish.
+        await self._scan_and_record(suggestion)
+        if not suggestion.validation_passed:
+            self.logger.warning(
+                "Suggestion %s from case %s does not pass the runbook quality "
+                "gate after %d extraction attempt(s); %d error(s) surfaced for "
+                "review: %s",
+                suggestion_id,
+                case_id,
+                self._max_extraction_attempts,
+                len(suggestion.validation_errors),
+                "; ".join(suggestion.validation_errors[:5]),
+            )
 
-        # Make room BEFORE storing, so the cap is a real ceiling rather than a
-        # ceiling plus one. Raises when the queue is full of pending reviews.
-        self._evict_for_capacity()
+        # Capacity was checked and made at the top of this method, before the
+        # generation budget was spent.
         self._suggestions_store[suggestion_id] = suggestion
         self.logger.info(f"Created suggestion {suggestion_id} from case {case_id}")
 
@@ -288,68 +470,373 @@ Format as Markdown with these sections:
             ", ".join(s.suggestion_id for s in terminal[:needed]),
         )
 
-    async def _generate_knowledge_content(self, prompt: str) -> str:
-        """Generate knowledge content using LLM.
+    async def _generate_runbook_draft(self, base_prompt: str, case_id: str) -> str:
+        """Generate a v4 runbook draft, re-prompting with the gate's own errors.
+
+        The extraction path publishes into a corpus fronted by
+        ``RunbookValidator`` (#1214), so "the model produced markdown" is not
+        the finish line — "the model produced markdown the gate accepts" is. A
+        first draft that misses a required section or mis-forms a Cause is
+        recoverable information, not a dead end: the validator's errors are
+        structured, so the repair turn is told exactly which lines to fix
+        instead of being handed the schema again and asked to try harder.
+
+        Bounded by :attr:`MAX_EXTRACTION_ATTEMPTS` — see the constant for why
+        that number is what it is. When the budget runs out the BEST draft is
+        still returned: the caller records the verdict on the suggestion, so a
+        reviewer gets a near-miss runbook plus the list of what is wrong, which
+        is a far shorter edit than the ``## Problem / ## Root Cause`` prose they
+        used to have to reshape from scratch.
 
         Args:
-            prompt: Extraction prompt with case context
+            base_prompt: The full first-attempt prompt (shared v4 authoring
+                instructions + the case-specific block).
+            case_id: Source case, used only as the last-resort id stem.
 
         Returns:
-            Generated markdown content
+            The best draft produced — the first one that passes, else the one
+            with the fewest gate errors (earliest on a tie), else the skeleton
+            template when no draft was produced at all.
         """
-        if self._llm_provider:
-            try:
-                response = await self._llm_provider.generate(
-                    prompt=prompt,
-                    max_tokens=2000,
-                    temperature=0.3,
+        prompt = base_prompt
+        best: Optional[str] = None
+        best_validation: Optional[ValidationResult] = None
+
+        for attempt in range(1, self._max_extraction_attempts + 1):
+            content = await self._generate_once(prompt)
+            if content is None:
+                # Provider absent, broken, or cut at the ceiling. Retrying the
+                # same call cannot fix any of those, and the repair turn has
+                # nothing to repair — stop and fall through.
+                break
+
+            content = _force_frontmatter_id(content, self._mint_id(content, case_id))
+            validation = self._validator.validate_content(content)
+
+            # Keep the FEWEST-ERRORS draft, not simply the latest (#1226
+            # rework). A repair turn is not monotonic — it can come back worse,
+            # having "fixed" three flagged errors by restructuring a section
+            # into two new ones — and overwriting unconditionally would hand the
+            # reviewer that regression while the docstring promised them the
+            # best draft. Ties keep the EARLIER draft: it is the one the model
+            # produced from the case alone, without a repair turn's pressure to
+            # edit.
+            if best_validation is None or len(validation.errors) < len(
+                best_validation.errors
+            ):
+                best, best_validation = content, validation
+
+            if validation.passed:
+                if attempt > 1:
+                    self.logger.info(
+                        "Extraction draft passed the runbook quality gate on "
+                        "attempt %d/%d after repair",
+                        attempt,
+                        self._max_extraction_attempts,
+                    )
+                # ``best`` is this draft: zero errors always wins the comparison
+                # above. Returned through the same variable so the passing path
+                # and the exhausted path cannot disagree about what "best" is.
+                return best
+
+            self.logger.info(
+                "Extraction draft failed the runbook quality gate on attempt "
+                "%d/%d with %d error(s)",
+                attempt,
+                self._max_extraction_attempts,
+                len(validation.errors),
+            )
+            if attempt == self._max_extraction_attempts:
+                break
+
+            prompt = base_prompt + self.REPAIR_PROMPT.format(
+                attempt=attempt + 1,
+                max_attempts=self._max_extraction_attempts,
+                error_count=len(validation.errors),
+                errors="\n".join(f"- {e}" for e in validation.errors),
+                previous_output=content,
+            )
+
+        if best is not None:
+            self.logger.warning(
+                "Extraction exhausted its %d-attempt budget; returning the best "
+                "draft with %d unresolved gate error(s) for review",
+                self._max_extraction_attempts,
+                len(best_validation.errors) if best_validation else 0,
+            )
+            return best
+
+        return self.fallback_template(self._case_stem_id(case_id))
+
+    @staticmethod
+    def _case_stem_id(case_id: str) -> str:
+        """The last-resort runbook id: the case's own identifier, slugged.
+
+        Opaque, but an internal case identifier and therefore safe to publish —
+        unlike the case TITLE, which names an incident (see :meth:`_mint_id`).
+        """
+        return (
+            _as_kebab(runbook_id_from_parts("case", case_id))
+            or "extracted-runbook-draft"
+        )
+
+    def _mint_id(self, content: str, case_id: str) -> str:
+        """The kebab-case ``id`` to force onto a draft's frontmatter.
+
+        Minted from the draft's OWN ``service`` + ``title`` — the same
+        ``(service, title)`` mint the conversion path uses — and deliberately
+        NOT from the case title.
+
+        That distinction was measured, not reasoned about. The first cut minted
+        from the case title, and the eval's deliberately-noisy fixture
+        ("INC-48213: prod-web-07 returning 502 for customer Contoso from
+        2026-03-14 02:11 UTC") produced a body the model had de-identified
+        perfectly and a frontmatter line reading
+        ``id: case-inc-48213-prod-web-07-returning-502-for-customer-c-fd3a``.
+        The id is inside the content, so it is chunked, embedded and retrieved:
+        a ticket number, a hostname and a customer name would have entered the
+        global corpus through the one field the extractor writes itself.
+
+        The emitted title is de-identified because the prompt says so; the mint
+        is normalisation only, so a title that slipped is a prompt failure, not
+        one this can catch. Falls back to the case stem when the draft carries
+        no usable title (an empty slug would otherwise mean no ``id`` at all).
+        """
+        try:
+            # The validator's frontmatter parse, reused so "what the id is
+            # derived from" is the same text the gate will read it as.
+            metadata = self._validator._extract_metadata(content) or {}
+        except Exception:
+            metadata = {}
+        title = metadata.get("title") if isinstance(metadata, dict) else None
+        service = metadata.get("service") if isinstance(metadata, dict) else None
+        if isinstance(title, str) and title.strip():
+            minted = _as_kebab(
+                runbook_id_from_parts(
+                    service if isinstance(service, str) else "", title
                 )
-                # ``generate`` returns an LLMResponse. The old code read it as a
-                # dict and otherwise fell back to ``str(response)``, which would
-                # have written the dataclass REPR into a knowledge suggestion —
-                # inert today only because both construction sites pass no
-                # provider, so this branch never runs. Corrected rather than
-                # left as a trap for whoever wires the provider up, and a
-                # truncated draft falls through to the template below rather
-                # than being persisted half-written (#1094).
-                if response is None:
-                    # Not truncation — the contract says ``generate`` returns an
-                    # LLMResponse, so this means a provider broke it. Reported
-                    # as itself rather than folded into the truncation warning
-                    # below, which would send a reader looking for an output cap
-                    # that was never involved.
-                    self.logger.warning(
-                        "Suggestion generation returned no response; "
-                        "falling back to the template"
-                    )
-                elif response.is_truncated:
-                    self.logger.warning(
-                        "Suggestion generation truncated at the output cap; "
-                        "falling back to the template"
-                    )
-                else:
-                    content = (response.content or "").strip()
-                    if content:
-                        return content
-            except Exception as e:
-                self.logger.warning(f"LLM generation failed: {e}")
+            )
+            if minted:
+                return minted
+        return self._case_stem_id(case_id)
 
-        # Fallback template
-        return """## Problem
-[Describe the problem pattern observed in this incident]
+    async def _generate_once(self, prompt: str) -> Optional[str]:
+        """One generation call. ``None`` means "no usable draft came back".
 
-## Root Cause
-[Explain the underlying cause]
+        Separated from the retry loop so the loop reads as policy and this reads
+        as plumbing. Every ``None`` branch below is a reason a REPAIR turn would
+        be pointless: there is no draft to repair.
+        """
+        if not self._llm_provider:
+            return None
 
-## Solution
-1. [Step 1]
-2. [Step 2]
-3. [Step 3]
+        async def _call(cap: int):
+            return await self._llm_provider.generate(
+                prompt=prompt,
+                max_tokens=cap,
+                temperature=0.3,
+            )
+
+        try:
+            # A v4 runbook does not fit in the 2000-token cap this path used to
+            # pass — that budget was sized for four paragraphs of prose, and the
+            # template alone is longer. Sized off the conversion path, which
+            # generates the same artifact, and given the same one doubling on a
+            # cut body.
+            response = await generate_with_truncation_retry(
+                _call,
+                max_tokens=RUNBOOK_MAX_TOKENS,
+                ceiling=RUNBOOK_MAX_TOKENS_CEILING,
+                label="knowledge suggestion extraction",
+            )
+        except Exception as e:
+            self.logger.warning(f"LLM generation failed: {e}")
+            return None
+
+        # ``generate`` returns an LLMResponse. The old code read it as a dict and
+        # otherwise fell back to ``str(response)``, which would have written the
+        # dataclass REPR into a knowledge suggestion.
+        if response is None:
+            # Not truncation — the contract says ``generate`` returns an
+            # LLMResponse, so this means a provider broke it. Reported as itself
+            # rather than folded into the truncation warning below, which would
+            # send a reader looking for an output cap that was never involved.
+            self.logger.warning(
+                "Suggestion generation returned no response; "
+                "falling back to the template"
+            )
+            return None
+
+        if response.is_truncated:
+            # A runbook cut mid-procedure is complete-or-nothing, the same rule
+            # the conversion path applies (#1094): a half-procedure still
+            # carries frontmatter and (sections being written in order) the
+            # early required headings, so it can PASS the gate while missing
+            # its last steps. Never repaired, never returned.
+            self.logger.warning(
+                "Suggestion generation truncated at the output cap even after "
+                "the retry; falling back to the template"
+            )
+            return None
+
+        content = (response.content or "").strip()
+        return content or None
+
+    @staticmethod
+    def fallback_template(runbook_id: str = "extracted-runbook-draft") -> str:
+        """The v4 skeleton used when no draft could be generated at all.
+
+        Deliberately DOES NOT pass the gate, and that is not an oversight: with
+        no draft there is no knowledge here, only a form, and letting a click
+        publish ``[INSUFFICIENT SOURCE DATA]`` into the global corpus would be a
+        hole this lane opened rather than closed — the prose template it
+        replaces was unapprovable too, just for a worse reason (it was not a
+        runbook at all).
+
+        What blocks it is not a contrivance bolted on to force a failure: ALL
+        THREE of Cause A's required sub-fields — ``**Statement:**``,
+        ``**Indicators:**``, ``**Interventions:**`` — are empty, because there
+        genuinely is no cause, no observable and no fix to record. An empty
+        required sub-field is already a gate error, so the reviewer gets the v4
+        shape to fill in and three precise sentences saying what is missing.
+
+        Three, not one, and that is the point (#1226 rework). Leaving only the
+        Statement empty made the form ONE keystroke from publishable: filling
+        it cleared the single remaining error while every other field, the
+        frontmatter ``title`` included, still read ``[INSUFFICIENT SOURCE
+        DATA]``. The three that are empty now are the cause, its evidence and
+        its fix — the runbook's actual knowledge — so clearing them is
+        authoring, not a formality.
+
+        What this does NOT claim: that a filled-in form is a GOOD runbook. The
+        gate is structural and cannot tell grounded prose from plausible prose
+        (the same limit the eval records for a thin case), so the remaining
+        ``[INSUFFICIENT SOURCE DATA]`` markers are visible to a human reviewer
+        and to nothing else.
+
+        ``tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py``
+        pins all of it: v4-shaped, refused, and still refused after any single
+        sub-field is filled.
+        """
+        return f"""---
+id: {runbook_id}
+title: "[INSUFFICIENT SOURCE DATA -- manual completion required]"
+domain: application
+service: unknown
+symptom_class: []
+scope: global
+tags: [extracted, case-derived]
+difficulty: intermediate
+severity: medium
+version: "1.0.0"
+last_updated: "{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+verified_by: ""
+status: draft
+---
+
+# Runbook: [INSUFFICIENT SOURCE DATA -- manual completion required]
+
+## Symptom Recognition
+- [INSUFFICIENT SOURCE DATA -- record the alert names, log lines and metric
+  patterns exactly as an operator sees them]
+
+## Applicability
+[INSUFFICIENT SOURCE DATA -- state the software version range, required access
+level, and the tools needed.]
+
+## Diagnostic Steps
+
+### Step 1: [INSUFFICIENT SOURCE DATA -- name the first check]
+```bash
+# [INSUFFICIENT SOURCE DATA -- the command an operator runs]
+```
+[INSUFFICIENT SOURCE DATA -- what to look for in that output.]
+
+## Causes
+
+### Cause A: [INSUFFICIENT SOURCE DATA -- name the failure mode]
+<!-- All three sub-fields below are required and all three are empty. Fill in,
+     in order: one declarative sentence naming the single root cause; one
+     bullet per observable, each tagged with the diagnostic step that shows it
+     (root: [Step 1] ...); one bullet per fix, each tagged with its quadrant
+     and the rung it targets, each carrying its own verification.
+     Do NOT write example sub-field labels inside this comment: the cause
+     parser does not strip HTML comments, so a label written here is read as
+     the real field and the gate passes a form nobody filled in. -->
+**Statement:**
+**Indicators:**
+**Interventions:**
+
+### Cause Z: Unidentified
+**Statement:** None of the documented causes match the observed evidence.
+**Indicators:**
+- [Default]
+**Interventions:**
+- **mitigation** (D): Capture full diagnostic output and consult an SME.
+  **Risk:** Diagnostic only. **Duration:** Until SME review. **Verification:** N/A.
 
 ## Prevention
-- [Recommendation 1]
-- [Recommendation 2]
+- [INSUFFICIENT SOURCE DATA -- the configuration change or alert to add.]
+
+## Sources
+- [INSUFFICIENT SOURCE DATA -- the case this was extracted from.]
 """
+
+    async def _scan_and_record(self, suggestion: KnowledgeSuggestion) -> None:
+        """Scan for PII, then record the gate's verdict on what the scan left.
+
+        The two are paired in ONE method rather than left as two calls every
+        mutation site has to remember, because forgetting the second is silent:
+        the suggestion keeps a ``validation_passed`` describing text that no
+        longer exists, and a reviewer reads a green verdict on content the gate
+        would refuse. That is exactly what happened at the third site — the
+        SCAN_FAILED re-scan inside ``approve_suggestion`` — while the other two
+        got it right (#1226 rework).
+
+        Ordering is load-bearing and always this way round: the scan may REDACT,
+        redaction can itself break the gate (a redacted frontmatter value, a
+        redacted Cause Statement), and the verdict must be about the text
+        approval will actually publish.
+        """
+        await self._scan_for_pii(suggestion)
+        self._record_validation(suggestion)
+
+    def _record_validation(self, suggestion: KnowledgeSuggestion) -> None:
+        """Run the publication gate over a suggestion's CURRENT content and
+        record the verdict on it.
+
+        The single place the verdict is computed, so extraction and the review
+        edit cannot disagree about what "passes" means, and so both ask the same
+        ``RunbookValidator`` ``upload_document`` will ask on approval.
+        """
+        result = self._validator.validate_content(suggestion.suggested_content)
+        suggestion.set_validation(
+            passed=result.passed,
+            errors=result.errors,
+            warnings=result.warnings,
+        )
+
+    def _title_from_draft(self, content: str) -> Optional[str]:
+        """The draft's own frontmatter ``title``, when it has a usable one.
+
+        ``None`` for a draft with no frontmatter, no title, or the rule-8
+        ``[INSUFFICIENT SOURCE DATA]`` placeholder the skeleton carries — that
+        last one is a form, not a name, and putting it in the review inbox as a
+        heading would say less than the case title does.
+        """
+        try:
+            metadata = self._validator._extract_metadata(content) or {}
+        except Exception:
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        title = metadata.get("title")
+        if not isinstance(title, str):
+            return None
+        title = title.strip()
+        if not title or "INSUFFICIENT SOURCE DATA" in title:
+            return None
+        return title
 
     async def _generate_title(self, case_title: str, content: str) -> str:
         """Generate a knowledge article title.
@@ -396,25 +883,71 @@ Format as Markdown with these sections:
 
         if self._sanitizer:
             try:
-                # Scan content for PII
-                content_to_scan = (
-                    f"{suggestion.suggested_title}\n\n{suggestion.suggested_content}"
-                )
-                sanitized = await self._sanitizer.asanitize(content_to_scan)
+                # TITLE AND CONTENT ARE SANITIZED SEPARATELY, and each is written
+                # back to its OWN field (#1226 rework).
+                #
+                # This used to scan ``f"{title}\n\n{content}"`` and assign the
+                # WHOLE sanitized buffer to ``suggested_content``. Two bugs in
+                # one line, and both only became reachable once extraction
+                # started producing real runbooks:
+                #
+                #   1. It DESTROYED the runbook. A v4 runbook must open with
+                #      ``---`` on line 1; a title prepended in front of it
+                #      guarantees that it never is. Measured over the eval's
+                #      eight recorded drafts, all of which pass the gate:
+                #      prepending a title flips all 8 to
+                #      ``['No YAML frontmatter found']``. So on any deployment
+                #      with a real sanitizer, ANY suggestion carrying PII became
+                #      permanently unapprovable — in exactly the population this
+                #      lane serves, since case transcripts are where PII lives.
+                #      The eval measured 8/8 with ``sanitizer=None``, which takes
+                #      the ``else`` branch below and never rewrites, so the
+                #      headline number never touched this path.
+                #   2. It never redacted the TITLE. The title was scanned but
+                #      only content was stored, so PII in the title survived into
+                #      ``upload_document(title=...)`` — the published knowledge
+                #      item's name AND, through ``runbook_filename``, its
+                #      filename on disk. The same leak class the frontmatter
+                #      ``id`` had (see ``_mint_id``), one field over.
+                #
+                # Two calls rather than one concatenation: a title and a runbook
+                # are separate documents, and the only thing the concatenation
+                # ever bought was slightly wider NER context, at the cost of
+                # making the result structurally unusable.
+                original_title = suggestion.suggested_title or ""
+                original_content = suggestion.suggested_content or ""
 
-                # If content was modified, PII was found
-                if sanitized != content_to_scan:
+                sanitized_title = (
+                    await self._sanitizer.asanitize(original_title)
+                    if original_title
+                    else original_title
+                )
+                sanitized_content = (
+                    await self._sanitizer.asanitize(original_content)
+                    if original_content
+                    else original_content
+                )
+
+                title_changed = sanitized_title != original_title
+                content_changed = sanitized_content != original_content
+
+                if title_changed or content_changed:
                     suggestion.mark_pii_scan_complete(
                         status=PIIScanStatus.PII_DETECTED,
                         result={
-                            "original_length": len(content_to_scan),
-                            "sanitized_length": len(sanitized),
+                            "original_length": len(original_title)
+                            + len(original_content),
+                            "sanitized_length": len(sanitized_title)
+                            + len(sanitized_content),
                             "pii_removed": True,
+                            "title_redacted": title_changed,
+                            "content_redacted": content_changed,
                             "message": "PII detected. Manual review required before approval.",
                         },
                     )
-                    # Store sanitized version as suggestion
-                    suggestion.suggested_content = sanitized
+                    # Each field back into its own slot. Never the concatenation.
+                    suggestion.suggested_title = sanitized_title
+                    suggestion.suggested_content = sanitized_content
                 else:
                     suggestion.mark_pii_scan_complete(
                         status=PIIScanStatus.CLEAN,
@@ -602,7 +1135,13 @@ Format as Markdown with these sections:
                 "Suggestion %s has a failed PII scan; re-scanning before " "approval",
                 suggestion_id,
             )
-            await self._scan_for_pii(suggestion)
+            # Through the paired helper, not a bare scan: this re-scan can
+            # REDACT, and a redaction rewrites the text the recorded verdict
+            # describes. Left unpaired it was the one mutation site of three
+            # that skipped ``_record_validation``, so a suggestion could reach
+            # the reviewer reading ``validation_passed=True`` about content that
+            # no longer existed (#1226 rework).
+            await self._scan_and_record(suggestion)
 
         if not suggestion.is_ready_for_review():
             self.logger.warning(
@@ -889,8 +1428,11 @@ Format as Markdown with these sections:
                 title=title or suggestion.suggested_title,
                 content=content or suggestion.suggested_content,
             )
-            # Re-scan for PII since content changed
-            await self._scan_for_pii(suggestion)
+            # Re-scan for PII since content changed, and re-record the gate's
+            # verdict on the result. This is the loop the reviewer actually
+            # works in — edit, see which errors cleared, edit again — so a stale
+            # verdict here is worse than none.
+            await self._scan_and_record(suggestion)
 
         if suggested_type:
             suggestion.suggested_type = suggested_type
@@ -945,6 +1487,17 @@ Format as Markdown with these sections:
             "extracted_at": to_json_compatible(suggestion.extracted_at),
         }
 
+        # The publication gate's verdict, forward-declared (#1226). Approval
+        # runs ``RunbookValidator`` inside ``upload_document`` and answers 422
+        # on a refusal; without this the reviewer learns that only by pressing
+        # approve, and learns nothing about what to fix. ``passed: null`` means
+        # not yet evaluated — never read it as "fine".
+        validation = {
+            "passed": suggestion.validation_passed,
+            "errors": list(suggestion.validation_errors),
+            "warnings": list(suggestion.validation_warnings),
+        }
+
         if include_content:
             return {
                 "suggestion_id": suggestion.suggestion_id,
@@ -967,6 +1520,7 @@ Format as Markdown with these sections:
                     else None
                 ),
                 "lineage": lineage,
+                "validation": validation,
                 "reviewed_by": suggestion.reviewed_by,
                 "reviewed_at": (
                     to_json_compatible(suggestion.reviewed_at)
@@ -992,4 +1546,8 @@ Format as Markdown with these sections:
                 "suggested_type": suggestion.suggested_type,
                 "created_at": to_json_compatible(suggestion.created_at),
                 "lineage": lineage,
+                # The summary carries the whole verdict, not just the boolean:
+                # the review inbox is a list, and "why is this one blocked" is
+                # the question a reviewer asks BEFORE opening a row.
+                "validation": validation,
             }

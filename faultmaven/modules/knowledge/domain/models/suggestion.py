@@ -9,7 +9,7 @@ Design Reference: Source Verification Badges Feature
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import ConflictError
 
@@ -100,6 +100,12 @@ class KnowledgeSuggestion:
         # Final document link (when approved)
         knowledge_item_id: ID of created KnowledgeItem (bidirectional link)
 
+        # Runbook quality gate (#1226)
+        validation_passed: Whether the content passes RunbookValidator (None =
+            not yet evaluated)
+        validation_errors: Blocking errors from the last validation
+        validation_warnings: Non-blocking warnings from the last validation
+
         # Timestamps
         created_at: When suggestion was created
         updated_at: When suggestion was last modified
@@ -141,6 +147,22 @@ class KnowledgeSuggestion:
 
     # Final document link (bidirectional lineage per refinement #4)
     knowledge_item_id: Optional[str] = None
+
+    # Runbook quality gate (#1226).
+    #
+    # ``upload_document`` enforces ``RunbookValidator`` before its first side
+    # effect (#1214), so approving content the gate refuses answers 422 and
+    # publishes nothing. A reviewer who only sees "422" cannot act; these carry
+    # the SAME structured verdict forward from extraction time, and are
+    # recomputed on every content edit, so the review inbox can show what is
+    # wrong and the reviewer can watch it clear as they edit.
+    #
+    # ``None`` means NOT YET EVALUATED — distinct from ``False`` (evaluated and
+    # refused). An older suggestion, or one whose content was just replaced and
+    # not yet re-checked, is unknown rather than passing.
+    validation_passed: Optional[bool] = None
+    validation_errors: List[str] = field(default_factory=list)
+    validation_warnings: List[str] = field(default_factory=list)
 
     # Timestamps
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -353,7 +375,40 @@ class KnowledgeSuggestion:
         # Reset PII scan since content changed
         self.pii_scan_status = PIIScanStatus.NOT_SCANNED
         self.pii_scan_result = None
+        # The stored verdict was about the PREVIOUS content, so it is now a
+        # claim about text that no longer exists (#1226). Cleared to "not yet
+        # evaluated" rather than left standing; ``SuggestionService`` re-runs the
+        # gate immediately after this call and sets the fresh one.
+        self.validation_passed = None
+        self.validation_errors = []
+        self.validation_warnings = []
         self.touch()
+
+    def set_validation(
+        self,
+        passed: bool,
+        errors: Optional[List[str]] = None,
+        warnings: Optional[List[str]] = None,
+    ) -> None:
+        """Record the runbook quality gate's verdict on the current content.
+
+        The same ``RunbookValidator`` verdict ``upload_document`` will reach on
+        approval (#1214), captured at extraction time and after every edit so a
+        reviewer sees WHAT blocks approval instead of only a 422 (#1226).
+
+        Deliberately does NOT ``touch()``: validating is an observation of the
+        content, not a modification of the suggestion, and bumping
+        ``updated_at`` here would reorder the eviction pool (which sorts
+        terminal entries by decision time) on a read-only re-check.
+
+        Args:
+            passed: Whether the content clears the gate
+            errors: Blocking errors (empty when ``passed``)
+            warnings: Non-blocking warnings
+        """
+        self.validation_passed = bool(passed)
+        self.validation_errors = list(errors or [])
+        self.validation_warnings = list(warnings or [])
 
     def touch(self) -> None:
         """Update the updated_at timestamp to current time."""

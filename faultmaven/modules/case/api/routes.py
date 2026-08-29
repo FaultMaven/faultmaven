@@ -4408,6 +4408,18 @@ async def extract_knowledge_from_case(
             "suggested_title": suggestion.suggested_title,
             "suggested_content": suggestion.suggested_content,
             "pii_scan_status": suggestion.pii_scan_status.value,
+            # The runbook quality gate's verdict on what was just extracted
+            # (#1226). This response is the FIRST surface a reviewer sees, and
+            # it is the one the extraction flow actually lands on — omitting the
+            # verdict here meant they learned the draft was unpublishable only
+            # by pressing approve and reading a 422, which is the whole failure
+            # this issue is about. ``passed: null`` means not yet evaluated;
+            # never read it as "fine".
+            "validation": {
+                "passed": suggestion.validation_passed,
+                "errors": list(suggestion.validation_errors),
+                "warnings": list(suggestion.validation_warnings),
+            },
             "extracted_from": {
                 "case_title": suggestion.source_case_title,
                 "message_count": suggestion.message_count,
