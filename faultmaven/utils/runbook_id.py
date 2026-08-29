@@ -227,14 +227,25 @@ def runbook_id_from_parts(service: str | None, title: str | None) -> str:
       over the FULL slug, so two long titles sharing a 55-character prefix stay
       distinct.
 
-    **Nothing that was already valid changed.** Both branches only fire on
-    input whose old id the validator already rejected (empty is a missing
-    required field *and* a grammar failure; a double hyphen is a grammar
-    failure), so no *usable* persisted id is re-minted. That is the property
-    that made this change affordable, and
+    A third change is not about validity at all, and is called out separately
+    because it DOES alter an id that was valid:
+
+    - **A ``None`` part is normalised to ``""``** (see the comment on ``raw``).
+      Stringified, it became the literal ``"none"``, which is not empty — so
+      the hash branch could not see it and three punctuation-only titles under
+      a ``None`` service all minted ``"none"``. ``"none-title"`` becomes
+      ``"title"``.
+
+    **Nothing REACHABLE that was already valid changed.** The first two
+    branches fire only on input whose old id the validator already rejected
+    (empty is a missing required field *and* a grammar failure; a double hyphen
+    is a grammar failure), so no *usable* persisted id is re-minted. The third
+    fires only on ``None``, which no call site can pass — all four supply a
+    ``str``. That is the property that made this change affordable, and
     ``tests/unit/utils/test_runbook_id_consolidation.py`` pins it as a
     differential against the pre-consolidation originals rather than as a
-    comment.
+    comment, with the ``None`` exemption named and bounded to exactly the
+    inputs that carry one.
 
     What this does NOT do is make the id globally unique. Two distinct titles
     that slug identically still mint the same id, and they must — determinism
