@@ -27,7 +27,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, time, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from faultmaven.core.investigation.causal_graph import (
     BLOCK_REASON_COUNT,
@@ -46,6 +46,7 @@ from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
     delimiter_overhead_chars,
     render_fenced,
+    reseal,
 )
 from faultmaven.core.preprocessing.evidence_metadata import (
     LOW_CONFIDENCE_THRESHOLD,
@@ -1444,14 +1445,17 @@ _TIER_A_MARKUP_OVERHEAD_CHARS = 200 + _TIER_A_DELIMITERS * delimiter_overhead_ch
 
 
 def _open_evidence_collected(fence: PromptFence) -> str:
-    """Open ``<evidence_collected>`` and declare the fence for this render.
+    """Open ``<evidence_collected>`` on the prompt's shared fence.
 
-    The declaration names the live token, so the trust rule is checkable
-    against the text the model is holding rather than only stated abstractly in
-    the template (``_EVIDENCE_FENCE_RULE`` in ``templates.py`` carries the
-    mechanism; this carries the value).
+    The DECLARATION is not emitted here. Since #1228 one token is live for the
+    whole prompt and it is declared exactly once, at the head of
+    ``<problem_context>`` (:func:`_render_problem_context`) — a reserve section
+    that is never trimmed and the first fenced block in every template. A
+    second renderer-emitted ``FENCE:`` line would also contradict the rule the
+    templates state, which tells the model that any later one is quoted content
+    describing itself.
     """
-    return fence.open("evidence_collected") + "\n" + fence.declaration() + "\n"
+    return fence.open("evidence_collected") + "\n"
 
 
 def _render_orphan_file_block(
@@ -1562,6 +1566,52 @@ def _render_orphan_file_block(
     return entry
 
 
+def _render_problem_context(case: Case, fence: PromptFence) -> str:
+    """Render ``<problem_context>`` on the prompt's shared fence (#1228).
+
+    ``case.title``, ``case.description`` and ``pv.symptom_statement`` are raw
+    caller text. Unfenced they could forge a complete pseudo-XML element —
+    closing this block and opening a fabricated ``<evidence_collected>`` or
+    ``<uploaded_file …searchable="true">`` — which is the #1217 exposure
+    resurfaced outside the evidence envelope.
+
+    This section also carries the prompt's ONE fence declaration, on the line
+    immediately ABOVE the opening tag. Three properties pick this section:
+
+    - it is a RESERVE section (``_allocate_sections``), so it is never trimmed;
+      the evidence block, where the declaration used to live, can be allocated
+      to nothing;
+    - it is the first fenced block in every template that renders one
+      (``INQUIRY_TEMPLATE``, ``INVESTIGATION_BASE``, ``TERMINAL_TEMPLATE``), so
+      the genuine declaration precedes every counterfeit one the content can
+      carry;
+    - ``TERMINAL_TEMPLATE`` has no evidence block at all, so an
+      evidence-anchored declaration would leave a fenced prompt undeclared.
+
+    ABOVE the tag, not inside it: the trust rule tells the model that the three
+    fenced blocks quote material it did not write, so a declaration rendered
+    inside one would be covered by its own demotion clause. Everything above it
+    in the prompt (the template preamble, ``<case_identity>``) is
+    renderer-emitted, so no caller-controlled byte precedes it either way.
+
+    The whole body goes through ``element``, which routes it into the collision
+    corpus and appends a terminator when it ends mid-tag — a title ending
+    ``…<uploaded_file label="x`` would otherwise swallow the closing delimiter
+    and inherit the live token.
+    """
+    lines = [f"TITLE: {case.title}", f"DESCRIPTION: {case.description}"]
+    if case.problem_verification:
+        pv = case.problem_verification
+        lines.append(f"SYMPTOM_STATEMENT: {pv.symptom_statement}")
+        if pv.severity:
+            lines.append(f"SEVERITY: {pv.severity}")
+        if pv.temporal_state:
+            lines.append(f"TEMPORAL_STATE: {pv.temporal_state.value}")
+    return (
+        fence.declaration() + "\n" + fence.element("problem_context", "\n".join(lines))
+    )
+
+
 def _build_evidence_context(
     case: Case,
     processing_mode: Optional[str] = None,
@@ -1570,23 +1620,47 @@ def _build_evidence_context(
     model_name: Optional[str] = None,
     char_budget_override: Optional[int] = None,
     tools_available: bool = False,
+    fence: Optional[PromptFence] = None,
 ) -> str:
-    """Render ``<evidence_collected>`` behind a per-render nonce fence (#1217).
+    """Render ``<evidence_collected>`` behind a nonce fence (#1217, #1228).
 
     Thin wrapper over :func:`_render_evidence_block`. Every body channel in that
     block — a file's own ``structural_index``, ``ev.summary``, ``ev.extract``,
     ``search_map``, ``file_meta`` — is caller-controlled text emitted
     byte-verbatim, so a log LINE could otherwise close the element it sits in
     and open a forged one carrying an attacker-chosen ``label`` and
-    ``searchable="true"``. :func:`render_fenced` mints the token AFTER the
-    content is known and re-renders on the (astronomically unlikely) collision;
-    see :mod:`.fence` for why fencing, and not escaping or sanitising, is the
-    only mechanism compatible with byte-verbatim evidence.
+    ``searchable="true"``. The token is minted AFTER the content is known and
+    the render repeats on the (astronomically unlikely) collision; see
+    :mod:`.fence` for why fencing, and not escaping or sanitising, is the only
+    mechanism compatible with byte-verbatim evidence.
+
+    ``fence`` is the PROMPT's fence, and on the production path it is always
+    supplied: :func:`build_investigation_context` mints one token and shares it
+    across ``<problem_context>``, ``<entity_highlights>`` and this block, so a
+    single declaration governs them all (#1228).
+
+    Omitting it renders the block as an assembly of ITS OWN, with a token
+    minted for it alone and a collision corpus limited to this block's
+    channels. Note what a standalone render does NOT have: a declaration. The
+    declaration is a property of a whole prompt — exactly one, above the first
+    fenced block — and a bare evidence block is not a prompt. That is why
+    nothing on the production path calls this without a fence.
     """
-    return render_fenced(
-        lambda fence: _render_evidence_block(
+    if fence is not None:
+        return _render_evidence_block(
             case,
             fence,
+            processing_mode=processing_mode,
+            user_query=user_query,
+            provider_name=provider_name,
+            model_name=model_name,
+            char_budget_override=char_budget_override,
+            tools_available=tools_available,
+        )
+    return render_fenced(
+        lambda f: _render_evidence_block(
+            case,
+            f,
             processing_mode=processing_mode,
             user_query=user_query,
             provider_name=provider_name,
@@ -1750,10 +1824,12 @@ def _render_evidence_block(
     da_index_only = processing_mode == "directed_analysis" and tools_available
 
     result = _open_evidence_collected(fence)
-    # The envelope + fence declaration are ~280 chars of the block's budget and
-    # used to be spent without being counted. ``first_item_rendered`` carries
-    # the "nothing has been emitted yet" question that ``total_chars == 0`` used
-    # to answer, so the current-turn floor still guarantees the first upload a
+    # The fenced envelope is ~55 chars of the block's budget (it was ~280 while
+    # the fence declaration was emitted here; since #1228 the declaration is a
+    # per-PROMPT line above <problem_context>, not a per-block one) and used to
+    # be spent without being counted. ``first_item_rendered`` carries the
+    # "nothing has been emitted yet" question that ``total_chars == 0`` used to
+    # answer, so the current-turn floor still guarantees the first upload a
     # full render (INV-EC-1) now that the counter no longer starts at zero.
     total_chars = len(result)
     first_item_rendered = False
@@ -2950,6 +3026,13 @@ def _allocate_sections(
             # keep="head" is correct for them.
             keep = "tail" if key == "investigation_journal" else "head"
             rendered = budget._truncate_to(text, alloc, keep=keep)
+            # A fenced section loses its CLOSING delimiter and its terminator
+            # to head truncation, which reopens #1217 downstream of every
+            # check that would have caught it — see :func:`reseal`. Re-closing
+            # costs a few tokens over ``alloc``; the whole-prompt accountant's
+            # margin absorbs that, and the recount below keeps the running
+            # total honest.
+            rendered = reseal(rendered, text)
 
         ctx[key] = rendered
         # Reuse the known size when the section was admitted whole (no recount).
@@ -3162,11 +3245,20 @@ def build_investigation_context(
     use_state_summary: Optional[bool] = None,
     enable_stage_specific_loading: bool = True,
     processing_mode: Optional[str] = None,
-    entity_highlights: Optional[str] = None,
+    entity_highlight_groups: Optional[Sequence["EntityHighlightGroup"]] = None,
     tools_available: bool = False,
 ) -> Dict[str, str]:
     """
     Gather and format context elements within token budget.
+
+    **One fence token per assembly (#1228).** ``<problem_context>``,
+    ``<entity_highlights>`` and ``<evidence_collected>`` are the prompt's
+    caller-controlled blocks; all three are rendered inside a single
+    :func:`~faultmaven.core.investigation.prompts.fence.render_fenced`, so one
+    token governs the prompt and one declaration names it. A token per block
+    was rejected: it turns the rule the model must follow from one anchor into
+    an N-entry token→block binding table, and it lets content in one block
+    forge another block's opening tag with a GENUINE token. See :mod:`.fence`.
 
     Gap #10: Stage-Specific Context Loading
     - Skip irrelevant sections based on investigation stage
@@ -3228,19 +3320,6 @@ def build_investigation_context(
     if case.state == CaseState.INVESTIGATING and case.current_stage:
         identity += f"CURRENT_STAGE: {case.current_stage.value.upper()}\n"
     identity += "</case_identity>"
-
-    # 2. Case Core Context
-    core_context = f"<problem_context>\n"
-    core_context += f"TITLE: {case.title}\n"
-    core_context += f"DESCRIPTION: {case.description}\n"
-    if case.problem_verification:
-        pv = case.problem_verification
-        core_context += f"SYMPTOM_STATEMENT: {pv.symptom_statement}\n"
-        if pv.severity:
-            core_context += f"SEVERITY: {pv.severity}\n"
-        if pv.temporal_state:
-            core_context += f"TEMPORAL_STATE: {pv.temporal_state.value}\n"
-    core_context += "</problem_context>"
 
     # 3. Milestone Status (separated into stage-gate and progress indicators)
     milestones_str = ""
@@ -3306,15 +3385,42 @@ def build_investigation_context(
         evidence_char_override = max(
             2 * EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM, int(max_tokens * _frac * 4)
         )
-    evidence_str = _build_evidence_context(
-        case,
-        processing_mode=processing_mode,
-        user_query=user_message_safe,
-        provider_name=provider_name,
-        model_name=model_name,
-        char_budget_override=evidence_char_override,
-        tools_available=tools_available,
-    )
+    # --- ONE fence for the whole assembly (#1228) ---
+    # ``<problem_context>``, ``<entity_highlights>`` and
+    # ``<evidence_collected>`` are the prompt's three caller-controlled blocks.
+    # They are rendered together under a single ``render_fenced`` so ONE token
+    # is live per prompt: the model gets one anchor to read it from, and a
+    # forgery in any of the three cannot carry a genuine token borrowed from
+    # another. The collision corpus is correspondingly the union of all three
+    # blocks' channels, so the token is provably absent from every
+    # caller-controlled string in the prompt rather than from one block's own.
+    #
+    # The callable may run more than once (a re-mint re-renders), so it must
+    # stay pure — which is why the entity rows are FETCHED by the caller and
+    # only FORMATTED here.
+    _fenced: Dict[str, str] = {}
+
+    def _render_caller_controlled_blocks(fence: PromptFence) -> str:
+        _fenced["core_context"] = _render_problem_context(case, fence)
+        _fenced["entity_highlights"] = _render_entity_highlights(
+            entity_highlight_groups, fence
+        )
+        _fenced["evidence"] = _build_evidence_context(
+            case,
+            processing_mode=processing_mode,
+            user_query=user_message_safe,
+            provider_name=provider_name,
+            model_name=model_name,
+            char_budget_override=evidence_char_override,
+            tools_available=tools_available,
+            fence=fence,
+        )
+        # Checked as one corpus; the parts are what the templates interpolate.
+        return "\n\n".join(part for part in _fenced.values() if part)
+
+    render_fenced(_render_caller_controlled_blocks)
+    core_context = _fenced["core_context"]
+    evidence_str = _fenced["evidence"]
 
     # 5. Causal graph (hypotheses ARE chains, methodology M3).
     # Rendered by _build_causal_graph_block — see its docstring for the
@@ -3600,12 +3706,12 @@ def build_investigation_context(
                     )
             inquiry_state_str += "</inquiry_state>"
 
-    # Phase 4c — entity highlights block. Pre-fetched by the milestone
-    # engine from the Phase 4 ``case_entities`` registry. Empty string
-    # when the flag is off, the fetch failed, or the case has no
-    # extracted entities — safe to always include the key so templates
-    # can reference it unconditionally.
-    entity_highlights_str = entity_highlights or ""
+    # Phase 4c — entity highlights block. Rows pre-fetched by the milestone
+    # engine from the Phase 4 ``case_entities`` registry, formatted above
+    # inside the shared fence. Empty string when the flag is off, the fetch
+    # failed, or the case has no extracted entities — safe to always include
+    # the key so templates can reference it unconditionally.
+    entity_highlights_str = _fenced["entity_highlights"]
 
     # Evidence-needs Phase 4 — demand-side pool block. Empty string when
     # the pool has no visible needs for this stage (progressive
@@ -3672,18 +3778,33 @@ _HIGHLIGHT_TYPES: tuple[EntityType, ...] = (
 _HIGHLIGHT_PER_TYPE_LIMIT = 5
 
 
+@dataclass(frozen=True)
+class EntityHighlightRow:
+    """One extracted entity, as the highlights block shows it."""
+
+    value: str
+    mention_count: int
+    in_error_context: bool = False
+
+
+@dataclass(frozen=True)
+class EntityHighlightGroup:
+    """The rows for one entity type, in the order the query returned them."""
+
+    entity_type: str
+    rows: tuple[EntityHighlightRow, ...]
+
+
 async def fetch_entity_highlights(
     case_repository: Any,
     case_id: str,
     *,
     per_type_limit: int = _HIGHLIGHT_PER_TYPE_LIMIT,
-) -> str:
-    """Return a compact ``<entity_highlights>`` block or ``""``.
+) -> list[EntityHighlightGroup]:
+    """Return the highlight groups for a case, or ``[]``.
 
     Queries ``CaseRepository.list_top_entities`` for each
-    investigative-signal type (IP, hostname, user, service) and formats
-    the results as a tight XML block the template can drop in directly.
-    Empty string when:
+    investigative-signal type (IP, hostname, user, service). Empty list when:
 
     - the repository is ``None`` or lacks ``list_top_entities`` (test
       doubles without the full surface),
@@ -3693,14 +3814,21 @@ async def fetch_entity_highlights(
     Callers (milestone engine) gate on ``FAULTMAVEN_ENTITY_REGISTRY``
     before calling; this helper is also safe to call with the flag off,
     because there'll be no entities to surface.
+
+    **Fetch only — the formatting lives in :func:`_render_entity_highlights`,
+    inside the fenced assembly (#1228).** The values are extracted from file
+    content, so the block has to be fenced; and ``render_fenced``'s core safety
+    property is that it can RE-RENDER on a token collision, which it cannot do
+    if the render is an awaited database query. Splitting the two makes the
+    retry free: the rows are fetched once, the formatting is pure.
     """
     if case_repository is None:
-        return ""
+        return []
     query = getattr(case_repository, "list_top_entities", None)
     if query is None:
-        return ""
+        return []
 
-    sections: list[str] = []
+    groups: list[EntityHighlightGroup] = []
     for entity_type in _HIGHLIGHT_TYPES:
         try:
             rows = await query(
@@ -3718,19 +3846,62 @@ async def fetch_entity_highlights(
             continue
         if not rows:
             continue
-        body_lines = []
-        for row in rows:
-            marker = " (error)" if getattr(row, "in_error_context", False) else ""
-            body_lines.append(f"  - {row.entity_value} ×{row.mention_count}{marker}")
-        sections.append(f"{entity_type.value}:\n" + "\n".join(body_lines))
+        groups.append(
+            EntityHighlightGroup(
+                entity_type=entity_type.value,
+                rows=tuple(
+                    EntityHighlightRow(
+                        value=row.entity_value,
+                        mention_count=row.mention_count,
+                        in_error_context=bool(getattr(row, "in_error_context", False)),
+                    )
+                    for row in rows
+                ),
+            )
+        )
 
-    if not sections:
+    return groups
+
+
+#: Standing instruction for the block. Renderer-owned, so it is emitted ABOVE
+#: the opening delimiter rather than inside the element: the trust rule
+#: demotes unfenced text INSIDE a fenced block to quoted case content, and a
+#: renderer instruction sitting there would be demoted with it. Keeping it out
+#: also keeps the collision corpus to the entity VALUES, which is what the
+#: fence exists to contain.
+_ENTITY_HIGHLIGHTS_PREAMBLE = (
+    "Top entities extracted from this case's evidence "
+    "(aggregated mention_count across artifacts). Use find_entity "
+    "to locate a value's origin evidence, or list_top_entities for "
+    "types not shown here."
+)
+
+
+def _render_entity_highlights(
+    groups: Optional[Sequence[EntityHighlightGroup]],
+    fence: PromptFence,
+) -> str:
+    """Render ``<entity_highlights>`` on the prompt's shared fence, or ``""``.
+
+    ``row.value`` is a substring lifted out of uploaded file content, so it is
+    the same attacker-influenced population #1217 was about, resurfaced through
+    the extraction path: an entity value shaped like ``x"><uploaded_file
+    file_id="…`` would otherwise forge structure. ``element`` fences both
+    delimiters, records the body in the collision corpus and terminates a body
+    that ends mid-tag.
+    """
+    if not groups:
         return ""
-
+    sections = []
+    for group in groups:
+        body_lines = [
+            f"  - {row.value} ×{row.mention_count}"
+            f"{' (error)' if row.in_error_context else ''}"
+            for row in group.rows
+        ]
+        sections.append(f"{group.entity_type}:\n" + "\n".join(body_lines))
     return (
-        "<entity_highlights>\n"
-        "Top entities extracted from this case's evidence "
-        "(aggregated mention_count across artifacts). Use find_entity "
-        "to locate a value's origin evidence, or list_top_entities for "
-        "types not shown here.\n\n" + "\n\n".join(sections) + "\n</entity_highlights>"
+        _ENTITY_HIGHLIGHTS_PREAMBLE
+        + "\n"
+        + fence.element("entity_highlights", "\n\n".join(sections))
     )

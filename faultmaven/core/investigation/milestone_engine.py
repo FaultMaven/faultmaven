@@ -5717,12 +5717,16 @@ class MilestoneEngine:
                     user_message, has_attachments=bool(case.evidence)
                 ).mode.value
 
-            # Phase 4c — prefetch entity highlights from the Phase 4
+            # Phase 4c — prefetch entity highlight ROWS from the Phase 4
             # ``case_entities`` registry when the feature is on. When
             # the flag is off (or the producer wrote no entities),
-            # ``fetch_entity_highlights`` returns "" and the template
-            # slot renders empty.
-            entity_highlights_block = ""
+            # ``fetch_entity_highlights`` returns [] and the template
+            # slot renders empty. Rows rather than a formatted block: the
+            # values come out of file content, so the block is fenced, and
+            # the fence re-renders on a token collision — which it cannot do
+            # around an awaited query (#1228). Formatting happens inside the
+            # fenced assembly in ``build_investigation_context``.
+            entity_highlight_groups: list = []
             try:
                 from faultmaven.config.settings import get_settings
                 from faultmaven.core.investigation.prompts.context_builder import (
@@ -5730,7 +5734,7 @@ class MilestoneEngine:
                 )
 
                 if get_settings().preprocessing.entity_registry_enabled:
-                    entity_highlights_block = await fetch_entity_highlights(
+                    entity_highlight_groups = await fetch_entity_highlights(
                         self.repository, case.case_id
                     )
             except Exception as exc:
@@ -5756,7 +5760,7 @@ class MilestoneEngine:
                     provider_name=provider_name,
                     model_name=model_name,
                     processing_mode=processing_mode,
-                    entity_highlights=entity_highlights_block,
+                    entity_highlight_groups=entity_highlight_groups,
                     tools_available=tools_available,
                 )
 
