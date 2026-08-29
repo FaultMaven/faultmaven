@@ -28,17 +28,25 @@ that need heading offsets to keep matching the raw markdown the chunker sees.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
 import pytest
 
 from faultmaven.modules.knowledge.domain.services import (
+    knowledge_service as knowledge_service_mod,
+)
+from faultmaven.modules.knowledge.domain.services import (
     runbook_cause_extractor as extractor_mod,
 )
 from faultmaven.modules.knowledge.domain.services import runbook_grammar as g
 from faultmaven.modules.knowledge.domain.services import (
     runbook_validator as validator_mod,
+)
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    _matched_cause_letters,
+    _read_stamped_cause_letters,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_cause_extractor import (
     extract_causes,
@@ -360,3 +368,198 @@ class TestShippedPackIsUnchanged:
             r["cause_letter"]
             for r in extract_causes(TestCommentedCauseIsNotEnumerated._DOC)
         ] == ["A", "Z"]
+
+
+# =============================================================================
+# The chunk-stamping path — the fourth CAUSE_HEADING_RE consumer
+# =============================================================================
+
+
+class TestChunkStampingIsCommentBlind:
+    """``_matched_cause_letters`` mints the join key the KB cause seeder reads.
+
+    It ran ``CAUSE_HEADING_RE.findall`` on raw chunk text, so a commented-out
+    ``### Cause A:`` example sitting beside a real Cause stamped a phantom ``A``
+    and the seeder read "retrieval surfaced Cause A" for a cause with no
+    ``metadata["causes"]`` record to join to. Nothing shipped reaches it — no
+    runbook in the corpus carries such a heading — but it is the same class,
+    found while closing it.
+    """
+
+    _CHUNK = (
+        "### Cause Z: Unidentified\n**Statement:** unknown\n\n"
+        "<!--\n### Cause A: commented-out example\n"
+        "**Statement:** never real\n-->\n"
+    )
+
+    def test_a_commented_heading_does_not_stamp_a_phantom_letter(self):
+        assert _matched_cause_letters(self._CHUNK) == ["Z"]
+
+    def test_a_real_heading_beside_a_comment_still_stamps(self):
+        """The complement: masking must not cost a letter that is genuinely
+        there, or the seeder loses the join it exists to make."""
+        chunk = (
+            "<!-- authoring note about the cause below -->\n"
+            "### Cause D: OOMKilled\n**Statement:** the container exceeded "
+            "its memory limit.\n"
+        )
+        assert _matched_cause_letters(chunk) == ["D"]
+
+    def test_the_stamp_identity_moved_so_old_stamps_are_re_derived(self):
+        """The source fix alone repairs nothing already stamped.
+
+        ``_read_stamped_cause_letters`` falls back to parsing on key ABSENCE
+        only, so a present-but-wrong ``cause_letters`` stamp is read forever.
+        ``chunk_stamp_identity`` is derived from the pattern (unchanged here)
+        plus ``CHUNK_STAMP_SCHEMA``, so the schema bump is the only thing that
+        marks those rows stale for the pack gate and the fm#1108 restamp sweep.
+        """
+        assert knowledge_service_mod.CHUNK_STAMP_SCHEMA >= 2
+
+    def test_a_present_but_wrong_stamp_is_never_re_parsed(self):
+        """Why the bump above is load-bearing rather than tidy — pin the read
+        path's key-absence rule, which is what makes a bad stamp permanent."""
+        phantom = {"cause_letters": "Z,A"}
+        assert _read_stamped_cause_letters(phantom, self._CHUNK) == ["Z", "A"]
+        # Only key ABSENCE re-parses (and then gets the corrected answer).
+        assert _read_stamped_cause_letters({}, self._CHUNK) == ["Z"]
+
+
+# =============================================================================
+# Structural guard — what stops a FIFTH call site reintroducing this
+# =============================================================================
+#
+# ``CAUSE_HEADING_RE`` is comment-blind on its own and must stay exported: the
+# cross-repo drift guard pins its ``.pattern``/``.flags``, ``chunk_stamp_identity``
+# hashes them, and one site legitimately matches a string it built itself. So the
+# safety cannot live in the primitive; today it lives in each caller remembering
+# to mask, which is a convention — and this lane found a caller that had not.
+#
+# A masking WRAPPER was considered and rejected. It would make a new caller
+# correct by default, but it cannot stop one reaching for the bare regex that has
+# to remain exported, so it improves the odds without closing the hole. It would
+# also HIDE the raw-vs-masked distinction that ``_iter_cause_blocks`` and
+# ``extract_causes`` depend on being visible: they deliberately find headings in
+# the masked copy and slice the RAW text, because the chunk-size gate must
+# measure exactly what the chunker sees.
+#
+# So the guard is an enumeration instead: every ``CAUSE_HEADING_RE.<matcher>()``
+# in the shipped tree must either mask its input syntactically, or be classified
+# below with a reason. A new site is neither, and fails.
+
+_MATCHER_METHODS = {
+    "search",
+    "match",
+    "fullmatch",
+    "finditer",
+    "findall",
+    "split",
+    "sub",
+    "subn",
+}
+
+_COMMENT_SAFE_BY_CONSTRUCTION = {
+    "knowledge_service::_letter_can_head_a_cause": (
+        "matches a heading string the function builds itself from a letter "
+        '(f"### Cause {letter}: name"); there is no document text in it, so '
+        "there is no comment for one to hide in."
+    ),
+    "runbook_validator::_flag_malformed_cause_headings": (
+        "its input is a line taken from ``scan``, which the same function "
+        'already built as ``_CODE_FENCE_RE.sub("", HTML_COMMENT_RE.sub("", '
+        "causes_body))`` — comments are gone before the loose scan that "
+        "produces the line, so masking again would be a no-op."
+    ),
+}
+
+# Positive control for the walk (see the vacuity test): the sites that exist
+# today. Raising this is fine; a walk that finds FEWER is broken.
+_EXPECTED_MATCHER_SITES_AT_LEAST = 6
+
+_PACKAGE_ROOT = Path(__file__).resolve().parents[4] / "faultmaven"
+
+
+def _enclosing_functions(tree: ast.AST) -> dict[ast.AST, str]:
+    """Map every node to the name of the function that lexically contains it."""
+    owner: dict[ast.AST, str] = {}
+
+    def walk(node: ast.AST, current: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            name = (
+                child.name
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                else current
+            )
+            owner[child] = name
+            walk(child, name)
+
+    walk(tree, "<module>")
+    return owner
+
+
+def _cause_heading_matcher_sites() -> list[tuple[str, int, str, bool]]:
+    """Every ``CAUSE_HEADING_RE.<matcher>(...)`` in the shipped package.
+
+    Returns ``(key, lineno, relpath, masked)`` where ``key`` is
+    ``"<module stem>::<enclosing function>"`` — line numbers move, that key does
+    not — and ``masked`` says whether the first argument is syntactically
+    ``mask_html_comments(...)``.
+    """
+    sites: list[tuple[str, int, str, bool]] = []
+    for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        owner = _enclosing_functions(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not isinstance(fn, ast.Attribute) or fn.attr not in _MATCHER_METHODS:
+                continue
+            if not (
+                isinstance(fn.value, ast.Name) and fn.value.id == "CAUSE_HEADING_RE"
+            ):
+                continue
+            masked = bool(
+                node.args
+                and isinstance(node.args[0], ast.Call)
+                and isinstance(node.args[0].func, ast.Name)
+                and node.args[0].func.id == "mask_html_comments"
+            )
+            key = f"{path.stem}::{owner.get(node, '<module>')}"
+            rel = str(path.relative_to(_PACKAGE_ROOT))
+            sites.append((key, node.lineno, rel, masked))
+    return sites
+
+
+class TestEveryCauseHeadingConsumerMasks:
+    def test_the_walk_actually_finds_the_call_sites(self):
+        """Positive control. The pin below asserts a filtered list is empty, and
+        an empty list is exactly what a broken walk produces."""
+        sites = _cause_heading_matcher_sites()
+        assert len(sites) >= _EXPECTED_MATCHER_SITES_AT_LEAST, (
+            f"the AST walk found only {len(sites)} CAUSE_HEADING_RE matcher "
+            f"call(s), expected at least {_EXPECTED_MATCHER_SITES_AT_LEAST} — "
+            "the walk is broken, so the pin below passes vacuously"
+        )
+
+    def test_no_consumer_matches_unmasked_text(self):
+        offenders = [
+            f"{rel}:{line} ({key})"
+            for key, line, rel, masked in _cause_heading_matcher_sites()
+            if not masked and key not in _COMMENT_SAFE_BY_CONSTRUCTION
+        ]
+        assert not offenders, (
+            "CAUSE_HEADING_RE is blind to HTML comments (#1241), so a "
+            "commented-out '### Cause X:' example is enumerated as a real "
+            "Cause. Every consumer must pass its input through "
+            "mask_html_comments() — or, if the input cannot contain a comment, "
+            "be added to _COMMENT_SAFE_BY_CONSTRUCTION with the reason why. "
+            f"Unclassified: {offenders}"
+        )
+
+    def test_no_stale_exemptions(self):
+        """An exemption naming no live site is a claim nobody checks any more —
+        and it would silently cover a NEW function that later takes the name."""
+        live = {key for key, _line, _rel, _masked in _cause_heading_matcher_sites()}
+        stale = sorted(set(_COMMENT_SAFE_BY_CONSTRUCTION) - live)
+        assert not stale, f"exemptions naming no live call site: {stale}"
