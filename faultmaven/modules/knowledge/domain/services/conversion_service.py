@@ -1164,7 +1164,7 @@ class ConversionService:
             # its content on the way to an INSERT migration 046 rejects. See
             # ``refuse_if_draft_slot_taken``.
             await self.refuse_if_draft_slot_taken(
-                writable_org_id(organization_id), runbook_id, str(draft_path)
+                organization_id, runbook_id, str(draft_path)
             )
 
             write_runbook_file(
@@ -1400,8 +1400,8 @@ class ConversionService:
         - its ``file_path``, which is NOT in that index and does not follow
           from the id. ``draft_filename`` runs the id back through ``_slug``,
           so ``"foo--bar"`` and ``"foo-bar"`` resolve to one ``foo-bar.md``.
-          A legacy row holding the double-hyphen form (valid before #1243
-          re-minted the mint) is invisible to an id lookup, and the write would
+          A legacy row holding the double-hyphen form — which the mint could
+          produce before #1243 — is invisible to an id lookup, and the write would
           clobber its file while the INSERT sailed past the index. Measured on
           the dev database: 0 rows of that shape today, so this is a guard
           against a state I could not reproduce rather than one I observed —
@@ -1457,7 +1457,7 @@ class ConversionService:
         )
 
     async def refuse_if_draft_slot_taken(
-        self, org_id: str, runbook_id: str, draft_path: str
+        self, organization_id: Optional[str], runbook_id: str, draft_path: str
     ) -> None:
         """Refuse BEFORE writing, on every path that mints a NEW draft file.
 
@@ -1475,9 +1475,18 @@ class ConversionService:
 
         This is the ordinary case; the index stays the backstop for the genuine
         cross-replica race, which is what an index is for.
+
+        Takes the RAW ``organization_id`` and resolves it here, after the
+        factory check — unlike ``_raise_if_runbook_id_taken``, whose only caller
+        has already resolved it. ``writable_org_id`` raises on an unscoped
+        context, and evaluating it at the call site would make that a failure on
+        a path with no database, which writes nothing and has no index to
+        honour. Mirrors ``_persist_job``'s own early return.
         """
+        if not self._db_session_factory:
+            return
         taken = await self._find_live_draft_owning(
-            org_id, [runbook_id], file_path=draft_path
+            writable_org_id(organization_id), [runbook_id], file_path=draft_path
         )
         if taken:
             raise self._duplicate_draft_conflict(taken)
@@ -2396,7 +2405,7 @@ status: draft
         # manual create is one runbook, so refusing it IS the answer, and the
         # caller gets the 409.
         await self.refuse_if_draft_slot_taken(
-            writable_org_id(organization_id), runbook_id, str(draft_path)
+            organization_id, runbook_id, str(draft_path)
         )
 
         write_runbook_file(
