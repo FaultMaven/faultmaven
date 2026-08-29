@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from faultmaven.utils.path_containment import resolve_within_root
+
 logger = logging.getLogger(__name__)
 
 PACK_FORMAT = 1
@@ -235,7 +237,24 @@ class KbPack:
             runbooks: List[PackRunbook] = []
             for rb in meta.get("runbooks", []):
                 relpath = rb["relpath"]
-                content_path = runbooks_root / relpath
+                # ``relpath`` is a data field in pack.json, joined onto the
+                # pack directory. Same containment class as the runbook tree
+                # and the storage backend (#1213/#1215/#1225/#1235): resolve,
+                # then require the result to be strictly inside the pack's
+                # runbooks directory, so a manifest naming ``../../etc/passwd``
+                # (or a symlink to it) cannot pull content the pack does not
+                # own into the KB. Lower risk than the other two — a pack is an
+                # operator-installed artifact, not request input — and refused
+                # the same way as every other malformed-pack guard here: the
+                # raise reaches the handler below and the pack is dropped
+                # WHOLE, not silently half-ingested.
+                content_path = resolve_within_root(
+                    runbooks_root / relpath,
+                    root=runbooks_root,
+                    source=f"pack.json relpath (pack_dir={pack_dir})",
+                    subject="KB pack runbook path",
+                    tree="KB pack",
+                )
                 content = content_path.read_text(encoding="utf-8")
                 chunks: List[PackChunk] = []
                 for c in rb.get("chunks", []):
