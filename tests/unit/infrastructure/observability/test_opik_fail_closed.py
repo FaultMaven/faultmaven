@@ -40,7 +40,17 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
-OPIK_INSTALLED = importlib.util.find_spec("opik") is not None
+# "Is the Opik SDK installed?" is NOT ``find_spec("opik") is not None``.
+# pip's uninstall removes a package's files but leaves its directories, so a
+# venv that once had the ``cloud`` extra (opik is optional — pyproject's
+# ``[cloud]`` extra) keeps an empty ``site-packages/opik/`` tree behind. PEP
+# 420 resolves that to a namespace package: the spec is found and ``import
+# opik`` succeeds, while none of the SDK exists. The probes below then ran
+# instead of skipping and died on
+# ``AttributeError: module 'opik' has no attribute 'is_tracing_active'``.
+# A namespace package has no ``origin``; a real distribution does.
+_OPIK_SPEC = importlib.util.find_spec("opik")
+OPIK_INSTALLED = _OPIK_SPEC is not None and _OPIK_SPEC.origin is not None
 
 # Env keys that would change what the probe observes if inherited from the
 # developer's shell or CI. Removed from every probe env, then selectively

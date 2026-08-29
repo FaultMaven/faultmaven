@@ -227,8 +227,20 @@ from .modules.report.api.routes import router as report_router
 # SessionManager now handled via DI container - services.session.SessionService
 
 # Optional Opik middleware import
+#
+# ``import opik`` succeeding is not proof the SDK is installed: opik is
+# optional (pyproject's ``[cloud]`` extra) and pip's uninstall leaves a
+# package's directories behind, so an empty ``site-packages/opik/`` tree
+# imports as a PEP 420 namespace package exposing none of the SDK. Without the
+# ``__file__`` check that state reports "Opik SDK available but middleware not
+# found" instead of "Opik not available". (The OpikMiddleware import below is
+# a from-import and already fails correctly, so the middleware itself was
+# never at risk.)
 try:
     import opik
+
+    if getattr(opik, "__file__", None) is None:
+        raise ImportError("'opik' resolved to a namespace package, not the SDK")
 
     OPIK_AVAILABLE = True
 

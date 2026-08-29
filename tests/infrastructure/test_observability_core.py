@@ -28,7 +28,14 @@ def restore_opik_sdk_state():
         import opik
 
         previous_active = opik.is_tracing_active()
-    except ImportError:
+    except (ImportError, AttributeError):
+        # AttributeError, not just ImportError: pip's uninstall leaves a
+        # package's directories behind, so a venv that once had the optional
+        # ``cloud`` extra keeps an empty ``site-packages/opik/`` tree that PEP
+        # 420 imports as a namespace package — ``import opik`` succeeds and
+        # exposes nothing. Catching only ImportError turned that into an
+        # error at fixture setup rather than the intended "no SDK, nothing to
+        # restore". Same reason the fail-closed suite tests the spec origin.
         opik = None
         previous_active = None
 
