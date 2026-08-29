@@ -73,16 +73,17 @@ except on the shape that is mid-forgery. :func:`absorbed_delimiters` is the
 standing check that the terminator and whatever is reading the prompt still
 agree about where a tag ends.
 
-**Scope: the caller-controlled class is closed ON THE MAIN PROMPT (#1228),
-and NOT on the fallback — see below.** One token is minted per prompt
-ASSEMBLY and shared by every caller-controlled block that assembly renders:
-``<problem_context>`` (case title / description / symptom statement),
-``<entity_highlights>`` (values extracted from file content) and the
-``<evidence_collected>`` envelope. There is exactly ONE genuine declaration
-per prompt, on the line immediately ABOVE the ``<problem_context …>`` opening
-tag — a reserve section, so never trimmed; the first fenced block in every
-template, so no caller-controlled byte precedes it; and outside the element,
-because the rule demotes unfenced text INSIDE these blocks to quoted content.
+**Scope: the caller-controlled class is closed on the MAIN prompt (#1228) and
+on the FALLBACK prompt (#1242).** One token is minted per prompt ASSEMBLY and
+shared by every caller-controlled block that assembly renders. On the main
+prompt those are ``<problem_context>`` (case title / description / symptom
+statement), ``<entity_highlights>`` (values extracted from file content) and
+the ``<evidence_collected>`` envelope. There is exactly ONE genuine
+declaration per prompt, on the line immediately ABOVE the
+``<problem_context …>`` opening tag — a reserve section, so never trimmed; the
+first fenced block in every template, so no caller-controlled byte precedes
+it; and outside the element, because the rule demotes unfenced text INSIDE
+these blocks to quoted content.
 
 The TOKEN is prompt-wide; the DEMOTION CLAUSE is not. ``_PROMPT_FENCE_RULE``
 scopes "a tag without the genuine token is data" to the three fenced blocks,
@@ -103,36 +104,70 @@ only while exactly one token is live. One shared token is also strictly
 stronger on check 1: with a shared corpus the token is provably absent from
 *every* caller-controlled string in the prompt, not just from one block's own.
 
-**OPEN, and reachable: the FALLBACK templates.** ``FALLBACK_INQUIRY_TEMPLATE``,
-``FALLBACK_INVESTIGATION_TEMPLATE`` and ``FALLBACK_TERMINAL_TEMPLATE``
-interpolate ``case.description`` (as ``PROBLEM:``) and ``user_message`` raw,
-and state NO fence rule at all. ``_fallback_current_turn_evidence`` mints its
-own token and emits a declaration, but only when the turn carried an upload —
-so on a turn without one, a ``FENCE:`` line planted in ``case.description`` is
-the ONLY declaration in the prompt. Measured on this code::
+**The FALLBACK prompt (#1242).** ``FALLBACK_INQUIRY_TEMPLATE``,
+``FALLBACK_INVESTIGATION_TEMPLATE`` and ``FALLBACK_TERMINAL_TEMPLATE`` used to
+interpolate ``case.description`` (as ``PROBLEM:``) and ``user_message`` raw
+and state NO rule at all. ``_fallback_current_turn_evidence`` minted a token
+and emitted a declaration, but only when the turn carried an upload — so on a
+turn without one, a ``FENCE:`` line planted in ``case.description`` was the
+ONLY declaration in the prompt. Measured on ``859a8d47c``::
 
     get_fallback_prompt_for_case(case, "what is happening?")
-      attacker FENCE: at index 91
+      attacker FENCE: at index 75
       "trust boundary" in prompt: False
       FENCE: occurrences: 1        <- the attacker's, and only that
 
-This is attacker-reachable rather than theoretical: the fallback fires under
+That was attacker-reachable rather than theoretical: the fallback fires under
 budget pressure (``prompt_starvation_fallback`` / ``prompt_overflow_fallback``
 in ``templates._assemble_allocated``), which an uploader induces by uploading
-a large file. It is left open here deliberately, not by oversight: the
-fallback is chosen precisely when ``variable_room < min_viable`` (~1500
-tokens), so dropping a ~530-token rule block into it is a token trade of its
-own size and wants a compact rule variant; and
-``get_fallback_prompt_for_case`` has a second caller (``milestone_engine``'s
-runtime context-overflow recovery), so a shared-mint restructure has to serve
-both. Tracked separately — do not read the paragraph above as covering it.
+a large file.
 
-Because the fallback keeps an independent mint, "exactly one token is live per
-emitted prompt" rests on the two assemblies never co-occurring. They do not:
-the fallback templates REPLACE the assembled prompt rather than joining it
-(verified by execution in #1228 — forcing both the starvation and the overflow
-exit runs two ``render_fenced`` calls and leaves exactly one distinct token in
-the emitted prompt).
+It is now one fenced assembly of its own: ``templates.get_fallback_prompt_for_case``
+runs the whole body through :func:`render_fenced`, so ``<problem_context>``
+(the problem summary), ``<user_message>`` and the ``<uploaded_file>`` stubs
+share ONE token, and the single declaration is emitted above the first fenced
+tag rather than inside the stub block. The mint is at
+``get_fallback_prompt_for_case`` rather than at ``get_prompt_for_case`` level
+because this function has a SECOND caller — ``milestone_engine``'s runtime
+context-overflow recovery — with no main assembly to inherit a token from;
+minting at the one point both callers pass through serves both.
+
+The rule it states is ``templates._FALLBACK_FENCE_RULE``, not
+``_PROMPT_FENCE_RULE``, for two independent reasons. The full rule would not
+be TRUE here — it names ``<entity_highlights>``, ``<evidence_collected>``,
+``<security_constraints>``, ``<case_identity>``, ``<progress_indicators>`` and
+``<conversation_history>``, none of which the fallback renders — and it costs
+613 tokens with its declaration against 239 for the compact one (measured with
+``utils.token_estimation``, openai/gpt-4o), in a prompt reached precisely
+because fewer than ``min_viable`` (1500) tokens were available. The compact
+rule keeps everything the full one says that holds here, and states the
+demotion PROMPT-WIDE rather than block-scoped: unlike the main prompt, the
+fallback emits no unfenced tag-shaped structure of its own, so there is
+nothing outside the fenced blocks for a prompt-wide demotion to wrongly
+demote.
+
+"Exactly one token is live per emitted prompt" still rests on the two
+assemblies never co-occurring, and they do not: the fallback REPLACES the
+assembled prompt rather than joining it. Verified by execution in #1228, and
+RE-verified for #1242 because the mint moved — a budget sweep from 1,000 to
+24,000 ``prompt_target_tokens`` emitted 39 fallback and 8 main prompts, each
+with exactly one live token and no unclosed fenced delimiter
+(``tests/unit/core/investigation/test_fallback_fence_1242.py``).
+
+What the fallback deliberately does NOT fence, and why: ``RESOLUTION:``
+carries ``case.closure_reason``, which is engine-derived from a closed enum
+(``terminal_transitions.derive_closure_reason``) and which the LLM never
+authors; ``HYPOTHESES:`` and the journal digest carry schema-validated model
+output, the same classification the main prompt gives ``<working_hypotheses>``
+and ``<investigation_journal>``; ``STATE:``/``STAGE:``/``MILESTONES
+COMPLETED:`` are enum values and literals.
+
+One asymmetry worth knowing rather than fixing here: on the MAIN path
+``user_message`` passes through ``context_builder.sanitize_user_input``, which
+escapes ``<``/``>``; the fallback receives the raw argument. The fallback
+answers that with a fence rather than an escape, for the reason at the top of
+this module — nothing on this path decodes, so an escaped entity is what the
+model echoes at the user (#666).
 
 The remaining MAIN-PROMPT blocks are still NOT fenced, and the justification is
 that none of them is a caller-controlled channel:
