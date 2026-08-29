@@ -1,9 +1,13 @@
 """One file per turn on the unified ``POST /cases/{case_id}/turns`` endpoint.
 
 ``files`` is declared as a list because that is how multipart repeats a field,
-but the supported contract is a single file per turn — the clarification
-emitter only ever clarifies the first ``classification_failed`` attachment.
-fm#694 makes that a server-side rule instead of a client-side convention, and
+but the supported contract is a single file per turn: the Copilot sends exactly
+one, and multi-file turns are undefined and untested (per-file attachment
+results, request-size budget). fm#694 also cited the clarification emitter,
+which then clarified only the first ``classification_failed`` attachment —
+that is no longer true (it clarifies every failure, #1222) and is no longer
+part of why this cap exists.
+fm#694 makes the rule server-side instead of a client-side convention, and
 does it with ``File(max_length=1)`` rather than a hand-rolled ``len(files)``
 check: the framework both refuses the request AND publishes ``maxItems: 1``
 into the OpenAPI schema, so the narrowing is visible to clients and to
