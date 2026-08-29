@@ -1,9 +1,15 @@
 """Phase 4c — ``fetch_entity_highlights`` + context-builder slot.
 
-The helper pre-formats the ``<entity_highlights>`` block from the
-Phase 4 ``case_entities`` registry. The context builder carries it
-through into the ctx dict so the INVESTIGATING template can drop it
-in directly.
+The helper reads highlight ROWS out of the Phase 4 ``case_entities``
+registry; the context builder formats them into ``<entity_highlights>``
+inside the prompt's shared fence and carries the result through into
+the ctx dict for the INVESTIGATING template.
+
+The fetch/format split is #1228: the values are extracted from uploaded
+file content, so the block has to be fenced, and ``render_fenced``'s
+safety property is that it can RE-RENDER on a token collision — which it
+cannot do around an awaited database query. So the fetch returns rows and
+the formatting is pure.
 """
 
 from __future__ import annotations
@@ -14,9 +20,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.prompts.context_builder import (
+    EntityHighlightGroup,
+    EntityHighlightRow,
+    _render_entity_highlights,
     build_investigation_context,
     fetch_entity_highlights,
 )
+from faultmaven.core.investigation.prompts.fence import render_fenced
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseEntity,
@@ -46,9 +56,9 @@ def _entity(
 @pytest.fixture
 def repo_with_entities():
     """Repo stub whose ``list_top_entities`` returns predictable rows
-    per type. The tests inspect the formatted block; what matters is
-    that each ``EntityType`` the helper queries gets routed to the
-    right bucket."""
+    per type. The tests inspect the rows and the block rendered from
+    them; what matters is that each ``EntityType`` the helper queries
+    gets routed to the right bucket."""
     repo = MagicMock()
 
     async def fake_list(case_id, entity_type, limit=10):
@@ -80,11 +90,17 @@ def repo_with_entities():
     return repo
 
 
+def _render(groups) -> str:
+    """The block the assembly would emit for ``groups`` (own fence token)."""
+    return render_fenced(lambda f: _render_entity_highlights(groups, f))
+
+
 class TestFetchEntityHighlights:
     @pytest.mark.asyncio
     async def test_returns_empty_when_repo_is_none(self):
         result = await fetch_entity_highlights(None, "case_xyz")
-        assert result == ""
+        assert result == []
+        assert _render(result) == ""
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_repo_lacks_method(self):
@@ -92,13 +108,21 @@ class TestFetchEntityHighlights:
             pass
 
         result = await fetch_entity_highlights(LegacyRepo(), "case_xyz")
-        assert result == ""
+        assert result == []
+        assert _render(result) == ""
 
     @pytest.mark.asyncio
     async def test_formats_block_with_only_populated_types(self, repo_with_entities):
-        result = await fetch_entity_highlights(repo_with_entities, "case_xyz")
-        assert result.startswith("<entity_highlights>")
-        assert result.endswith("</entity_highlights>")
+        groups = await fetch_entity_highlights(repo_with_entities, "case_xyz")
+        assert [g.entity_type for g in groups] == ["ip", "hostname"]
+        assert groups[0].rows == (
+            EntityHighlightRow("10.0.0.5", 12, True),
+            EntityHighlightRow("10.0.0.6", 3, False),
+        )
+
+        result = _render(groups)
+        assert result.startswith("<entity_highlights fence=")
+        assert result.endswith('</entity_highlights fence="%s">' % _token(result))
         assert "ip:" in result
         assert "10.0.0.5 ×12 (error)" in result
         assert "10.0.0.6 ×3" in result
@@ -114,7 +138,8 @@ class TestFetchEntityHighlights:
         repo = MagicMock()
         repo.list_top_entities = AsyncMock(return_value=[])
         result = await fetch_entity_highlights(repo, "case_xyz")
-        assert result == ""
+        assert result == []
+        assert _render(result) == ""
 
     @pytest.mark.asyncio
     async def test_per_type_query_failure_is_skipped(self):
@@ -136,7 +161,9 @@ class TestFetchEntityHighlights:
             return []
 
         repo.list_top_entities = AsyncMock(side_effect=flaky)
-        result = await fetch_entity_highlights(repo, "case_xyz")
+        groups = await fetch_entity_highlights(repo, "case_xyz")
+        assert [g.entity_type for g in groups] == ["hostname"]
+        result = _render(groups)
         assert "hostname:" in result
         assert "db-01" in result
         assert "ip:" not in result
@@ -179,6 +206,23 @@ class TestContextBuilderSlot:
 
     def test_passing_highlights_surfaces_in_ctx(self):
         case = self._make_investigating_case()
-        block = "<entity_highlights>\nip:\n  - 10.0.0.5 ×3\n</entity_highlights>"
-        ctx = build_investigation_context(case, "hello", entity_highlights=block)
-        assert ctx["entity_highlights"] == block
+        groups = [
+            EntityHighlightGroup(
+                entity_type="ip", rows=(EntityHighlightRow("10.0.0.5", 3),)
+            )
+        ]
+        ctx = build_investigation_context(case, "hello", entity_highlight_groups=groups)
+        block = ctx["entity_highlights"]
+        assert "ip:" in block
+        assert "10.0.0.5 ×3" in block
+        # Rendered on the PROMPT's fence, not one of its own (#1228).
+        assert _token(block) == _token(ctx["core_context"])
+
+
+def _token(rendered: str) -> str:
+    """The fence token on the first fenced delimiter in ``rendered``."""
+    import re
+
+    m = re.search(r'fence="([0-9a-f]+)"', rendered)
+    assert m, rendered
+    return m.group(1)
