@@ -145,6 +145,14 @@ class CountingProvider:
         return await self._inner.generate(**kwargs)
 
 
+def _relative_to_repo(path: str) -> str:
+    """``path`` as a repo-relative string, or its basename if it lies outside."""
+    try:
+        return str(Path(path).resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return Path(path).name
+
+
 def _resolved_model() -> str:
     """The model the router will actually use, asked of settings rather than
     guessed from whichever ``*_MODEL`` env var happens to be set."""
@@ -324,14 +332,10 @@ def print_summary(summary: dict) -> None:
 
 
 async def main_async(args) -> int:
-    cases = load_cases(Path(args.cases))
-    if args.only:
-        wanted = set(args.only.split(","))
-        cases = [c for c in cases if c["case_id"] in wanted]
-    if not cases:
-        print("no cases selected", file=sys.stderr)
-        return 2
-
+    # ``replay`` is scored ENTIRELY from the recorded runbooks — it must not
+    # touch the fixtures, or re-scoring a committed transcript breaks the day
+    # `cases.json` is renamed or a case is dropped from it. That is the one
+    # thing a recorded run exists to survive.
     if args.mode == "replay":
         recorded = json.loads(Path(args.from_file).read_text())
         for arm_rows in recorded["arms"].values():
@@ -343,6 +347,14 @@ async def main_async(args) -> int:
                 rescored.append(fresh)
             print_summary(summarise(rescored))
         return 0
+
+    cases = load_cases(Path(args.cases))
+    if args.only:
+        wanted = set(args.only.split(","))
+        cases = [c for c in cases if c["case_id"] in wanted]
+    if not cases:
+        print("no cases selected", file=sys.stderr)
+        return 2
 
     provider = build_provider()
     arms: dict[str, list[dict]] = {}
@@ -360,7 +372,9 @@ async def main_async(args) -> int:
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "model": _resolved_model(),
             "chat_provider": os.environ.get("CHAT_PROVIDER", "(unset)"),
-            "cases_file": str(args.cases),
+            # Relative to the repo root: an absolute path baked into a
+            # committed artifact records the machine it ran on, not the run.
+            "cases_file": _relative_to_repo(args.cases),
             "arms": arms,
             "summaries": {k: summarise(v) for k, v in arms.items()},
         }

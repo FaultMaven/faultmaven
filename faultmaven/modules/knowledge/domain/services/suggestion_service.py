@@ -165,12 +165,15 @@ corrected runbook, starting at the opening `---`, and output nothing else.
     #: that a third turn never helps: the corpus never produced a twice-failing
     #: draft for one to act on.
     #:
-    #: The cost side is what makes 2 the right stopping point rather than 3:
-    #: each attempt is a full runbook generation inside a SYNCHRONOUS HTTP
-    #: request (~20-30 s), so a speculative third turn is bought with reviewer
-    #: latency on every extraction that is going to fail anyway — and a draft
-    #: that fails twice reaches the reviewer with its errors attached, which is
-    #: the recovery this lane built.
+    #: The cost side is what makes 2 the right stopping point rather than 3.
+    #: This counts GATE attempts, and each one wraps
+    #: ``generate_with_truncation_retry``, which spends a second generation of
+    #: its own if the body comes back cut — so the budget is up to FOUR
+    #: generations, not two, inside a synchronous HTTP request. At the ~20-60 s
+    #: per generation the eval measured, a speculative third gate attempt is
+    #: bought with reviewer latency on every extraction that was going to fail
+    #: anyway — and a draft that fails twice reaches the reviewer with its
+    #: errors attached, which is the recovery this lane built.
     #:
     #: Re-run that driver before changing this.
     MAX_EXTRACTION_ATTEMPTS = 2
@@ -262,6 +265,20 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             Created KnowledgeSuggestion
         """
         self.logger.info(f"Extracting knowledge from case {case_id}")
+
+        # Refuse a full queue BEFORE spending the generation budget, not after
+        # (#1226 rework). This raises ServiceUnavailableException, and running
+        # it last meant a deployment whose review inbox was full burned the
+        # whole budget — up to four LLM generations, 20-60 s each on the
+        # measured path — producing a runbook that was then thrown away, on
+        # every extract request, for as long as the queue stayed full. The
+        # answer does not depend on anything generated below, so there is
+        # nothing to wait for.
+        #
+        # It still makes room for exactly one entry and nothing is stored
+        # between here and the write below, so the cap remains a real ceiling
+        # rather than a ceiling plus one.
+        self._evict_for_capacity()
 
         # Get case details
         case_title = "Unknown Case"
@@ -368,20 +385,10 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             evidence_count=len(evidence),
         )
 
-        # Trigger PII scan
-        await self._scan_for_pii(suggestion)
-
-        # Carry the gate's verdict onto the suggestion BEFORE it is stored, so
-        # the review inbox can show what blocks approval instead of the reviewer
-        # discovering it as a bare 422 (#1226).
-        #
-        # Re-run rather than reuse ``validation`` from the generation loop: a
-        # sanitizer that finds PII REPLACES ``suggested_content``, and redaction
-        # can itself break the gate (a redacted frontmatter value, a redacted
-        # Cause Statement). The verdict on the suggestion must be about the text
-        # the suggestion actually holds — which is the text approval will
-        # publish — not about the draft the loop last saw.
-        self._record_validation(suggestion)
+        # Scan for PII, then record the gate's verdict on whatever the scan
+        # left behind (#1226). Never reuse ``validation`` from the generation
+        # loop: redaction rewrites the very text approval will publish.
+        await self._scan_and_record(suggestion)
         if not suggestion.validation_passed:
             self.logger.warning(
                 "Suggestion %s from case %s does not pass the runbook quality "
@@ -394,9 +401,8 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                 "; ".join(suggestion.validation_errors[:5]),
             )
 
-        # Make room BEFORE storing, so the cap is a real ceiling rather than a
-        # ceiling plus one. Raises when the queue is full of pending reviews.
-        self._evict_for_capacity()
+        # Capacity was checked and made at the top of this method, before the
+        # generation budget was spent.
         self._suggestions_store[suggestion_id] = suggestion
         self.logger.info(f"Created suggestion {suggestion_id} from case {case_id}")
 
@@ -488,9 +494,9 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             case_id: Source case, used only as the last-resort id stem.
 
         Returns:
-            The best draft produced — the first one that passes, else the last
-            one generated, else the skeleton template when no draft was
-            produced at all.
+            The best draft produced — the first one that passes, else the one
+            with the fewest gate errors (earliest on a tie), else the skeleton
+            template when no draft was produced at all.
         """
         prompt = base_prompt
         best: Optional[str] = None
@@ -506,7 +512,19 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
             content = _force_frontmatter_id(content, self._mint_id(content, case_id))
             validation = self._validator.validate_content(content)
-            best, best_validation = content, validation
+
+            # Keep the FEWEST-ERRORS draft, not simply the latest (#1226
+            # rework). A repair turn is not monotonic — it can come back worse,
+            # having "fixed" three flagged errors by restructuring a section
+            # into two new ones — and overwriting unconditionally would hand the
+            # reviewer that regression while the docstring promised them the
+            # best draft. Ties keep the EARLIER draft: it is the one the model
+            # produced from the case alone, without a repair turn's pressure to
+            # edit.
+            if best_validation is None or len(validation.errors) < len(
+                best_validation.errors
+            ):
+                best, best_validation = content, validation
 
             if validation.passed:
                 if attempt > 1:
@@ -516,7 +534,10 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                         attempt,
                         self._max_extraction_attempts,
                     )
-                return content
+                # ``best`` is this draft: zero errors always wins the comparison
+                # above. Returned through the same variable so the passing path
+                # and the exhausted path cannot disagree about what "best" is.
+                return best
 
             self.logger.info(
                 "Extraction draft failed the runbook quality gate on attempt "
@@ -538,7 +559,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
         if best is not None:
             self.logger.warning(
-                "Extraction exhausted its %d-attempt budget; returning the last "
+                "Extraction exhausted its %d-attempt budget; returning the best "
                 "draft with %d unresolved gate error(s) for review",
                 self._max_extraction_attempts,
                 len(best_validation.errors) if best_validation else 0,
@@ -666,20 +687,36 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         """The v4 skeleton used when no draft could be generated at all.
 
         Deliberately DOES NOT pass the gate, and that is not an oversight: with
-        no draft there is no knowledge here, only a form, and letting one click
+        no draft there is no knowledge here, only a form, and letting a click
         publish ``[INSUFFICIENT SOURCE DATA]`` into the global corpus would be a
         hole this lane opened rather than closed — the prose template it
         replaces was unapprovable too, just for a worse reason (it was not a
         runbook at all).
 
-        What blocks it is not a contrivance bolted on to force a failure: Cause
-        A's ``**Statement:**`` is EMPTY because there genuinely is no cause
-        statement, and an empty required sub-field is already a gate error. So
-        the reviewer gets the v4 shape to fill in, one precise sentence telling
-        them what is missing, and no way to publish the form by accident.
+        What blocks it is not a contrivance bolted on to force a failure: ALL
+        THREE of Cause A's required sub-fields — ``**Statement:**``,
+        ``**Indicators:**``, ``**Interventions:**`` — are empty, because there
+        genuinely is no cause, no observable and no fix to record. An empty
+        required sub-field is already a gate error, so the reviewer gets the v4
+        shape to fill in and three precise sentences saying what is missing.
+
+        Three, not one, and that is the point (#1226 rework). Leaving only the
+        Statement empty made the form ONE keystroke from publishable: filling
+        it cleared the single remaining error while every other field, the
+        frontmatter ``title`` included, still read ``[INSUFFICIENT SOURCE
+        DATA]``. The three that are empty now are the cause, its evidence and
+        its fix — the runbook's actual knowledge — so clearing them is
+        authoring, not a formality.
+
+        What this does NOT claim: that a filled-in form is a GOOD runbook. The
+        gate is structural and cannot tell grounded prose from plausible prose
+        (the same limit the eval records for a thin case), so the remaining
+        ``[INSUFFICIENT SOURCE DATA]`` markers are visible to a human reviewer
+        and to nothing else.
 
         ``tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py``
-        pins BOTH halves: v4-shaped, and still refused.
+        pins all of it: v4-shaped, refused, and still refused after any single
+        sub-field is filled.
         """
         return f"""---
 id: {runbook_id}
@@ -718,12 +755,17 @@ level, and the tools needed.]
 ## Causes
 
 ### Cause A: [INSUFFICIENT SOURCE DATA -- name the failure mode]
+<!-- All three sub-fields below are required and all three are empty. Fill in,
+     in order: one declarative sentence naming the single root cause; one
+     bullet per observable, each tagged with the diagnostic step that shows it
+     (root: [Step 1] ...); one bullet per fix, each tagged with its quadrant
+     and the rung it targets, each carrying its own verification.
+     Do NOT write example sub-field labels inside this comment: the cause
+     parser does not strip HTML comments, so a label written here is read as
+     the real field and the gate passes a form nobody filled in. -->
 **Statement:**
 **Indicators:**
-- root: [Step 1] [INSUFFICIENT SOURCE DATA -- the observable that confirms it]
 **Interventions:**
-- **remediation** (root): [INSUFFICIENT SOURCE DATA -- the durable fix.]
-  **Verification:** [INSUFFICIENT SOURCE DATA -- what confirms the fix worked.]
 
 ### Cause Z: Unidentified
 **Statement:** None of the documented causes match the observed evidence.
@@ -739,6 +781,25 @@ level, and the tools needed.]
 ## Sources
 - [INSUFFICIENT SOURCE DATA -- the case this was extracted from.]
 """
+
+    async def _scan_and_record(self, suggestion: KnowledgeSuggestion) -> None:
+        """Scan for PII, then record the gate's verdict on what the scan left.
+
+        The two are paired in ONE method rather than left as two calls every
+        mutation site has to remember, because forgetting the second is silent:
+        the suggestion keeps a ``validation_passed`` describing text that no
+        longer exists, and a reviewer reads a green verdict on content the gate
+        would refuse. That is exactly what happened at the third site — the
+        SCAN_FAILED re-scan inside ``approve_suggestion`` — while the other two
+        got it right (#1226 rework).
+
+        Ordering is load-bearing and always this way round: the scan may REDACT,
+        redaction can itself break the gate (a redacted frontmatter value, a
+        redacted Cause Statement), and the verdict must be about the text
+        approval will actually publish.
+        """
+        await self._scan_for_pii(suggestion)
+        self._record_validation(suggestion)
 
     def _record_validation(self, suggestion: KnowledgeSuggestion) -> None:
         """Run the publication gate over a suggestion's CURRENT content and
@@ -822,25 +883,71 @@ level, and the tools needed.]
 
         if self._sanitizer:
             try:
-                # Scan content for PII
-                content_to_scan = (
-                    f"{suggestion.suggested_title}\n\n{suggestion.suggested_content}"
-                )
-                sanitized = await self._sanitizer.asanitize(content_to_scan)
+                # TITLE AND CONTENT ARE SANITIZED SEPARATELY, and each is written
+                # back to its OWN field (#1226 rework).
+                #
+                # This used to scan ``f"{title}\n\n{content}"`` and assign the
+                # WHOLE sanitized buffer to ``suggested_content``. Two bugs in
+                # one line, and both only became reachable once extraction
+                # started producing real runbooks:
+                #
+                #   1. It DESTROYED the runbook. A v4 runbook must open with
+                #      ``---`` on line 1; a title prepended in front of it
+                #      guarantees that it never is. Measured over the eval's
+                #      eight recorded drafts, all of which pass the gate:
+                #      prepending a title flips all 8 to
+                #      ``['No YAML frontmatter found']``. So on any deployment
+                #      with a real sanitizer, ANY suggestion carrying PII became
+                #      permanently unapprovable — in exactly the population this
+                #      lane serves, since case transcripts are where PII lives.
+                #      The eval measured 8/8 with ``sanitizer=None``, which takes
+                #      the ``else`` branch below and never rewrites, so the
+                #      headline number never touched this path.
+                #   2. It never redacted the TITLE. The title was scanned but
+                #      only content was stored, so PII in the title survived into
+                #      ``upload_document(title=...)`` — the published knowledge
+                #      item's name AND, through ``runbook_filename``, its
+                #      filename on disk. The same leak class the frontmatter
+                #      ``id`` had (see ``_mint_id``), one field over.
+                #
+                # Two calls rather than one concatenation: a title and a runbook
+                # are separate documents, and the only thing the concatenation
+                # ever bought was slightly wider NER context, at the cost of
+                # making the result structurally unusable.
+                original_title = suggestion.suggested_title or ""
+                original_content = suggestion.suggested_content or ""
 
-                # If content was modified, PII was found
-                if sanitized != content_to_scan:
+                sanitized_title = (
+                    await self._sanitizer.asanitize(original_title)
+                    if original_title
+                    else original_title
+                )
+                sanitized_content = (
+                    await self._sanitizer.asanitize(original_content)
+                    if original_content
+                    else original_content
+                )
+
+                title_changed = sanitized_title != original_title
+                content_changed = sanitized_content != original_content
+
+                if title_changed or content_changed:
                     suggestion.mark_pii_scan_complete(
                         status=PIIScanStatus.PII_DETECTED,
                         result={
-                            "original_length": len(content_to_scan),
-                            "sanitized_length": len(sanitized),
+                            "original_length": len(original_title)
+                            + len(original_content),
+                            "sanitized_length": len(sanitized_title)
+                            + len(sanitized_content),
                             "pii_removed": True,
+                            "title_redacted": title_changed,
+                            "content_redacted": content_changed,
                             "message": "PII detected. Manual review required before approval.",
                         },
                     )
-                    # Store sanitized version as suggestion
-                    suggestion.suggested_content = sanitized
+                    # Each field back into its own slot. Never the concatenation.
+                    suggestion.suggested_title = sanitized_title
+                    suggestion.suggested_content = sanitized_content
                 else:
                     suggestion.mark_pii_scan_complete(
                         status=PIIScanStatus.CLEAN,
@@ -1028,7 +1135,13 @@ level, and the tools needed.]
                 "Suggestion %s has a failed PII scan; re-scanning before " "approval",
                 suggestion_id,
             )
-            await self._scan_for_pii(suggestion)
+            # Through the paired helper, not a bare scan: this re-scan can
+            # REDACT, and a redaction rewrites the text the recorded verdict
+            # describes. Left unpaired it was the one mutation site of three
+            # that skipped ``_record_validation``, so a suggestion could reach
+            # the reviewer reading ``validation_passed=True`` about content that
+            # no longer existed (#1226 rework).
+            await self._scan_and_record(suggestion)
 
         if not suggestion.is_ready_for_review():
             self.logger.warning(
@@ -1315,14 +1428,11 @@ level, and the tools needed.]
                 title=title or suggestion.suggested_title,
                 content=content or suggestion.suggested_content,
             )
-            # Re-scan for PII since content changed
-            await self._scan_for_pii(suggestion)
-            # And re-run the publication gate, AFTER the scan for the same
-            # reason extraction does: a sanitizer that redacts rewrites the
-            # content the verdict is about (#1226). This is the loop the
-            # reviewer actually works in — edit, see which errors cleared, edit
-            # again — so a stale verdict here is worse than none.
-            self._record_validation(suggestion)
+            # Re-scan for PII since content changed, and re-record the gate's
+            # verdict on the result. This is the loop the reviewer actually
+            # works in — edit, see which errors cleared, edit again — so a stale
+            # verdict here is worse than none.
+            await self._scan_and_record(suggestion)
 
         if suggested_type:
             suggestion.suggested_type = suggested_type

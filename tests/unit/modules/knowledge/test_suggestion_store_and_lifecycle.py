@@ -233,7 +233,10 @@ class TestAFailedScanRecovers:
         assert result is not None, "a recovered scan should let approval proceed"
         assert result["status"] == "approved"
         assert suggestion.pii_scan_status is PIIScanStatus.CLEAN
-        assert sanitizer.calls == 2, "the scan must actually be re-run"
+        # Three sanitize calls, not two: a scan is now TWO calls (title, then
+        # content — #1226 rework), and the first scan aborts on the title call
+        # that raises, so it never reaches the content. 1 failed + 2 recovered.
+        assert sanitizer.calls == 3, "the scan must actually be re-run"
 
     async def test_a_still_broken_engine_stays_not_ready(self):
         """The retry is honest: if the engine is still down the status stays

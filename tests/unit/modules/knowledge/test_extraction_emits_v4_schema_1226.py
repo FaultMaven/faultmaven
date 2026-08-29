@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -79,6 +79,38 @@ class ScriptedProvider:
     @staticmethod
     def _bodies_exhausted():
         raise AssertionError("provider called more times than the test scripted")
+
+
+class RedactingSanitizer:
+    """A sanitizer that actually REWRITES.
+
+    Every other double in this suite, and the eval driver, pass
+    ``sanitizer=None`` — which takes ``_scan_for_pii``'s ``else`` branch and
+    never touches the content. That is why the concatenation bug survived a
+    green suite AND a 8/8 measured pass rate: nothing in the lane exercised the
+    branch that runs in cloud, over case transcripts, which is precisely where
+    PII lives.
+    """
+
+    def __init__(self, needle: str = "prod-db-01", replacement: str = "<HOST>"):
+        self.needle = needle
+        self.replacement = replacement
+        self.seen: list[str] = []
+
+    async def asanitize(self, text: str) -> str:
+        self.seen.append(text)
+        return text.replace(self.needle, self.replacement)
+
+
+def _without_id_line(content: str) -> str:
+    """``content`` minus its frontmatter ``id:`` line.
+
+    Every draft has its id re-minted by ``_force_frontmatter_id``, so a
+    byte-equality assertion against the input would be testing the mint, not
+    the thing under test."""
+    return "\n".join(
+        line for line in content.splitlines() if not line.startswith("id:")
+    ).strip()
 
 
 def _case_repository(
@@ -536,3 +568,277 @@ class TestTheGateStillRefuses:
 
         assert "### Cause Z: Unidentified" in suggestion.suggested_content
         assert suggestion.validation_passed is False
+
+
+# ---------------------------------------------------------------------------
+# 5. Redaction must not destroy the runbook (#1226 rework)
+# ---------------------------------------------------------------------------
+
+
+class TestRedactionKeepsTheDraftPublishable:
+    """``_scan_for_pii`` used to scan ``f"{title}\n\n{content}"`` and assign the
+    WHOLE sanitized buffer back to ``suggested_content``.
+
+    A v4 runbook must open with ``---`` on line 1, so a title prepended in front
+    of it guarantees that it never is. Measured over the eval's eight recorded
+    drafts — all of which pass the gate — prepending a title flips all eight to
+    ``['No YAML frontmatter found']``. With a real sanitizer, therefore, ANY
+    suggestion carrying PII was permanently unapprovable, and the lane's
+    headline was false in exactly the population it targets.
+    """
+
+    @staticmethod
+    def _draft_with_pii() -> str:
+        return valid_runbook().replace(
+            "PostgreSQL 14+. Requires pg_monitor role. Tools: psql.",
+            "PostgreSQL 14+ on prod-db-01. Requires pg_monitor role. Tools: psql.",
+        )
+
+    async def _extract_with_redaction(self, title: str = "Pool exhaustion"):
+        sanitizer = RedactingSanitizer()
+        svc = SuggestionService(
+            case_repository=_case_repository(),
+            knowledge_service=MagicMock(),
+            sanitizer=sanitizer,
+            llm_provider=ScriptedProvider(self._draft_with_pii()),
+        )
+        suggestion = await svc.extract_knowledge_from_case(
+            case_id=CASE_ID,
+            organization_id=ORG,
+            extracted_by="user_extractor",
+            title_suggestion=title,
+        )
+        return svc, sanitizer, suggestion
+
+    async def test_the_frontmatter_survives_redaction(self):
+        _svc, _san, suggestion = await self._extract_with_redaction()
+
+        assert suggestion.suggested_content.startswith("---\n")
+        assert RunbookValidator().validate_content(suggestion.suggested_content).passed
+
+    async def test_the_recorded_verdict_still_passes(self):
+        """The number the lane exists to move, measured on the branch that
+        actually runs in cloud."""
+        _svc, _san, suggestion = await self._extract_with_redaction()
+
+        assert suggestion.validation_passed is True, suggestion.validation_errors
+        assert suggestion.validation_errors == []
+
+    async def test_pii_is_still_detected_and_removed(self):
+        """Not fixed by disabling redaction — the redaction still happens."""
+        _svc, _san, suggestion = await self._extract_with_redaction()
+
+        assert suggestion.pii_scan_status is PIIScanStatus.PII_DETECTED
+        assert "prod-db-01" not in suggestion.suggested_content
+        assert "<HOST>" in suggestion.suggested_content
+
+    async def test_the_title_is_redacted_too(self):
+        """The other half of the same bug: the title was SCANNED but only
+        content was written back, so PII in the title survived into
+        ``upload_document(title=...)`` — the published item's name and, through
+        ``runbook_filename``, its filename on disk."""
+        _svc, _san, suggestion = await self._extract_with_redaction(
+            title="Pool exhaustion on prod-db-01"
+        )
+
+        assert suggestion.suggested_title == "Pool exhaustion on <HOST>"
+        assert "prod-db-01" not in suggestion.suggested_title
+
+    async def test_title_and_content_are_scanned_as_separate_documents(self):
+        """Never the concatenation — that is the thing that broke it."""
+        _svc, sanitizer, suggestion = await self._extract_with_redaction()
+
+        assert len(sanitizer.seen) == 2
+        title_seen, content_seen = sanitizer.seen
+        assert title_seen == "Pool exhaustion"
+        assert content_seen.startswith("---\n")
+
+    async def test_clean_content_is_not_rewritten(self):
+        """A sanitizer that finds nothing must leave both fields alone and mark
+        the scan CLEAN, exactly as before."""
+        sanitizer = RedactingSanitizer(needle="nothing-here-to-find")
+        svc = SuggestionService(
+            case_repository=_case_repository(),
+            knowledge_service=MagicMock(),
+            sanitizer=sanitizer,
+            llm_provider=ScriptedProvider(valid_runbook()),
+        )
+
+        suggestion = await _extract(svc)
+
+        assert suggestion.pii_scan_status is PIIScanStatus.CLEAN
+        assert _without_id_line(suggestion.suggested_content) == _without_id_line(
+            valid_runbook()
+        )
+        assert suggestion.validation_passed is True
+
+
+# ---------------------------------------------------------------------------
+# 6. The recorded verdict is never stale (#1226 rework)
+# ---------------------------------------------------------------------------
+
+
+class TestTheVerdictTracksEveryContentMutation:
+    """Three sites mutate content: extraction, the reviewer edit, and the
+    SCAN_FAILED re-scan inside ``approve_suggestion``. The third one skipped
+    ``_record_validation``, so a suggestion could carry
+    ``validation_passed=True`` describing text that no longer existed. They are
+    now one paired helper rather than two calls each site must remember."""
+
+    class _BreakingOnRetry:
+        """Fails the first scan, then redacts a required section heading — a
+        redaction that itself breaks the gate, which is the case the pairing
+        exists for."""
+
+        def __init__(self):
+            self.calls = 0
+
+        async def asanitize(self, text: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("presidio unavailable")
+            return text.replace("## Sources", "## Redacted")
+
+    async def test_the_scan_failed_rescan_re_records_the_verdict(self):
+        sanitizer = self._BreakingOnRetry()
+        knowledge = MagicMock()
+        knowledge.upload_document = AsyncMock(
+            return_value={"document_id": "kb_abcdef0123456789"}
+        )
+        svc = SuggestionService(
+            case_repository=_case_repository(),
+            knowledge_service=knowledge,
+            sanitizer=sanitizer,
+            llm_provider=ScriptedProvider(valid_runbook()),
+        )
+        suggestion = await _extract(svc)
+        assert suggestion.pii_scan_status is PIIScanStatus.SCAN_FAILED
+
+        await svc.approve_suggestion(
+            suggestion_id=suggestion.suggestion_id,
+            reviewed_by="user-admin",
+            organization_id=ORG,
+        )
+
+        # The re-scan removed a required section, so the verdict MUST have
+        # moved with it. Left unpaired this stayed at whatever extraction last
+        # recorded.
+        assert suggestion.validation_passed is False
+        assert "Missing required section: Sources" in suggestion.validation_errors
+
+    def test_every_content_mutation_goes_through_the_paired_helper(self):
+        """A structural pin, because the failure mode is forgetting. Any future
+        site that calls the bare scan is a site that can leave a stale verdict
+        behind."""
+        import inspect
+
+        from faultmaven.modules.knowledge.domain.services import suggestion_service
+
+        source = inspect.getsource(suggestion_service.SuggestionService)
+        bare = source.count("self._scan_for_pii(")
+        paired = source.count("self._scan_and_record(")
+        # Exactly one bare call: the one inside _scan_and_record itself.
+        assert bare == 1, "a caller is scanning without re-recording the verdict"
+        assert paired >= 3
+
+
+# ---------------------------------------------------------------------------
+# 7. The best draft, not merely the last (#1226 rework)
+# ---------------------------------------------------------------------------
+
+
+class TestTheBestDraftIsKept:
+    async def test_a_worse_repair_turn_does_not_replace_a_near_miss(self):
+        """A repair turn is not monotonic: it can "fix" three flagged errors by
+        restructuring a section into two new ones. Overwriting unconditionally
+        handed the reviewer that regression while the docstring promised them
+        the best draft."""
+        near_miss = valid_runbook().replace("## Sources", "## Not Sources")
+        much_worse = "# Not a runbook at all\n\nJust prose.\n"
+        provider = ScriptedProvider(near_miss, much_worse)
+
+        suggestion = await _extract(_service(provider))
+
+        assert len(provider.prompts) == 2
+        assert _without_id_line(suggestion.suggested_content) == _without_id_line(
+            near_miss
+        )
+        assert suggestion.validation_errors == ["Missing required section: Sources"]
+
+    async def test_a_better_repair_turn_does_replace_the_first(self):
+        """The complement — otherwise "keep the best" could be implemented as
+        "keep the first" and pass the test above."""
+        much_worse = "# Not a runbook at all\n\nJust prose.\n"
+        near_miss = valid_runbook().replace("## Sources", "## Not Sources")
+        provider = ScriptedProvider(much_worse, near_miss)
+
+        suggestion = await _extract(_service(provider))
+
+        assert _without_id_line(suggestion.suggested_content) == _without_id_line(
+            near_miss
+        )
+        assert suggestion.validation_errors == ["Missing required section: Sources"]
+
+
+# ---------------------------------------------------------------------------
+# 8. Filling one field must not publish the form (#1226 rework)
+# ---------------------------------------------------------------------------
+
+
+class TestTheSkeletonNeedsRealAuthoring:
+    _FILLS = {
+        "Statement": (
+            "**Statement:**\n",
+            "**Statement:** The single root cause.\n",
+        ),
+        "Indicators": (
+            "**Indicators:**\n",
+            "**Indicators:**\n- root: [Step 1] the observable\n",
+        ),
+        "Interventions": (
+            "**Interventions:**\n",
+            "**Interventions:**\n- **remediation** (root): the fix.\n"
+            "  **Verification:** re-run Step 1.\n",
+        ),
+    }
+
+    def test_all_three_cause_subfields_start_empty(self):
+        result = RunbookValidator().validate_content(
+            SuggestionService.fallback_template("case-example")
+        )
+        assert not result.passed
+        for sub in ("Statement", "Indicators", "Interventions"):
+            assert f"Cause A: **{sub}:** sub-field is empty" in result.errors
+
+    @pytest.mark.parametrize("field", ["Statement", "Indicators", "Interventions"])
+    def test_filling_any_single_field_still_does_not_publish(self, field):
+        """The regression this replaces: with only the Statement empty, ONE
+        keystroke cleared the single remaining error while every other field —
+        the frontmatter ``title`` included — still read
+        ``[INSUFFICIENT SOURCE DATA]``."""
+        old, new = self._FILLS[field]
+        content = SuggestionService.fallback_template("case-example").replace(
+            old, new, 1
+        )
+
+        assert not RunbookValidator().validate_content(content).passed
+
+    def test_authoring_the_whole_cause_does_clear_the_gate(self):
+        """The complement: the block is three real authoring acts away from
+        valid, not unreachable. Without this the class above would also pass if
+        the skeleton were simply broken beyond repair."""
+        content = SuggestionService.fallback_template("case-example")
+        for old, new in self._FILLS.values():
+            content = content.replace(old, new, 1)
+
+        assert RunbookValidator().validate_content(content).passed
+
+    def test_the_hint_comment_declares_no_subfield_labels(self):
+        """``parse_cause_subfields`` does NOT strip HTML comments, so a
+        ``**Statement:**`` example written inside the guidance comment is read
+        as the real field — measured: it made the empty skeleton PASS. The
+        comment must therefore never spell a sub-field label."""
+        skeleton = SuggestionService.fallback_template("case-example")
+        comment = skeleton[skeleton.index("<!--") : skeleton.index("-->")]
+        for sub in ("Statement", "Indicators", "Interventions", "Chain"):
+            assert f"**{sub}:**" not in comment

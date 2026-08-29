@@ -2,7 +2,7 @@
   "recorded_at": "2026-08-29T04:38:42.024888+00:00",
   "model": "claude-sonnet-4-5",
   "chat_provider": "anthropic",
-  "cases_file": "/home/swhouse/product/faultmaven/.claude/worktrees/agent-ab8c9bbab7704e195/tests/eval/suggestion_extraction/cases.json",
+  "cases_file": "tests/eval/suggestion_extraction/cases.json",
   "arms": {
     "before": [
       {
