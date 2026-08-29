@@ -259,7 +259,24 @@ class KnowledgeSuggestion:
             reviewed_by: User ID of the reviewer
             rejection_reason: Why the suggestion was rejected
             review_notes: Optional additional notes
+
+        Raises:
+            ConflictError: the suggestion is already APPROVED. The documented
+                lifecycle forks — ``PENDING_REVIEW`` goes to APPROVED *or*
+                REJECTED — and approval has already published a knowledge item.
+                Rejecting afterwards flipped the status to REJECTED while
+                leaving ``knowledge_item_id`` set and the item live in the
+                corpus, so the inbox said "rejected" about content every tenant
+                could still retrieve. ``conflict_reason="already_approved"``.
         """
+        if self.is_approved():
+            raise ConflictError(
+                "Suggestion has already been approved and cannot be rejected",
+                resource_type="suggestion",
+                resource_id=self.suggestion_id,
+                conflict_reason="already_approved",
+            )
+
         self.status = SuggestionStatus.REJECTED
         self.reviewed_by = reviewed_by
         self.reviewed_at = datetime.now(timezone.utc)
@@ -312,7 +329,25 @@ class KnowledgeSuggestion:
         Args:
             title: New title
             content: New content
+
+        Raises:
+            ConflictError: the suggestion is already APPROVED. The edit resets
+                ``pii_scan_status`` to NOT_SCANNED, which made an approved
+                suggestion simultaneously "approved" and not ready for review,
+                still linked to a published knowledge item whose content no
+                longer matched what the inbox showed. An approved suggestion is
+                finished; edit the published runbook instead.
+                ``conflict_reason="already_approved"``.
         """
+        if self.is_approved():
+            raise ConflictError(
+                "Suggestion has already been approved and cannot be edited; "
+                "edit the published knowledge item instead",
+                resource_type="suggestion",
+                resource_id=self.suggestion_id,
+                conflict_reason="already_approved",
+            )
+
         self.suggested_title = title
         self.suggested_content = content
         # Reset PII scan since content changed

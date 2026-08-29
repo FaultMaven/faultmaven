@@ -347,6 +347,40 @@ def create_knowledge_service(
     )
 
 
+def create_suggestion_service(
+    *,
+    case_repository: Any | None,
+    knowledge_service: Any,
+    sanitizer: Any,
+    llm_provider: Any | None,
+) -> Any:
+    """Create the knowledge SuggestionService singleton (#1214).
+
+    One instance per process, holding a REAL ``knowledge_service`` — the
+    collaborator ``approve_suggestion`` publishes through. Without it the
+    service refuses to approve rather than reporting a success it cannot back.
+
+    ⚠️ The suggestion store is still an in-memory dict on this instance
+    (``SuggestionService._suggestions_store``). Making it a singleton is what
+    makes extract → approve work at all, but it does NOT make it durable: a
+    restart drops every pending suggestion, and with ``WORKERS > 1`` (or more
+    than one pod) an extract handled by one worker is invisible to an approve
+    handled by another. ``knowledge_suggestions`` exists as a table and as an
+    ORM model with no repository behind it; giving the store a database is a
+    separate change.
+    """
+    from faultmaven.modules.knowledge.domain.services.suggestion_service import (
+        SuggestionService,
+    )
+
+    return SuggestionService(
+        case_repository=case_repository,
+        knowledge_service=knowledge_service,
+        sanitizer=sanitizer,
+        llm_provider=llm_provider,
+    )
+
+
 def create_organization_repository() -> Any | None:
     """Create the sessionless organization repository.
 
@@ -1315,6 +1349,23 @@ def register_services(container: BaseDIContainer) -> None:
         share_repository=share_repository,
     )
     container._register_service("knowledge_service", knowledge_service)
+
+    # Suggestion Service — the write side of the knowledge flywheel (#1214).
+    #
+    # This was NEVER registered: ``app.state.suggestion_service`` was read in
+    # two routes and written nowhere, so both fell through to a throwaway
+    # ``SuggestionService()`` per request — no knowledge service, no sanitizer,
+    # and a private empty store. A suggestion created by the extract request
+    # could not be found by the approve request, which answered 404.
+    #
+    # Registered AFTER knowledge_service because it takes it as a collaborator.
+    suggestion_service = create_suggestion_service(
+        case_repository=case_repository,
+        knowledge_service=knowledge_service,
+        sanitizer=container.get_service("sanitizer", required=True),
+        llm_provider=container.get_service("llm_provider", required=False),
+    )
+    container._register_service("suggestion_service", suggestion_service)
 
     # Report Generation Service (TD-001: migrated from IReportStore to CaseRepository)
     llm_provider = container.get_service("llm_provider")

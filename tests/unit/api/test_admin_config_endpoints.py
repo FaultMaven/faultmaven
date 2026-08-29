@@ -130,6 +130,11 @@ def mock_settings():
     settings.auth.oauth_first_party_redirect_patterns = []
     settings.is_cloud = False  # standalone (canonical DEPLOYMENT_MODE, ADR-004)
     settings.server.environment = MagicMock(value="development")
+    # A real int, not a MagicMock: the endpoint compares it (#1214 reports
+    # whether the per-worker suggestion store is worker-safe), and a bare
+    # MagicMock attribute would make every test here fail on the comparison
+    # rather than on what it is about.
+    settings.server.workers = 1
     settings.database.case_storage_type = "sqlite"
     settings.database.session_storage_type = "inmemory"
     settings.database.vector_storage_type = "chromadb"
@@ -717,6 +722,43 @@ class TestGetEnvConfigStatus:
             )
 
         assert result.features["first_party_consent_skip"].enabled is True
+
+    @pytest.mark.asyncio
+    async def test_suggestion_store_reports_worker_safe_on_a_single_worker(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        """Knowledge suggestions live in a per-worker in-memory store (#1214),
+        so extract → approve breaks intermittently once WORKERS>1: the approve
+        can land on a worker that has never seen the suggestion and answers 404
+        for an id the API just issued.
+
+        Reported here for the same reason as the consent skip above — the only
+        other signal is a startup log line, which has rolled out of
+        ``kubectl logs`` long before anyone investigates an intermittent 404.
+        """
+        mock_settings.server.workers = 1
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        assert result.features["suggestion_store_worker_safe"].enabled is True
+
+    @pytest.mark.asyncio
+    async def test_suggestion_store_reports_unsafe_on_multiple_workers(
+        self, mock_admin_user, mock_settings, rate_limited_app
+    ):
+        mock_settings.server.workers = 4
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(rate_limited_app), current_user=mock_admin_user
+            )
+
+        feature = result.features["suggestion_store_worker_safe"]
+        assert feature.enabled is False
+        assert "WORKERS=1" in feature.config_hint
 
     @pytest.mark.asyncio
     async def test_rate_limit_enabled_is_false_when_middleware_absent(

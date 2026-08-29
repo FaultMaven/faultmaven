@@ -34,6 +34,7 @@ from faultmaven.infrastructure.persistence.models import (
 from faultmaven.modules.knowledge.domain.services.knowledge_service import (
     KnowledgeService,
 )
+from tests.runbook_samples import valid_runbook
 
 DEFAULT_ENTERPRISE_ID = "00000000-0000-0000-0000-000000000002"
 
@@ -95,7 +96,10 @@ async def test_personal_upload_lands_in_user_dir_flat(
     service = make_service(seeded_session_factory)
 
     await service.upload_document(
-        content="---\ntitle: Redis Notes\ndomain: database\n---\n# Redis\n\nRestart the node.",
+        # Gate-passing content (#1214): upload_document validates before it
+        # writes, so a non-runbook body never reaches the layout logic this
+        # test is about.
+        content=valid_runbook("Redis Notes For The Cache Tier"),
         title="Redis Notes",
         document_type="runbook",
         scope="personal",
@@ -120,7 +124,7 @@ async def test_global_upload_lands_in_global_dir_flat(
     service = make_service(seeded_session_factory)
 
     await service.upload_document(
-        content="---\ntitle: K8s Guide\ndomain: orchestration\n---\n# K8s\n\nCheck the pod events.",
+        content=valid_runbook("K8s Guide For The Control Plane"),
         title="K8s Guide",
         document_type="runbook",
         scope="global",

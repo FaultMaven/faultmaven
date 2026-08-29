@@ -50,6 +50,7 @@ from faultmaven.api.v1.auth_dependencies import (
     require_authentication,
 )
 from faultmaven.api.v1.dependencies import (
+    SUGGESTION_QUEUE_FULL,
     get_case_repository,  # TD-001: use case_repository for reports
     get_case_service,
     get_case_vector_store,
@@ -58,6 +59,7 @@ from faultmaven.api.v1.dependencies import (
     get_preprocessing_service,
     get_session_id,
     get_session_service,
+    get_suggestion_service,
 )
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.exceptions import (
@@ -66,6 +68,7 @@ from faultmaven.exceptions import (
     NotFoundError,
     PermissionDeniedException,
     ServiceException,
+    ServiceUnavailableException,
     ValidationException,
 )
 from faultmaven.infrastructure.base_client import CircuitBreakerError
@@ -4329,8 +4332,8 @@ async def unshare_case_from_team(
 async def extract_knowledge_from_case(
     case_id: str = Path(..., description="Case ID to extract knowledge from"),
     request_body: Optional[Dict[str, Any]] = Body(default=None),
-    request: Request = None,
     case_service: ICaseService = Depends(get_case_service),
+    suggestion_service=Depends(get_suggestion_service),
     current_user: UserDTO = Depends(require_authentication),
 ) -> Dict[str, Any]:
     """
@@ -4341,6 +4344,10 @@ async def extract_knowledge_from_case(
 
     The suggestion is automatically scanned for PII and placed in a
     "pending_review" state for admin approval in the Dashboard Review Inbox.
+
+    Answers 503 when no suggestion service is composed for this process — the
+    extraction cannot be stored, and a suggestion id that resolves to nothing is
+    worse than a refusal.
 
     Args:
         case_id: Case to extract knowledge from
@@ -4370,18 +4377,17 @@ async def extract_knowledge_from_case(
             include_evidence = request_body.get("include_evidence", True)
             title_suggestion = request_body.get("title_suggestion")
 
-        # Get suggestion service from app state
-        suggestion_service = None
-        if request and hasattr(request.app, "state"):
-            suggestion_service = getattr(request.app.state, "suggestion_service", None)
-
-        if not suggestion_service:
-            # Create a temporary service for extraction
-            from faultmaven.modules.knowledge.domain.services.suggestion_service import (
-                SuggestionService,
-            )
-
-            suggestion_service = SuggestionService()
+        # ``suggestion_service`` arrives via Depends(get_suggestion_service) —
+        # the SAME shared dependency the knowledge-side review routes use, which
+        # answers 503 when the composition root produced no singleton (#1214).
+        #
+        # It used to be looked up inline here, guarded by a
+        # ``request: Request = None`` default FastAPI never actually passes, and
+        # falling back to a fresh ``SuggestionService()``: the suggestion went
+        # into that throwaway instance's private dict, the instance died with
+        # the request, and the approve that followed could never find it (404).
+        # As a dependency the 503 policy lives in one place and the route is
+        # overridable in tests like every sibling.
 
         # Extract knowledge
         suggestion = await suggestion_service.extract_knowledge_from_case(
@@ -4411,6 +4417,22 @@ async def extract_knowledge_from_case(
 
     except HTTPException:
         raise
+    except ServiceUnavailableException as unavailable:
+        # The review inbox is at capacity and every entry is still awaiting
+        # review, so the in-memory store has nothing it may evict (#1214
+        # review). 503 rather than 500: nothing is broken, the queue is full,
+        # and the fix is to review it. The durable store is #1227.
+        # The static constant, never str(unavailable): this module's AST guard
+        # forbids carrying a caught exception into any 5xx body, and that rule
+        # does not get an exemption for a message that happens to be ours today.
+        # The exception's own text goes to the log instead.
+        logger.warning(
+            "Knowledge extraction refused for case %s: %s", case_id, unavailable
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=SUGGESTION_QUEUE_FULL,
+        ) from unavailable
     except Exception as e:
         logger.error(
             f"Knowledge extraction failed for case {case_id}: {e}", exc_info=True

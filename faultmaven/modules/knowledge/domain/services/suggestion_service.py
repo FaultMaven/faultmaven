@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from faultmaven.exceptions import ConflictError
+from faultmaven.exceptions import ConflictError, ServiceUnavailableException
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
     PIIScanStatus,
@@ -60,12 +60,25 @@ Format as Markdown with these sections:
 ## Prevention
 """
 
+    #: Cap on the in-memory store (see #1227 for the durable replacement).
+    #:
+    #: The store became process-lifetime-scoped when the service became a
+    #: singleton, and nothing ever removed an entry: approved, rejected and
+    #: abandoned suggestions all accumulated, each holding a full LLM-generated
+    #: article. Unbounded growth in a long-lived process is a leak, so the store
+    #: is capped and evicts.
+    #:
+    #: Sized for a review inbox, not a corpus: the queue is admin-facing and
+    #: drained by hand, so a few hundred is already far past what anyone reviews.
+    MAX_STORED_SUGGESTIONS = 500
+
     def __init__(
         self,
         case_repository: Optional[Any] = None,
         knowledge_service: Optional[Any] = None,
         sanitizer: Optional[Any] = None,
         llm_provider: Optional[Any] = None,
+        max_stored_suggestions: Optional[int] = None,
     ):
         """Initialize the suggestion service.
 
@@ -74,14 +87,26 @@ Format as Markdown with these sections:
             knowledge_service: Service for creating knowledge items
             sanitizer: ISanitizer for PII detection/redaction
             llm_provider: LLM provider for extraction
+            max_stored_suggestions: Cap on the in-memory store; defaults to
+                :attr:`MAX_STORED_SUGGESTIONS`. Injectable so a test can drive
+                the eviction path without minting hundreds of suggestions.
         """
         self.logger = logging.getLogger(__name__)
         self._case_repository = case_repository
         self._knowledge_service = knowledge_service
         self._sanitizer = sanitizer
         self._llm_provider = llm_provider
+        self._max_stored_suggestions = (
+            self.MAX_STORED_SUGGESTIONS
+            if max_stored_suggestions is None
+            else max_stored_suggestions
+        )
 
-        # In-memory store for suggestions (production would use DB)
+        # In-memory store. NOT durable and NOT shared across workers — a restart
+        # drops every pending suggestion and with WORKERS>1 an extract handled by
+        # one worker is invisible to an approve handled by another. The durable
+        # replacement is #1227; until then the store is bounded (see
+        # _evict_for_capacity) so a long-lived process cannot grow without limit.
         self._suggestions_store: Dict[str, KnowledgeSuggestion] = {}
 
     async def extract_knowledge_from_case(
@@ -193,11 +218,75 @@ Format as Markdown with these sections:
         # Trigger PII scan
         await self._scan_for_pii(suggestion)
 
-        # Store suggestion
+        # Make room BEFORE storing, so the cap is a real ceiling rather than a
+        # ceiling plus one. Raises when the queue is full of pending reviews.
+        self._evict_for_capacity()
         self._suggestions_store[suggestion_id] = suggestion
         self.logger.info(f"Created suggestion {suggestion_id} from case {case_id}")
 
         return suggestion
+
+    def _evict_for_capacity(self) -> None:
+        """Make room for one more suggestion, or refuse.
+
+        Terminal suggestions — APPROVED and REJECTED — are the eviction pool:
+        their decision is already recorded elsewhere (an approved one has its
+        knowledge item in the corpus, a rejected one has nothing to publish), so
+        dropping them from an in-memory review inbox loses only history. Oldest
+        first, by ``updated_at``, which is when the decision was taken.
+
+        A PENDING_REVIEW or DRAFT suggestion is NEVER evicted for capacity. It is
+        the one thing here that exists nowhere else — evicting it would silently
+        destroy work a reviewer has not seen, and the extract that caused the
+        eviction would look like a success. So when the store is full of items
+        still awaiting review, extraction REFUSES:
+
+        Raises:
+            ServiceUnavailableException: the store is at capacity and every
+                entry is still awaiting review. The route answers 503, which is
+                honest — the queue is full and the fix is to review it. #1227's
+                durable store removes the ceiling.
+        """
+        capacity = self._max_stored_suggestions
+        if capacity <= 0 or len(self._suggestions_store) < capacity:
+            return
+
+        terminal = [
+            s
+            for s in self._suggestions_store.values()
+            if s.status in (SuggestionStatus.APPROVED, SuggestionStatus.REJECTED)
+        ]
+        needed = len(self._suggestions_store) - capacity + 1
+        if len(terminal) < needed:
+            self.logger.error(
+                "Suggestion store is full (%d/%d) and %d entries are still "
+                "awaiting review; refusing to extract more knowledge until the "
+                "review inbox is drained",
+                len(self._suggestions_store),
+                capacity,
+                len(self._suggestions_store) - len(terminal),
+            )
+            # DIAGNOSTIC wording, with the numbers an operator needs. The
+            # user-facing sentence is the route's (``SUGGESTION_QUEUE_FULL``) —
+            # not this string re-rendered, because a domain service may not
+            # import the API layer (import-linter contract 2) and because the
+            # route's own AST guard forbids echoing a caught exception into a
+            # 5xx body anyway. One audience each, no duplication.
+            raise ServiceUnavailableException(
+                f"Suggestion store at capacity ({len(self._suggestions_store)}/"
+                f"{capacity}) with no reviewed entry to evict"
+            )
+
+        terminal.sort(key=lambda s: s.updated_at)
+        for victim in terminal[:needed]:
+            del self._suggestions_store[victim.suggestion_id]
+        self.logger.warning(
+            "Suggestion store hit its %d-entry cap; evicted %d reviewed "
+            "suggestion(s) (oldest decision first): %s",
+            capacity,
+            needed,
+            ", ".join(s.suggestion_id for s in terminal[:needed]),
+        )
 
     async def _generate_knowledge_content(self, prompt: str) -> str:
         """Generate knowledge content using LLM.
@@ -471,6 +560,16 @@ Format as Markdown with these sections:
                 (``conflict_reason="already_approved"``) — checked before
                 anything is published, so a repeat writes nothing. The global
                 handler maps this to HTTP 409.
+            RunbookQualityError: the suggested content does not meet the
+                runbook quality standard (#1214). Raised by ``upload_document``
+                BEFORE it writes anything, so the refusal publishes nothing;
+                the global handler answers 422. LLM-extracted markdown reaches
+                the corpus only after a reviewer edits it into a valid runbook.
+            RuntimeError: no knowledge service is wired, so there is nothing to
+                publish INTO (#1214). This used to mint a fake id and report
+                ``201 {"status": "approved"}`` for an item that was never
+                created — and, with ``app.state.suggestion_service`` unset, it
+                was the branch every production request took.
             Exception: anything ``upload_document`` raises now PROPAGATES
                 rather than being swallowed into ``None`` (#1200). A
                 ``TypeError`` from that call is a programming error and an
@@ -484,6 +583,26 @@ Format as Markdown with these sections:
         if not suggestion:
             self.logger.warning(f"Suggestion {suggestion_id} not found")
             return None
+
+        # A scan that FAILED is a transient infrastructure fault, not a verdict
+        # about the content — so retry it here rather than leaving the
+        # suggestion stuck (#1214 review).
+        #
+        # This became reachable when the real sanitizer was wired: before that
+        # every service was built with sanitizer=None and every scan was marked
+        # CLEAN, so SCAN_FAILED could not occur in production. With a real
+        # Presidio engine it can, and it was a dead end — approve answered 400,
+        # mark_pii_remediated answered 409 (only PII_DETECTED is remediable),
+        # and the ONLY re-arm was an undocumented content edit. Re-scanning is
+        # the honest recovery: it is the same call that produced the failure, so
+        # if the engine is still down the status stays SCAN_FAILED and the 400
+        # below is truthful again.
+        if suggestion.pii_scan_status is PIIScanStatus.SCAN_FAILED:
+            self.logger.info(
+                "Suggestion %s has a failed PII scan; re-scanning before " "approval",
+                suggestion_id,
+            )
+            await self._scan_for_pii(suggestion)
 
         if not suggestion.is_ready_for_review():
             self.logger.warning(
@@ -513,96 +632,127 @@ Format as Markdown with these sections:
                 conflict_reason="already_approved",
             )
 
-        # Create knowledge item
-        knowledge_item_id = None
-        if self._knowledge_service:
-            # NO try/except around this call (#1200).
-            #
-            # It used to pass ``metadata={...}`` — a parameter
-            # ``upload_document`` has never had. The resulting ``TypeError``
-            # was caught by a broad ``except Exception`` here, logged, and
-            # turned into ``return None``, which the approve route renders as
-            # ``400 "Cannot approve: PII scan not complete"``. That claim is
-            # false by construction: the scan had to be CLEAN or REMEDIATED to
-            # get past ``is_ready_for_review`` above. So the approval step of
-            # the knowledge flywheel created nothing and misreported why, and
-            # the failure was shaped exactly like "nothing to approve".
-            #
-            # A ``TypeError`` from a call this service makes to its own
-            # collaborator is a programming error, and a failed ingestion is a
-            # server-side fault. Neither is a client error and neither is a
-            # statement about PII. Both now propagate: the route's own
-            # ``except Exception`` logs them and answers 500. ``return None``
-            # is left to mean one thing only — the suggestion is not ready —
-            # which is the one case that 400 is actually about.
-            result = await self._knowledge_service.upload_document(
-                content=suggestion.suggested_content,
-                title=suggestion.suggested_title,
-                document_type=suggestion.suggested_type,
-                # The platform tier, stated rather than inherited from a
-                # default (#1166). Gated at the approve route by
-                # require_global_authoring_allowed(); an approved
-                # suggestion becomes platform-shipped knowledge, which is
-                # why that gate is there and why this says "global" out
-                # loud instead of taking whatever the service assumed.
-                scope="global",
-                category="extracted",
-                tags=["extracted", "case-derived"],
-                source_url=None,
-                # ATTRIBUTION, on the one parameter that actually persists.
-                #
-                # ``owner_id`` reaches four real columns —
-                # ``uploaded_files.uploaded_by``, ``conversion_jobs.user_id``,
-                # ``conversion_drafts.verified_by``, and ``ingest_runbook``'s
-                # own ``owner_id`` — so the approving admin is recorded in the
-                # database. For an approved suggestion the approver IS the
-                # verifier, which is what ``verified_by`` means.
-                #
-                # Safe at this scope: the only other use of ``owner_id`` is the
-                # ``scope == "personal"`` directory branch, which cannot fire
-                # under ``scope="global"``.
-                owner_id=reviewed_by,
-                # ⚠️ ``description`` is accepted by ``upload_document`` and then
-                # IGNORED — referenced zero times in that method's body, so it
-                # reaches no column and no ChromaDB metadata. ``category`` is
-                # the same, surviving only in the transient return dict.
-                #
-                # Passed anyway because it is the natural sink and a future one
-                # would read it, but it records NOTHING today. The
-                # case/extractor/suggestion lineage the dropped ``metadata=``
-                # was carrying still has no home, and neither does
-                # ``verification_level: 2`` (the derive yields EXPERIMENTAL).
-                # That pair IS the "where does the metadata belong" decision
-                # this issue names, and #878 owns it. Do not read this argument
-                # as provenance.
-                description=(
-                    f"Extracted from case {suggestion.case_id} "
-                    f"by {suggestion.extracted_by} "
-                    f"(suggestion {suggestion_id})"
-                ),
+        # Create knowledge item.
+        #
+        # No knowledge service means no corpus to publish into, and the only
+        # honest answer is a failure (#1214). The old ``else`` minted an id from
+        # ``authored_item_id()`` and returned ``{"status": "approved"}`` for a
+        # knowledge item that had never been created — the same class of claim
+        # #1200 exists to remove, standing inside the function that fixes it.
+        # And because ``app.state.suggestion_service`` was written NOWHERE, the
+        # route always built a collaborator-less service, so that branch was the
+        # one 100% of production approvals took.
+        if not self._knowledge_service:
+            raise RuntimeError(
+                "Cannot approve suggestion "
+                f"{suggestion_id}: no knowledge service is configured, so no "
+                "knowledge item can be created. Approval reports success only "
+                "when something was actually published."
             )
-            knowledge_item_id = result.get("document_id")
-            if not knowledge_item_id:
-                # Never mark a suggestion approved against an id we did not
-                # get: the point of this fix is that approval stops claiming
-                # success it cannot back.
-                raise RuntimeError(
-                    "upload_document returned no document_id for suggestion "
-                    f"{suggestion_id}; nothing was linked"
-                )
-        else:
-            # Mock id (no knowledge_service) — still must not match the 12-hex
-            # built-in prune pattern, so route through the shared authored-id mint.
-            from faultmaven.utils.runbook_id import authored_item_id
 
-            knowledge_item_id = authored_item_id()
-
-        # Mark suggestion as approved
-        suggestion.approve(
-            reviewed_by=reviewed_by,
-            knowledge_item_id=knowledge_item_id,
-            review_notes=review_notes,
+        # NO try/except around this call (#1200).
+        #
+        # It used to pass ``metadata={...}`` — a parameter
+        # ``upload_document`` has never had. The resulting ``TypeError``
+        # was caught by a broad ``except Exception`` here, logged, and
+        # turned into ``return None``, which the approve route renders as
+        # ``400 "Cannot approve: PII scan not complete"``. That claim is
+        # false by construction: the scan had to be CLEAN or REMEDIATED to
+        # get past ``is_ready_for_review`` above. So the approval step of
+        # the knowledge flywheel created nothing and misreported why, and
+        # the failure was shaped exactly like "nothing to approve".
+        #
+        # A ``TypeError`` from a call this service makes to its own
+        # collaborator is a programming error, and a failed ingestion is a
+        # server-side fault. Neither is a client error and neither is a
+        # statement about PII. Both now propagate: the route's own
+        # ``except Exception`` logs them and answers 500. ``return None``
+        # is left to mean one thing only — the suggestion is not ready —
+        # which is the one case that 400 is actually about.
+        #
+        # ``upload_document`` also enforces the runbook quality gate (#1214)
+        # before its first side effect, so content that fails it raises
+        # ``RunbookQualityError`` here having published NOTHING.
+        result = await self._knowledge_service.upload_document(
+            content=suggestion.suggested_content,
+            title=suggestion.suggested_title,
+            document_type=suggestion.suggested_type,
+            # The platform tier, stated rather than inherited from a
+            # default (#1166). Gated at the approve route by
+            # require_global_authoring_allowed(); an approved
+            # suggestion becomes platform-shipped knowledge, which is
+            # why that gate is there and why this says "global" out
+            # loud instead of taking whatever the service assumed.
+            scope="global",
+            category="extracted",
+            tags=["extracted", "case-derived"],
+            source_url=None,
+            # ATTRIBUTION, on the one parameter that actually persists.
+            #
+            # ``owner_id`` reaches four real columns —
+            # ``uploaded_files.uploaded_by``, ``conversion_jobs.user_id``,
+            # ``conversion_drafts.verified_by``, and ``ingest_runbook``'s
+            # own ``owner_id`` — so the approving admin is recorded in the
+            # database. For an approved suggestion the approver IS the
+            # verifier, which is what ``verified_by`` means.
+            #
+            # Safe at this scope: the only other use of ``owner_id`` is the
+            # ``scope == "personal"`` directory branch, which cannot fire
+            # under ``scope="global"``.
+            owner_id=reviewed_by,
+            # ⚠️ ``description`` is accepted by ``upload_document`` and then
+            # IGNORED — referenced zero times in that method's body, so it
+            # reaches no column and no ChromaDB metadata. ``category`` is
+            # the same, surviving only in the transient return dict.
+            #
+            # Passed anyway because it is the natural sink and a future one
+            # would read it, but it records NOTHING today. The
+            # case/extractor/suggestion lineage the dropped ``metadata=``
+            # was carrying still has no home, and neither does
+            # ``verification_level: 2`` (the derive yields EXPERIMENTAL).
+            # That pair IS the "where does the metadata belong" decision
+            # this issue names, and #878 owns it. Do not read this argument
+            # as provenance.
+            description=(
+                f"Extracted from case {suggestion.case_id} "
+                f"by {suggestion.extracted_by} "
+                f"(suggestion {suggestion_id})"
+            ),
         )
+        knowledge_item_id = result.get("document_id")
+        if not knowledge_item_id:
+            # Never mark a suggestion approved against an id we did not
+            # get: the point of this fix is that approval stops claiming
+            # success it cannot back.
+            raise RuntimeError(
+                "upload_document returned no document_id for suggestion "
+                f"{suggestion_id}; nothing was linked"
+            )
+
+        # Mark suggestion as approved — COMPENSATED (#1214).
+        #
+        # ``approve()`` re-checks readiness, and ``update_suggestion``
+        # concurrently resets ``pii_scan_status`` on any content edit, so this
+        # can raise AFTER the publish has already written a knowledge_items
+        # row, its ChromaDB chunks and a file on disk. Without compensation the
+        # corpus keeps a published runbook that no suggestion links to, while
+        # the client is told the approval failed — an orphan created by the
+        # error path itself.
+        #
+        # ``ingest_runbook`` already applies exactly this discipline one level
+        # down (SQL row deleted when the vector write fails); this is the same
+        # rule for the step above it. ``delete_document`` hard-deletes an
+        # authored id (``kb_<16 hex>``, which is what ``upload_document``
+        # mints), removing both the row and its vectors.
+        try:
+            suggestion.approve(
+                reviewed_by=reviewed_by,
+                knowledge_item_id=knowledge_item_id,
+                review_notes=review_notes,
+            )
+        except Exception:
+            await self._rollback_published_item(knowledge_item_id, suggestion_id)
+            raise
 
         self.logger.info(
             f"Approved suggestion {suggestion_id}, created knowledge item {knowledge_item_id}"
@@ -613,6 +763,63 @@ Format as Markdown with these sections:
             "knowledge_item_id": knowledge_item_id,
             "status": "approved",
         }
+
+    #: One sentence, used by BOTH residue branches below, so log-based alerting
+    #: can match a single string instead of two near-identical ones.
+    _ROLLBACK_RESIDUE_LOG = (
+        "Rollback after the failed approval of suggestion %s left residue that "
+        "needs manual cleanup: %s"
+    )
+
+    async def _rollback_published_item(
+        self, knowledge_item_id: str, suggestion_id: str
+    ) -> None:
+        """Undo the publish behind an approval that then failed.
+
+        Delegates to ``KnowledgeService.rollback_uploaded_document``, which
+        removes everything ``upload_document`` wrote — the knowledge item and its
+        vectors AND the draft / job / uploaded-file rows and the on-disk runbook.
+        Deleting only the item leaves a ``status="verified"`` draft row pointing
+        at a deleted id, which the reconciliation scan then SKIPS (measured), so
+        the file is stranded permanently. The knowledge of what an upload wrote
+        lives with the service that wrote it; this method only reports.
+
+        Best-effort and NEVER raises: it runs inside an ``except`` block whose
+        original exception is what the caller must see. A rollback that itself
+        raised would replace a truthful "approval failed" with an unrelated error
+        AND still leave the residue. So residue is logged as the
+        operator-actionable event it is — naming which store kept what — and
+        swallowed.
+        """
+        try:
+            result = await self._knowledge_service.rollback_uploaded_document(
+                knowledge_item_id
+            )
+            residue = (result or {}).get("residue") or []
+            if residue:
+                self.logger.error(
+                    self._ROLLBACK_RESIDUE_LOG,
+                    suggestion_id,
+                    "; ".join(str(item) for item in residue),
+                )
+            else:
+                self.logger.warning(
+                    "Rolled back knowledge item %s and its upload bookkeeping "
+                    "after approval of suggestion %s failed",
+                    knowledge_item_id,
+                    suggestion_id,
+                )
+        except Exception as rollback_error:
+            # The rollback itself blew up, so nothing is known about which
+            # stores were cleaned. Report the whole upload as residue rather
+            # than naming a store on a guess.
+            self.logger.error(
+                self._ROLLBACK_RESIDUE_LOG,
+                suggestion_id,
+                f"the rollback of {knowledge_item_id} failed outright "
+                f"({rollback_error}); every store this upload touched may still "
+                f"hold data",
+            )
 
     async def reject_suggestion(
         self,

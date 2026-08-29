@@ -12,7 +12,7 @@ Resolution".
 """
 
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
 
 import pytest
 from fastapi import FastAPI
@@ -29,6 +29,9 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
     PIIScanStatus,
     SuggestionStatus,
+)
+from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+    KnowledgeService,
 )
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
     SuggestionService,
@@ -66,8 +69,17 @@ def _service() -> SuggestionService:
 
     Both rows are review-ready, so the org-B row would be returned/acted on by
     every route but for the tenant predicate.
+
+    It carries a knowledge-service double because since #1214 approval REFUSES
+    when there is none (it used to mint a fake id and report 201 for an item it
+    never created). Autospecced, so the publish call still has to bind against
+    the real ``upload_document`` signature.
     """
-    service = SuggestionService()
+    knowledge_service = create_autospec(KnowledgeService, instance=True)
+    knowledge_service.upload_document.return_value = {
+        "document_id": "kb_abcdef0123456789"
+    }
+    service = SuggestionService(knowledge_service=knowledge_service)
     service._suggestions_store[SUG_A] = _suggestion(SUG_A, ORG_A)
     service._suggestions_store[SUG_B] = _suggestion(SUG_B, ORG_B)
     return service

@@ -465,6 +465,26 @@ async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -
             "bootstrap/seeding cannot run."
         )
 
+    # Knowledge suggestion service — the case → KB write side (#1214).
+    #
+    # This slot was READ by two routes and WRITTEN by none, so both silently
+    # built a fresh, collaborator-less SuggestionService per request: the
+    # suggestion an extract created lived in that instance's private store and
+    # was gone by the time approve looked for it (404). Wired here, next to the
+    # knowledge service it depends on.
+    #
+    # Follows knowledge_service's precedent for the empty case: logged, not
+    # raised, and the routes answer 503. Composing one without a knowledge
+    # service is impossible by construction — the factory takes it — so this is
+    # empty only when the knowledge service itself is.
+    app.state.suggestion_service = container.get_suggestion_service()
+    if app.state.suggestion_service is None:
+        logger.error(
+            "No knowledge suggestion service was composed — extracting "
+            "knowledge from a case and approving a suggestion will both answer "
+            "503 for this process."
+        )
+
     # Document-to-runbook conversion service
     try:
         from .config.settings import get_settings as _get_settings
@@ -696,6 +716,23 @@ async def lifespan(app: FastAPI):
         elif workers > 1:
             logger.info(
                 f"✅ Multi-worker configuration (WORKERS={workers}) with {storage_type} storage"
+            )
+            # ...but not everything is worker-safe just because CASE storage is.
+            # The knowledge-suggestion store is an in-process dict on a
+            # per-worker singleton, so extract → approve breaks INTERMITTENTLY
+            # here: whichever worker takes the approve request has never seen
+            # the suggestion and answers 404. Not a boot refusal — the feature
+            # is platform-admin-gated and degraded, not corrupting — and not a
+            # log line alone either, because startup logs roll out of
+            # `kubectl logs`. The durable store is #1227; until then the state
+            # is reportable after the fact on GET /admin/config/status.
+            logger.warning(
+                "⚠️  WORKERS=%d: knowledge suggestions are stored per worker, "
+                "so extracting knowledge from a case and approving the "
+                "suggestion may land on different workers and answer 404. "
+                "Reported as 'suggestion_store_worker_safe' on "
+                "GET /admin/config/status.",
+                workers,
             )
         else:
             logger.debug(f"Using single worker (WORKERS={workers})")
