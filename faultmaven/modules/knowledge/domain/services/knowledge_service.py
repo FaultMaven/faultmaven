@@ -100,7 +100,12 @@ def _matched_cause_letters(chunk_text: str) -> List[str]:
 
     Uses the SHARED ``CAUSE_HEADING_RE`` (``runbook_grammar``) — the same pattern
     the extractor and pack builder use to mint ``cause_letter`` — so the letter
-    parsed here is by construction the letter the seeder joins on.
+    parsed here is by construction the letter the seeder joins on. And over the
+    same comment-MASKED view the extractor enumerates on (#1241): the pattern is
+    blind to HTML comments on its own, so a commented-out ``### Cause A:``
+    example beside a real Cause stamped a phantom ``A`` here, and the seeder
+    read "retrieval surfaced Cause A" for a cause the author had explicitly
+    commented out — one with no ``metadata["causes"]`` record to join to.
 
     Searches the whole chunk rather than anchoring at its start: a runbook's
     first Cause commonly shares a chunk with the ``## Causes`` section header
@@ -116,10 +121,11 @@ def _matched_cause_letters(chunk_text: str) -> List[str]:
         return []
     from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
         CAUSE_HEADING_RE,
+        mask_html_comments,
     )
 
     seen: List[str] = []
-    for letter, _name in CAUSE_HEADING_RE.findall(chunk_text):
+    for letter, _name in CAUSE_HEADING_RE.findall(mask_html_comments(chunk_text)):
         if letter not in seen:
             seen.append(letter)
     return seen
@@ -168,7 +174,16 @@ def _letter_can_head_a_cause(letter: str) -> bool:
 # Bumped when the meaning of a chunk stamp changes in a way that makes already
 # written stamps wrong (a new stamped field, a different join key, a changed
 # encoding) — NOT for unrelated ``VectorMetadata`` additions.
-CHUNK_STAMP_SCHEMA = 1
+#
+# 2 (#1241): the letter derivation now runs over a comment-MASKED view, so a
+# stamp written by the unmasked pass can carry a letter with no
+# ``metadata["causes"]`` record behind it. The source fix alone does NOT repair
+# those: ``_read_stamped_cause_letters`` falls back to parsing on key ABSENCE
+# only, so a present-but-wrong stamp is read forever. Bumping is what re-derives
+# them — the pack re-ingests prechunked (seconds, no embedding) and authored rows
+# are swept by the fm#1108 restamp pass. The pattern itself is unchanged, so the
+# identity would not have moved on its own.
+CHUNK_STAMP_SCHEMA = 2
 
 
 def chunk_stamp_identity() -> str:

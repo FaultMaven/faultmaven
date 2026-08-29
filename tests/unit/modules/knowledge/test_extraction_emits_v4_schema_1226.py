@@ -851,12 +851,43 @@ class TestTheSkeletonNeedsRealAuthoring:
 
         assert RunbookValidator().validate_content(content).passed
 
-    def test_the_hint_comment_declares_no_subfield_labels(self):
-        """``parse_cause_subfields`` does NOT strip HTML comments, so a
-        ``**Statement:**`` example written inside the guidance comment is read
-        as the real field — measured: it made the empty skeleton PASS. The
-        comment must therefore never spell a sub-field label."""
+    def test_the_hint_comment_emits_no_grammar_token(self):
+        """The hint names each sub-field in prose and writes no grammar token.
+
+        NOT the #1226 workaround wearing a new hat. #1226 banned these because
+        THIS repo's parser read a label inside a comment as the real field;
+        #1241 fixed that, and ``test_all_three_cause_subfields_start_empty``
+        above proves it by running the gate over this very skeleton — the labels
+        would now be harmless here.
+
+        What this pins is a PORTABILITY constraint on emitted content. This
+        method returns a runbook document, and a published runbook can be
+        committed to the corpus and built into a KB pack by
+        ``faultmaven-kb-toolkit``, which carries BOTH halves of the defect
+        (checked at ``371a517``): its ``parse_cause_subfields`` does no comment
+        handling, and its cause walk runs ``CAUSE_HEADING_RE.finditer`` on the
+        raw block. A grammar token written in this comment is read there as
+        real content, which would make the empty skeleton pass the UPSTREAM
+        gate.
+
+        EXPIRY: delete this test when ``FaultMaven/faultmaven-kb-toolkit#29``
+        closes — that issue carries the measured reproduction and the design to
+        copy, and closing it is what retires this restriction. Not before.
+        ``**Chain:**`` is included because it is a sub-field label upstream
+        splits on even though this skeleton omits the field.
+        """
         skeleton = SuggestionService.fallback_template("case-example")
         comment = skeleton[skeleton.index("<!--") : skeleton.index("-->")]
         for sub in ("Statement", "Indicators", "Interventions", "Chain"):
             assert f"**{sub}:**" not in comment
+        # Quadrant tags are the other token upstream reads structurally.
+        for quadrant in ("remediation", "defensive_fix", "mitigation", "loop_break"):
+            assert f"**{quadrant}**" not in comment
+
+    def test_the_hint_still_names_every_sub_field_for_the_author(self):
+        """The complement: dropping the markup must not drop the guidance, or
+        the constraint above would be satisfied by an empty comment."""
+        skeleton = SuggestionService.fallback_template("case-example")
+        comment = skeleton[skeleton.index("<!--") : skeleton.index("-->")]
+        for sub in ("Statement", "Indicators", "Interventions"):
+            assert sub in comment
