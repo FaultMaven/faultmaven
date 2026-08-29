@@ -228,7 +228,9 @@ async def run_before(cases: list[dict], provider) -> list[dict]:
     return rows
 
 
-async def run_after(cases: list[dict], provider) -> list[dict]:
+async def run_after(
+    cases: list[dict], provider, attempts: int | None = None
+) -> list[dict]:
     from faultmaven.modules.knowledge.domain.services.suggestion_service import (
         SuggestionService,
     )
@@ -241,6 +243,7 @@ async def run_after(cases: list[dict], provider) -> list[dict]:
             knowledge_service=None,
             sanitizer=None,
             llm_provider=counting,
+            max_extraction_attempts=attempts,
         )
         started = time.time()
         error = None
@@ -349,7 +352,7 @@ async def main_async(args) -> int:
         print_summary(summarise(arms["before"]))
     if args.mode in ("after", "both"):
         print(f"\n--- AFTER (shipped extraction path, {len(cases)} cases) ---")
-        arms["after"] = await run_after(cases, provider)
+        arms["after"] = await run_after(cases, provider, args.attempts)
         print_summary(summarise(arms["after"]))
 
     if args.json:
@@ -380,6 +383,17 @@ def main() -> int:
         ),
     )
     ap.add_argument("--only", help="comma-separated case_ids")
+    ap.add_argument(
+        "--attempts",
+        type=int,
+        help=(
+            "Override MAX_EXTRACTION_ATTEMPTS for the `after` arm. `--attempts "
+            "1` is how the FIRST-DRAFT error profile is read: the surfaced "
+            "validator errors are what the repair turn would otherwise have "
+            "been handed, and reading them is how a systematic prompt defect "
+            "is told apart from model noise."
+        ),
+    )
     ap.add_argument("--json", help="write the full run (runbooks included) here")
     ap.add_argument("--from", dest="from_file", help="recorded run to replay")
     args = ap.parse_args()

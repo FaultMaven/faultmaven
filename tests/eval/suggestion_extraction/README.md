@@ -80,9 +80,43 @@ flatter or punish the prompt for the wrong reason.
 
 ## What it found
 
-See `recorded-runs/` for the committed transcripts. The headline is the
-substantive-case pass rate of `validate_content` on extractor output, before
-versus after.
+`recorded-runs/2026-08-29-anthropic-claude-sonnet-4-5.json` — the committed
+transcript, full runbooks included.
+
+| Arm | Substantive cases passing the gate | Thin case | LLM calls |
+|---|---|---|---|
+| `before` | **0 / 7 (0%)** | 0 / 1 | 8 |
+| `after` | **7 / 7 (100%)** | 1 / 1 | 16 |
+
+Every `before` draft failed with the identical six errors — no frontmatter and
+five of the six required sections — which is the point: the old prompt was not
+*nearly* a runbook, it was a different document.
+
+**The repair turn is doing the work, not the prompt alone.** 0/8 first drafts
+cleared the gate; 8/8 cleared it after one repair turn. That is the number that
+sized `MAX_EXTRACTION_ATTEMPTS`, and it is also why an extraction now costs two
+generations: the budget is not a safety net that rarely fires, it is part of the
+normal path. Reducing the *first-draft* failure rate is the obvious next
+improvement and is a prompt question, not an architecture one.
+
+Two things the run surfaced that the pass rate does not say:
+
+- **The runbook `id` leaked incident detail.** The deliberately-noisy fixture
+  produced a body the model had de-identified perfectly beside a frontmatter
+  line reading `id: case-inc-48213-prod-web-07-returning-502-for-customer-c-…`.
+  The id was minted from the raw case title by the extractor itself, and it
+  lives *inside* the content, so it is chunked, embedded and retrieved. Fixed —
+  the id is now minted from the draft's own de-identified `service` + `title`.
+  This is the clearest argument for running the eval on noisy input rather than
+  clean input.
+- **A thin case yields a structurally valid but speculative runbook.**
+  `case_ev8_thin_case` ("login page slow", no evidence, no resolution) passed:
+  the model marked `## Applicability` with the rule-8
+  `[INSUFFICIENT SOURCE DATA]` escape but invented four diagnostic steps and a
+  connection-pool cause with nothing in the case to support them. The gate is
+  **structural** — it cannot tell a grounded runbook from a plausible one — so
+  the human review step stays load-bearing. Not something the extractor can fix
+  from its side.
 
 These are facts about one model on one fixture set on one day, not invariants.
 The invariants they motivated are pinned in CI, at

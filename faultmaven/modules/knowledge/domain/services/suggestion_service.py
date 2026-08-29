@@ -129,10 +129,20 @@ corrected runbook, starting at the opening `---`, and output nothing else.
     #: Total extraction attempts, first try included — so ONE repair turn.
     #:
     #: Sized from the measurement in ``tests/eval/suggestion_extraction``, not
-    #: from taste: over the fixture corpus every draft that ever passed passed on
-    #: attempt 1 or attempt 2, and no attempt-3 turn converted a failure into a
-    #: pass. A third turn would spend another full runbook generation inside a
-    #: synchronous HTTP request to re-buy a result the data says does not arrive.
+    #: from taste. On that corpus (8 cases, claude-sonnet-4-5, 2026-08-29):
+    #: **0/8 first drafts cleared the gate and 8/8 cleared it after one repair
+    #: turn**, so the repair turn is doing the work and a third turn had nothing
+    #: left to buy. That is a measurement of when it is ENOUGH, not proof that a
+    #: third turn never helps — the corpus never produced a twice-failing draft
+    #: for one to act on.
+    #:
+    #: The cost side is what makes 2 the right stopping point rather than 3:
+    #: each attempt is a full runbook generation inside a SYNCHRONOUS HTTP
+    #: request (~20-30 s), so a speculative third turn is bought with reviewer
+    #: latency on every extraction that is going to fail anyway — and a draft
+    #: that fails twice reaches the reviewer with its errors attached, which is
+    #: the recovery this lane built.
+    #:
     #: Re-run that driver before changing this.
     MAX_EXTRACTION_ATTEMPTS = 2
 
