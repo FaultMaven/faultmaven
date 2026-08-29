@@ -27,6 +27,7 @@ from faultmaven.core.investigation.turn_pipeline import (
     generate_implicit_query,
     submitted_name,
 )
+from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -51,8 +52,9 @@ from faultmaven.models.api_models import (
 )
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import Case, CaseState, VerificationStatus
+from faultmaven.modules.case.contracts import Case, CaseState
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
+from faultmaven.modules.case.contracts import VerificationStatus
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceSourceType,
@@ -829,7 +831,25 @@ class InvestigationService:
 
             # ── STEP 2: LLM INFERENCE ──
             # Heuristic check for greetings if intent is CONVERSATION (default)
-            if intent_type == IntentType.CONVERSATION and query:
+            #
+            # Never on a turn that carried an attachment (#1229). The heuristic
+            # reads the message text alone, so "hi" plus a genuinely new log
+            # matched ``^(hi|hello|...)$`` and routed to ``_handle_greeting`` —
+            # which answers from a static string, never calls the engine, and
+            # therefore reported no upload, armed no progress arm, and left the
+            # two #1224 degradation warnings unreachable. The row was already
+            # committed and dedup-classified by then; only the engine was not
+            # told. A turn that delivers data is not a greeting, whatever the
+            # covering text says — the same judgement #708 applies one block
+            # below when it re-routes a generic cover note to Directed
+            # Analysis. Any attachment disqualifies, not just a novel one: a
+            # re-submission still belongs on the path that knows what to do
+            # with a duplicate.
+            if (
+                intent_type == IntentType.CONVERSATION
+                and query
+                and not payload.has_attachments
+            ):
                 heuristic_intent = self._detect_intent_heuristic(query)
                 if heuristic_intent:
                     intent_type = heuristic_intent
@@ -964,12 +984,15 @@ class InvestigationService:
                         attachments=attachment_metadata or None,
                     )
                 elif intent_type == IntentType.GREETING:
-                    result = await self._handle_greeting(case=case)
+                    result = await self._handle_greeting(
+                        case=case, attachments=attachment_metadata or None
+                    )
                 elif intent_type == IntentType.FILE_RECLASSIFICATION:
                     result = await self._handle_file_reclassification(
                         case=case,
                         file_id=intent.file_id if intent else None,
                         data_type_value=intent.data_type if intent else None,
+                        attachments=attachment_metadata or None,
                     )
                 else:
                     # Dispatch table claims SERVICE but there's no handler.
@@ -1858,6 +1881,7 @@ class InvestigationService:
         case: "Case",
         file_id: Optional[str],
         data_type_value: Optional[str],
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Resolve a classification_failed upload by reclassifying its file.
 
@@ -2010,14 +2034,26 @@ class InvestigationService:
                     "from_type": str(previous_type),
                     "to_type": new_source_type.value,
                 },
+                **report_turn_uploads(case.case_id, case.current_turn, attachments),
             },
         }
 
-    async def _handle_greeting(self, case: "Case") -> Dict[str, Any]:
+    async def _handle_greeting(
+        self,
+        case: "Case",
+        attachments: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """Handle greeting intent without LLM.
 
         Args:
             case: Case entity
+            attachments: The turn's engine attachment metadata (#1229).
+                Normally empty here — the heuristic that mints this intent is
+                now barred from firing on a turn that carried an attachment,
+                and an explicit client-sent GREETING with a file is the only
+                way to arrive with one. Reported anyway, because "normally
+                empty" is not "provably empty" and a dropped signal is exactly
+                what #1229 is about.
 
         Returns:
             Result dict with static agent response and updated case
@@ -2053,8 +2089,18 @@ class InvestigationService:
             ],
             "case_updated": case,
             "metadata": {
+                # These two handlers never reach the engine, so they report the
+                # turn's uploads but do not write engine-owned state: no
+                # progress flag, no ``turns_without_progress`` touch. That is
+                # self-consistent — the flag says False and the counter is
+                # unchanged, which agree — where a True flag beside an untouched
+                # counter would be the disagreement #1229 exists to remove.
+                # ``_check_if_progress_made`` is the sole writer of that
+                # counter and it lives in the engine; a service-side second
+                # writer is the two-derivations shape, not a fix for it.
                 "progress_made": False,
                 "milestones_completed": [],
+                **report_turn_uploads(case.case_id, case.current_turn, attachments),
             },
         }
 
