@@ -46,6 +46,8 @@ pytestmark = pytest.mark.unit
 CONTENT = b"2026-08-28T10:00:00Z ERROR pod restart loop\n"
 CONTENT_HASH = "d" * 64
 HYPOTHESIS_ID = "hyp_111111111111"
+# The stall counter every case below starts on.
+STANDING_STALL = 3
 
 
 class _PreprocessingDouble:
@@ -128,6 +130,9 @@ def case(sample_case, sample_user_id):
     sample_case.inquiry.decided_to_investigate = True
     sample_case.inquiry.decision_made_at = datetime.now(timezone.utc)
     sample_case.state = CaseState.INVESTIGATING
+    # Non-zero on purpose: it is what makes "the counter was not written" a
+    # real assertion rather than one that holds at its default.
+    sample_case.turns_without_progress = STANDING_STALL
     sample_case.hypotheses = {
         HYPOTHESIS_ID: Hypothesis(
             hypothesis_id=HYPOTHESIS_ID,
@@ -141,9 +146,9 @@ def case(sample_case, sample_user_id):
     return sample_case
 
 
-def _payload(intent: QueryIntent) -> TurnPayload:
+def _payload(intent: QueryIntent, query: str = "here it is") -> TurnPayload:
     return TurnPayload(
-        query="here it is",
+        query=query,
         attachments=[
             Attachment(content=CONTENT, filename="app.log", content_type="text/plain")
         ],
@@ -212,3 +217,128 @@ class TestEachServiceRoutedHandler:
         )
 
         assert seen["attachments"] is None
+
+
+class TestTheGreetingHeuristicDoesNotSwallowData:
+    """``_detect_intent_heuristic`` rewrites CONVERSATION->GREETING from the
+    message text alone, and ``_handle_greeting`` answers from a static string
+    without ever calling the engine. So "hi" plus a genuinely new log was
+    persisted and dedup-classified, and the engine was told nothing arrived —
+    no upload keys, no progress arm, and the two #1224 degradation warnings
+    unreachable. A turn that delivers data is not a greeting."""
+
+    async def test_a_greeting_carrying_a_file_reaches_the_engine(
+        self, service, repo, case, seen
+    ):
+        await repo.save(case)
+
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=case.user_id,
+            # The exact text the heuristic matches (``^(hi|hello|hey|greetings
+            # |help)( faultmaven)?[.!]*$``) — a payload whose query does not
+            # match would never reach the heuristic and the test would pass
+            # for the wrong reason.
+            payload=_payload(QueryIntent(type=IntentType.CONVERSATION), query="hi"),
+        )
+
+        assert seen.get("attachments") is not None, (
+            "the greeting heuristic swallowed a turn that delivered a file "
+            "(#1229) — the engine was never called"
+        )
+        assert seen["attachments"][0]["is_novel"] is True
+
+    async def test_a_bare_greeting_still_short_circuits(
+        self, service, repo, case, seen
+    ):
+        """The control. Without this, the guard above could be passing because
+        the heuristic broke entirely rather than because it was scoped."""
+        await repo.save(case)
+
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id=case.user_id,
+            payload=TurnPayload(
+                query="hi", intent=QueryIntent(type=IntentType.CONVERSATION)
+            ),
+        )
+
+        assert seen == {}, "a bare greeting must not reach the engine"
+        assert "FaultMaven" in response.agent_response
+
+
+class TestTheNonEngineHandlersStillReportUploads:
+    """GREETING and FILE_RECLASSIFICATION are SERVICE-routed and never reach
+    the engine, so nothing else can report their uploads for them.
+
+    They report the keys and stop there: no progress flag, no
+    ``turns_without_progress`` write. That is self-consistent — the flag says
+    False and the counter is unchanged, and those agree —
+    where a True flag beside an untouched counter would be the disagreement
+    #1229 exists to remove. ``_check_if_progress_made`` is the sole writer of
+    that counter and it lives in the engine.
+    """
+
+    async def test_greeting_reports_the_upload(self, service, case):
+        """Reached only by an explicit client-sent GREETING now that the
+        heuristic is scoped — but "normally unreachable" is not "provably
+        unreachable", which is the whole lesson of #1229."""
+        result = await service._handle_greeting(
+            case=case,
+            attachments=[
+                {"file_id": "file_ffffffffffff", "is_novel": True},
+            ],
+        )
+
+        assert result["metadata"]["files_uploaded"] == ["file_ffffffffffff"]
+        assert result["metadata"]["novel_files_uploaded"] == ["file_ffffffffffff"]
+        assert result["metadata"]["progress_made"] is False
+        assert case.turns_without_progress == STANDING_STALL, (
+            "the counter is engine-owned; a service handler that never calls "
+            "the engine must not write it"
+        )
+
+    async def test_greeting_omits_the_keys_with_no_upload(self, service, case):
+        result = await service._handle_greeting(case=case)
+
+        assert "files_uploaded" not in result["metadata"]
+
+    async def test_the_reclassification_handler_is_told_about_the_attachment(
+        self, service, repo, case
+    ):
+        """The wiring, pinned at the seam: the dispatch built
+        ``attachment_metadata`` and then discarded it for this handler.
+
+        ``create_autospec`` of the REAL bound method, so a call naming a
+        parameter the handler does not have fails here rather than being
+        silently accepted by a permissive Mock.
+        """
+        await repo.save(case)
+        spy = create_autospec(
+            service._handle_file_reclassification,
+            return_value={
+                "agent_response": "ok",
+                "case_updated": case,
+                "metadata": {"progress_made": False, "milestones_completed": []},
+            },
+        )
+        service._handle_file_reclassification = spy
+
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id=case.user_id,
+            payload=_payload(
+                QueryIntent(
+                    type=IntentType.FILE_RECLASSIFICATION,
+                    file_id="file_dddddddddddd",
+                    data_type="logs_and_errors",
+                )
+            ),
+        )
+
+        passed = spy.await_args.kwargs["attachments"]
+        assert passed is not None, (
+            "file_reclassification was handed attachments=None while a row "
+            "for the upload was already committed (#1229)"
+        )
+        assert passed[0]["is_novel"] is True

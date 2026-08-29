@@ -24,7 +24,13 @@ reported it as incrementing, and it does not. So a novel upload resets it and
 nothing here increments it; both arms err against a stall net firing on a turn
 the engine did no investigative work on.
 
-Service-side half (the three intent handlers that passed ``attachments=None``):
+The class, not just the issue: the same reading has to cross the RETURN
+boundary on every path, because the service persists the returned metadata onto
+the assistant ``case_messages`` row. ``TestBothPathsAgree`` is the pin for that
+— it drives an ordinary generation turn and a gate turn with the same
+attachment and compares what each hands back.
+
+Service-side half (the intent handlers that never told the engine):
 ``tests/unit/modules/agent/test_intent_handler_attachments_1229.py``.
 """
 
@@ -35,7 +41,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import faultmaven.core.investigation.prompts.context_builder as context_builder
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
@@ -350,6 +358,33 @@ class TestTheTerminalShortCircuit:
         assert seen["files_uploaded"] == ["file_aaaaaaaaaaaa"]
         assert seen["novel_files_uploaded"] == ["file_aaaaaaaaaaaa"]
 
+    async def test_progress_stays_false(self):
+        """The third reading, decided and pinned (#1229 rework).
+
+        A terminal case is immutable: there is no investigation left to
+        advance, so an upload arriving here is recorded and nothing else. That
+        is SELF-CONSISTENT in the way the pre-fix gate turn was not — the flag
+        says False and the counter is untouched, and those two agree. A True
+        flag beside an untouched counter would be the disagreement this PR
+        exists to remove.
+        """
+        engine = _engine()
+        case = self._terminal_case()
+        seen: dict = {}
+
+        async def spy(case, user_message, metadata, user_id=None):
+            seen.update(metadata)
+            return {"agent_response": "", "case_updated": case, "metadata": metadata}
+
+        engine._process_terminal_turn = spy
+
+        await engine.process_turn(
+            case=case, user_message="what happened here?", attachments=[_novel()]
+        )
+
+        assert seen["novel_files_uploaded"] == ["file_aaaaaaaaaaaa"]
+        assert seen["progress_made"] is False
+
     async def test_the_counter_is_left_alone(self):
         engine = _engine()
         case = self._terminal_case()
@@ -364,3 +399,186 @@ class TestTheTerminalShortCircuit:
         )
 
         assert case.turns_without_progress == STANDING_STALL
+
+
+def _generating_engine() -> MilestoneEngine:
+    """An engine whose LLM seam returns a real response, so the turn completes
+    and we can read what crosses the RETURN boundary."""
+    repo = MagicMock()
+    repo.save = AsyncMock(side_effect=lambda c: c)
+    repo.get = AsyncMock(side_effect=lambda cid: None)
+    engine = MilestoneEngine(MagicMock(), repo, investigation_tools=MagicMock())
+    engine._generate_structured_output = AsyncMock(
+        return_value=InvestigationResponse_Diagnosis(
+            agent_response="Looking at the new log now.",
+            state_updates={},
+        )
+    )
+    return engine
+
+
+class TestTheGenerationPathReturnBoundary:
+    """The single generation-path return rebuilds ``metadata`` from a fixed key
+    list rather than forwarding the working dict, so a key the engine computed
+    reaches nobody unless it is named there. The upload keys were not named."""
+
+    async def test_a_novel_upload_crosses_the_return_boundary(self):
+        engine = _generating_engine()
+        case = _investigating_case()
+
+        result = await engine.process_turn(
+            case=case, user_message="here is a brand new log", attachments=[_novel()]
+        )
+
+        assert engine._generate_structured_output.called, (
+            "this turn must take the GENERATION path — if it short-circuited, "
+            "the test is not exercising the return boundary"
+        )
+        assert result["metadata"]["files_uploaded"] == ["file_aaaaaaaaaaaa"]
+        assert result["metadata"]["novel_files_uploaded"] == ["file_aaaaaaaaaaaa"]
+
+    async def test_the_keys_are_absent_when_nothing_was_attached(self):
+        """Absent, not empty — the deterministic branches omit them too, and
+        every consumer reads them with ``.get()``/``in``."""
+        engine = _generating_engine()
+        case = _investigating_case()
+
+        result = await engine.process_turn(case=case, user_message="any news?")
+
+        assert "files_uploaded" not in result["metadata"]
+        assert "novel_files_uploaded" not in result["metadata"]
+
+    async def test_prompt_building_still_sees_the_pre_turn_stall_counter(
+        self, monkeypatch
+    ):
+        """The reset must NOT be hoisted above prompt building (#1229 rework).
+
+        ``turns_without_progress`` is read DURING a generation turn — the
+        prompt's "N since last progress" line, the momentum bands, the
+        evidence-need page cursor — and Step 5.8 updates it only after those
+        have run. An earlier revision of this PR reset it at the top of
+        ``_process_turn_impl``, and this same turn then reported 0 to the
+        prompt builder where base reported 5: a change to what the model is
+        told about its own stall state, and no part of #1229.
+
+        Asserts on what the reader SAW rather than on rendered prompt text,
+        because whether the ``<state_summary>`` block reaches the final prompt
+        depends on the template selected for the turn — and the invariant is
+        about the value, not about that template.
+        """
+        seen: list[int] = []
+        original = context_builder._build_state_summary
+
+        def _spy(case_arg, *a, **kw):
+            seen.append(case_arg.turns_without_progress)
+            return original(case_arg, *a, **kw)
+
+        monkeypatch.setattr(context_builder, "_build_state_summary", _spy)
+
+        engine = _generating_engine()
+        case = _investigating_case()
+
+        await engine.process_turn(
+            case=case, user_message="here is a brand new log", attachments=[_novel()]
+        )
+
+        assert seen, "prompt building must reach the state-summary reader"
+        assert seen == [STANDING_STALL], (
+            "prompt building read the POST-reset counter — the reset was "
+            f"hoisted above it again (saw {seen})"
+        )
+        # And Step 5.8 still does its job afterwards.
+        assert case.turns_without_progress == 0
+
+
+class TestBothPathsAgree:
+    """The class-closure pin: the SAME attachment must produce the SAME upload
+    reading whichever path the turn took. That invariant is what #1229 is
+    about — not any single branch's behaviour."""
+
+    @staticmethod
+    def _upload_keys(metadata: dict) -> dict:
+        return {
+            k: v
+            for k, v in metadata.items()
+            if k in ("files_uploaded", "novel_files_uploaded")
+        }
+
+    async def _generation(self, attachment) -> dict:
+        engine = _generating_engine()
+        result = await engine.process_turn(
+            case=_investigating_case(),
+            user_message="here is a log",
+            attachments=[attachment],
+        )
+        assert engine._generate_structured_output.called
+        return result["metadata"]
+
+    async def test_a_novel_upload_reads_the_same_on_both_paths(self):
+        gate = await _gate_turn(
+            _engine(), _investigating_case(pending="closed"), [_novel()]
+        )
+        generation = await self._generation(_novel())
+
+        assert self._upload_keys(gate) == self._upload_keys(generation)
+        assert self._upload_keys(gate) == {
+            "files_uploaded": ["file_aaaaaaaaaaaa"],
+            "novel_files_uploaded": ["file_aaaaaaaaaaaa"],
+        }
+
+    async def test_a_duplicate_reads_the_same_on_both_paths(self):
+        gate = await _gate_turn(
+            _engine(), _investigating_case(pending="closed"), [_duplicate()]
+        )
+        generation = await self._generation(_duplicate())
+
+        assert self._upload_keys(gate) == self._upload_keys(generation)
+        assert "novel_files_uploaded" not in self._upload_keys(gate)
+
+
+class TestTheStoredTurnAgreesWithTheReportedTurn:
+    """One decision, three surfaces (#1229 rework). The persisted
+    ``TurnProgress``, the returned metadata and the stall counter used to be
+    written in three places, and the turn-history entry was a hardcoded
+    ``progress_made=False``."""
+
+    async def test_a_novel_upload_is_progress_on_all_three(self):
+        case = _investigating_case(pending="closed")
+
+        metadata = await _gate_turn(_engine(), case, [_novel()])
+
+        assert metadata["progress_made"] is True
+        assert case.turn_history[-1].progress_made is True
+        assert case.turns_without_progress == 0
+
+    async def test_a_duplicate_is_not_progress_on_all_three(self):
+        case = _investigating_case(pending="closed")
+
+        metadata = await _gate_turn(_engine(), case, [_duplicate()])
+
+        assert metadata["progress_made"] is False
+        assert case.turn_history[-1].progress_made is False
+        assert case.turns_without_progress == STANDING_STALL
+
+    async def test_the_reading_is_check_if_progress_made_itself(self):
+        """Not a copy of its upload arm — so a progress arm added there in
+        future lands on the deterministic paths too, instead of on the
+        generation path alone."""
+        engine = _engine()
+        case = _investigating_case(pending="closed")
+        scored: list[dict] = []
+        original = engine._check_if_progress_made
+
+        def _spy(metadata):
+            scored.append(dict(metadata))
+            return original(metadata)
+
+        engine._check_if_progress_made = _spy
+
+        await _gate_turn(engine, case, [_novel()])
+
+        assert scored, "the deterministic branch must score via _check_if_progress_made"
+        assert scored[-1]["novel_files_uploaded"] == ["file_aaaaaaaaaaaa"], (
+            "the upload keys must be on the dict BEFORE it is scored, or the "
+            "arm cannot fire"
+        )
