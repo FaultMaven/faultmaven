@@ -13,19 +13,24 @@ file proved it: both originals frozen verbatim, compared against
 ``runbook_id_from_parts`` over a corpus covering every shape the two
 implementations could plausibly disagree on.
 
-#1230/#1243 then changed the mint on purpose — its empty and double-hyphen
-branches emitted ids the runbook validator rejects. That does NOT retire the
+#1230/#1243 then changed the mint on purpose. That does NOT retire the
 differential, it **narrows** it, and narrowing is where its value now is: the
 frozen originals stay, and the claim becomes
 
-    for every input, either the new id is byte-identical to what the originals
-    produced, or the originals produced an id that was ALREADY INVALID and the
-    new one is valid.
+    for every input, the new id is byte-identical to what the originals
+    produced — EXCEPT in two named classes, and in both the change is an
+    improvement over an id no caller could have relied on.
 
-An unintended drift still fails, because it would change an id that was fine.
-A vacuous version of that claim would also pass, so
-``test_both_deliberate_divergences_are_actually_exercised`` requires the
-divergence set to be non-empty and to contain both classes.
+    1. The originals produced an id that was ALREADY INVALID (empty, or a
+       double hyphen) and the new one is valid.
+    2. The input carries a ``None`` part, which no call site can pass
+       (``_carries_a_none_part`` enumerates all four and says why).
+
+An unintended drift still fails, because it would change an id that was fine
+and reachable. A vacuous version of the claim would also pass, so two further
+tests require each class to be non-empty and require class 2 to cover EXACTLY
+the three ``None``-bearing corpus inputs — an exemption that can quietly widen
+is not an exemption, it is a hole.
 
 The third place — ``runbook_filename`` / ``safe_path_component`` — is NOT
 consolidated onto the same policy, and the last class here pins why by
@@ -195,7 +200,7 @@ CORPUS = EXPLICIT_CASES + _random_corpus()
 # ---------------------------------------------------------------------------
 
 
-class TestTheSharedMintOnlyChangedIdsThatWereAlreadyInvalid:
+class TestTheSharedMintOnlyChangedWhereItHadTo:
     def test_no_corpus_input_re_mints_a_valid_id(self):
         """The load-bearing claim of #1230/#1243: nothing usable was re-minted.
 
