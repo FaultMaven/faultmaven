@@ -64,6 +64,28 @@ def _was_already_invalid(old_id: str) -> bool:
     return not _KEBAB.match(old_id)
 
 
+def _carries_a_none_part(service, title) -> bool:
+    """The SECOND deliberate divergence class, and the only other one.
+
+    The originals let the f-string stringify ``None`` into the literal
+    ``"none"``, so ``(None, "!!!")``, ``(None, "???")`` and ``(None, "。。。")``
+    all minted ``"none"`` — #1230's collision, reachable through the one input
+    the signature admits but the empty-slug branch cannot see (the slug is not
+    empty, it is ``"none"``). ``None`` is now normalised to ``""``.
+
+    Those ids are re-minted even though some were valid kebab
+    (``"none-title"`` → ``"title"``). That is affordable for a reason that must
+    be RE-CHECKED, not assumed, if a call site is ever added: no caller can
+    pass ``None``. All four supply a ``str`` — ``conversion_service.py``'s
+    ``service_name: str`` / ``title: str``, ``conversion.py``'s
+    ``FailureModeAnalysis.service: str = "unknown"`` / ``title: str``,
+    ``suggestion_service.py``'s literal ``"case"``, and its
+    ``service if isinstance(service, str) else ""`` coercion — so no persisted
+    id can have been minted this way.
+    """
+    return service is None or title is None
+
+
 # ---------------------------------------------------------------------------
 # The two implementations as they stood at aab5f34, frozen verbatim
 # ---------------------------------------------------------------------------
@@ -189,12 +211,43 @@ class TestTheSharedMintOnlyChangedIdsThatWereAlreadyInvalid:
             ):
                 if new == old:
                     continue
-                if not _was_already_invalid(old):
-                    regressions.append((name, service, title, old, new))
+                if _was_already_invalid(old) or _carries_a_none_part(service, title):
+                    continue
+                regressions.append((name, service, title, old, new))
         assert not regressions, (
             f"{len(regressions)} of {len(CORPUS)} inputs re-minted an ALREADY "
             f"VALID id. First five: {regressions[:5]}"
         )
+
+    def test_the_none_exemption_is_exactly_three_inputs_wide(self):
+        """The exemption in ``_carries_a_none_part`` must not be a blank cheque.
+
+        It is claimed on the grounds that no call site can pass ``None``, so it
+        has to stay confined to inputs that actually carry one — and it has to
+        be REACHED, or the exemption is dead code hiding nothing."""
+        exempted = [
+            (s, t)
+            for s, t in CORPUS
+            if runbook_id_from_parts(s, t) != _original_generate_runbook_id(s, t)
+            and not _was_already_invalid(_original_generate_runbook_id(s, t))
+        ]
+        assert exempted, "the None divergence was never reached"
+        assert all(_carries_a_none_part(s, t) for s, t in exempted), exempted
+        assert set(exempted) == {(None, "title"), ("svc", None), (None, None)}, exempted
+
+    def test_a_none_part_now_behaves_exactly_like_an_empty_string(self):
+        """What the normalisation is FOR — and the collision it removes."""
+        assert runbook_id_from_parts(None, "Redis OOM") == runbook_id_from_parts(
+            "", "Redis OOM"
+        )
+        assert runbook_id_from_parts("svc", None) == runbook_id_from_parts("svc", "")
+        ids = [runbook_id_from_parts(None, t) for t in ("!!!", "???", "。。。")]
+        assert len(set(ids)) == 3, ids
+        assert all(_KEBAB.match(i) for i in ids), ids
+        # The originals collapsed all three onto the literal "none".
+        assert {
+            _original_generate_runbook_id(None, t) for t in ("!!!", "???", "。。。")
+        } == {"none"}
 
     def test_every_divergence_replaces_an_invalid_id_with_a_valid_one(self):
         """The other direction: where it did change, it changed for the better.
@@ -207,6 +260,12 @@ class TestTheSharedMintOnlyChangedIdsThatWereAlreadyInvalid:
             old = _original_generate_runbook_id(service, title)
             if new != old and not _KEBAB.match(new):
                 bad.append((service, title, old, new))
+        # Not only the divergences: EVERY id the mint produces is kebab now.
+        bad += [
+            (s, t, None, runbook_id_from_parts(s, t))
+            for s, t in CORPUS
+            if not _KEBAB.match(runbook_id_from_parts(s, t))
+        ]
         assert not bad, f"divergences that are still not kebab: {bad[:5]}"
 
     def test_the_public_entry_point_agrees_too(self):
@@ -225,6 +284,8 @@ class TestTheSharedMintOnlyChangedIdsThatWereAlreadyInvalid:
             )
             old = _original_generate_runbook_id(fm.service, fm.title)
             new = generate_runbook_id(fm)
+            # ``FailureModeAnalysis`` coerces both parts to ``str``, so the
+            # None exemption cannot apply here and is deliberately not offered.
             assert new == old or _was_already_invalid(old), (fm.service, fm.title, old)
             assert _KEBAB.match(new), new
 

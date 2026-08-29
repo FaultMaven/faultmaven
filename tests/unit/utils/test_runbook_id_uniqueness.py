@@ -300,6 +300,47 @@ class TestTheRealValidatorAcceptsEveryMintedId:
 
 
 class TestWhatTheMintDeliberatelyDoesNotDo:
+    def test_a_surviving_service_keeps_the_hash_branch_from_firing(self):
+        """The shape that LOOKS like it should have been covered by #1230.
+
+        ``("redis", "!!!")`` and ``("redis", "???")`` both mint ``"redis"``:
+        the hash branch keys on the WHOLE pair filtering to nothing, and here
+        the service survives. Extending it to "the title contributed nothing"
+        would re-mint ids that are valid today, which is the one thing this
+        change may not do — so this is contained by the 045 index and its 409
+        (``tests/integration/modules/knowledge/test_runbook_id_conflict.py``),
+        not by the mint.
+
+        Executed rather than left as a docstring claim, because a future reader
+        chasing "make the mint unique" needs to hit the consequence.
+        """
+        assert (
+            runbook_id_from_parts("redis", "!!!")
+            == runbook_id_from_parts("redis", "???")
+            == "redis"
+        )
+        # Still valid, still deterministic — degraded, not broken.
+        assert KEBAB.match(runbook_id_from_parts("redis", "!!!"))
+
+    def test_a_none_part_is_normalised_to_the_empty_string(self):
+        """``service: str | None`` is a promise the mint has to keep.
+
+        The f-string used to stringify ``None`` into the literal ``"none"``, so
+        three punctuation-only titles under a ``None`` service all minted
+        ``"none"`` — #1230's collision reintroduced through the one input the
+        signature admits and the empty-slug branch cannot see. No call site
+        passes ``None`` today, so nothing persisted is affected; the type hint
+        is what is being repaired.
+        """
+        ids = [runbook_id_from_parts(None, t) for t in ("!!!", "???", "。。。")]
+        assert len(set(ids)) == 3, ids
+        assert all(i and KEBAB.match(i) for i in ids), ids
+        assert all(is_hash_only_runbook_id(i) for i in ids), ids
+        # None and "" are now indistinguishable, which is the whole claim.
+        assert runbook_id_from_parts(None, "Redis OOM") == "redis-oom"
+        assert runbook_id_from_parts("svc", None) == "svc"
+        assert runbook_id_from_parts(None, None) == runbook_id_from_parts("", "")
+
     def test_two_titles_that_slug_identically_still_share_an_id(self):
         """Not a leftover defect — the documented boundary.
 

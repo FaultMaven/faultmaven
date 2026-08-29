@@ -2187,9 +2187,14 @@ class ConversionService:
         # BEFORE the write: the draft file is named after ``runbook_id``, so a
         # duplicate would overwrite the existing runbook's content on its way
         # to an INSERT that 045 rejects. See ``_raise_if_runbook_id_taken``.
-        await self._raise_if_runbook_id_taken(
-            writable_org_id(organization_id), [runbook_id]
-        )
+        #
+        # Guarded on the factory to mirror ``_persist_job``'s own early return:
+        # with no database there is no index to honour, and resolving the org
+        # would newly raise on an unscoped context where nothing is written.
+        if self._db_session_factory:
+            await self._raise_if_runbook_id_taken(
+                writable_org_id(organization_id), [runbook_id]
+            )
 
         symptom_str = ", ".join(symptom_class)
         tags_str = ", ".join(tags) if tags else ""

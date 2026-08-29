@@ -216,8 +216,10 @@ def runbook_id_from_parts(service: str | None, title: str | None) -> str:
       identical ``item_id_from_runbook_id('')``, which no unique constraint
       rejected. They now get ``runbook-<8 hex of the RAW pair>``: non-empty,
       kebab, deterministic (the disk scan reconciles a file to a row by this
-      id, so the same pair must keep minting the same value), and DIFFERENT for
-      different pairs.
+      id, so the same pair must keep minting the same value), and — **among
+      pairs that reach this branch** — different for different pairs. That
+      scoping is deliberate and load-bearing; see the boundary paragraph below,
+      because the branch fires only when the WHOLE pair filters to nothing.
     - Truncation could land on a hyphen, so ``slug[:55] + "-" + md5`` emitted a
       **double** hyphen — 5 of the 91 shipped runbook titles, measured with
       their real frontmatter ``service``. The kept prefix is now ``rstrip``ed
@@ -234,17 +236,38 @@ def runbook_id_from_parts(service: str | None, title: str | None) -> str:
     differential against the pre-consolidation originals rather than as a
     comment.
 
-    What this does NOT do is make the id globally unique: two distinct titles
-    that slug identically (``"Foo Bar"`` and ``"foo-bar"``) still mint the same
-    id, and they must — determinism is what the scan's file-to-row
-    reconciliation depends on, and a pure function cannot see the other rows.
-    Uniqueness is enforced where the other rows are visible: the partial unique
-    index on ``(organization_id, runbook_id)`` added by migration 045.
+    What this does NOT do is make the id globally unique. Two distinct titles
+    that slug identically still mint the same id, and they must — determinism
+    is what the scan's file-to-row reconciliation depends on, and a pure
+    function cannot see the other rows. Two shapes reach that, and the second
+    is worth naming because it looks like it should have been covered:
+
+    - ``("svc", "Foo Bar")`` and ``("svc", "foo-bar")`` — the same slug.
+    - ``("redis", "!!!")`` and ``("redis", "???")`` — **both mint ``"redis"``**.
+      The hash branch does not fire, because it keys on the pair filtering to
+      *nothing*, and here the service survives. Extending it to "the title
+      contributed nothing" would re-mint ``("redis", "")``-shaped ids that are
+      valid today, which is the one thing this change is not allowed to do.
+
+    (Two long titles cut to the same 55 characters are NOT in that list — the
+    md5 disambiguator separates those.)
+
+    Both are enforced where the other rows are visible: the partial unique
+    index on ``(organization_id, runbook_id)`` from migration 045, surfaced as
+    a 409 by ``ConversionService._raise_if_runbook_id_taken``.
 
     The md5 is a disambiguator, not a secret: its input is the slug (or, on the
     empty branch, the raw pair), which is the id's own visible prefix.
     """
-    raw = f"{service}-{title}"
+    # ``or ""`` rather than letting the f-string stringify: ``None`` used to
+    # become the literal ``"none"``, so ``(None, "!!!")``, ``(None, "???")`` and
+    # ``(None, "。。。")`` all minted ``"none"`` — the #1230 collision, reintroduced
+    # through the one input the signature admits and the hash branch cannot
+    # see (the slug is not empty, it is ``"none"``). It also put a ``none-``
+    # prefix on every ordinary title. No call site passes ``None`` today — all
+    # four supply a ``str`` — so no persisted id can have been minted this way;
+    # the signature is the promise being repaired.
+    raw = f"{service or ''}-{title or ''}"
     slug = _slug(raw)
     if not slug:
         digest = hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[
