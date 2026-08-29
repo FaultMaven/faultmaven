@@ -78,10 +78,16 @@ def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
     """Stamp UTC onto a naive timestamp read back from the database.
 
     SQLite has no timezone type, so every value it returns is naive even though
-    it was written as UTC. Left alone, the service's own eviction sort
-    (``key=lambda s: s.updated_at``) mixes naive and aware datetimes and raises
-    ``TypeError``, and the API serialiser publishes an offset-less timestamp a
-    client reads as local time.
+    it was written as UTC. Left alone it reaches ``to_api_response`` and the
+    extract route, both of which serialise it with ``to_json_compatible``, and
+    the review inbox publishes ``extracted_at``/``created_at`` with no offset —
+    which a client parses as *local* time, so the "2h ago" lineage footer reads
+    hours wrong in either direction depending on where the reviewer sits. The
+    same normalisation, for the same reason, as ``operator_grant_repository``.
+
+    It also keeps every ``datetime`` the service sees comparable with the
+    ``datetime.now(timezone.utc)`` values it mints; the eviction ORDER BY is
+    SQL's, so that is a latent hazard rather than a live one.
     """
     if value is not None and value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)

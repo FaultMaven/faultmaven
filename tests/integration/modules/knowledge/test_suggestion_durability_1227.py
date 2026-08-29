@@ -273,6 +273,149 @@ class TestTheSuggestionSurvivesARestart:
 
 
 # ---------------------------------------------------------------------------
+# 1b. What a read hands back is a DETACHED COPY
+# ---------------------------------------------------------------------------
+
+
+class TestAReadHandsBackADetachedCopy:
+    """Mutating what a read returned changes nothing until it is saved.
+
+    This is not a style preference — it is the database's actual behaviour
+    (a new session per call, so no identity map across calls) and the whole
+    reason ``SuggestionService`` now saves explicitly on every write path. It
+    is pinned HERE, on both implementations, because the in-memory double is
+    what the unit tests run against: a double that handed back its own live
+    object would let the service forget a ``save()`` and still pass everywhere
+    except production.
+    """
+
+    async def test_the_database_repository_returns_a_detached_copy(self, db):
+        _db_path, factory = db
+        repository = DatabaseSuggestionRepository(factory)
+        suggestion = await _extract(_service(factory))
+
+        loaded = await repository.get(suggestion.suggestion_id)
+        loaded.suggested_title = "edited but never saved"
+
+        again = await repository.get(suggestion.suggestion_id)
+        assert again.suggested_title != "edited but never saved"
+
+    async def test_the_in_memory_double_returns_a_detached_copy_too(self):
+        """The double has to diverge from the database in NO observable way
+        here, or it stops being able to catch a missing save."""
+        from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+            InMemorySuggestionRepository,
+        )
+
+        repository = InMemorySuggestionRepository()
+        await repository.save(
+            KnowledgeSuggestion(
+                suggestion_id="sug_copy_check",
+                organization_id=ORG_ID,
+                case_id=CASE_ID,
+                suggested_title="Original",
+                suggested_content="## Problem\n...",
+                extracted_by=USER_ID,
+            )
+        )
+
+        loaded = await repository.get("sug_copy_check")
+        loaded.suggested_title = "edited but never saved"
+        assert (await repository.get("sug_copy_check")).suggested_title == "Original"
+
+        # ...and the object handed to save() is copied on the way IN as well,
+        # so a later mutation of the caller's object does not leak into the
+        # store behind its back.
+        held = KnowledgeSuggestion(
+            suggestion_id="sug_copy_check_2",
+            organization_id=ORG_ID,
+            case_id=CASE_ID,
+            suggested_title="Original",
+            suggested_content="## Problem\n...",
+            extracted_by=USER_ID,
+        )
+        await repository.save(held)
+        held.suggested_title = "mutated after the save"
+        assert (await repository.get("sug_copy_check_2")).suggested_title == "Original"
+
+    async def test_seeding_and_peeking_the_double_copy_as_well(self):
+        """``seed``/``peek`` are the double's synchronous affordances for test
+        setup. They have to obey the same rule, or a test using them measures
+        different semantics from a test using ``save``/``get``."""
+        from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+            InMemorySuggestionRepository,
+        )
+
+        repository = InMemorySuggestionRepository()
+        seeded = KnowledgeSuggestion(
+            suggestion_id="sug_seeded",
+            organization_id=ORG_ID,
+            case_id=CASE_ID,
+            suggested_title="Original",
+            suggested_content="## Problem\n...",
+            extracted_by=USER_ID,
+        )
+        repository.seed(seeded)
+        seeded.suggested_title = "mutated after seeding"
+        assert repository.peek("sug_seeded").suggested_title == "Original"
+
+        peeked = repository.peek("sug_seeded")
+        peeked.suggested_title = "mutated after peeking"
+        assert repository.peek("sug_seeded").suggested_title == "Original"
+
+
+# ---------------------------------------------------------------------------
+# 1c. Timestamps come back timezone-aware
+# ---------------------------------------------------------------------------
+
+
+class TestTimestampsComeBackAware:
+    """SQLite has no timezone type, so every datetime it returns is naive even
+    though it was written as UTC.
+
+    Left un-normalised it reaches ``to_api_response`` and the extract route,
+    both of which serialise with ``to_json_compatible``: the review inbox then
+    publishes ``extracted_at`` and ``created_at`` with no offset, and a client
+    parses them as LOCAL time — so the lineage footer ("extracted 2h ago")
+    reads hours wrong in either direction depending on where the reviewer sits.
+    """
+
+    async def test_every_timestamp_on_a_reloaded_suggestion_carries_an_offset(self, db):
+        _db_path, factory = db
+        service = _service(factory)
+        suggestion = await _extract(service)
+        await service.reject_suggestion(
+            suggestion_id=suggestion.suggestion_id,
+            reviewed_by=ADMIN_ID,
+            rejection_reason="not reusable",
+            organization_id=ORG_ID,
+        )
+
+        reloaded = await _service(factory).get_suggestion(suggestion.suggestion_id)
+
+        for field in ("created_at", "updated_at", "extracted_at", "reviewed_at"):
+            value = getattr(reloaded, field)
+            assert value is not None, f"{field} was not persisted"
+            assert value.tzinfo is not None, (
+                f"{field} came back naive; serialised with no offset a client "
+                f"reads it as local time"
+            )
+
+    async def test_the_api_response_carries_the_offset(self, db):
+        """The consequence, at the surface that actually publishes it."""
+        _db_path, factory = db
+        service = _service(factory)
+        suggestion = await _extract(service)
+
+        reloaded = await service.get_suggestion(suggestion.suggestion_id)
+        body = service.to_api_response(reloaded, include_content=True)
+
+        assert (
+            body["extracted_at"].endswith("Z") or "+00:00" in body["extracted_at"]
+        ), f"extracted_at published without an offset: {body['extracted_at']!r}"
+
+
+# ---------------------------------------------------------------------------
 # 2. Two independent services — the multi-worker symptom
 # ---------------------------------------------------------------------------
 
