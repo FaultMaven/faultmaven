@@ -626,6 +626,13 @@ class TestConversionDraftRunbookIdUniquenessMigration:
         else in the schema."""
         assert run_alembic("upgrade head", database_url).returncode == 0
         self._seed([("draft_a", "org-1", "", "draft")])
+        # Without this the whole test passes vacuously against a build that
+        # never created the index — measured, by reverting it.
+        assert query_rows(
+            TEST_DB,
+            "SELECT name FROM pragma_index_list('conversion_drafts') "
+            f"WHERE name = '{self._INDEX}'",
+        ), "nothing to downgrade — the index was never created"
 
         assert run_alembic("downgrade -1", database_url).returncode == 0
         assert get_current_revision(database_url) == self._PARENT
