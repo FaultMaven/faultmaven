@@ -228,14 +228,12 @@ from .modules.report.api.routes import router as report_router
 
 # Optional Opik middleware import
 #
-# ``import opik`` succeeding is not proof the SDK is installed: opik is
-# optional (pyproject's ``[cloud]`` extra) and pip's uninstall leaves a
-# package's directories behind, so an empty ``site-packages/opik/`` tree
-# imports as a PEP 420 namespace package exposing none of the SDK. Without the
-# ``__file__`` check that state reports "Opik SDK available but middleware not
-# found" instead of "Opik not available". (The OpikMiddleware import below is
-# a from-import and already fails correctly, so the middleware itself was
-# never at risk.)
+# The ``__file__`` test is the same guard, for the same reason, as the one in
+# infrastructure/observability/tracing.py — see the comment there. Here it
+# decides only what gets logged: without it this reports "Opik SDK available
+# but middleware not found" instead of "Opik not available". (The
+# OpikMiddleware import below is a from-import and already fails correctly, so
+# the middleware itself was never at risk.)
 try:
     import opik
 
@@ -253,10 +251,13 @@ try:
         logger.debug(
             "Opik middleware class not available, tracing will work without middleware"
         )
-except ImportError:
+except ImportError as exc:
     OPIK_AVAILABLE = False
     OPIK_MIDDLEWARE_AVAILABLE = False
-    logger.info("Opik not available, running without tracing")
+    # Carry the reason: "not installed" and "shadowed by a namespace package"
+    # are different operator problems and this is the only line that names
+    # which one happened.
+    logger.info("Opik not available, running without tracing (%s)", exc)
 
 
 async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -> None:

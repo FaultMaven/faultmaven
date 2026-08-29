@@ -64,8 +64,14 @@ try:
     if OPIK_AVAILABLE:
         logging.debug("Opik SDK loaded successfully")
     else:
+        # Name the observation, not a presumed cause, and print the path —
+        # it is the only thing that tells an operator which directory to
+        # remove. An empty leftover tree is the common source but not the
+        # only way a namespace package resolves.
         logging.warning(
-            "Comet Opik not available (an empty 'opik' directory shadows the SDK)"
+            "Comet Opik not available: 'opik' resolved to a namespace package "
+            "(no SDK) at %s",
+            list(getattr(opik, "__path__", []) or ["<unknown>"]),
         )
 except ImportError:
     OPIK_AVAILABLE = False
