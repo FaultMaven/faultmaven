@@ -2029,7 +2029,10 @@ def test_the_shipped_pack_still_loads():
     """The vendored pack is the artifact this guard must not break."""
     from faultmaven.bootstrap.kb_pack import KbPack
 
-    pack_dir = Path("resources/knowledge/pack")
+    # Anchored on this file, not the cwd: another test's monkeypatch.chdir
+    # would otherwise turn this into a silent skip.
+    repo_root = Path(__file__).resolve().parents[3]
+    pack_dir = repo_root / "resources" / "knowledge" / "pack"
     if not (pack_dir / "pack.json").exists():
         pytest.skip("shipped KB pack is not present in this checkout")
 
