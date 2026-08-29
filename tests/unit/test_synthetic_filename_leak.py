@@ -36,8 +36,9 @@ from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.prompts.context_builder import (
     _build_evidence_context,
 )
+from faultmaven.core.investigation.prompts.fence import render_fenced
 from faultmaven.core.investigation.prompts.templates import (
-    _fallback_current_turn_evidence,
+    _fallback_stub_block,
 )
 from faultmaven.core.investigation.turn_pipeline import (
     generate_implicit_query,
@@ -60,6 +61,18 @@ from faultmaven.modules.case.domain.models import Case
 from faultmaven.modules.report.domain.services.report_generation_service import (
     ReportGenerationService,
 )
+
+
+def _fallback_current_turn_evidence(case):
+    """The fallback's upload-stub block, rendered standalone under its own mint.
+
+    Since #1242 the whole fallback prompt is one fenced assembly, so production
+    renders this block under the prompt's shared fence
+    (``templates._fallback_body``). These tests are about the names the stub
+    render emits, so they give it a fence of its own.
+    """
+    return render_fenced(lambda f: _fallback_stub_block(case, f))
+
 
 # The exact string from the #656 P1.3 gate-tier transcript quoted in #666.
 LEAKED_NAME = "pasted-content-20260709T105531.txt"

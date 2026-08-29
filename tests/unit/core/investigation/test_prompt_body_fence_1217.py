@@ -53,7 +53,7 @@ from faultmaven.core.investigation.prompts.templates import (
     _PROMPT_FENCE_RULE,
     INQUIRY_TEMPLATE,
     INVESTIGATION_BASE,
-    _fallback_current_turn_evidence,
+    _fallback_stub_block,
 )
 from faultmaven.modules.case.contracts import (
     Case,
@@ -66,6 +66,19 @@ from faultmaven.modules.case.contracts import (
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
+
+
+def _fallback_current_turn_evidence(case):
+    """The fallback's upload-stub block, rendered standalone under its own mint.
+
+    Since #1242 the whole fallback prompt is one fenced assembly, so production
+    renders this block under the prompt's shared fence
+    (``templates._fallback_body``). These tests are about the stub render
+    itself, so they give it a fence of its own — the same shape it had before,
+    with the same collision checks.
+    """
+    return render_fenced(lambda f: _fallback_stub_block(case, f))
+
 
 FILE_ID = "file_0e0e0e0e0e05"
 
