@@ -3032,7 +3032,7 @@ def _allocate_sections(
             # costs a few tokens over ``alloc``; the whole-prompt accountant's
             # margin absorbs that, and the recount below keeps the running
             # total honest.
-            rendered = reseal(rendered)
+            rendered = reseal(rendered, text)
 
         ctx[key] = rendered
         # Reuse the known size when the section was admitted whole (no recount).

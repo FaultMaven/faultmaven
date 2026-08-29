@@ -406,16 +406,24 @@ def absorbed_delimiters(text: str, token: str) -> list[str]:
 
 
 #: The FIRST fenced opening delimiter in a section — i.e. its outermost
-#: element, since nested opens can only come after it. Head truncation always
-#: preserves it, which is what lets :func:`reseal` recover the token with no
-#: plumbing from the render that produced it. Not anchored at index 0: a
-#: section may open with renderer-owned prose (the fence declaration, a
-#: standing instruction) that deliberately sits outside the element.
+#: element, since nested opens can only come after it. :func:`reseal` matches
+#: it against the PRE-truncation text, so the token is recovered from what the
+#: fence actually rendered rather than from whatever survived the cut. Not
+#: anchored at index 0: a section may open with renderer-owned prose (the
+#: fence declaration, a standing instruction) that deliberately sits outside
+#: the element.
 _LEADING_OPEN_RE = re.compile(rf'<([a-z_]+)[^>]*?\s{FENCE_ATTR}="([0-9a-f]+)"\s*>')
 
 
-def reseal(text: str) -> str:
+def reseal(text: str, original: str) -> str:
     """Re-close a fenced block whose tail a budget truncation cut off.
+
+    ``text`` is the section as truncated; ``original`` is the same section as
+    the fence rendered it. Both are needed: only ``original`` can say whether
+    this section was EVER a fenced block, which is what separates "the body was
+    cut" (re-close it) from "the opening delimiter itself was cut" (there is
+    nothing to close) and from "this is an ordinary unfenced section" (leave it
+    completely alone).
 
     The allocator sizes variable sections to their allotment with
     ``TokenBudget._truncate_to(..., keep="head")``, which for a fenced block
@@ -431,21 +439,37 @@ def reseal(text: str) -> str:
       absorb whatever delimiter comes next. That is the #1217 absorption hole,
       reopened by an operation that runs after the fence was verified.
 
-    Appends renderer-owned bytes only; never alters a byte of what remains.
-    Returns ``text`` unchanged when it does not begin with a fenced opening
-    delimiter (an unfenced section, or one truncated so hard that even the
-    opening tag is gone — in which case no element is left open either).
+    The invariant this restores, and the one to test against, is: **if any part
+    of a fenced block survives, its opening and closing delimiters both do, and
+    the section does not end inside an unterminated tag.**
+
+    Three outcomes:
+
+    - ``original`` is not a fenced block → ``text`` unchanged.
+    - the complete opening delimiter survived → terminator (only if the
+      surviving body now ends mid-tag) plus the closing delimiter, APPENDED.
+      Never alters a surviving byte — the fence's whole premise is that the
+      renderer does not touch quoted content.
+    - the opening delimiter did NOT survive intact → ``""``. The cut landed
+      inside the renderer's own delimiter (``<entity_highlights fence="d924``),
+      so there is no element to close and no content worth keeping — what
+      remains is at most the block's renderer preamble. Left in place, the
+      half-written tag would absorb the next ``>`` in the assembled prompt.
     """
-    if not text:
+    m_orig = _LEADING_OPEN_RE.search(original or "")
+    if not m_orig:
         return text
-    m = _LEADING_OPEN_RE.search(text)
-    if not m:
-        return text
-    name, token = m.group(1), m.group(2)
+    opening, name, token = m_orig.group(0), m_orig.group(1), m_orig.group(2)
+    if opening not in (text or ""):
+        logger.warning(
+            "prompt_fence_truncated_opening_delimiter",
+            extra={"element": name, "kept_chars": len(text or "")},
+        )
+        return ""
     closing = f'</{name} {FENCE_ATTR}="{token}">'
     if text.rstrip().endswith(closing):
         return text
-    body = text[m.end() :]
+    body = text[text.index(opening) + len(opening) :]
     in_tag, quote = _ends_inside_tag(body)
     terminator = f"{quote}>{TERMINATOR_NOTE}" if in_tag else ""
     return f"{text}{terminator}\n{closing}"

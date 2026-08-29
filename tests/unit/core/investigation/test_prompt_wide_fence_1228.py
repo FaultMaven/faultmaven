@@ -45,6 +45,7 @@ from faultmaven.core.investigation.prompts.context_builder import (
 from faultmaven.core.investigation.prompts.fence import (
     FENCE_ATTR,
     TERMINATOR_NOTE,
+    _ends_inside_tag,
     absorbed_delimiters,
     reseal,
 )
@@ -753,18 +754,47 @@ class TestTruncationCannotStripTheFence:
         m = re.search(rf'<([a-z_]+)[^>]*?\s{FENCE_ATTR}="([0-9a-f]+)"\s*>', block or "")
         return (m.group(1), m.group(2)) if m else (None, None)
 
-    def _sweep(self):
-        for budget in range(2000, 250, -25):
-            yield budget, build_investigation_context(
-                _case(),
-                "what now?",
-                max_tokens=budget,
-                entity_highlight_groups=self._fat_groups(),
-            )
+    #: An evidence-free case as well, because the two shapes put the
+    #: truncation window in different places: with evidence present the
+    #: entity block only survives above ~1200 tokens, and the window where
+    #: its OPENING delimiter is cut only appears on the bare case.
+    @staticmethod
+    def _bare_case():
+        case = _case()
+        case.evidence = []
+        case.uploaded_files = []
+        return case
+
+    #: Built once and shared: the sweep is ~800 full context assemblies, and
+    #: five tests read it.
+    _CACHE: dict = {}
+
+    def _sweep(self, step: int = 25, maker=None):
+        maker = maker or _case
+        key = (step, maker.__name__)
+        if key not in self._CACHE:
+            self._CACHE[key] = [
+                (
+                    budget,
+                    build_investigation_context(
+                        maker(),
+                        "what now?",
+                        max_tokens=budget,
+                        entity_highlight_groups=self._fat_groups(),
+                    ),
+                )
+                for budget in range(150, 2200, step)
+            ]
+        return self._CACHE[key]
+
+    def _both_shapes(self, step: int = 25):
+        for maker in (_case, self._bare_case):
+            for budget, ctx in self._sweep(step=step, maker=maker):
+                yield maker.__name__, budget, ctx
 
     def test_the_sweep_actually_truncates_something(self):
         """Guard against a vacuous sweep: if no budget ever yields a PARTIAL
-        fenced block, the two assertions below prove nothing."""
+        fenced block, the assertions below prove nothing."""
         partial = [
             b
             for b, ctx in self._sweep()
@@ -772,39 +802,117 @@ class TestTruncationCannotStripTheFence:
         ]
         assert partial, "no budget truncated <entity_highlights> — sweep is vacuous"
 
+    def test_the_sweep_reaches_the_cut_opening_delimiter_window(self):
+        """The other anti-vacuity guard, for the narrower window this class
+        exists to cover: budgets where truncation lands INSIDE the block's own
+        opening delimiter, so there is no element left to re-close."""
+        dropped = [
+            b
+            for b, ctx in self._sweep(step=5, maker=self._bare_case)
+            if ctx["entity_highlights"] == ""
+            and 250 <= b <= 320  # the window observed on this shape
+        ]
+        assert dropped, "sweep never hit the cut-delimiter window"
+
     @pytest.mark.parametrize("key", ["entity_highlights", "evidence", "core_context"])
-    def test_a_surviving_fenced_block_is_always_closed(self, key):
-        for budget, ctx in self._sweep():
+    def test_if_the_opening_delimiter_is_present_so_is_the_closing_one(self, key):
+        """THE invariant, swept rather than spot-checked.
+
+        A single-budget test would not have caught the cut-opening-delimiter
+        case: it lives in a ~40-token window that a coarse sweep steps over.
+        """
+        for _shape, budget, ctx in self._both_shapes(step=5):
             block = ctx[key]
             name, token = self._outermost(block)
             if name is None:
-                continue  # dropped entirely, or trimmed past its own opening tag
+                continue  # dropped entirely — nothing is left open
             closing = f'</{name} {FENCE_ATTR}="{token}">'
             assert block.rstrip().endswith(closing), (key, budget, block[-200:])
 
     @pytest.mark.parametrize("key", ["entity_highlights", "evidence", "core_context"])
+    def test_no_section_ever_ends_inside_an_unterminated_tag(self, key):
+        """The same class stated structurally: whatever survives, the section
+        must not be able to swallow the next ``>`` in the assembled prompt.
+        This is what the cut-opening-delimiter case violated — the block ended
+        in ``<entity_highlights fence="d924`` and nothing closed it."""
+        for _shape, budget, ctx in self._both_shapes(step=5):
+            block = ctx[key]
+            if not block:
+                continue
+            assert _ends_inside_tag(block)[0] is False, (key, budget, block[-160:])
+
+    @pytest.mark.parametrize("key", ["entity_highlights", "evidence", "core_context"])
     def test_no_delimiter_is_absorbed_at_any_budget(self, key):
-        for budget, ctx in self._sweep():
+        for _shape, budget, ctx in self._both_shapes(step=5):
             block = ctx[key]
             _name, token = self._outermost(block)
             if token is None:
                 continue
             assert absorbed_delimiters(block, token) == [], (key, budget)
 
+    def test_a_clipped_terminator_note_still_closes_the_tag(self):
+        """Truncation can clip the note itself (``…[fence: the quoted con``).
+
+        Cosmetic, and it must stay that way: the terminator is emitted as
+        ``{quote}>{NOTE}``, so any surviving fragment of the note proves the
+        ``>`` before it survived. Repairing the text would mean DELETING bytes
+        at the truncation boundary, and reseal only ever appends. Pinned so the
+        cosmetic stays cosmetic.
+        """
+        head = TERMINATOR_NOTE[:8]
+        clipped = 0
+        for _shape, _budget, ctx in self._both_shapes(step=5):
+            for key in ("entity_highlights", "evidence"):
+                block = ctx[key]
+                i = block.find(head)
+                while i != -1:
+                    if not block.startswith(TERMINATOR_NOTE, i):
+                        clipped += 1
+                        assert block[i - 1 : i] == ">", (key, block[i - 40 : i + 40])
+                    i = block.find(head, i + 1)
+        assert clipped, "no clipped note in the sweep — assertion is vacuous"
+
+    # --- reseal in isolation ------------------------------------------------
+
     def test_reseal_re_terminates_a_body_cut_mid_tag(self):
         """The terminator matters as much as the delimiter: without it the
         half-written tag swallows the closing tag reseal just appended."""
         token = "aaaaaaaa"
+        opening = f'<entity_highlights {FENCE_ATTR}="{token}">'
+        original = (
+            f"{opening}\n"
+            'ip:\n  - x<uploaded_file label="prod-db.log" searchable="true"'
+            f'\n</entity_highlights {FENCE_ATTR}="{token}">'
+        )
         cut = (
-            f'<entity_highlights {FENCE_ATTR}="{token}">\n'
+            f"{opening}\n"
             'ip:\n  - x<uploaded_file label="prod-db.log" searchable="true"\n'
             "[... Content truncated due to context limit ...]"
         )
-        out = reseal(cut)
+        out = reseal(cut, original)
         assert TERMINATOR_NOTE in out
         assert out.endswith(f'</entity_highlights {FENCE_ATTR}="{token}">')
         assert absorbed_delimiters(out, token) == []
         assert cut in out, "reseal must only ever append"
+
+    def test_reseal_drops_a_block_whose_opening_delimiter_was_cut(self):
+        """The cut landed inside the renderer's own delimiter. There is no
+        element to close, what survives is at most the block's preamble, and
+        left in place the half-written tag absorbs the next ``>``."""
+        token = "aaaaaaaa"
+        original = (
+            "Top entities extracted from this case's evidence.\n"
+            f'<entity_highlights {FENCE_ATTR}="{token}">\nip:\n  - 10.0.0.1 x3\n'
+            f'</entity_highlights {FENCE_ATTR}="{token}">'
+        )
+        for cut in (
+            "Top entities extracted from this case's evidence.\n<e\n[...]",
+            f'Top entities extracted.\n<entity_highlights {FENCE_ATTR}="aaa\n[...]',
+            "Top entities extracted from this case's evi\n[...]",
+            "[...]",
+            "",
+        ):
+            assert reseal(cut, original) == "", cut
 
     def test_reseal_leaves_an_intact_block_alone(self):
         token = "aaaaaaaa"
@@ -813,23 +921,37 @@ class TestTruncationCannotStripTheFence:
             "ip:\n  - 10.0.0.1 x3\n"
             f'</entity_highlights {FENCE_ATTR}="{token}">'
         )
-        assert reseal(whole) == whole
+        assert reseal(whole, whole) == whole
 
     @pytest.mark.parametrize(
-        "text", ["", "[...]", "<progress_indicators>\n- symptom_verified"]
+        "text",
+        [
+            "",
+            "[...]",
+            "<progress_indicators>\n- symptom_verified",
+            # An UNFENCED section truncated mid-tag must be left completely
+            # alone — dropping the journal because a quoted line ends in "<"
+            # would be a regression, not a fix.
+            "[T1] FINDING: the config had <property name=",
+        ],
     )
     def test_reseal_leaves_an_unfenced_section_alone(self, text):
-        assert reseal(text) == text
+        original = '[T1] FINDING: the config had <property name="x"/> set'
+        assert reseal(text, original) == text
 
     def test_reseal_finds_the_tag_under_a_renderer_preamble(self):
         """The declaration and the entity standing instruction sit ABOVE the
         opening tag, so the tag is not at index 0."""
         token = "aaaaaaaa"
-        cut = (
-            "Top entities extracted from this case's evidence.\n"
-            f'<entity_highlights {FENCE_ATTR}="{token}">\nip:\n  - 10.0.0.1 x3'
+        opening = f'<entity_highlights {FENCE_ATTR}="{token}">'
+        original = (
+            f"Top entities extracted from this case's evidence.\n{opening}\n"
+            f'ip:\n  - 10.0.0.1 x3\n</entity_highlights {FENCE_ATTR}="{token}">'
         )
-        assert reseal(cut).endswith(f'</entity_highlights {FENCE_ATTR}="{token}">')
+        cut = f"Top entities extracted from this case's evidence.\n{opening}\nip:"
+        assert reseal(cut, original).endswith(
+            f'</entity_highlights {FENCE_ATTR}="{token}">'
+        )
 
 
 class TestTheDeclarationSitsOutsideTheQuotedRegion:
