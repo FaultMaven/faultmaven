@@ -401,7 +401,7 @@ reach for the `max_tokens` escalation instead.
 body, instructing the agent to say in one sentence that it could not inspect the
 evidence this turn and not to present a cause as established. This is *required,
 not cosmetic*: the fallback body renders addressable file stubs (see
-`_fallback_current_turn_evidence`, written for a tool-capable turn) while this
+`_fallback_stub_block`, written for a tool-capable turn) while this
 retry drops the tool set — so without the notice the agent is invited to search
 files it cannot reach.
 

@@ -15,10 +15,11 @@ exposure was worse than "unfenced". Measured on ``859a8d47c``::
       "trust boundary" in prompt: False
       FENCE: occurrences: 1        <- the attacker's, and the only one
 
-``_fallback_current_turn_evidence`` minted a token and emitted a declaration,
-but ONLY on a turn that carried an upload. Without one there was no genuine
-declaration at all, so the planted line was the only thing in the prompt
-claiming to define the trust boundary.
+The upload-stub block (``_fallback_stub_block``, then reached through a
+``_fallback_current_turn_evidence`` wrapper) minted a token and emitted a
+declaration, but ONLY on a turn that carried an upload. Without one there was
+no genuine declaration at all, so the planted line was the only thing in the
+prompt claiming to define the trust boundary.
 
 **What changed.** The whole fallback prompt is one ``render_fenced`` assembly:
 one token shared by ``<problem_context>``, ``<user_message>`` and the

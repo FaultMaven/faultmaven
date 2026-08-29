@@ -1,4 +1,4 @@
-"""Per-render nonce fence for caller-controlled prompt channels (#1217, #1228).
+"""Per-render nonce fence for caller-controlled prompt channels (#1217, #1228, #1242).
 
 ``context_builder`` renders context items as pseudo-XML whose element and
 attribute names are **load-bearing** — see
@@ -107,7 +107,7 @@ stronger on check 1: with a shared corpus the token is provably absent from
 **The FALLBACK prompt (#1242).** ``FALLBACK_INQUIRY_TEMPLATE``,
 ``FALLBACK_INVESTIGATION_TEMPLATE`` and ``FALLBACK_TERMINAL_TEMPLATE`` used to
 interpolate ``case.description`` (as ``PROBLEM:``) and ``user_message`` raw
-and state NO rule at all. ``_fallback_current_turn_evidence`` minted a token
+and state NO rule at all. ``_fallback_stub_block`` minted a token
 and emitted a declaration, but only when the turn carried an upload — so on a
 turn without one, a ``FENCE:`` line planted in ``case.description`` was the
 ONLY declaration in the prompt. Measured on ``859a8d47c``::

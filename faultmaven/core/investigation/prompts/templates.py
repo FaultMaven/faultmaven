@@ -2612,13 +2612,13 @@ You are an ADVISOR.
 # The fallback's own trust rule (#1242). ``_PROMPT_FENCE_RULE`` is not reused
 # here, for two independent reasons:
 #
-# 1. It would not be TRUE. It names three blocks (``<entity_highlights>``,
-#    ``<evidence_collected>``) and five renderer sections
-#    (``<security_constraints>``, ``<case_identity>``,
-#    ``<progress_indicators>``, ``<conversation_history>``, the hypothesis and
-#    journal blocks) that the FALLBACK_* templates do not render at all. A rule
-#    that tells the model to authenticate delimiters which are not in the
-#    prompt is worse than a shorter one that describes what is.
+# 1. It would not be TRUE. It names two fenced blocks
+#    (``<entity_highlights>``, ``<evidence_collected>``) and four renderer
+#    sections (``<security_constraints>``, ``<case_identity>``,
+#    ``<progress_indicators>``, ``<conversation_history>``) that the
+#    FALLBACK_* templates do not render at all. A rule that tells the model to
+#    authenticate delimiters which are not in the prompt is worse than a
+#    shorter one that describes what is.
 # 2. Token cost, measured with ``utils.token_estimation`` (openai/gpt-4o):
 #    ``_PROMPT_FENCE_RULE`` + declaration is 613 tokens; the rule below +
 #    declaration is 239 (61% less). The fallback is chosen precisely when
@@ -2703,7 +2703,7 @@ Answer questions about the findings. Do not reopen investigation.
 # compile-time starvation/overflow fallbacks — those keep their tools, so this
 # text would be false there. It exists because that recovery drops the tool set
 # while the fallback body still lists addressable files (see
-# ``_fallback_current_turn_evidence``, written for a tool-capable turn): without
+# ``_fallback_stub_block``, written for a tool-capable turn): without
 # this, the agent is invited to search files it cannot reach, and the user cannot
 # tell a context-starved answer from a normal one.
 DEGRADED_NO_TOOLS_NOTICE = """
@@ -2717,7 +2717,7 @@ what little remains — name what you would need to confirm it instead.
 """
 
 
-def _fallback_current_turn_evidence(case: Case, fence: PromptFence) -> str:
+def _fallback_stub_block(case: Case, fence: PromptFence) -> str:
     """Compact addressable stub(s) for files uploaded THIS turn (INV-1).
 
     The fallback fires at the tightest budget — precisely when a fresh upload
@@ -2759,11 +2759,6 @@ def _fallback_current_turn_evidence(case: Case, fence: PromptFence) -> str:
     table, and puts every caller-controlled string of the prompt into one
     collision corpus.
     """
-    return _fallback_stub_block(case, fence)
-
-
-def _fallback_stub_block(case: Case, fence: PromptFence) -> str:
-    """One fence's worth of current-turn upload stubs — see the caller."""
     current_turn = getattr(case, "current_turn", 0)
     find = getattr(case, "find_uploaded_file", None)
     stubs = []
@@ -2882,7 +2877,7 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
             fence_preamble=fence_preamble,
             problem_summary=problem_block,
             user_message=user_block,
-            current_turn_evidence=_fallback_current_turn_evidence(case, fence),
+            current_turn_evidence=_fallback_stub_block(case, fence),
         )
 
     elif case.state == CaseState.INVESTIGATING:
@@ -2911,7 +2906,7 @@ def _fallback_body(case: Case, user_message: str, fence: PromptFence) -> str:
             milestones_summary=", ".join(milestones) if milestones else "None yet",
             hypotheses_summary="; ".join(hypotheses) if hypotheses else "None yet",
             journal_digest=_fallback_journal_digest(case),
-            current_turn_evidence=_fallback_current_turn_evidence(case, fence),
+            current_turn_evidence=_fallback_stub_block(case, fence),
             user_message=user_block,
         )
 
