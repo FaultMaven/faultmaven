@@ -339,10 +339,18 @@ class DatabaseSuggestionRepository(SuggestionRepository):
         current version and the write that supersedes it are one atomic step.
         A read-then-write pair would reintroduce the race it exists to close.
 
+        The insert arm is NOT guarded the same way, and does not need to be:
+        ids are ``sug_{uuid4().hex[:12]}``, so two writers racing on the same
+        new id is not a scenario. If it somehow happened the primary key would
+        refuse the second insert and it would surface as a
+        ``SuggestionRepositoryError``, not as a concurrency conflict — which is
+        the truthful shape for "this id already exists" as opposed to "the row
+        you loaded has moved".
+
         Raises:
-            SuggestionConcurrencyError: the row moved since it was loaded (or,
-                on an insert, the id was taken between the check and the write).
-            SuggestionRepositoryError: anything else the store refused.
+            SuggestionConcurrencyError: the row moved since it was loaded.
+            SuggestionRepositoryError: anything else the store refused,
+                including a primary-key collision on the insert arm.
         """
         expected_version = suggestion.version or 1
         next_version = expected_version + 1
