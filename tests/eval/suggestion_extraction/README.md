@@ -81,42 +81,67 @@ flatter or punish the prompt for the wrong reason.
 ## What it found
 
 `recorded-runs/2026-08-29-anthropic-claude-sonnet-4-5.json` — the committed
-transcript, full runbooks included.
+transcript at the shipped head, full runbooks included.
 
 | Arm | Substantive cases passing the gate | Thin case | LLM calls |
 |---|---|---|---|
 | `before` | **0 / 7 (0%)** | 0 / 1 | 8 |
-| `after` | **7 / 7 (100%)** | 1 / 1 | 16 |
+| `after` | **7 / 7 (100%)** | 1 / 1 | 11 |
 
 Every `before` draft failed with the identical six errors — no frontmatter and
 five of the six required sections — which is the point: the old prompt was not
 *nearly* a runbook, it was a different document.
 
-**The repair turn is doing the work, not the prompt alone.** 0/8 first drafts
-cleared the gate; 8/8 cleared it after one repair turn. That is the number that
-sized `MAX_EXTRACTION_ATTEMPTS`, and it is also why an extraction now costs two
-generations: the budget is not a safety net that rarely fires, it is part of the
-normal path. Reducing the *first-draft* failure rate is the obvious next
-improvement and is a prompt question, not an architecture one.
+**Passes by attempt: 5 on the first draft, 3 after one repair turn.** That
+split is what sized `MAX_EXTRACTION_ATTEMPTS`, and it did not start there — see
+below.
 
-Two things the run surfaced that the pass rate does not say:
+### The first-draft profile is the thing to read next
+
+`recorded-runs/2026-08-29-first-draft-profile-before-domain-fix.json`, produced
+with `--attempts 1`, is the diagnostic that turned a working-but-expensive
+result into a cheaper one. At that point **every** case needed the repair turn,
+so an extraction cost two full generations. The profile said why:
+
+```
+PASS case_ev1_pg_pool
+FAIL case_ev2_k8s_oom   Invalid domain 'kubernetes'…; Cause A: Indicator entry has no [Step N] token: 's1: [Step 2, Step 3] …'
+FAIL case_ev3_tls_expiry  ID must be kebab-case: tls-outbound-tls-failure-due-to-expired-ca-certificate--7217
+FAIL case_ev4_redis_evict Invalid domain 'cache'…
+FAIL case_ev5_dns_ndots   Invalid domain 'kubernetes'…
+PASS case_ev6_disk_full_wal
+PASS case_ev7_pii_noisy
+FAIL case_ev8_thin_case   Invalid domain 'web'…
+```
+
+Four of five failures were one systematic defect: the prompt enumerated the
+`symptom_class` vocabulary but never `VALID_DOMAINS`. The *document* path is
+handed a `domain` by its analysis pass and told not to change it; a case
+supplies none, so the model free-picked the technology (`kubernetes`, `cache`,
+`web`) where the schema wants a coarse system layer. Naming the vocabulary took
+first-draft passes from 0/8 to 5/8 and the run from 16 LLM calls to 11.
+
+**Run `--attempts 1` before touching the prompt.** The pass rate alone cannot
+distinguish "the prompt is good" from "the repair turn is covering for it".
+
+### Two things the pass rate does not say
 
 - **The runbook `id` leaked incident detail.** The deliberately-noisy fixture
   produced a body the model had de-identified perfectly beside a frontmatter
   line reading `id: case-inc-48213-prod-web-07-returning-502-for-customer-c-…`.
   The id was minted from the raw case title by the extractor itself, and it
   lives *inside* the content, so it is chunked, embedded and retrieved. Fixed —
-  the id is now minted from the draft's own de-identified `service` + `title`.
-  This is the clearest argument for running the eval on noisy input rather than
-  clean input.
+  minted from the draft's own de-identified `service` + `title`, which also
+  fixed the same leak in `suggested_title` (the published item's name *and* its
+  filename). This is the clearest argument for running the eval on noisy input
+  rather than clean input.
 - **A thin case yields a structurally valid but speculative runbook.**
-  `case_ev8_thin_case` ("login page slow", no evidence, no resolution) passed:
-  the model marked `## Applicability` with the rule-8
-  `[INSUFFICIENT SOURCE DATA]` escape but invented four diagnostic steps and a
-  connection-pool cause with nothing in the case to support them. The gate is
-  **structural** — it cannot tell a grounded runbook from a plausible one — so
-  the human review step stays load-bearing. Not something the extractor can fix
-  from its side.
+  `case_ev8_thin_case` ("login page slow", no evidence, no resolution) passes:
+  the model marks `## Applicability` with the rule-8 `[INSUFFICIENT SOURCE
+  DATA]` escape but invents diagnostic steps and a cause with nothing in the
+  case to support them. The gate is **structural** — it cannot tell a grounded
+  runbook from a plausible one — so the human review step stays load-bearing.
+  Not something the extractor can fix from its side.
 
 These are facts about one model on one fixture set on one day, not invariants.
 The invariants they motivated are pinned in CI, at

@@ -159,11 +159,11 @@ corrected runbook, starting at the opening `---`, and output nothing else.
     #:
     #: Sized from the measurement in ``tests/eval/suggestion_extraction``, not
     #: from taste. On that corpus (8 cases, claude-sonnet-4-5, 2026-08-29):
-    #: **0/8 first drafts cleared the gate and 8/8 cleared it after one repair
-    #: turn**, so the repair turn is doing the work and a third turn had nothing
-    #: left to buy. That is a measurement of when it is ENOUGH, not proof that a
-    #: third turn never helps — the corpus never produced a twice-failing draft
-    #: for one to act on.
+    #: **5/8 cleared the gate on the first draft and the remaining 3/8 cleared
+    #: it on the repair turn** — 8/8 within the budget, and nothing left for a
+    #: third turn to buy. That is a measurement of when it is ENOUGH, not proof
+    #: that a third turn never helps: the corpus never produced a twice-failing
+    #: draft for one to act on.
     #:
     #: The cost side is what makes 2 the right stopping point rather than 3:
     #: each attempt is a full runbook generation inside a SYNCHRONOUS HTTP
