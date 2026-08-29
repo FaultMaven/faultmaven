@@ -44,6 +44,7 @@ from faultmaven.modules.knowledge.domain.services.suggestion_service import (
     SuggestionService,
 )
 from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+    DatabaseSuggestionRepository,
     InMemorySuggestionRepository,
 )
 from tests.runbook_samples import valid_runbook
@@ -368,6 +369,12 @@ class TestTheRouteDependency:
 # ---------------------------------------------------------------------------
 
 
+def _settings_with_database_url(database_url):
+    settings = MagicMock()
+    settings.database.database_url = database_url
+    return settings
+
+
 def test_the_factory_injects_the_knowledge_service():
     """``create_suggestion_service`` is what makes the no-knowledge-service
     refusal above unreachable in a composed app."""
@@ -383,6 +390,7 @@ def test_the_factory_injects_the_knowledge_service():
         knowledge_service=knowledge,
         sanitizer=sanitizer,
         llm_provider=llm,
+        settings=_settings_with_database_url("sqlite+aiosqlite:///./data/fm.db"),
     )
 
     assert isinstance(svc, SuggestionService)
@@ -390,6 +398,63 @@ def test_the_factory_injects_the_knowledge_service():
     assert svc._sanitizer is sanitizer
     assert svc._case_repository is case_repository
     assert svc._llm_provider is llm
+
+
+class TestTheFactoryPicksTheStoreFromTheDatabaseUrl:
+    """The store choice is keyed off ``persistent_database_configured`` — the
+    one shared predicate (fm#1128), not a re-derivation.
+
+    It matters because the sessionless repository opens a session per
+    operation and SQLite is pooled with ``NullPool``: over an in-memory URL
+    each call would get a brand-new empty database, so every write would vanish
+    before the next read. And ``create_case_repository`` degrades to in-memory
+    on the same configuration, so the suggestion's ``case_id`` foreign key would
+    have no case row to point at and extract would 500 where the dict store
+    worked.
+    """
+
+    @staticmethod
+    def _store_for(database_url):
+        from faultmaven.container.providers.services import create_suggestion_service
+
+        svc = create_suggestion_service(
+            case_repository=MagicMock(),
+            knowledge_service=MagicMock(),
+            sanitizer=MagicMock(),
+            llm_provider=MagicMock(),
+            settings=_settings_with_database_url(database_url),
+        )
+        return svc._repository
+
+    @pytest.mark.parametrize(
+        "database_url",
+        [
+            "sqlite+aiosqlite:///./data/faultmaven.db",
+            "postgresql+asyncpg://u:p@host/db",
+        ],
+    )
+    def test_a_persistent_url_gets_the_database_store(self, database_url):
+        store = self._store_for(database_url)
+        assert isinstance(store, DatabaseSuggestionRepository)
+        assert store.is_durable is True
+
+    @pytest.mark.parametrize(
+        "database_url",
+        [
+            "",
+            None,
+            ":memory:",
+            "sqlite+aiosqlite:///:memory:",
+            "sqlite://",
+        ],
+    )
+    def test_an_ephemeral_or_absent_url_gets_the_in_memory_store(self, database_url):
+        store = self._store_for(database_url)
+        assert isinstance(store, InMemorySuggestionRepository)
+        assert store.is_durable is False, (
+            "the fallback must report itself non-durable, or "
+            "/admin/config/status claims a durability this process does not have"
+        )
 
 
 async def test_the_service_still_scans_for_pii_when_wired():
@@ -405,7 +470,11 @@ async def test_the_service_still_scans_for_pii_when_wired():
     and their arguments is what pins that apart."""
     sanitizer = MagicMock()
     sanitizer.asanitize = AsyncMock(side_effect=lambda text: f"REDACTED::{text[:6]}")
-    svc = SuggestionService(knowledge_service=MagicMock(), sanitizer=sanitizer)
+    svc = SuggestionService(
+        knowledge_service=MagicMock(),
+        sanitizer=sanitizer,
+        suggestion_repository=InMemorySuggestionRepository(),
+    )
     suggestion = _ready_suggestion()
     original_title = suggestion.suggested_title
     original_content = suggestion.suggested_content

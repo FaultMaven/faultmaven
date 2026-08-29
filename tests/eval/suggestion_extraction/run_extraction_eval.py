@@ -265,6 +265,7 @@ async def run_after(
             sanitizer=None,
             llm_provider=counting,
             max_extraction_attempts=attempts,
+            suggestion_repository=InMemorySuggestionRepository(),
         )
         started = time.time()
         error = None

@@ -451,7 +451,11 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
         # Capacity was checked and made at the top of this method, before the
         # generation budget was spent.
-        await self._repository.save(suggestion)
+        # Reassigned, not just called: ``save`` returns the persisted copy
+        # carrying the version the store now holds, and a caller that keeps the
+        # pre-save object would fail its OWN next write's concurrency check
+        # against a row only it had touched.
+        suggestion = await self._repository.save(suggestion)
         self.logger.info(f"Created suggestion {suggestion_id} from case {case_id}")
 
         return suggestion
@@ -1190,7 +1194,12 @@ level, and the tools needed.]
             # successful re-scan is discarded on the way out and the next
             # approve re-runs it — and a redaction the scan applied to the
             # content would be lost while the verdict it produced was not.
-            await self._repository.save(suggestion)
+            #
+            # Reassigned, so the object carries the version this write produced.
+            # Without that, the approval's own later save would be checked
+            # against a version IT had already superseded and would report a
+            # concurrent modification that never happened.
+            suggestion = await self._repository.save(suggestion)
 
         if not suggestion.is_ready_for_review():
             self.logger.warning(
@@ -1483,7 +1492,7 @@ level, and the tools needed.]
             rejection_reason=rejection_reason,
             review_notes=review_notes,
         )
-        await self._repository.save(suggestion)
+        suggestion = await self._repository.save(suggestion)
 
         self.logger.info(f"Rejected suggestion {suggestion_id}: {rejection_reason}")
         return True
@@ -1530,7 +1539,7 @@ level, and the tools needed.]
             suggestion.suggested_type = suggested_type
             suggestion.touch()
 
-        await self._repository.save(suggestion)
+        suggestion = await self._repository.save(suggestion)
         self.logger.info(f"Updated suggestion {suggestion_id}")
         return suggestion
 
@@ -1558,7 +1567,7 @@ level, and the tools needed.]
             return None
 
         suggestion.mark_pii_remediated(remediated_by)
-        await self._repository.save(suggestion)
+        suggestion = await self._repository.save(suggestion)
         self.logger.info(f"PII remediated for suggestion {suggestion_id}")
         return suggestion
 
