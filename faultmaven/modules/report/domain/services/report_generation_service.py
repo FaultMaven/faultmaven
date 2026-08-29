@@ -1079,7 +1079,15 @@ class ReportGenerationService:
                 # Same rule as "Hypotheses Considered": a retired hypothesis
                 # carries a decayed prior, not a measured confidence.
                 if status_str == "retired":
-                    parts.append(f"- **{h.statement}** — set aside without a verdict")
+                    # Carry the reason here too. CLOSED cases are where most
+                    # retirements land, and this is their only hypothesis
+                    # section — without it the never-grounded / stalled /
+                    # undetermined distinction is invisible in exactly the
+                    # report that matters most.
+                    line = f"- **{h.statement}** — set aside without a verdict"
+                    if getattr(h, "retirement_reason", None):
+                        line += f"  \n  Set aside: {_one_line(h.retirement_reason)}"
+                    parts.append(line)
                 else:
                     parts.append(
                         f"- **{h.statement}** — {status_str} "

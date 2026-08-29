@@ -468,3 +468,31 @@ def test_force_alternative_generation_defaults_to_no_graph_access():
 
     assert retired == [h.hypothesis_id]
     assert h.retirement_reason == _RETIRED_GROUNDING_UNKNOWN
+
+
+def test_an_over_length_legacy_reason_still_loads():
+    """``max_length`` here would be a HYDRATION constraint: both repositories
+    build ``Hypothesis(**row)`` from the Text column inside a blanket except that
+    raises ``RepositoryException``, so one over-length legacy row would make the
+    whole CASE unloadable. The user-retire path wrote this field unbounded from
+    2026-04-09, so such rows can exist. Truncate on load; never reject."""
+    # Construction is the path that matters: it is what the repositories do.
+    # (``validate_assignment`` is off on this model, so attribute writes bypass
+    # the validator entirely — which is why the user-retire write site truncates
+    # for itself rather than relying on this.)
+    h = Hypothesis(
+        hypothesis_id="hyp_0000000000e1",
+        statement="a database theory",
+        category=HypothesisCategory.DATABASE,
+        state=HypothesisState.RETIRED,
+        generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+        rationale="r",
+        likelihood=0.4,
+        initial_likelihood=0.4,
+        generated_at_turn=1,
+        last_updated_turn=2,
+        retirement_reason="x" * 427,
+    )
+
+    assert len(h.retirement_reason) == 200
+    assert h.retirement_reason.endswith("...")
