@@ -18,7 +18,14 @@ from faultmaven.modules.preprocessing.extractors.utils import (
     has_content,
     truncate_output,
 )
+from faultmaven.utils.optional_dependency import module_is_usable
 
+# NOT `TREE_SITTER_AVAILABLE = True`: an empty leftover directory for ANY of
+# these eight imports cleanly as a PEP 420 namespace package (see
+# faultmaven/utils/optional_dependency.py), and one shadow among eight is
+# enough — the flag would read True and the first `_ts.Language(...)` /
+# `_tsc.language()` would raise AttributeError mid-extraction. Each grammar is
+# checked for the symbol this module actually calls on it.
 try:
     import tree_sitter as _ts
     import tree_sitter_c as _tsc
@@ -29,7 +36,20 @@ try:
     import tree_sitter_rust as _tsrust
     import tree_sitter_typescript as _tsts
 
-    TREE_SITTER_AVAILABLE = True
+    # Attribute names taken from the call sites in _language_loaders() below —
+    # note typescript exposes `language_typescript`, not `language`.
+    TREE_SITTER_AVAILABLE = module_is_usable(_ts, "Language") and all(
+        module_is_usable(_grammar, _symbol)
+        for _grammar, _symbol in (
+            (_tsc, "language"),
+            (_tsgo, "language"),
+            (_tsjava, "language"),
+            (_tsjs, "language"),
+            (_tspy, "language"),
+            (_tsrust, "language"),
+            (_tsts, "language_typescript"),
+        )
+    )
 except ImportError:
     TREE_SITTER_AVAILABLE = False
 

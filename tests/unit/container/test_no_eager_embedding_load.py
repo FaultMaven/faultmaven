@@ -323,9 +323,7 @@ def test_availability_is_true_under_this_test_suite():
 def test_availability_reports_absent_when_nothing_provides_it(monkeypatch):
     """...and the flag can still say False, or it means nothing."""
     monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
-    monkeypatch.setattr(
-        model_cache_module.importlib.util, "find_spec", lambda name: None
-    )
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
 
     assert model_cache_module._sentence_transformers_obtainable() is False
 
@@ -394,9 +392,7 @@ def test_a_leftover_directory_is_not_an_installed_package(
     # sys.modules wins first (conftest installs a stand-in), so the find_spec
     # branch is unreachable until that is cleared.
     monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
-    monkeypatch.setattr(
-        model_cache_module.importlib.util, "find_spec", lambda name: spec
-    )
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: spec)
 
     assert model_cache_module._sentence_transformers_obtainable() is expect_obtainable
 

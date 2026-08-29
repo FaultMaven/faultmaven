@@ -20,16 +20,16 @@ Configuration:
 """
 
 import asyncio
-import importlib.util
 import logging
 import math
 import os
-import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from faultmaven.utils.optional_dependency import dependency_is_usable
 
 if TYPE_CHECKING:  # the real class, for type checkers only — never at runtime
     from sentence_transformers import SentenceTransformer
@@ -41,65 +41,18 @@ def _sentence_transformers_obtainable() -> bool:
     Importing sentence_transformers pulls torch in behind it (~690 MiB of RSS)
     in every process that so much as imports this module, including the cleanup
     CronJobs that never embed anything and were OOMKilled at 512Mi (#868). So
-    the question is answered by locating the package, not executing it.
+    the question is answered by locating the package, not executing it — which
+    is exactly what ``dependency_is_usable`` does, including the two subtleties
+    this module discovered and that live there now: ``sys.modules`` has to be
+    consulted first (``find_spec`` RAISES ValueError for the spec-less doubles
+    ``tests/conftest.py`` installs), and being present there is still not being
+    usable, because importing a namespace shadow succeeds.
 
-    ``sys.modules`` is consulted FIRST because ``find_spec`` raises
-    ``ValueError`` for a module whose ``__spec__`` is None, which is exactly
-    the shape of the stand-in the test suite installs (``tests/conftest.py``).
-    Asking find_spec first would report the embedding stack as *absent* for the
-    whole test session and quietly make the real-model path untestable.
-
-    But "present in sys.modules" is not the same as "obtainable", which is the
-    whole point of this function — see both branches below.
+    ``SentenceTransformer`` is the attribute because it is the one
+    ``_sentence_transformer_class`` goes on to fetch: conftest's stand-in sets
+    it, a real install has it, an empty leftover directory does not.
     """
-    imported = sys.modules.get("sentence_transformers")
-    if imported is not None:
-        # NOT an unconditional True. Importing a namespace shadow (below)
-        # SUCCEEDS and installs a module exposing nothing, so an earlier
-        # importer anywhere in the process would otherwise hand this branch the
-        # very state the rest of the function exists to reject. Ask for the one
-        # attribute the caller needs: conftest's stand-in sets it, a real
-        # install has it, an empty leftover directory does not. Free, because
-        # the module is already imported — no #868 cost.
-        return hasattr(imported, "SentenceTransformer")
-    try:
-        spec = importlib.util.find_spec("sentence_transformers")
-    except (ImportError, ValueError):
-        # A parent package that raises while being imported, or a sys.modules
-        # entry whose __spec__ is None. The second is answered above and cannot
-        # reach here; both are kept because find_spec's contract allows them.
-        return False
-
-    if spec is None:
-        return False
-
-    # ``spec is not None`` is not the question. pip and uv remove a package's
-    # FILES on uninstall but leave its DIRECTORIES, and PEP 420 resolves the
-    # leftover tree to a namespace package — find_spec returns
-    # ModuleSpec(origin=None) and reports a directory containing nothing as
-    # present. Nothing raises, so the ``except`` above cannot cover it; the
-    # discriminator has to be tested. This is not hypothetical — it is the
-    # state this repo's venv was in for ``opik`` (#1231).
-    #
-    # (Correct here because sentence_transformers is a REGULAR package. A
-    # distribution genuinely shipped as a namespace package — ``google.*``,
-    # ``zope.*`` — installs correctly and still has origin None, so this is not
-    # a rule to copy without checking which kind the dependency is.)
-    if spec.origin is None:
-        # Say which directory, or an operator cannot act: "never installed" and
-        # "shadowed by a leftover tree" are different problems with different
-        # fixes, and every downstream signal — get_bge_m3_model's generic
-        # warning, then KnowledgeBaseError out of embedding_guard — names
-        # neither. Same reason #1231's opik guard logs its __path__.
-        logging.getLogger(__name__).warning(
-            "sentence-transformers resolved to a namespace package (no module) "
-            "at %s — an empty leftover directory shadows the real package; "
-            "embedding is disabled",
-            list(spec.submodule_search_locations or ["<unknown>"]),
-        )
-        return False
-
-    return True
+    return dependency_is_usable("sentence_transformers", "SentenceTransformer")
 
 
 SENTENCE_TRANSFORMERS_AVAILABLE = _sentence_transformers_obtainable()
@@ -117,8 +70,8 @@ def _sentence_transformer_class():
     """
     global SentenceTransformer
     if SentenceTransformer is None:
-        from sentence_transformers import (  # heavy: torch loads behind it
-            SentenceTransformer as _SentenceTransformer,
+        from sentence_transformers import (
+            SentenceTransformer as _SentenceTransformer,  # heavy: torch loads behind it
         )
 
         SentenceTransformer = _SentenceTransformer

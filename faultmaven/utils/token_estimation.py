@@ -20,18 +20,27 @@ import logging
 from functools import lru_cache
 from typing import Optional
 
+from faultmaven.utils.optional_dependency import module_is_usable
+
 logger = logging.getLogger(__name__)
 
 
 # Try importing provider-specific tokenizers
+# NOT `TIKTOKEN_AVAILABLE = True`: an empty leftover `site-packages/tiktoken/`
+# tree imports cleanly as a PEP 420 namespace package (see
+# faultmaven/utils/optional_dependency.py). The flag would read True and
+# `tiktoken.encoding_for_model` would raise AttributeError instead of this
+# module taking its documented character-based fallback.
 try:
     import tiktoken
 
-    TIKTOKEN_AVAILABLE = True
+    TIKTOKEN_AVAILABLE = module_is_usable(tiktoken, "encoding_for_model")
 except ImportError:
     TIKTOKEN_AVAILABLE = False
+
+if not TIKTOKEN_AVAILABLE:
     logger.warning(
-        "tiktoken not installed - falling back to character-based estimation "
+        "tiktoken not available - falling back to character-based estimation "
         "for OpenAI/Fireworks/Anthropic"
     )
 

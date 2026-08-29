@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, Optional
 
 from faultmaven.infrastructure.base_client import BaseExternalClient
 from faultmaven.models.interfaces import ITracer
+from faultmaven.utils.optional_dependency import module_is_usable
 
 # Prometheus metrics
 try:
@@ -60,7 +61,7 @@ except ImportError:
 try:
     import opik
 
-    OPIK_AVAILABLE = getattr(opik, "__file__", None) is not None
+    OPIK_AVAILABLE = module_is_usable(opik)
     if OPIK_AVAILABLE:
         logging.debug("Opik SDK loaded successfully")
     else:
