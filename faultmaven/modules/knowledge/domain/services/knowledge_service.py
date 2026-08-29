@@ -902,9 +902,11 @@ class KnowledgeService:
         # rollback, and every failure mode — refusal, permission, TOCTOU — is
         # reported as residue rather than aborting the rest of the cleanup.
         if file_path:
-            from faultmaven.utils.runbook_id import RunbookPathEscape
+            from faultmaven.utils.runbook_id import (
+                RunbookPathEscape,
+                resolve_runbook_path,
+            )
             from faultmaven.utils.runbook_id import knowledge_root as _knowledge_root
-            from faultmaven.utils.runbook_id import resolve_runbook_path
 
             try:
                 resolved = resolve_runbook_path(
