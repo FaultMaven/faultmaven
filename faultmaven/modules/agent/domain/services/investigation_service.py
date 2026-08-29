@@ -625,8 +625,11 @@ def _carry_forward_unresolved_clarifications(
     """Clarification choices for attachments a reclassification turn left open.
 
     ``last_suggestions`` is rebuilt from scratch every turn, and a
-    reclassification turn builds no clarification of its own (it carries no
-    attachment), so the whole list collapsed to ``None``. With one failed
+    reclassification turn normally builds no clarification of its own — a
+    click carries no attachment — so the whole list collapsed to ``None``.
+    (The route permits an attachment alongside the intent, which is what
+    ``superseded_file_ids`` is for; do not read "carries no attachment" as
+    a guarantee.) With one failed
     attachment that cost nothing — the only pending question had just been
     answered. Once the emitter clarifies EVERY failure (#1222), answering
     one question deleted the others: the paste's four choices vanished from
