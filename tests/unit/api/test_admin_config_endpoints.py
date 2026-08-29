@@ -723,42 +723,92 @@ class TestGetEnvConfigStatus:
 
         assert result.features["first_party_consent_skip"].enabled is True
 
+    async def _suggestion_store_feature(
+        self, mock_admin_user, mock_settings, app, repository
+    ):
+        """Compose ``app.state.suggestion_service`` over ``repository`` and read
+        the reported feature back."""
+        from faultmaven.modules.knowledge.domain.services.suggestion_service import (
+            SuggestionService,
+        )
+
+        if repository is not None:
+            app.state.suggestion_service = SuggestionService(
+                knowledge_service=MagicMock(), suggestion_repository=repository
+            )
+
+        with patch(SETTINGS_PATCH, return_value=mock_settings):
+            result = await get_env_config_status(
+                request=_request_for(app), current_user=mock_admin_user
+            )
+        return result.features["suggestion_store_worker_safe"]
+
     @pytest.mark.asyncio
-    async def test_suggestion_store_reports_worker_safe_on_a_single_worker(
+    @pytest.mark.parametrize("workers", [1, 4])
+    async def test_the_database_backed_store_reports_safe_at_any_worker_count(
+        self, mock_admin_user, mock_settings, rate_limited_app, workers
+    ):
+        """Since #1227 the store is ``knowledge_suggestions``, so extract and
+        approve reach the same rows from any worker or pod.
+
+        Swept over WORKERS deliberately. The field used to BE
+        ``settings.server.workers <= 1``, and that proxy stopped being one the
+        moment the store could be a database: the parametrisation is what makes
+        this test fail against the old implementation rather than agree with it
+        by coincidence at ``workers == 1``.
+        """
+        from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+            DatabaseSuggestionRepository,
+        )
+
+        mock_settings.server.workers = workers
+
+        feature = await self._suggestion_store_feature(
+            mock_admin_user,
+            mock_settings,
+            rate_limited_app,
+            DatabaseSuggestionRepository(session_factory=MagicMock()),
+        )
+
+        assert feature.enabled is True
+
+    @pytest.mark.asyncio
+    async def test_the_in_memory_double_reports_unsafe_even_on_one_worker(
         self, mock_admin_user, mock_settings, rate_limited_app
     ):
-        """Knowledge suggestions live in a per-worker in-memory store (#1214),
-        so extract → approve breaks intermittently once WORKERS>1: the approve
-        can land on a worker that has never seen the suggestion and answers 404
-        for an id the API just issued.
+        """The other half of the same point: a single worker over a dict is
+        still a process that loses every pending review on restart, and
+        ``WORKERS=1`` cannot see that."""
+        from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+            InMemorySuggestionRepository,
+        )
 
-        Reported here for the same reason as the consent skip above — the only
-        other signal is a startup log line, which has rolled out of
-        ``kubectl logs`` long before anyone investigates an intermittent 404.
-        """
         mock_settings.server.workers = 1
 
-        with patch(SETTINGS_PATCH, return_value=mock_settings):
-            result = await get_env_config_status(
-                request=_request_for(rate_limited_app), current_user=mock_admin_user
-            )
+        feature = await self._suggestion_store_feature(
+            mock_admin_user,
+            mock_settings,
+            rate_limited_app,
+            InMemorySuggestionRepository(),
+        )
 
-        assert result.features["suggestion_store_worker_safe"].enabled is True
+        assert feature.enabled is False
 
     @pytest.mark.asyncio
-    async def test_suggestion_store_reports_unsafe_on_multiple_workers(
+    async def test_no_composed_suggestion_service_reports_unsafe(
         self, mock_admin_user, mock_settings, rate_limited_app
     ):
-        mock_settings.server.workers = 4
+        """Composition failed, so the suggestion routes answer 503 — reported
+        as not-safe rather than as an unqualified True, since there is no store
+        at all to be safe."""
+        mock_settings.server.workers = 1
 
-        with patch(SETTINGS_PATCH, return_value=mock_settings):
-            result = await get_env_config_status(
-                request=_request_for(rate_limited_app), current_user=mock_admin_user
-            )
+        feature = await self._suggestion_store_feature(
+            mock_admin_user, mock_settings, rate_limited_app, None
+        )
 
-        feature = result.features["suggestion_store_worker_safe"]
         assert feature.enabled is False
-        assert "WORKERS=1" in feature.config_hint
+        assert "database-backed" in feature.config_hint
 
     @pytest.mark.asyncio
     async def test_rate_limit_enabled_is_false_when_middleware_absent(
