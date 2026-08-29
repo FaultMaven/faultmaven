@@ -680,7 +680,7 @@ class _PreprocessedAttachment:
 
     Also carries classification clarification hints when the heuristic
     classifier couldn't confidently classify the attachment — see
-    ``_build_classification_clarification_suggestions``.
+    ``_build_classification_clarification``.
     """
 
     uploaded_file: UploadedFile
@@ -2062,7 +2062,7 @@ class InvestigationService:
         """Resolve a classification_failed upload by reclassifying its file.
 
         Engine-owned resolution for the classification-clarification
-        suggestions (see ``_build_classification_clarification_suggestions``):
+        suggestions (see ``_build_classification_clarification``):
         the user's click/typed choice arrives as a ``file_reclassification``
         intent carrying the UploadedFile ID and the target DataType. The
         handler re-runs preprocessing under ``user_override`` and updates the

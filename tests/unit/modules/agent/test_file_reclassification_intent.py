@@ -24,6 +24,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     _DATA_TYPE_TO_SOURCE_TYPE,
     InvestigationService,
     _build_classification_clarification,
+    _carry_forward_unresolved_clarifications,
     _PreprocessedAttachment,
     _sanitize_label_fragment,
 )
@@ -857,6 +858,81 @@ class TestRecoveryLoopSurvivesResolvingOneAttachment:
         )
         saved = await repo.get(case.case_id)
         assert self._clarified_file_ids(saved.last_suggestions) == []
+
+
+class TestCarryForwardSelection:
+    """Direct coverage of which stored entries survive a resolving turn.
+
+    The end-to-end flow above exercises the common shape; these pin the
+    selection rules themselves, including the supersede guard, which no
+    shipped path can reach today (a fresh upload always mints a new
+    file_id, and the dedup short-circuit returns
+    ``classification_failed=False``) but which keeps a future
+    file_id-reusing path from offering the same file twice.
+    """
+
+    @staticmethod
+    def _entry(file_id, data_type="documentation", intent_type=None):
+        return {
+            "label": f"Documentation ({file_id})",
+            "action_type": "DECIDE",
+            "payload": "…",
+            "body": "…",
+            "intent": {
+                "type": intent_type or IntentType.FILE_RECLASSIFICATION.value,
+                "file_id": file_id,
+                "data_type": data_type,
+            },
+        }
+
+    def test_nothing_is_carried_when_no_attachment_was_resolved(self):
+        """Scoped to the resolving turn — the set only ever shrinks, so it
+        cannot accumulate into the resolver's choice list."""
+        stored = [self._entry("file_aaaaaaaaaaaa")]
+        assert _carry_forward_unresolved_clarifications(stored, None, set()) == []
+
+    def test_the_resolved_file_is_dropped_and_the_rest_kept(self):
+        a, b = self._entry("file_aaaaaaaaaaaa"), self._entry("file_bbbbbbbbbbbb")
+        assert _carry_forward_unresolved_clarifications(
+            [a, b], "file_aaaaaaaaaaaa", set()
+        ) == [b]
+
+    def test_a_file_reoffered_this_turn_is_not_carried_twice(self):
+        a, b = self._entry("file_aaaaaaaaaaaa"), self._entry("file_bbbbbbbbbbbb")
+        assert (
+            _carry_forward_unresolved_clarifications(
+                [a, b], "file_aaaaaaaaaaaa", {"file_bbbbbbbbbbbb"}
+            )
+            == []
+        )
+
+    def test_non_clarification_intents_do_not_outlive_their_turn(self):
+        """An engine follow-up was about the turn that produced it."""
+        follow_up = self._entry(
+            "file_bbbbbbbbbbbb", intent_type=IntentType.CONFIRMATION.value
+        )
+        assert (
+            _carry_forward_unresolved_clarifications(
+                [follow_up], "file_aaaaaaaaaaaa", set()
+            )
+            == []
+        )
+
+    def test_entries_without_intent_or_file_id_are_skipped(self):
+        malformed = [
+            {"label": "no intent", "action_type": "DECIDE"},
+            {"label": "no file", "intent": {"type": "file_reclassification"}},
+        ]
+        assert (
+            _carry_forward_unresolved_clarifications(
+                malformed, "file_aaaaaaaaaaaa", set()
+            )
+            == []
+        )
+
+    def test_empty_history_is_safe(self):
+        assert _carry_forward_unresolved_clarifications(None, "file_a", set()) == []
+        assert _carry_forward_unresolved_clarifications([], "file_a", set()) == []
 
 
 class TestQueryIntentValidation:

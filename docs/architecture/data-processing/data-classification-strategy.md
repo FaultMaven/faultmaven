@@ -381,7 +381,7 @@ Every classification_failed path populates `ClassificationResult.suggested_types
 - Content: a user-facing text like `[Classification uncertain for 'foo.csv' — requesting user input] Suggested types: metrics_and_performance, unstructured_text`
 - `extraction_metadata.suggested_types`: list of candidate DataType values (as strings)
 
-The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `InvestigationService._build_classification_clarification_suggestions` injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
+The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `InvestigationService._build_classification_clarification` injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
 
 - Up to 3 pre-composed click-to-send messages, one per suggested type: *"Treat the previously uploaded file ('foo.csv') as metrics or performance data and analyze it."*
 - Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
