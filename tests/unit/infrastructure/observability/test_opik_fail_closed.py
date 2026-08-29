@@ -40,7 +40,45 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
-OPIK_INSTALLED = importlib.util.find_spec("opik") is not None
+# The symbols the probes below reach for. The question this guard answers is
+# not "is opik installed" but the stronger "will these probes work", so it is
+# asked of the API rather than of the package — a partial or drifted install
+# should skip here, not fail six tests on the first attribute access.
+_PROBE_SYMBOLS = (
+    "track",
+    "is_tracing_active",
+    "set_tracing_active",
+    "reset_tracing_to_config_default",
+)
+
+
+def _opik_probes_can_run() -> bool:
+    """True only when the real SDK, with the API the probes use, is importable.
+
+    ``find_spec("opik") is not None`` was the original guard and is not that
+    test: opik is optional (pyproject's ``[cloud]`` extra) and pip's uninstall
+    removes a package's files but leaves its directories, so a venv that once
+    had the extra keeps an empty ``site-packages/opik/`` tree that PEP 420
+    resolves to a namespace package — spec found, ``import opik`` succeeds,
+    none of the SDK there. The probes then ran instead of skipping and died on
+    ``AttributeError: module 'opik' has no attribute 'is_tracing_active'``.
+
+    The spec check comes first and is import-free, so the common
+    not-installed case costs nothing and no import happens on a shadow. Only a
+    real distribution is imported — which every non-skipped test here does
+    anyway, six times over, in its own subprocess.
+    """
+    spec = importlib.util.find_spec("opik")
+    if spec is None or spec.origin is None:  # absent, or a namespace shadow
+        return False
+    try:
+        import opik
+    except ImportError:
+        return False
+    return all(hasattr(opik, name) for name in _PROBE_SYMBOLS)
+
+
+OPIK_INSTALLED = _opik_probes_can_run()
 
 # Env keys that would change what the probe observes if inherited from the
 # developer's shell or CI. Removed from every probe env, then selectively

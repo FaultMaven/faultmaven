@@ -27,10 +27,19 @@ def restore_opik_sdk_state():
     try:
         import opik
 
-        previous_active = opik.is_tracing_active()
+        # ``import opik`` succeeding is not proof the SDK is there: an empty
+        # leftover directory imports as a namespace package exposing nothing
+        # (see infrastructure/observability/tracing.py for why that happens).
+        # Test the discriminator rather than catching AttributeError off the
+        # call below — a broad catch would also swallow a genuine SDK API
+        # change and, by setting ``opik = None``, silently disable the teardown
+        # this fixture exists to perform.
+        if getattr(opik, "__file__", None) is None:
+            opik = None
     except ImportError:
         opik = None
-        previous_active = None
+
+    previous_active = opik.is_tracing_active() if opik is not None else None
 
     yield
 

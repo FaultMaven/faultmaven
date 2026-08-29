@@ -46,11 +46,33 @@ except ImportError:
     logging.warning("Prometheus client not available")
 
 # Comet Opik tracing
+#
+# A bare ``import opik`` succeeding is not proof the SDK is installed. Opik is
+# optional (pyproject's ``[cloud]`` extra) and pip's uninstall removes a
+# package's files but leaves its directories, so an environment that once had
+# the extra keeps an empty ``site-packages/opik/`` tree — which PEP 420
+# imports as a namespace package exposing none of the SDK. Trusting the import
+# alone makes init_opik_tracing log "initialized" and health_check report
+# ``opik_sdk_available: True`` against nothing. The sites that additionally
+# from-import a symbol (llm/router.py, preprocessing/classifier.py,
+# shims/observability.py) already fail correctly; the bare-import sites are
+# the ones that need the check. A namespace package has ``__file__ is None``.
 try:
     import opik
 
-    OPIK_AVAILABLE = True
-    logging.debug("Opik SDK loaded successfully")
+    OPIK_AVAILABLE = getattr(opik, "__file__", None) is not None
+    if OPIK_AVAILABLE:
+        logging.debug("Opik SDK loaded successfully")
+    else:
+        # Name the observation, not a presumed cause, and print the path —
+        # it is the only thing that tells an operator which directory to
+        # remove. An empty leftover tree is the common source but not the
+        # only way a namespace package resolves.
+        logging.warning(
+            "Comet Opik not available: 'opik' resolved to a namespace package "
+            "(no SDK) at %s",
+            list(getattr(opik, "__path__", []) or ["<unknown>"]),
+        )
 except ImportError:
     OPIK_AVAILABLE = False
     logging.warning("Comet Opik not available")

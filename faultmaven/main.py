@@ -227,8 +227,18 @@ from .modules.report.api.routes import router as report_router
 # SessionManager now handled via DI container - services.session.SessionService
 
 # Optional Opik middleware import
+#
+# The ``__file__`` test is the same guard, for the same reason, as the one in
+# infrastructure/observability/tracing.py — see the comment there. Here it
+# decides only what gets logged: without it this reports "Opik SDK available
+# but middleware not found" instead of "Opik not available". (The
+# OpikMiddleware import below is a from-import and already fails correctly, so
+# the middleware itself was never at risk.)
 try:
     import opik
+
+    if getattr(opik, "__file__", None) is None:
+        raise ImportError("'opik' resolved to a namespace package, not the SDK")
 
     OPIK_AVAILABLE = True
 
@@ -241,10 +251,13 @@ try:
         logger.debug(
             "Opik middleware class not available, tracing will work without middleware"
         )
-except ImportError:
+except ImportError as exc:
     OPIK_AVAILABLE = False
     OPIK_MIDDLEWARE_AVAILABLE = False
-    logger.info("Opik not available, running without tracing")
+    # Carry the reason: "not installed" and "shadowed by a namespace package"
+    # are different operator problems and this is the only line that names
+    # which one happened.
+    logger.info("Opik not available, running without tracing (%s)", exc)
 
 
 async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -> None:
