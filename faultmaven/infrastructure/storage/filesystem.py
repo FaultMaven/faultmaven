@@ -72,9 +72,10 @@ class FilesystemStorageBackend(IFileStorageBackend):
     def _get_full_path(self, key: str) -> Path:
         """Resolve ``key`` to a path, refusing anything outside the root.
 
-        Every filesystem operation in this backend goes through here first, and
-        acts on the **resolved** path this returns — so containment is checked
-        once, before the first ``makedirs``/``open``/``remove``, not after.
+        Every filesystem operation in this backend goes through here first, so
+        containment is checked once, before the first
+        ``makedirs``/``open``/``remove``, and never after. What it hands back is
+        the unresolved join — see below, that distinction is load-bearing.
 
         This used to be a denylist (``".." in key or key.startswith("/")``).
         Two properties the allowlist has that it did not (#1235):
