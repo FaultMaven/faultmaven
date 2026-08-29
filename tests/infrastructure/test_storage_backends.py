@@ -214,11 +214,17 @@ class TestFilesystemStorageBackend:
 
     @pytest.mark.asyncio
     async def test_path_traversal_prevention(self, filesystem_backend):
-        """Test that path traversal attacks are prevented."""
-        with pytest.raises(ValueError, match="Invalid storage key"):
+        """The two shapes the old denylist caught are still caught.
+
+        The message changed in #1235 (the guard is now root-anchored
+        containment, not a substring check) but the *type* did not:
+        ``PathEscape`` subclasses ``ValueError``, which is what every caller
+        of this backend was already written against.
+        """
+        with pytest.raises(ValueError, match="outside the storage tree"):
             await filesystem_backend.store_file("../../../etc/passwd", b"malicious")
 
-        with pytest.raises(ValueError, match="Invalid storage key"):
+        with pytest.raises(ValueError, match="outside the storage tree"):
             await filesystem_backend.store_file("/absolute/path", b"malicious")
 
     def test_storage_type(self, filesystem_backend):
@@ -226,6 +232,222 @@ class TestFilesystemStorageBackend:
         from faultmaven.infrastructure.storage.base import StorageType
 
         assert filesystem_backend.get_storage_type() == StorageType.FILESYSTEM
+
+
+# =============================================================================
+# Filesystem Backend Containment (#1235)
+# =============================================================================
+
+
+class TestFilesystemPathContainment:
+    """The backend refuses any key that RESOLVES outside the storage root.
+
+    Until #1235 the guard was a denylist — ``".." in key or
+    key.startswith("/")``. These tests are written against the property that
+    denylist did not have: a key can contain neither marker and still land
+    outside the root, because a substring check does not resolve symlinks.
+
+    Severity note, so nobody reads more into this than is there: no known key
+    reaches the backend from user input (``storage_key`` is minted by
+    ``FileStorageService._generate_storage_key``). This is defense in depth and
+    one containment discipline across subsystems, not a live traversal.
+    """
+
+    @pytest.fixture
+    def outside_dir(self, tmp_path):
+        """A directory that is definitively NOT under the storage root."""
+        outside = tmp_path / "outside_the_root"
+        outside.mkdir()
+        return outside
+
+    @staticmethod
+    def _backend(storage_root):
+        from faultmaven.infrastructure.storage.filesystem import (
+            FilesystemStorageBackend,
+        )
+
+        return FilesystemStorageBackend(
+            storage_root=str(storage_root),
+            base_url="http://localhost:8090",
+        )
+
+    # -- The decisive case: a key the old denylist admitted ------------------
+
+    @pytest.mark.asyncio
+    async def test_store_through_directory_symlink_is_refused(
+        self, temp_storage_dir, outside_dir
+    ):
+        """A key with no ``..`` and no leading ``/`` that still escapes.
+
+        ``linked -> <outside>`` inside the root. The key ``linked/evidence.log``
+        passes every denylist predicate and resolves to
+        ``<outside>/evidence.log``. This is the test that fails on the denylist
+        and passes on the allowlist.
+        """
+        (Path(temp_storage_dir) / "linked").symlink_to(
+            outside_dir, target_is_directory=True
+        )
+        key = "linked/evidence.log"
+
+        # Precondition: the OLD guard would have admitted this key.
+        assert ".." not in key
+        assert not key.startswith("/")
+
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(ValueError, match="outside the storage tree"):
+            await backend.store_file(key, b"escaped payload")
+
+        # And nothing was written through the link.
+        assert not (outside_dir / "evidence.log").exists()
+        assert list(outside_dir.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_read_through_file_symlink_is_refused(
+        self, temp_storage_dir, outside_dir
+    ):
+        """The read side escapes the same way — exfiltration, not just write."""
+        secret = outside_dir / "secret.txt"
+        secret.write_text("private")
+        (Path(temp_storage_dir) / "peek.txt").symlink_to(secret)
+
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(ValueError, match="outside the storage tree"):
+            await backend.retrieve_file("peek.txt")
+
+    @pytest.mark.asyncio
+    async def test_delete_through_file_symlink_is_refused(
+        self, temp_storage_dir, outside_dir
+    ):
+        """And the destructive side: unlink must not follow a link out."""
+        victim = outside_dir / "victim.txt"
+        victim.write_text("do not delete me")
+        (Path(temp_storage_dir) / "victim-link.txt").symlink_to(victim)
+
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(ValueError, match="outside the storage tree"):
+            await backend.delete_file("victim-link.txt")
+
+        assert victim.exists()
+
+    # -- Validation precedes creation ----------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_refused_key_creates_no_directories(self, temp_storage_dir):
+        """A refused write leaves nothing on disk — not even a directory.
+
+        ``mkdir(parents=True)`` on an escaped path materialises
+        attacker-chosen directories outside the tree whatever the write then
+        does; that was the second half of #1215's round-1 defect. Containment
+        must therefore be checked BEFORE ``makedirs``, which is why
+        ``_get_full_path`` is the first statement in ``store_file``.
+        """
+        root = Path(temp_storage_dir) / "root"
+        root.mkdir()
+        backend = self._backend(root)
+
+        with pytest.raises(ValueError, match="outside the storage tree"):
+            await backend.store_file("../sibling/deep/nested/f.txt", b"x")
+
+        assert not (Path(temp_storage_dir) / "sibling").exists()
+        assert list(root.iterdir()) == []
+
+    # -- The shapes the denylist already caught, still caught -----------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "../escape.txt",
+            "../../../etc/passwd",
+            "a/../../escape.txt",
+            "/etc/passwd",
+        ],
+    )
+    async def test_textual_traversal_still_refused(self, temp_storage_dir, key):
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(ValueError, match="outside the storage tree"):
+            await backend.store_file(key, b"malicious")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["", ".", "./"])
+    async def test_key_resolving_to_the_root_itself_is_refused(
+        self, temp_storage_dir, key
+    ):
+        """Strictly inside, so the root is refused too.
+
+        Deliberate behaviour change: an empty key used to return the root and
+        fail later with ``IsADirectoryError``. It now fails at the guard, where
+        the message names the key.
+        """
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(ValueError, match="outside the storage tree"):
+            await backend.store_file(key, b"x")
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_key_is_refused_not_raised_raw(self, temp_storage_dir):
+        """An embedded NUL makes ``resolve()`` raise; it must arrive typed."""
+        from faultmaven.utils.path_containment import PathEscape
+
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(PathEscape, match="unresolvable storage key"):
+            await backend.store_file("evidence\x00.log", b"x")
+
+    # -- No regression on ordinary keys ---------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_ordinary_nested_key_round_trips(self, temp_storage_dir):
+        """The shape ``_generate_storage_key`` actually mints."""
+        backend = self._backend(temp_storage_dir)
+        key = "org_abc/case_123/2026-08-29/deadbeef1234_app.log"
+
+        stored = await backend.store_file(key, b"log line", content_type="text/plain")
+
+        assert stored.key == key
+        assert await backend.retrieve_file(key) == b"log line"
+        assert await backend.file_exists(key)
+        assert key in await backend.list_keys()
+        assert (Path(temp_storage_dir) / key).is_file()
+        assert await backend.delete_file(key)
+
+    @pytest.mark.asyncio
+    async def test_sidecar_suffix_key_round_trips(self, temp_storage_dir):
+        """``{storage_key}.sidecar.json`` — the orphan-tracking companion."""
+        backend = self._backend(temp_storage_dir)
+        key = "org_abc/case_123/blob.bin.sidecar.json"
+
+        await backend.store_file(key, b"{}")
+
+        assert await backend.retrieve_file(key) == b"{}"
+
+    @pytest.mark.asyncio
+    async def test_relative_storage_root_still_contains(self, tmp_path, monkeypatch):
+        """The default root (``./data/storage``) is relative.
+
+        Both root and candidate resolve against the same cwd, so containment
+        holds — but a guard that resolved only one of them would not, and the
+        shipped default takes this path.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "outside").mkdir()
+        (tmp_path / "data" / "storage").mkdir(parents=True)
+        (tmp_path / "data" / "storage" / "linked").symlink_to(
+            tmp_path / "outside", target_is_directory=True
+        )
+
+        backend = self._backend("./data/storage")
+
+        await backend.store_file("ok/file.txt", b"fine")
+        assert (tmp_path / "data" / "storage" / "ok" / "file.txt").is_file()
+
+        with pytest.raises(ValueError, match="outside the storage tree"):
+            await backend.store_file("linked/escaped.txt", b"escaped")
+        assert list((tmp_path / "outside").iterdir()) == []
 
 
 # =============================================================================
