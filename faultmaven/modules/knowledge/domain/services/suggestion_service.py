@@ -208,11 +208,11 @@ corrected runbook, starting at the opening `---`, and output nothing else.
     #:
     #: Sized for a review inbox, not a corpus: the queue is admin-facing and
     #: drained by hand, so a few hundred is already far past what anyone reviews.
+    #:
+    #: Renamed from ``MAX_STORED_SUGGESTIONS``: it no longer counts what is
+    #: stored. No alias is kept — nothing outside this class ever read it, and
+    #: a name that describes the wrong quantity is worse than a rename.
     MAX_UNREVIEWED_SUGGESTIONS = 500
-
-    #: Retired spelling of :attr:`MAX_UNREVIEWED_SUGGESTIONS`. Kept as an alias
-    #: because the old name said "stored", which is no longer what is counted.
-    MAX_STORED_SUGGESTIONS = MAX_UNREVIEWED_SUGGESTIONS
 
     def __init__(
         self,
@@ -220,7 +220,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         knowledge_service: Optional[Any] = None,
         sanitizer: Optional[Any] = None,
         llm_provider: Optional[Any] = None,
-        max_stored_suggestions: Optional[int] = None,
+        max_unreviewed_suggestions: Optional[int] = None,
         max_extraction_attempts: Optional[int] = None,
         suggestion_repository: Optional[ISuggestionRepository] = None,
     ):
@@ -231,7 +231,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             knowledge_service: Service for creating knowledge items
             sanitizer: ISanitizer for PII detection/redaction
             llm_provider: LLM provider for extraction
-            max_stored_suggestions: Cap on how many UNREVIEWED suggestions one
+            max_unreviewed_suggestions: Cap on how many UNREVIEWED suggestions one
                 organization may have queued; defaults to
                 :attr:`MAX_UNREVIEWED_SUGGESTIONS`. Injectable so a test can
                 drive the refusal without minting hundreds of suggestions.
@@ -261,10 +261,10 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         self._knowledge_service = knowledge_service
         self._sanitizer = sanitizer
         self._llm_provider = llm_provider
-        self._max_stored_suggestions = (
-            self.MAX_STORED_SUGGESTIONS
-            if max_stored_suggestions is None
-            else max_stored_suggestions
+        self._max_unreviewed_suggestions = (
+            self.MAX_UNREVIEWED_SUGGESTIONS
+            if max_unreviewed_suggestions is None
+            else max_unreviewed_suggestions
         )
         self._max_extraction_attempts = max(
             1,
@@ -494,7 +494,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                 full. The route answers 503, which is honest — the queue is full
                 and the fix is to review it.
         """
-        capacity = self._max_stored_suggestions
+        capacity = self._max_unreviewed_suggestions
         if capacity <= 0:
             return
         unreviewed = await self._repository.count_for_organization(

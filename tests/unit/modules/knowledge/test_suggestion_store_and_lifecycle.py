@@ -88,7 +88,7 @@ def _suggestion(
 def _service(capacity: int = 3) -> SuggestionService:
     return SuggestionService(
         knowledge_service=MagicMock(),
-        max_stored_suggestions=capacity,
+        max_unreviewed_suggestions=capacity,
         suggestion_repository=InMemorySuggestionRepository(),
     )
 

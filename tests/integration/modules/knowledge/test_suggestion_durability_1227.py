@@ -168,7 +168,7 @@ def _service(session_factory, *, capacity: Optional[int] = None) -> SuggestionSe
         knowledge_service=None,
         sanitizer=None,
         llm_provider=None,
-        max_stored_suggestions=capacity,
+        max_unreviewed_suggestions=capacity,
         suggestion_repository=DatabaseSuggestionRepository(session_factory),
     )
 

@@ -566,7 +566,7 @@ class TestAFullReviewInboxRefusesHonestly:
         self, wired
     ):
         client, _app, _knowledge, suggestion_service = wired
-        suggestion_service._max_stored_suggestions = 1
+        suggestion_service._max_unreviewed_suggestions = 1
         _extract(client)  # fills the single slot with a PENDING_REVIEW entry
 
         resp = client.post(f"/cases/{CASE_ID}/extract-knowledge", json={})
