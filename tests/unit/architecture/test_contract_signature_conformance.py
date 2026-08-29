@@ -505,6 +505,7 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     from faultmaven.modules.knowledge.contracts import (
         IConversionService,
         IKnowledgeService,
+        ISuggestionRepository,
         ISuggestionService,
     )
     from faultmaven.modules.knowledge.domain.services.conversion_service import (
@@ -515,6 +516,10 @@ def _build_registry() -> Dict[str, RegistryEntry]:
     )
     from faultmaven.modules.knowledge.domain.services.suggestion_service import (
         SuggestionService,
+    )
+    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+        DatabaseSuggestionRepository,
+        InMemorySuggestionRepository,
     )
 
     entries = (
@@ -552,6 +557,16 @@ def _build_registry() -> Dict[str, RegistryEntry]:
         RegistryEntry(interface=IKnowledgeService, reals=(KnowledgeService,)),
         RegistryEntry(interface=IConversionService, reals=(ConversionService,)),
         RegistryEntry(interface=ISuggestionService, reals=(SuggestionService,)),
+        # Both implementations, deliberately (#1227): the in-memory one is a
+        # test double AND the no-database fallback, and the whole reason it can
+        # stand in for the database one is that they agree on the interface —
+        # including the detached-copy and optimistic-locking semantics the
+        # contract spells out. A double that drifted from the real repository
+        # would let the service pass unit tests it would fail in production.
+        RegistryEntry(
+            interface=ISuggestionRepository,
+            reals=(DatabaseSuggestionRepository, InMemorySuggestionRepository),
+        ),
         RegistryEntry(
             interface=IUserRepository,
             reals=(
