@@ -399,11 +399,16 @@ class TestConversionLiveCaseUniquenessMigration:
                     (cid, f"file_{cid}", created),
                 )
                 conn.execute(
+                    # ``runbook_id`` is per-draft, not the shared literal it
+                    # used to be: since 045 two LIVE drafts in one org may not
+                    # share one, and this fixture's two drafts are both live.
+                    # Nothing in this test's subject (``live_case_id``) depends
+                    # on the value.
                     "INSERT INTO conversion_drafts "
                     "(id, organization_id, conversion_id, runbook_id, title, "
                     "file_path, status, source_type) "
-                    "VALUES (?, 'org-1', ?, 'rb', 'T', '/x.md', 'draft', 'case')",
-                    (f"{cid}_d", cid),
+                    "VALUES (?, 'org-1', ?, ?, 'T', '/x.md', 'draft', 'case')",
+                    (f"{cid}_d", cid, f"rb-{cid}"),
                 )
             conn.commit()
         finally:

@@ -1273,7 +1273,12 @@ class ConversionService:
                 )
                 session.add(draft_model)
 
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                await self._raise_if_runbook_id_taken(org_id, drafts)
+                raise
 
         # Team publish target: record it as a share row on the conversion_job
         # (source of truth, ADR-013 §D4). On verify, it is transferred to the
@@ -1288,6 +1293,62 @@ class ConversionService:
                 organization_id=org_id,
                 created_by=user_id,
             )
+
+    async def _raise_if_runbook_id_taken(
+        self, org_id: str, drafts: List[ConversionDraft]
+    ) -> None:
+        """Translate the 045 unique-index violation into a 409, or return.
+
+        ``uq_conversion_drafts_org_runbook_id`` (migration 045) admits one LIVE
+        draft per ``(organization_id, runbook_id)``. Two drafts reaching the
+        same id is ordinary — ``runbook_id_from_parts`` is deterministic on
+        ``(service, title)``, deliberately, because the disk scan reconciles a
+        file to its row by that id — so a user converting the same source
+        twice, or two cases about the same failure, lands here. Without this
+        the whole commit surfaces as an unhandled ``IntegrityError``, i.e. a
+        500 that says nothing.
+
+        Classification is by a **confirming re-read**, never by matching the
+        exception's message: the same commit also carries
+        ``uq_conversion_jobs_live_case_id``, whose violation
+        ``convert_from_case`` already handles by returning the winner's
+        conversion. If the re-read does not positively find a live draft
+        holding one of these ids, this returns and the caller re-raises the
+        original — so that path is untouched.
+
+        The re-read uses its own session because the failed commit poisoned the
+        caller's transaction.
+
+        Two drafts in ONE job colliding with each other is not covered: nothing
+        committed, so there is nothing to re-read. That needs the LLM to emit
+        two identical ``(service, title)`` pairs in one analysis, and the fix
+        belongs where the duplicate is produced rather than here.
+        """
+        if not self._db_session_factory:
+            return
+        ids = [d.runbook_id for d in drafts if d.runbook_id]
+        if not ids:
+            return
+        async with self._db_session_factory() as probe:
+            result = await probe.execute(
+                select(ConversionDraftModel.runbook_id, ConversionDraftModel.id)
+                .where(ConversionDraftModel.organization_id == org_id)
+                .where(ConversionDraftModel.runbook_id.in_(ids))
+                .where(ConversionDraftModel.status != "discarded")
+                .limit(1)
+            )
+            taken = result.first()
+        if not taken:
+            return
+        runbook_id, existing_draft_id = taken
+        raise ConflictError(
+            f"A runbook draft with id '{runbook_id}' already exists in this "
+            "organization. Discard or verify the existing draft before "
+            "creating another with the same service and title.",
+            resource_type="conversion_draft",
+            resource_id=existing_draft_id,
+            conflict_reason="duplicate_runbook_id",
+        )
 
     async def _resolve_job_team_id(self, conversion_id: str) -> Optional[str]:
         """Return the team a conversion job is shared to, or None.
@@ -2613,33 +2674,52 @@ status: draft
             else:
                 tags_list = None
 
-            # Persist as a synthetic conversion job
+            # Persist as a synthetic conversion job.
+            #
+            # A ``ConflictError`` here means another live draft in this tenant
+            # already holds this file's ``runbook_id`` (migration 045) — two
+            # on-disk runbooks carrying the same frontmatter ``id``. The scan
+            # SKIPS what it cannot take, the way it does for a path it cannot
+            # contain: one unmintable file must not abort the walk over the
+            # rest, and the operator needs the filename to fix it.
             conversion_id = generate_conversion_id()
-            await self._persist_job(
-                conversion_id=conversion_id,
-                user_id=user_id,
-                organization_id=organization_id,
-                scope=scope,
-                team_id=None,
-                status=ConversionStatus.COMPLETED,
-                source_file=SourceFileInfo(
-                    filename=md_file.name,
-                    size_bytes=md_file.stat().st_size,
-                    content_type="text/markdown",
-                    retained_path=str(md_file),
-                ),
-                analysis=AnalysisResult(
-                    is_actionable=True,
-                    failure_modes=[],
-                    source_assessment=SourceAssessment(
-                        content_type="file_scan",
-                        actionability_rating="unknown",
-                        missing_information=[],
+            try:
+                await self._persist_job(
+                    conversion_id=conversion_id,
+                    user_id=user_id,
+                    organization_id=organization_id,
+                    scope=scope,
+                    team_id=None,
+                    status=ConversionStatus.COMPLETED,
+                    source_file=SourceFileInfo(
+                        filename=md_file.name,
+                        size_bytes=md_file.stat().st_size,
+                        content_type="text/markdown",
+                        retained_path=str(md_file),
                     ),
-                ),
-                drafts=[draft],
-                created_at=datetime.now(timezone.utc),
-            )
+                    analysis=AnalysisResult(
+                        is_actionable=True,
+                        failure_modes=[],
+                        source_assessment=SourceAssessment(
+                            content_type="file_scan",
+                            actionability_rating="unknown",
+                            missing_information=[],
+                        ),
+                    ),
+                    drafts=[draft],
+                    created_at=datetime.now(timezone.utc),
+                )
+            except ConflictError as exc:
+                logger.warning(
+                    "skipping a scanned runbook whose id is already taken: %s (%s)",
+                    md_file.name,
+                    exc,
+                )
+                errors.append(
+                    f"{md_file.name}: runbook id {runbook_id!r} is already held "
+                    f"by another live draft in this organization"
+                )
+                continue
 
             # Set metadata columns on the draft record
             if self._db_session_factory:
