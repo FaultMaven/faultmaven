@@ -321,6 +321,10 @@ class TestTheTerminalShortCircuit:
         # construction the lifecycle-invariant tests use).
         object.__setattr__(case, "state", CaseState.CLOSED)
         object.__setattr__(case, "closed_at", datetime.now(UTC))
+        # A CLOSED case that would survive re-validation, so the carve-out
+        # below is pinned by the ENGINE declining to write the counter — not by
+        # a write blowing up on a half-built model.
+        object.__setattr__(case, "closure_reason", "abandoned")
         return case
 
     async def test_the_report_reaches_the_terminal_path(self):
