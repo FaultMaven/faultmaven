@@ -1634,12 +1634,17 @@ def _build_evidence_context(
     :mod:`.fence` for why fencing, and not escaping or sanitising, is the only
     mechanism compatible with byte-verbatim evidence.
 
-    ``fence`` is the PROMPT's fence when this block is one part of a whole
-    assembly — :func:`build_investigation_context` mints one token and shares
-    it across ``<problem_context>``, ``<entity_highlights>`` and this block, so
-    a single declaration governs them all (#1228). Omitting it renders the
-    block as an assembly of its own, with a token minted for it alone; the
-    collision corpus is then this block's channels rather than the prompt's.
+    ``fence`` is the PROMPT's fence, and on the production path it is always
+    supplied: :func:`build_investigation_context` mints one token and shares it
+    across ``<problem_context>``, ``<entity_highlights>`` and this block, so a
+    single declaration governs them all (#1228).
+
+    Omitting it renders the block as an assembly of ITS OWN, with a token
+    minted for it alone and a collision corpus limited to this block's
+    channels. Note what a standalone render does NOT have: a declaration. The
+    declaration is a property of a whole prompt — exactly one, above the first
+    fenced block — and a bare evidence block is not a prompt. That is why
+    nothing on the production path calls this without a fence.
     """
     if fence is not None:
         return _render_evidence_block(
@@ -1819,10 +1824,12 @@ def _render_evidence_block(
     da_index_only = processing_mode == "directed_analysis" and tools_available
 
     result = _open_evidence_collected(fence)
-    # The envelope + fence declaration are ~280 chars of the block's budget and
-    # used to be spent without being counted. ``first_item_rendered`` carries
-    # the "nothing has been emitted yet" question that ``total_chars == 0`` used
-    # to answer, so the current-turn floor still guarantees the first upload a
+    # The fenced envelope is ~55 chars of the block's budget (it was ~280 while
+    # the fence declaration was emitted here; since #1228 the declaration is a
+    # per-PROMPT line above <problem_context>, not a per-block one) and used to
+    # be spent without being counted. ``first_item_rendered`` carries the
+    # "nothing has been emitted yet" question that ``total_chars == 0`` used to
+    # answer, so the current-turn floor still guarantees the first upload a
     # full render (INV-EC-1) now that the counter no longer starts at zero.
     total_chars = len(result)
     first_item_rendered = False
