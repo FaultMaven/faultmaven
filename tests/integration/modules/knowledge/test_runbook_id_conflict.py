@@ -155,6 +155,35 @@ class TestTheIndexBitesThroughTheService:
 
         assert await _live_draft_count(session_factory, runbook_id) == 1
 
+    async def test_the_refused_create_does_not_clobber_the_existing_file(
+        self, service, tmp_path
+    ):
+        """A 409 must mean nothing happened.
+
+        The draft file is named after ``runbook_id``, so the second create
+        resolves to the SAME path. Writing first and rejecting at the INSERT
+        would leave the first draft's row pointing at the second author's
+        content — a worse state than the duplicate rows this index removes.
+        """
+        first = await service.create_runbook_from_template(
+            title="Connection Pool Exhausted",
+            service_name="checkout-api",
+            **TEMPLATE_ARGS,
+        )
+        path = Path(first["draft"].file_path)
+        before = path.read_text(encoding="utf-8")
+        assert "Connection Pool Exhausted" in before
+
+        with pytest.raises(ConflictError):
+            await service.create_runbook_from_template(
+                title="Connection Pool Exhausted",
+                service_name="checkout-api",
+                **{**TEMPLATE_ARGS, "prevention": "A DIFFERENT PREVENTION SECTION"},
+            )
+
+        assert path.read_text(encoding="utf-8") == before
+        assert "A DIFFERENT PREVENTION SECTION" not in path.read_text(encoding="utf-8")
+
     async def test_a_punctuation_only_title_no_longer_collides_at_all(
         self, service, session_factory
     ):

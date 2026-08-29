@@ -1277,7 +1277,9 @@ class ConversionService:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
-                await self._raise_if_runbook_id_taken(org_id, drafts)
+                await self._raise_if_runbook_id_taken(
+                    org_id, [d.runbook_id for d in drafts]
+                )
                 raise
 
         # Team publish target: record it as a share row on the conversion_job
@@ -1295,7 +1297,7 @@ class ConversionService:
             )
 
     async def _raise_if_runbook_id_taken(
-        self, org_id: str, drafts: List[ConversionDraft]
+        self, org_id: str, runbook_ids: List[Optional[str]]
     ) -> None:
         """Translate the 045 unique-index violation into a 409, or return.
 
@@ -1319,6 +1321,14 @@ class ConversionService:
         The re-read uses its own session because the failed commit poisoned the
         caller's transaction.
 
+        ``create_runbook_from_template`` also calls this BEFORE it writes,
+        because it names the file after the id: a second runbook with the same
+        service and title resolves to the same path and would overwrite the
+        first one's content on its way to a rejected INSERT. Checking first
+        makes the ordinary duplicate a clean 409 that touched nothing; the
+        index remains the backstop for the genuine race, which is what an index
+        is for.
+
         Two drafts in ONE job colliding with each other is not covered: nothing
         committed, so there is nothing to re-read. That needs the LLM to emit
         two identical ``(service, title)`` pairs in one analysis, and the fix
@@ -1326,7 +1336,7 @@ class ConversionService:
         """
         if not self._db_session_factory:
             return
-        ids = [d.runbook_id for d in drafts if d.runbook_id]
+        ids = [rid for rid in runbook_ids if rid]
         if not ids:
             return
         async with self._db_session_factory() as probe:
@@ -2173,6 +2183,13 @@ class ConversionService:
         # path's ``generate_runbook_id`` (#1213 follow-up); the inline copy this
         # replaces was byte-identical, which a differential test pins.
         runbook_id = runbook_id_from_parts(service_name, title)
+
+        # BEFORE the write: the draft file is named after ``runbook_id``, so a
+        # duplicate would overwrite the existing runbook's content on its way
+        # to an INSERT that 045 rejects. See ``_raise_if_runbook_id_taken``.
+        await self._raise_if_runbook_id_taken(
+            writable_org_id(organization_id), [runbook_id]
+        )
 
         symptom_str = ", ".join(symptom_class)
         tags_str = ", ".join(tags) if tags else ""
