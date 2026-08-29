@@ -9739,7 +9739,10 @@ class MilestoneEngine:
                 ).strip()
             elif action == "retire":
                 hypothesis.state = HypothesisState.RETIRED
-                hypothesis.retirement_reason = user_message or "User retired"
+                # Bounded at the write, not left to the field validator: this is
+                # the user's own message, and letting an over-long one raise here
+                # would turn a retire intent into a failed turn.
+                hypothesis.retirement_reason = (user_message or "User retired")[:200]
                 hypothesis.last_updated_turn = case.current_turn
 
             metadata["hypothesis_action_applied"] = True
@@ -12644,7 +12647,7 @@ class MilestoneEngine:
                 and case.hypotheses[hid].root_node_id not in count_held
             ]
             retired = self.hypothesis_manager.force_alternative_generation(
-                targets, active_hypotheses, case.current_turn
+                targets, active_hypotheses, case.current_turn, case
             )
             # Record that the intervention fired THIS turn — drives the cooldown
             # regardless of how many hypotheses were eligible to retire.
