@@ -79,12 +79,13 @@ class FilesystemStorageBackend(IFileStorageBackend):
         This used to be a denylist (``".." in key or key.startswith("/")``).
         Two properties the allowlist has that it did not (#1235):
 
-        - A substring check does not resolve symlinks. A key of
-          ``linked/evidence.log`` where ``linked -> /etc`` contains no ``..``
-          and does not start with ``/``, so the denylist admitted it and the
-          write landed in ``/etc``. ``resolve()`` + ``is_relative_to`` refuses
-          it, because containment is about where a path *lands*, not what it is
-          named.
+        - A substring check does not resolve symlinks. Given a symlink
+          ``linked`` inside the root pointing anywhere outside it, the key
+          ``linked/evidence.log`` contains no ``..`` and does not start with
+          ``/`` — the denylist admitted it and the write landed outside the
+          root (measured; see the tests). ``resolve()`` + ``is_relative_to``
+          refuses it, because containment is about where a path *lands*, not
+          what it is named.
         - It couples "safe" to the positive property "the resolved path is
           inside the root" rather than to the absence of two textual markers,
           which is the invariant that can actually be asserted.
