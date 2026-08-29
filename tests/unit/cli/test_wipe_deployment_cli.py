@@ -871,6 +871,45 @@ async def test_a_partial_object_sweep_reports_what_it_deleted(monkeypatch):
     assert error and "AccessDenied" in error
 
 
+async def test_one_refused_key_does_not_end_the_sweep(monkeypatch):
+    """A wipe is a bulk operation; one unreachable object is residue, not a
+    reason to abandon the rest.
+
+    The filesystem backend refuses a key whose resolved path leaves the storage
+    root (#1235), and ``list_keys`` can hand us exactly such a key: ``rglob``
+    yields a file symlink inside the root and ``is_file()`` follows it, so a
+    link pointing outside is listed and then refused. Before the per-key guard
+    the raise ended the loop, so ``c`` here was never attempted, ``--wipe``
+    reported partial, and ``--verify`` then exited 5 with no way to finish
+    through the tool.
+    """
+
+    attempted = []
+
+    class _Backend:
+        async def list_keys(self, prefix=""):
+            return ["a", "escapes-the-root", "c"]
+
+        async def delete_file(self, key):
+            attempted.append(key)
+            if key == "escapes-the-root":
+                from faultmaven.utils.path_containment import PathEscape
+
+                raise PathEscape("Invalid storage key: 'escapes-the-root'")
+            return True
+
+    monkeypatch.setattr(
+        "faultmaven.infrastructure.storage.factory.get_storage_backend",
+        lambda *a, **k: _Backend(),
+    )
+
+    deleted, error = await wd.wipe_objects()
+
+    assert attempted == ["a", "escapes-the-root", "c"], "the sweep stopped early"
+    assert deleted == 2, "every deletable object should be gone"
+    assert error and "escapes-the-root" in error, "the residue must be named"
+
+
 # ---------------------------------------------------------------------------
 # Preflight failure modes (#6) and wipe-time target disclosure (#7)
 # ---------------------------------------------------------------------------

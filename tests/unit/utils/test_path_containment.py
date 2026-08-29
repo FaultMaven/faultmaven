@@ -153,9 +153,27 @@ class TestUnresolvable:
         assert "unresolvable test root" in str(exc.value)
         assert "innocent.txt" not in str(exc.value)
 
-    def test_escape_is_a_value_error(self, tmp_path):
+    def test_escape_is_a_value_error(self):
         """Callers written against the pre-lift ``ValueError`` still work."""
         assert issubclass(PathEscape, ValueError)
+
+    def test_a_str_root_raises_the_typed_error_not_attribute_error(self, tmp_path):
+        """``root`` is annotated ``Path``, and nothing enforces annotations.
+
+        A ``str`` root used to reach ``root.resolve()`` and raise
+        ``AttributeError``, which escapes as itself past every caller that
+        catches only the typed error — in the one primitive this module tells
+        every new subsystem to use.
+        """
+        with pytest.raises(PathEscape):
+            _resolve("/etc/passwd", str(tmp_path))
+
+    def test_a_str_root_still_contains_correctly(self, tmp_path):
+        """And it is normalised, not merely tolerated."""
+        assert (
+            _resolve(tmp_path / "in.txt", str(tmp_path))
+            == (tmp_path / "in.txt").resolve()
+        )
 
 
 # =============================================================================
@@ -196,15 +214,26 @@ class TestRunbookDelegationUnchanged:
         assert issubclass(RunbookPathEscape, PathEscape)
         assert issubclass(RunbookPathEscape, ValueError)
 
-    def test_storage_refusal_is_not_a_runbook_refusal(self, tmp_path):
-        """The knowledge callers that DEGRADE catch ``RunbookPathEscape``.
+    def test_the_default_error_type_is_the_base_not_a_subsystems(self, tmp_path):
+        """A caller that names no ``error`` gets the base type.
 
-        A shared base class must not make a storage refusal look like one to
-        them — the scan would skip a file over an unrelated subsystem's error.
+        This is a statement about the PRIMITIVE's default, and nothing more.
+        The invariant that matters operationally — that
+        ``FilesystemStorageBackend`` never raises ``RunbookPathEscape``, because
+        the knowledge callers catch that type in order to skip a row and carry
+        on — has to be asserted against the backend itself, and is:
+        ``tests/infrastructure/test_storage_backends.py::
+        TestFilesystemPathContainment::
+        test_a_storage_refusal_is_never_a_runbook_refusal``.
+
+        Asserting it here instead was the defect: with the default error type
+        the property holds by construction, so the pin survived a mutation that
+        made the backend raise the runbook type.
         """
         with pytest.raises(PathEscape) as exc:
             _resolve("/etc/passwd", tmp_path, subject="storage key", tree="storage")
 
+        assert type(exc.value) is PathEscape
         assert not isinstance(exc.value, RunbookPathEscape)
 
     def test_outside_message_is_byte_for_byte_what_1225_shipped(self, tmp_path):

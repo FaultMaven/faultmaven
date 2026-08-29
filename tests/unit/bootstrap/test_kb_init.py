@@ -1991,7 +1991,16 @@ def test_a_pack_relpath_that_escapes_the_pack_is_refused(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         assert KbPack.load(pack_dir) is None
 
-    assert "Failed to load KB pack" in "\n".join(r.getMessage() for r in caplog.records)
+    # An actionable ERROR naming the offending entry, like every sibling guard
+    # in KbPack.load — not the catch-all's generic WARNING. An operator whose
+    # runbooks/ subtree is symlinked gets an empty KB either way; only this
+    # tells them why. (Startup logs are not an observable in the long run; if
+    # this needs to be surfaced it belongs on /admin/config/status.)
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert errors, "the refusal must be an ERROR, not the catch-all WARNING"
+    message = errors[0].getMessage()
+    assert "../../outside.md" in message, "the message must name the bad relpath"
+    assert "Rebuild" in message, "the message must say what to do"
 
 
 def test_a_pack_relpath_symlinked_out_of_the_pack_is_refused(tmp_path):
