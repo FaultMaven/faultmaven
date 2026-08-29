@@ -12644,7 +12644,7 @@ class MilestoneEngine:
                 and case.hypotheses[hid].root_node_id not in count_held
             ]
             retired = self.hypothesis_manager.force_alternative_generation(
-                targets, active_hypotheses, case.current_turn
+                targets, active_hypotheses, case.current_turn, case
             )
             # Record that the intervention fired THIS turn — drives the cooldown
             # regardless of how many hypotheses were eligible to retire.

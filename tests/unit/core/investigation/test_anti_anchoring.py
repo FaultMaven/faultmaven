@@ -19,7 +19,11 @@ from uuid import uuid4
 
 import pytest
 
-from faultmaven.core.investigation.hypothesis_manager import HypothesisManager
+from faultmaven.core.investigation.hypothesis_manager import (
+    _RETIRED_NEVER_GROUNDED,
+    _RETIRED_STALLED,
+    HypothesisManager,
+)
 from faultmaven.core.investigation.milestone_engine import (
     _ANTI_ANCHORING_COOLDOWN_TURNS,
     MilestoneEngine,
@@ -30,14 +34,17 @@ from faultmaven.modules.case.contracts import (
     CaseState,
     CausalNode,
     EvidenceNeed,
+    EvidenceStance,
     Hypothesis,
     HypothesisCategory,
+    HypothesisEvidenceLink,
     HypothesisGenerationMode,
     HypothesisState,
     InquiryData,
     NeedPriority,
     NeedPurpose,
     NeedState,
+    NodeEvidenceLink,
     NodeState,
     NodeType,
     ProblemVerification,
@@ -309,3 +316,102 @@ def test_count_held_root_hypothesis_is_not_retired():
         case.hypotheses[h.hypothesis_id].state == HypothesisState.RETIRED
         for h in others
     )
+
+
+# ---------------------------------------------------------------------------
+# Grounding label (observability only — never changes WHICH ids are retired).
+#
+# Two axes carry grounding and only one of them lives on the hypothesis: the
+# flat ``hypothesis.evidence_links`` and the chain ROOT's ``node.evidence_links``.
+# Chain links never mirror into the flat list, so a flat-only test would report a
+# chain-grounded hypothesis as never-tested.
+# ---------------------------------------------------------------------------
+
+
+def _flat_link(hyp_id: str, evidence_id: str) -> HypothesisEvidenceLink:
+    return HypothesisEvidenceLink(
+        hypothesis_id=hyp_id,
+        evidence_id=evidence_id,
+        stance=EvidenceStance.SUPPORTS,
+        reasoning="it fits",
+        stance_confidence=0.9,
+    )
+
+
+def _node_link(evidence_id: str) -> NodeEvidenceLink:
+    return NodeEvidenceLink(
+        evidence_id=evidence_id,
+        stance=EvidenceStance.SUPPORTS,
+        reasoning="it fits the root",
+        stance_confidence=0.9,
+        linked_at_turn=2,
+    )
+
+
+def _bare_root(node_id: str) -> CausalNode:
+    """A root node that is NOT validated — so it does not trip the
+    validated-root protection and its hypothesis stays retirable."""
+    return CausalNode(
+        node_id=node_id,
+        statement="a candidate root",
+        node_type=NodeType.ROOT,
+        node_state=NodeState.CANDIDATE,
+        belief=0.3,
+        actionable=True,
+        generated_at_turn=1,
+    )
+
+
+def test_retirement_reason_distinguishes_grounded_from_never_tested():
+    """Both are retired; only the reason differs."""
+    eng, case = _engine(), _case(current_turn=10)
+    grounded = _hyp("hyp_0000000000b1", iters=3)
+    grounded.evidence_links = [_flat_link("hyp_0000000000b1", "ev_000000000001")]
+    untested = _hyp("hyp_0000000000b2", iters=3)
+    others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(2)]
+    case.hypotheses = {h.hypothesis_id: h for h in [grounded, untested, *others]}
+
+    eng._perform_hypothesis_housekeeping(case, {})
+
+    # The retirement DECISION is unchanged: every stalled flagged id is retired.
+    assert all(h.state == HypothesisState.RETIRED for h in case.hypotheses.values())
+    assert case.hypotheses["hyp_0000000000b1"].retirement_reason == _RETIRED_STALLED
+    assert (
+        case.hypotheses["hyp_0000000000b2"].retirement_reason == _RETIRED_NEVER_GROUNDED
+    )
+    assert _RETIRED_STALLED != _RETIRED_NEVER_GROUNDED
+
+
+def test_chain_only_grounded_hypothesis_is_not_labelled_never_tested():
+    """The case the corpus actually produced (hyp_8b1fb1a283c2): zero flat links,
+    but evidence linked to the chain ROOT. A flat-only test would mislabel it."""
+    eng, case = _engine(), _case(current_turn=10)
+    root = _bare_root("cn_000000000009")
+    root.evidence_links = [_node_link("ev_000000000002")]
+    case.causal_nodes = {root.node_id: root}
+    chain_only = _hyp("hyp_0000000000c1", iters=3, root_node_id=root.node_id)
+    assert not chain_only.evidence_links  # the flat list really is empty
+    others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(3)]
+    case.hypotheses = {h.hypothesis_id: h for h in [chain_only, *others]}
+
+    eng._perform_hypothesis_housekeeping(case, {})
+
+    assert case.hypotheses["hyp_0000000000c1"].state == HypothesisState.RETIRED
+    assert (
+        case.hypotheses["hyp_0000000000c1"].retirement_reason == _RETIRED_STALLED
+    ), "chain-root grounding must not be reported as 'never linked to evidence'"
+
+
+def test_grounded_reason_is_byte_identical_to_the_historical_string():
+    """Existing rows keep their meaning: the grounded branch writes exactly what
+    this mechanism has always written."""
+    assert _RETIRED_STALLED == (
+        "Anti-anchoring: retired a stalled hypothesis to diversify the differential"
+    )
+
+
+def test_never_grounded_withholds_the_claim_without_graph_access():
+    """Fail-safe: with no case (no graph access) the never-grounded claim cannot
+    be established, so it is not made."""
+    h = _hyp("hyp_0000000000d1", iters=3, root_node_id="cn_00000000000f")
+    assert HypothesisManager._never_grounded(h, None) is False
