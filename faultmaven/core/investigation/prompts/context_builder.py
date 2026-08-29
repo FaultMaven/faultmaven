@@ -42,7 +42,11 @@ from faultmaven.core.investigation.evidence_need_surfacing import (
     is_ask_exhausted,
     select_surfaced_causal_needs,
 )
-from faultmaven.core.investigation.prompts.fence import PromptFence, render_fenced
+from faultmaven.core.investigation.prompts.fence import (
+    PromptFence,
+    delimiter_overhead_chars,
+    render_fenced,
+)
 from faultmaven.core.preprocessing.evidence_metadata import (
     LOW_CONFIDENCE_THRESHOLD,
     EvidenceMetadata,
@@ -158,10 +162,28 @@ def _parse_extract(raw: str) -> tuple[str, str | None, dict]:
     try:
         d = json.loads(raw)
         if isinstance(d, dict) and "file_extract" in d:
+            # Coerce each field to the type the renderer will use it as. This
+            # blob is NOT always extractor output: preprocessing falls back to
+            # ``structural_index = extraction.content`` — the raw upload — when
+            # an extractor times out or raises, so an uploaded file whose own
+            # bytes are JSON with a ``file_extract`` key lands here with
+            # arbitrary types under the other two keys. Un-coerced, a dict
+            # ``search_map`` reached ``.strip()`` and a list ``file_meta``
+            # reached ``.items()``, and the AttributeError killed prompt
+            # assembly for the whole turn — a denial of service costing one
+            # upload. A wrong-typed field is rendered as compact JSON rather
+            # than dropped, so nothing the extractor did produce is lost.
+            fe = d.get("file_extract", "")
+            sm = d.get("search_map")
+            fm = d.get("file_meta") or {}
             return (
-                d.get("file_extract", ""),
-                d.get("search_map"),
-                d.get("file_meta") or {},
+                fe if isinstance(fe, str) else json.dumps(fe, separators=(",", ":")),
+                (
+                    sm
+                    if isinstance(sm, str)
+                    else (None if sm is None else json.dumps(sm, separators=(",", ":")))
+                ),
+                fm if isinstance(fm, dict) else {"file_meta": fm},
             )
     except (json.JSONDecodeError, TypeError):
         pass
@@ -1407,14 +1429,18 @@ def _current_turn_reserve_fraction() -> float:
         return 0.5
 
 
+#: Delimiters on a fully-populated Tier-A item: evidence / summary /
+#: file_extract / verbatim_quote / search_map / file_meta, open + close.
+_TIER_A_DELIMITERS = 12
+
 #: Flat per-item allowance for a Tier-A item's own markup in the budget
-#: estimate — the tags, not the bodies. Was 200 while the tags were bare; the
-#: fence adds ``` fence="xxxxxxxx"``` (17 chars) to each of up to 12 delimiters
-#: on a fully-populated item (evidence / summary / file_extract /
-#: verbatim_quote / search_map / file_meta, open + close), so ~200 more. Still
-#: an approximation, and still bounded upstream by the GAP-3 whole-prompt
-#: overflow backstop, which measures the assembled prompt for real.
-_TIER_A_MARKUP_OVERHEAD_CHARS = 420
+#: estimate — the tags, not the bodies. The 200 is the pre-fence element
+#: skeleton (unchanged); the rest is DERIVED from ``fence`` rather than written
+#: out, so changing ``FENCE_ATTR`` or the token length cannot silently skew
+#: every Tier-A budget decision. Still an approximation, and still bounded
+#: upstream by the GAP-3 whole-prompt overflow backstop, which measures the
+#: assembled prompt for real.
+_TIER_A_MARKUP_OVERHEAD_CHARS = 200 + _TIER_A_DELIMITERS * delimiter_overhead_chars()
 
 
 def _open_evidence_collected(fence: PromptFence) -> str:
@@ -1481,11 +1507,13 @@ def _render_orphan_file_block(
     if summary_only:
         # Degraded render: file present + addressable, full index omitted.
         entry += (
-            "    "
-            + fence.open("file_extract")
-            + "[Full content omitted to fit budget; "
-            "use search_file with the file_id above to read it.]"
-            + fence.close("file_extract")
+            fence.element(
+                "file_extract",
+                "[Full content omitted to fit budget; "
+                "use search_file with the file_id above to read it.]",
+                indent="    ",
+                inline=True,
+            )
             + "\n"
         )
         entry += "  " + fence.close("uploaded_file") + "\n"
@@ -1494,15 +1522,15 @@ def _render_orphan_file_block(
         # DA index+stub: drop the extract body, keep search_map (below). Same
         # marker Evidence-backed items get, so navigation parity holds.
         entry += (
-            "    "
-            + fence.open(
-                "file_extract", ' role="orientation" elided="directed_analysis"'
+            fence.element(
+                "file_extract",
+                "[Structural index elided in directed-analysis mode — call "
+                "search_file with the file_id above to read specifics from the "
+                "raw file.]",
+                attrs=' role="orientation" elided="directed_analysis"',
+                indent="    ",
             )
             + "\n"
-            "[Structural index elided in directed-analysis mode — call "
-            "search_file with the file_id above to read specifics from the "
-            "raw file.]\n"
-            "    " + fence.close("file_extract") + "\n"
         )
     elif file_extract.strip():
         truncation_note = ""
@@ -1513,29 +1541,21 @@ def _render_orphan_file_block(
                 f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. "
                 "Use search_file with the file_id above for specific lookups.]"
             )
-        entry += "    " + fence.open("file_extract") + "\n"
+        body = ""
         if uf.filename:
-            entry += f"[Source: {fence.data(_safe_name(uf.display_name))}]\n"
-        entry += fence.data(file_extract)
-        entry += truncation_note
-        entry += "\n    " + fence.close("file_extract") + "\n"
+            body += f"[Source: {_safe_name(uf.display_name)}]\n"
+        body += file_extract + truncation_note
+        entry += fence.element("file_extract", body, indent="    ") + "\n"
     if search_map and search_map.strip():
-        entry += (
-            "    "
-            + fence.open("search_map")
-            + "\n"
-            + fence.data(search_map)
-            + "\n    "
-            + fence.close("search_map")
-            + "\n"
-        )
+        entry += fence.element("search_map", search_map, indent="    ") + "\n"
     if file_meta:
-        meta_lines = _format_file_meta(file_meta)
         entry += (
-            "    "
-            + fence.open("file_meta")
-            + fence.data(meta_lines)
-            + fence.close("file_meta")
+            fence.element(
+                "file_meta",
+                _format_file_meta(file_meta),
+                indent="    ",
+                inline=True,
+            )
             + "\n"
         )
     entry += "  " + fence.close("uploaded_file") + "\n"
@@ -1730,7 +1750,13 @@ def _render_evidence_block(
     da_index_only = processing_mode == "directed_analysis" and tools_available
 
     result = _open_evidence_collected(fence)
-    total_chars = 0
+    # The envelope + fence declaration are ~280 chars of the block's budget and
+    # used to be spent without being counted. ``first_item_rendered`` carries
+    # the "nothing has been emitted yet" question that ``total_chars == 0`` used
+    # to answer, so the current-turn floor still guarantees the first upload a
+    # full render (INV-EC-1) now that the counter no longer starts at zero.
+    total_chars = len(result)
+    first_item_rendered = False
     # INV-4: count evidence items skipped for budget (Tiers B/C/D) so their
     # omission is never silent — a marker is emitted before the closing tag.
     n_omitted = 0
@@ -1768,7 +1794,7 @@ def _render_evidence_block(
             # First item renders full unconditionally; later items render full
             # only while within the reserve, else degrade to a summary stub.
             # Never dropped — current-turn uploads are always present.
-            if total_chars == 0 or (
+            if not first_item_rendered or (
                 total_chars + len(full_entry) <= current_turn_floor_chars
             ):
                 result += full_entry
@@ -1779,6 +1805,7 @@ def _render_evidence_block(
                 )
                 result += summary_entry
                 total_chars += len(summary_entry)
+            first_item_rendered = True
             handled_file_ids.add(str(uf.file_id))
 
     # Tier A: Recent data evidence with structural index
@@ -1876,11 +1903,7 @@ def _render_evidence_block(
             + "\n"
         )
         result += (
-            "    "
-            + fence.open("summary")
-            + fence.data(str(ev.summary))
-            + fence.close("summary")
-            + "\n"
+            fence.element("summary", str(ev.summary), indent="    ", inline=True) + "\n"
         )
         if file_extract.strip() and suppress_extract:
             # DA index-only: elide the extract body, keep the file addressable.
@@ -1888,62 +1911,58 @@ def _render_evidence_block(
             # the agent everything it needs to search_file for specifics (INV-4:
             # the elision is marked, never silent).
             result += (
-                "    "
-                + fence.open(
-                    "file_extract", ' role="orientation" elided="directed_analysis"'
+                fence.element(
+                    "file_extract",
+                    "[Structural index elided in directed-analysis mode — call "
+                    "search_file with the evidence id above to read specifics "
+                    "from the raw file.]",
+                    attrs=' role="orientation" elided="directed_analysis"',
+                    indent="    ",
                 )
                 + "\n"
-                "[Structural index elided in directed-analysis mode — call "
-                "search_file with the evidence id above to read specifics from "
-                "the raw file.]\n"
-                "    " + fence.close("file_extract") + "\n"
             )
         elif file_extract.strip():
             role_attr = (
                 ' role="orientation"' if processing_mode == "directed_analysis" else ""
             )
-            result += "    " + fence.open("file_extract", role_attr) + "\n"
             # Content-level source attribution: reinforces the XML attribute
             # so the LLM sees which file this content belongs to while reading
             # through multi-evidence blocks, not just in the enclosing tag.
+            body = ""
             if ev_file_meta is not None:
-                result += (
-                    f"[Source: {fence.data(_safe_name(ev_file_meta.display_name))}]\n"
-                )
+                body += f"[Source: {_safe_name(ev_file_meta.display_name)}]\n"
             if confidence_advisory:
-                result += f"{confidence_advisory}\n"
-            result += fence.data(file_extract)
+                body += f"{confidence_advisory}\n"
+            body += file_extract
             if truncated:
-                result += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Use search_file with the evidence id above to search for specific content in the raw file.]"
-            result += "\n    " + fence.close("file_extract") + "\n"
+                body += f"\n[TRUNCATED: {remaining_chars:,} more characters not shown. Use search_file with the evidence id above to search for specific content in the raw file.]"
+            result += (
+                fence.element("file_extract", body, attrs=role_attr, indent="    ")
+                + "\n"
+            )
         # Post-010: surface the agent's verbatim quote (when present) as a
         # distinct claim-supporting snippet, separate from the file's
         # structural index above.
         if ev.extract and ev.extract.strip():
             result += (
-                "    "
-                + fence.open("verbatim_quote")
-                + fence.data(ev.extract.strip())
-                + fence.close("verbatim_quote")
+                fence.element(
+                    "verbatim_quote",
+                    ev.extract.strip(),
+                    indent="    ",
+                    inline=True,
+                )
                 + "\n"
             )
         if search_map and search_map.strip():
-            result += (
-                "    "
-                + fence.open("search_map")
-                + "\n"
-                + fence.data(search_map)
-                + "\n    "
-                + fence.close("search_map")
-                + "\n"
-            )
+            result += fence.element("search_map", search_map, indent="    ") + "\n"
         if file_meta:
-            meta_lines = _format_file_meta(file_meta)
             result += (
-                "    "
-                + fence.open("file_meta")
-                + fence.data(meta_lines)
-                + fence.close("file_meta")
+                fence.element(
+                    "file_meta",
+                    _format_file_meta(file_meta),
+                    indent="    ",
+                    inline=True,
+                )
                 + "\n"
             )
         result += "  " + fence.close("evidence") + "\n"
@@ -1969,9 +1988,7 @@ def _render_evidence_block(
             f"{confidence_attr}{fresh_attr}{observed_attr}{duplicate_attr}",
         )
         entry += (
-            fence.open("summary")
-            + fence.data(str(ev.summary))
-            + fence.close("summary")
+            fence.element("summary", str(ev.summary), inline=True)
             + fence.close("evidence")
             + "\n"
         )
@@ -2000,10 +2017,8 @@ def _render_evidence_block(
         observed_attr = _observed_attr(ev)
         quote_block = ""
         if ev.extract and ev.extract.strip():
-            quote_block = (
-                fence.open("verbatim_quote")
-                + fence.data(ev.extract.strip())
-                + fence.close("verbatim_quote")
+            quote_block = fence.element(
+                "verbatim_quote", ev.extract.strip(), inline=True
             )
         entry = (
             "  "
@@ -2011,9 +2026,7 @@ def _render_evidence_block(
                 "evidence",
                 f' id="{ev.evidence_id}"{label_attr}{fresh_attr}{observed_attr}',
             )
-            + fence.open("summary")
-            + fence.data(str(ev.summary))
-            + fence.close("summary")
+            + fence.element("summary", str(ev.summary), inline=True)
             + quote_block
             + fence.close("evidence")
             + "\n"
