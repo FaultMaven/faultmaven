@@ -329,7 +329,9 @@ class TestEveryFailedAttachmentIsClarified:
         }
 
         suggestions = _build_classification_clarification_suggestions(results)
-        qualifiers = {s.label.split(" (", 1)[1].rstrip(")") for s in suggestions}
+        labels = [s.label for s in suggestions]
+        assert all(" (" in label for label in labels), labels
+        qualifiers = {label.split(" (", 1)[1].rstrip(")") for label in labels}
         assert qualifiers == {"mystery.txt", "pasted text"}
 
     def test_single_failure_is_byte_identical_to_before(self):
