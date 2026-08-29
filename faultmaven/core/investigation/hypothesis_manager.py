@@ -89,12 +89,24 @@ ANCHORING_SAME_CATEGORY_THRESHOLD = 4
 IGNORED_STAGNATION_TURN_THRESHOLD = 3
 
 
-#: Recorded when an anti-anchoring retirement removes a hypothesis that HAD been
-#: linked to evidence on some axis — i.e. it was tested and went nowhere. Byte
-#: -identical to the string this mechanism has always written; existing rows keep
-#: their meaning.
+#: Recorded when an anti-anchoring retirement removes a hypothesis that was
+#: linked to evidence on some axis. Byte-identical to the string this mechanism
+#: has always written, so existing rows keep their meaning. It asserts nothing
+#: beyond the retirement itself — when grounding cannot be DETERMINED the
+#: separate ``_RETIRED_GROUNDING_UNKNOWN`` is written instead, because writing
+#: this one there would record an undeterminable case as a positive
+#: "was grounded" claim and over-count the grounded bucket exactly where the
+#: data is weakest.
 _RETIRED_STALLED = (
     "Anti-anchoring: retired a stalled hypothesis to diversify the differential"
+)
+
+#: Recorded when grounding could not be established either way — no ``case`` for
+#: graph access, or a chain head naming a node absent from the loaded graph.
+#: Distinct from both other constants on purpose: an unknown counted as either
+#: one silently biases the measurement this label exists to produce.
+_RETIRED_GROUNDING_UNKNOWN = (
+    "Anti-anchoring: retired a stalled hypothesis (grounding undetermined)"
 )
 
 #: Recorded when the retired hypothesis was never linked to evidence on EITHER
@@ -757,7 +769,7 @@ class HypothesisManager:
         return False, None, []
 
     @staticmethod
-    def _never_grounded(hypothesis: Hypothesis, case: "Case | None") -> bool:
+    def _never_grounded(hypothesis: Hypothesis, case: "Case | None") -> "bool | None":
         """Whether this hypothesis can be POSITIVELY established as never having
         been linked to evidence, on either axis.
 
@@ -774,27 +786,37 @@ class HypothesisManager:
         observation as grounding for the cause.
 
         Any link counts, whatever its stance or confidence — the question is
-        "was this ever tested", not "was it supported". Returns False whenever
-        the answer cannot be established (no ``case``, so no graph access): the
-        fail-safe direction is to withhold the never-grounded claim, because a
-        grounded hypothesis mislabelled as untested corrupts the measurement
-        this label exists to produce.
+        "was this ever tested", not "was it supported".
+
+        Three-valued because "cannot tell" is not "grounded": ``True`` =
+        positively never linked, ``False`` = positively linked, ``None`` =
+        undeterminable (no ``case``, or a chain head naming a node absent from
+        the loaded graph). Collapsing ``None`` into either answer biases the
+        measurement this label exists to produce.
         """
         if hypothesis.evidence_links:
             return False
         if case is None:
             # No graph access, so the chain axis cannot be ruled out.
-            return False
-        root_id = getattr(hypothesis, "root_node_id", None)
-        if not root_id:
-            # No chain axis exists to carry grounding, so the empty flat list is
-            # the whole picture — this one really was never linked.
+            return None
+        # The chain head is root_node_id when set, else path[0]: the Hypothesis
+        # validator (``_root_heads_the_path``) deliberately permits a path whose
+        # root is not yet assigned, and evidence on that head is real chain
+        # grounding. Head only, never the whole path — terminal path nodes are
+        # shared symptom nodes across hypotheses, so a path-wide check would
+        # count symptom observation as grounding for the cause.
+        head_id = getattr(hypothesis, "root_node_id", None) or next(
+            iter(getattr(hypothesis, "path", None) or []), None
+        )
+        if not head_id:
+            # No chain axis exists at all, so the empty flat list is the whole
+            # picture — this one really was never linked.
             return True
-        node = (case.causal_nodes or {}).get(root_id)
+        node = (case.causal_nodes or {}).get(head_id)
         if node is None:
-            # Root id names no loaded node: the links cannot be inspected, so the
-            # claim is withheld rather than guessed.
-            return False
+            # The head names no loaded node: its links cannot be inspected, so
+            # the answer is unknown rather than guessed.
+            return None
         return not node.evidence_links
 
     def force_alternative_generation(
@@ -820,8 +842,8 @@ class HypothesisManager:
             current_turn: current conversation turn
             case: the case, for causal-graph access when recording WHETHER the
                 retired hypothesis had ever been grounded. Observability only —
-                it does not affect WHICH hypotheses are retired. Omitted, the
-                recorded reason falls back to the grounding-neutral wording.
+                it does not affect WHICH hypotheses are retired. Omitted,
+                grounding is undeterminable and the reason says so.
 
         Returns:
             The list of retired hypothesis ids (possibly empty — e.g. all flagged
@@ -839,11 +861,12 @@ class HypothesisManager:
                 h.state = HypothesisState.RETIRED
                 # Records WHY the retirement happened, not WHETHER it does. The
                 # eligibility test above is untouched: both branches retire.
-                h.retirement_reason = (
-                    _RETIRED_NEVER_GROUNDED
-                    if self._never_grounded(h, case)
-                    else _RETIRED_STALLED
-                )
+                never_grounded = self._never_grounded(h, case)
+                h.retirement_reason = {
+                    True: _RETIRED_NEVER_GROUNDED,
+                    False: _RETIRED_STALLED,
+                    None: _RETIRED_GROUNDING_UNKNOWN,
+                }[never_grounded]
                 h.last_updated_turn = current_turn
                 retired.append(hid)
 

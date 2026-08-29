@@ -20,6 +20,7 @@ from uuid import uuid4
 import pytest
 
 from faultmaven.core.investigation.hypothesis_manager import (
+    _RETIRED_GROUNDING_UNKNOWN,
     _RETIRED_NEVER_GROUNDED,
     _RETIRED_STALLED,
     HypothesisManager,
@@ -410,8 +411,60 @@ def test_grounded_reason_is_byte_identical_to_the_historical_string():
     )
 
 
-def test_never_grounded_withholds_the_claim_without_graph_access():
-    """Fail-safe: with no case (no graph access) the never-grounded claim cannot
-    be established, so it is not made."""
+def test_grounding_is_undetermined_without_graph_access():
+    """No case means no chain axis to inspect: the answer is unknown, and unknown
+    is neither of the two positive claims."""
     h = _hyp("hyp_0000000000d1", iters=3, root_node_id="cn_00000000000f")
-    assert HypothesisManager._never_grounded(h, None) is False
+    assert HypothesisManager._never_grounded(h, None) is None
+
+
+def test_grounding_is_undetermined_when_the_chain_head_is_not_loaded():
+    """The branch that actually fires in production: root_node_id names a node
+    absent from the loaded graph. Its links cannot be inspected, so neither
+    positive claim may be recorded."""
+    case = _case(current_turn=10)
+    case.causal_nodes = {}
+    h = _hyp("hyp_0000000000d2", iters=3, root_node_id="cn_00000000dead")
+    assert HypothesisManager._never_grounded(h, case) is None
+
+
+def test_undetermined_grounding_is_recorded_as_undetermined():
+    """End-to-end: the unknown reaches retirement_reason as its own string rather
+    than being folded into either positive claim."""
+    eng, case = _engine(), _case(current_turn=10)
+    case.causal_nodes = {}
+    unknown = _hyp("hyp_0000000000d3", iters=3, root_node_id="cn_00000000dead")
+    others = [_hyp(f"hyp_0000000000a{i}", iters=3) for i in range(3)]
+    case.hypotheses = {h.hypothesis_id: h for h in [unknown, *others]}
+
+    eng._perform_hypothesis_housekeeping(case, {})
+
+    assert case.hypotheses["hyp_0000000000d3"].state == HypothesisState.RETIRED
+    assert (
+        case.hypotheses["hyp_0000000000d3"].retirement_reason
+        == _RETIRED_GROUNDING_UNKNOWN
+    )
+
+
+def test_path_head_grounding_counts_when_no_root_is_assigned_yet():
+    """``_root_heads_the_path`` permits a chain whose root is not yet assigned.
+    Evidence on path[0] is real chain grounding and must not be reported as
+    never-linked."""
+    case = _case(current_turn=10)
+    head = _bare_root("cn_00000000000a")
+    head.evidence_links = [_node_link("ev_00000000000a")]
+    case.causal_nodes = {head.node_id: head}
+    h = _hyp("hyp_0000000000d4", iters=3)
+    h.path = [head.node_id]
+    assert HypothesisManager._never_grounded(h, case) is False
+
+
+def test_force_alternative_generation_defaults_to_no_graph_access():
+    """Called without a case — the pre-existing signature — every retirement is
+    recorded as undetermined, never as a positive grounding claim."""
+    hm = HypothesisManager()
+    h = _hyp("hyp_0000000000d5", iters=3)
+    retired = hm.force_alternative_generation([h.hypothesis_id], [h], 10)
+
+    assert retired == [h.hypothesis_id]
+    assert h.retirement_reason == _RETIRED_GROUNDING_UNKNOWN

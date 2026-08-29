@@ -3537,7 +3537,15 @@ class Hypothesis(BaseModel):
     )
 
     retirement_reason: Optional[str] = Field(
-        default=None, description="Reason if hypothesis was retired"
+        default=None,
+        max_length=200,
+        description=(
+            "Why the hypothesis was set aside without a verdict. Bounded like "
+            "``refutation_reason`` because it is rendered into the terminal "
+            "report, and the user-retire path writes the user's own message "
+            "here — an unbounded field on that path reaches the report, and "
+            "through it the replayed conversation, as arbitrary user text."
+        ),
     )
 
     refutation_reason: Optional[str] = Field(
