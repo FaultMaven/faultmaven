@@ -110,6 +110,12 @@ class TestTheEmptySlugBranch:
         ("🔥🚀", "💡"),
         ("", ""),
         ("／／", "／"),
+        # The DELIMITER-AMBIGUITY pair. Both join to ``"!-@-#"``, so a digest
+        # taken over the joined string gave them one id and one derived item
+        # id — #1230's collision, inside the branch added to remove it. The
+        # digest is over ``repr((service, title))`` for exactly this pair.
+        ("!", "@-#"),
+        ("!-@", "#"),
     ]
 
     def test_no_degenerate_pair_mints_an_empty_id(self):
@@ -149,6 +155,16 @@ class TestTheEmptySlugBranch:
                 runbook_id_from_parts(service, title) == first for _ in range(5)
             ), f"({service!r}, {title!r}) is not deterministic"
 
+    def test_the_digest_is_not_taken_over_the_joined_string(self):
+        """Named separately from the sweep, because the sweep would pass if the
+        pair were quietly dropped from ``DEGENERATE``."""
+        a, b = runbook_id_from_parts("!", "@-#"), runbook_id_from_parts("!-@", "#")
+        assert a != b, (a, b)
+        assert item_id_from_runbook_id(a) != item_id_from_runbook_id(b)
+        # And both really did take the hash branch — otherwise this proves
+        # nothing about the digest.
+        assert is_hash_only_runbook_id(a) and is_hash_only_runbook_id(b)
+
     def test_a_readable_title_does_not_take_the_hash_branch(self):
         """Without this the fallback could swallow every id and still pass."""
         minted = runbook_id_from_parts("checkout-api", "Connection pool exhausted")
@@ -166,7 +182,12 @@ class TestTheTruncationBranch:
     def test_the_pack_is_actually_present(self):
         """Guards every assertion below: an empty corpus passes them all."""
         pairs = _pack_pairs()
-        assert len(pairs) == 91, f"expected the 91 shipped runbooks, got {len(pairs)}"
+        # A floor, not an exact count: the pack is owned by
+        # ``faultmaven-kb-toolkit`` and grows on its own schedule, so pinning
+        # 91 would make an unrelated KB update fail here. The floor still
+        # catches the failure this guards — an empty or mis-rooted corpus,
+        # which would make every assertion below hold vacuously.
+        assert len(pairs) >= 80, f"the shipped runbook corpus looks wrong: {len(pairs)}"
         assert all(s and t for _, s, t in pairs), "a shipped runbook lost its metadata"
 
     def test_every_shipped_title_mints_a_kebab_id(self):
@@ -177,9 +198,10 @@ class TestTheTruncationBranch:
             for name, service, title in _pack_pairs()
             if not KEBAB.match(runbook_id_from_parts(service, title))
         ]
-        assert (
-            not broken
-        ), f"{len(broken)}/91 shipped titles mint a non-kebab id: {broken}"
+        assert not broken, (
+            f"{len(broken)} of {len(_pack_pairs())} shipped titles mint a "
+            f"non-kebab id: {broken}"
+        )
 
     def test_the_five_ids_the_issue_named_are_no_longer_produced(self):
         """Names the regression rather than only counting it.
@@ -357,6 +379,14 @@ class TestWhatTheMintDeliberatelyDoesNotDo:
         assert runbook_id_from_parts("svc", "Foo Bar") == runbook_id_from_parts(
             "svc", "foo-bar"
         )
+
+    def test_item_id_tolerates_a_missing_id(self):
+        """A runbook file with a bare ``id:`` parses to ``None``, and the disk
+        scan calls ``item_id_from_runbook_id`` on it. That used to raise
+        ``AttributeError`` and abort the whole walk — on precisely the class of
+        malformed legacy file the scan exists to surface."""
+        assert item_id_from_runbook_id(None) == item_id_from_runbook_id("")
+        assert item_id_from_runbook_id(None).startswith("kb_")
 
     def test_is_hash_only_is_a_signal_not_a_guard(self):
         """Its docstring says a real title can match. Pinned so a caller does

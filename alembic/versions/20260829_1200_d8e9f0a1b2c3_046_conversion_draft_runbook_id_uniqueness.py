@@ -24,11 +24,27 @@ Scope qualification, and why:
   a correctness one: a unique index is enforced BELOW row-level security, so a
   key omitting the tenant would reject an insert because of a row the caller
   cannot see — a cross-tenant existence oracle over runbook titles.
-- NOT further qualified by KB scope (personal/team/global). ``scope`` lives on
-  ``conversion_jobs``, not on the draft row, so a plain index cannot reach it —
-  and it should not: ``item_id_from_runbook_id`` is scope-blind, so two drafts
-  sharing a ``runbook_id`` in one tenant collide on the derived item id
-  whatever scope they were minted under.
+- NOT further qualified by KB **scope** (personal/team/global) or by **owner**.
+  Neither is on the draft row — ``scope`` and ``user_id`` both live on
+  ``conversion_jobs`` — so a plain index cannot reach either, and the table's
+  shape is therefore the bound on how fine this key can be. Making it finer
+  would mean denormalising a column onto every draft, which is a schema change
+  this does not need.
+
+  The consequence is deliberate and should be read before it surprises someone:
+  in a multi-user organization, one user's live draft reserves that runbook id
+  **tenant-wide**, including against another user's PERSONAL draft. That is
+  defensible on its own terms — ``conversion_drafts`` is the shared review
+  queue behind the Drafts tab, and two rows in it carrying one id are two rows
+  a reviewer cannot tell apart — but it is a coarser rule than "your personal
+  drafts are yours".
+
+  Note also what does NOT justify the tenant scope: the derived
+  ``item_id_from_runbook_id`` is scope-blind, but the user-facing
+  ``verify_draft`` path mints a random ``authored_item_id()``, so a derived
+  item-id collision is only reachable on the scan/bootstrap reconciliation
+  path. The argument that carries the weight is the review-queue ambiguity and
+  the shared on-disk filename, not the derived id.
 - Partial on ``status <> 'discarded'``. Discard is a soft delete (the row
   stays), so including discarded rows would make a discarded draft permanently
   block re-converting the same source. Both SQLite (>= 3.8.0) and PostgreSQL

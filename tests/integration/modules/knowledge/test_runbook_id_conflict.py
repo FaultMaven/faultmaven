@@ -23,6 +23,7 @@ Three claims:
 
 from __future__ import annotations
 
+import pathlib
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock, patch
@@ -36,8 +37,10 @@ from faultmaven.exceptions import ConflictError
 from faultmaven.infrastructure.persistence.models import (
     Base,
     ConversionDraftModel,
+    ConversionJobModel,
     EnterpriseModel,
     OrganizationModel,
+    UploadedFileModel,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
     ConversionService,
@@ -295,3 +298,198 @@ redis-cli INFO memory | grep used_memory_human
         assert result["discovered"] == 2, result
         assert any("already held" in e for e in result["errors"]), result["errors"]
         assert await _live_draft_count(session_factory, "redis-oom") == 1
+
+
+class TestTheGuardCoversEveryNewDraftWritePath:
+    """The clobber fix reached one write site; the review found the others.
+
+    ``refuse_if_draft_slot_taken`` is the single guard, and these test it
+    through the paths rather than by calling it — a guard wired into only one
+    of two callers passes a direct-call test and fails a user.
+    """
+
+    async def test_the_guard_is_reached_before_every_new_draft_write(self):
+        """Structural: every ``write_runbook_file`` on a NEW draft has the
+        guard above it in the same function.
+
+        Source-level on purpose. Driving the LLM path end to end needs a
+        scripted provider and the whole analysis pipeline; what actually
+        regressed was a missing CALL, and that is what this sees. ``update_draft``
+        is exempt and named, so adding a third write site fails here until
+        someone decides which kind it is.
+        """
+        import inspect
+
+        from faultmaven.modules.knowledge.domain.services import conversion_service
+
+        src = pathlib.Path(inspect.getfile(conversion_service)).read_text()
+        # Split into top-level method bodies and check each that writes.
+        methods = {}
+        current = None
+        for line in src.splitlines():
+            if line.startswith("    def ") or line.startswith("    async def "):
+                current = line.split("(")[0].split()[-1]
+                methods[current] = []
+            elif current is not None:
+                methods[current].append(line)
+
+        writers = {
+            name: "\n".join(body)
+            for name, body in methods.items()
+            if "write_runbook_file(" in "\n".join(body)
+        }
+        assert writers, "no runbook write site found — this test has gone blind"
+
+        # ``update_draft`` rewrites the file its OWN row already owns, so the
+        # row it would conflict with is itself.
+        exempt = {"update_draft"}
+        unguarded = [
+            name
+            for name, body in writers.items()
+            if name not in exempt and "refuse_if_draft_slot_taken(" not in body
+        ]
+        assert not unguarded, (
+            f"these write a NEW draft file without checking the slot first: "
+            f"{unguarded}. Either call refuse_if_draft_slot_taken before the "
+            f"write, or add the method to `exempt` with the reason."
+        )
+        # And the exemption is not vacuous.
+        assert exempt <= set(writers), (exempt, sorted(writers))
+
+    async def test_the_guard_keys_on_the_PATH_not_only_the_id(
+        self, service, session_factory
+    ):
+        """``draft_filename`` collapses a hyphen run, so a legacy row holding
+        ``foo--bar`` owns ``foo-bar.md`` — the file a fresh ``foo-bar`` mint
+        resolves to. An id-only lookup misses it and the write clobbers.
+
+        Measured as 0 rows on the dev database, so this is a guard against a
+        state that was not reproduced in the wild; it is cheap and the failure
+        it prevents is silent data loss.
+        """
+        first = await service.create_runbook_from_template(
+            title="Connection Pool Exhausted",
+            service_name="checkout-api",
+            **TEMPLATE_ARGS,
+        )
+        # Rewrite the row's id to the double-hyphen form a pre-#1243 mint could
+        # have produced. Its file_path is unchanged, and that is the point.
+        legacy_id = first["draft"].runbook_id.replace("-connection-", "--connection-")
+        assert legacy_id != first["draft"].runbook_id
+        async with session_factory() as session:
+            row = await session.get(ConversionDraftModel, first["draft"].draft_id)
+            row.runbook_id = legacy_id
+            await session.commit()
+
+        path = Path(first["draft"].file_path)
+        before = path.read_text(encoding="utf-8")
+
+        with pytest.raises(ConflictError):
+            await service.create_runbook_from_template(
+                title="Connection Pool Exhausted",
+                service_name="checkout-api",
+                **{**TEMPLATE_ARGS, "prevention": "SECOND AUTHOR CONTENT"},
+            )
+        assert path.read_text(encoding="utf-8") == before
+        assert "SECOND AUTHOR CONTENT" not in before
+
+    async def test_an_empty_runbook_id_still_classifies(self, service, session_factory):
+        """The falsy filter dropped ``''`` from the lookup, so a collision on
+        the one id shape #1230 reported never classified and the raw
+        ``IntegrityError`` escaped every caller written to catch the typed
+        refusal.
+
+        Seeded directly: the mint cannot produce ``''`` any more, and a legacy
+        row is exactly the case that matters.
+        """
+        async with session_factory() as session:
+            session.add(
+                UploadedFileModel(
+                    file_id="file_legacy",
+                    organization_id=ORG,
+                    uploaded_by=None,
+                    filename="legacy.md",
+                    size_bytes=1,
+                    content_type="text/markdown",
+                    storage_ref="x",
+                    upload_source="conversion_source",
+                    uploaded_at_turn=0,
+                )
+            )
+            await session.flush()
+            session.add(
+                ConversionJobModel(
+                    id="conv_legacy",
+                    organization_id=ORG,
+                    scope="global",
+                    status="completed",
+                    source_file_id="file_legacy",
+                    source_type="document",
+                )
+            )
+            session.add(
+                ConversionDraftModel(
+                    id="draft_legacy",
+                    organization_id=ORG,
+                    conversion_id="conv_legacy",
+                    runbook_id="",
+                    title="Legacy",
+                    file_path="data/knowledge/global/legacy.md",
+                    status="draft",
+                    source_type="document",
+                )
+            )
+            await session.commit()
+
+        with pytest.raises(ConflictError) as excinfo:
+            await service._raise_if_runbook_id_taken(ORG, [""])
+        assert excinfo.value.resource_id == "draft_legacy"
+        # ... and a list of only ``None`` still short-circuits.
+        await service._raise_if_runbook_id_taken(ORG, [None])
+
+
+class TestTheCaseRaceStillReturnsTheWinner:
+    """F2. Migration 046 made the live-case race and a runbook_id duplicate
+    indistinguishable at the commit, because two replicas converting one case
+    mint the same ids — so the classifier reports a runbook_id duplicate for
+    what is really the race, and ``convert_from_case`` would have handed the
+    loser a 409 instead of the winner's conversion.
+    """
+
+    @staticmethod
+    def _handler_source() -> str:
+        import inspect
+
+        from faultmaven.modules.knowledge.domain.services.conversion_service import (
+            ConversionService,
+        )
+
+        return inspect.getsource(ConversionService._convert_from_case_impl)
+
+    def test_the_handler_catches_both_typed_failures(self):
+        src = self._handler_source()
+        assert "except (IntegrityError, ConflictError):" in src, (
+            "the live-case race now arrives as ConflictError as often as "
+            "IntegrityError; catching only one hands the loser a 409"
+        )
+        # It must still RE-RAISE what its own re-read cannot confirm, or a
+        # genuine duplicate from a different case would be swallowed.
+        assert "return existing" in src and "raise" in src
+
+    async def test_the_classifier_really_does_fire_on_the_race_shape(
+        self, service, session_factory
+    ):
+        """Why the catch has to be widened, executed rather than argued.
+
+        Seed the WINNER's state — a live draft holding the id both replicas
+        mint — then ask the classifier what it makes of the loser's ids. It
+        raises ConflictError, which is precisely why IntegrityError alone is no
+        longer the whole story.
+        """
+        first = await service.create_runbook_from_template(
+            title="Connection Pool Exhausted",
+            service_name="checkout-api",
+            **TEMPLATE_ARGS,
+        )
+        with pytest.raises(ConflictError):
+            await service._raise_if_runbook_id_taken(ORG, [first["draft"].runbook_id])
