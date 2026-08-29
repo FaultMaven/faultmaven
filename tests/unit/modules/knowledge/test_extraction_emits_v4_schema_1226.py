@@ -851,12 +851,19 @@ class TestTheSkeletonNeedsRealAuthoring:
 
         assert RunbookValidator().validate_content(content).passed
 
-    def test_the_hint_comment_declares_no_subfield_labels(self):
-        """``parse_cause_subfields`` does NOT strip HTML comments, so a
-        ``**Statement:**`` example written inside the guidance comment is read
-        as the real field — measured: it made the empty skeleton PASS. The
-        comment must therefore never spell a sub-field label."""
+    def test_the_hint_comment_spells_the_subfield_labels(self):
+        """The hint comment shows each sub-field by name — the clearest way to
+        write it, and the shape #1226 could not use.
+
+        Until #1241 ``parse_cause_subfields`` did not strip HTML comments, so a
+        ``**Statement:**`` written inside the guidance comment was read as the
+        real field and made the empty skeleton PASS. #1226 worked around it by
+        banning the labels from the comment; the grammar now strips comments, so
+        this asserts the opposite of what that workaround did. Paired with
+        ``test_all_three_cause_subfields_start_empty`` above — which runs the
+        gate over this very skeleton — it pins BOTH halves: the labels are back
+        in the comment AND the skeleton is still refused."""
         skeleton = SuggestionService.fallback_template("case-example")
         comment = skeleton[skeleton.index("<!--") : skeleton.index("-->")]
-        for sub in ("Statement", "Indicators", "Interventions", "Chain"):
-            assert f"**{sub}:**" not in comment
+        for sub in ("Statement", "Indicators", "Interventions"):
+            assert f"**{sub}:**" in comment

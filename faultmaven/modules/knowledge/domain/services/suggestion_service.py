@@ -767,9 +767,17 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         ``[INSUFFICIENT SOURCE DATA]`` markers are visible to a human reviewer
         and to nothing else.
 
+        The hint comment spells the three sub-field labels as worked examples,
+        which is the clearest way to write it and was NOT possible before #1241:
+        the parser read a label inside a comment as the real field, so the hint
+        itself made this empty skeleton PASS the gate. #1226 worked around that
+        here by forbidding the labels in the comment; the grammar now strips
+        comments before parsing, so the workaround is gone and the repair lives
+        in one place.
+
         ``tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py``
         pins all of it: v4-shaped, refused, and still refused after any single
-        sub-field is filled.
+        sub-field is filled — with the labelled hint comment in place.
         """
         return f"""---
 id: {runbook_id}
@@ -809,13 +817,15 @@ level, and the tools needed.]
 
 ### Cause A: [INSUFFICIENT SOURCE DATA -- name the failure mode]
 <!-- All three sub-fields below are required and all three are empty. Fill in,
-     in order: one declarative sentence naming the single root cause; one
-     bullet per observable, each tagged with the diagnostic step that shows it
-     (root: [Step 1] ...); one bullet per fix, each tagged with its quadrant
-     and the rung it targets, each carrying its own verification.
-     Do NOT write example sub-field labels inside this comment: the cause
-     parser does not strip HTML comments, so a label written here is read as
-     the real field and the gate passes a form nobody filled in. -->
+     in order:
+     **Statement:** one declarative sentence naming the single root cause.
+     **Indicators:** one bullet per observable, each tagged with the diagnostic
+       step that shows it — e.g. `- root: [Step 1] connections climb and never
+       fall`.
+     **Interventions:** one bullet per fix, each tagged with its quadrant and
+       the rung it targets, each carrying its own verification — e.g.
+       `- **remediation** (root): restart the leaking worker. **Risk:** brief
+       downtime. **Duration:** 2m. **Verification:** connections fall.` -->
 **Statement:**
 **Indicators:**
 **Interventions:**
