@@ -2410,6 +2410,10 @@ class ConversionDraftModel(Base):
         ),
         Index("ix_conversion_drafts_tags", "tags", postgresql_using="gin"),
         # At most one LIVE draft per (tenant, runbook_id) — migration 045.
+        # ``organization_id`` leads the key for confidentiality as well as
+        # correctness: a unique index is enforced BELOW row-level security, so
+        # a key omitting the tenant would reject an insert because of a row the
+        # caller cannot see — a cross-tenant existence oracle over titles.
         # ``runbook_id`` is minted deterministically from (service, title), so
         # two drafts can legitimately arrive at the same value; before this
         # index nothing rejected them and they were indistinguishable to

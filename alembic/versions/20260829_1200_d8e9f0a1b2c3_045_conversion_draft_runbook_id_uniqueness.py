@@ -20,7 +20,10 @@ Scope qualification, and why:
 
 - ``organization_id`` — ``conversion_drafts`` is RLS-tenanted on this column
   (migration 018). Two tenants authoring a runbook with the same title is
-  ordinary, not a collision.
+  ordinary, not a collision. It is also a confidentiality requirement, not only
+  a correctness one: a unique index is enforced BELOW row-level security, so a
+  key omitting the tenant would reject an insert because of a row the caller
+  cannot see — a cross-tenant existence oracle over runbook titles.
 - NOT further qualified by KB scope (personal/team/global). ``scope`` lives on
   ``conversion_jobs``, not on the draft row, so a plain index cannot reach it —
   and it should not: ``item_id_from_runbook_id`` is scope-blind, so two drafts
