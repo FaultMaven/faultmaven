@@ -29,17 +29,29 @@ from faultmaven.infrastructure.storage.base import (
     StorageType,
     StoredFile,
 )
+from faultmaven.utils.optional_dependency import module_is_usable
 
 logger = logging.getLogger(__name__)
 
 
-# Feature detection for boto3
+# Feature detection for boto3.
+#
+# NOT `BOTO3_AVAILABLE = True`: an empty leftover `site-packages/boto3/` tree
+# imports cleanly as a PEP 420 namespace package, and botocore is a separate
+# distribution so its from-imports below would still succeed — leaving the flag
+# True and `boto3.client(...)` raising AttributeError inside the backend. See
+# faultmaven/utils/optional_dependency.py.
 try:
     import boto3
     from botocore.config import Config as BotoConfig
     from botocore.exceptions import ClientError
 
-    BOTO3_AVAILABLE = True
+    BOTO3_AVAILABLE = module_is_usable(boto3, "client")
+    if not BOTO3_AVAILABLE:
+        boto3 = None
+        BotoConfig = None
+        ClientError = Exception
+        logger.debug("boto3 resolved to a namespace package - S3 backend unavailable")
 except ImportError:
     BOTO3_AVAILABLE = False
     boto3 = None

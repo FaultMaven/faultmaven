@@ -50,6 +50,7 @@ from starlette.requests import Request as StarletteRequest
 
 from faultmaven.api.contract_version import API_CONTRACT_VERSION
 from faultmaven.api.middleware.tenant_scope import bind_request_org_context
+from faultmaven.utils.optional_dependency import module_is_usable
 from faultmaven.utils.serialization import to_json_compatible
 
 # Configure enhanced logging system first
@@ -226,38 +227,32 @@ from .modules.report.api.routes import router as report_router
 
 # SessionManager now handled via DI container - services.session.SessionService
 
-# Optional Opik middleware import
+# Optional Opik middleware import.
 #
-# The ``__file__`` test is the same guard, for the same reason, as the one in
-# infrastructure/observability/tracing.py — see the comment there. Here it
-# decides only what gets logged: without it this reports "Opik SDK available
-# but middleware not found" instead of "Opik not available". (The
-# OpikMiddleware import below is a from-import and already fails correctly, so
-# the middleware itself was never at risk.)
+# ``import opik`` succeeding is not proof the SDK is installed — see
+# faultmaven/utils/optional_dependency.py. Here that decides only what gets
+# logged: without it this reports "Opik SDK available but middleware not found"
+# instead of "Opik not available". (The OpikMiddleware import below is a
+# from-import and already fails correctly, so the middleware was never at risk.)
 try:
     import opik
 
-    if getattr(opik, "__file__", None) is None:
-        raise ImportError("'opik' resolved to a namespace package, not the SDK")
+    OPIK_AVAILABLE = module_is_usable(opik)
+except ImportError:
+    OPIK_AVAILABLE = False
 
-    OPIK_AVAILABLE = True
-
+OPIK_MIDDLEWARE_AVAILABLE = False
+if OPIK_AVAILABLE:
     try:
         from opik.integrations.fastapi import OpikMiddleware
 
         OPIK_MIDDLEWARE_AVAILABLE = True
     except ImportError:
-        OPIK_MIDDLEWARE_AVAILABLE = False
         logger.debug(
             "Opik middleware class not available, tracing will work without middleware"
         )
-except ImportError as exc:
-    OPIK_AVAILABLE = False
-    OPIK_MIDDLEWARE_AVAILABLE = False
-    # Carry the reason: "not installed" and "shadowed by a namespace package"
-    # are different operator problems and this is the only line that names
-    # which one happened.
-    logger.info("Opik not available, running without tracing (%s)", exc)
+else:
+    logger.info("Opik not available, running without tracing")
 
 
 async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -> None:
