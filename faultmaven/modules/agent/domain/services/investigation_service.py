@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
@@ -371,6 +371,47 @@ def _upload_subject(uf) -> str:
     return uf.submission_phrase or f'"{uf.filename}"'
 
 
+# Longest filename fragment a choice label will carry. Long enough to keep
+# real names recognisable, short enough that a pathological one cannot
+# dominate the resolver's choice list.
+_LABEL_QUALIFIER_MAX_CHARS = 48
+
+
+def _sanitize_label_fragment(text: str) -> str:
+    """Flatten caller-supplied text to one bounded, single-line fragment.
+
+    A choice ``label`` is not display-only. It is persisted in
+    ``last_suggestions`` and rendered verbatim into
+    ``IntentResolver._build_prompt`` as a line in a NUMBERED CHOICE LIST —
+    the prompt whose answer selects which offered intent fires. A filename
+    carrying a newline therefore injects new lines into that list: a forged
+    ``7. Yes, close the case`` reshapes the menu the classifier picks from,
+    and because the same list also carries the engine's own follow-up
+    intents (confirmation, status transitions), the steer is not confined
+    to reclassification.
+
+    Escaping is the wrong tool and #1216's lesson says why: nothing on this
+    path DECODES, so ``&#10;`` would reach the model as those five literal
+    characters and the label would read as garbage while still not being a
+    newline the model treats as structure. The fix is at mint time — strip
+    the characters that carry structure, collapse the whitespace, and bound
+    the length — which is also what keeps the label a button.
+
+    Every non-printable character becomes a space rather than being
+    deleted — that covers newline, CR, tab and the rest of C0/C1, and also
+    the format category, so a bidi override cannot reorder the label
+    either. Deleting them instead would glue the surrounding tokens
+    together and make a mangled name harder to recognise, not safer. Runs
+    of whitespace then collapse to one space, and truncation is marked with
+    an ellipsis so a clipped name does not read as the whole name.
+    """
+    flattened = "".join(ch if ch.isprintable() else " " for ch in text)
+    collapsed = " ".join(flattened.split())
+    if len(collapsed) > _LABEL_QUALIFIER_MAX_CHARS:
+        return collapsed[: _LABEL_QUALIFIER_MAX_CHARS - 1].rstrip() + "…"
+    return collapsed
+
+
 def _clarification_label_qualifier(target: "_PreprocessedAttachment") -> str:
     """Short name telling one failed attachment's choices from another's.
 
@@ -380,13 +421,20 @@ def _clarification_label_qualifier(target: "_PreprocessedAttachment") -> str:
     ``UploadedFile.submission_phrase`` (sentence, carries a clause). A button
     has room for neither, so this is the bare noun. Derived from the same
     provenance properties as its two siblings; keep the wording in step.
+
+    The paste and capture arms are our own fixed wording. The third is the
+    user's filename, and it goes through ``_sanitize_label_fragment``
+    because a label reaches the intent resolver's prompt — see there. A
+    name that sanitises away to nothing falls back to the generic phrase
+    rather than an empty parenthetical.
     """
     uf = target.uploaded_file
     if uf.is_page_capture:
         return "captured page"
     if uf.is_pasted:
         return "pasted text"
-    return target.attachment_filename or uf.filename or "the uploaded file"
+    raw = target.attachment_filename or uf.filename or ""
+    return _sanitize_label_fragment(raw) or "the uploaded file"
 
 
 def _reclassification_intent(file_id: str, dt_value: str) -> Dict[str, Any]:
@@ -398,11 +446,15 @@ def _reclassification_intent(file_id: str, dt_value: str) -> Dict[str, Any]:
     }
 
 
-def _build_classification_clarification_suggestions(
-    preprocess_results: List["_PreprocessedAttachment"],
+def _clarification_suggestions_for_failed(
+    failed: List["_PreprocessedAttachment"],
 ) -> List[SuggestedActionResponse]:
     """Emit DECIDE suggestions for EVERY attachment that hit
     classification_failed.
+
+    Takes the ALREADY-FILTERED list, so this and the narration note cannot
+    disagree about which attachments failed — see
+    ``_build_classification_clarification``, the one place the filter runs.
 
     One set of choices per failed attachment: up to 3 type-specific plus a
     "Something else" fallback each, and at least the fallback for any
@@ -454,7 +506,6 @@ def _build_classification_clarification_suggestions(
 
     Returns an empty list when no classification failure occurred this turn.
     """
-    failed = [r for r in preprocess_results if r.classification_failed]
     if not failed:
         return []
 
@@ -510,10 +561,14 @@ def _build_classification_clarification_suggestions(
     return suggestions
 
 
-def _classification_clarification_note(
-    preprocess_results: List["_PreprocessedAttachment"],
+def _clarification_note_for_failed(
+    failed: List["_PreprocessedAttachment"],
 ) -> Optional[str]:
     """The narration bridge for this turn's clarification choices, or None.
+
+    Takes the ALREADY-FILTERED list for the reason given on
+    ``_clarification_suggestions_for_failed``: the note names exactly the
+    attachments the choices target, by construction rather than by prose.
 
     The clarification suggestions are engine-emitted, so the LLM's own
     response usually says nothing about the content it couldn't classify —
@@ -529,9 +584,7 @@ def _classification_clarification_note(
     while naming one (#1222). Wording is unchanged for the single-failure
     case, which is every turn carrying only one attachment.
     """
-    subjects = [
-        _clarification_subject(r) for r in preprocess_results if r.classification_failed
-    ]
+    subjects = [_clarification_subject(r) for r in failed]
     if not subjects:
         return None
     if len(subjects) == 1:
@@ -544,6 +597,75 @@ def _classification_clarification_note(
         f"{named}, so I haven't analyzed {pronoun} yet. "
         f"How should I treat {pronoun}?"
     )
+
+
+def _build_classification_clarification(
+    preprocess_results: List["_PreprocessedAttachment"],
+) -> Tuple[List[SuggestedActionResponse], Optional[str]]:
+    """This turn's clarification choices and the note that introduces them.
+
+    The ONE place ``classification_failed`` is filtered. Both halves are
+    built from the same list object, so the note cannot name a different
+    set of attachments than the choices target — an invariant that was
+    prose (two call sites each re-deriving the filter) until it was made
+    structural here. Nothing else should re-derive it.
+    """
+    failed = [r for r in preprocess_results if r.classification_failed]
+    return (
+        _clarification_suggestions_for_failed(failed),
+        _clarification_note_for_failed(failed),
+    )
+
+
+def _carry_forward_unresolved_clarifications(
+    previous_suggestions: Optional[List[Dict[str, Any]]],
+    resolved_file_id: Optional[str],
+    superseded_file_ids: Set[str],
+) -> List[Dict[str, Any]]:
+    """Clarification choices for attachments a reclassification turn left open.
+
+    ``last_suggestions`` is rebuilt from scratch every turn, and a
+    reclassification turn builds no clarification of its own (it carries no
+    attachment), so the whole list collapsed to ``None``. With one failed
+    attachment that cost nothing — the only pending question had just been
+    answered. Once the emitter clarifies EVERY failure (#1222), answering
+    one question deleted the others: the paste's four choices vanished from
+    server-side memory the moment the user resolved the file, and a typed
+    answer for it resolved to nothing. The recovery path the emitter
+    advertised existed for exactly one of the two attachments.
+
+    So an answered question is dropped and an unanswered one is kept.
+
+    Deliberately scoped to the turn that RESOLVES an attachment
+    (``resolved_file_id is None`` → carry nothing), for two reasons. It is
+    the turn the emitter's own contract creates: hand out N recovery paths
+    and the user must be able to walk all N. And it is self-limiting —
+    the carried set only ever shrinks, one file per reclassification, so
+    nothing accumulates into the resolver's choice list. A user who instead
+    ignores the question and says something else still loses the choices,
+    which is pre-existing behaviour and identical for one attachment or
+    two; widening to that case would need an expiry rule this does not have.
+
+    ``superseded_file_ids`` are files the CURRENT turn built fresh choices
+    for — those entries win, so the same file never appears twice.
+    """
+    if not previous_suggestions or resolved_file_id is None:
+        return []
+
+    carried: List[Dict[str, Any]] = []
+    for entry in previous_suggestions:
+        intent = entry.get("intent") or {}
+        if intent.get("type") != IntentType.FILE_RECLASSIFICATION.value:
+            # Only clarification choices are re-offered. An engine follow-up
+            # was about the turn that produced it and does not outlive it.
+            continue
+        file_id = intent.get("file_id")
+        if not file_id or file_id == resolved_file_id:
+            continue
+        if file_id in superseded_file_ids:
+            continue
+        carried.append(entry)
+    return carried
 
 
 @dataclass
@@ -1113,27 +1235,48 @@ class InvestigationService:
             #      here — before the save — so a user who *types* a choice
             #      ("application logs") instead of clicking resolves to the
             #      same file_reclassification intent as a click.
-            clarification = _build_classification_clarification_suggestions(
+            # Choices and the note that introduces them come back together
+            # from one filter pass, so the note cannot name a different set
+            # of attachments than the choices target.
+            clarification, clarification_note = _build_classification_clarification(
                 preprocess_results
             )
-            # Narration bridge — see ``_classification_clarification_note``.
-            # Derived from the same predicate as the suggestions above, so
-            # the note names exactly the attachments the choices target.
-            clarification_note = _classification_clarification_note(preprocess_results)
             if clarification_note:
                 agent_response_text += clarification_note
+
+            # Questions this turn ANSWERED stop being offered; questions it
+            # left open keep their choices. Rebuilding the list from
+            # ``clarification`` alone deleted the second attachment's
+            # recovery path the moment the user resolved the first — see
+            # ``_carry_forward_unresolved_clarifications``. Read off
+            # ``updated_case`` because the reclassification handler
+            # ``model_copy``s the case, so this is still the PREVIOUS turn's
+            # list at this point.
+            resolved_file_id = (
+                (result.get("metadata") or {})
+                .get("file_reclassified", {})
+                .get("file_id")
+            )
+            fresh_entries = [
+                {
+                    "label": s.label,
+                    "action_type": s.type,
+                    "payload": s.payload,
+                    "body": s.body,
+                    "intent": s.intent,
+                }
+                for s in clarification
+            ]
+            carried_entries = _carry_forward_unresolved_clarifications(
+                updated_case.last_suggestions,
+                resolved_file_id,
+                {s.intent["file_id"] for s in clarification if s.intent},
+            )
+
             raw_follow_ups = result.get("suggested_follow_ups", [])
             updated_case.last_suggestions = (
-                [
-                    {
-                        "label": s.label,
-                        "action_type": s.type,
-                        "payload": s.payload,
-                        "body": s.body,
-                        "intent": s.intent,
-                    }
-                    for s in clarification
-                ]
+                fresh_entries
+                + carried_entries
                 + [s for s in raw_follow_ups if s.get("intent")]
             ) or None
 
