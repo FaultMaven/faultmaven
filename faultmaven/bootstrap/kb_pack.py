@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from faultmaven.utils.path_containment import resolve_within_root
+from faultmaven.utils.path_containment import PathEscape, resolve_within_root
 
 logger = logging.getLogger(__name__)
 
@@ -248,13 +248,34 @@ class KbPack:
                 # the same way as every other malformed-pack guard here: the
                 # raise reaches the handler below and the pack is dropped
                 # WHOLE, not silently half-ingested.
-                content_path = resolve_within_root(
-                    runbooks_root / relpath,
-                    root=runbooks_root,
-                    source=f"pack.json relpath (pack_dir={pack_dir})",
-                    subject="KB pack runbook path",
-                    tree="KB pack",
-                )
+                try:
+                    content_path = resolve_within_root(
+                        runbooks_root / relpath,
+                        root=runbooks_root,
+                        source=f"pack.json relpath (pack_dir={pack_dir})",
+                        subject="KB pack runbook path",
+                        tree="KB pack",
+                    )
+                except PathEscape as exc:
+                    # Reported like every sibling guard here — an actionable
+                    # ERROR naming the offending entry, not the generic WARNING
+                    # the catch-all below would emit. An operator whose
+                    # ``runbooks/`` subtree is assembled out of symlinks gets an
+                    # empty KB either way; only this tells them why.
+                    logger.error(
+                        "KB pack at %s: runbook %r has relpath=%r, which "
+                        "resolves outside the pack's runbooks/ directory (%s). "
+                        "A pack may only name files it ships. Ignoring the "
+                        "pack; no runbooks are ingested from it (an already-"
+                        "populated KB keeps its last-good content). Rebuild "
+                        "the pack, or replace a symlinked runbooks/ subtree "
+                        "with real files.",
+                        pack_dir,
+                        rb.get("item_id"),
+                        relpath,
+                        exc,
+                    )
+                    return None
                 content = content_path.read_text(encoding="utf-8")
                 chunks: List[PackChunk] = []
                 for c in rb.get("chunks", []):

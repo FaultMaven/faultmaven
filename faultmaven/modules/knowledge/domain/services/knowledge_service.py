@@ -780,8 +780,6 @@ class KnowledgeService:
             ``{"document_id", "residue": [str, ...]}``. Empty ``residue`` means
             every store this upload touched is clean.
         """
-        from pathlib import Path
-
         from sqlalchemy import select as _select
 
         from faultmaven.infrastructure.persistence.models import (
@@ -911,7 +909,10 @@ class KnowledgeService:
             try:
                 resolved = resolve_runbook_path(
                     file_path,
-                    source=f"knowledge_items.file_path (document_id={document_id})",
+                    source=(
+                        f"conversion_drafts.file_path "
+                        f"(draft_id={draft_id}, document_id={document_id})"
+                    ),
                     root=_knowledge_root(),
                 )
                 resolved.unlink(missing_ok=True)

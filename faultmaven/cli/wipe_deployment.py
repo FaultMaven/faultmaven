@@ -772,15 +772,38 @@ async def wipe_objects() -> tuple[int, str | None]:
     backend removes a sidecar along with its base file, so the later sidecar key
     simply reports ``False`` — but on a store where one was orphaned, deleting it
     by key is how it gets cleaned up.
+
+    **One key that cannot be deleted must not end the sweep.** The filesystem
+    backend refuses a key whose resolved path leaves the storage root (#1235),
+    and ``list_keys`` can hand us exactly such a key: ``rglob`` yields a file
+    symlink inside the root and ``is_file()`` follows it, so a link pointing
+    outside is listed and then refused (measured). Letting that raise out of the
+    loop stopped the wipe at the offending key and left every object after it in
+    place, with ``--verify`` then exiting 5 and no way to finish through the
+    tool. Refusals are counted and named instead, the same skip-don't-abort
+    shape the orphan sweep uses — a wipe is a bulk operation and one unreachable
+    object is a residue to report, not a reason to abandon the rest.
     """
     deleted = 0
+    refused: list[str] = []
     try:
         from faultmaven.infrastructure.storage.factory import get_storage_backend
 
         backend = get_storage_backend()
         for key in await backend.list_keys():
-            if await backend.delete_file(key):
-                deleted += 1
+            try:
+                if await backend.delete_file(key):
+                    deleted += 1
+            except Exception as exc:  # noqa: BLE001 - one bad key, keep sweeping
+                refused.append(f"{key} ({type(exc).__name__}: {exc})")
+        if refused:
+            # Reported as an error so --verify's exit 5 still has a cause the
+            # operator can act on, but AFTER every deletable object is gone.
+            return deleted, (
+                f"{len(refused)} object(s) could not be deleted and remain: "
+                + "; ".join(refused[:5])
+                + ("; ..." if len(refused) > 5 else "")
+            )
         return deleted, None
     except Exception as exc:
         # The running count, not 0. A sweep that failed at object 900 of 1522 did

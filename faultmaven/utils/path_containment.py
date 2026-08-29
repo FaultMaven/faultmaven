@@ -6,14 +6,18 @@ module owns that check; #1213/#1215/#1225 established the discipline for the
 runbook tree and #1235 lifted it here so the evidence/object-storage backend
 uses the same implementation rather than a second one that drifts.
 
-Two consumers today:
+Three consumers today:
 
 - ``faultmaven.utils.runbook_id.resolve_runbook_path`` — the runbook tree, which
   keeps its own ``RunbookPathEscape`` subclass and its own wording because
   callers there catch precisely that type in order to *degrade* (a listing skips
   one bad row, the scan skips one bad file) rather than fail.
 - ``faultmaven.infrastructure.storage.filesystem.FilesystemStorageBackend`` —
-  the evidence blob tree, where a refusal is a hard error.
+  the evidence blob tree, where a refusal is a hard error. It re-raises with a
+  REDACTED message, because its exception reaches a client and the LLM context;
+  see ``_get_full_path``.
+- ``faultmaven.bootstrap.kb_pack.KbPack.load`` — the shipped-runbook pack, whose
+  ``pack.json`` names each runbook's file with a relative path.
 
 The generic checker is deliberately parameterised on *wording* and *error type*
 rather than being copied: what must be identical between subsystems is the
@@ -101,6 +105,12 @@ def resolve_within_root(
         root: The tree the path must be inside. Required, never defaulted: a
             default root is a bypass no test can see, because a caller that
             simply omits it checks against the wrong tree and passes anyway.
+            Resolved against the process cwd like ``path``, every call — NOT
+            cached. A cached anchor plus a freshly resolved candidate disagree
+            the moment the process chdirs, and the shipped storage root
+            (``./data/storage``) is relative, so that is reachable rather than
+            theoretical. The saving would be ~57us per call (measured); the
+            consistency is worth more.
         source: Where the path came from, carried into the error. For a value
             read back from the database that means naming the row — "some draft
             is bad" is not an actionable message.
@@ -114,8 +124,12 @@ def resolve_within_root(
         error: the path is outside the root, or cannot be resolved.
     """
     try:
-        resolved_root = root.resolve()
-    except (RuntimeError, OSError, ValueError) as exc:
+        # ``Path(root)``, not ``root.resolve()``: the annotation says ``Path``
+        # but nothing enforces it, and a ``str`` root raised ``AttributeError``
+        # — escaping as itself, past every caller that catches the typed error.
+        # Normalising both sides identically is the point of a shared primitive.
+        resolved_root = Path(root).resolve()
+    except (RuntimeError, OSError, ValueError, TypeError) as exc:
         raise error(
             f"refusing to resolve against an unresolvable {tree} root: "
             f"{root!r} ({type(exc).__name__}: {exc}) (source: {source})"

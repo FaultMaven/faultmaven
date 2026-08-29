@@ -27,7 +27,7 @@ from faultmaven.infrastructure.storage.base import (
     StorageType,
     StoredFile,
 )
-from faultmaven.utils.path_containment import resolve_within_root
+from faultmaven.utils.path_containment import PathEscape, resolve_within_root
 
 logger = logging.getLogger(__name__)
 
@@ -96,24 +96,56 @@ class FilesystemStorageBackend(IFileStorageBackend):
         minted by ``FileStorageService._generate_storage_key`` — so this is
         defense in depth and cross-subsystem consistency, not a live traversal.
 
+        **What it returns is the UNRESOLVED join, deliberately.** Containment
+        is decided on the resolved path; the filesystem operation is then
+        performed on ``storage_root / key`` itself. For a read or a write the
+        two are equivalent — ``open`` follows the link to the same in-root
+        target — but for ``delete_file`` they are not: unlinking the RESOLVED
+        path removes a symlink's target and leaves the key dangling, so the
+        object disappears from ``list_keys`` (``is_file()`` is False on a broken
+        link) and becomes unreachable by both the orphan sweep and
+        ``fm-wipe-deployment``. In-root symlinks are legal here, so that is a
+        silent data-loss shape, not a corner case. Unlinking the key's own path
+        is also what this backend did before the guard existed.
+
+        **The raised message is REDACTED, deliberately.** ``PathEscape``'s
+        message carries resolved absolute paths and its docstring says that must
+        never reach a client — but this backend's exceptions do:
+        ``FileStorageService.retrieve_file`` re-wraps them into a ``ServiceError``
+        and ``read_file_tool`` puts that string in a ``ToolResult``, which enters
+        the LLM context and the case transcript. So the detail is logged
+        server-side and the exception names only the key, which the caller
+        supplied and already has. The runbook tree keeps its detailed message
+        because it translates at its service seams instead.
+
         Args:
             key: Storage key/path, relative to the storage root.
 
         Returns:
-            The resolved absolute path, strictly inside the storage root.
+            ``storage_root / key`` — unresolved, and proven to resolve to a
+            location strictly inside the storage root.
 
         Raises:
             PathEscape: the key resolves outside the storage root, resolves to
                 the root itself, or cannot be resolved at all. Subclasses
-                ``ValueError``, which is what this raised before.
+                ``ValueError``, which is what this raised before. It is a plain
+                ``PathEscape`` and never ``RunbookPathEscape`` — the knowledge
+                scan catches that type in order to skip a file and continue, and
+                must not do so for an unrelated subsystem's refusal.
         """
-        return resolve_within_root(
-            self.storage_root / key,
-            root=self.storage_root,
-            source=f"key={key!r}",
-            subject="storage key",
-            tree="storage",
-        )
+        candidate = self.storage_root / key
+        try:
+            resolve_within_root(
+                candidate,
+                root=self.storage_root,
+                source=f"key={key!r}",
+                subject="storage key",
+                tree="storage",
+            )
+        except PathEscape as exc:
+            logger.warning("Refusing storage key %r: %s", key, exc)
+            raise PathEscape(f"Invalid storage key: {key!r}") from exc
+        return candidate
 
     async def generate_upload_url(
         self,
