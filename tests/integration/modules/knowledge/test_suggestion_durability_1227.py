@@ -228,7 +228,7 @@ class TestTheSuggestionSurvivesARestart:
 
     async def test_the_quality_gate_verdict_survives(self, db):
         """``validation_passed`` / ``errors`` / ``warnings`` are the three
-        fields #1226 added to the domain object and migration 046 adds columns
+        fields #1226 added to the domain object and migration 045 adds columns
         for. Without the columns they are dropped on write and the reviewer is
         shown ``passed: null`` — "not yet evaluated" — about a draft the
         extractor HAD evaluated, which the API contract explicitly warns must

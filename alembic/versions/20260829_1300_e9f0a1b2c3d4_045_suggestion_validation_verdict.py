@@ -1,4 +1,4 @@
-"""046_suggestion_validation_verdict
+"""045_suggestion_validation_verdict
 
 Adds the runbook quality gate's verdict to ``knowledge_suggestions`` —
 ``validation_passed`` / ``validation_errors`` / ``validation_warnings`` (fm#1227).
@@ -27,7 +27,7 @@ Type follows the table's own ``metadata`` column and ``JsonBlob``:
 accepts both the SQLite string and the PostgreSQL decoded shape.
 
 Revision ID: e9f0a1b2c3d4
-Revises: d8e9f0a1b2c3
+Revises: c7d8e9f0a1b2
 Create Date: 2026-08-29 13:00:00.000000
 """
 
@@ -40,7 +40,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision: str = "e9f0a1b2c3d4"
-down_revision: Union[str, Sequence[str], None] = "d8e9f0a1b2c3"
+down_revision: Union[str, Sequence[str], None] = "c7d8e9f0a1b2"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
