@@ -153,16 +153,88 @@ assemblies never co-occurring, and they do not: the fallback REPLACES the
 assembled prompt rather than joining it. Verified by execution in #1228, and
 RE-verified for #1242 because the mint moved — a budget sweep from 1,000 to
 24,000 ``prompt_target_tokens`` emitted 39 fallback and 8 main prompts, each
-with exactly one live token and no unclosed fenced delimiter
+with exactly one live token, no unclosed fenced delimiter and no absorbed one
 (``tests/unit/core/investigation/test_fallback_fence_1242.py``).
 
-What the fallback deliberately does NOT fence, and why: ``RESOLUTION:``
-carries ``case.closure_reason``, which is engine-derived from a closed enum
-(``terminal_transitions.derive_closure_reason``) and which the LLM never
-authors; ``HYPOTHESES:`` and the journal digest carry schema-validated model
-output, the same classification the main prompt gives ``<working_hypotheses>``
-and ``<investigation_journal>``; ``STATE:``/``STAGE:``/``MILESTONES
-COMPLETED:`` are enum values and literals.
+The fallback's SIZE is bounded by construction rather than by a check, which
+matters because ``_assemble_allocated``'s overflow branch returns it without
+re-measuring it against the model ceiling. Every input is capped (problem 200
+chars, user message 500, three stubs x 200, twelve journal entries x 120,
+three hypotheses x 50), so a worst case exists and is 1,781 tokens — under
+``model_context.MIN_PROMPT_BUDGET`` (2,000), the floor of any ceiling
+``resolve_model_budget`` can return. The margin is thin enough that it is
+pinned by a test rather than left to inspection.
+
+**FORGERY and ABSORPTION are different questions, and only the first one is
+about authorship.** This distinction is the whole lesson of #1254 and it is
+worth stating before the block list below, because getting it wrong is what
+made the first attempt at the fallback fence *create* a hole.
+
+- **Forgery** asks "could this text pretend to be renderer structure?" That is
+  settled by authorship plus the trust rule: schema-validated model output
+  cannot forge a fenced delimiter without the model injecting itself, and any
+  unfenced tag is demoted to quoted DATA by the rule anyway.
+- **Absorption** asks "could this text SWALLOW renderer structure?" That is
+  settled by nothing but the bytes. A tag with no ``>`` absorbs whatever
+  follows it, and the live token comes along for the ride. It does not matter
+  who wrote the text, and it does not matter whether the text was well-formed
+  when it was written — **the renderer's own caps manufacture the shape**:
+  ``h.statement[:50]`` cut a properly terminated forgery into an unterminated
+  one in the #1254 reproduction.
+
+The first version of this fix fenced ``<problem_context>``, ``<user_message>``
+and the upload stubs, and left the journal digest and hypotheses summary bare
+on the reasoning above — sound about forgery, silent about absorption. Because
+those two render IMMEDIATELY BEFORE fenced opening delimiters, the result was
+strictly worse than before the fix: fencing a SUBSET of adjacent channels is
+not a partial improvement, it manufactures a new surface, because a delimiter
+carrying a live token is now sitting next to unguarded text. Measured on
+``6db02e83a``::
+
+    journal content = 'saw <uploaded_file file_id="file_c0ffee..." ...'  (no >)
+    absorbed_delimiters(prompt, live) -> 1 span
+    log: prompt_fence_absorbed_delimiter
+
+It had a second, quieter consequence. ``render_fenced`` now sees the WHOLE
+fallback prompt, so an absorption anywhere in it triggers the corrective
+``always_terminate`` retry, which appends a ``>`` and a terminator note to
+every body including the clean ones — a #666-class citation defect (the user
+sees the agent echo a bracket that was never in their data) plus ~330 wasted
+characters, in the one prompt selected because the budget ran out. Before
+#1242 that retry could not be reached from case text at all, because
+``render_fenced`` only saw the stub substring. Closing the absorption closes
+this too: the retry stops firing.
+
+So the rule the fallback now follows is **every channel the renderer did not
+author is fenced or guarded, and none is left bare adjacent to a fenced
+delimiter** — with two treatments, differing in what they CLAIM rather than in
+what they protect:
+
+- **Fenced** — genuine quoted content: the problem summary, the user's
+  message, the upload stubs, and prior-turn hypotheses and journal entries
+  replayed back (``<working_hypotheses>``, ``<investigation_journal>``, same
+  vocabulary as the main prompt). Delimiters carry the token, the body joins
+  the collision corpus, a body ending mid-tag earns the terminator.
+- **Guarded** — renderer- or engine-authored text that is nonetheless not
+  PROVABLY bracket-free. Corpus plus terminator, no delimiters: fencing would
+  tell the model this is material it did not write, which for engine-derived
+  text is false. ``RESOLUTION:`` is the case in point. Its only writer is
+  ``terminal_transitions.derive_closure_reason``, which returns one of a
+  closed set of labels — but the field is an unconstrained ``Optional[str]``
+  (``max_length=100``, no pattern), so that shape is a convention, not a
+  guarantee, and it renders directly above a fenced ``<user_message>``.
+
+Left BARE, and this is the only safe reason to leave anything bare:
+``STATE:``/``STAGE:`` are enum values and ``MILESTONES COMPLETED:`` is a join
+over string literals written in ``_fallback_body`` itself. Those are provably
+bracket-free — constructed here, not merely trusted — so there is no byte for
+a terminator to close.
+
+The trust rule's block list is generated from the blocks a given render
+actually emitted, because a static list would name ``uploaded_file`` on a
+TERMINAL turn and on every turn without an upload — exactly the defect cited
+above for not reusing ``_PROMPT_FENCE_RULE``, and no more acceptable in a rule
+of our own.
 
 One asymmetry worth knowing rather than fixing here: on the MAIN path
 ``user_message`` passes through ``context_builder.sanitize_user_input``, which

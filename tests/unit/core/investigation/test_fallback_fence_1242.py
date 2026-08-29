@@ -66,23 +66,21 @@ from faultmaven.core.investigation.prompts.templates import (
     get_prompt_for_case,
 )
 from faultmaven.modules.case.contracts import (
-    Hypothesis,
-    HypothesisCategory,
-    HypothesisGenerationMode,
-    HypothesisState,
-)
-from faultmaven.modules.case.domain.models import JournalEntry
-from faultmaven.modules.case.contracts import (
     Case,
     CaseState,
     Evidence,
     EvidenceCategory,
     EvidenceSourceType,
+    Hypothesis,
+    HypothesisCategory,
+    HypothesisGenerationMode,
+    HypothesisState,
     InquiryData,
     InvestigationStage,
     ProblemVerification,
     UploadedFile,
 )
+from faultmaven.modules.case.domain.models import JournalEntry
 from faultmaven.utils.token_estimation import estimate_tokens
 
 pytestmark = [pytest.mark.unit, pytest.mark.security]
