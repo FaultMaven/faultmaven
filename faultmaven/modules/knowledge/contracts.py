@@ -8,7 +8,16 @@ Following the design in module-organization-design.md:
 - Domain services use these contracts for cross-module communication
 """
 
-from typing import TYPE_CHECKING, Any, Dict, Optional, Protocol
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Sequence,
+    Tuple,
+)
 
 if TYPE_CHECKING:
     from faultmaven.modules.knowledge.domain.models.knowledge_item import KnowledgeItem
@@ -156,6 +165,108 @@ class ISuggestionService(Protocol):
 
 
 # ============================================================
+# Repository Contracts
+# ============================================================
+
+
+# ``SuggestionConcurrencyError`` — raised by every implementation of the
+# interface below — lives in ``modules/knowledge/exceptions``, NOT here.
+#
+# Measured, not preferred: ``contracts`` re-exports the domain models, so any
+# module importing from it acquires a path to ``domain``. import-linter's layers
+# contract follows indirect chains, so an infrastructure module importing this
+# exception from here would report ``infrastructure -> contracts -> domain`` and
+# need contract 4 to exempt the whole contracts hop — a wider hole than the
+# single model import ``knowledge_item_repository`` already has exempted.
+# ``exceptions`` imports nothing from ``domain``, so the exception reaches every
+# layer with no chain at all.
+from faultmaven.modules.knowledge.exceptions import (  # noqa: E402,F401
+    SuggestionConcurrencyError,
+)
+
+
+class ISuggestionRepository(Protocol):
+    """Persistence interface for knowledge suggestions (#1227).
+
+    Declared here rather than in ``infrastructure`` for the reason
+    ``ICaseRepository`` is: it is what ``SuggestionService`` depends on, and a
+    domain service that imported a concrete repository would pull the whole ORM
+    graph in at module-import time and pin itself to one implementation.
+
+    **Every read returns a DETACHED COPY.** Mutating what a read handed you
+    changes nothing until you ``save`` it. That is not a choice an
+    implementation may make differently — it is what a sessionless,
+    session-per-operation database repository does, and an implementation that
+    returned its own live object would let a caller forget a ``save`` and still
+    appear correct.
+
+    **Every write is optimistically locked** on ``KnowledgeSuggestion.version``.
+    Because reads are detached, two callers can hold the same row at version N;
+    without the check the second write replays its stale snapshot over the
+    first and silently reverts a concurrent decision.
+    """
+
+    async def save(self, suggestion: "KnowledgeSuggestion") -> "KnowledgeSuggestion":
+        """Insert a new suggestion, or update an existing one in place.
+
+        The update is conditional on ``suggestion.version`` still matching what
+        is stored; on success the stored version is bumped and the returned
+        copy carries the new value.
+
+        Raises:
+            SuggestionConcurrencyError: the row moved since it was loaded.
+        """
+        ...
+
+    async def get(self, suggestion_id: str) -> Optional["KnowledgeSuggestion"]:
+        """Load one suggestion by id — UNSCOPED (the trusted internal load)."""
+        ...
+
+    async def get_for_organization(
+        self, suggestion_id: str, organization_id: str
+    ) -> Optional["KnowledgeSuggestion"]:
+        """Load one suggestion by id, scoped to ``organization_id``.
+
+        ``None`` both for an absent id and for one owned by another tenant, so
+        the two are indistinguishable to the caller.
+        """
+        ...
+
+    async def list_for_organization(
+        self,
+        organization_id: str,
+        *,
+        status: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> "Tuple[List[KnowledgeSuggestion], int]":
+        """Return one page of an organization's suggestions and the total count.
+
+        Newest first, by ``created_at``.
+        """
+        ...
+
+    async def count_for_organization(
+        self,
+        organization_id: str,
+        *,
+        statuses: Optional["Sequence[SuggestionStatus]"] = None,
+    ) -> int:
+        """Count an organization's suggestions, optionally in given statuses."""
+        ...
+
+    @property
+    def is_durable(self) -> bool:
+        """Does this store survive a restart and share rows across processes?
+
+        Reported on ``GET /admin/config/status``. An implementation states it
+        about itself; the composition root is responsible for not building a
+        durable-claiming store over an ephemeral database.
+        """
+        ...
+
+
+# ============================================================
 # DTOs for cross-module communication
 # ============================================================
 
@@ -166,6 +277,7 @@ from faultmaven.modules.knowledge.domain.models.knowledge_item import (
     VerificationLevel,
 )
 from faultmaven.modules.knowledge.domain.models.suggestion import (
+    KnowledgeSuggestion,
     PIIScanStatus,
     SuggestionStatus,
 )

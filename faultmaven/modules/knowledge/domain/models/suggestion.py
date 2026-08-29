@@ -110,6 +110,7 @@ class KnowledgeSuggestion:
         created_at: When suggestion was created
         updated_at: When suggestion was last modified
         metadata: Additional metadata (JSON)
+        version: Optimistic-concurrency token; owned by the repository
     """
 
     suggestion_id: str
@@ -168,6 +169,14 @@ class KnowledgeSuggestion:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: Optional[Dict[str, Any]] = None
+
+    # Optimistic-concurrency token (#1227). Carried on the domain object because
+    # the store hands out DETACHED COPIES: the value a caller loaded is what its
+    # write must be checked against, so it has to travel with the object rather
+    # than live in the repository. Set by the repository on load and bumped by
+    # it on save; nothing in the domain should assign it. A never-persisted
+    # suggestion starts at 1, matching the column's server default.
+    version: int = 1
 
     def __post_init__(self) -> None:
         """Validate suggestion data."""
@@ -397,9 +406,11 @@ class KnowledgeSuggestion:
         reviewer sees WHAT blocks approval instead of only a 422 (#1226).
 
         Deliberately does NOT ``touch()``: validating is an observation of the
-        content, not a modification of the suggestion, and bumping
-        ``updated_at`` here would reorder the eviction pool (which sorts
-        terminal entries by decision time) on a read-only re-check.
+        content, not a modification of the suggestion, so a read-only re-check
+        should not make the row look freshly decided. (The original reason was
+        that ``updated_at`` ordered an eviction pool; #1227 removed the
+        eviction, but ``updated_at`` still means "when this was last changed"
+        and a verdict does not change it.)
 
         Args:
             passed: Whether the content clears the gate

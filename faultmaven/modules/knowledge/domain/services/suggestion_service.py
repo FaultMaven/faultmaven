@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import ConflictError, ServiceUnavailableException
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
+from faultmaven.modules.knowledge.contracts import ISuggestionRepository
 from faultmaven.modules.knowledge.domain.models.conversion import ValidationResult
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
@@ -35,11 +36,18 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_DOMAINS,
     RunbookValidator,
 )
+from faultmaven.modules.knowledge.exceptions import SuggestionConcurrencyError
 from faultmaven.utils.runbook_id import (
     is_hash_only_runbook_id,
     runbook_id_from_parts,
 )
 from faultmaven.utils.serialization import to_json_compatible
+
+#: Statuses that mean "a reviewer has not dealt with this yet". The store's
+#: ceiling counts these and nothing else: a decided suggestion is a permanent
+#: record — and, for an approved one, the only link from its case to the
+#: runbook it produced — not queue depth.
+UNREVIEWED_STATUSES = (SuggestionStatus.PENDING_REVIEW, SuggestionStatus.DRAFT)
 
 
 class SuggestionService:
@@ -159,17 +167,33 @@ corrected runbook, starting at the opening `---`, and output nothing else.
     #: Re-run that driver before changing this.
     MAX_EXTRACTION_ATTEMPTS = 2
 
-    #: Cap on the in-memory store (see #1227 for the durable replacement).
+    #: How many UNREVIEWED suggestions ONE ORGANIZATION may have queued at once.
     #:
-    #: The store became process-lifetime-scoped when the service became a
-    #: singleton, and nothing ever removed an entry: approved, rejected and
-    #: abandoned suggestions all accumulated, each holding a full LLM-generated
-    #: article. Unbounded growth in a long-lived process is a leak, so the store
-    #: is capped and evicts.
+    #: Two things changed with the durable store (#1227), and both are
+    #: deliberate.
+    #:
+    #: **It counts unreviewed work, and nothing is ever deleted.** The old cap
+    #: bounded a process-local dict and made room by EVICTING approved and
+    #: rejected entries. Over a table that is permanent destruction of the only
+    #: case → runbook link that exists: ``knowledge_items`` carries no
+    #: back-pointer, so ``knowledge_suggestions.knowledge_item_id`` is the
+    #: whole provenance trail, and the flywheel this feature exists to build is
+    #: made of exactly those rows. Rows are cheap and a decided suggestion is a
+    #: record, not queue depth — so the ceiling now applies to PENDING_REVIEW
+    #: and DRAFT only, and a full queue REFUSES rather than evicting.
+    #:
+    #: **It is scoped per organization.** The table is shared by every tenant;
+    #: a deployment-wide count would let one tenant's undrained inbox refuse
+    #: another tenant's extraction, a cross-tenant denial of service the
+    #: per-worker dict could only ever inflict within one worker.
     #:
     #: Sized for a review inbox, not a corpus: the queue is admin-facing and
     #: drained by hand, so a few hundred is already far past what anyone reviews.
-    MAX_STORED_SUGGESTIONS = 500
+    #:
+    #: Renamed from ``MAX_STORED_SUGGESTIONS``: it no longer counts what is
+    #: stored. No alias is kept — nothing outside this class ever read it, and
+    #: a name that describes the wrong quantity is worse than a rename.
+    MAX_UNREVIEWED_SUGGESTIONS = 500
 
     def __init__(
         self,
@@ -177,8 +201,9 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         knowledge_service: Optional[Any] = None,
         sanitizer: Optional[Any] = None,
         llm_provider: Optional[Any] = None,
-        max_stored_suggestions: Optional[int] = None,
+        max_unreviewed_suggestions: Optional[int] = None,
         max_extraction_attempts: Optional[int] = None,
+        suggestion_repository: Optional[ISuggestionRepository] = None,
     ):
         """Initialize the suggestion service.
 
@@ -187,24 +212,40 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             knowledge_service: Service for creating knowledge items
             sanitizer: ISanitizer for PII detection/redaction
             llm_provider: LLM provider for extraction
-            max_stored_suggestions: Cap on the in-memory store; defaults to
-                :attr:`MAX_STORED_SUGGESTIONS`. Injectable so a test can drive
-                the eviction path without minting hundreds of suggestions.
+            max_unreviewed_suggestions: Cap on how many UNREVIEWED suggestions one
+                organization may have queued; defaults to
+                :attr:`MAX_UNREVIEWED_SUGGESTIONS`. Injectable so a test can
+                drive the refusal without minting hundreds of suggestions.
             max_extraction_attempts: Total runbook-generation attempts per
                 extraction, first try included; defaults to
                 :attr:`MAX_EXTRACTION_ATTEMPTS`. Injectable so a test can pin
                 the retry budget instead of inheriting whatever the shipped
                 number happens to be.
+            suggestion_repository: The store (#1227) — REQUIRED. Production
+                passes a ``DatabaseSuggestionRepository`` over
+                ``knowledge_suggestions``; a deployment with no database
+                configured, and every unit test, passes
+                ``InMemorySuggestionRepository``.
+
+                There is deliberately no default. A default would make the one
+                mistake that matters — composing a service whose store nobody
+                chose — silent, and it would force this domain service to
+                import a concrete infrastructure class at module scope, pulling
+                the ORM graph in and pinning it to one implementation. Refusing
+                is what the class docstring already claimed happened.
+
+        Raises:
+            ValueError: no repository was supplied.
         """
         self.logger = logging.getLogger(__name__)
         self._case_repository = case_repository
         self._knowledge_service = knowledge_service
         self._sanitizer = sanitizer
         self._llm_provider = llm_provider
-        self._max_stored_suggestions = (
-            self.MAX_STORED_SUGGESTIONS
-            if max_stored_suggestions is None
-            else max_stored_suggestions
+        self._max_unreviewed_suggestions = (
+            self.MAX_UNREVIEWED_SUGGESTIONS
+            if max_unreviewed_suggestions is None
+            else max_unreviewed_suggestions
         )
         self._max_extraction_attempts = max(
             1,
@@ -216,12 +257,18 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         )
         self._validator = RunbookValidator()
 
-        # In-memory store. NOT durable and NOT shared across workers — a restart
-        # drops every pending suggestion and with WORKERS>1 an extract handled by
-        # one worker is invisible to an approve handled by another. The durable
-        # replacement is #1227; until then the store is bounded (see
-        # _evict_for_capacity) so a long-lived process cannot grow without limit.
-        self._suggestions_store: Dict[str, KnowledgeSuggestion] = {}
+        # The store. Durable and worker-shared when it is the database
+        # repository the composition root builds; a process-local double
+        # otherwise. Every read and write below goes through this seam — the
+        # service holds no suggestion state of its own, which is what makes an
+        # extract on one pod visible to the approve on another.
+        if suggestion_repository is None:
+            raise ValueError(
+                "SuggestionService requires a suggestion_repository. There is "
+                "no default: a service whose store nobody chose is the failure "
+                "this argument exists to prevent (#1227)."
+            )
+        self._repository: ISuggestionRepository = suggestion_repository
 
     async def extract_knowledge_from_case(
         self,
@@ -256,10 +303,9 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         # answer does not depend on anything generated below, so there is
         # nothing to wait for.
         #
-        # It still makes room for exactly one entry and nothing is stored
-        # between here and the write below, so the cap remains a real ceiling
-        # rather than a ceiling plus one.
-        self._evict_for_capacity()
+        # Nothing is stored between here and the write below, so the check
+        # remains a real ceiling rather than a ceiling plus one.
+        await self._refuse_if_review_queue_full(organization_id)
 
         # Get case details
         case_title = "Unknown Case"
@@ -384,71 +430,78 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
         # Capacity was checked and made at the top of this method, before the
         # generation budget was spent.
-        self._suggestions_store[suggestion_id] = suggestion
+        # Reassigned, not just called: ``save`` returns the persisted copy
+        # carrying the version the store now holds, and a caller that keeps the
+        # pre-save object would fail its OWN next write's concurrency check
+        # against a row only it had touched.
+        suggestion = await self._repository.save(suggestion)
         self.logger.info(f"Created suggestion {suggestion_id} from case {case_id}")
 
         return suggestion
 
-    def _evict_for_capacity(self) -> None:
-        """Make room for one more suggestion, or refuse.
+    async def _refuse_if_review_queue_full(self, organization_id: str) -> None:
+        """Refuse a new extraction when ``organization_id``'s inbox is full.
 
-        Terminal suggestions — APPROVED and REJECTED — are the eviction pool:
-        their decision is already recorded elsewhere (an approved one has its
-        knowledge item in the corpus, a rejected one has nothing to publish), so
-        dropping them from an in-memory review inbox loses only history. Oldest
-        first, by ``updated_at``, which is when the decision was taken.
+        A PENDING_REVIEW or DRAFT suggestion is the one thing in this store that
+        exists nowhere else, so the ceiling is enforced by refusing to add to it
+        — never by removing something a reviewer has not seen, and never by
+        removing anything at all.
 
-        A PENDING_REVIEW or DRAFT suggestion is NEVER evicted for capacity. It is
-        the one thing here that exists nowhere else — evicting it would silently
-        destroy work a reviewer has not seen, and the extract that caused the
-        eviction would look like a success. So when the store is full of items
-        still awaiting review, extraction REFUSES:
+        This REPLACED an eviction policy, and the change is deliberate (#1227).
+        The old cap bounded a process-local dict and made room by deleting the
+        oldest APPROVED/REJECTED entry, on the reasoning that a decided
+        suggestion "loses only history". That reasoning does not survive the
+        move to a table: ``knowledge_items`` carries no back-pointer, so an
+        approved suggestion's ``knowledge_item_id`` is the ONLY link from a case
+        to the runbook it produced, and deleting the row destroys the provenance
+        the knowledge flywheel exists to accumulate. A process-memory bound
+        became permanent destruction, so the bound moved to the thing that
+        actually needs bounding.
+
+        Scoped to ONE organization, because the store is a table shared by every
+        tenant. A deployment-wide count would let one tenant's undrained inbox
+        refuse another tenant's extraction.
+
+        Called BEFORE the generation budget is spent, not after: it raises, and
+        running it last meant a deployment whose inbox was full burned up to
+        four LLM generations producing a runbook that was then thrown away, on
+        every extract request, for as long as the queue stayed full.
+
+        Args:
+            organization_id: the tenant the extraction is being stored under
 
         Raises:
-            ServiceUnavailableException: the store is at capacity and every
-                entry is still awaiting review. The route answers 503, which is
-                honest — the queue is full and the fix is to review it. #1227's
-                durable store removes the ceiling.
+            ServiceUnavailableException: this organization's review queue is
+                full. The route answers 503, which is honest — the queue is full
+                and the fix is to review it.
         """
-        capacity = self._max_stored_suggestions
-        if capacity <= 0 or len(self._suggestions_store) < capacity:
+        capacity = self._max_unreviewed_suggestions
+        if capacity <= 0:
+            return
+        unreviewed = await self._repository.count_for_organization(
+            organization_id, statuses=UNREVIEWED_STATUSES
+        )
+        if unreviewed < capacity:
             return
 
-        terminal = [
-            s
-            for s in self._suggestions_store.values()
-            if s.status in (SuggestionStatus.APPROVED, SuggestionStatus.REJECTED)
-        ]
-        needed = len(self._suggestions_store) - capacity + 1
-        if len(terminal) < needed:
-            self.logger.error(
-                "Suggestion store is full (%d/%d) and %d entries are still "
-                "awaiting review; refusing to extract more knowledge until the "
-                "review inbox is drained",
-                len(self._suggestions_store),
-                capacity,
-                len(self._suggestions_store) - len(terminal),
-            )
-            # DIAGNOSTIC wording, with the numbers an operator needs. The
-            # user-facing sentence is the route's (``SUGGESTION_QUEUE_FULL``) —
-            # not this string re-rendered, because a domain service may not
-            # import the API layer (import-linter contract 2) and because the
-            # route's own AST guard forbids echoing a caught exception into a
-            # 5xx body anyway. One audience each, no duplication.
-            raise ServiceUnavailableException(
-                f"Suggestion store at capacity ({len(self._suggestions_store)}/"
-                f"{capacity}) with no reviewed entry to evict"
-            )
-
-        terminal.sort(key=lambda s: s.updated_at)
-        for victim in terminal[:needed]:
-            del self._suggestions_store[victim.suggestion_id]
-        self.logger.warning(
-            "Suggestion store hit its %d-entry cap; evicted %d reviewed "
-            "suggestion(s) (oldest decision first): %s",
+        self.logger.error(
+            "Review queue is full for organization %s (%d/%d unreviewed); "
+            "refusing to extract more knowledge until the review inbox is "
+            "drained. Nothing is evicted: an approved suggestion is the only "
+            "link from its case to the runbook it produced",
+            organization_id,
+            unreviewed,
             capacity,
-            needed,
-            ", ".join(s.suggestion_id for s in terminal[:needed]),
+        )
+        # DIAGNOSTIC wording, with the numbers an operator needs. The
+        # user-facing sentence is the route's (``SUGGESTION_QUEUE_FULL``) —
+        # not this string re-rendered, because a domain service may not
+        # import the API layer (import-linter contract 2) and because the
+        # route's own AST guard forbids echoing a caught exception into a
+        # 5xx body anyway. One audience each, no duplication.
+        raise ServiceUnavailableException(
+            f"Suggestion review queue at capacity ({unreviewed}/{capacity}) "
+            f"for this organization"
         )
 
     async def _generate_runbook_draft(self, base_prompt: str, case_id: str) -> str:
@@ -968,7 +1021,7 @@ level, and the tools needed.]
         Returns:
             KnowledgeSuggestion or None
         """
-        return self._suggestions_store.get(suggestion_id)
+        return await self._repository.get(suggestion_id)
 
     async def get_suggestion_visible(
         self, suggestion_id: str, *, organization_id: str
@@ -994,10 +1047,9 @@ level, and the tools needed.]
         """
         if not suggestion_id or not organization_id:
             return None
-        suggestion = self._suggestions_store.get(suggestion_id)
-        if suggestion is None or suggestion.organization_id != organization_id:
-            return None
-        return suggestion
+        return await self._repository.get_for_organization(
+            suggestion_id, organization_id
+        )
 
     async def list_suggestions(
         self,
@@ -1029,22 +1081,15 @@ level, and the tools needed.]
                 "offset": offset,
             }
 
-        suggestions = [
-            s
-            for s in self._suggestions_store.values()
-            if s.organization_id == organization_id
-        ]
-
-        if status:
-            suggestions = [s for s in suggestions if s.status.value == status]
-
-        # Sort by created_at descending
-        suggestions.sort(key=lambda s: s.created_at, reverse=True)
-
-        total_count = len(suggestions)
-
-        # Apply pagination
-        suggestions = suggestions[offset : offset + limit]
+        # Filtering, ordering (newest first) and pagination are the store's, so
+        # the database does them in SQL instead of this service loading every
+        # row to slice three of them.
+        suggestions, total_count = await self._repository.list_for_organization(
+            organization_id,
+            status=status,
+            limit=limit,
+            offset=offset,
+        )
 
         return {
             "suggestions": suggestions,
@@ -1129,6 +1174,17 @@ level, and the tools needed.]
             # the reviewer reading ``validation_passed=True`` about content that
             # no longer existed (#1226 rework).
             await self._scan_and_record(suggestion)
+            # Persist the re-scan whatever it concluded. The loaded suggestion
+            # is a detached copy of the row (#1227), so without this a
+            # successful re-scan is discarded on the way out and the next
+            # approve re-runs it — and a redaction the scan applied to the
+            # content would be lost while the verdict it produced was not.
+            #
+            # Reassigned, so the object carries the version this write produced.
+            # Without that, the approval's own later save would be checked
+            # against a version IT had already superseded and would report a
+            # concurrent modification that never happened.
+            suggestion = await self._repository.save(suggestion)
 
         if not suggestion.is_ready_for_review():
             self.logger.warning(
@@ -1270,12 +1326,54 @@ level, and the tools needed.]
         # rule for the step above it. ``delete_document`` hard-deletes an
         # authored id (``kb_<16 hex>``, which is what ``upload_document``
         # mints), removing both the row and its vectors.
+        #
+        # The ``save`` is inside the SAME try for the same reason the mutation
+        # is (#1227). Marking the loaded copy approved changes nothing until it
+        # is written back, so a store failure here leaves a published knowledge
+        # item that no suggestion links to — the identical orphan, arrived at
+        # one line later.
+        #
+        # AND it is where the cross-process double-approve is stopped. The
+        # ``is_approved()`` guard above reads a DETACHED COPY, so on two pods it
+        # is a TOCTOU: both load PENDING_REVIEW, both pass, both publish. That
+        # guard was sound while one worker owned the store as a single live
+        # object; #1227 removes that premise, so the real decision has to be
+        # taken by the database. ``save`` is an optimistically-locked UPDATE
+        # (``WHERE version = :loaded``), so exactly one of the two racing
+        # approvals commits and the loser raises
+        # ``SuggestionConcurrencyError`` — at which point the ``except`` below
+        # rolls ITS OWN published item back out of the global corpus and the
+        # caller gets a 409. Net effect: one knowledge item survives, linked;
+        # the duplicate is created and then removed rather than left orphaned.
+        #
+        # Preventing the second publish outright would need a claim written
+        # before ``upload_document`` runs, which means a durable "approving"
+        # state that a crashed pod never releases. Publish-then-claim reuses the
+        # compensation that already exists and leaves no state that can get
+        # stuck; the cost is transient duplicate work in a rare race.
         try:
             suggestion.approve(
                 reviewed_by=reviewed_by,
                 knowledge_item_id=knowledge_item_id,
                 review_notes=review_notes,
             )
+            await self._repository.save(suggestion)
+        except SuggestionConcurrencyError:
+            self.logger.warning(
+                "Concurrent approval detected for suggestion %s: another writer "
+                "committed first, so this approval's knowledge item %s is being "
+                "rolled back",
+                suggestion_id,
+                knowledge_item_id,
+            )
+            await self._rollback_published_item(knowledge_item_id, suggestion_id)
+            raise ConflictError(
+                "Suggestion was decided by another reviewer while this "
+                "approval was in flight",
+                resource_type="suggestion",
+                resource_id=suggestion_id,
+                conflict_reason="concurrent_modification",
+            ) from None
         except Exception:
             await self._rollback_published_item(knowledge_item_id, suggestion_id)
             raise
@@ -1379,6 +1477,7 @@ level, and the tools needed.]
             rejection_reason=rejection_reason,
             review_notes=review_notes,
         )
+        suggestion = await self._repository.save(suggestion)
 
         self.logger.info(f"Rejected suggestion {suggestion_id}: {rejection_reason}")
         return True
@@ -1425,6 +1524,7 @@ level, and the tools needed.]
             suggestion.suggested_type = suggested_type
             suggestion.touch()
 
+        suggestion = await self._repository.save(suggestion)
         self.logger.info(f"Updated suggestion {suggestion_id}")
         return suggestion
 
@@ -1452,6 +1552,7 @@ level, and the tools needed.]
             return None
 
         suggestion.mark_pii_remediated(remediated_by)
+        suggestion = await self._repository.save(suggestion)
         self.logger.info(f"PII remediated for suggestion {suggestion_id}")
         return suggestion
 

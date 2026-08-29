@@ -89,6 +89,36 @@ ANCHORING_SAME_CATEGORY_THRESHOLD = 4
 IGNORED_STAGNATION_TURN_THRESHOLD = 3
 
 
+#: Recorded when an anti-anchoring retirement removes a hypothesis that was
+#: linked to evidence on some axis. Byte-identical to the string this mechanism
+#: has always written, so existing rows keep their meaning. It asserts nothing
+#: beyond the retirement itself — when grounding cannot be DETERMINED the
+#: separate ``_RETIRED_GROUNDING_UNKNOWN`` is written instead, because writing
+#: this one there would record an undeterminable case as a positive
+#: "was grounded" claim and over-count the grounded bucket exactly where the
+#: data is weakest.
+_RETIRED_STALLED = (
+    "Anti-anchoring: retired a stalled hypothesis to diversify the differential"
+)
+
+#: Recorded when grounding could not be established either way — no ``case`` for
+#: graph access, or a chain head naming a node absent from the loaded graph.
+#: Distinct from both other constants on purpose: an unknown counted as either
+#: one silently biases the measurement this label exists to produce.
+_RETIRED_GROUNDING_UNKNOWN = (
+    "Anti-anchoring: retired a stalled hypothesis (grounding undetermined)"
+)
+
+#: Recorded when the retired hypothesis was never linked to evidence on EITHER
+#: axis (flat or chain root) — the engine discarded a candidate it never tested.
+#: Distinguishing these two is the whole point of the label: without it, the
+#: report and the telemetry cannot tell "tested and abandoned" from "never
+#: grounded", and 74% of anti-anchoring retirements in the corpus are the latter.
+_RETIRED_NEVER_GROUNDED = (
+    "Anti-anchoring: retired a hypothesis that was never linked to evidence"
+)
+
+
 class HypothesisManager:
     """Unified hypothesis lifecycle and confidence management
 
@@ -738,11 +768,71 @@ class HypothesisManager:
 
         return False, None, []
 
+    @staticmethod
+    def _never_grounded(hypothesis: Hypothesis, case: "Case | None") -> "bool | None":
+        """Whether this hypothesis can be POSITIVELY established as never having
+        been linked to evidence, on either axis.
+
+        Two axes carry grounding and only one of them is on the hypothesis:
+        the flat ``hypothesis.evidence_links``, and the chain ROOT's
+        ``node.evidence_links`` in the causal graph. Chain node_evidence_links
+        never mirror into the flat list (see
+        ``_chain_root_confidently_supported``), so a flat-only test reports a
+        chain-grounded hypothesis as untested — the failure this label exists to
+        avoid, and one the corpus actually produced.
+
+        ROOT only, never the whole path: terminal path nodes are shared symptom
+        nodes across hypotheses, so a path-wide check would count symptom
+        observation as grounding for the cause.
+
+        Any link counts, whatever its stance or confidence — the question is
+        "was this ever tested", not "was it supported".
+
+        Three-valued because "cannot tell" is not "grounded": ``True`` =
+        positively never linked, ``False`` = positively linked, ``None`` =
+        undeterminable (no ``case``, or a chain head naming a node absent from
+        the loaded graph). Collapsing ``None`` into either answer biases the
+        measurement this label exists to produce.
+        """
+        if hypothesis.evidence_links:
+            return False
+        if case is None:
+            # No graph access, so the chain axis cannot be ruled out.
+            return None
+        # The chain head is root_node_id when set, else path[0]: the Hypothesis
+        # validator (``_root_heads_the_path``) deliberately permits a path whose
+        # root is not yet assigned, and evidence on that head is real chain
+        # grounding. Head only, never the whole path — terminal path nodes are
+        # shared symptom nodes across hypotheses, so a path-wide check would
+        # count symptom observation as grounding for the cause.
+        #
+        # This head resolution is DELIBERATELY wider than
+        # ``_chain_root_confidently_supported``'s, which reads root_node_id
+        # alone. Do not unify them: that one gates a likelihood cap and asks
+        # "is the root confidently supported", so widening it would change a
+        # validation outcome. This one only labels a retirement and asks "was
+        # anything ever linked", where missing a grounded hypothesis is the
+        # failure to avoid. Same lookup shape, different questions.
+        head_id = getattr(hypothesis, "root_node_id", None) or next(
+            iter(getattr(hypothesis, "path", None) or []), None
+        )
+        if not head_id:
+            # No chain axis exists at all, so the empty flat list is the whole
+            # picture — this one really was never linked.
+            return True
+        node = (case.causal_nodes or {}).get(head_id)
+        if node is None:
+            # The head names no loaded node: its links cannot be inspected, so
+            # the answer is unknown rather than guessed.
+            return None
+        return not node.evidence_links
+
     def force_alternative_generation(
         self,
         target_hypothesis_ids: list[str],
         hypotheses: list[Hypothesis],
         current_turn: int,
+        case: "Case | None" = None,
     ) -> list[str]:
         """Break a detected fixation by retiring the STALLED hypotheses the
         anchoring detector flagged.
@@ -758,6 +848,10 @@ class HypothesisManager:
             target_hypothesis_ids: ids flagged by ``detect_anchoring``
             hypotheses: hypotheses to resolve the ids against
             current_turn: current conversation turn
+            case: the case, for causal-graph access when recording WHETHER the
+                retired hypothesis had ever been grounded. Observability only —
+                it does not affect WHICH hypotheses are retired. Omitted,
+                grounding is undeterminable and the reason says so.
 
         Returns:
             The list of retired hypothesis ids (possibly empty — e.g. all flagged
@@ -773,10 +867,14 @@ class HypothesisManager:
                 and h.iterations_without_progress >= 2
             ):
                 h.state = HypothesisState.RETIRED
-                h.retirement_reason = (
-                    "Anti-anchoring: retired a stalled hypothesis to diversify "
-                    "the differential"
-                )
+                # Records WHY the retirement happened, not WHETHER it does. The
+                # eligibility test above is untouched: both branches retire.
+                never_grounded = self._never_grounded(h, case)
+                h.retirement_reason = {
+                    True: _RETIRED_NEVER_GROUNDED,
+                    False: _RETIRED_STALLED,
+                    None: _RETIRED_GROUNDING_UNKNOWN,
+                }[never_grounded]
                 h.last_updated_turn = current_turn
                 retired.append(hid)
 

@@ -3537,7 +3537,15 @@ class Hypothesis(BaseModel):
     )
 
     retirement_reason: Optional[str] = Field(
-        default=None, description="Reason if hypothesis was retired"
+        default=None,
+        description=(
+            "Why the hypothesis was set aside without a verdict. Bounded to 200 "
+            "characters by TRUNCATION (see the validator below), not by "
+            "max_length: it is rendered into the terminal report, and the "
+            "user-retire path writes the user's own message here, so an "
+            "unbounded value reaches the report and the replayed conversation "
+            "as arbitrary user text."
+        ),
     )
 
     refutation_reason: Optional[str] = Field(
@@ -3625,6 +3633,31 @@ class Hypothesis(BaseModel):
                 f"Current state is {self.state.value}."
             )
         return self
+
+    @field_validator("retirement_reason", mode="before")
+    @classmethod
+    def _bound_retirement_reason(cls, v: Optional[str]) -> Optional[str]:
+        """Truncate rather than reject — this validator also runs on LOAD.
+
+        ``max_length`` here would be a HYDRATION constraint, not just a write
+        one: both repositories build ``Hypothesis(**row)`` straight from the
+        Text column inside ``get_case``'s blanket ``except`` that raises
+        ``RepositoryException``, so a single over-length legacy row would make
+        the whole CASE unloadable — not a truncated reason, a dead case. The
+        user-retire path has written this field unbounded since 2026-04-09
+        (``d10d34e1d``), so such rows can exist in any deployment. (
+        ``refutation_reason`` can safely carry ``max_length`` because its only
+        writer has always truncated at 200, so it never accumulated long rows.)
+
+        Truncating on read keeps the invariant that matters — nothing over 200
+        characters reaches the report or the replayed prompt — while letting
+        legacy rows load. Dropping the bound instead would leave exactly the
+        unbounded user text in the prompt that bounding this field exists to
+        prevent.
+        """
+        if isinstance(v, str) and len(v) > 200:
+            return v[:197] + "..."
+        return v
 
     @model_validator(mode="after")
     def _root_heads_the_path(self) -> "Hypothesis":

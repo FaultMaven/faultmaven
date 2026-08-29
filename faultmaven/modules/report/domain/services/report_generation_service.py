@@ -53,6 +53,20 @@ from faultmaven.utils.serialization import to_json_compatible
 logger = logging.getLogger(__name__)
 
 
+def _one_line(text: str) -> str:
+    """Flatten a stored reason to a single line before it is rendered.
+
+    These reasons are interpolated into the terminal report, which is appended
+    to the agent's reply, persisted as a case message, and replayed to the model
+    on later turns. ``retirement_reason`` is written verbatim from the user's own
+    message on the explicit-retire path, so a newline in it would open a
+    ``## Root Cause`` heading inside the report and forge a section the
+    investigation never produced. Collapsing the whitespace removes the vector
+    without altering the words.
+    """
+    return " ".join(str(text).split())
+
+
 class ReportGenerationService:
     """
     Auto-generate terminal summaries for resolved and closed cases.
@@ -912,6 +926,7 @@ class ReportGenerationService:
                 "validated": [],
                 "refuted": [],
                 "inconclusive": [],
+                "retired": [],
                 "other": [],
             }
             for h in hypotheses:
@@ -921,10 +936,17 @@ class ReportGenerationService:
                 else:
                     buckets["other"].append(h)
 
+            # RETIRED is its own bucket rather than falling into "Other". A
+            # retired hypothesis was set aside, not disproven, and most of them
+            # were never linked to any evidence — listing those unlabelled,
+            # beside validated and refuted ones and carrying a confidence
+            # percentage, reads as a candidate the investigation considered and
+            # dispatched. It states more than the record supports.
             bucket_order = [
                 ("validated", "Validated"),
                 ("refuted", "Refuted"),
                 ("inconclusive", "Inconclusive"),
+                ("retired", "Set aside without a verdict"),
                 ("other", "Other"),
             ]
             for key, label in bucket_order:
@@ -935,12 +957,23 @@ class ReportGenerationService:
                 # the bullets to render as a list).
                 parts.append(f"**{label}:**\n")
                 for h in buckets[key]:
-                    confidence = getattr(h, "likelihood", 0)
-                    line = f"- {h.statement} _(confidence: {confidence:.0%})_"
+                    # No confidence figure on a hypothesis set aside without a
+                    # verdict. Anti-anchoring retirement never touches
+                    # likelihood, so the number is the decayed prior — it
+                    # reports no evidence, and printing it beside validated and
+                    # refuted entries is the overclaim this section exists to
+                    # avoid.
+                    if key == "retired":
+                        line = f"- {h.statement}"
+                    else:
+                        confidence = getattr(h, "likelihood", 0)
+                        line = f"- {h.statement} _(confidence: {confidence:.0%})_"
                     if key == "refuted" and getattr(h, "refutation_reason", None):
                         # Two trailing spaces before \n produce a hard
                         # line break within the same list item.
-                        line += f"  \n  Refuted by: {h.refutation_reason}"
+                        line += f"  \n  Refuted by: {_one_line(h.refutation_reason)}"
+                    elif key == "retired" and getattr(h, "retirement_reason", None):
+                        line += f"  \n  Set aside: {_one_line(h.retirement_reason)}"
                     parts.append(line)
                 parts.append("")
             # Trailing empty already appended per-group; no extra needed here.
@@ -1043,10 +1076,23 @@ class ReportGenerationService:
                 status_str = (
                     h.state.value if hasattr(h.state, "value") else str(h.state)
                 )
-                parts.append(
-                    f"- **{h.statement}** — {status_str} "
-                    f"(confidence: {getattr(h, 'likelihood', 0):.0%})"
-                )
+                # Same rule as "Hypotheses Considered": a retired hypothesis
+                # carries a decayed prior, not a measured confidence.
+                if status_str == "retired":
+                    # Carry the reason here too. CLOSED cases are where most
+                    # retirements land, and this is their only hypothesis
+                    # section — without it the never-grounded / stalled /
+                    # undetermined distinction is invisible in exactly the
+                    # report that matters most.
+                    line = f"- **{h.statement}** — set aside without a verdict"
+                    if getattr(h, "retirement_reason", None):
+                        line += f"  \n  Set aside: {_one_line(h.retirement_reason)}"
+                    parts.append(line)
+                else:
+                    parts.append(
+                        f"- **{h.statement}** — {status_str} "
+                        f"(confidence: {getattr(h, 'likelihood', 0):.0%})"
+                    )
             parts.append("")
 
         # Mitigation Status — only meaningful when a mitigation was
@@ -1090,12 +1136,31 @@ class ReportGenerationService:
             )
         elif closure_reason_raw == "closed_insufficient_evidence":
             parts.append("## Recommendation\n")
-            if hypotheses:
-                top_hyp = max(hypotheses, key=lambda h: getattr(h, "likelihood", 0))
+            # Only a hypothesis still in play can be a lead. REFUTED ones are
+            # disproven and RETIRED ones were set aside without a verdict —
+            # most of those were never linked to any evidence, so naming one as
+            # "the most promising lead" would send a follow-up to a candidate
+            # this investigation never tested. Same population as
+            # ``_insufficient_evidence_boundary_block``'s residual candidates.
+            live = [
+                h
+                for h in hypotheses
+                if (h.state.value if hasattr(h.state, "value") else str(h.state))
+                not in ("refuted", "retired")
+            ]
+            if live:
+                top_hyp = max(live, key=lambda h: getattr(h, "likelihood", 0))
                 parts.append(
                     f"The most promising lead at time of closure was: "
                     f"**{top_hyp.statement}**. A follow-up investigation "
                     f"should start there.\n"
+                )
+            elif hypotheses:
+                parts.append(
+                    "Every hypothesis raised was either disproven or set aside "
+                    "without a verdict, so no lead survives to resume from. A "
+                    "follow-up should start from the evidence, not from these "
+                    "candidates.\n"
                 )
             else:
                 parts.append(

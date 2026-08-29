@@ -94,11 +94,13 @@ async def get_preprocessing_service(request: Request) -> PreprocessingService:
 #: cannot drift into saying different things about the same missing service.
 SUGGESTION_SERVICE_UNAVAILABLE = "Knowledge suggestions unavailable"
 
-#: Answered when the in-memory suggestion store is at capacity and every entry
-#: is still awaiting review, so nothing may be evicted (#1214; the durable store
-#: is #1227). A STATIC string, deliberately: the module's own AST guard forbids
-#: interpolating a caught exception into any 5xx body, and this route's 503 is
-#: no exception to that rule just because the message happens to be ours.
+#: Answered when this organization's review queue is at its ceiling — the store
+#: refuses to add unreviewed work rather than deleting any (#1227; the #1214
+#: version of this evicted decided entries, which over a durable table would
+#: destroy the only case → runbook link there is). A STATIC string,
+#: deliberately: the module's own AST guard forbids interpolating a caught
+#: exception into any 5xx body, and this route's 503 is no exception to that
+#: rule just because the message happens to be ours.
 SUGGESTION_QUEUE_FULL = (
     "The knowledge suggestion queue is full. Review or reject the pending "
     "suggestions before extracting more."
