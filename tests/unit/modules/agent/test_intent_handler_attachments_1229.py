@@ -20,6 +20,7 @@ branch): ``tests/unit/core/investigation/test_gate_turn_upload_novelty_1229.py``
 """
 
 import copy
+import inspect
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -32,7 +33,9 @@ from faultmaven.core.investigation.schemas import Attachment, TurnPayload
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
+    _INTENT_DISPATCH,
     InvestigationService,
+    _IntentDispatchKind,
 )
 from faultmaven.modules.case.domain.models import (
     CaseState,
@@ -342,3 +345,49 @@ class TestTheNonEngineHandlersStillReportUploads:
             "for the upload was already committed (#1229)"
         )
         assert passed[0]["is_novel"] is True
+
+
+class TestEverySeriveRoutedHandlerCanReceiveUploads:
+    """The structural guard — the class, not the five instances.
+
+    #1229's two halves were both "a handler that could not be told". The three
+    the issue named took ``attachments=None``; ``GREETING`` and
+    ``FILE_RECLASSIFICATION`` had no such parameter at all. The dispatch is an
+    if/elif chain, so a SERVICE intent added tomorrow drops the signal again by
+    simply not mentioning it, and nothing fails.
+
+    Derived from ``_INTENT_DISPATCH`` rather than from a hand-kept list, in the
+    same spirit as ``_validate_intent_dispatch_completeness``: a new SERVICE
+    entry is checked automatically or the test says why it could not be.
+    """
+
+    @staticmethod
+    def _service_intents():
+        return sorted(
+            i
+            for i, kind in _INTENT_DISPATCH.items()
+            if kind is _IntentDispatchKind.SERVICE
+        )
+
+    def test_the_dispatch_table_still_has_service_entries(self):
+        """Guards the guard: if SERVICE routing disappears or is renamed, the
+        parametrised check below would pass over an empty set."""
+        assert len(self._service_intents()) >= 5
+
+    def test_each_handler_accepts_attachments(self, service):
+        missing = []
+        for intent in self._service_intents():
+            handler = getattr(service, f"_handle_{intent.value}", None)
+            assert handler is not None, (
+                f"{intent.value} is SERVICE-routed but has no "
+                f"_handle_{intent.value}; if the handler was renamed, teach "
+                "this test the new name — do not delete the check"
+            )
+            if "attachments" not in inspect.signature(handler).parameters:
+                missing.append(intent.value)
+
+        assert not missing, (
+            f"SERVICE-routed handlers that cannot be told about the turn's "
+            f"uploads: {missing}. Every one of them delegates to, or stands in "
+            "for, a turn that already committed an UploadedFile row (#1229)."
+        )
