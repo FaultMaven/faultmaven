@@ -436,10 +436,18 @@ class TestContextBuilderFlagIntegration:
                 case, user_query="errors between 14:00 and 14:30"
             )
 
+        # Anchored on the element, not on a fixed character window: the
+        # promoted item is Tier A iff its own <evidence> element contains a
+        # <file_extract>. A 300-char proximity window used to stand in for
+        # that, and the fence attributes ate most of its margin (#1217) —
+        # one more attribute on either tag would have turned it into a false
+        # regression with nothing about the rerank having changed.
         config_tag_start = out.find(f'id="{matching_config.evidence_id}"')
-        local_window = out[config_tag_start : config_tag_start + 300]
+        assert config_tag_start != -1, out
+        element_end = out.find("</evidence", config_tag_start)
+        assert element_end != -1, out
         # Phase 3c bonus ran → config is now in Tier A with structural_index.
-        assert "<file_extract" in local_window
+        assert "<file_extract" in out[config_tag_start:element_end]
 
     def test_flag_on_no_time_phrase_behaves_like_flag_off(self):
         """User turn without a time phrase — rerank doesn't fire, and
