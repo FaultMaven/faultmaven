@@ -145,6 +145,17 @@ class CountingProvider:
         return await self._inner.generate(**kwargs)
 
 
+def _resolved_model() -> str:
+    """The model the router will actually use, asked of settings rather than
+    guessed from whichever ``*_MODEL`` env var happens to be set."""
+    try:
+        from faultmaven.config.settings import get_settings
+
+        return get_settings().llm.get_knowledge_model() or "(provider default)"
+    except Exception:  # a recorded run should never fail on its own metadata
+        return "(unresolved)"
+
+
 def build_provider():
     from faultmaven.container.providers.infrastructure import create_llm_provider
 
@@ -344,9 +355,7 @@ async def main_async(args) -> int:
     if args.json:
         payload = {
             "recorded_at": datetime.now(timezone.utc).isoformat(),
-            "model": os.environ.get("GEMINI_MODEL")
-            or os.environ.get("OPENAI_MODEL")
-            or "(provider default)",
+            "model": _resolved_model(),
             "chat_provider": os.environ.get("CHAT_PROVIDER", "(unset)"),
             "cases_file": str(args.cases),
             "arms": arms,
@@ -361,12 +370,26 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("mode", choices=["before", "after", "both", "replay"])
     ap.add_argument("--cases", default=str(DEFAULT_CASES))
+    ap.add_argument(
+        "--provider",
+        help=(
+            "CHAT_PROVIDER for this run, applied before settings are read. The "
+            "shipped default (gemini) answered 503 'high demand' for the whole "
+            "of the recorded window, so the committed run names anthropic here "
+            "rather than silently measuring a saturated endpoint."
+        ),
+    )
     ap.add_argument("--only", help="comma-separated case_ids")
     ap.add_argument("--json", help="write the full run (runbooks included) here")
     ap.add_argument("--from", dest="from_file", help="recorded run to replay")
     args = ap.parse_args()
     if args.mode == "replay" and not args.from_file:
         ap.error("replay needs --from")
+    if args.provider:
+        # Before any settings read: LLMSettings resolves CHAT_PROVIDER from the
+        # environment, and an env var set after the first get_settings() call
+        # is ignored by the cached instance.
+        os.environ["CHAT_PROVIDER"] = args.provider
     return asyncio.run(main_async(args))
 
 

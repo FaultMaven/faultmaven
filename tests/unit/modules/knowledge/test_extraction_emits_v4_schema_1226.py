@@ -157,14 +157,23 @@ class TestThePromptAsksForV4:
         assert "[Default]" in prompt
         assert "last_updated" in prompt and "symptom_class" in prompt
 
-    def test_it_reuses_the_shared_authoring_prompt_rather_than_copying_it(self):
+    async def test_it_reuses_the_shared_authoring_prompt_rather_than_copying_it(self):
         """A second copy of the template is a second thing to keep in step with
         the validator. ``test_cause_grammar_vocab`` pins exactly one of them
-        against ``cause_grammar``; this asserts the extraction path is behind
-        that same pin instead of beside it."""
+        against ``cause_grammar``; this asserts the extraction path sits behind
+        that same pin instead of beside it.
+
+        Both halves matter: the shipped prompt IS the shared one (the composed
+        prompt begins with it, byte for byte), and the module-level constant
+        does NOT restate it (a copy pasted into ``EXTRACTION_PROMPT`` would
+        satisfy the first assertion while re-opening the drift)."""
         provider = ScriptedProvider(valid_runbook())
         svc = _service(provider)
-        assert conversion_service.CONVERSION_SYSTEM_PROMPT not in svc.EXTRACTION_PROMPT
+        await _extract(svc)
+
+        shared = conversion_service.CONVERSION_SYSTEM_PROMPT
+        assert provider.prompts[0].startswith(shared)
+        assert shared not in svc.EXTRACTION_PROMPT
 
     async def test_the_prompt_pins_the_frontmatter_the_extractor_owns(self):
         """``id`` and ``scope`` are not asked of the model — approval publishes
