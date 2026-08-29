@@ -124,11 +124,17 @@ def resolve_within_root(
         error: the path is outside the root, or cannot be resolved.
     """
     try:
-        # ``Path(root)``, not ``root.resolve()``: the annotation says ``Path``
-        # but nothing enforces it, and a ``str`` root raised ``AttributeError``
-        # — escaping as itself, past every caller that catches the typed error.
-        # Normalising both sides identically is the point of a shared primitive.
-        resolved_root = Path(root).resolve()
+        # Coerced, not assumed: the annotation says ``Path`` and nothing
+        # enforces annotations, so a ``str`` root reached ``root.resolve()`` and
+        # raised ``AttributeError`` — escaping as itself, past every caller that
+        # catches only the typed error. Anything that already exposes
+        # ``resolve()`` is used as-is (``Path`` and its subclasses, and the test
+        # doubles that stand in for a root whose resolution fails); everything
+        # else goes through ``Path()``, which normalises ``str``/``os.PathLike``
+        # and raises ``TypeError`` — caught below — for anything it cannot.
+        resolved_root = (
+            root.resolve() if hasattr(root, "resolve") else Path(root).resolve()
+        )
     except (RuntimeError, OSError, ValueError, TypeError) as exc:
         raise error(
             f"refusing to resolve against an unresolvable {tree} root: "
