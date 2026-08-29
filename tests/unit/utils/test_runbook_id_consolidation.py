@@ -1,4 +1,4 @@
-"""The persisted-runbook-id mint is byte-identical to the copies it replaced.
+"""The persisted-runbook-id mint changed EXACTLY where it had to, nowhere else.
 
 #1213's review recorded that the slug rule lived in three places. Two of them —
 ``conversion.generate_runbook_id`` and
@@ -8,11 +8,24 @@ behaviour change there does not just alter future ids, it orphans rows that
 already exist: the disk scan reconciles a file against a row by that id, and a
 re-minted id makes an existing draft look like a new one.
 
-Consolidation was therefore conditional on proving it changes nothing. Both
-originals are frozen verbatim below and compared against
-``runbook_id_from_parts`` over a corpus that includes every shape the two
-implementations could plausibly disagree on. Freezing the source rather than
-citing it is the point: if someone "improves" the shared helper, these fail.
+Consolidation was therefore conditional on proving it changed nothing, and this
+file proved it: both originals frozen verbatim, compared against
+``runbook_id_from_parts`` over a corpus covering every shape the two
+implementations could plausibly disagree on.
+
+#1230/#1243 then changed the mint on purpose — its empty and double-hyphen
+branches emitted ids the runbook validator rejects. That does NOT retire the
+differential, it **narrows** it, and narrowing is where its value now is: the
+frozen originals stay, and the claim becomes
+
+    for every input, either the new id is byte-identical to what the originals
+    produced, or the originals produced an id that was ALREADY INVALID and the
+    new one is valid.
+
+An unintended drift still fails, because it would change an id that was fine.
+A vacuous version of that claim would also pass, so
+``test_both_deliberate_divergences_are_actually_exercised`` requires the
+divergence set to be non-empty and to contain both classes.
 
 The third place — ``runbook_filename`` / ``safe_path_component`` — is NOT
 consolidated onto the same policy, and the last class here pins why by
@@ -32,12 +45,23 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
     generate_runbook_id,
 )
 from faultmaven.utils.runbook_id import (
+    is_hash_only_runbook_id,
     runbook_filename,
     runbook_id_from_parts,
     safe_path_component,
 )
 
 pytestmark = pytest.mark.unit
+
+#: The grammar ``RunbookValidator`` enforces on frontmatter ``id``. Restated
+#: here only to CLASSIFY the frozen originals' output; that the LIVE mint
+#: satisfies the REAL validator is pinned behaviourally, by running it, in
+#: ``tests/unit/utils/test_runbook_id_uniqueness.py``.
+_KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+
+def _was_already_invalid(old_id: str) -> bool:
+    return not _KEBAB.match(old_id)
 
 
 # ---------------------------------------------------------------------------
@@ -149,21 +173,41 @@ CORPUS = EXPLICIT_CASES + _random_corpus()
 # ---------------------------------------------------------------------------
 
 
-class TestTheSharedMintIsByteIdenticalToBothOriginals:
-    def test_every_corpus_input_agrees(self):
-        mismatches = []
+class TestTheSharedMintOnlyChangedIdsThatWereAlreadyInvalid:
+    def test_no_corpus_input_re_mints_a_valid_id(self):
+        """The load-bearing claim of #1230/#1243: nothing usable was re-minted.
+
+        A drift that alters an id the originals produced VALIDLY lands here,
+        whatever its motivation — those are the rows in ``conversion_drafts``
+        that would be orphaned."""
+        regressions = []
         for service, title in CORPUS:
             new = runbook_id_from_parts(service, title)
             for name, old in (
                 ("generate_runbook_id", _original_generate_runbook_id(service, title)),
                 ("create_runbook", _original_create_runbook(service, title)),
             ):
-                if new != old:
-                    mismatches.append((name, service, title, old, new))
-        assert not mismatches, (
-            f"{len(mismatches)} of {len(CORPUS)} inputs changed the PERSISTED id. "
-            f"First five: {mismatches[:5]}"
+                if new == old:
+                    continue
+                if not _was_already_invalid(old):
+                    regressions.append((name, service, title, old, new))
+        assert not regressions, (
+            f"{len(regressions)} of {len(CORPUS)} inputs re-minted an ALREADY "
+            f"VALID id. First five: {regressions[:5]}"
         )
+
+    def test_every_divergence_replaces_an_invalid_id_with_a_valid_one(self):
+        """The other direction: where it did change, it changed for the better.
+
+        A "fix" that swapped one invalid id for another invalid one would pass
+        the test above and fail this one."""
+        bad = []
+        for service, title in CORPUS:
+            new = runbook_id_from_parts(service, title)
+            old = _original_generate_runbook_id(service, title)
+            if new != old and not _KEBAB.match(new):
+                bad.append((service, title, old, new))
+        assert not bad, f"divergences that are still not kebab: {bad[:5]}"
 
     def test_the_public_entry_point_agrees_too(self):
         """Through ``generate_runbook_id`` itself, not just the extracted
@@ -179,21 +223,35 @@ class TestTheSharedMintIsByteIdenticalToBothOriginals:
                 symptoms_summary="s",
                 resolution_summary="r",
             )
-            assert generate_runbook_id(fm) == _original_generate_runbook_id(
-                fm.service, fm.title
-            )
+            old = _original_generate_runbook_id(fm.service, fm.title)
+            new = generate_runbook_id(fm)
+            assert new == old or _was_already_invalid(old), (fm.service, fm.title, old)
+            assert _KEBAB.match(new), new
 
-    def test_the_corpus_actually_exercises_the_branches(self):
-        """A differential over inputs that all take one branch proves nothing.
+    def test_both_deliberate_divergences_are_actually_exercised(self):
+        """Without this, the two tests above hold vacuously.
 
-        Both the truncation branch and the empty-result branch must be reached,
-        and the corpus must contain inputs the transform actually changes."""
-        ids = [runbook_id_from_parts(s, t) for s, t in CORPUS]
-        assert any(len(i) == 60 for i in ids), "truncation branch never reached"
-        assert any(i == "" for i in ids), "empty-result branch never reached"
+        The corpus must reach the truncation branch, the empty-slug branch, AND
+        the sub-case of truncation that lands on a hyphen — the one #1243
+        measured. A corpus that stopped reaching them would silently turn this
+        file into a differential over nothing."""
+        pairs = [
+            (s, t, runbook_id_from_parts(s, t), _original_generate_runbook_id(s, t))
+            for s, t in CORPUS
+        ]
         assert any(
-            runbook_id_from_parts(s, t) != f"{s}-{t}" for s, t in CORPUS
-        ), "no input was actually transformed"
+            len(old) == 60 for _, _, _, old in pairs
+        ), "truncation branch never reached"
+        assert any(old == "" for _, _, _, old in pairs), "empty branch never reached"
+        assert any(
+            is_hash_only_runbook_id(new) for _, _, new, _ in pairs
+        ), "the hash-only replacement for an empty slug was never minted"
+        assert any(
+            "--" in old and new != old for _, _, new, old in pairs
+        ), "the double-hyphen truncation #1243 measured was never reached"
+        assert any(
+            new != old for _, _, new, old in pairs
+        ), "no input diverged at all — the mint fix is not in this tree"
 
 
 class TestTheFilenamePolicyIsDeliberatelyDifferent:
@@ -219,12 +277,16 @@ class TestTheFilenamePolicyIsDeliberatelyDifferent:
         )
 
     def test_empty_result_diverges(self):
-        # An id with no allowlisted characters is empty. Substituting a
-        # placeholder here would re-mint ids that already exist in
-        # ``conversion_drafts``.
-        assert runbook_id_from_parts("...", "???") == ""
-        # An empty PATH component is a write to the parent directory, so it
-        # must never be empty.
-        assert safe_path_component("...") == "unknown"
+        # Neither is empty any more (#1230), but the substitutes differ in the
+        # property that matters. An ID must be DISTINCT per input, because two
+        # drafts sharing one are indistinguishable to verify/approve — so its
+        # substitute is derived from the input.
+        a = runbook_id_from_parts("...", "???")
+        b = runbook_id_from_parts("!!!", "___")
+        assert a and b and a != b, (a, b)
+        # A PATH component only has to be A safe segment; a collision there is
+        # resolved by the id suffix ``runbook_filename`` appends, so a fixed
+        # SHARED literal is correct and more readable.
+        assert safe_path_component("...") == safe_path_component("???") == "unknown"
         assert runbook_filename("...", "...").endswith(".md")
         assert runbook_filename("...", "...") != ".md"
