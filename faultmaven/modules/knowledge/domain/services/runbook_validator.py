@@ -55,15 +55,14 @@ from faultmaven.modules.knowledge.domain.services.content_chunker import (
 # parse into the exact ``metadata["causes"]`` records the seeder reads).
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
     CAUSE_HEADING_RE,
-    CAUSES_SECTION_RE,
     CHAIN_RUNG_RE,
     CONVERGES_REF,
-    HTML_COMMENT_RE,
     INDICATOR_TOKEN_RE,
     INTERVENTION_RE,
     STEP_HEADING_RE,
     STEP_REF_RE,
-    mask_html_comments,
+    causes_section,
+    iter_cause_blocks,
     parse_cause_subfields,
 )
 
@@ -393,16 +392,19 @@ _CAUSE_SUBFIELDS: List[str] = list(REQUIRED_CAUSE_SUBFIELDS) + list(
 
 
 def _causes_section_body(content: str) -> str:
-    """Body of the ``## Causes`` H2 section (up to the next H2 or EOF), or "".
+    """Comment-MASKED body of the ``## Causes`` H2 section, or "".
 
-    Uses the shared ``CAUSES_SECTION_RE`` so the gate scopes causes to exactly the
+    Uses the shared ``causes_section`` so the gate scopes causes to exactly the
     span the extractor does: a ``### Cause``-style heading in ANOTHER section stays
     out of cause validation, and the LAST cause's block cannot bleed into
     ``## Prevention`` / ``## Sources`` (which would let a whole-body sub-field scan
     find a required label in a trailing section and mask a genuinely-missing one).
+
+    Masked, and the section itself located in the masked document (#1241): a
+    comment opening BEFORE the ``## Causes`` heading otherwise leaves the whole
+    section live, which measured as a full gate bypass.
     """
-    m = CAUSES_SECTION_RE.search(content)
-    return m.group(1) if m else ""
+    return causes_section(content)[1]
 
 
 def _section_body(content: str, heading: str) -> Optional[str]:
@@ -430,27 +432,23 @@ def _cause_fields(body: str) -> Dict[str, str]:
 
 
 def _iter_cause_blocks(content: str, include_heading: bool = False):
-    """Yield ``(letter, name, text)`` for each strict ``### Cause X:`` block WITHIN
-    the ``## Causes`` section, using the shared ``CAUSE_HEADING_RE``. By default
-    ``text`` is the post-heading BODY (what the sub-field parser consumes); with
-    ``include_heading=True`` it is the FULL span ``ContentChunker`` sees for the
-    Cause — the heading line THROUGH the block terminus (next strict Cause heading,
-    or the causes-section end) — so a length measured on it matches the chunker's
+    """Yield ``(letter, name, text)`` for each strict ``### Cause X:`` block, from
+    the SHARED walk (``runbook_grammar.iter_cause_blocks``) the extractor uses —
+    so the gate can never accept a Cause shape the extractor silently drops.
+
+    By default ``text`` is the comment-MASKED post-heading BODY (what the
+    sub-field parser consumes); with ``include_heading=True`` it is the RAW span
+    ``ContentChunker`` sees — the heading line THROUGH the block terminus,
+    comments included — so a length measured on it matches the chunker's
     per-section length. A heading that is not the strict form (``#### Cause``,
     ``### Cause AA``, ``### Cause A :``) is NOT yielded here — the extractor drops
-    it too; it is surfaced separately by ``_flag_malformed_cause_headings``.
-
-    Headings are located in a comment-MASKED copy of the body, so a Cause written
-    inside an authoring comment is not enumerated as real (#1241); the yielded
-    text is sliced from the RAW body at those positions, because the mask
-    preserves every offset and ``include_heading=True`` must hand back exactly
-    what the chunker sees, comments included."""
-    body = _causes_section_body(content)
-    heads = list(CAUSE_HEADING_RE.finditer(mask_html_comments(body)))
-    for i, h in enumerate(heads):
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(body)
-        start = h.start() if include_heading else h.end()
-        yield h.group(1), h.group(2).strip(), body[start:end]
+    it too; it is surfaced separately by ``_flag_malformed_cause_headings``."""
+    for cause in iter_cause_blocks(content):
+        yield (
+            cause.letter,
+            cause.name,
+            cause.raw_block if include_heading else cause.body,
+        )
 
 
 def _cause_is_fallback(fields: Dict[str, str]) -> bool:
@@ -663,9 +661,7 @@ class RunbookValidator:
         # are masked for the same reason (#1241): a section holding only a
         # commented-out example Cause parses to zero causes, so it must fail here.
         if re.search(r"^##[ \t]+Causes[ \t]*$", content, re.MULTILINE):
-            if not CAUSE_HEADING_RE.search(
-                mask_html_comments(_causes_section_body(content))
-            ):
+            if not iter_cause_blocks(content):
                 errors.append(
                     "## Causes section must contain at least one ### Cause subsection"
                 )
@@ -913,7 +909,14 @@ class RunbookValidator:
         an Intervention's command example is not mistaken for a malformed heading
         (a false block); a genuine ``### Cause`` in a fence is parsed as a cause by
         the extractor anyway, so it is not a near-miss to flag."""
-        scan = _CODE_FENCE_RE.sub("", HTML_COMMENT_RE.sub("", causes_body))
+        # ``causes_body`` arrives comment-MASKED from ``_causes_section_body``,
+        # so this must NOT strip comments again — and above all must not DELETE
+        # them. Deleting splices the lines either side together, which measurably
+        # stopped a heading being a heading: the enumerator dropped the Cause and
+        # this guard, the one that exists to turn a silent drop into an error,
+        # could not see it either (#1241). Fences are still removed, for their
+        # own reason: an illustrative ``#### Cause`` in a command example.
+        scan = _CODE_FENCE_RE.sub("", causes_body)
         for m in _LOOSE_CAUSE_HEADING_RE.finditer(scan):
             # Compare with LEADING whitespace preserved: the strict grammar (and the
             # extractor) anchor the heading at column 0, so an INDENTED ``### Cause``
@@ -942,7 +945,6 @@ class RunbookValidator:
         Chain with none is a hard error (the pack builder would drop it); softer
         issues (missing root/D, overlong rung) warn."""
         valid_refs = {"root", "D"}
-        chain_text = HTML_COMMENT_RE.sub("", chain_text)
         if not chain_text.strip():
             return valid_refs
         rungs = CHAIN_RUNG_RE.findall(chain_text)
@@ -1082,9 +1084,9 @@ class RunbookValidator:
 
     @staticmethod
     def _indicator_lines(indicator_text: str) -> List[str]:
-        """Bullet entries of an Indicators field, HTML comments stripped and leading
-        bullet markers removed — the same lines the pack builder sees."""
-        indicator_text = HTML_COMMENT_RE.sub("", indicator_text)
+        """Bullet entries of an Indicators field, leading bullet markers removed —
+        the same lines the pack builder sees. Comments are already gone: the
+        value came from a comment-masked Cause body (#1241)."""
         lines: List[str] = []
         for raw in indicator_text.splitlines():
             stripped = raw.strip()

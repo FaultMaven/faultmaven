@@ -27,13 +27,10 @@ from faultmaven.modules.knowledge.domain.services.cause_grammar import (
     REQUIRED_CAUSE_SUBFIELDS,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_grammar import (
-    CAUSE_HEADING_RE,
-    CAUSES_SECTION_RE,
     CHAIN_RUNG_RE,
     CONVERGES_REF,
-    HTML_COMMENT_RE,
     INTERVENTION_RE,
-    mask_html_comments,
+    iter_cause_blocks,
     parse_cause_subfields,
 )
 
@@ -51,25 +48,19 @@ def extract_causes(content: str) -> list[dict[str, Any]]:
     case's causal graph (chain nodes/edges, per-rung indicators, quadrant-tagged
     interventions). Mirrors ``kb_toolkit.core.pack_builder._extract_causes``.
     """
-    sec = CAUSES_SECTION_RE.search(content)
-    if not sec:
-        return []
-    block = sec.group(1)
-    # Headings are located in a comment-MASKED copy so a Cause written inside an
-    # authoring comment is not extracted as real knowledge (#1241); bodies are
-    # sliced from the RAW block at those positions (the mask preserves offsets),
-    # and ``parse_cause_subfields`` strips the comments out of each value.
-    heads = list(CAUSE_HEADING_RE.finditer(mask_html_comments(block)))
+    # The walk is ``runbook_grammar.iter_cause_blocks`` — the SAME one the gate
+    # uses, so the gate cannot pass a Cause shape this drops (#1241). It hands
+    # back a comment-masked body, which is why nothing here re-strips comments.
     causes: list[dict[str, Any]] = []
-    for i, h in enumerate(heads):
-        end = heads[i + 1].start() if i + 1 < len(heads) else len(block)
-        body = block[h.end() : end].strip()
+    for cause in iter_cause_blocks(content):
+        h_letter, h_name = cause.letter, cause.name
+        body = cause.body.strip()
         fields = parse_cause_subfields(body, _CAUSE_SUBFIELDS)
 
         # Chain: linear cause->effect rungs. A `converges:` directive is NOT a
         # node (the validator skips it too) — it records that the prior rung maps
         # onto another Cause's node, captured as a convergence edge.
-        chain_text = HTML_COMMENT_RE.sub("", fields.get("Chain", ""))
+        chain_text = fields.get("Chain", "")
         chain_nodes: list[dict[str, Any]] = []
         refs: list[str] = []
         converge_edges: list[dict[str, Any]] = []
@@ -96,7 +87,7 @@ def extract_causes(content: str) -> list[dict[str, Any]]:
 
         # Per-rung indicators: ref -> list (a rung may carry more than one
         # observable; keep them all rather than overwrite).
-        ind_text = HTML_COMMENT_RE.sub("", fields.get("Indicators", ""))
+        ind_text = fields.get("Indicators", "")
         rung_indicators: dict[str, list[str]] = {}
         for m in CHAIN_RUNG_RE.finditer(ind_text):
             ref = m.group(1)
@@ -119,8 +110,8 @@ def extract_causes(content: str) -> list[dict[str, Any]]:
 
         causes.append(
             {
-                "cause_letter": h.group(1),
-                "cause_name": h.group(2).strip(),
+                "cause_letter": h_letter,
+                "cause_name": h_name,
                 "is_fallback_cause": FALLBACK_INDICATOR_TOKEN
                 in fields.get("Indicators", ""),
                 "cause_statement": fields.get("Statement", ""),
