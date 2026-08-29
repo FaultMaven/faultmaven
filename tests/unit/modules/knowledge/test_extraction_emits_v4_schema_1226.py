@@ -175,28 +175,64 @@ class TestThePromptAsksForV4:
         assert provider.prompts[0].startswith(shared)
         assert shared not in svc.EXTRACTION_PROMPT
 
-    async def test_the_prompt_pins_the_frontmatter_the_extractor_owns(self):
-        """``id`` and ``scope`` are not asked of the model — approval publishes
-        at the platform tier, and a non-kebab ``id`` is a gate error."""
+    async def test_the_prompt_pins_the_scope_the_extractor_owns(self):
+        """Approval publishes at the platform tier, so ``scope`` is stated
+        rather than inferred."""
         provider = ScriptedProvider(valid_runbook())
         await _extract(_service(provider))
 
-        prompt = provider.prompts[0]
-        assert "The frontmatter `scope` field MUST be exactly: global" in prompt
-        assert "RUNBOOK_ID: case-checkout-api-500s-during-the-evening-peak" in prompt
+        assert (
+            "The frontmatter `scope` field MUST be exactly: global"
+            in provider.prompts[0]
+        )
 
     async def test_a_non_kebab_id_from_the_model_is_overwritten(self):
-        """Models routinely echo the title into ``id``. The gate rejects that,
-        so the minted value is re-forced rather than requested and hoped for."""
+        """Models routinely echo a title into ``id``, and a non-kebab ``id`` is
+        a gate error — so it is normalised rather than requested and hoped for.
+        The value comes from the draft's own ``service`` + ``title``, the same
+        mint the conversion path uses."""
         provider = ScriptedProvider(
             valid_runbook().replace("id: sample-runbook", "id: Checkout API 500s")
         )
         suggestion = await _extract(_service(provider))
 
-        assert "id: case-checkout-api-500s-during-the-evening-peak" in (
+        assert "id: postgresql-sample-runbook-for-publication" in (
             suggestion.suggested_content
         )
         assert suggestion.validation_passed is True
+
+    async def test_the_id_is_never_minted_from_the_case_title(self):
+        """Measured, not reasoned about (see ``_mint_id``): the first cut minted
+        from the case title, and the eval's noisy fixture produced a body the
+        model had de-identified perfectly beside a frontmatter line reading
+        ``id: case-inc-48213-prod-web-07-returning-502-for-customer-c-…``. The
+        id sits inside the content, so it is chunked, embedded and retrieved."""
+        svc = SuggestionService(
+            case_repository=_case_repository(
+                title="INC-48213: prod-web-07 returning 502 for customer Contoso"
+            ),
+            knowledge_service=MagicMock(),
+            sanitizer=None,
+            llm_provider=ScriptedProvider(valid_runbook()),
+        )
+        suggestion = await _extract(svc)
+
+        id_line = next(
+            line
+            for line in suggestion.suggested_content.splitlines()
+            if line.startswith("id:")
+        )
+        for leaked in ("inc-48213", "prod-web-07", "contoso"):
+            assert leaked not in id_line.lower(), id_line
+
+    async def test_a_draft_with_no_usable_title_falls_back_to_the_case_stem(self):
+        """An empty slug would otherwise mean no ``id`` at all. The case
+        identifier is opaque but internal, so it is safe to publish — unlike the
+        case title."""
+        provider = ScriptedProvider(valid_runbook().replace("title: ", "title2: "))
+        suggestion = await _extract(_service(provider))
+
+        assert f"id: case-{CASE_ID}".replace("_", "-") in (suggestion.suggested_content)
 
     async def test_a_v4_draft_passes_the_same_gate_approval_applies(self):
         provider = ScriptedProvider(valid_runbook())

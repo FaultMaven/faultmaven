@@ -66,13 +66,14 @@ evidence summaries — not a document. Convert it into ONE runbook covering the
 single failure mode the case is about, following the template and the rules
 above exactly.
 
-RUNBOOK_ID: {runbook_id}
 SCOPE: global
 TODAY: {today_iso}
 SOURCE FILENAME: {source_label}
 
-The frontmatter `id` field MUST be exactly: {runbook_id}
 The frontmatter `scope` field MUST be exactly: global
+The frontmatter `id` field is kebab-case derived from the DE-IDENTIFIED title
+you write below — NEVER from the case title, which names an incident. It is
+normalised after you write it, so spend your care on the title.
 `domain`, `service`, `severity` and `symptom_class` are NOT supplied for a case:
 infer each one from the case content, using only the controlled vocabularies
 named in the rules above.
@@ -270,16 +271,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                 evidence_summaries.append(f"- [{ev_type}] {ev_name}: {ev_summary}")
             evidence_section = "Evidence Summary:\n" + "\n".join(evidence_summaries)
 
-        # Minted here, not asked of the model, and re-forced onto the
-        # frontmatter after every attempt. ``id`` must be kebab-case or the gate
-        # rejects it, and models routinely echo the title verbatim — the same
-        # failure ``_force_frontmatter_id`` exists for on the conversion path.
-        # ``"case"`` as the service part keeps the slug non-empty even for a
-        # title with no allowlisted characters.
-        runbook_id = runbook_id_from_parts("case", case_title or case_id)
-
         prompt = CONVERSION_SYSTEM_PROMPT + self.EXTRACTION_PROMPT.format(
-            runbook_id=runbook_id,
             today_iso=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             source_label=f"Case {case_id}",
             case_title=case_title,
@@ -290,7 +282,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
         # Generate the runbook, re-prompting with the validator's own errors if
         # the first draft is refused (#1226).
-        suggested_content = await self._generate_runbook_draft(prompt, runbook_id)
+        suggested_content = await self._generate_runbook_draft(prompt, case_id)
 
         # Generate title if not provided
         suggested_title = title_suggestion or await self._generate_title(
@@ -413,7 +405,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             ", ".join(s.suggestion_id for s in terminal[:needed]),
         )
 
-    async def _generate_runbook_draft(self, base_prompt: str, runbook_id: str) -> str:
+    async def _generate_runbook_draft(self, base_prompt: str, case_id: str) -> str:
         """Generate a v4 runbook draft, re-prompting with the gate's own errors.
 
         The extraction path publishes into a corpus fronted by
@@ -434,8 +426,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         Args:
             base_prompt: The full first-attempt prompt (shared v4 authoring
                 instructions + the case-specific block).
-            runbook_id: The minted kebab-case id, re-forced onto every draft's
-                frontmatter.
+            case_id: Source case, used only as the last-resort id stem.
 
         Returns:
             The best draft produced — the first one that passes, else the last
@@ -454,7 +445,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
                 # nothing to repair — stop and fall through.
                 break
 
-            content = _force_frontmatter_id(content, runbook_id)
+            content = _force_frontmatter_id(content, self._mint_id(content, case_id))
             validation = self._validator.validate_content(content)
             best, best_validation = content, validation
 
@@ -495,7 +486,54 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             )
             return best
 
-        return self.fallback_template(runbook_id)
+        return self.fallback_template(self._case_stem_id(case_id))
+
+    @staticmethod
+    def _case_stem_id(case_id: str) -> str:
+        """The last-resort runbook id: the case's own identifier, slugged.
+
+        Opaque, but an internal case identifier and therefore safe to publish —
+        unlike the case TITLE, which names an incident (see :meth:`_mint_id`).
+        """
+        return runbook_id_from_parts("case", case_id) or "extracted-runbook-draft"
+
+    def _mint_id(self, content: str, case_id: str) -> str:
+        """The kebab-case ``id`` to force onto a draft's frontmatter.
+
+        Minted from the draft's OWN ``service`` + ``title`` — the same
+        ``(service, title)`` mint the conversion path uses — and deliberately
+        NOT from the case title.
+
+        That distinction was measured, not reasoned about. The first cut minted
+        from the case title, and the eval's deliberately-noisy fixture
+        ("INC-48213: prod-web-07 returning 502 for customer Contoso from
+        2026-03-14 02:11 UTC") produced a body the model had de-identified
+        perfectly and a frontmatter line reading
+        ``id: case-inc-48213-prod-web-07-returning-502-for-customer-c-fd3a``.
+        The id is inside the content, so it is chunked, embedded and retrieved:
+        a ticket number, a hostname and a customer name would have entered the
+        global corpus through the one field the extractor writes itself.
+
+        The emitted title is de-identified because the prompt says so; the mint
+        is normalisation only, so a title that slipped is a prompt failure, not
+        one this can catch. Falls back to the case stem when the draft carries
+        no usable title (an empty slug would otherwise mean no ``id`` at all).
+        """
+        try:
+            # The validator's frontmatter parse, reused so "what the id is
+            # derived from" is the same text the gate will read it as.
+            metadata = self._validator._extract_metadata(content) or {}
+        except Exception:
+            metadata = {}
+        title = metadata.get("title") if isinstance(metadata, dict) else None
+        service = metadata.get("service") if isinstance(metadata, dict) else None
+        if isinstance(title, str) and title.strip():
+            minted = runbook_id_from_parts(
+                service if isinstance(service, str) else "", title
+            )
+            if minted:
+                return minted
+        return self._case_stem_id(case_id)
 
     async def _generate_once(self, prompt: str) -> Optional[str]:
         """One generation call. ``None`` means "no usable draft came back".
