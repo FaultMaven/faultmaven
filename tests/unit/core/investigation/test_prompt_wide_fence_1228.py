@@ -476,11 +476,39 @@ class TestTheNewChannelsAreInTheCollisionCorpus:
         payload = f"a line mentioning {colliding} for no good reason"
         ctx, block = _assemble(channel, payload)
 
+        # Asserted BEFORE reading the live token, so a channel that dropped out
+        # of the corpus fails as "no re-mint" rather than as "no fence".
         assert handed_out == [colliding, "0000beef"], (channel, handed_out)
         assert _live_token(ctx) == "0000beef"
         # The colliding string is still in the prompt — as data, not as a fence.
         assert colliding in block
         assert f'{FENCE_ATTR}="{colliding}"' not in block
+
+    @pytest.mark.parametrize(
+        "channel", ["title", "description", "symptom_statement", "entity_value"]
+    )
+    def test_the_CORPUS_check_fires_where_the_structural_one_cannot(
+        self, channel, monkeypatch
+    ):
+        """Isolates check 1 from check 2.
+
+        Planting the token in its full ``fence="…"`` spelling makes the
+        bare-token count equal the attribute count, so the STRUCTURAL backstop
+        stays silent by construction and only the corpus can catch it. That is
+        precisely the check a channel drops out of when it is rendered without
+        being routed through ``PromptFence.data`` — as these two blocks were
+        before #1228.
+        """
+        colliding = "abadcafe"
+        handed_out, source = self._rigged(colliding)
+        monkeypatch.setattr(fence_mod, "mint_token", source)
+
+        payload = f'quoted config: {FENCE_ATTR}="{colliding}"'
+        ctx, block = _assemble(channel, payload)
+
+        assert handed_out == [colliding, "0000beef"], (channel, handed_out)
+        assert _live_token(ctx) == "0000beef"
+        assert payload in block  # byte-verbatim, as data
 
 
 # ---------------------------------------------------------------------------
