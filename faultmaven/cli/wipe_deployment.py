@@ -794,7 +794,7 @@ async def wipe_objects() -> tuple[int, str | None]:
             try:
                 if await backend.delete_file(key):
                     deleted += 1
-            except Exception as exc:  # noqa: BLE001 - one bad key, keep sweeping
+            except Exception as exc:  # one bad key must not end the sweep
                 refused.append(f"{key} ({type(exc).__name__}: {exc})")
         if refused:
             # Reported as an error so --verify's exit 5 still has a cause the
