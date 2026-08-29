@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1964,3 +1965,87 @@ async def test_the_sweep_skips_and_names_a_row_whose_metadata_is_unreadable(capl
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "authored-bad" in logged
     assert "cause_letter" not in logged, "the blob itself must not be logged"
+
+
+# =============================================================================
+# Pack path containment (#1235)
+# =============================================================================
+
+
+def test_a_pack_relpath_that_escapes_the_pack_is_refused(tmp_path, caplog):
+    """``relpath`` is a data field joined onto the pack directory.
+
+    Same containment class as the runbook tree and the storage backend. A pack
+    is an operator-installed artifact rather than request input, so the risk is
+    lower — but the rule is the same one, and a manifest that reaches outside
+    its own directory drops the pack WHOLE, like every other malformed-pack
+    guard here, rather than ingesting content the pack does not own.
+    """
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack_dir = _write_pack(tmp_path, relpath="../../outside.md")
+    escaped = (pack_dir / "runbooks" / "../../outside.md").resolve()
+    assert escaped.exists(), "fixture precondition: the escaped file was written"
+    assert not escaped.is_relative_to(pack_dir.resolve())
+
+    with caplog.at_level("WARNING"):
+        assert KbPack.load(pack_dir) is None
+
+    # An actionable ERROR naming the offending entry, like every sibling guard
+    # in KbPack.load — not the catch-all's generic WARNING. An operator whose
+    # runbooks/ subtree is symlinked gets an empty KB either way; only this
+    # tells them why. (Startup logs are not an observable in the long run; if
+    # this needs to be surfaced it belongs on /admin/config/status.)
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert errors, "the refusal must be an ERROR, not the catch-all WARNING"
+    message = errors[0].getMessage()
+    assert "../../outside.md" in message, "the message must name the bad relpath"
+    assert "Rebuild" in message, "the message must say what to do"
+
+
+def test_a_pack_relpath_symlinked_out_of_the_pack_is_refused(tmp_path):
+    """The case a ``".." in relpath`` check would admit.
+
+    No traversal sequence in the relpath at all — the escape is a symlink
+    inside ``runbooks/``, which only ``resolve()`` can see.
+    """
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack_dir = _write_pack(tmp_path, relpath="linked/example.md")
+    outside = tmp_path / "outside_the_pack"
+    outside.mkdir()
+    (outside / "example.md").write_text(RUNBOOK_MD, encoding="utf-8")
+
+    linked = pack_dir / "runbooks" / "linked"
+    shutil.rmtree(linked)
+    linked.symlink_to(outside, target_is_directory=True)
+
+    assert ".." not in "linked/example.md"
+    assert KbPack.load(pack_dir) is None
+
+
+def test_an_ordinary_nested_relpath_still_loads(tmp_path):
+    """No regression: the shape the shipped pack actually uses."""
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    pack = KbPack.load(_write_pack(tmp_path, relpath="global/database/redis-oom.md"))
+
+    assert pack is not None
+    assert [rb.relpath for rb in pack.runbooks] == ["global/database/redis-oom.md"]
+
+
+def test_the_shipped_pack_still_loads():
+    """The vendored pack is the artifact this guard must not break."""
+    from faultmaven.bootstrap.kb_pack import KbPack
+
+    # Anchored on this file, not the cwd: another test's monkeypatch.chdir
+    # would otherwise turn this into a silent skip.
+    repo_root = Path(__file__).resolve().parents[3]
+    pack_dir = repo_root / "resources" / "knowledge" / "pack"
+    if not (pack_dir / "pack.json").exists():
+        pytest.skip("shipped KB pack is not present in this checkout")
+
+    pack = KbPack.load(pack_dir)
+
+    assert pack is not None
+    assert pack.runbooks

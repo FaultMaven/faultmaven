@@ -780,8 +780,6 @@ class KnowledgeService:
             ``{"document_id", "residue": [str, ...]}``. Empty ``residue`` means
             every store this upload touched is clean.
         """
-        from pathlib import Path
-
         from sqlalchemy import select as _select
 
         from faultmaven.infrastructure.persistence.models import (
@@ -894,17 +892,35 @@ class KnowledgeService:
         # 3) The on-disk runbook. Containment is anchored on the knowledge ROOT
         # (never on the file's own directory, which would be circular) because
         # file_path is read back out of the database.
+        #
+        # This was the last hand-rolled spelling of the rule; #1235 routed it
+        # through the shared helper so the anchor, the strictness (the root
+        # itself is refused) and the unresolvable-path handling are the same
+        # here as everywhere else. The broad ``except`` stays: this is a
+        # rollback, and every failure mode — refusal, permission, TOCTOU — is
+        # reported as residue rather than aborting the rest of the cleanup.
         if file_path:
+            from faultmaven.utils.runbook_id import (
+                RunbookPathEscape,
+                resolve_runbook_path,
+            )
+            from faultmaven.utils.runbook_id import knowledge_root as _knowledge_root
+
             try:
-                knowledge_root = Path("data/knowledge").resolve()
-                resolved = Path(file_path).resolve()
-                if not resolved.is_relative_to(knowledge_root):
-                    residue.append(
-                        f"on-disk runbook {file_path} (refusing to delete a path "
-                        f"outside {knowledge_root})"
-                    )
-                else:
-                    resolved.unlink(missing_ok=True)
+                resolved = resolve_runbook_path(
+                    file_path,
+                    source=(
+                        f"conversion_drafts.file_path "
+                        f"(draft_id={draft_id}, document_id={document_id})"
+                    ),
+                    root=_knowledge_root(),
+                )
+                resolved.unlink(missing_ok=True)
+            except RunbookPathEscape as escape_error:
+                residue.append(
+                    f"on-disk runbook {file_path} (refusing to delete: "
+                    f"{escape_error})"
+                )
             except Exception as file_error:
                 residue.append(
                     f"on-disk runbook {file_path} (delete failed: {file_error})"

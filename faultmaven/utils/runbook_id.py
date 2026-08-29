@@ -32,6 +32,8 @@ import re
 from pathlib import Path
 from uuid import uuid4
 
+from faultmaven.utils.path_containment import PathEscape, resolve_within_root
+
 # A bootstrap-published (platform built-in) runbook has a deterministic
 # ``kb_<12-hex>`` item_id (see ``item_id_from_runbook_id``). This is the
 # provenance discriminator the inventory surface uses to decide delete
@@ -251,7 +253,7 @@ def knowledge_root() -> Path:
     return Path("data/knowledge")
 
 
-class RunbookPathEscape(ValueError):
+class RunbookPathEscape(PathEscape):
     """A runbook path that is not, or cannot be shown to be, inside the tree.
 
     Covers both halves of "this path is not safe to touch": it resolved outside
@@ -260,10 +262,13 @@ class RunbookPathEscape(ValueError):
     refuse the filesystem operation — so distinguishing them at the type level
     would buy nothing and invite one of the two to be forgotten.
 
-    Subclasses ``ValueError`` so it stays compatible with the guard #1215
-    shipped inline at the upload write site, and is its own type so a caller
-    that must degrade rather than fail (a listing skipping one bad row, the
-    scan skipping one bad file) can catch precisely this and nothing else.
+    Subclasses ``PathEscape`` (itself a ``ValueError``) so it stays compatible
+    with the guard #1215 shipped inline at the upload write site, and is its own
+    type so a caller that must degrade rather than fail (a listing skipping one
+    bad row, the scan skipping one bad file) can catch precisely this and
+    nothing else — and NOT a refusal from the evidence-storage tree, which
+    shares the containment rule (#1235) but not the degrade-and-continue
+    contract.
 
     The message carries the resolved absolute paths, which are useful in a
     server log and must never reach a client. Service callers translate it to a
@@ -323,29 +328,22 @@ def resolve_runbook_path(path: str | Path, *, source: str, root: Path) -> Path:
     row. Conflating them sent an operator chasing the innocent draft file when
     the root was at fault.
 
+    The rule itself lives in ``utils.path_containment.resolve_within_root``,
+    shared with the evidence-storage backend since #1235. Only the wording and
+    the exception type are this subsystem's (see ``RunbookPathEscape``); the
+    messages are unchanged from the inline implementation this replaced.
+
     Raises:
         RunbookPathEscape: the path is outside the root, or cannot be resolved.
     """
-    try:
-        knowledge = root.resolve()
-    except (RuntimeError, OSError, ValueError) as exc:
-        raise RunbookPathEscape(
-            f"refusing to resolve against an unresolvable knowledge root: "
-            f"{root!r} ({type(exc).__name__}: {exc}) (source: {source})"
-        ) from exc
-    try:
-        resolved = Path(path).resolve()
-    except (RuntimeError, OSError, ValueError) as exc:
-        raise RunbookPathEscape(
-            f"refusing to touch an unresolvable runbook path: {path!r} "
-            f"({type(exc).__name__}: {exc}) (source: {source})"
-        ) from exc
-    if resolved == knowledge or not resolved.is_relative_to(knowledge):
-        raise RunbookPathEscape(
-            f"refusing to touch a runbook path outside the knowledge tree: "
-            f"{resolved} is not under {knowledge} (source: {source})"
-        )
-    return resolved
+    return resolve_within_root(
+        path,
+        root=root,
+        source=source,
+        subject="runbook path",
+        tree="knowledge",
+        error=RunbookPathEscape,
+    )
 
 
 def write_runbook_file(
