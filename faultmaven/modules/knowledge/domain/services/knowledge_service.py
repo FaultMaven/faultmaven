@@ -2033,8 +2033,10 @@ class KnowledgeService:
             from faultmaven.utils.frontmatter import extract_frontmatter_metadata
             from faultmaven.utils.runbook_id import (
                 authored_item_id,
+                knowledge_root,
                 runbook_filename,
                 safe_path_component,
+                write_runbook_file,
             )
 
             # The quality gate, FIRST — before the id is minted, before the file
@@ -2082,16 +2084,13 @@ class KnowledgeService:
             conversion_id = f"conv_{_uuid.uuid4().hex[:12]}"
             draft_id = f"draft_{_uuid.uuid4().hex[:12]}"
 
-            # Write content to disk
-            from pathlib import Path
-
             # Flat by scope, matching the canonical layout the scan pass
             # infers scope from (ConversionService._scope_dir): global/,
             # team_{id}/, user_{id}/ — NO domain subdirectory (domain lives
             # in frontmatter + ChromaDB metadata). Writing a literal
             # "personal"/"team" folder would break scan scope-inference,
             # which keys off the user_/team_ prefixes.
-            data_dir = Path("data/knowledge")
+            data_dir = knowledge_root()
             # #1213: ``team_id``/``owner_id`` are interpolated into the
             # directory name. They come from the auth context rather than a
             # request body, so they are a lower-risk source than ``title`` — but
@@ -2117,33 +2116,22 @@ class KnowledgeService:
             filename = runbook_filename(title, document_id)
             file_path = target_dir / filename
 
-            # Containment, anchored on the ROOT of the knowledge tree and
-            # checked BEFORE anything is created.
+            # Containment — anchored on the ROOT of the knowledge tree, checked
+            # BEFORE anything is created. Both properties now live in
+            # ``write_runbook_file``, the one helper every runbook write goes
+            # through (#1213 follow-up); this used to be an inline block here
+            # and nowhere else, which is the shape of mistake that let the
+            # conversion write sites keep the hole after #1215 closed this one.
             #
-            # Anchoring on ``target_dir`` would be circular — that is the
-            # directory the caller-influenced component is IN, so an escaped
-            # ``target_dir`` trivially contains its own child and the assertion
-            # passes. Anchoring on ``data_dir`` is what actually says "inside
-            # the knowledge tree".
-            #
-            # Before ``mkdir`` because ``mkdir(parents=True)`` on an escaped
-            # path materialises attacker-chosen directories outside the tree
-            # whatever the write then does.
-            #
-            # Both guards are belt-and-braces: ``safe_path_component`` and
-            # ``runbook_filename`` already make an escape unconstructible. This
-            # keeps holding if either rule is loosened, or if a new caller
-            # assembles its own path.
-            knowledge_root = data_dir.resolve()
-            resolved = (target_dir / filename).resolve()
-            if not resolved.is_relative_to(knowledge_root):
-                raise ValueError(
-                    f"refusing to write a runbook outside the knowledge tree: "
-                    f"{resolved} is not under {knowledge_root}"
-                )
-
-            target_dir.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(content, encoding="utf-8")
+            # Belt-and-braces: ``safe_path_component`` and ``runbook_filename``
+            # already make an escape unconstructible. The guard keeps holding if
+            # either rule is loosened, or if a new caller assembles its own path.
+            write_runbook_file(
+                file_path,
+                content,
+                source=f"uploaded runbook (document_id={document_id})",
+                root=data_dir,
+            )
 
             async with self._db_session_factory() as session:
                 # ``conversion_jobs.source_file_id`` is a FK to

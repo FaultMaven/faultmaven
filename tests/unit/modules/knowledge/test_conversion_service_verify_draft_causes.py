@@ -99,7 +99,16 @@ def _session_factory(job, draft):
     return _Factory()
 
 
-def _service(tmp_file: Path, knowledge_service) -> ConversionService:
+def _service(tmp_file: Path, knowledge_service, monkeypatch) -> ConversionService:
+    # Pin the knowledge root at the directory the fixture writes into.
+    # ``verify_draft`` containment-checks ``conversion_drafts.file_path``
+    # against this root (#1213 follow-up); in production the draft always
+    # lives under it, so a fixture writing outside it is not a shape the
+    # service can be handed.
+    monkeypatch.setattr(
+        ConversionService, "_data_dir", property(lambda self: tmp_file.parent)
+    )
+
     job = MagicMock()
     job.user_id = "user_x"
     job.scope = "personal"
@@ -131,13 +140,13 @@ async def _run_verify(service):
     )
 
 
-async def test_verify_draft_passes_extracted_causes_to_ingest(tmp_path):
+async def test_verify_draft_passes_extracted_causes_to_ingest(tmp_path, monkeypatch):
     rb = tmp_path / "runbook.md"
     rb.write_text(_RUNBOOK_WITH_CAUSES, encoding="utf-8")
     ks = MagicMock()
     ks.ingest_runbook = AsyncMock(return_value=3)
 
-    service = _service(rb, ks)
+    service = _service(rb, ks, monkeypatch)
     resp = await _run_verify(service)
 
     assert resp.status == "verified"
@@ -152,7 +161,7 @@ async def test_verify_draft_passes_extracted_causes_to_ingest(tmp_path):
     assert passed[0]["cause_letter"] == "A" and passed[0]["chain_nodes"]
 
 
-async def test_verify_draft_passes_none_when_no_causes_section(tmp_path):
+async def test_verify_draft_passes_none_when_no_causes_section(tmp_path, monkeypatch):
     # `causes or None` — a runbook without a Causes section carries no record,
     # so nothing is persisted for the seeder (metadata stays None).
     rb = tmp_path / "runbook.md"
@@ -160,7 +169,7 @@ async def test_verify_draft_passes_none_when_no_causes_section(tmp_path):
     ks = MagicMock()
     ks.ingest_runbook = AsyncMock(return_value=2)
 
-    service = _service(rb, ks)
+    service = _service(rb, ks, monkeypatch)
     await _run_verify(service)
 
     ks.ingest_runbook.assert_awaited_once()
