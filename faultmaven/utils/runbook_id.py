@@ -103,9 +103,24 @@ _MAX_SUFFIX_CHARS = 40
 #: and into runbook frontmatter. Tightening the filename bound must not silently
 #: re-mint ids that already exist in the database.
 _MAX_RUNBOOK_ID_CHARS = 60
-#: An over-long id keeps 55 characters of readable slug plus ``-`` plus a 4-hex
-#: disambiguator, landing exactly on ``_MAX_RUNBOOK_ID_CHARS``.
+#: An over-long id keeps up to 55 characters of readable slug plus ``-`` plus a
+#: 4-hex disambiguator, landing on ``_MAX_RUNBOOK_ID_CHARS`` (or one shorter,
+#: when the truncation point lands on a hyphen — see ``runbook_id_from_parts``).
 _RUNBOOK_ID_HASH_CHARS = 4
+
+#: Stem for the id of a ``(service, title)`` pair with no allowlisted
+#: characters at all. Followed by ``-`` and ``_EMPTY_SLUG_HASH_CHARS`` hex of
+#: the RAW pair, so two such pairs get DIFFERENT ids while the same pair keeps
+#: getting the same one.
+_EMPTY_SLUG_STEM = "runbook"
+_EMPTY_SLUG_HASH_CHARS = 8
+
+#: Recognises an id minted by that branch. Used by callers that want a more
+#: informative fallback than a bare hash (``SuggestionService._mint_id`` prefers
+#: the case's own stem when the draft's title carried nothing readable).
+_HASH_ONLY_ID_RE = re.compile(
+    rf"^{_EMPTY_SLUG_STEM}-[0-9a-f]{{{_EMPTY_SLUG_HASH_CHARS}}}$"
+)
 
 
 def _slug(value: str | None) -> str:
@@ -184,22 +199,86 @@ def runbook_id_from_parts(service: str | None, title: str | None) -> str:
       so two long titles that share a 60-character prefix still get distinct
       ids. ``safe_path_component`` just truncates — a filename collision is
       resolved by the id suffix ``runbook_filename`` appends.
-    - **Empty result.** An id with no allowlisted characters is ``""`` here.
-      ``safe_path_component`` substitutes ``"unknown"``, because an empty
-      *path component* is a write to the parent directory. Substituting here
-      would change ids that already exist in ``conversion_drafts``.
+    - **Empty result.** An id with no allowlisted characters gets a
+      hash-derived stem here (see below). ``safe_path_component`` substitutes
+      the fixed literal ``"unknown"``, because a path component only has to be
+      *a* safe segment — a filename collision there is resolved by the id
+      suffix ``runbook_filename`` appends, and there is no such backstop for an
+      id.
 
-    The md5 is a disambiguator, not a secret: its input is the slug, which is
-    the id's own visible prefix.
+    **Invariant: the result always matches ``^[a-z0-9]+(-[a-z0-9]+)*$``** — the
+    grammar ``RunbookValidator`` enforces on frontmatter ``id``, non-empty by
+    construction. Two branches used to break it (#1230, #1243):
+
+    - A ``(service, title)`` pair with no allowlisted characters — punctuation
+      only, or a non-latin script — returned ``""``. Two such runbooks
+      persisted two ``conversion_drafts`` rows with ``runbook_id = ''`` and one
+      identical ``item_id_from_runbook_id('')``, which no unique constraint
+      rejected. They now get ``runbook-<8 hex of the RAW pair>``: non-empty,
+      kebab, deterministic (the disk scan reconciles a file to a row by this
+      id, so the same pair must keep minting the same value), and DIFFERENT for
+      different pairs.
+    - Truncation could land on a hyphen, so ``slug[:55] + "-" + md5`` emitted a
+      **double** hyphen — 5 of the 91 shipped runbook titles, measured with
+      their real frontmatter ``service``. The kept prefix is now ``rstrip``ed
+      of hyphens before the disambiguator is joined on. The hash is still taken
+      over the FULL slug, so two long titles sharing a 55-character prefix stay
+      distinct.
+
+    **Nothing that was already valid changed.** Both branches only fire on
+    input whose old id the validator already rejected (empty is a missing
+    required field *and* a grammar failure; a double hyphen is a grammar
+    failure), so no *usable* persisted id is re-minted. That is the property
+    that made this change affordable, and
+    ``tests/unit/utils/test_runbook_id_consolidation.py`` pins it as a
+    differential against the pre-consolidation originals rather than as a
+    comment.
+
+    What this does NOT do is make the id globally unique: two distinct titles
+    that slug identically (``"Foo Bar"`` and ``"foo-bar"``) still mint the same
+    id, and they must — determinism is what the scan's file-to-row
+    reconciliation depends on, and a pure function cannot see the other rows.
+    Uniqueness is enforced where the other rows are visible: the partial unique
+    index on ``(organization_id, runbook_id)`` added by migration 045.
+
+    The md5 is a disambiguator, not a secret: its input is the slug (or, on the
+    empty branch, the raw pair), which is the id's own visible prefix.
     """
-    slug = _slug(f"{service}-{title}")
+    raw = f"{service}-{title}"
+    slug = _slug(raw)
+    if not slug:
+        digest = hashlib.md5(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[
+            :_EMPTY_SLUG_HASH_CHARS
+        ]
+        return f"{_EMPTY_SLUG_STEM}-{digest}"
     if len(slug) > _MAX_RUNBOOK_ID_CHARS:
         suffix = hashlib.md5(slug.encode(), usedforsecurity=False).hexdigest()[
             :_RUNBOOK_ID_HASH_CHARS
         ]
         keep = _MAX_RUNBOOK_ID_CHARS - _RUNBOOK_ID_HASH_CHARS - 1
-        slug = slug[:keep] + "-" + suffix
+        # ``rstrip`` BEFORE joining: ``_slug`` never emits a run of hyphens, so
+        # the only way a double hyphen reaches the output is the cut landing on
+        # one. The prefix cannot strip to empty — ``_slug`` also never emits a
+        # LEADING hyphen.
+        slug = slug[:keep].rstrip("-") + "-" + suffix
     return slug
+
+
+def is_hash_only_runbook_id(runbook_id: str | None) -> bool:
+    """True if ``runbook_id`` carries no readable text — only the hash stem.
+
+    ``runbook_id_from_parts`` emits ``runbook-<8 hex>`` when the
+    ``(service, title)`` pair filters to nothing (#1230). The id is valid and
+    unique, but it says nothing about what the runbook is, so a caller holding
+    a better name can prefer that instead. ``SuggestionService._mint_id`` does:
+    it falls back to the case's own stem, which is opaque but at least
+    traceable to the incident.
+
+    It is a *signal*, not a guard — an id that is not hash-only is not thereby
+    guaranteed readable, and a real title of ``"Runbook 3fa2b1c0"`` on an empty
+    service would match. Nothing security-relevant hangs on either direction.
+    """
+    return bool(runbook_id and _HASH_ONLY_ID_RE.match(runbook_id))
 
 
 def draft_filename(runbook_id: str | None) -> str:
