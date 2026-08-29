@@ -46,6 +46,7 @@ from faultmaven.core.investigation.prompts.fence import (
     PromptFence,
     delimiter_overhead_chars,
     render_fenced,
+    reseal,
 )
 from faultmaven.core.preprocessing.evidence_metadata import (
     LOW_CONFIDENCE_THRESHOLD,
@@ -3012,6 +3013,13 @@ def _allocate_sections(
             # keep="head" is correct for them.
             keep = "tail" if key == "investigation_journal" else "head"
             rendered = budget._truncate_to(text, alloc, keep=keep)
+            # A fenced section loses its CLOSING delimiter and its terminator
+            # to head truncation, which reopens #1217 downstream of every
+            # check that would have caught it — see :func:`reseal`. Re-closing
+            # costs a few tokens over ``alloc``; the whole-prompt accountant's
+            # margin absorbs that, and the recount below keeps the running
+            # total honest.
+            rendered = reseal(rendered)
 
         ctx[key] = rendered
         # Reuse the known size when the section was admitted whole (no recount).

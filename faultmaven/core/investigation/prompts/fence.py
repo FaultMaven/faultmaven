@@ -134,6 +134,7 @@ __all__ = [
     "delimiter_overhead_chars",
     "mint_token",
     "render_fenced",
+    "reseal",
 ]
 
 #: Attribute name carrying the nonce on every structural delimiter.
@@ -375,6 +376,50 @@ def absorbed_delimiters(text: str, token: str) -> list[str]:
     """
     pattern = re.compile(rf'<[a-z_]+([^>]*?) {FENCE_ATTR}="{re.escape(token)}"\s*/?>')
     return [m.group(1) for m in pattern.finditer(text) if "<" in m.group(1)]
+
+
+#: The opening delimiter of a fenced block, at the very start of a section.
+#: Head truncation always preserves it — it is the first thing in the block —
+#: which is what lets :func:`reseal` recover the token with no plumbing from
+#: the render that produced it.
+_LEADING_OPEN_RE = re.compile(rf'\A\s*<([a-z_]+)[^>]*?\s{FENCE_ATTR}="([0-9a-f]+)"\s*>')
+
+
+def reseal(text: str) -> str:
+    """Re-close a fenced block whose tail a budget truncation cut off.
+
+    The allocator sizes variable sections to their allotment with
+    ``TokenBudget._truncate_to(..., keep="head")``, which for a fenced block
+    removes the CLOSING delimiter and the terminator :meth:`PromptFence.element`
+    appended. Both losses matter, and neither is caught upstream:
+    :func:`render_fenced`'s checks run on the finished render, BEFORE the
+    allocator ever sees it.
+
+    - The element stays open, so everything after it in the prompt — including
+      the trust rule itself, which ``INVESTIGATION_BASE`` renders *after*
+      ``{entity_highlights}`` — sits inside what reads as quoted case data.
+    - The terminator is gone, so a body ending mid-tag is once again free to
+      absorb whatever delimiter comes next. That is the #1217 absorption hole,
+      reopened by an operation that runs after the fence was verified.
+
+    Appends renderer-owned bytes only; never alters a byte of what remains.
+    Returns ``text`` unchanged when it does not begin with a fenced opening
+    delimiter (an unfenced section, or one truncated so hard that even the
+    opening tag is gone — in which case no element is left open either).
+    """
+    if not text:
+        return text
+    m = _LEADING_OPEN_RE.match(text)
+    if not m:
+        return text
+    name, token = m.group(1), m.group(2)
+    closing = f'</{name} {FENCE_ATTR}="{token}">'
+    if text.rstrip().endswith(closing):
+        return text
+    body = text[m.end() :]
+    in_tag, quote = _ends_inside_tag(body)
+    terminator = f"{quote}>{TERMINATOR_NOTE}" if in_tag else ""
+    return f"{text}{terminator}\n{closing}"
 
 
 def render_fenced(
