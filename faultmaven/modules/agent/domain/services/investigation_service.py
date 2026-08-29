@@ -371,21 +371,75 @@ def _upload_subject(uf) -> str:
     return uf.submission_phrase or f'"{uf.filename}"'
 
 
+def _clarification_label_qualifier(target: "_PreprocessedAttachment") -> str:
+    """Short name telling one failed attachment's choices from another's.
+
+    The *button* register — third and shortest of the three ways this
+    codebase names an attachment back to the user, beside
+    ``UploadedFile.display_name`` (citable, carries a turn number) and
+    ``UploadedFile.submission_phrase`` (sentence, carries a clause). A button
+    has room for neither, so this is the bare noun. Derived from the same
+    provenance properties as its two siblings; keep the wording in step.
+    """
+    uf = target.uploaded_file
+    if uf.is_page_capture:
+        return "captured page"
+    if uf.is_pasted:
+        return "pasted text"
+    return target.attachment_filename or uf.filename or "the uploaded file"
+
+
+def _reclassification_intent(file_id: str, dt_value: str) -> Dict[str, Any]:
+    """The engine-owned intent a clarification choice carries."""
+    return {
+        "type": IntentType.FILE_RECLASSIFICATION.value,
+        "file_id": file_id,
+        "data_type": dt_value,
+    }
+
+
 def _build_classification_clarification_suggestions(
     preprocess_results: List["_PreprocessedAttachment"],
 ) -> List[SuggestedActionResponse]:
-    """Emit DECIDE suggestions when an attachment hit classification_failed.
+    """Emit DECIDE suggestions for EVERY attachment that hit
+    classification_failed.
 
-    Per-turn file limit is 1, so we expect at most one classification_failed
-    result. Generates up to 3 type-specific suggestions plus a "Something
-    else" fallback. Always emits at least the fallback when any
-    classification_failed is present.
+    One set of choices per failed attachment: up to 3 type-specific plus a
+    "Something else" fallback each, and at least the fallback for any
+    attachment that failed.
 
-    Choice sources: for a chosen file, the classifier's ``suggested_types``;
-    for pasted text, the war-room seeds (command output / logs) come first —
-    see ``_PASTE_CLARIFICATION_SEEDS`` — then the classifier's suggestions
-    fill the remaining slots. The copy names the subject the way the user
+    **Every** failure, not just the first. The emitter used to clarify
+    ``failed[0]`` and justify it from the per-turn file limit — "the limit is
+    1, so we expect at most one classification_failed result". The premise
+    was false: the limit is on ``files`` ALONE (``maxItems: 1``), and
+    ``pasted_content`` is a separate form field that legitimately rides
+    alongside a file as a second attachment. The paste/capture arm reaches
+    ``classification_failed`` on its own — see ``_clarification_subject`` —
+    so a turn where both fell below threshold left the second attachment
+    with no choices, no ``file_reclassification`` intent and no recovery
+    path, silently misclassified (#1222). Do not reintroduce a
+    count-bounded shortcut here: the recovery path has to exist for whatever
+    the route lets through, not for what one field's cap implies.
+
+    Choice sources, per attachment: for a chosen file, the classifier's
+    ``suggested_types``; for pasted text, the war-room seeds (command output
+    / logs) come first — see ``_PASTE_CLARIFICATION_SEEDS`` — then the
+    classifier's suggestions fill the remaining slots. Dedup and the
+    three-choice budget are per attachment, so one attachment's choices
+    never consume another's. The copy names the subject the way the user
     knows it (``_clarification_subject``).
+
+    Labels carry the attachment's short name
+    (``_clarification_label_qualifier``) **only** when more than one
+    attachment failed: two cards both reading "Documentation" are
+    indistinguishable on screen, and ``IntentResolver._exact_match`` matches
+    a typed label against the choices in order — so it would resolve an
+    answer meant for the paste onto the file, turning a missing option into
+    a wrong action. A single failure keeps the bare label it has always had.
+    The qualifiers are distinct because a turn mints at most ONE synthetic
+    name (#1198): ``pasted_content`` is a single form field, so a turn
+    carries one paste or one capture, never two, and everything else is a
+    user-chosen filename.
 
     Each suggestion carries an engine-owned ``file_reclassification`` intent
     (file_id + target DataType) so any client that forwards suggestion intent
@@ -401,57 +455,92 @@ def _build_classification_clarification_suggestions(
     if not failed:
         return []
 
-    target = failed[0]
-    subject = _clarification_subject(target)
-    file_id = target.uploaded_file.file_id
-    candidates = list(target.suggested_types or [])
-    if _is_paste_upload(target):
-        candidates = _PASTE_CLARIFICATION_SEEDS + candidates
-
-    def _intent(dt_value: str) -> Dict[str, Any]:
-        return {
-            "type": IntentType.FILE_RECLASSIFICATION.value,
-            "file_id": file_id,
-            "data_type": dt_value,
-        }
-
+    qualify = len(failed) > 1
     suggestions: List[SuggestedActionResponse] = []
-    seen: set = set()
 
-    for dt_value in candidates:
-        if dt_value in seen:
-            continue
-        seen.add(dt_value)
-        # unstructured_text collapses into the fallback — don't surface twice
-        if dt_value == "unstructured_text":
-            continue
-        friendly = _CLARIFICATION_FRIENDLY_NAMES.get(dt_value)
-        if friendly is None:
-            continue
+    for target in failed:
+        subject = _clarification_subject(target)
+        file_id = target.uploaded_file.file_id
+        suffix = f" ({_clarification_label_qualifier(target)})" if qualify else ""
+        candidates = list(target.suggested_types or [])
+        if _is_paste_upload(target):
+            candidates = _PASTE_CLARIFICATION_SEEDS + candidates
+
+        seen: set = set()
+        emitted = 0
+
+        for dt_value in candidates:
+            if dt_value in seen:
+                continue
+            seen.add(dt_value)
+            # unstructured_text collapses into the fallback — don't surface twice
+            if dt_value == "unstructured_text":
+                continue
+            friendly = _CLARIFICATION_FRIENDLY_NAMES.get(dt_value)
+            if friendly is None:
+                continue
+            suggestions.append(
+                SuggestedActionResponse(
+                    label=f'{friendly["label"]}{suffix}',
+                    type="DECIDE",
+                    payload=f'Treat {subject} as {friendly["long"]}.',
+                    body=f'Treat as {friendly["long"]}.',
+                    intent=_reclassification_intent(file_id, dt_value),
+                )
+            )
+            emitted += 1
+            if emitted >= 3:
+                break
+
+        # Always include the "Something else" fallback — last position for
+        # this attachment.
         suggestions.append(
             SuggestedActionResponse(
-                label=friendly["label"],
+                label=f"{_CLARIFICATION_FALLBACK_LABEL}{suffix}",
                 type="DECIDE",
-                payload=f'Treat {subject} as {friendly["long"]}.',
-                body=f'Treat as {friendly["long"]}.',
-                intent=_intent(dt_value),
+                payload=f"Treat {subject} as {_CLARIFICATION_FALLBACK_LONG}.",
+                body=f"Treat as {_CLARIFICATION_FALLBACK_LONG}.",
+                intent=_reclassification_intent(file_id, "unstructured_text"),
             )
         )
-        if len(suggestions) >= 3:
-            break
-
-    # Always include the "Something else" fallback — last position.
-    suggestions.append(
-        SuggestedActionResponse(
-            label=_CLARIFICATION_FALLBACK_LABEL,
-            type="DECIDE",
-            payload=f"Treat {subject} as {_CLARIFICATION_FALLBACK_LONG}.",
-            body=f"Treat as {_CLARIFICATION_FALLBACK_LONG}.",
-            intent=_intent("unstructured_text"),
-        )
-    )
 
     return suggestions
+
+
+def _classification_clarification_note(
+    preprocess_results: List["_PreprocessedAttachment"],
+) -> Optional[str]:
+    """The narration bridge for this turn's clarification choices, or None.
+
+    The clarification suggestions are engine-emitted, so the LLM's own
+    response usually says nothing about the content it couldn't classify —
+    without this note the choices ("Treat as documentation.") read as
+    disconnected nonsense under an unrelated investigation reply. Appended
+    deterministically so every client gets the same context, phrased in the
+    user's terms (a paste is "the text you pasted", never its synthetic
+    snippet name).
+
+    Names **every** failed attachment, for the same reason the emitter
+    clarifies every one: the note used to pick the first via ``next(...)``,
+    so a paste+file turn where both failed offered choices for two things
+    while naming one (#1222). Wording is unchanged for the single-failure
+    case, which is every turn carrying only one attachment.
+    """
+    subjects = [
+        _clarification_subject(r) for r in preprocess_results if r.classification_failed
+    ]
+    if not subjects:
+        return None
+    if len(subjects) == 1:
+        named, pronoun = subjects[0], "it"
+    else:
+        named = f"{', '.join(subjects[:-1])} or {subjects[-1]}"
+        pronoun = "them"
+    return (
+        f"\n\nOne more thing — I couldn't confidently classify "
+        f"{named}, so I haven't analyzed {pronoun} yet. "
+        f"How should I treat {pronoun}?"
+    )
 
 
 @dataclass
@@ -1024,24 +1113,12 @@ class InvestigationService:
             clarification = _build_classification_clarification_suggestions(
                 preprocess_results
             )
-            if clarification:
-                # Narration bridge: the clarification suggestions are
-                # engine-emitted, so the LLM's response usually says nothing
-                # about the content it couldn't classify — without this note
-                # the choices ("Treat as documentation.") read as
-                # disconnected nonsense under an unrelated investigation
-                # reply. Appended deterministically so every client gets the
-                # same context, phrased in the user's terms (a paste is "the
-                # text you pasted", never its synthetic snippet name).
-                failed_att = next(
-                    r for r in preprocess_results if r.classification_failed
-                )
-                subject = _clarification_subject(failed_att)
-                agent_response_text += (
-                    f"\n\nOne more thing — I couldn't confidently classify "
-                    f"{subject}, so I haven't analyzed it yet. "
-                    "How should I treat it?"
-                )
+            # Narration bridge — see ``_classification_clarification_note``.
+            # Derived from the same predicate as the suggestions above, so
+            # the note names exactly the attachments the choices target.
+            clarification_note = _classification_clarification_note(preprocess_results)
+            if clarification_note:
+                agent_response_text += clarification_note
             raw_follow_ups = result.get("suggested_follow_ups", [])
             updated_case.last_suggestions = (
                 [
