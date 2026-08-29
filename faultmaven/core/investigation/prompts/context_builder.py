@@ -1575,8 +1575,8 @@ def _render_problem_context(case: Case, fence: PromptFence) -> str:
     ``<uploaded_file …searchable="true">`` — which is the #1217 exposure
     resurfaced outside the evidence envelope.
 
-    This block also carries the prompt's ONE fence declaration, as
-    ``element``'s ``preamble``. Three properties pick it:
+    This section also carries the prompt's ONE fence declaration, on the line
+    immediately ABOVE the opening tag. Three properties pick this section:
 
     - it is a RESERVE section (``_allocate_sections``), so it is never trimmed;
       the evidence block, where the declaration used to live, can be allocated
@@ -1587,6 +1587,12 @@ def _render_problem_context(case: Case, fence: PromptFence) -> str:
       carry;
     - ``TERMINAL_TEMPLATE`` has no evidence block at all, so an
       evidence-anchored declaration would leave a fenced prompt undeclared.
+
+    ABOVE the tag, not inside it: the trust rule tells the model that the three
+    fenced blocks quote material it did not write, so a declaration rendered
+    inside one would be covered by its own demotion clause. Everything above it
+    in the prompt (the template preamble, ``<case_identity>``) is
+    renderer-emitted, so no caller-controlled byte precedes it either way.
 
     The whole body goes through ``element``, which routes it into the collision
     corpus and appends a terminator when it ends mid-tag — a title ending
@@ -1601,8 +1607,8 @@ def _render_problem_context(case: Case, fence: PromptFence) -> str:
             lines.append(f"SEVERITY: {pv.severity}")
         if pv.temporal_state:
             lines.append(f"TEMPORAL_STATE: {pv.temporal_state.value}")
-    return fence.element(
-        "problem_context", "\n".join(lines), preamble=fence.declaration()
+    return (
+        fence.declaration() + "\n" + fence.element("problem_context", "\n".join(lines))
     )
 
 
@@ -3850,9 +3856,12 @@ async def fetch_entity_highlights(
     return groups
 
 
-#: Standing instruction at the head of the block. Renderer-owned, so it is
-#: passed as ``element``'s preamble rather than concatenated into the body —
-#: only the entity VALUES belong in the collision corpus.
+#: Standing instruction for the block. Renderer-owned, so it is emitted ABOVE
+#: the opening delimiter rather than inside the element: the trust rule
+#: demotes unfenced text INSIDE a fenced block to quoted case content, and a
+#: renderer instruction sitting there would be demoted with it. Keeping it out
+#: also keeps the collision corpus to the entity VALUES, which is what the
+#: fence exists to contain.
 _ENTITY_HIGHLIGHTS_PREAMBLE = (
     "Top entities extracted from this case's evidence "
     "(aggregated mention_count across artifacts). Use find_entity "
@@ -3884,8 +3893,8 @@ def _render_entity_highlights(
             for row in group.rows
         ]
         sections.append(f"{group.entity_type}:\n" + "\n".join(body_lines))
-    return fence.element(
-        "entity_highlights",
-        "\n\n".join(sections),
-        preamble=_ENTITY_HIGHLIGHTS_PREAMBLE + "\n",
+    return (
+        _ENTITY_HIGHLIGHTS_PREAMBLE
+        + "\n"
+        + fence.element("entity_highlights", "\n\n".join(sections))
     )

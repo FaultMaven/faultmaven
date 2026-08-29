@@ -607,15 +607,15 @@ class TestTheEngineIsToldTheRule:
         token, so neither fires — the only defence is that the model was told
         where the genuine one lives.
 
-        Since #1228 the anchor is the one declaration at the top of
-        ``<problem_context>``, not the ``<evidence_collected>`` envelope: one
-        token is live for the whole prompt, and the terminal template renders
-        ``<problem_context>`` with no evidence block at all.
+        Since #1228 the anchor is the one declaration immediately above the
+        ``<problem_context …>`` tag, not the ``<evidence_collected>`` envelope:
+        one token is live for the whole prompt, and the terminal template
+        renders ``<problem_context>`` with no evidence block at all.
         """
         rule = _PROMPT_FENCE_RULE
         assert "GENUINE TOKEN" in rule
-        assert "<problem_context>" in rule
-        assert "first fenced block" in rule
+        assert "<problem_context" in rule
+        assert "immediately\nabove the `<problem_context …>` opening tag" in rule
         assert "different token" in rule.lower()
         assert "FENCE:" in rule, "the rule must name the counterfeit's own shape"
 
@@ -630,9 +630,11 @@ class TestTheEngineIsToldTheRule:
         ctx = build_investigation_context(_case([_file()], []), "what now?")
         core = ctx["core_context"]
         token = fence_read.any_token(core)
-        declaration = core.split("\n")[1]
+        declaration = core.split("\n")[0]
         assert f'fence="{token}"' in declaration, core
         assert "ONLY genuine declaration" in declaration
+        # ...and it sits ABOVE the opening tag, not inside the block.
+        assert core.split("\n")[1].startswith(f'<problem_context fence="{token}">')
         # ...and the SAME token governs the evidence block.
         assert fence_read.token(ctx["evidence"]) == token
 

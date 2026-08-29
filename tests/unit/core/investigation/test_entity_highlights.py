@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from faultmaven.core.investigation.prompts.context_builder import (
+    _ENTITY_HIGHLIGHTS_PREAMBLE,
     EntityHighlightGroup,
     EntityHighlightRow,
     _render_entity_highlights,
@@ -121,7 +122,11 @@ class TestFetchEntityHighlights:
         )
 
         result = _render(groups)
-        assert result.startswith("<entity_highlights fence=")
+        # The standing instruction is renderer-owned and sits ABOVE the opening
+        # delimiter (#1228) — the rule demotes unfenced text INSIDE a fenced
+        # block to quoted case content, and an instruction there goes with it.
+        assert result.startswith(_ENTITY_HIGHLIGHTS_PREAMBLE)
+        assert f'<entity_highlights fence="{_token(result)}">' in result
         assert result.endswith('</entity_highlights fence="%s">' % _token(result))
         assert "ip:" in result
         assert "10.0.0.5 ×12 (error)" in result
