@@ -23,6 +23,7 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     _DATA_TYPE_TO_SOURCE_TYPE,
     InvestigationService,
     _build_classification_clarification_suggestions,
+    _classification_clarification_note,
     _PreprocessedAttachment,
 )
 from faultmaven.modules.case.domain.models import (
@@ -45,10 +46,11 @@ def _clarification_target(
     suggested_types: list[str] | None = None,
     upload_source: str = "file_upload",
     filename: str = "server.log",
+    file_id: str = "file_aaaaaaaaaaaa",
 ) -> _PreprocessedAttachment:
     return _PreprocessedAttachment(
         uploaded_file=make_uploaded_file(
-            filename=filename, upload_source=upload_source
+            file_id=file_id, filename=filename, upload_source=upload_source
         ),
         classification_failed=True,
         suggested_types=(
@@ -213,6 +215,280 @@ class TestClarificationEmitterIntent:
         assert matched is not None
         assert matched["type"] == IntentType.FILE_RECLASSIFICATION.value
         assert matched["data_type"] == "logs_and_errors"
+
+
+class TestEveryFailedAttachmentIsClarified:
+    """#1222: the emitter clarified ``failed[0]`` only, reasoning from the
+    per-turn file limit. That limit is on ``files`` ALONE — ``pasted_content``
+    is a separate form field that legitimately rides alongside a file, and the
+    paste/capture arm reaches ``classification_failed`` on its own. A turn
+    where both fell below threshold left the second attachment with no
+    choices, no intent, and no recovery path.
+    """
+
+    @staticmethod
+    def _paste_and_file() -> list[_PreprocessedAttachment]:
+        """The shipped paste+file turn, in the order the route builds it:
+        the file attachment first, then ``pasted_content``."""
+        return [
+            _clarification_target(
+                file_id="file_f11ef11ef11e",
+                filename="mystery.txt",
+                upload_source="file_upload",
+                suggested_types=["documentation"],
+            ),
+            _clarification_target(
+                file_id="file_0a570a570a57",
+                filename="pasted-content-20260713T083214.txt",
+                upload_source="text_paste",
+                suggested_types=["documentation"],
+            ),
+        ]
+
+    def test_both_attachments_get_choices_and_an_intent(self):
+        suggestions = _build_classification_clarification_suggestions(
+            self._paste_and_file()
+        )
+        by_file: dict[str, list] = {}
+        for s in suggestions:
+            assert s.type == "DECIDE"
+            assert s.intent["type"] == IntentType.FILE_RECLASSIFICATION.value
+            QueryIntent(**s.intent)
+            by_file.setdefault(s.intent["file_id"], []).append(s)
+
+        # Neither attachment is silently left without a recovery path.
+        assert set(by_file) == {"file_f11ef11ef11e", "file_0a570a570a57"}
+        # ...and each set ends in its own "Something else" escape hatch.
+        for file_id, group in by_file.items():
+            assert group[-1].intent["data_type"] == "unstructured_text"
+            assert group[-1].label.startswith("Something else")
+
+    def test_each_attachment_keeps_its_own_choice_budget(self):
+        """Dedup and the 3-choice cap are per attachment: the file's choices
+        must not consume the paste's, and a type offered for one must still
+        be offered for the other."""
+        suggestions = _build_classification_clarification_suggestions(
+            self._paste_and_file()
+        )
+        by_file: dict[str, list[str]] = {}
+        for s in suggestions:
+            by_file.setdefault(s.intent["file_id"], []).append(s.intent["data_type"])
+
+        # The file: its one classifier guess + the fallback.
+        assert by_file["file_f11ef11ef11e"] == ["documentation", "unstructured_text"]
+        # The paste: war-room seeds lead, then the classifier's guess (the
+        # same `documentation` the file already used), then the fallback.
+        assert by_file["file_0a570a570a57"] == [
+            "command_output",
+            "logs_and_errors",
+            "documentation",
+            "unstructured_text",
+        ]
+
+    def test_labels_disambiguate_so_a_typed_answer_lands_on_the_right_file(self):
+        """Two cards reading "Documentation" are indistinguishable on screen,
+        and ``IntentResolver._exact_match`` matches a typed label against the
+        choices in order — it would resolve the paste's answer onto the file,
+        turning a missing option into a wrong action."""
+        suggestions = _build_classification_clarification_suggestions(
+            self._paste_and_file()
+        )
+        labels = [s.label for s in suggestions]
+        assert len(labels) == len(set(labels)), f"ambiguous labels: {labels}"
+        assert "Documentation (mystery.txt)" in labels
+        assert "Documentation (pasted text)" in labels
+
+        choices = [
+            {
+                "label": s.label,
+                "action_type": s.type,
+                "payload": s.payload,
+                "body": s.body,
+                "intent": s.intent,
+            }
+            for s in suggestions
+        ]
+        resolver = IntentResolver(MagicMock())
+        matched = resolver._exact_match("Documentation (pasted text)", choices)
+        assert matched is not None
+        assert matched["file_id"] == "file_0a570a570a57"
+        matched_file = resolver._exact_match("Documentation (mystery.txt)", choices)
+        assert matched_file["file_id"] == "file_f11ef11ef11e"
+
+    def test_qualifiers_are_unambiguous_because_one_synthetic_name_per_turn(self):
+        """#1198: ``pasted_content`` is a single form field, so a turn carries
+        one paste or one capture — never two — and everything else is a
+        user-chosen filename. That is what makes naming both attachments in
+        one clarification unambiguous."""
+        results = self._paste_and_file()
+        synthetic = [r for r in results if r.uploaded_file.has_synthetic_filename]
+        assert len(synthetic) == 1
+        assert {r.uploaded_file.display_name for r in results} == {
+            "mystery.txt",
+            "pasted text (turn 0)",
+        }
+
+        suggestions = _build_classification_clarification_suggestions(results)
+        qualifiers = {s.label.split(" (", 1)[1].rstrip(")") for s in suggestions}
+        assert qualifiers == {"mystery.txt", "pasted text"}
+
+    def test_single_failure_is_byte_identical_to_before(self):
+        """The common path — one attachment, one failure — must be untouched:
+        bare labels, same payload, same body, same order."""
+        suggestions = _build_classification_clarification_suggestions(
+            [_clarification_target()]
+        )
+        assert [
+            (s.label, s.payload, s.body, s.intent["data_type"]) for s in suggestions
+        ] == [
+            (
+                "Application logs",
+                'Treat the file you shared ("server.log") as application logs.',
+                "Treat as application logs.",
+                "logs_and_errors",
+            ),
+            (
+                "Configuration",
+                'Treat the file you shared ("server.log") as configuration.',
+                "Treat as configuration.",
+                "structured_config",
+            ),
+            (
+                "Something else",
+                'Treat the file you shared ("server.log") as unstructured text.',
+                "Treat as unstructured text.",
+                "unstructured_text",
+            ),
+        ]
+
+
+class TestNarrationBridgeNamesEveryFailure:
+    """The bridge used to ``next(...)`` the first failed attachment, so a
+    paste+file turn offered choices for two things while naming one."""
+
+    def test_one_failure_keeps_the_shipped_wording(self):
+        note = _classification_clarification_note([_clarification_target()])
+        assert note == (
+            "\n\nOne more thing — I couldn't confidently classify the file "
+            'you shared ("server.log"), so I haven\'t analyzed it yet. '
+            "How should I treat it?"
+        )
+
+    def test_two_failures_name_both_and_go_plural(self):
+        note = _classification_clarification_note(
+            TestEveryFailedAttachmentIsClarified._paste_and_file()
+        )
+        assert note == (
+            "\n\nOne more thing — I couldn't confidently classify the file "
+            'you shared ("mystery.txt") or the text you pasted, so I haven\'t '
+            "analyzed them yet. How should I treat them?"
+        )
+
+    def test_no_failure_emits_no_note(self):
+        ok = _PreprocessedAttachment(uploaded_file=make_uploaded_file())
+        assert _classification_clarification_note([ok]) is None
+
+
+class TestPasteAndFileTurnEndToEnd:
+    """The whole shape, through ``process_turn``: one file plus a paste, both
+    below the classifier's threshold — the request shape the route explicitly
+    permits (``maxItems: 1`` on ``files`` alone)."""
+
+    @staticmethod
+    def _failed_classification(content_hash: str):
+        result = MagicMock()
+        result.summary = "preview summary"
+        result.structural_index = "index"
+        result.data_type = UnifiedDataType.TEXT
+        result.detailed_data_type = DataType.UNSTRUCTURED_TEXT
+        result.content_hash = content_hash
+        result.extraction_method = "classification_failed"
+        result.extraction_metadata = {"suggested_types": ["documentation"]}
+        result.coverage_start_ts = None
+        result.coverage_end_ts = None
+        return result
+
+    @pytest.mark.asyncio
+    async def test_both_attachments_are_recoverable(
+        self, repo_with_case, preprocessing_service, file_storage
+    ):
+        repo, case = repo_with_case
+        case.uploaded_files = []
+
+        hashes = iter(["a" * 64, "b" * 64])
+        preprocessing_service.classify_and_extract = AsyncMock(
+            side_effect=lambda *a, **k: self._failed_classification(next(hashes))
+        )
+        blobs = iter(
+            [
+                {"file_path": "evidence/case_x/blob1.txt"},
+                {"file_path": "evidence/case_x/blob2.txt"},
+            ]
+        )
+        file_storage.store_file = AsyncMock(side_effect=lambda *a, **k: next(blobs))
+        file_storage.mark_linked = AsyncMock(return_value=True)
+
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+
+        payload = TurnPayload(
+            query="here's the dump and what I pasted from the terminal",
+            attachments=[
+                # Route order: the file first, then `pasted_content`.
+                Attachment(
+                    content=b"ambiguous file bytes",
+                    filename="mystery.txt",
+                    content_type="text/plain",
+                    source_metadata={"source_type": "file_upload"},
+                ),
+                Attachment(
+                    content=b"NAME READY STATUS\nkube-proxy 1/1 Running",
+                    filename="pasted-content-20260713T083214.txt",
+                    content_type="text/plain",
+                    source_metadata={"source_type": "text_paste"},
+                ),
+            ],
+        )
+        response = await service.process_turn(
+            case_id=case.case_id, user_id="user_owner", payload=payload
+        )
+
+        saved = await repo.get(case.case_id)
+        assert len(saved.uploaded_files) == 2
+        every_file_id = {f.file_id for f in saved.uploaded_files}
+
+        clarified = {
+            a.intent["file_id"]
+            for a in response.suggested_actions
+            if a.intent
+            and a.intent.get("type") == IntentType.FILE_RECLASSIFICATION.value
+        }
+        assert clarified == every_file_id, "an attachment was left unclarified"
+
+        # The narration bridge names both, each in the user's own terms.
+        assert '"mystery.txt"' in response.agent_response
+        assert "the text you pasted" in response.agent_response
+        assert "pasted-content-" not in response.agent_response
+        assert "analyzed them yet" in response.agent_response
+
+        # Persisted for the intent resolver, so a TYPED answer next turn
+        # resolves for either attachment.
+        stored = {
+            s["intent"]["file_id"]
+            for s in saved.last_suggestions
+            if s.get("intent")
+            and s["intent"].get("type") == IntentType.FILE_RECLASSIFICATION.value
+        }
+        assert stored == every_file_id
+
+        # #1198 holds through the real pipeline: exactly one synthetic name.
+        synthetic = [f for f in saved.uploaded_files if f.has_synthetic_filename]
+        assert len(synthetic) == 1
+        assert len({f.display_name for f in saved.uploaded_files}) == 2
 
 
 class TestQueryIntentValidation:
