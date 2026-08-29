@@ -15,10 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from faultmaven.exceptions import ConflictError, ServiceUnavailableException
 from faultmaven.infrastructure.llm.truncation import generate_with_truncation_retry
-from faultmaven.modules.knowledge.contracts import (
-    ISuggestionRepository,
-    SuggestionConcurrencyError,
-)
+from faultmaven.modules.knowledge.contracts import ISuggestionRepository
 from faultmaven.modules.knowledge.domain.models.conversion import ValidationResult
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
@@ -40,6 +37,7 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     VALID_DOMAINS,
     RunbookValidator,
 )
+from faultmaven.modules.knowledge.exceptions import SuggestionConcurrencyError
 from faultmaven.utils.runbook_id import runbook_id_from_parts
 from faultmaven.utils.serialization import to_json_compatible
 

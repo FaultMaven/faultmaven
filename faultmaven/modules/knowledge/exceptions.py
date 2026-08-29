@@ -19,6 +19,36 @@ class KnowledgeException(KnowledgeBaseException):
     pass
 
 
+class SuggestionConcurrencyError(Exception):
+    """A suggestion write lost an optimistic-concurrency check (#1227).
+
+    The store hands out DETACHED COPIES, so two callers can hold the same row
+    at the same version; the second write to commit is refused rather than
+    replaying its stale snapshot over the first. Callers translate it — the
+    approve path into a 409 ``ConflictError``, after rolling back whatever it
+    had already published.
+
+    Deliberately NOT a ``KnowledgeException``: it is a concurrency outcome, not
+    a knowledge-base fault, and it must not be swallowed by a handler catching
+    the module's error family. Deliberately NOT declared in ``contracts``
+    either — see the comment beside ``ISuggestionRepository`` for the
+    import-linter measurement behind that.
+
+    Carries the suggestion id so a handler can name the row without
+    re-deriving it.
+    """
+
+    def __init__(self, suggestion_id: str, message: Optional[str] = None):
+        self.suggestion_id = suggestion_id
+        super().__init__(
+            message
+            or (
+                f"Suggestion {suggestion_id} was modified by another writer "
+                f"since it was loaded"
+            )
+        )
+
+
 class DocumentNotFoundError(KnowledgeException):
     """Raised when a document is not found in the knowledge base."""
 

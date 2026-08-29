@@ -169,24 +169,20 @@ class ISuggestionService(Protocol):
 # ============================================================
 
 
-class SuggestionConcurrencyError(Exception):
-    """A write lost an optimistic-concurrency check (#1227).
-
-    Declared here, beside the interface that raises it, because the callers
-    that must handle it live in the domain layer and may not import
-    infrastructure. Carries the suggestion id so a handler can name the row
-    without re-deriving it.
-    """
-
-    def __init__(self, suggestion_id: str, message: Optional[str] = None):
-        self.suggestion_id = suggestion_id
-        super().__init__(
-            message
-            or (
-                f"Suggestion {suggestion_id} was modified by another writer "
-                f"since it was loaded"
-            )
-        )
+# ``SuggestionConcurrencyError`` — raised by every implementation of the
+# interface below — lives in ``modules/knowledge/exceptions``, NOT here.
+#
+# Measured, not preferred: ``contracts`` re-exports the domain models, so any
+# module importing from it acquires a path to ``domain``. import-linter's layers
+# contract follows indirect chains, so an infrastructure module importing this
+# exception from here would report ``infrastructure -> contracts -> domain`` and
+# need contract 4 to exempt the whole contracts hop — a wider hole than the
+# single model import ``knowledge_item_repository`` already has exempted.
+# ``exceptions`` imports nothing from ``domain``, so the exception reaches every
+# layer with no chain at all.
+from faultmaven.modules.knowledge.exceptions import (  # noqa: E402,F401
+    SuggestionConcurrencyError,
+)
 
 
 class ISuggestionRepository(Protocol):

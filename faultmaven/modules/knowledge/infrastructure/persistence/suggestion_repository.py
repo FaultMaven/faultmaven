@@ -50,12 +50,19 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from sqlalchemy import func, select, update
 
 from faultmaven.infrastructure.persistence.models import KnowledgeSuggestionModel
-from faultmaven.modules.knowledge.contracts import SuggestionConcurrencyError
+
+# The domain model this repository maps. Contract 4 exempts exactly this edge
+# for exactly this reason, and already did so for ``knowledge_item_repository``:
+# a repository has to name the type it hydrates. It is imported STRAIGHT from
+# ``domain.models`` rather than through ``contracts`` on purpose — contracts
+# re-exports several models, so routing through it would make the exemption
+# cover a wider chain than the one edge that needs it.
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
     PIIScanStatus,
     SuggestionStatus,
 )
+from faultmaven.modules.knowledge.exceptions import SuggestionConcurrencyError
 from faultmaven.utils.serialization import decode_json_blob
 
 logger = logging.getLogger(__name__)
