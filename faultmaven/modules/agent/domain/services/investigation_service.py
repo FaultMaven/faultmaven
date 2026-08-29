@@ -272,20 +272,46 @@ _CLARIFICATION_FALLBACK_LONG = "unstructured text"
 _PASTE_CLARIFICATION_SEEDS = ["command_output", "logs_and_errors"]
 
 
-def _engine_attachment_metadata(uf) -> dict:
+def _engine_attachment_metadata(result: "_PreprocessedAttachment") -> dict:
     """The per-attachment dict handed to ``engine.process_turn``.
 
-    Sourced entirely from the ``UploadedFile`` row, which is the record of what
-    was submitted. It used to take ``source_type`` from the shape of the
-    SUBMITTED filename instead — ``"paste" if att.filename.startswith(
-    "pasted-content-") else "file_upload"`` — so a page capture, minted as
-    ``page-capture-<ts>.txt``, reached the engine tagged ``file_upload`` and the
-    engine could not tell a captured page from a chosen file (#1201).
+    The file facts are sourced entirely from the ``UploadedFile`` row, which is
+    the record of what was submitted. ``source_type`` used to be taken from the
+    shape of the SUBMITTED filename instead — ``"paste" if
+    att.filename.startswith("pasted-content-") else "file_upload"`` — so a page
+    capture, minted as ``page-capture-<ts>.txt``, reached the engine tagged
+    ``file_upload`` and the engine could not tell a captured page from a chosen
+    file (#1201). ``uf.input_origin`` is that fact derived once, with the
+    precedence every other consumer uses.
 
-    ``uf.input_origin`` is that fact derived once, with the precedence every
-    other consumer uses. Nothing here consults the attachment, so there is no
-    second derivation to drift.
+    ``is_novel`` is the other fact the engine cannot recover for itself: did
+    this turn bring data the case did not already hold? It is **tri-state**,
+    because the honest answer has three values:
+
+    - ``False`` — the content-hash dedup short-circuit fired, so the case
+      demonstrably already held these bytes.
+    - ``True`` — the lookup ran and found nothing.
+    - ``None`` — *undetermined*: the lookup never ran (no content_hash, or it
+      raised), so nothing here knows. Reading that as ``True`` would report a
+      brand-new file for a byte-identical re-submission and arm #1136's
+      progress arm on it — #1210 inverted, in the aggressive direction. The
+      engine treats ``None`` conservatively and says so in the log.
+
+    The engine used to re-derive novelty from the case aggregate
+    (``file_id not in {f.file_id for f in case.uploaded_files}``), but
+    ``_preprocess_attachment`` appends the authoritative row to that same
+    aggregate BEFORE ``process_turn`` is called and there is no reload in
+    between — so the id was always already known, and #1136's stall-net arm for
+    uploads was dead on every turn (#1210). Deriving it here, once, from the
+    field that owns it is the same lesson #1201 pinned: one derivation, not two.
     """
+    uf = result.uploaded_file
+    if result.duplicate_of is not None:
+        is_novel: Optional[bool] = False
+    elif result.dedup_ran:
+        is_novel = True
+    else:
+        is_novel = None
     return {
         "file_id": uf.file_id,
         "filename": uf.filename,
@@ -294,6 +320,7 @@ def _engine_attachment_metadata(uf) -> dict:
         "source_type": uf.input_origin,
         "summary": uf.summary or "",
         "storage_ref": uf.storage_ref,
+        "is_novel": is_novel,
     }
 
 
@@ -445,6 +472,16 @@ class _PreprocessedAttachment:
     uploaded_file: UploadedFile
     duplicate_of: Optional[str] = None
     duplicate_turn: Optional[int] = None
+    # Did the content-hash lookup actually execute and return an answer?
+    #
+    # ``duplicate_of is None`` alone does NOT mean "novel" — it also covers
+    # every case where dedup never ran (no content_hash to match on, or the
+    # lookup raised). Reading absence as novelty reports a confident True for a
+    # byte-identical re-submission, which ARMS #1136's progress arm and resets
+    # ``turns_without_progress`` — the inverse of #1210, in the aggressive
+    # direction. Defaults False so any construction site that does not
+    # positively establish the answer is treated as undetermined.
+    dedup_ran: bool = False
     # Classification clarification — populated only when the preprocessing
     # result had extraction_method="classification_failed". Contains 0–3
     # DataType enum values (as strings) suggested by the classifier for
@@ -925,14 +962,18 @@ class InvestigationService:
                 # to the per-intent handler in milestone_engine.
                 # Build attachment metadata for the engine. Post-010:
                 # uploads create only an UploadedFile (no auto-Evidence),
-                # so the metadata is sourced directly from those rows.
-                # One row per attachment (``_preprocess_attachment`` appends
-                # exactly one above), so iterating the rows is the same set the
-                # old ``zip`` walked — and the attachment is no longer consulted
-                # at all, which is the #1201 fix: the row is the record of what
-                # was submitted, its filename is not.
+                # so the file facts are sourced directly from those rows —
+                # the #1201 fix: the row is the record of what was submitted,
+                # its filename is not.
+                #
+                # Walks ``preprocess_results`` rather than
+                # ``uploaded_files_this_turn`` (the same set, in the same
+                # order — one result per attachment, and the list above is
+                # built from ``result.uploaded_file``) because the result also
+                # carries ``duplicate_of``, the only place novelty is still
+                # knowable by the time the engine runs (#1210).
                 attachment_metadata = [
-                    _engine_attachment_metadata(uf) for uf in uploaded_files_this_turn
+                    _engine_attachment_metadata(res) for res in preprocess_results
                 ]
                 # DA evidence search is handled inside MilestoneEngine's
                 # tool loop. The same LLM that tracks hypotheses searches
@@ -1298,18 +1339,50 @@ class InvestigationService:
         # content_hash already exists on this case returns the existing
         # UploadedFile instead of creating a new one. No raw file
         # re-storage either — storage already has the bytes.
+        #
+        # ``dedup_ran`` records whether the lookup actually produced an answer.
+        # It is what separates "ran and found nothing" (novel) from "never ran"
+        # (undetermined) downstream; without it both look like
+        # ``duplicate_of is None`` and a re-submission is reported as new data
+        # (#1210 round 2). Both skip paths log, because a permanently skipped
+        # lookup means per-case dedup is not working at all.
         existing_file = None
-        if preprocessing_result.content_hash:
+        dedup_ran = False
+        if not preprocessing_result.content_hash:
+            logger.warning(
+                "No content_hash for '%s' on case %s — per-case dedup could not "
+                "run and novelty is UNDETERMINED for this attachment; the turn "
+                "is scored conservatively (#1136's upload progress arm will not "
+                "arm on it).",
+                attachment.filename,
+                case.case_id,
+            )
+        else:
             try:
                 existing_file = (
                     await self.repository.find_uploaded_file_by_content_hash(
                         case.case_id, preprocessing_result.content_hash
                     )
                 )
-            except AttributeError:
-                # Repository doesn't implement dedup lookup (test doubles).
-                # Silently skip dedup.
-                existing_file = None
+                dedup_ran = True
+            except AttributeError as e:
+                # Two very different things land here: a repository that does
+                # not implement the lookup at all (test doubles), and a real
+                # implementation raising AttributeError from inside its own
+                # body. Neither can be told apart from the outside, and in both
+                # the answer is the same — dedup did not run — so this stays a
+                # degradation rather than a failure. It is no longer SILENT:
+                # swallowing it and reporting the attachment novel is how a
+                # broken repository would quietly re-arm the stall net.
+                logger.warning(
+                    "Per-case dedup lookup unavailable on %s for case %s (%s) — "
+                    "novelty is UNDETERMINED for '%s'; the turn is scored "
+                    "conservatively and duplicate uploads will not be detected.",
+                    type(self.repository).__name__,
+                    case.case_id,
+                    e,
+                    attachment.filename,
+                )
         if existing_file is not None:
             logger.info(
                 "Duplicate upload detected: file '%s' matches %s (turn %s) "
@@ -1324,6 +1397,7 @@ class InvestigationService:
                 uploaded_file=existing_file,
                 duplicate_of=existing_file.file_id,
                 duplicate_turn=existing_file.uploaded_at_turn,
+                dedup_ran=True,
             )
 
         # Post-010 strict evidence model: file upload creates only an
@@ -1520,6 +1594,7 @@ class InvestigationService:
 
         return _PreprocessedAttachment(
             uploaded_file=uploaded_file,
+            dedup_ran=dedup_ran,
             classification_failed=is_classification_failed,
             suggested_types=suggested_types,
             attachment_filename=attachment.filename,

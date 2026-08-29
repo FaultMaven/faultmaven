@@ -770,10 +770,20 @@ class TestInvestigationServiceProcessTurn:
         sample_case,
         sample_user_id,
     ):
-        """Regression: attachment_metadata must include filename, size, source_type.
+        """The dict handed to ``engine.process_turn`` carries the whole set of
+        keys the engine reads by name — ``file_id``, ``filename``, ``size``,
+        ``source_type``, ``data_type``, ``summary``, ``storage_ref``,
+        ``is_novel`` — sourced from the persisted ``UploadedFile`` row plus the
+        preprocessing result's dedup answer.
 
-        Without these fields, milestone_engine._create_uploaded_file_from_attachment()
-        defaults size_bytes=0, violating the uploaded_files_size_positive CHECK constraint.
+        The original reason was narrower and no longer exists: the engine used
+        to mint its own ``UploadedFile`` from this dict, and a missing ``size``
+        defaulted ``size_bytes=0`` and violated the
+        ``uploaded_files_size_positive`` CHECK. That minting was deleted with
+        #1210 (the service owns the rows). The dict is still the dispatch
+        contract, so the shape stays pinned here — see
+        ``test_engine_attachment_provenance_1201.py`` for the per-key
+        derivations and ``test_novel_upload_thread_1210.py`` for ``is_novel``.
         """
         sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
