@@ -33,7 +33,9 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = "e9f0a1b2c3d4"  # current head (045 — suggestion validation verdict)
+HEAD_REVISION = (
+    "d8e9f0a1b2c3"  # current head (046 — conversion-draft runbook_id uniqueness)
+)
 # Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
 # (029) regardless of no-op migrations stacked above it — more robust than a
 # relative "downgrade -1", which follows whatever the current head is.
@@ -397,11 +399,16 @@ class TestConversionLiveCaseUniquenessMigration:
                     (cid, f"file_{cid}", created),
                 )
                 conn.execute(
+                    # ``runbook_id`` is per-draft, not the shared literal it
+                    # used to be: since 046 two LIVE drafts in one org may not
+                    # share one, and this fixture's two drafts are both live.
+                    # Nothing in this test's subject (``live_case_id``) depends
+                    # on the value.
                     "INSERT INTO conversion_drafts "
                     "(id, organization_id, conversion_id, runbook_id, title, "
                     "file_path, status, source_type) "
-                    "VALUES (?, 'org-1', ?, 'rb', 'T', '/x.md', 'draft', 'case')",
-                    (f"{cid}_d", cid),
+                    "VALUES (?, 'org-1', ?, ?, 'T', '/x.md', 'draft', 'case')",
+                    (f"{cid}_d", cid, f"rb-{cid}"),
                 )
             conn.commit()
         finally:
@@ -434,6 +441,213 @@ class TestConversionLiveCaseUniquenessMigration:
         )
         assert idx, "unique index uq_conversion_jobs_live_case_id must exist"
         assert idx[0][1] == 1, "the live_case_id index must be UNIQUE"
+
+
+class TestConversionDraftRunbookIdUniquenessMigration:
+    """Migration 046: one live ``conversion_drafts`` row per (org, runbook_id).
+
+    Three things need executing rather than asserting from the migration's
+    docstring: that the index is UNIQUE and PARTIAL and scoped to the tenant,
+    that a database which already contains a collision is REFUSED with a
+    message an operator can act on, and that the refusal is not a dead end —
+    resolving and re-running completes.
+
+    A clean-DB up/down cannot reach the refusal path, so these seed at the
+    parent revision and upgrade across the boundary, the way 034's tests do.
+    """
+
+    _PARENT = "e9f0a1b2c3d4"  # 045 (fm#1227) — the revision before 046
+    _INDEX = "uq_conversion_drafts_org_runbook_id"
+
+    @staticmethod
+    def _insert_draft(conn, draft_id, org, runbook_id, status="draft"):
+        conn.execute(
+            "INSERT INTO conversion_drafts "
+            "(id, organization_id, conversion_id, runbook_id, title, "
+            "file_path, status, source_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'document')",
+            (
+                draft_id,
+                org,
+                f"conv_{org}",
+                runbook_id,
+                draft_id,
+                f"data/knowledge/global/{draft_id}.md",
+                status,
+            ),
+        )
+
+    def _seed(self, drafts):
+        """``drafts`` is a list of ``(draft_id, org, runbook_id, status)``."""
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            for org in sorted({d[1] for d in drafts}):
+                conn.execute(
+                    "INSERT INTO conversion_jobs "
+                    "(id, organization_id, scope, status, source_file_id, "
+                    "source_type, created_at) "
+                    "VALUES (?, ?, 'global', 'completed', ?, 'document', "
+                    "'2026-08-29 10:00:00')",
+                    (f"conv_{org}", org, f"file_{org}"),
+                )
+            for draft_id, org, runbook_id, status in drafts:
+                self._insert_draft(conn, draft_id, org, runbook_id, status)
+            conn.commit()
+        finally:
+            conn.close()
+
+    # -- the refusal ------------------------------------------------------
+
+    def test_a_pre_existing_collision_refuses_the_upgrade(
+        self, clean_database, database_url
+    ):
+        """The empty-id collision #1230 measured, seeded verbatim."""
+        assert run_alembic(f"upgrade {self._PARENT}", database_url).returncode == 0
+        self._seed(
+            [
+                ("draft_a", "org-1", "", "draft"),
+                ("draft_b", "org-1", "", "draft"),
+            ]
+        )
+
+        result = run_alembic("upgrade head", database_url)
+
+        assert result.returncode != 0, "a colliding database was migrated anyway"
+        combined = result.stdout + result.stderr
+        # Actionable: names the key, the count, and a way forward.
+        assert "org-1" in combined, combined[-2000:]
+        assert "live_drafts=2" in combined, combined[-2000:]
+        assert "SELECT id, organization_id" in combined, combined[-2000:]
+        assert "re-run the migration" in combined, combined[-2000:]
+        # And it left the schema alone.
+        assert get_current_revision(database_url) == self._PARENT
+
+    def test_resolving_the_collision_lets_the_upgrade_through(
+        self, clean_database, database_url
+    ):
+        """The refusal must not be a dead end — this is the operator's exit."""
+        assert run_alembic(f"upgrade {self._PARENT}", database_url).returncode == 0
+        self._seed(
+            [
+                ("draft_a", "org-1", "", "draft"),
+                ("draft_b", "org-1", "", "draft"),
+            ]
+        )
+        assert run_alembic("upgrade head", database_url).returncode != 0
+
+        conn = sqlite3.connect(TEST_DB)
+        conn.execute(
+            "UPDATE conversion_drafts SET status='discarded' WHERE id=?", ("draft_b",)
+        )
+        conn.commit()
+        conn.close()
+
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stderr
+        assert get_current_revision(database_url) == HEAD_REVISION
+
+    def test_rows_that_only_LOOK_like_collisions_do_not_refuse(
+        self, clean_database, database_url
+    ):
+        """The qualification, executed.
+
+        Two tenants on the same runbook_id, and a discarded duplicate, are both
+        legal. Without this the refusal could be a blanket "any repeat" check
+        and still pass the test above.
+        """
+        assert run_alembic(f"upgrade {self._PARENT}", database_url).returncode == 0
+        self._seed(
+            [
+                ("draft_a", "org-1", "shared-id", "draft"),
+                ("draft_b", "org-2", "shared-id", "draft"),
+                ("draft_c", "org-1", "shared-id", "discarded"),
+            ]
+        )
+
+        result = run_alembic("upgrade head", database_url)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    # -- the index itself -------------------------------------------------
+
+    def test_the_index_is_unique_and_partial(self, clean_database, database_url):
+        assert run_alembic("upgrade head", database_url).returncode == 0
+
+        idx = query_rows(
+            TEST_DB,
+            'SELECT name, "unique", partial FROM pragma_index_list'
+            f"('conversion_drafts') WHERE name = '{self._INDEX}'",
+        )
+        assert idx, f"{self._INDEX} must exist"
+        assert idx[0][1] == 1, "the index must be UNIQUE"
+        assert idx[0][2] == 1, (
+            "the index must be PARTIAL — without the predicate a DISCARDED "
+            "draft permanently blocks re-converting its own source"
+        )
+        ddl = query_rows(
+            TEST_DB, f"SELECT sql FROM sqlite_master WHERE name = '{self._INDEX}'"
+        )[0][0]
+        assert "status <> 'discarded'" in ddl, ddl
+        assert "organization_id" in ddl and "runbook_id" in ddl, ddl
+
+    def test_the_index_rejects_a_second_live_draft_on_the_same_key(
+        self, clean_database, database_url
+    ):
+        """The index BITES. ``pragma_index_list`` reporting unique=1 is a
+        declaration; this is the enforcement."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        self._seed([("draft_a", "org-1", "", "draft")])
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                self._insert_draft(conn, "draft_b", "org-1", "")
+                conn.commit()
+            conn.rollback()
+            # ... while the two legal shapes still insert.
+            conn.execute(
+                "INSERT INTO conversion_jobs "
+                "(id, organization_id, scope, status, source_file_id, "
+                "source_type, created_at) VALUES "
+                "('conv_org-2', 'org-2', 'global', 'completed', 'f2', "
+                "'document', '2026-08-29 10:00:00')"
+            )
+            self._insert_draft(conn, "draft_c", "org-2", "")
+            self._insert_draft(conn, "draft_d", "org-1", "", status="discarded")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_downgrade_drops_the_index_and_lifts_the_rejection(
+        self, clean_database, database_url
+    ):
+        """Both directions, and the second direction proves the first was real:
+        the same INSERT that was rejected above succeeds once the index is
+        gone, so the rejection came from THIS index and not from something
+        else in the schema."""
+        assert run_alembic("upgrade head", database_url).returncode == 0
+        self._seed([("draft_a", "org-1", "", "draft")])
+        # Without this the whole test passes vacuously against a build that
+        # never created the index — measured, by reverting it.
+        assert query_rows(
+            TEST_DB,
+            "SELECT name FROM pragma_index_list('conversion_drafts') "
+            f"WHERE name = '{self._INDEX}'",
+        ), "nothing to downgrade — the index was never created"
+
+        assert run_alembic("downgrade -1", database_url).returncode == 0
+        assert get_current_revision(database_url) == self._PARENT
+        assert not query_rows(
+            TEST_DB,
+            "SELECT name FROM pragma_index_list('conversion_drafts') "
+            f"WHERE name = '{self._INDEX}'",
+        )
+
+        conn = sqlite3.connect(TEST_DB)
+        try:
+            self._insert_draft(conn, "draft_b", "org-1", "")
+            conn.commit()
+        finally:
+            conn.close()
 
 
 class TestRbacSeed:

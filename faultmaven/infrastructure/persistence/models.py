@@ -2425,6 +2425,27 @@ class ConversionDraftModel(Base):
             name="conversion_drafts_severity_check",
         ),
         Index("ix_conversion_drafts_tags", "tags", postgresql_using="gin"),
+        # At most one LIVE draft per (tenant, runbook_id) — migration 046.
+        # ``organization_id`` leads the key for confidentiality as well as
+        # correctness: a unique index is enforced BELOW row-level security, so
+        # a key omitting the tenant would reject an insert because of a row the
+        # caller cannot see — a cross-tenant existence oracle over titles.
+        # ``runbook_id`` is minted deterministically from (service, title), so
+        # two drafts can legitimately arrive at the same value; before this
+        # index nothing rejected them and they were indistinguishable to
+        # verify/approve and to ``item_id_from_runbook_id`` (#1230).
+        # Partial on ``status <> 'discarded'`` because discard is a SOFT
+        # delete: without it a discarded draft would block re-converting its
+        # own source forever. Both dialect clauses are identical; they are
+        # spelled twice because SQLAlchemy takes the predicate per dialect.
+        Index(
+            "uq_conversion_drafts_org_runbook_id",
+            "organization_id",
+            "runbook_id",
+            unique=True,
+            sqlite_where=text("status <> 'discarded'"),
+            postgresql_where=text("status <> 'discarded'"),
+        ),
     )
 
 

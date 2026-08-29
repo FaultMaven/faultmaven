@@ -8,7 +8,6 @@ Design Reference: Source Verification Badges Feature
 
 import json
 import logging
-import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -38,7 +37,10 @@ from faultmaven.modules.knowledge.domain.services.runbook_validator import (
     RunbookValidator,
 )
 from faultmaven.modules.knowledge.exceptions import SuggestionConcurrencyError
-from faultmaven.utils.runbook_id import runbook_id_from_parts
+from faultmaven.utils.runbook_id import (
+    is_hash_only_runbook_id,
+    runbook_id_from_parts,
+)
 from faultmaven.utils.serialization import to_json_compatible
 
 #: Statuses that mean "a reviewer has not dealt with this yet". The store's
@@ -46,27 +48,6 @@ from faultmaven.utils.serialization import to_json_compatible
 #: record — and, for an approved one, the only link from its case to the
 #: runbook it produced — not queue depth.
 UNREVIEWED_STATUSES = (SuggestionStatus.PENDING_REVIEW, SuggestionStatus.DRAFT)
-
-
-def _as_kebab(runbook_id: str) -> str:
-    """Coerce a minted id into the kebab grammar the validator enforces.
-
-    ``runbook_id_from_parts`` can return a value its own docstring says it does
-    not: for an over-length input it truncates to 55 characters and appends
-    ``"-" + md5[:4]``, so a slug whose 55th character is already a hyphen yields
-    a DOUBLE hyphen — and ``^[a-z0-9]+(-[a-z0-9]+)*$`` rejects that. Measured on
-    the extraction eval: ``tls-outbound-tls-failure-due-to-expired-ca-certificate--7217``
-    was one of eight first drafts, refused by the gate for its id alone.
-
-    Repaired HERE rather than in the shared helper on purpose. That helper is
-    pinned byte-for-byte by ``tests/unit/utils/test_runbook_id_consolidation.py``
-    because its output is a PERSISTED id (``conversion_drafts.runbook_id``,
-    runbook frontmatter), so changing it is a decision about orphaning existing
-    rows — a call for the owner of that seam, not a side effect of this lane.
-    The defect is real and reaches the two conversion call sites as well; it is
-    reported as a residual rather than fixed silently.
-    """
-    return re.sub(r"-{2,}", "-", runbook_id or "").strip("-")
 
 
 class SuggestionService:
@@ -627,11 +608,14 @@ corrected runbook, starting at the opening `---`, and output nothing else.
 
         Opaque, but an internal case identifier and therefore safe to publish —
         unlike the case TITLE, which names an incident (see :meth:`_mint_id`).
+
+        No local kebab repair and no ``or "extracted-runbook-draft"`` fallback:
+        since #1230/#1243 ``runbook_id_from_parts`` guarantees a non-empty
+        kebab id itself, and the literal fallback was the worse of the two
+        anyway — every case with a degenerate id would have shared it, which is
+        the collision this pair of issues exists to remove.
         """
-        return (
-            _as_kebab(runbook_id_from_parts("case", case_id))
-            or "extracted-runbook-draft"
-        )
+        return runbook_id_from_parts("case", case_id)
 
     def _mint_id(self, content: str, case_id: str) -> str:
         """The kebab-case ``id`` to force onto a draft's frontmatter.
@@ -664,12 +648,15 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         title = metadata.get("title") if isinstance(metadata, dict) else None
         service = metadata.get("service") if isinstance(metadata, dict) else None
         if isinstance(title, str) and title.strip():
-            minted = _as_kebab(
-                runbook_id_from_parts(
-                    service if isinstance(service, str) else "", title
-                )
+            minted = runbook_id_from_parts(
+                service if isinstance(service, str) else "", title
             )
-            if minted:
+            # The mint no longer returns ``""`` for a title that filters to
+            # nothing — it returns ``runbook-<hash>`` (#1230). That is a valid
+            # id but a nameless one, and the case stem is strictly more
+            # traceable, so the "no usable title" fallback below is preserved
+            # by asking the mint which branch it took.
+            if not is_hash_only_runbook_id(minted):
                 return minted
         return self._case_stem_id(case_id)
 
