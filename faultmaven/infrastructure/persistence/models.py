@@ -2245,6 +2245,12 @@ class KnowledgeSuggestionModel(Base):
     validation_errors = Column(JsonBlob, nullable=False, server_default="[]")
     validation_warnings = Column(JsonBlob, nullable=False, server_default="[]")
 
+    # Optimistic-concurrency token, mirroring `cases.version` (migration 045).
+    # The store is read as detached copies, so a full-row write from a stale
+    # snapshot would silently revert a concurrent decision; the repository's
+    # UPDATE carries `WHERE version = :loaded` and bumps it.
+    version = Column(Integer, nullable=False, server_default="1")
+
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
@@ -2271,6 +2277,7 @@ class KnowledgeSuggestionModel(Base):
         CheckConstraint(
             "evidence_count >= 0", name="knowledge_suggestions_evidence_count_check"
         ),
+        CheckConstraint("version >= 1", name="knowledge_suggestions_version_positive"),
     )
 
 

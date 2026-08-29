@@ -9,8 +9,13 @@ no ``sessionAffinity`` and no ingress stickiness):
 * a restart destroyed every pending review;
 * an extract handled by one pod was invisible to the approve handled by
   another, so approval 404'd on roughly a coin flip;
-* nothing ever evicted an entry, so a long-lived process accumulated full
+* nothing bounded the store, so a long-lived process accumulated full
   LLM-authored articles for its whole lifetime.
+
+The interface these implement is ``modules/knowledge/contracts``'s
+:class:`ISuggestionRepository`; read it for the two invariants callers rely on
+(detached-copy reads, optimistically-locked writes). This module holds only the
+implementations and the abstract base they share.
 
 Sessionless by design. ``SuggestionService`` is a process singleton, so it
 cannot hold an ``AsyncSession``; :class:`DatabaseSuggestionRepository` opens one
@@ -27,13 +32,12 @@ carry an explicit ``organization_id`` predicate wherever the caller supplies
 one — defence in depth, and the only isolation that exists on SQLite, which has
 no RLS at all. Do not remove them.
 
-Identity. Both implementations return a DETACHED copy of the stored suggestion:
-mutating what a read handed you changes nothing until you ``save()`` it. The
-database repository gets that for free (a new session per call, no identity map
-across calls); :class:`InMemorySuggestionRepository` copies explicitly so the
-double cannot pass a test the database would fail. That is the whole point of
-the double — a store that handed back its own live object would let the service
-forget a ``save()`` and still look correct in unit tests.
+**Nothing here deletes.** There is no eviction primitive, deliberately: an
+approved suggestion's ``knowledge_item_id`` is the only case → runbook link that
+exists (``knowledge_items`` carries no back-pointer), so deleting the row
+destroys the provenance the knowledge flywheel is built to accumulate. The
+store is bounded by refusing new extractions when the *unreviewed* queue is
+full — see ``SuggestionService._refuse_if_review_queue_full``.
 """
 
 import json
@@ -43,24 +47,18 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select, update
 
 from faultmaven.infrastructure.persistence.models import KnowledgeSuggestionModel
+from faultmaven.modules.knowledge.contracts import SuggestionConcurrencyError
 from faultmaven.modules.knowledge.domain.models.suggestion import (
     KnowledgeSuggestion,
     PIIScanStatus,
     SuggestionStatus,
 )
+from faultmaven.utils.serialization import decode_json_blob
 
 logger = logging.getLogger(__name__)
-
-#: Statuses whose decision is already recorded somewhere else, so an entry in
-#: this state is the eviction pool rather than work in progress. An APPROVED
-#: suggestion has its knowledge item in the corpus; a REJECTED one has nothing
-#: to publish. PENDING_REVIEW and DRAFT are NEVER evictable — they exist
-#: nowhere else, and dropping one silently destroys work a reviewer has not
-#: seen.
-TERMINAL_STATUSES = (SuggestionStatus.APPROVED, SuggestionStatus.REJECTED)
 
 #: Placeholder ``case_id`` for a suggestion whose source case has been deleted.
 #: ``knowledge_suggestions.case_id`` is ON DELETE SET NULL — the suggestion is
@@ -86,8 +84,7 @@ def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
     same normalisation, for the same reason, as ``operator_grant_repository``.
 
     It also keeps every ``datetime`` the service sees comparable with the
-    ``datetime.now(timezone.utc)`` values it mints; the eviction ORDER BY is
-    SQL's, so that is a latent hazard rather than a live one.
+    ``datetime.now(timezone.utc)`` values it mints.
     """
     if value is not None and value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -97,13 +94,17 @@ def _as_utc(value: Optional[datetime]) -> Optional[datetime]:
 def _decode_list(value: Any) -> List[str]:
     """Decode a ``JsonBlob`` column that holds a JSON list of strings.
 
-    ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so what comes
-    back depends on the backend AND on the writer: SQLite hands back the JSON
-    string this repository wrote, and PostgreSQL hands back the same ``str``
-    because ``json.dumps`` binds a JSON *string scalar* into JSONB. A writer
-    binding a real list produces the decoded shape instead. Handling one and
-    not the other loses the value silently, so both are handled — the same rule
-    ``utils.serialization.decode_json_blob`` applies to the dict case.
+    The list counterpart of ``utils.serialization.decode_json_blob``, which
+    handles only the dict case (and is used directly for the two dict-shaped
+    columns here). Both exist because ``JsonBlob`` is
+    ``Text().with_variant(JSONB, "postgresql")``, so what comes back depends on
+    the backend AND on the writer: SQLite hands back the JSON string this
+    repository wrote; PostgreSQL hands back the same ``str``, because
+    ``json.dumps`` binds a JSON *string scalar* into JSONB; and a value that
+    reached the column through the migration's ``server_default '[]'`` comes
+    back from JSONB as a real ``list``. All three shapes are live in one column
+    on a PostgreSQL deployment, so handling one and not the others loses the
+    value silently.
     """
     if value is None:
         return []
@@ -119,28 +120,29 @@ def _decode_list(value: Any) -> List[str]:
     return []
 
 
-def _decode_dict(value: Any) -> Optional[Dict[str, Any]]:
-    """Decode a ``JsonBlob`` column that holds a JSON object, or ``None``."""
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, (str, bytes)):
-        try:
-            decoded = json.loads(value)
-        except (ValueError, TypeError):
-            return None
-        if isinstance(decoded, dict):
-            return decoded
-    return None
-
-
 class SuggestionRepository(ABC):
-    """Abstract store for :class:`KnowledgeSuggestion`."""
+    """Abstract base shared by the two implementations.
+
+    The *interface* callers depend on is
+    ``modules.knowledge.contracts.ISuggestionRepository``; this class exists so
+    the two implementations below cannot silently diverge on the method set,
+    the same split the case module makes between ``ICaseRepository`` (contract)
+    and ``CaseRepository`` (base).
+    """
+
+    #: See ``ISuggestionRepository.is_durable``. A class attribute rather than a
+    #: computed property: durability is a property of the implementation, and
+    #: choosing an implementation whose claim is true for the configured
+    #: database is the composition root's job, not this object's.
+    IS_DURABLE: bool = False
+
+    @property
+    def is_durable(self) -> bool:
+        return self.IS_DURABLE
 
     @abstractmethod
     async def save(self, suggestion: KnowledgeSuggestion) -> KnowledgeSuggestion:
-        """Insert or update ``suggestion``, returning what was persisted."""
+        """Insert or optimistically-locked update; see the contract."""
 
     @abstractmethod
     async def get(self, suggestion_id: str) -> Optional[KnowledgeSuggestion]:
@@ -150,11 +152,7 @@ class SuggestionRepository(ABC):
     async def get_for_organization(
         self, suggestion_id: str, organization_id: str
     ) -> Optional[KnowledgeSuggestion]:
-        """Load one suggestion by id, scoped to ``organization_id``.
-
-        ``None`` both for an absent id and for one owned by another tenant, so
-        the two are indistinguishable to the caller.
-        """
+        """Load one suggestion by id, scoped to ``organization_id``."""
 
     @abstractmethod
     async def list_for_organization(
@@ -165,31 +163,22 @@ class SuggestionRepository(ABC):
         limit: int = 20,
         offset: int = 0,
     ) -> Tuple[List[KnowledgeSuggestion], int]:
-        """Return one page of an organization's suggestions and the total count.
-
-        Newest first, by ``created_at``.
-        """
+        """One page of an organization's suggestions, newest first, and a total."""
 
     @abstractmethod
-    async def count_for_organization(self, organization_id: str) -> int:
-        """Total suggestions stored for ``organization_id``."""
-
-    @abstractmethod
-    async def list_terminal_for_organization(
-        self, organization_id: str
-    ) -> List[KnowledgeSuggestion]:
-        """Every APPROVED/REJECTED suggestion for ``organization_id``.
-
-        Oldest decision first, by ``updated_at`` — the eviction order.
-        """
-
-    @abstractmethod
-    async def delete_many(self, suggestion_ids: Sequence[str]) -> int:
-        """Delete the named suggestions; returns how many rows went away."""
+    async def count_for_organization(
+        self,
+        organization_id: str,
+        *,
+        statuses: Optional[Sequence[SuggestionStatus]] = None,
+    ) -> int:
+        """Count an organization's suggestions, optionally in given statuses."""
 
 
 class DatabaseSuggestionRepository(SuggestionRepository):
     """``knowledge_suggestions``-backed store, one session per operation."""
+
+    IS_DURABLE = True
 
     def __init__(self, session_factory: Optional[Callable[[], Any]] = None):
         """Args:
@@ -221,7 +210,10 @@ class DatabaseSuggestionRepository(SuggestionRepository):
             include_messages=bool(row.include_messages),
             include_evidence=bool(row.include_evidence),
             pii_scan_status=PIIScanStatus(row.pii_scan_status),
-            pii_scan_result=_decode_dict(row.pii_scan_result),
+            # ``copy=True``: the decoded dict may be the ORM row's own JSONB
+            # value on PostgreSQL, and the domain object is handed out to
+            # callers who mutate it.
+            pii_scan_result=decode_json_blob(row.pii_scan_result, copy=True),
             pii_remediated_by=row.pii_remediated_by,
             pii_remediated_at=_as_utc(row.pii_remediated_at),
             source_case_title=row.source_case_title or "",
@@ -237,12 +229,16 @@ class DatabaseSuggestionRepository(SuggestionRepository):
             validation_warnings=_decode_list(row.validation_warnings),
             created_at=_as_utc(row.created_at),
             updated_at=_as_utc(row.updated_at),
-            metadata=_decode_dict(row.suggestion_metadata),
+            metadata=decode_json_blob(row.suggestion_metadata, copy=True),
+            version=row.version or 1,
         )
 
     @staticmethod
     def _column_values(suggestion: KnowledgeSuggestion) -> Dict[str, Any]:
-        """The column payload for an insert or update.
+        """The column payload for an insert or update, EXCLUDING ``version``.
+
+        ``version`` is the repository's own bookkeeping and is set by the write
+        path, never copied from the caller's snapshot.
 
         ``case_id`` and ``extracted_by`` are real foreign keys, and the domain
         carries them as plain strings. A value that never named a row (the
@@ -296,28 +292,67 @@ class DatabaseSuggestionRepository(SuggestionRepository):
         ``SuggestionService`` is "persist whatever this object now says": the
         extract path writes a new row, the review paths write back a loaded
         one, and forcing them to know which is which buys nothing.
+
+        The UPDATE is a single conditional statement —
+        ``WHERE suggestion_id = :id AND version = :loaded`` — so the read of the
+        current version and the write that supersedes it are one atomic step.
+        A read-then-write pair would reintroduce the race it exists to close.
+
+        Raises:
+            SuggestionConcurrencyError: the row moved since it was loaded (or,
+                on an insert, the id was taken between the check and the write).
+            SuggestionRepositoryError: anything else the store refused.
         """
         values = self._column_values(suggestion)
+        expected_version = suggestion.version or 1
+        next_version = expected_version + 1
         try:
             async with self._session_factory() as session:
-                row = await session.get(
-                    KnowledgeSuggestionModel, suggestion.suggestion_id
-                )
-                if row is None:
-                    session.add(
-                        KnowledgeSuggestionModel(
-                            suggestion_id=suggestion.suggestion_id, **values
+                exists = (
+                    await session.execute(
+                        select(KnowledgeSuggestionModel.suggestion_id).where(
+                            KnowledgeSuggestionModel.suggestion_id
+                            == suggestion.suggestion_id
                         )
                     )
+                ).scalar_one_or_none()
+
+                if exists is None:
+                    session.add(
+                        KnowledgeSuggestionModel(
+                            suggestion_id=suggestion.suggestion_id,
+                            version=expected_version,
+                            **values,
+                        )
+                    )
+                    await session.commit()
+                    stored_version = expected_version
                 else:
-                    for key, value in values.items():
-                        setattr(row, key, value)
-                await session.commit()
+                    result = await session.execute(
+                        update(KnowledgeSuggestionModel)
+                        .where(
+                            KnowledgeSuggestionModel.suggestion_id
+                            == suggestion.suggestion_id,
+                            KnowledgeSuggestionModel.version == expected_version,
+                        )
+                        .values(version=next_version, **values)
+                        .execution_options(synchronize_session=False)
+                    )
+                    if (result.rowcount or 0) == 0:
+                        await session.rollback()
+                        raise SuggestionConcurrencyError(suggestion.suggestion_id)
+                    await session.commit()
+                    stored_version = next_version
+        except SuggestionConcurrencyError:
+            raise
         except Exception as exc:
             raise SuggestionRepositoryError(
                 f"Failed to save suggestion {suggestion.suggestion_id}: {exc}"
             ) from exc
-        return deepcopy(suggestion)
+
+        saved = deepcopy(suggestion)
+        saved.version = stored_version
+        return saved
 
     async def get(self, suggestion_id: str) -> Optional[KnowledgeSuggestion]:
         if not suggestion_id:
@@ -372,66 +407,48 @@ class DatabaseSuggestionRepository(SuggestionRepository):
             rows = (await session.execute(stmt)).scalars().all()
             return [self._to_domain(row) for row in rows], int(total)
 
-    async def count_for_organization(self, organization_id: str) -> int:
+    async def count_for_organization(
+        self,
+        organization_id: str,
+        *,
+        statuses: Optional[Sequence[SuggestionStatus]] = None,
+    ) -> int:
         if not organization_id:
             return 0
         async with self._session_factory() as session:
+            predicates = [KnowledgeSuggestionModel.organization_id == organization_id]
+            if statuses:
+                predicates.append(
+                    KnowledgeSuggestionModel.status.in_([s.value for s in statuses])
+                )
             total = (
                 await session.execute(
                     select(func.count())
                     .select_from(KnowledgeSuggestionModel)
-                    .where(KnowledgeSuggestionModel.organization_id == organization_id)
+                    .where(*predicates)
                 )
             ).scalar_one()
             return int(total)
 
-    async def list_terminal_for_organization(
-        self, organization_id: str
-    ) -> List[KnowledgeSuggestion]:
-        if not organization_id:
-            return []
-        async with self._session_factory() as session:
-            stmt = (
-                select(KnowledgeSuggestionModel)
-                .where(
-                    KnowledgeSuggestionModel.organization_id == organization_id,
-                    KnowledgeSuggestionModel.status.in_(
-                        [s.value for s in TERMINAL_STATUSES]
-                    ),
-                )
-                .order_by(KnowledgeSuggestionModel.updated_at.asc())
-            )
-            rows = (await session.execute(stmt)).scalars().all()
-            return [self._to_domain(row) for row in rows]
-
-    async def delete_many(self, suggestion_ids: Sequence[str]) -> int:
-        ids = [sid for sid in suggestion_ids if sid]
-        if not ids:
-            return 0
-        async with self._session_factory() as session:
-            result = await session.execute(
-                delete(KnowledgeSuggestionModel).where(
-                    KnowledgeSuggestionModel.suggestion_id.in_(ids)
-                )
-            )
-            await session.commit()
-            return int(result.rowcount or 0)
-
 
 class InMemorySuggestionRepository(SuggestionRepository):
-    """Process-local store — a TEST DOUBLE, not a deployment option.
+    """Process-local store — a TEST DOUBLE, and the no-database fallback.
 
     This is what ``SuggestionService._suggestions_store`` used to be, moved
-    behind the repository seam and demoted (#1227). Nothing in the composition
-    root builds one: ``create_suggestion_service`` takes a
-    :class:`DatabaseSuggestionRepository`, and a service handed no repository at
-    all refuses rather than degrading to this. It exists so unit tests can drive
-    the service without a database.
+    behind the repository seam and demoted (#1227). It is built in exactly two
+    places: by a test, and by ``create_suggestion_service`` when
+    ``persistent_database_configured()`` says there is no database to write to
+    — the same predicate every other factory keys off (fm#1128). It reports
+    ``is_durable == False``, so a deployment that lands here says so on
+    ``GET /admin/config/status`` instead of claiming a durability it does not
+    have.
 
-    Copies on the way in AND on the way out, because the database repository
-    does: a double that handed back its own live object would let the service
-    mutate a loaded suggestion, forget to ``save()`` it, and still pass.
+    Copies on the way in AND on the way out, and enforces the same version
+    check, because the database repository does: a double that diverged on
+    either would let the service pass a test the database would fail.
     """
+
+    IS_DURABLE = False
 
     def __init__(self) -> None:
         self._items: Dict[str, KnowledgeSuggestion] = {}
@@ -457,8 +474,19 @@ class InMemorySuggestionRepository(SuggestionRepository):
     # -- protocol ---------------------------------------------------------
 
     async def save(self, suggestion: KnowledgeSuggestion) -> KnowledgeSuggestion:
-        self._items[suggestion.suggestion_id] = deepcopy(suggestion)
-        return deepcopy(suggestion)
+        existing = self._items.get(suggestion.suggestion_id)
+        expected_version = suggestion.version or 1
+        if existing is None:
+            stored_version = expected_version
+        else:
+            if (existing.version or 1) != expected_version:
+                raise SuggestionConcurrencyError(suggestion.suggestion_id)
+            stored_version = expected_version + 1
+
+        stored = deepcopy(suggestion)
+        stored.version = stored_version
+        self._items[suggestion.suggestion_id] = stored
+        return deepcopy(stored)
 
     async def get(self, suggestion_id: str) -> Optional[KnowledgeSuggestion]:
         stored = self._items.get(suggestion_id)
@@ -494,29 +522,18 @@ class InMemorySuggestionRepository(SuggestionRepository):
         page = matches[offset : offset + limit]
         return [deepcopy(s) for s in page], total
 
-    async def count_for_organization(self, organization_id: str) -> int:
+    async def count_for_organization(
+        self,
+        organization_id: str,
+        *,
+        statuses: Optional[Sequence[SuggestionStatus]] = None,
+    ) -> int:
         if not organization_id:
             return 0
+        wanted = set(statuses) if statuses else None
         return sum(
-            1 for s in self._items.values() if s.organization_id == organization_id
-        )
-
-    async def list_terminal_for_organization(
-        self, organization_id: str
-    ) -> List[KnowledgeSuggestion]:
-        if not organization_id:
-            return []
-        terminal = [
-            s
+            1
             for s in self._items.values()
-            if s.organization_id == organization_id and s.status in TERMINAL_STATUSES
-        ]
-        terminal.sort(key=lambda s: s.updated_at)
-        return [deepcopy(s) for s in terminal]
-
-    async def delete_many(self, suggestion_ids: Sequence[str]) -> int:
-        removed = 0
-        for suggestion_id in suggestion_ids:
-            if self._items.pop(suggestion_id, None) is not None:
-                removed += 1
-        return removed
+            if s.organization_id == organization_id
+            and (wanted is None or s.status in wanted)
+        )

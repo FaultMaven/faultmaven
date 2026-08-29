@@ -353,6 +353,7 @@ def create_suggestion_service(
     knowledge_service: Any,
     sanitizer: Any,
     llm_provider: Any | None,
+    settings: Any,
 ) -> Any:
     """Create the knowledge SuggestionService singleton (#1214, #1227).
 
@@ -370,20 +371,49 @@ def create_suggestion_service(
     roughly a coin flip. The repository is sessionless (one short transaction
     per call), which is what a process singleton can hold and what keeps the
     PostgreSQL RLS tenant binding correct.
+
+    **The choice is keyed off ``persistent_database_configured``** — the ONE
+    shared predicate every factory uses (fm#1128), the same call
+    ``create_user_service`` makes a few hundred lines below. Without it this
+    factory would hand the database repository an ephemeral or absent
+    ``DATABASE_URL``: SQLite in-memory is pooled with ``NullPool``, so each
+    per-operation session of a *sessionless* repository opens a brand-new empty
+    database and every write vanishes before the next read — and with
+    ``case_repository`` degrading to in-memory on the same configuration, the
+    suggestion's ``case_id`` foreign key would have no case row to point at, so
+    extract would 500 where the old dict store worked. Falling back to the
+    in-memory repository keeps that deployment working AND keeps
+    ``GET /admin/config/status`` truthful, because that repository reports
+    ``is_durable == False``.
     """
+    from faultmaven.config.settings import persistent_database_configured
     from faultmaven.modules.knowledge.domain.services.suggestion_service import (
         SuggestionService,
     )
     from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
         DatabaseSuggestionRepository,
+        InMemorySuggestionRepository,
     )
+
+    database_url = getattr(getattr(settings, "database", None), "database_url", None)
+    if persistent_database_configured(database_url):
+        suggestion_repository = DatabaseSuggestionRepository()
+        logger.debug("SuggestionService using DatabaseSuggestionRepository")
+    else:
+        suggestion_repository = InMemorySuggestionRepository()
+        logger.warning(
+            "No persistent database is configured, so knowledge suggestions are "
+            "stored in memory: they will NOT survive a restart and are NOT "
+            "shared across workers. Reported as "
+            "suggestion_store_worker_safe=false on GET /admin/config/status."
+        )
 
     return SuggestionService(
         case_repository=case_repository,
         knowledge_service=knowledge_service,
         sanitizer=sanitizer,
         llm_provider=llm_provider,
-        suggestion_repository=DatabaseSuggestionRepository(),
+        suggestion_repository=suggestion_repository,
     )
 
 
@@ -1371,6 +1401,7 @@ def register_services(container: BaseDIContainer) -> None:
         knowledge_service=knowledge_service,
         sanitizer=container.get_service("sanitizer", required=True),
         llm_provider=container.get_service("llm_provider", required=False),
+        settings=settings,
     )
     container._register_service("suggestion_service", suggestion_service)
 

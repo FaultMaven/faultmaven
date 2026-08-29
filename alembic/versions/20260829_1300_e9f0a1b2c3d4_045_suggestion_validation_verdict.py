@@ -1,7 +1,8 @@
 """045_suggestion_validation_verdict
 
 Adds the runbook quality gate's verdict to ``knowledge_suggestions`` —
-``validation_passed`` / ``validation_errors`` / ``validation_warnings`` (fm#1227).
+``validation_passed`` / ``validation_errors`` / ``validation_warnings`` — plus
+the ``version`` counter that makes concurrent writes to the row safe (fm#1227).
 
 ``KnowledgeSuggestion`` grew those three fields in #1226 so a reviewer sees WHY a
 draft cannot be published instead of discovering it as a 422 on approve. The
@@ -20,6 +21,17 @@ evaluated and refused, ``True`` = clears the gate) is load-bearing, and a
 reached. The two list columns are NOT NULL with a ``[]`` default, matching the
 domain's ``default_factory=list`` — an unevaluated row has no errors to show,
 which is true whichever way ``validation_passed`` reads.
+
+``version`` is the optimistic-concurrency token, mirroring ``cases.version``
+(``Integer NOT NULL DEFAULT 1`` with a ``>= 1`` CHECK). #1227 moves the store
+from one live in-process object shared by every caller in a worker to a table
+read as detached copies, and that is what creates the lost-update class: two
+reviewers (or two pods) load the same row at version N, and the second write
+would otherwise replay its whole stale snapshot over the first — reverting a
+rejection, or resetting ``knowledge_item_id`` to NULL while the knowledge item
+stays published, which is exactly the orphan ``_rollback_published_item``
+exists to prevent. The repository's UPDATE carries ``WHERE version = :loaded``
+and bumps it, so the second write fails loudly instead of silently winning.
 
 Type follows the table's own ``metadata`` column and ``JsonBlob``:
 ``Text().with_variant(JSONB, "postgresql")``. The repository writes them with
@@ -48,8 +60,19 @@ _JSON_BLOB = sa.Text().with_variant(postgresql.JSONB(astext_type=Text()), "postg
 
 
 def upgrade() -> None:
-    """Add the three verdict columns. Batch mode for SQLite."""
+    """Add the three verdict columns and the version counter.
+
+    Batch mode for SQLite. The CHECK is added inside the same batch as the
+    column so SQLite's table rebuild emits it with the rest of the constraints
+    rather than in a second rebuild.
+    """
     with op.batch_alter_table("knowledge_suggestions") as batch:
+        batch.add_column(
+            sa.Column("version", sa.Integer(), nullable=False, server_default="1")
+        )
+        batch.create_check_constraint(
+            "knowledge_suggestions_version_positive", "version >= 1"
+        )
         batch.add_column(sa.Column("validation_passed", sa.Boolean(), nullable=True))
         batch.add_column(
             sa.Column(
@@ -70,8 +93,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the three verdict columns."""
+    """Drop the version counter and the three verdict columns."""
     with op.batch_alter_table("knowledge_suggestions") as batch:
+        batch.drop_constraint("knowledge_suggestions_version_positive", type_="check")
+        batch.drop_column("version")
         batch.drop_column("validation_warnings")
         batch.drop_column("validation_errors")
         batch.drop_column("validation_passed")

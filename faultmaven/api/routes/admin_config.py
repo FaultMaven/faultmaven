@@ -466,21 +466,24 @@ def _suggestion_store_is_durable(app) -> bool:
     a database-backed one is fine. What an operator needs to know is which
     store this process holds.
 
-    ``False`` covers both bad answers — the in-memory double is composed, or no
-    suggestion service is composed at all (the routes then answer 503). They
-    are different faults with the same consequence for scaling out, and the
-    ``config_hint`` names both.
+    ``False`` covers both bad answers — a non-durable store is composed (which
+    is CORRECT, not a fault, on a deployment with no database configured), or no
+    suggestion service is composed at all and the routes answer 503. They have
+    the same consequence for scaling out, and the ``config_hint`` names both.
     """
     service = getattr(getattr(app, "state", None), "suggestion_service", None)
-    if service is None:
+    repository = getattr(service, "_repository", None) if service else None
+    if repository is None:
         return False
-    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
-        DatabaseSuggestionRepository,
-    )
-
-    return isinstance(
-        getattr(service, "_repository", None), DatabaseSuggestionRepository
-    )
+    # The store STATES its own durability (``ISuggestionRepository.is_durable``)
+    # rather than being recognised by type. An ``isinstance`` check would be one
+    # more proxy of the same kind as ``WORKERS`` — true of a class, not of the
+    # deployment — and it would go stale the moment a third implementation
+    # appears or the database one is composed over an ephemeral URL. The
+    # composition root is what keeps the claim honest: it picks the in-memory
+    # repository (``is_durable == False``) whenever
+    # ``persistent_database_configured`` says there is no database to write to.
+    return bool(getattr(repository, "is_durable", False))
 
 
 @router.get("/config/status", response_model=EnvConfigStatusResponse)
@@ -594,9 +597,10 @@ async def get_env_config_status(
                 ),
                 config_hint=(
                     "True when the process holds the database-backed suggestion "
-                    "store. False means the in-memory double is composed, or no "
-                    "suggestion service is composed at all — run WORKERS=1 and "
-                    "check the composition root"
+                    "store. False means no persistent DATABASE_URL is configured "
+                    "(so the store is in-memory), or no suggestion service is "
+                    "composed at all — configure a database, and until then run "
+                    "WORKERS=1"
                 ),
             ),
         }
