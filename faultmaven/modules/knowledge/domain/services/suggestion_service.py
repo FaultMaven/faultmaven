@@ -8,6 +8,7 @@ Design Reference: Source Verification Badges Feature
 
 import json
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -32,10 +33,32 @@ from faultmaven.modules.knowledge.domain.services.conversion_service import (
     _force_frontmatter_id,
 )
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    VALID_DOMAINS,
     RunbookValidator,
 )
 from faultmaven.utils.runbook_id import runbook_id_from_parts
 from faultmaven.utils.serialization import to_json_compatible
+
+
+def _as_kebab(runbook_id: str) -> str:
+    """Coerce a minted id into the kebab grammar the validator enforces.
+
+    ``runbook_id_from_parts`` can return a value its own docstring says it does
+    not: for an over-length input it truncates to 55 characters and appends
+    ``"-" + md5[:4]``, so a slug whose 55th character is already a hyphen yields
+    a DOUBLE hyphen — and ``^[a-z0-9]+(-[a-z0-9]+)*$`` rejects that. Measured on
+    the extraction eval: ``tls-outbound-tls-failure-due-to-expired-ca-certificate--7217``
+    was one of eight first drafts, refused by the gate for its id alone.
+
+    Repaired HERE rather than in the shared helper on purpose. That helper is
+    pinned byte-for-byte by ``tests/unit/utils/test_runbook_id_consolidation.py``
+    because its output is a PERSISTED id (``conversion_drafts.runbook_id``,
+    runbook frontmatter), so changing it is a decision about orphaning existing
+    rows — a call for the owner of that seam, not a side effect of this lane.
+    The defect is real and reaches the two conversion call sites as well; it is
+    reported as a residual rather than fixed silently.
+    """
+    return re.sub(r"-{2,}", "-", runbook_id or "").strip("-")
 
 
 class SuggestionService:
@@ -75,8 +98,14 @@ The frontmatter `id` field is kebab-case derived from the DE-IDENTIFIED title
 you write below — NEVER from the case title, which names an incident. It is
 normalised after you write it, so spend your care on the title.
 `domain`, `service`, `severity` and `symptom_class` are NOT supplied for a case:
-infer each one from the case content, using only the controlled vocabularies
-named in the rules above.
+infer each one from the case content, using only the controlled vocabularies.
+`domain` MUST be one of: {domain_vocab}. It is a coarse system-layer label, not
+the technology — a Kubernetes scheduling failure is `compute`, a cache eviction
+is `database`, a resolver timeout is `networking`, a web tier is `application`.
+Put the technology in `service` and `tags`, where it is free text.
+
+Each Indicator carries exactly ONE `[Step N]` token. To cite two steps, write
+two Indicator entries — `[Step 2, Step 3]` is not a token and is rejected.
 
 DE-IDENTIFICATION — mandatory, and applied to every section including code
 blocks. A runbook is reusable knowledge, not an incident record. Remove:
@@ -282,6 +311,12 @@ corrected runbook, starting at the opening `---`, and output nothing else.
             evidence_section = "Evidence Summary:\n" + "\n".join(evidence_summaries)
 
         prompt = CONVERSION_SYSTEM_PROMPT + self.EXTRACTION_PROMPT.format(
+            # The document path gets `domain` from its analysis pass and the
+            # prompt tells the model not to change it; a case supplies none, so
+            # the model free-picks — and picked `kubernetes`, `cache` and `web`,
+            # every one of them a hard gate error, in 4 of 8 first drafts before
+            # the vocabulary was named here (see the eval's --attempts 1 mode).
+            domain_vocab=", ".join(VALID_DOMAINS),
             today_iso=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             source_label=f"Case {case_id}",
             case_title=case_title,
@@ -294,9 +329,23 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         # the first draft is refused (#1226).
         suggested_content = await self._generate_runbook_draft(prompt, case_id)
 
-        # Generate title if not provided
-        suggested_title = title_suggestion or await self._generate_title(
-            case_title, suggested_content
+        # Title, in preference order: the caller's, then the DRAFT'S OWN
+        # frontmatter title, then the case title with its severity prefixes
+        # stripped.
+        #
+        # The draft's title comes second-but-first-in-practice for the reason
+        # the eval surfaced on the id (#1226): this value is what
+        # ``upload_document`` publishes as the knowledge item's title AND what
+        # ``runbook_filename`` names the file after, and deriving it from the
+        # case title carried the incident into both — "Troubleshooting:
+        # INC-48213: prod-web-07 returning 502 for customer Contoso from
+        # 2026-03-14 02:11 UTC". The draft's frontmatter title is the
+        # de-identified one, and it names the failure mode rather than the
+        # incident, which is what a corpus entry should be called.
+        suggested_title = (
+            title_suggestion
+            or self._title_from_draft(suggested_content)
+            or await self._generate_title(case_title, suggested_content)
         )
 
         # Create suggestion
@@ -499,13 +548,16 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         return self.fallback_template(self._case_stem_id(case_id))
 
     @staticmethod
-    def _case_stem_id(case_id: str) -> str:
+    def _case_stem_id(case_id: str) -> str:  # noqa: D401 - see _mint_id
         """The last-resort runbook id: the case's own identifier, slugged.
 
         Opaque, but an internal case identifier and therefore safe to publish —
         unlike the case TITLE, which names an incident (see :meth:`_mint_id`).
         """
-        return runbook_id_from_parts("case", case_id) or "extracted-runbook-draft"
+        return (
+            _as_kebab(runbook_id_from_parts("case", case_id))
+            or "extracted-runbook-draft"
+        )
 
     def _mint_id(self, content: str, case_id: str) -> str:
         """The kebab-case ``id`` to force onto a draft's frontmatter.
@@ -538,8 +590,10 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         title = metadata.get("title") if isinstance(metadata, dict) else None
         service = metadata.get("service") if isinstance(metadata, dict) else None
         if isinstance(title, str) and title.strip():
-            minted = runbook_id_from_parts(
-                service if isinstance(service, str) else "", title
+            minted = _as_kebab(
+                runbook_id_from_parts(
+                    service if isinstance(service, str) else "", title
+                )
             )
             if minted:
                 return minted
@@ -700,6 +754,28 @@ level, and the tools needed.]
             errors=result.errors,
             warnings=result.warnings,
         )
+
+    def _title_from_draft(self, content: str) -> Optional[str]:
+        """The draft's own frontmatter ``title``, when it has a usable one.
+
+        ``None`` for a draft with no frontmatter, no title, or the rule-8
+        ``[INSUFFICIENT SOURCE DATA]`` placeholder the skeleton carries — that
+        last one is a form, not a name, and putting it in the review inbox as a
+        heading would say less than the case title does.
+        """
+        try:
+            metadata = self._validator._extract_metadata(content) or {}
+        except Exception:
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        title = metadata.get("title")
+        if not isinstance(title, str):
+            return None
+        title = title.strip()
+        if not title or "INSUFFICIENT SOURCE DATA" in title:
+            return None
+        return title
 
     async def _generate_title(self, case_title: str, content: str) -> str:
         """Generate a knowledge article title.

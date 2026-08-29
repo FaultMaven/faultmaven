@@ -28,6 +28,7 @@ may not call one): it is ``tests/eval/suggestion_extraction/``.
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -39,6 +40,7 @@ from faultmaven.modules.knowledge.domain.models.suggestion import (
 )
 from faultmaven.modules.knowledge.domain.services import conversion_service
 from faultmaven.modules.knowledge.domain.services.runbook_validator import (
+    VALID_DOMAINS,
     RunbookValidator,
 )
 from faultmaven.modules.knowledge.domain.services.suggestion_service import (
@@ -224,6 +226,87 @@ class TestThePromptAsksForV4:
         )
         for leaked in ("inc-48213", "prod-web-07", "contoso"):
             assert leaked not in id_line.lower(), id_line
+
+    async def test_the_suggestion_title_is_the_drafts_not_the_cases(self):
+        """Same leak class, one field over. ``suggested_title`` is what
+        ``upload_document`` publishes as the knowledge item's title AND what
+        ``runbook_filename`` names the file after, and deriving it from the case
+        title carried the incident into both — "Troubleshooting: INC-48213:
+        prod-web-07 returning 502 for customer Contoso…"."""
+        svc = SuggestionService(
+            case_repository=_case_repository(
+                title="INC-48213: prod-web-07 returning 502 for customer Contoso"
+            ),
+            knowledge_service=MagicMock(),
+            sanitizer=None,
+            llm_provider=ScriptedProvider(valid_runbook()),
+        )
+        suggestion = await _extract(svc)
+
+        assert suggestion.suggested_title == "Sample Runbook For Publication"
+
+    async def test_an_explicit_title_still_wins(self):
+        """The caller's title is a decision, not a guess."""
+        svc = _service(ScriptedProvider(valid_runbook()))
+        suggestion = await svc.extract_knowledge_from_case(
+            case_id=CASE_ID,
+            organization_id=ORG,
+            extracted_by="user_extractor",
+            title_suggestion="A Title The Reviewer Chose",
+        )
+
+        assert suggestion.suggested_title == "A Title The Reviewer Chose"
+
+    async def test_the_skeletons_placeholder_title_is_not_used_as_a_name(self):
+        """``[INSUFFICIENT SOURCE DATA…]`` is a form field, not a heading; the
+        review inbox learns more from the case title."""
+        suggestion = await _extract(_service(provider=None))
+
+        assert "INSUFFICIENT" not in suggestion.suggested_title
+        assert suggestion.suggested_title.startswith("Troubleshooting: ")
+
+    async def test_the_prompt_names_the_domain_vocabulary(self):
+        """The document path is HANDED a domain by its analysis pass and told
+        not to change it; a case supplies none, so the model free-picks. Before
+        the vocabulary was named, 4 of 8 first drafts died on `kubernetes` /
+        `cache` / `web` — each a hard gate error (eval, --attempts 1)."""
+        provider = ScriptedProvider(valid_runbook())
+        await _extract(_service(provider))
+
+        prompt = provider.prompts[0]
+        for domain in VALID_DOMAINS:
+            assert domain in prompt, f"prompt omits domain {domain!r}"
+        assert "`domain` MUST be one of:" in prompt
+
+    async def test_the_prompt_forbids_a_multi_step_indicator_token(self):
+        """``[Step 2, Step 3]`` is not a token — INDICATOR_TOKEN_RE does not
+        match it — and one first draft died on exactly that."""
+        provider = ScriptedProvider(valid_runbook())
+        await _extract(_service(provider))
+
+        assert "[Step 2, Step 3]" in provider.prompts[0]
+
+    async def test_an_overlong_title_still_mints_a_kebab_id(self):
+        """``runbook_id_from_parts`` truncates to 55 chars then appends
+        ``-<md5>``, so a slug whose 55th character is a hyphen yields a DOUBLE
+        hyphen the validator rejects. Measured: the eval produced
+        ``tls-outbound-tls-failure-due-to-expired-ca-certificate--7217``."""
+        long_title = "Outbound TLS Failure Due to Expired CA Certificate in Trust"
+        draft = valid_runbook().replace("service: postgresql", "service: tls")
+        draft = draft.replace(
+            "title: Sample Runbook For Publication", f"title: {long_title}"
+        )
+        provider = ScriptedProvider(draft)
+        suggestion = await _extract(_service(provider))
+
+        id_line = next(
+            line
+            for line in suggestion.suggested_content.splitlines()
+            if line.startswith("id:")
+        )
+        minted = id_line.split(":", 1)[1].strip()
+        assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", minted), minted
+        assert suggestion.validation_passed is True, suggestion.validation_errors
 
     async def test_a_draft_with_no_usable_title_falls_back_to_the_case_stem(self):
         """An empty slug would otherwise mean no ``id`` at all. The case
