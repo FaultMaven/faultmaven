@@ -119,6 +119,37 @@ def _cgroup_cpu_quota() -> Optional[float]:
     return None
 
 
+def _resolve_thread_count() -> int:
+    """Threads to pin to: the pod's CFS quota, or the node count when free."""
+    quota = _cgroup_cpu_quota()
+    # Round up so a 2000m limit → 2 threads, a 1500m limit → 2 threads. Floor at
+    # 1. When unconstrained (bare metal / no cgroup), fall back to the node count
+    # so local/dev runs are not artificially throttled.
+    if quota is not None:
+        return max(1, math.ceil(quota))
+    return os.cpu_count() or 1
+
+
+def pin_thread_env() -> int:
+    """Set the BLAS/OpenMP env knobs. Must run BEFORE torch is imported.
+
+    Split out of ``configure_inference_threads`` because these are read by the
+    native libraries when they initialise their pools, i.e. at torch import —
+    setting them afterwards is a no-op. Measured on a 48-core host:
+
+        env set, then import torch  -> torch.get_num_threads() == 2
+        import torch, then env set  -> torch.get_num_threads() == 24
+
+    So this half has to precede the ``sentence_transformers`` import while
+    ``configure_inference_threads`` (which imports torch itself) follows it.
+    Imports nothing, so it is free to call on a path that never loads a model.
+    """
+    threads = _resolve_thread_count()
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ.setdefault(var, str(threads))
+    return threads
+
+
 def configure_inference_threads() -> int:
     """Pin torch/OpenMP intra-op threads to the container's CPU allocation.
 
@@ -136,19 +167,13 @@ def configure_inference_threads() -> int:
     logger = logging.getLogger(__name__)
 
     quota = _cgroup_cpu_quota()
-    # Round up so a 2000m limit → 2 threads, a 1500m limit → 2 threads. Floor at
-    # 1. When unconstrained (bare metal / no cgroup), fall back to the node count
-    # so local/dev runs are not artificially throttled.
-    if quota is not None:
-        threads = max(1, math.ceil(quota))
-    else:
-        threads = os.cpu_count() or 1
+    threads = _resolve_thread_count()
 
-    # Set the BLAS/OpenMP env knobs too. These are only honoured if read before
-    # the native libs initialise their pools; harmless otherwise. torch's own
-    # setter below is the load-bearing one for the sentence-transformers path.
-    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
-        os.environ.setdefault(var, str(threads))
+    # Idempotent with pin_thread_env(), which the model load calls first (see
+    # its docstring for why the ordering is load-bearing). setdefault keeps this
+    # a no-op when it already ran, and still covers callers that reach here
+    # directly.
+    pin_thread_env()
 
     try:
         import torch
@@ -253,12 +278,17 @@ class ModelCache:
                 # CronJobs, and only then fails into the handler below. Ordering
                 # makes the whole class of wrong-True flags harmless instead of
                 # enumerating them one at a time.
+                # Env knobs FIRST: OpenMP/MKL/OpenBLAS read them when their
+                # pools initialise, which happens at torch import — i.e. inside
+                # _sentence_transformer_class() below. Setting them afterwards
+                # is a no-op (measured: 2 threads vs 24 on a 48-core host).
+                # pin_thread_env() imports nothing, so a wrong-True flag still
+                # costs no memory here.
+                pin_thread_env()
                 model_class = _sentence_transformer_class()
-                # Then bound intra-op threads to the pod's CPU quota BEFORE the
-                # model (and its native thread pools) initialise — prevents
-                # torch from oversubscribing the node's core count against the
-                # cgroup limit. Still ahead of construction, which is what that
-                # guarantee actually requires.
+                # Then torch's own setter, now that torch is definitely
+                # importable. Ordering it after the class resolves is what keeps
+                # every wrong-True flag from paying the ~690 MiB (#868).
                 configure_inference_threads()
                 self.logger.info(f"Loading BGE-M3 model ({triggered_by} load)...")
                 model = model_class(model_key)

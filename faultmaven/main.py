@@ -238,8 +238,11 @@ try:
     import opik
 
     OPIK_AVAILABLE = module_is_usable(opik)
+    # See tracing.py for why no `attr` is passed.
+    _opik_reason = None if OPIK_AVAILABLE else "shadowed by a namespace package"
 except ImportError:
     OPIK_AVAILABLE = False
+    _opik_reason = "not installed"
 
 OPIK_MIDDLEWARE_AVAILABLE = False
 if OPIK_AVAILABLE:
@@ -252,7 +255,10 @@ if OPIK_AVAILABLE:
             "Opik middleware class not available, tracing will work without middleware"
         )
 else:
-    logger.info("Opik not available, running without tracing")
+    # Name WHICH cause: an operator staring at an empty site-packages/opik/
+    # tree and one who never installed the extra need different fixes, and
+    # this is the only line here that tells them apart.
+    logger.info("Opik not available (%s), running without tracing", _opik_reason)
 
 
 async def _wire_composition_root(app: FastAPI, settings: "FaultMavenSettings") -> None:

@@ -489,3 +489,62 @@ def test_a_wrong_true_flag_still_never_reaches_the_torch_import(monkeypatch):
 
     assert cache.get_bge_m3_model(triggered_by="lazy") is None
     assert called == [], "torch import was reached before the package proved importable"
+
+
+def test_thread_env_is_pinned_before_the_torch_pulling_import(monkeypatch):
+    """The OMP/MKL/OpenBLAS knobs must be set BEFORE sentence_transformers.
+
+    Those variables are read by the native libraries when they initialise their
+    pools, which happens at torch import — and sentence_transformers pulls
+    torch. Setting them afterwards is a no-op. Measured on a 48-core host:
+
+        env set, then import torch  -> torch.get_num_threads() == 2
+        import torch, then env set  -> torch.get_num_threads() == 24
+
+    #1253 reordered this block so the class import came first (so that a
+    wrong-True flag could not reach `import torch`), which silently moved the
+    env knobs after the pools they configure. Both properties are required, so
+    the env half is split out and runs first; this pins the ordering.
+    """
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        monkeypatch.delenv(var, raising=False)
+
+    seen = {}
+
+    def _record_class():
+        seen["omp_at_import"] = os.environ.get("OMP_NUM_THREADS")
+        return lambda model_key: object()
+
+    monkeypatch.setattr(
+        model_cache_module, "_sentence_transformer_class", _record_class
+    )
+    monkeypatch.setattr(model_cache_module, "SENTENCE_TRANSFORMERS_AVAILABLE", True)
+
+    cache = model_cache_module.ModelCache()
+    cache.clear_cache()
+    assert cache.get_bge_m3_model(triggered_by="lazy") is not None
+
+    assert seen["omp_at_import"] is not None, (
+        "OMP_NUM_THREADS was unset when sentence_transformers was imported — "
+        "the native thread pools initialise there, so pinning after that point "
+        "does nothing"
+    )
+
+
+def test_pinning_the_env_imports_nothing_heavy(monkeypatch):
+    """pin_thread_env() runs before the availability gate is proven, so it must
+    not be a way back into the ~690 MiB #868 keeps out."""
+    import sys
+
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        monkeypatch.delenv(var, raising=False)
+    before = set(sys.modules)
+
+    threads = model_cache_module.pin_thread_env()
+
+    assert threads >= 1
+    assert os.environ["OMP_NUM_THREADS"] == str(threads)
+    newly_imported = {m.split(".")[0] for m in set(sys.modules) - before}
+    assert not (
+        newly_imported & {"torch", "sentence_transformers", "transformers"}
+    ), f"pin_thread_env pulled in {newly_imported}"

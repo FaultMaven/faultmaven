@@ -18,6 +18,7 @@ sidestepped by calling the flag something else.
 """
 
 import ast
+import importlib.util
 import pathlib
 import sys
 from types import ModuleType
@@ -31,6 +32,10 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 PACKAGE_ROOT = REPO_ROOT / "faultmaven"
 
+# A scan that walked zero files reports zero violations and passes. Moving
+# this test one directory deeper would do exactly that, silently.
+_MIN_FILES_EXPECTED = 200
+
 # Sites allowed to assign a literal True inside an ImportError-guarded try that
 # also carries a top-level bare import. Empty on purpose: every such site has
 # been converted. An entry here is a considered exemption and needs a reason —
@@ -38,52 +43,47 @@ PACKAGE_ROOT = REPO_ROOT / "faultmaven"
 ALLOWED: dict[str, str] = {}
 
 
-def _import_guard_violations() -> list[str]:
+def _scan(paths) -> list[str]:
     """Every ``FLAG = True`` inside a try that could have imported a shadow.
 
-    Three shapes reach an availability flag, and only one is unsafe:
+    Takes the paths so a synthetic violating file can be pushed through this
+    exact function — a scan only ever run against a clean tree passes just as
+    well when the scan itself is broken.
 
-    * ``from X import Y`` — raises ImportError on a shadow (``Y`` is absent).
-    * ``import X.Y``      — raises ModuleNotFoundError (the submodule cannot
-                            resolve under a namespace package).
-    * ``import X``        — SUCCEEDS. Only this one needs the guard.
-
-    So a try block is flagged only when it contains a top-level bare import
-    whose package is not also from-imported in the same block, AND assigns a
-    literal ``True`` — which is exactly "this flag is unconditionally True once
-    the import survived".
+    Only ONE import shape is unsafe: a **top-level bare** ``import X``, which
+    succeeds against an empty directory. ``import X.Y`` cannot resolve the
+    submodule. A same-block ``from X import Y`` is deliberately NOT treated as
+    exempting the bare import: it protects only when ``Y`` is a symbol, and an
+    uninstall leaves nested directories too, so ``from X import Ysubpkg``
+    succeeds on a shadow just as the bare import does (measured). AST cannot
+    tell a symbol from a subpackage, so the conservative reading is used — a
+    false positive there costs one call to the helper.
     """
     violations = []
-    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+    for path in sorted(paths):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Try):
-                continue
-            if not _catches_import_error(node):
+            if not isinstance(node, ast.Try) or not _catches_import_error(node):
                 continue
 
-            from_roots = {
-                stmt.module.split(".")[0]
-                for stmt in node.body
-                if isinstance(stmt, ast.ImportFrom) and stmt.module
-            }
             bare = [
                 alias.name
                 for stmt in node.body
                 if isinstance(stmt, ast.Import)
                 for alias in stmt.names
-                if "." not in alias.name and alias.name not in from_roots
+                if "." not in alias.name
             ]
             if not bare:
                 continue
 
-            for flag, lineno in _literal_true_assignments(node.body):
-                rel = path.relative_to(REPO_ROOT)
-                key = f"{rel}:{flag}"
+            # `else:` runs only when the try body did not raise, so a flag set
+            # there is exactly as unguarded as one set in the body.
+            for flag, lineno in _literal_true_assignments(node.body + node.orelse):
+                key = f"{path.name}:{flag}"
                 if key in ALLOWED:
                     continue
                 violations.append(
-                    f"{rel}:{lineno}: `{flag} = True` guarded only by "
+                    f"{path}:{lineno}: `{flag} = True` guarded only by "
                     f"`import {', '.join(bare)}` — a namespace-package shadow "
                     f"would set it True. Use module_is_usable() "
                     f"(faultmaven/utils/optional_dependency.py)."
@@ -92,8 +92,16 @@ def _import_guard_violations() -> list[str]:
 
 
 def _catches_import_error(node: ast.Try) -> bool:
-    names = {"ImportError", "ModuleNotFoundError"}
+    """Handlers that would swallow a failed import.
+
+    ``Exception`` and a bare ``except:`` count. They catch ImportError too, so
+    the same defect written that way is the same defect — and keying only on
+    the literal name ``ImportError`` left a one-keyword bypass.
+    """
+    names = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
     for handler in node.handlers:
+        if handler.type is None:  # bare `except:`
+            return True
         if isinstance(handler.type, ast.Name) and handler.type.id in names:
             return True
         if isinstance(handler.type, ast.Tuple) and any(
@@ -104,14 +112,21 @@ def _catches_import_error(node: ast.Try) -> bool:
 
 
 def _literal_true_assignments(body) -> list[tuple[str, int]]:
+    """``F = True`` and ``F: bool = True`` alike — the annotation changes
+    nothing about the defect, and matching only ``ast.Assign`` made a plain
+    type hint an escape hatch."""
     found = []
     for stmt in body:
         for sub in ast.walk(stmt):
-            if not isinstance(sub, ast.Assign):
+            is_true = (
+                isinstance(sub, (ast.Assign, ast.AnnAssign))
+                and isinstance(sub.value, ast.Constant)
+                and sub.value.value is True
+            )
+            if not is_true:
                 continue
-            if not (isinstance(sub.value, ast.Constant) and sub.value.value is True):
-                continue
-            for target in sub.targets:
+            targets = sub.targets if isinstance(sub, ast.Assign) else [sub.target]
+            for target in targets:
                 if isinstance(target, ast.Name):
                     found.append((target.id, sub.lineno))
     return found
@@ -120,74 +135,96 @@ def _literal_true_assignments(body) -> list[tuple[str, int]]:
 def test_no_availability_flag_trusts_a_bare_import():
     """A new flag of the shape that caused #1231 and #1233 fails here.
 
-    This is the finding that closes the class. Fixing the call sites was
-    necessary and repeatedly insufficient: each pass fixed the instances that
-    were visible and the next review found the ones that were not.
+    This is what closes the class. Fixing call sites was necessary and
+    repeatedly insufficient: each pass fixed the instances that were visible
+    and the next review found the ones that were not.
     """
-    violations = _import_guard_violations()
+    files = sorted(PACKAGE_ROOT.rglob("*.py"))
+    # Otherwise a layout change makes this pass over an unscanned tree.
+    assert PACKAGE_ROOT.is_dir(), f"{PACKAGE_ROOT} is not a directory"
+    assert len(files) >= _MIN_FILES_EXPECTED, (
+        f"scanned only {len(files)} files under {PACKAGE_ROOT} — the scan is "
+        "not reaching the package, so a green result means nothing"
+    )
+
+    violations = _scan(files)
     assert not violations, "unguarded optional-dependency flags:\n" + "\n".join(
         f"  - {v}" for v in violations
     )
-
-
-def test_the_scan_would_catch_a_violation():
-    """...and the scan is not vacuous.
-
-    A scan asserting "no violations" over a tree that has none passes just as
-    well when the scan itself is broken. This feeds it the exact pre-fix shape
-    and requires that it objects.
-    """
-    source = (
-        "try:\n"
-        "    import somepackage\n"
-        "\n"
-        "    SOMEPACKAGE_AVAILABLE = True\n"
-        "except ImportError:\n"
-        "    SOMEPACKAGE_AVAILABLE = False\n"
-    )
-    tree = ast.parse(source)
-    node = next(n for n in ast.walk(tree) if isinstance(n, ast.Try))
-
-    assert _catches_import_error(node)
-    assert _literal_true_assignments(node.body) == [("SOMEPACKAGE_AVAILABLE", 4)]
 
 
 @pytest.mark.parametrize(
     "source, why",
     [
         pytest.param(
-            "try:\n    from somepackage import thing\n\n    F = True\nexcept ImportError:\n    F = False\n",
-            "a from-import raises on a shadow",
-            id="from-import-is-safe",
+            "try:\n    import x\n\n    F = True\nexcept ImportError:\n    F = False\n",
+            "the original shape",
+            id="plain",
         ),
         pytest.param(
-            "try:\n    import somepackage.sub\n\n    F = True\nexcept ImportError:\n    F = False\n",
-            "a submodule cannot resolve under a namespace package",
-            id="dotted-import-is-safe",
+            "try:\n    import x\n\n    F: bool = True\nexcept ImportError:\n    F = False\n",
+            "an annotation is not a guard",
+            id="annotated-assignment",
+        ),
+        pytest.param(
+            "try:\n    import x\nexcept ImportError:\n    F = False\nelse:\n    F = True\n",
+            "`else` runs exactly when the import survived",
+            id="else-clause",
+        ),
+        pytest.param(
+            "try:\n    import x\n\n    F = True\nexcept Exception:\n    F = False\n",
+            "a broad handler swallows the same ImportError",
+            id="except-Exception",
+        ),
+        pytest.param(
+            "try:\n    import x\n\n    F = True\nexcept:\n    F = False\n",
+            "so does a bare except",
+            id="bare-except",
+        ),
+        pytest.param(
+            "try:\n    import x\n    from x import sub\n\n    F = True\nexcept ImportError:\n    F = False\n",
+            "a from-import of a SUBPACKAGE also survives a shadow",
+            id="from-import-does-not-exempt",
         ),
     ],
 )
-def test_the_scan_does_not_flag_the_safe_shapes(source, why):
-    """The two shapes that already fail correctly must not be reported.
+def test_the_scan_catches_every_spelling(tmp_path, source, why):
+    """Fed through the REAL entry point, not a re-implementation of its filter.
 
-    Flagging them would push ~26 correct sites through a pointless migration
-    and train readers to ignore the scan.
+    Asserting "no violations" over a clean tree passes just as well when the
+    scan is broken; these push each spelling through ``_scan`` itself.
     """
-    tree = ast.parse(source)
-    node = next(n for n in ast.walk(tree) if isinstance(n, ast.Try))
-    from_roots = {
-        stmt.module.split(".")[0]
-        for stmt in node.body
-        if isinstance(stmt, ast.ImportFrom) and stmt.module
-    }
-    bare = [
-        alias.name
-        for stmt in node.body
-        if isinstance(stmt, ast.Import)
-        for alias in stmt.names
-        if "." not in alias.name and alias.name not in from_roots
-    ]
-    assert bare == [], why
+    probe = tmp_path / "probe_module.py"
+    probe.write_text(source)
+    assert _scan([probe]), why
+
+
+@pytest.mark.parametrize(
+    "source, why",
+    [
+        pytest.param(
+            "try:\n    from x import thing\n\n    F = True\nexcept ImportError:\n    F = False\n",
+            "a symbol from-import raises on a shadow",
+            id="from-import-only",
+        ),
+        pytest.param(
+            "try:\n    import x.sub\n\n    F = True\nexcept ImportError:\n    F = False\n",
+            "a submodule cannot resolve under a namespace package",
+            id="dotted-import",
+        ),
+        pytest.param(
+            "try:\n    import x\n\n    F = module_is_usable(x)\nexcept ImportError:\n    F = False\n",
+            "the converted shape is the point of the exercise",
+            id="already-converted",
+        ),
+    ],
+)
+def test_the_scan_leaves_the_safe_shapes_alone(tmp_path, source, why):
+    """Flagging these would push ~27 correct sites through a pointless
+    migration and train readers to ignore the scan."""
+    probe = tmp_path / "probe_module.py"
+    probe.write_text(source)
+    assert _scan([probe]) == [], why
 
 
 # --------------------------------------------------------------------------- #
@@ -207,8 +244,6 @@ def _namespace_spec(tmp_path, monkeypatch, name, init_py=None):
     if init_py is not None:
         (package / "__init__.py").write_text(init_py)
     monkeypatch.syspath_prepend(str(tmp_path))
-    import importlib
-
     importlib.invalidate_caches()
     spec = importlib.util.find_spec(name)
     monkeypatch.delitem(sys.modules, name, raising=False)
@@ -285,8 +320,6 @@ def test_dependency_is_usable_rejects_a_namespace_shadow_on_disk(
     """
     (tmp_path / "_fm_dep_disk").mkdir()
     monkeypatch.syspath_prepend(str(tmp_path))
-    import importlib
-
     importlib.invalidate_caches()
 
     with caplog.at_level("WARNING"):
@@ -300,8 +333,6 @@ def test_dependency_is_usable_accepts_a_real_package(tmp_path, monkeypatch):
     (tmp_path / "_fm_dep_ok").mkdir()
     (tmp_path / "_fm_dep_ok" / "__init__.py").write_text("thing = 1\n")
     monkeypatch.syspath_prepend(str(tmp_path))
-    import importlib
-
     importlib.invalidate_caches()
 
     assert dependency_is_usable("_fm_dep_ok") is True
