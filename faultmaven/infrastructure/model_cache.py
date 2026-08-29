@@ -50,13 +50,33 @@ def _sentence_transformers_obtainable() -> bool:
     the shape of the stand-in the test suite installs (``tests/conftest.py``).
     Asking find_spec first would report the embedding stack as *absent* for the
     whole test session and quietly make the real-model path untestable.
+
+    Locating it is answered by ``spec.origin``, not by ``spec is not None``:
+    see the comment on the return below.
     """
     if "sentence_transformers" in sys.modules:
         return True
     try:
-        return importlib.util.find_spec("sentence_transformers") is not None
-    except (ImportError, ValueError):  # broken install / namespace-package edge
+        spec = importlib.util.find_spec("sentence_transformers")
+    except (ImportError, ValueError):
+        # A parent package that raises while being imported, or a sys.modules
+        # entry whose __spec__ is None. The second is answered above and cannot
+        # reach here; both are kept because find_spec's contract allows them.
         return False
+
+    # ``spec is not None`` is not the question. pip and uv remove a package's
+    # FILES on uninstall but leave its DIRECTORIES, and PEP 420 resolves the
+    # leftover tree to a namespace package — find_spec returns
+    # ModuleSpec(origin=None) and reports a directory containing nothing as
+    # present. Nothing raises, so the handler above cannot cover it; the
+    # discriminator has to be tested. This is not hypothetical — it is the
+    # state this repo's venv was in for ``opik`` (#1231).
+    #
+    # Getting it wrong is worse than a wrong flag: get_bge_m3_model would walk
+    # past its "not available" early return into configure_inference_threads(),
+    # which imports torch — precisely the ~690 MiB that #868 exists to keep out
+    # of processes that never embed.
+    return spec is not None and spec.origin is not None
 
 
 SENTENCE_TRANSFORMERS_AVAILABLE = _sentence_transformers_obtainable()

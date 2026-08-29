@@ -319,3 +319,67 @@ def test_availability_reports_absent_when_nothing_provides_it(monkeypatch):
     )
 
     assert model_cache_module._sentence_transformers_obtainable() is False
+
+
+def _genuine_spec(tmp_path, name, init_py=None):
+    """A ModuleSpec produced by real CPython import machinery, not hand-built.
+
+    A namespace-package spec is the shape under test, and fabricating one
+    (``ModuleSpec(name, loader=None, origin=None)``) would be asserting against
+    this test's own idea of it rather than against the import system's. So the
+    directory is real: empty for a namespace package, or carrying an
+    ``__init__.py`` for a regular one, and ``find_spec`` is asked about it under
+    a unique name — the installed ``sentence_transformers`` would otherwise win
+    the namespace scan and the shadow could never be produced in-process.
+    """
+    package = tmp_path / name
+    package.mkdir()
+    if init_py is not None:
+        (package / "__init__.py").write_text(init_py)
+    sys.path.insert(0, str(tmp_path))
+    try:
+        importlib.invalidate_caches()
+        return importlib.util.find_spec(name)
+    finally:
+        sys.path.remove(str(tmp_path))
+        sys.modules.pop(name, None)
+
+
+@pytest.mark.parametrize(
+    "init_py, expect_obtainable",
+    [
+        pytest.param(None, False, id="namespace-package-shadow"),
+        pytest.param("VALUE = 1\n", True, id="real-file-backed-package"),
+    ],
+)
+def test_a_leftover_directory_is_not_an_installed_package(
+    tmp_path, monkeypatch, init_py, expect_obtainable
+):
+    """An empty ``sentence_transformers/`` must not read as installed.
+
+    pip and uv remove a package's files on uninstall but leave its directories,
+    and PEP 420 resolves the leftover tree to a namespace package: ``find_spec``
+    returns a spec, ``spec.origin`` is None, and nothing raises — so the
+    ``except (ImportError, ValueError)`` around it cannot cover this, however
+    its comment used to read. The venv this repo is developed in was in exactly
+    that state for ``opik`` (#1231).
+
+    The cost of the wrong answer is not just a wrong flag. ``get_bge_m3_model``
+    would skip its "not available" early return and reach
+    ``configure_inference_threads()``, which imports torch — the ~690 MiB this
+    whole module is shaped to keep out of processes that never embed (#868).
+    """
+    spec = _genuine_spec(
+        tmp_path, f"_fm_st_probe_{'real' if init_py else 'ns'}", init_py
+    )
+    # What the parametrization claims about the fixture, before relying on it.
+    assert (spec.origin is not None) is expect_obtainable
+
+    # sys.modules wins first (conftest installs a stand-in), so the find_spec
+    # branch is unreachable until that is cleared.
+    monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
+    monkeypatch.setattr(
+        model_cache_module.importlib.util, "find_spec", lambda name: spec
+    )
+
+    assert model_cache_module._sentence_transformers_obtainable() is expect_obtainable
