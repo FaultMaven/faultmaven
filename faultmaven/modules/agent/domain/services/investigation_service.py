@@ -439,7 +439,10 @@ def _build_classification_clarification_suggestions(
     The qualifiers are distinct because a turn mints at most ONE synthetic
     name (#1198): ``pasted_content`` is a single form field, so a turn
     carries one paste or one capture, never two, and everything else is a
-    user-chosen filename.
+    user-chosen filename. Note this is a property of the *names*, not a
+    count: two attachments could only share a qualifier by sharing a
+    filename, and then ``payload`` collides too — such a pair is
+    indistinguishable in any wording, so nothing is lost by not guarding it.
 
     Each suggestion carries an engine-owned ``file_reclassification`` intent
     (file_id + target DataType) so any client that forwards suggestion intent
