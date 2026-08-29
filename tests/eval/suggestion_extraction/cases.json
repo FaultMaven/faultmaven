@@ -1,0 +1,147 @@
+{
+  "_readme": "Case fixtures for run_extraction_eval.py. Each entry is the shape SuggestionService.extract_knowledge_from_case reads off a Case: title, description, an ordered message transcript, and evidence summaries. Written as an engineer would actually type them (partial sentences, pasted log lines, a wrong turn before the right one), NOT as a clean statement of the answer, because a prompt that only works on tidy input has not been tested. Every case is de-identified already except where noted: three carry deliberate incident-specific detail (hostnames, an email, absolute timestamps, a ticket id) so the de-identification instruction has something to remove.",
+  "cases": [
+    {
+      "case_id": "case_ev1_pg_pool",
+      "title": "Checkout API 500s during the evening peak",
+      "description": "Checkout starts returning 500s about 20 minutes into the evening traffic peak and recovers on its own overnight. Application logs show 'remaining connection slots are reserved for non-replication superuser connections'. Not every request fails - roughly one in five.",
+      "messages": [
+        {"role": "user", "content": "checkout is throwing 500s again. started ~19:40. app log has: FATAL: remaining connection slots are reserved for non-replication superuser connections"},
+        {"role": "assistant", "content": "That is PostgreSQL refusing new connections because max_connections is reached. Can you check how many backends are open and what state they are in?"},
+        {"role": "user", "content": "SELECT count(*), state FROM pg_stat_activity GROUP BY state gives: 187 idle in transaction, 11 active, 2 idle. max_connections is 200."},
+        {"role": "assistant", "content": "187 sessions sitting in 'idle in transaction' is the signal - those hold their connection and any locks. Something opens a transaction and does not commit or roll back. How long have they been idle?"},
+        {"role": "user", "content": "query_start on most of them is 15-40 minutes ago. they are all from the checkout service user."},
+        {"role": "assistant", "content": "So a code path in checkout begins a transaction and returns without ending it. Is there a request path added recently that does a read inside an explicit transaction?"},
+        {"role": "user", "content": "yeah - the promo-code lookup went in last week. it opens a tx to read the promo table and only commits on the success branch. if the code is invalid it returns early."},
+        {"role": "user", "content": "confirmed. added a finally that rolls back, deployed, idle-in-transaction count is back to single digits and 500s stopped. also set idle_in_transaction_session_timeout to 60s as a backstop."}
+      ],
+      "evidence": [
+        {"artifact_type": "log", "name": "checkout-api.log", "summary": "Repeated 'FATAL: remaining connection slots are reserved' entries, clustered from the start of the peak window; interleaved with HTTP 500 responses on POST /checkout."},
+        {"artifact_type": "metric", "name": "pg_stat_activity snapshot", "summary": "187 backends in state 'idle in transaction', 11 active, 2 idle, against max_connections=200. Oldest idle-in-transaction session 41 minutes."},
+        {"artifact_type": "config", "name": "postgresql.conf excerpt", "summary": "max_connections=200; idle_in_transaction_session_timeout=0 (disabled)."}
+      ]
+    },
+    {
+      "case_id": "case_ev2_k8s_oom",
+      "title": "Ingest worker pods restarting in a loop",
+      "description": "The ingest worker deployment cycles through CrashLoopBackOff. kubectl describe shows Last State: Terminated, Reason: OOMKilled, Exit Code: 137. Started after a batch of larger customer files began arriving.",
+      "messages": [
+        {"role": "user", "content": "ingest-worker pods keep restarting. kubectl get pods shows CrashLoopBackOff, restart count 40+"},
+        {"role": "assistant", "content": "What does kubectl describe pod say for Last State?"},
+        {"role": "user", "content": "Last State: Terminated / Reason: OOMKilled / Exit Code: 137. limits.memory is 512Mi."},
+        {"role": "assistant", "content": "The kernel OOM killer is stopping the container for exceeding its memory limit, so this is not an application crash. Does the working set genuinely need more than 512Mi, or is something loading unboundedly?"},
+        {"role": "user", "content": "container_memory_working_set_bytes climbs smoothly to the limit then the pod dies. sawtooth, every ~4 min."},
+        {"role": "assistant", "content": "A smooth climb to the ceiling on every restart points at per-item memory that scales with input size rather than a leak over time. What changed about the input?"},
+        {"role": "user", "content": "we onboarded a customer sending 300MB CSVs. previously biggest was ~20MB. the worker reads the whole file into memory before parsing."},
+        {"role": "user", "content": "switched the reader to a streaming parser and raised limits.memory to 1Gi with requests 512Mi. no restarts in 6 hours."}
+      ],
+      "evidence": [
+        {"artifact_type": "log", "name": "kubectl describe pod ingest-worker", "summary": "Last State Terminated, Reason OOMKilled, Exit Code 137, Restart Count 43. Container memory limit 512Mi, request 256Mi."},
+        {"artifact_type": "metric", "name": "container_memory_working_set_bytes", "summary": "Sawtooth pattern: smooth climb from ~90Mi to the 512Mi limit over roughly four minutes, then a vertical drop at each restart."}
+      ]
+    },
+    {
+      "case_id": "case_ev3_tls_expiry",
+      "title": "Partner integration failing with certificate verify failed",
+      "description": "Outbound calls from the billing service to the partner settlement API began failing. Error: SSLCertVerificationError: certificate verify failed: certificate has expired. Only outbound; inbound traffic is fine.",
+      "messages": [
+        {"role": "user", "content": "billing can't reach the partner settlement API. ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: certificate has expired (_ssl.c:1006)"},
+        {"role": "assistant", "content": "That is our client rejecting their certificate chain, not them rejecting us. Can you inspect what the endpoint presents?"},
+        {"role": "user", "content": "openssl s_client -connect ...:443 shows the leaf is valid until next year. but 'verify error:num=10:certificate has expired' on the chain."},
+        {"role": "assistant", "content": "So the expiry is on an intermediate or root in the chain we are validating against, not the leaf. Check which CA the chain terminates at and whether our trust store still carries it."},
+        {"role": "user", "content": "the chain roots at a cross-signed CA that expired. our base image pins an old ca-certificates package from 2021."},
+        {"role": "assistant", "content": "Then the fix is on our side: refresh the trust store so the current root is present, rather than disabling verification."},
+        {"role": "user", "content": "rebuilt the image with current ca-certificates, calls succeed. added a check to the image build that fails if ca-certificates is older than 12 months."}
+      ],
+      "evidence": [
+        {"artifact_type": "log", "name": "billing-service stderr", "summary": "ssl.SSLCertVerificationError: certificate verify failed: certificate has expired, on every outbound POST to the settlement endpoint."},
+        {"artifact_type": "config", "name": "Dockerfile excerpt", "summary": "Base image pins ca-certificates to a 2021 release; no refresh step in the build."}
+      ]
+    },
+    {
+      "case_id": "case_ev4_redis_evict",
+      "title": "Cache hit rate collapsed and latency doubled",
+      "description": "p99 API latency roughly doubled over an hour. Redis keyspace_hits/keyspace_misses shows the hit rate falling from 94% to under 40%. No deploy in the window.",
+      "messages": [
+        {"role": "user", "content": "p99 went from 180ms to 400ms over about an hour. nothing deployed. cache hit rate is in the toilet."},
+        {"role": "assistant", "content": "What does INFO memory and INFO stats say on the Redis instance?"},
+        {"role": "user", "content": "used_memory is right at maxmemory. evicted_keys is climbing fast - 2.1M since the window started. maxmemory-policy allkeys-lru."},
+        {"role": "assistant", "content": "So Redis is at its ceiling and evicting to make room, which is why hits collapsed. The question is what started consuming the space."},
+        {"role": "user", "content": "ran a scan of key patterns by memory. a session:* prefix is 70% of the keyspace now, was maybe 10%."},
+        {"role": "assistant", "content": "Are those session keys getting a TTL?"},
+        {"role": "user", "content": "no. a refactor last week moved session writes to a helper that doesn't set expiry. they accumulate forever."},
+        {"role": "user", "content": "set an 8h TTL on session writes, backfilled EXPIRE over existing session keys. memory dropped to 40% of maxmemory, hit rate back to 93%, p99 back to 185ms."}
+      ],
+      "evidence": [
+        {"artifact_type": "metric", "name": "redis INFO stats", "summary": "keyspace_hits/keyspace_misses ratio falls from 0.94 to 0.38 over about one hour; evicted_keys rises by 2.1M in the same window."},
+        {"artifact_type": "metric", "name": "redis INFO memory", "summary": "used_memory pinned at maxmemory; maxmemory-policy allkeys-lru."},
+        {"artifact_type": "log", "name": "keyspace sample", "summary": "session:* prefix accounts for roughly 70% of sampled key memory, up from roughly 10% a week earlier; sampled session keys report TTL -1."}
+      ]
+    },
+    {
+      "case_id": "case_ev5_dns_ndots",
+      "title": "Intermittent slow requests between services in the cluster",
+      "description": "Service-to-service calls intermittently take 5 seconds longer than usual. Not correlated with load. Affects several services, all in the same cluster.",
+      "messages": [
+        {"role": "user", "content": "seeing random +5s on internal calls. not all of them, maybe 1 in 30. no pattern with load."},
+        {"role": "assistant", "content": "A near-exact 5 second addition usually means a timeout somewhere, not queueing. Is the extra time before the connection is established or after?"},
+        {"role": "user", "content": "traced it. the time is in name resolution, before connect."},
+        {"role": "assistant", "content": "Then it is DNS. A 5s stall is the classic resolver timeout before it retries. What does /etc/resolv.conf look like inside the pod?"},
+        {"role": "user", "content": "search list has 5 entries and options ndots:5. the hostnames we call are fully qualified external ones."},
+        {"role": "assistant", "content": "With ndots:5 a name containing fewer than 5 dots is tried against every search domain first. Each miss is a round trip, and a dropped UDP packet on any of them costs the full resolver timeout."},
+        {"role": "user", "content": "confirmed against the coredns metrics - request count is ~6x the number of actual lookups. set ndots:2 in the pod dnsConfig and appended a trailing dot to the external hostnames. the 5s outliers are gone."}
+      ],
+      "evidence": [
+        {"artifact_type": "metric", "name": "coredns request rate", "summary": "DNS query volume roughly six times the number of distinct upstream lookups the services make, consistent with search-domain expansion."},
+        {"artifact_type": "config", "name": "/etc/resolv.conf in pod", "summary": "Five search domains; options ndots:5 timeout:5 attempts:2."}
+      ]
+    },
+    {
+      "case_id": "case_ev6_disk_full_wal",
+      "title": "Database went read-only overnight",
+      "description": "Writes started failing with 'could not extend file: No space left on device'. The data volume is full. Nothing obviously large was written by the application.",
+      "messages": [
+        {"role": "user", "content": "db is refusing writes. PANIC: could not write to file pg_wal/xlogtemp: No space left on device. df says the data volume is 100%."},
+        {"role": "assistant", "content": "Where is the space going - the heap, or pg_wal?"},
+        {"role": "user", "content": "du says pg_wal is 340GB. the actual database is 60GB."},
+        {"role": "assistant", "content": "WAL that large means something is preventing segments from being recycled. Usual suspects are an inactive replication slot, archive_command failing, or a very long-running transaction."},
+        {"role": "user", "content": "pg_replication_slots has a slot with active=false and a restart_lsn from 9 days ago. it was for a replica we decommissioned."},
+        {"role": "assistant", "content": "That slot is pinning WAL. Postgres cannot recycle any segment the slot still needs, so it grows until the volume fills."},
+        {"role": "user", "content": "dropped the orphaned slot, pg_wal collapsed to 4GB within a couple of checkpoints, writes resumed. added an alert on inactive slots older than 1h and set max_slot_wal_keep_size."}
+      ],
+      "evidence": [
+        {"artifact_type": "log", "name": "postgresql.log", "summary": "PANIC: could not write to file pg_wal/xlogtemp: No space left on device, followed by the server refusing writes."},
+        {"artifact_type": "metric", "name": "pg_replication_slots", "summary": "One slot with active=false whose restart_lsn has not advanced in nine days; pg_wal directory 340GB against a 60GB database."}
+      ]
+    },
+    {
+      "case_id": "case_ev7_pii_noisy",
+      "title": "INC-48213: prod-web-07 returning 502 for customer Contoso from 2026-03-14 02:11 UTC",
+      "description": "Ticket INC-48213 raised by priya.raman@example-corp.com. Host prod-web-07.eu-west-1.internal in namespace contoso-prod started returning 502 Bad Gateway at 2026-03-14T02:11:44Z. Customer Contoso reported it at 02:20 UTC.",
+      "messages": [
+        {"role": "user", "content": "INC-48213 - prod-web-07.eu-west-1.internal is 502ing since 02:11:44Z. nginx error log: upstream prematurely closed connection while reading response header from upstream, upstream: http://10.42.7.19:8080"},
+        {"role": "assistant", "content": "The proxy is reporting that the upstream application closed the connection mid-response. Is the upstream process still alive?"},
+        {"role": "user", "content": "the app container on 10.42.7.19 is up but its log ends abruptly mid-request each time. no stack trace."},
+        {"role": "assistant", "content": "A worker dying silently mid-request usually means it was killed rather than raising. Check the worker timeout and whether the supervisor is reaping it."},
+        {"role": "user", "content": "gunicorn timeout is 30s and the report endpoint takes 45s for Contoso's data volume. gunicorn kills the worker at 30s, nginx sees the socket close."},
+        {"role": "assistant", "content": "So the 502 is a symptom of the worker being reaped for exceeding its request timeout, not a network fault."},
+        {"role": "user", "content": "moved the report to a background job and returned 202 with a poll URL. raised gunicorn timeout to 60s as a stopgap first, which stopped the 502s immediately. priya.raman@example-corp.com confirmed at 03:05 UTC."}
+      ],
+      "evidence": [
+        {"artifact_type": "log", "name": "nginx error.log on prod-web-07.eu-west-1.internal", "summary": "upstream prematurely closed connection while reading response header from upstream, upstream: http://10.42.7.19:8080, client 203.0.113.44, repeated from 2026-03-14T02:11:44Z."},
+        {"artifact_type": "config", "name": "gunicorn.conf.py", "summary": "workers=4, timeout=30. The report endpoint measured at 45s for the Contoso dataset."}
+      ]
+    },
+    {
+      "case_id": "case_ev8_thin_case",
+      "title": "Login page slow",
+      "description": "Users report the login page is slow sometimes.",
+      "messages": [
+        {"role": "user", "content": "login feels slow"},
+        {"role": "assistant", "content": "Slow how - the page render, or the sign-in request itself? And is it every attempt or intermittent?"},
+        {"role": "user", "content": "not sure, a few people mentioned it. maybe intermittent"}
+      ],
+      "evidence": []
+    }
+  ]
+}

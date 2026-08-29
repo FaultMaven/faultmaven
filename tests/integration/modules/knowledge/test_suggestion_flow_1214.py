@@ -251,9 +251,16 @@ class TestTheQualityGate:
         self, wired, session_factory
     ):
         """The PM decision: LLM-extracted content may not enter the corpus
-        without the runbook gate. The extraction template is
-        ``## Problem / ## Root Cause / ## Solution / ## Prevention`` — no
-        frontmatter, none of the six required sections — so approval refuses."""
+        without the runbook gate.
+
+        No LLM is wired here, so extraction falls back to the skeleton
+        template. Since #1226 that skeleton is v4-SHAPED — frontmatter, the six
+        required sections, the ``[Default]`` fallback Cause — because that is
+        the schema the reviewer has to fill in. It is still refused, on the one
+        thing that is genuinely absent: Cause A has no Statement, because
+        nothing was extracted to state. A skeleton the gate accepted would let
+        one click publish a blank form into the global corpus.
+        """
         client = wired[0]
         suggestion_id = _extract(client)
 
@@ -265,10 +272,25 @@ class TestTheQualityGate:
         # single gate's refusal through the same helper the upload route uses,
         # so a reviewer gets per-error detail and the authoring help.
         assert detail["message"] == "Runbook does not meet quality standards"
-        assert "No YAML frontmatter found" in detail["errors"]
-        assert "Missing required section: Causes" in detail["errors"]
+        assert "Cause A: **Statement:** sub-field is empty" in detail["errors"]
         assert "YAML frontmatter" in detail["help"]
         assert await _knowledge_rows(session_factory) == []
+
+    async def test_the_reviewer_sees_the_refusal_before_pressing_approve(self, wired):
+        """#1226: the same verdict, on the suggestion, at review time.
+
+        Before this the ONLY way to learn a draft was unpublishable was to
+        press approve and read a 422, which is not a review affordance."""
+        client = wired[0]
+        suggestion_id = _extract(client)
+
+        detail = client.get(f"/knowledge/suggestions/{suggestion_id}").json()
+
+        assert detail["validation"]["passed"] is False
+        assert (
+            "Cause A: **Statement:** sub-field is empty"
+            in detail["validation"]["errors"]
+        )
 
     async def test_upload_and_approve_render_the_same_refusal(self, wired):
         """One gate, one rendering. These two routes refuse for the same reason
