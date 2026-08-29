@@ -1,6 +1,6 @@
 # FaultMaven Database ER Diagram
 
-> **Auto-generated** from SQLAlchemy models on 2026-08-17 07:10 UTC.
+> **Auto-generated** from SQLAlchemy models on 2026-08-29 09:56 UTC.
 > Do not edit manually — run `python scripts/generate_er_diagram.py --update` to regenerate.
 > Render with any Mermaid-compatible viewer (GitHub, VS Code, Mermaid Live Editor).
 
@@ -30,7 +30,7 @@
 | `hypothesis_evidence` | 8 | `hypothesis_id, evidence_id` | evidence, hypotheses, organizations, users |
 | `investigation_sessions` | 17 | `session_id` | cases, organizations, users |
 | `knowledge_items` | 28 | `item_id` | organizations, users |
-| `knowledge_suggestions` | 26 | `suggestion_id` | cases, knowledge_items, organizations, users |
+| `knowledge_suggestions` | 30 | `suggestion_id` | cases, knowledge_items, organizations, users |
 | `oauth_authorization_codes` | 8 | `code` | users |
 | `operator_access_audit` | 12 | `audit_id` | — |
 | `operator_access_grants` | 14 | `grant_id` | — |
@@ -397,6 +397,10 @@ erDiagram
         TEXT review_notes
         TEXT rejection_reason
         TEXT metadata
+        BOOLEAN validation_passed
+        TEXT validation_errors
+        TEXT validation_warnings
+        INTEGER version
         DATETIME created_at
         DATETIME updated_at
     }

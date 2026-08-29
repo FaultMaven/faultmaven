@@ -4459,10 +4459,10 @@ async def extract_knowledge_from_case(
     except HTTPException:
         raise
     except ServiceUnavailableException as unavailable:
-        # The review inbox is at capacity and every entry is still awaiting
-        # review, so the in-memory store has nothing it may evict (#1214
-        # review). 503 rather than 500: nothing is broken, the queue is full,
-        # and the fix is to review it. The durable store is #1227.
+        # This organization's review queue is at its ceiling, and the store
+        # refuses to add to it rather than deleting a decided suggestion
+        # (#1227). 503 rather than 500: nothing is broken, the queue is full,
+        # and the fix is to review it.
         # The static constant, never str(unavailable): this module's AST guard
         # forbids carrying a caught exception into any 5xx body, and that rule
         # does not get an exemption for a message that happens to be ours today.

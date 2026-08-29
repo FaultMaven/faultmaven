@@ -234,7 +234,37 @@ class DatabaseSuggestionRepository(SuggestionRepository):
         )
 
     @staticmethod
-    def _column_values(suggestion: KnowledgeSuggestion) -> Dict[str, Any]:
+    def _json_param(value: Any, *, dialect: str) -> Any:
+        """Bind a ``JsonBlob`` value in the shape that column actually wants.
+
+        ``JsonBlob`` is ``Text().with_variant(JSONB, "postgresql")``, so the
+        two backends want DIFFERENT Python values and handing both the same one
+        is wrong on one of them:
+
+        * SQLite's column is TEXT and takes the serialised string;
+        * PostgreSQL's is JSONB and takes the object, which SQLAlchemy encodes
+          into a real JSON array/object.
+
+        Passing a pre-``json.dumps``'d string to JSONB does not fail — it
+        stores a JSON **string scalar**, so ``jsonb_typeof`` answers ``string``
+        where the migration's own ``server_default '[]'`` stored an ``array``.
+        Measured on PostgreSQL 16 before this helper existed: a row written here
+        held ``"[\"err one\"]"`` while a defaulted row held ``[]``, i.e. two
+        shapes in one column. The readers below cope with both, so nothing was
+        broken — but every JSONB operator (``@>``, ``jsonb_array_length``, a GIN
+        index) silently misses the written rows, and "the column's own default
+        disagrees with its writer" is a trap to remove rather than document.
+        """
+        if value is None:
+            return None
+        if dialect == "postgresql":
+            return value
+        return json.dumps(value)
+
+    @classmethod
+    def _column_values(
+        cls, suggestion: KnowledgeSuggestion, *, dialect: str
+    ) -> Dict[str, Any]:
         """The column payload for an insert or update, EXCLUDING ``version``.
 
         ``version`` is the repository's own bookkeeping and is set by the write
@@ -261,10 +291,8 @@ class DatabaseSuggestionRepository(SuggestionRepository):
             "include_messages": bool(suggestion.include_messages),
             "include_evidence": bool(suggestion.include_evidence),
             "pii_scan_status": suggestion.pii_scan_status.value,
-            "pii_scan_result": (
-                json.dumps(suggestion.pii_scan_result)
-                if suggestion.pii_scan_result is not None
-                else None
+            "pii_scan_result": cls._json_param(
+                suggestion.pii_scan_result, dialect=dialect
             ),
             "pii_remediated_by": suggestion.pii_remediated_by,
             "pii_remediated_at": suggestion.pii_remediated_at,
@@ -276,11 +304,17 @@ class DatabaseSuggestionRepository(SuggestionRepository):
             "review_notes": suggestion.review_notes,
             "rejection_reason": suggestion.rejection_reason,
             "validation_passed": suggestion.validation_passed,
-            "validation_errors": json.dumps(list(suggestion.validation_errors)),
-            "validation_warnings": json.dumps(list(suggestion.validation_warnings)),
+            "validation_errors": cls._json_param(
+                list(suggestion.validation_errors), dialect=dialect
+            ),
+            "validation_warnings": cls._json_param(
+                list(suggestion.validation_warnings), dialect=dialect
+            ),
             "created_at": suggestion.created_at,
             "updated_at": suggestion.updated_at,
-            "suggestion_metadata": json.dumps(suggestion.metadata or {}),
+            "suggestion_metadata": cls._json_param(
+                suggestion.metadata or {}, dialect=dialect
+            ),
         }
 
     # -- operations -------------------------------------------------------
@@ -303,11 +337,13 @@ class DatabaseSuggestionRepository(SuggestionRepository):
                 on an insert, the id was taken between the check and the write).
             SuggestionRepositoryError: anything else the store refused.
         """
-        values = self._column_values(suggestion)
         expected_version = suggestion.version or 1
         next_version = expected_version + 1
         try:
             async with self._session_factory() as session:
+                values = self._column_values(
+                    suggestion, dialect=session.get_bind().dialect.name
+                )
                 exists = (
                     await session.execute(
                         select(KnowledgeSuggestionModel.suggestion_id).where(
