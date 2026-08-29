@@ -4,7 +4,7 @@
      app. Do not edit by hand — CI regenerates this and fails if it
      differs. -->
 
-**Version:** 2.1.0
+**Version:** 2.2.0
 
 AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals
 
@@ -2626,6 +2626,11 @@ A turn consists of an optional query and/or optional attachments.
 Attachments are preprocessed through Tier 0+1 before the LLM sees them.
 If no query is provided with attachments, an implicit query is generated.
 
+**One file per turn.** `files` accepts at most one item (`maxItems: 1`);
+more than one is rejected with 422. Submit each additional file as its own
+turn. `pasted_content` is a separate field and does not count against this
+limit, so a turn may legitimately carry one file *and* a paste.
+
 **Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`
 placeholder is named from its own content as part of processing the turn, if
 it now has enough substance to name — so the name is already in place when
@@ -4833,7 +4838,7 @@ Knowledge-base scopes the calling user may publish to.
 
 **Properties:**
 
-- `files` (array, optional)
+- `files` (array, optional) — At most ONE file per turn. Submit each additional file as its own turn. `pasted_content` is a separate field and does not count toward this limit, so a turn may carry one file *and* a paste.
 - `input_type` (object, optional)
 - `intent_data` (object, optional)
 - `intent_type` (object, optional)

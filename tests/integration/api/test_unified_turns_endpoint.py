@@ -5,7 +5,9 @@ Tests the complete endpoint flow:
 - File upload → Tier 0+1 preprocessing, implicit query, LLM with evidence context
 - Pasted text → same as file upload (via pasted_content form field)
 - Query + file → preprocessing + explicit query, both in LLM context
-- Multiple files + query → all preprocessed, all in evidence context
+- File + paste → two attachments. This is the only multi-attachment shape the
+  route can produce: `files` is capped at one item (fm#694, `maxItems: 1`) and
+  `pasted_content` is a separate field that does not count against the cap.
 - Intent routing (status_transition, confirmation) with attachments
 - Missing both query and attachments → 400 error
 - Invalid case_id → 400/404 errors
@@ -123,21 +125,24 @@ class TestTurnPayloadConstruction:
         assert payload.has_query is True
         assert payload.has_attachments is True
 
-    def test_multiple_files_payload(self):
-        """Multiple files build payload with multiple attachments."""
+    def test_file_plus_paste_payload(self):
+        """A file and a paste build one payload with two attachments.
+
+        This is the ONLY multi-attachment shape the route can produce: `files`
+        is capped at one item (fm#694) and `pasted_content` is a separate form
+        field that does not count against that cap.
+        """
         attachments = [
             Attachment(content=b"log1", filename="app.log", content_type="text/plain"),
             Attachment(
-                content=b"csv1", filename="metrics.csv", content_type="text/csv"
-            ),
-            Attachment(
-                content=b"yaml1",
-                filename="config.yaml",
-                content_type="application/yaml",
+                content=b"2026-08-28 WARN pool exhausted",
+                filename="pasted-content-20260828T120001.txt",
+                content_type="text/plain",
+                source_metadata={"source_type": "text_paste"},
             ),
         ]
-        payload = TurnPayload(query="Analyze all these", attachments=attachments)
-        assert len(payload.attachments) == 3
+        payload = TurnPayload(query="Analyze both", attachments=attachments)
+        assert len(payload.attachments) == 2
         assert payload.has_query is True
 
     def test_intent_routing_with_attachments(self):
@@ -395,23 +400,33 @@ class TestTurnResponseModel:
         assert att.source_type == "logs"
         assert att.processing_status == "completed"
 
-    def test_multiple_attachments_response(self):
-        """Multiple file uploads produce multiple AttachmentResults."""
+    def test_file_plus_paste_response(self):
+        """A file and a paste produce two AttachmentResults.
+
+        The one-file cap (fm#694) means this — not two uploads — is the shape
+        a multi-result response actually comes from.
+        """
         response = _make_turn_response(
             attachments_processed=[
                 AttachmentResult(
-                    file_id=f"file_{i:012d}",
-                    filename=f"file{i}.log",
+                    file_id="file_000000000000",
+                    filename="app.log",
                     source_type="logs",
-                    file_size=1000 * (i + 1),
+                    file_size=1000,
                     processing_status="completed",
-                )
-                for i in range(3)
+                ),
+                AttachmentResult(
+                    file_id="file_000000000001",
+                    filename="pasted-content-20260828T120001.txt",
+                    source_type="logs",
+                    file_size=2000,
+                    processing_status="completed",
+                ),
             ],
         )
-        assert len(response.attachments_processed) == 3
-        for i, att in enumerate(response.attachments_processed):
-            assert att.filename == f"file{i}.log"
+        assert len(response.attachments_processed) == 2
+        assert response.attachments_processed[0].filename == "app.log"
+        assert response.attachments_processed[1].filename.startswith("pasted-content-")
 
     def test_response_with_milestones(self):
         """TurnResponse includes milestone completion data."""

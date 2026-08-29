@@ -925,7 +925,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | Auth | `POST /auth/refresh` | Token refresh |
 | OAuth | `GET /auth/oauth/authorize` | OAuth authorization |
 | OAuth | `POST /auth/oauth/token` | OAuth token exchange. **Takes RFC 6749 §3.2 form encoding *or* JSON**, and answers errors as RFC 6749 §5.2 objects (`{"error", "error_description"}`), not `{"detail"}` — so a rejected grant is a **400** `invalid_grant`, not a 401. Same for `POST /auth/oauth/revoke` (RFC 7009). Both routes take a raw `Request` and validate by hand, because FastAPI cannot declare two body encodings on one signature; that is also why their OpenAPI `requestBody` is written out in `openapi_extra` and why they document a 400 where every other operation documents a 422 (#1150) |
-| Cases | `POST /cases/{case_id}/turns` | Submit a turn (multipart: query, files, pasted content) — how raw data enters a case |
+| Cases | `POST /cases/{case_id}/turns` | Submit a turn (multipart: query, files, pasted content) — how raw data enters a case. **One file max** per turn (`maxItems: 1`); `pasted_content` is a separate field and does not count toward it, so a turn may carry one file *and* a paste |
 | Reports | `GET/POST /reports` | Terminal summaries (auto-generated) |
 | Teams | `GET /teams` | List the caller's teams (read-only; names for share badges + share-to-team picker). Team *management* is the Cloud-composed admin module. |
 | Sessions | `GET /sessions` | Session management |

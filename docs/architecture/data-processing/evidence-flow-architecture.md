@@ -32,6 +32,8 @@ This document describes the complete evidence flow architecture in FaultMaven. A
 │                        API Gateway Layer                                 │
 │  POST /api/v1/cases/{case_id}/turns    (unified turn endpoint)         │
 │  {query?, files[]?, pasted_content?}                                   │
+│  files[] is capped at ONE item (maxItems: 1, fm#694); pasted_content    │
+│  is a separate field, so a turn may carry one file AND a paste         │
 └─────┬───────────────────────────────────────────────────────────────────┘
       │
       │

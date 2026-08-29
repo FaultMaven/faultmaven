@@ -2748,7 +2748,34 @@ async def submit_turn(
     case_id: str,
     request: Request,
     query: Optional[str] = Form(None),
-    files: List[UploadFile] = File(default=[]),
+    # One file per turn (fm#694), enforced by the framework rather than by hand:
+    # `max_length=1` both rejects a second file with the app's normalized 422
+    # AND publishes `maxItems: 1` into the OpenAPI schema, so the narrowing is
+    # visible to clients and to scripts/check_contract_version.py. A hand-rolled
+    # `len(files) > 1` raise enforced the same rule invisibly.
+    #
+    # The cap is on `files` ALONE. `pasted_content` is a separate form field
+    # that legitimately rides alongside a file as a second attachment, and that
+    # is a shipped path — counting it here would break paste+file turns.
+    #
+    # Two things this does NOT do, stated so nobody reads more into it:
+    #   * It is correctness-only, not a cost control. Starlette parses and
+    #     spools the ENTIRE multipart body (main.py patches Request.form with
+    #     max_files=1000) before pydantic validates, so a 50-file request is
+    #     fully read off the wire and written to temp files before the 422.
+    #   * It does not fully close the clarification-emitter gap. The emitter
+    #     clarifies only the first `classification_failed` attachment, and a
+    #     one-file turn can still carry two attachments (file + paste) where
+    #     both fail classification — see #1222.
+    files: List[UploadFile] = File(
+        default=[],
+        max_length=1,
+        description=(
+            "At most ONE file per turn. Submit each additional file as its own "
+            "turn. `pasted_content` is a separate field and does not count "
+            "toward this limit, so a turn may carry one file *and* a paste."
+        ),
+    ),
     pasted_content: Optional[str] = Form(None),
     intent_type: Optional[str] = Form(None),
     intent_data: Optional[str] = Form(None),
@@ -2764,6 +2791,11 @@ async def submit_turn(
     A turn consists of an optional query and/or optional attachments.
     Attachments are preprocessed through Tier 0+1 before the LLM sees them.
     If no query is provided with attachments, an implicit query is generated.
+
+    **One file per turn.** `files` accepts at most one item (`maxItems: 1`);
+    more than one is rejected with 422. Submit each additional file as its own
+    turn. `pasted_content` is a separate field and does not count against this
+    limit, so a turn may legitimately carry one file *and* a paste.
 
     **Auto-titling:** a case still carrying its auto-generated `Case-YYMMDD-N`
     placeholder is named from its own content as part of processing the turn, if
@@ -2943,6 +2975,7 @@ async def submit_turn(
                         + ", ".join(t.value for t in IntentType)
                         + "."
                     ),
+                    headers={"x-correlation-id": correlation_id},
                 )
             try:
                 intent = QueryIntent(type=parsed_intent_type, **data)
@@ -2950,6 +2983,7 @@ async def submit_turn(
                 raise HTTPException(
                     status_code=422,
                     detail=f"Invalid fields for intent_type={intent_type!r}: {e}",
+                    headers={"x-correlation-id": correlation_id},
                 )
 
         payload = TurnPayload(query=query, attachments=attachments, intent=intent)
