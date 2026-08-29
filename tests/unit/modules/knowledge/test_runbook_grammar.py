@@ -48,3 +48,23 @@ def test_parse_cause_subfields_boundaries():
 def test_parse_cause_subfields_absent_field_omitted():
     fields = g.parse_cause_subfields("**Statement:** only", ["Statement", "Chain"])
     assert fields == {"Statement": "only"}
+
+
+def test_comment_countermeasures_are_part_of_the_mirrored_grammar():
+    """#1241 — both halves of the comment fix must be mirrored upstream.
+
+    The cross-repo checker compares regex primitives and ``CONVERGES_REF`` only,
+    so it cannot see either of these; this is the in-repo half of the guard.
+    Behaviour is pinned in full by
+    ``test_grammar_ignores_html_comments_1241.py``.
+    """
+    # Sub-field VALUES: comments deleted before any label is looked for.
+    assert g.parse_cause_subfields(
+        "<!-- **Statement:** example -->\n**Statement:**\n", ["Statement"]
+    ) == {"Statement": ""}
+    # Heading ENUMERATION: comments blanked length-preservingly, so offsets into
+    # the raw markdown (which is what the chunker measures) still line up.
+    text = "<!-- ### Cause A: x -->\n### Cause A: real\n"
+    masked = g.mask_html_comments(text)
+    assert len(masked) == len(text)
+    assert [m.group(2) for m in g.CAUSE_HEADING_RE.finditer(masked)] == ["real"]
