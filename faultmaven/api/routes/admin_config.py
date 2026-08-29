@@ -456,6 +456,33 @@ def _rate_limiting_installed(app) -> bool:
     )
 
 
+def _suggestion_store_is_durable(app) -> bool:
+    """Is the composed knowledge-suggestion store durable and worker-shared?
+
+    Asks the object that is actually running, not the settings. ``WORKERS`` was
+    the old proxy for this question, and it stopped being one the moment the
+    store could be a database: ``WORKERS=1`` on a dict-backed process is still
+    a process that loses every pending review on restart, and ``WORKERS=4`` on
+    a database-backed one is fine. What an operator needs to know is which
+    store this process holds.
+
+    ``False`` covers both bad answers — the in-memory double is composed, or no
+    suggestion service is composed at all (the routes then answer 503). They
+    are different faults with the same consequence for scaling out, and the
+    ``config_hint`` names both.
+    """
+    service = getattr(getattr(app, "state", None), "suggestion_service", None)
+    if service is None:
+        return False
+    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+        DatabaseSuggestionRepository,
+    )
+
+    return isinstance(
+        getattr(service, "_repository", None), DatabaseSuggestionRepository
+    )
+
+
 @router.get("/config/status", response_model=EnvConfigStatusResponse)
 async def get_env_config_status(
     request: Request,
@@ -541,26 +568,35 @@ async def get_env_config_status(
                     r'["^https://<id>\.chromiumapp\.org/?$"]'
                 ),
             ),
-            # Knowledge suggestions live in a per-worker in-memory store
-            # (#1214), so with WORKERS>1 an extract and its approve can land on
-            # different workers and the approve answers 404 for an id the API
-            # just issued. Reported here for the same reason as the consent skip
-            # above: the only other signal is a startup log line, and startup
-            # logs roll out of `kubectl logs` long before anyone investigates an
-            # intermittent 404. `enabled` reads as "safe on this deployment".
-            # The durable, worker-shared store is #1227.
+            # The knowledge-suggestion store, reported as the RUNTIME fact it
+            # is (#1227) rather than inferred from a setting. Reported here for
+            # the same reason as the consent skip above: the only other signal
+            # is a startup log line, and startup logs roll out of
+            # `kubectl logs` long before anyone investigates an intermittent
+            # 404.
+            #
+            # It reads False when the composed store is the in-memory double
+            # (#1214's shape — non-durable and per worker, so with WORKERS>1 or
+            # more than one pod an extract and its approve land on different
+            # processes and the approve 404s on an id the API just issued), and
+            # when no suggestion service was composed at all. It reads True only
+            # when the process actually holds the database-backed store, which
+            # is the point: the field answers "is what is running right now safe
+            # to scale out", and a value derived from WORKERS could not tell
+            # a database-backed deployment from a dict-backed one.
             "suggestion_store_worker_safe": FeatureStatus(
-                enabled=settings.server.workers <= 1,
+                enabled=_suggestion_store_is_durable(request.app),
                 description=(
-                    "Knowledge suggestions survive across API workers "
-                    "(extract → approve cannot land on different workers). "
-                    "The store is in-memory and per worker, so this is only "
-                    "true with a single worker; it is never durable across a "
-                    "restart."
+                    "Knowledge suggestions are stored durably and shared across "
+                    "API workers and pods (extract → approve cannot land on a "
+                    "process that has never seen the suggestion, and a restart "
+                    "does not drop the review inbox)."
                 ),
                 config_hint=(
-                    "Set WORKERS=1, or scale out only once the suggestion store "
-                    "is database-backed"
+                    "True when the process holds the database-backed suggestion "
+                    "store. False means the in-memory double is composed, or no "
+                    "suggestion service is composed at all — run WORKERS=1 and "
+                    "check the composition root"
                 ),
             ),
         }

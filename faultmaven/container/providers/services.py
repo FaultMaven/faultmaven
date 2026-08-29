@@ -354,23 +354,28 @@ def create_suggestion_service(
     sanitizer: Any,
     llm_provider: Any | None,
 ) -> Any:
-    """Create the knowledge SuggestionService singleton (#1214).
+    """Create the knowledge SuggestionService singleton (#1214, #1227).
 
     One instance per process, holding a REAL ``knowledge_service`` — the
     collaborator ``approve_suggestion`` publishes through. Without it the
     service refuses to approve rather than reporting a success it cannot back.
 
-    ⚠️ The suggestion store is still an in-memory dict on this instance
-    (``SuggestionService._suggestions_store``). Making it a singleton is what
-    makes extract → approve work at all, but it does NOT make it durable: a
-    restart drops every pending suggestion, and with ``WORKERS > 1`` (or more
-    than one pod) an extract handled by one worker is invisible to an approve
-    handled by another. ``knowledge_suggestions`` exists as a table and as an
-    ORM model with no repository behind it; giving the store a database is a
-    separate change.
+    The store is ``knowledge_suggestions`` via
+    :class:`DatabaseSuggestionRepository` (#1227). It used to be an in-process
+    dict on this instance: making the service a singleton (#1214) is what made
+    extract → approve work within one worker, but it left the suggestion
+    non-durable across a restart and invisible to every other worker — and the
+    shipped cloud topology runs the API at three replicas with no session
+    affinity, so approve landed on a pod that had never seen the extract on
+    roughly a coin flip. The repository is sessionless (one short transaction
+    per call), which is what a process singleton can hold and what keeps the
+    PostgreSQL RLS tenant binding correct.
     """
     from faultmaven.modules.knowledge.domain.services.suggestion_service import (
         SuggestionService,
+    )
+    from faultmaven.modules.knowledge.infrastructure.persistence.suggestion_repository import (  # noqa: E501
+        DatabaseSuggestionRepository,
     )
 
     return SuggestionService(
@@ -378,6 +383,7 @@ def create_suggestion_service(
         knowledge_service=knowledge_service,
         sanitizer=sanitizer,
         llm_provider=llm_provider,
+        suggestion_repository=DatabaseSuggestionRepository(),
     )
 
 
@@ -1350,7 +1356,8 @@ def register_services(container: BaseDIContainer) -> None:
     )
     container._register_service("knowledge_service", knowledge_service)
 
-    # Suggestion Service — the write side of the knowledge flywheel (#1214).
+    # Suggestion Service — the write side of the knowledge flywheel (#1214),
+    # over the durable ``knowledge_suggestions`` store (#1227).
     #
     # This was NEVER registered: ``app.state.suggestion_service`` was read in
     # two routes and written nowhere, so both fell through to a throwaway
