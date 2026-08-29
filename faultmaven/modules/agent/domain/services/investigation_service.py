@@ -52,9 +52,8 @@ from faultmaven.models.api_models import (
 )
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import Case, CaseState
+from faultmaven.modules.case.contracts import Case, CaseState, VerificationStatus
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
-from faultmaven.modules.case.contracts import VerificationStatus
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceSourceType,

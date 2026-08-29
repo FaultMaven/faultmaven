@@ -103,7 +103,9 @@ from faultmaven.core.investigation.llm_error_handler import (
     is_output_truncation_error,
     is_truncated_json_error,
 )
-from faultmaven.core.investigation.progress_monitor import ProgressMonitor
+from faultmaven.core.investigation.progress_monitor import (
+    ProgressMonitor,
+)
 from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
 )
@@ -3417,7 +3419,9 @@ def _runbook_suggestion(case) -> dict | None:
     # provenance-blindness invariant carves out for this module. Closes the #695
     # offered-then-refused drift at the offer boundary rather than only at
     # action time (where the async similarity dedup runs).
-    from faultmaven.core.investigation.kb_cause_seeder import confirmed_root_seed_origin
+    from faultmaven.core.investigation.kb_cause_seeder import (
+        confirmed_root_seed_origin,
+    )
 
     if confirmed_root_seed_origin(case):
         return None

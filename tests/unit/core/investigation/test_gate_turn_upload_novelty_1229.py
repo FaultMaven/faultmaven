@@ -53,7 +53,9 @@ from faultmaven.modules.case.domain.models import (
 
 pytestmark = pytest.mark.unit
 
-_ENGINE_LOGGER = "faultmaven.core.investigation.milestone_engine"
+# The derivation — and therefore both degradation warnings — lives in the
+# shared free function, which the engine and the agent service both call.
+_UPLOADS_LOGGER = "faultmaven.core.investigation.turn_uploads"
 
 # The counter's value going into every turn below. Non-zero on purpose: it is
 # what makes "reset to 0" and "left where it was" distinguishable outcomes.
@@ -253,28 +255,30 @@ class TestAnUndeterminedNoveltySignal:
         so."""
         case = _investigating_case(pending="closed")
 
-        with caplog.at_level(logging.WARNING, logger=_ENGINE_LOGGER):
+        with caplog.at_level(logging.WARNING, logger=_UPLOADS_LOGGER):
             await _gate_turn(_engine(), case, [_undetermined()])
 
         assert any(
-            "carries no novelty signal" in r.getMessage()
+            r.name == _UPLOADS_LOGGER
+            and "carries no novelty signal" in r.getMessage()
             and "file_cccccccccccc" in r.getMessage()
             for r in caplog.records
-        ), [r.getMessage() for r in caplog.records]
+        ), [(r.name, r.getMessage()) for r in caplog.records]
 
 
 class TestAnAttachmentWithNoFileId:
     async def test_it_is_not_reported_and_says_so(self, caplog):
         case = _investigating_case(pending="closed")
 
-        with caplog.at_level(logging.WARNING, logger=_ENGINE_LOGGER):
+        with caplog.at_level(logging.WARNING, logger=_UPLOADS_LOGGER):
             metadata = await _gate_turn(_engine(), case, [_no_file_id()])
 
         assert "files_uploaded" not in metadata
         assert metadata["progress_made"] is False
-        assert any("carries no file_id" in r.getMessage() for r in caplog.records), [
-            r.getMessage() for r in caplog.records
-        ]
+        assert any(
+            r.name == _UPLOADS_LOGGER and "carries no file_id" in r.getMessage()
+            for r in caplog.records
+        ), [(r.name, r.getMessage()) for r in caplog.records]
 
 
 class TestTheDropdownTransitionBranch:
