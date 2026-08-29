@@ -805,6 +805,14 @@ class HypothesisManager:
         # grounding. Head only, never the whole path — terminal path nodes are
         # shared symptom nodes across hypotheses, so a path-wide check would
         # count symptom observation as grounding for the cause.
+        #
+        # This head resolution is DELIBERATELY wider than
+        # ``_chain_root_confidently_supported``'s, which reads root_node_id
+        # alone. Do not unify them: that one gates a likelihood cap and asks
+        # "is the root confidently supported", so widening it would change a
+        # validation outcome. This one only labels a retirement and asks "was
+        # anything ever linked", where missing a grounded hypothesis is the
+        # failure to avoid. Same lookup shape, different questions.
         head_id = getattr(hypothesis, "root_node_id", None) or next(
             iter(getattr(hypothesis, "path", None) or []), None
         )

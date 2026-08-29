@@ -11,6 +11,9 @@ from datetime import UTC, datetime
 
 import pytest
 
+from faultmaven.core.investigation.hypothesis_manager import (
+    _RETIRED_NEVER_GROUNDED as _NEVER_GROUNDED,
+)
 from faultmaven.modules.case.domain.models import (
     Case,
     CaseState,
@@ -25,10 +28,6 @@ from faultmaven.modules.report.domain.services.report_generation_service import 
 )
 
 pytestmark = pytest.mark.unit
-
-_NEVER_GROUNDED = (
-    "Anti-anchoring: retired a hypothesis that was never linked to evidence"
-)
 
 
 def _case_with(*hypotheses: Hypothesis) -> Case:
@@ -194,3 +193,28 @@ async def test_a_reason_cannot_forge_a_report_section():
 
     assert "\n## Root Cause" not in summary
     assert "The database was misconfigured." in summary  # words kept, structure not
+
+
+@pytest.mark.asyncio
+async def test_closure_summary_shows_why_a_hypothesis_was_set_aside():
+    """CLOSED cases are where most retirements land, and Leading Hypotheses is
+    their only hypothesis section — the reason has to travel with it there too."""
+    retired = _hyp(
+        "hyp_00000000ab07",
+        "the connection pool is exhausted",
+        HypothesisState.RETIRED,
+        retirement_reason=_NEVER_GROUNDED,
+    )
+    case = _case_with(retired)
+    object.__setattr__(case, "state", CaseState.CLOSED)
+    object.__setattr__(case, "closure_reason", "closed_insufficient_evidence")
+
+    summary = await ReportGenerationService()._generate_closure_summary(
+        case, {"duration": "38 minutes"}
+    )
+
+    assert "## Leading Hypotheses" in summary
+    assert "set aside without a verdict" in summary
+    assert _NEVER_GROUNDED in summary
+    # And still no confidence figure on an untested candidate.
+    assert "confidence:" not in summary.split("## Leading Hypotheses")[1]
