@@ -43,20 +43,63 @@ def _sentence_transformers_obtainable() -> bool:
     CronJobs that never embed anything and were OOMKilled at 512Mi (#868). So
     the question is answered by locating the package, not executing it.
 
-    ``sys.modules`` is consulted FIRST because an already-present module is
-    obtainable by definition — that is precisely what an import would hand
-    back. It also has to come first for a second reason: ``find_spec`` raises
+    ``sys.modules`` is consulted FIRST because ``find_spec`` raises
     ``ValueError`` for a module whose ``__spec__`` is None, which is exactly
     the shape of the stand-in the test suite installs (``tests/conftest.py``).
     Asking find_spec first would report the embedding stack as *absent* for the
     whole test session and quietly make the real-model path untestable.
+
+    But "present in sys.modules" is not the same as "obtainable", which is the
+    whole point of this function — see both branches below.
     """
-    if "sentence_transformers" in sys.modules:
-        return True
+    imported = sys.modules.get("sentence_transformers")
+    if imported is not None:
+        # NOT an unconditional True. Importing a namespace shadow (below)
+        # SUCCEEDS and installs a module exposing nothing, so an earlier
+        # importer anywhere in the process would otherwise hand this branch the
+        # very state the rest of the function exists to reject. Ask for the one
+        # attribute the caller needs: conftest's stand-in sets it, a real
+        # install has it, an empty leftover directory does not. Free, because
+        # the module is already imported — no #868 cost.
+        return hasattr(imported, "SentenceTransformer")
     try:
-        return importlib.util.find_spec("sentence_transformers") is not None
-    except (ImportError, ValueError):  # broken install / namespace-package edge
+        spec = importlib.util.find_spec("sentence_transformers")
+    except (ImportError, ValueError):
+        # A parent package that raises while being imported, or a sys.modules
+        # entry whose __spec__ is None. The second is answered above and cannot
+        # reach here; both are kept because find_spec's contract allows them.
         return False
+
+    if spec is None:
+        return False
+
+    # ``spec is not None`` is not the question. pip and uv remove a package's
+    # FILES on uninstall but leave its DIRECTORIES, and PEP 420 resolves the
+    # leftover tree to a namespace package — find_spec returns
+    # ModuleSpec(origin=None) and reports a directory containing nothing as
+    # present. Nothing raises, so the ``except`` above cannot cover it; the
+    # discriminator has to be tested. This is not hypothetical — it is the
+    # state this repo's venv was in for ``opik`` (#1231).
+    #
+    # (Correct here because sentence_transformers is a REGULAR package. A
+    # distribution genuinely shipped as a namespace package — ``google.*``,
+    # ``zope.*`` — installs correctly and still has origin None, so this is not
+    # a rule to copy without checking which kind the dependency is.)
+    if spec.origin is None:
+        # Say which directory, or an operator cannot act: "never installed" and
+        # "shadowed by a leftover tree" are different problems with different
+        # fixes, and every downstream signal — get_bge_m3_model's generic
+        # warning, then KnowledgeBaseError out of embedding_guard — names
+        # neither. Same reason #1231's opik guard logs its __path__.
+        logging.getLogger(__name__).warning(
+            "sentence-transformers resolved to a namespace package (no module) "
+            "at %s — an empty leftover directory shadows the real package; "
+            "embedding is disabled",
+            list(spec.submodule_search_locations or ["<unknown>"]),
+        )
+        return False
+
+    return True
 
 
 SENTENCE_TRANSFORMERS_AVAILABLE = _sentence_transformers_obtainable()
@@ -247,12 +290,25 @@ class ModelCache:
 
             start_time = time.time()
             try:
-                # Bound intra-op threads to the pod's CPU quota BEFORE the model
-                # (and its native thread pools) initialise — prevents torch from
-                # oversubscribing the node's core count against the cgroup limit.
+                # Resolve the class FIRST. This is the only step that proves
+                # the package is really importable, and it must precede
+                # configure_inference_threads() because that imports torch:
+                # otherwise ANY route to a wrong SENTENCE_TRANSFORMERS_AVAILABLE
+                # — a namespace shadow, a half-removed tree whose __init__.py
+                # survived, a version conflict raising inside the package —
+                # pays the ~690 MiB that #868 exists to keep out of the cleanup
+                # CronJobs, and only then fails into the handler below. Ordering
+                # makes the whole class of wrong-True flags harmless instead of
+                # enumerating them one at a time.
+                model_class = _sentence_transformer_class()
+                # Then bound intra-op threads to the pod's CPU quota BEFORE the
+                # model (and its native thread pools) initialise — prevents
+                # torch from oversubscribing the node's core count against the
+                # cgroup limit. Still ahead of construction, which is what that
+                # guarantee actually requires.
                 configure_inference_threads()
                 self.logger.info(f"Loading BGE-M3 model ({triggered_by} load)...")
-                model = _sentence_transformer_class()(model_key)
+                model = model_class(model_key)
                 load_time = time.time() - start_time
 
                 self._models[model_key] = model

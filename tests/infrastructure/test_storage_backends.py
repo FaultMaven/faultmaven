@@ -20,7 +20,30 @@ import pytest
 # CI install) deliberately omits it, and that job asserts its absence. Tests
 # that patch `boto3.client` must therefore skip there — `mock.patch` imports
 # the target module, so an unguarded patch is a hard error, not a skip.
-_BOTO3_AVAILABLE = importlib.util.find_spec("boto3") is not None
+#
+# `spec is not None` would not deliver that: pip and uv leave a package's
+# directories behind on uninstall, and PEP 420 resolves an empty `boto3/` tree
+# to a namespace package with `origin is None` — so the guard would read
+# "available", the patch would run, and it would fail as the hard error this
+# comment exists to prevent.
+#
+# The try/except is not decoration. `find_spec` RAISES ValueError for a name
+# already in `sys.modules` whose `__spec__` is None, and `tests/conftest.py`
+# installs exactly that shape (bare `ModuleType` doubles for torch,
+# transformers, sentence_transformers) before any test module is imported. Add
+# a `boto3` double there — a plausible next step — and an unguarded call here
+# raises at COLLECTION, taking all 44 tests in this file with it.
+#
+# `origin is not None` is the right question for boto3 because boto3 is a
+# regular package. It is NOT a universal rule: a distribution genuinely shipped
+# as a PEP 420 namespace package (`google.*`, `zope.*`, `ruamel.*`) installs
+# correctly and still resolves with `origin is None`. Copy this to a third
+# dependency only after checking which kind it is.
+try:
+    _boto3_spec = importlib.util.find_spec("boto3")
+except (ImportError, ValueError):
+    _boto3_spec = None
+_BOTO3_AVAILABLE = _boto3_spec is not None and _boto3_spec.origin is not None
 _REQUIRES_BOTO3 = pytest.mark.skipif(
     not _BOTO3_AVAILABLE, reason="boto3 is a cloud-only dependency"
 )

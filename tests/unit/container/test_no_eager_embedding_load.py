@@ -294,6 +294,15 @@ def test_availability_survives_a_spec_less_stand_in(monkeypatch):
     embedding stack unavailable for the whole suite and make the real-model
     path silently untestable, so an already-present module has to win first."""
     stub = types.ModuleType("sentence_transformers")
+    # As conftest builds it (conftest.py sets ``_mock_st.SentenceTransformer``).
+    # This used to be a bare ModuleType, which is NOT that shape: a module
+    # exposing no SentenceTransformer is exactly the namespace shadow of #1233
+    # and is genuinely not obtainable, so the sys.modules branch now
+    # discriminates on the attribute rather than returning True for anything
+    # present. The trap this test guards — never asking find_spec first — is
+    # unchanged, and the real stand-in is covered by
+    # test_the_conftest_stand_in_still_reads_as_obtainable.
+    stub.SentenceTransformer = type("SentenceTransformer", (), {})
     assert stub.__spec__ is None  # the trap this guards
     monkeypatch.setitem(sys.modules, "sentence_transformers", stub)
 
@@ -319,3 +328,168 @@ def test_availability_reports_absent_when_nothing_provides_it(monkeypatch):
     )
 
     assert model_cache_module._sentence_transformers_obtainable() is False
+
+
+# --------------------------------------------------------------------------- #
+# A leftover directory is not an installed package (#1233)
+# --------------------------------------------------------------------------- #
+
+
+def _probe_spec(tmp_path, monkeypatch, name, init_py=None):
+    """A ModuleSpec produced by real CPython import machinery, not hand-built.
+
+    A namespace-package spec is the shape under test, and fabricating one
+    (``ModuleSpec(name, loader=None, origin=None)``) would assert against this
+    test's idea of a namespace package rather than the import system's. So the
+    directory is real: empty for a namespace package, or carrying an
+    ``__init__.py`` for a regular one.
+
+    Asked under a unique name because the installed ``sentence_transformers``
+    would otherwise win the namespace scan — the trap that makes an empty dir on
+    ``sys.path`` measure the real package instead (#1231).
+    """
+    package = tmp_path / name
+    package.mkdir()
+    if init_py is not None:
+        (package / "__init__.py").write_text(init_py)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    spec = importlib.util.find_spec(name)
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    return spec
+
+
+@pytest.mark.parametrize(
+    "init_py, expect_obtainable",
+    [
+        pytest.param(None, False, id="namespace-package-shadow"),
+        pytest.param("", True, id="real-package-empty-init"),
+        pytest.param("VALUE = 1\n", True, id="real-package"),
+    ],
+)
+def test_a_leftover_directory_is_not_an_installed_package(
+    tmp_path, monkeypatch, init_py, expect_obtainable
+):
+    """An empty ``sentence_transformers/`` must not read as installed.
+
+    pip and uv remove a package's files on uninstall but leave its directories,
+    and PEP 420 resolves the leftover tree to a namespace package: ``find_spec``
+    returns a spec, ``spec.origin`` is None, and nothing raises — so the
+    ``except (ImportError, ValueError)`` around it cannot cover this, however
+    its comment used to read. The venv this repo is developed in was in exactly
+    that state for ``opik`` (#1231).
+
+    The cost of the wrong answer is not just a wrong flag — see
+    ``test_an_unavailable_stack_never_reaches_the_torch_import``.
+    """
+    suffix = "real" if init_py is not None else "ns"
+    spec = _probe_spec(tmp_path, monkeypatch, f"_fm_st_probe_{suffix}", init_py)
+    # What the parametrization claims about the fixture, before relying on it.
+    # ``spec is not None`` first: a probe that failed to resolve must report
+    # that, not an AttributeError saying nothing about the fixture being at
+    # fault.
+    assert spec is not None, "probe package did not resolve — the fixture is broken"
+    assert (spec.origin is not None) is expect_obtainable
+
+    # sys.modules wins first (conftest installs a stand-in), so the find_spec
+    # branch is unreachable until that is cleared.
+    monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
+    monkeypatch.setattr(
+        model_cache_module.importlib.util, "find_spec", lambda name: spec
+    )
+
+    assert model_cache_module._sentence_transformers_obtainable() is expect_obtainable
+
+
+@pytest.mark.parametrize(
+    "attrs, expect_obtainable",
+    [
+        pytest.param({}, False, id="imported-namespace-shadow"),
+        pytest.param(
+            {"SentenceTransformer": object}, True, id="imported-real-or-stand-in"
+        ),
+    ],
+)
+def test_an_already_imported_module_is_not_automatically_obtainable(
+    monkeypatch, attrs, expect_obtainable
+):
+    """The ``sys.modules`` branch must discriminate too.
+
+    Importing a namespace shadow SUCCEEDS — it installs a module object with
+    ``__file__ is None`` that exposes nothing. So "present in sys.modules" is
+    not "obtainable": any earlier importer in the process (a dependency probe,
+    a worker, a bare ``try: import sentence_transformers``) would hand this
+    branch the very state the find_spec branch exists to reject, and the flag
+    would read True again — the pre-fix behaviour, torch import included.
+
+    ``__file__`` cannot be the discriminator here: conftest's stand-in is a bare
+    ``ModuleType`` and has none. The attribute the caller actually needs can be,
+    and it is free because the module is already imported (no #868 cost).
+    """
+    module = types.ModuleType("sentence_transformers")
+    for name, value in attrs.items():
+        setattr(module, name, value)
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+
+    assert model_cache_module._sentence_transformers_obtainable() is expect_obtainable
+
+
+def test_the_conftest_stand_in_still_reads_as_obtainable():
+    """...and the real stand-in, not a reconstruction of it, still passes.
+
+    The sys.modules branch exists so conftest's double wins; a discriminator
+    that rejected it would mark the embedding stack absent for the whole
+    session and make every real-model assertion vacuous."""
+    assert sys.modules["sentence_transformers"].__spec__ is None  # the trap
+    assert model_cache_module._sentence_transformers_obtainable() is True
+
+
+def test_an_unavailable_stack_never_reaches_the_torch_import(monkeypatch):
+    """A False flag must stop short of ``configure_inference_threads()``.
+
+    That function imports torch — the ~690 MiB #868 exists to keep out of the
+    cleanup CronJobs — so the memory win this whole module is shaped around
+    lives at that call, not at the flag. Without this, moving the call above the
+    availability check would leave every 512Mi CronJob importing torch again
+    with the suite still green.
+    """
+    called = []
+    monkeypatch.setattr(
+        model_cache_module, "configure_inference_threads", lambda: called.append(1)
+    )
+    monkeypatch.setattr(model_cache_module, "SENTENCE_TRANSFORMERS_AVAILABLE", False)
+
+    cache = model_cache_module.ModelCache()
+    cache.clear_cache()
+
+    assert cache.get_bge_m3_model(triggered_by="lazy") is None
+    assert called == [], "torch import was reached despite an unavailable stack"
+
+
+def test_a_wrong_true_flag_still_never_reaches_the_torch_import(monkeypatch):
+    """And ordering makes the whole CLASS of wrong-True flags harmless.
+
+    The flag can be True and the package still unimportable — a shadow already
+    in sys.modules, a half-removed tree whose __init__.py survived, a version
+    conflict raising inside the package. Resolving the class BEFORE configuring
+    threads means those fail without paying for torch, instead of each having to
+    be enumerated and guarded at the flag.
+    """
+    called = []
+    monkeypatch.setattr(
+        model_cache_module, "configure_inference_threads", lambda: called.append(1)
+    )
+    monkeypatch.setattr(model_cache_module, "SENTENCE_TRANSFORMERS_AVAILABLE", True)
+
+    def _unimportable():
+        raise ImportError("cannot import name 'SentenceTransformer'")
+
+    monkeypatch.setattr(
+        model_cache_module, "_sentence_transformer_class", _unimportable
+    )
+
+    cache = model_cache_module.ModelCache()
+    cache.clear_cache()
+
+    assert cache.get_bge_m3_model(triggered_by="lazy") is None
+    assert called == [], "torch import was reached before the package proved importable"
