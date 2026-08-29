@@ -216,15 +216,17 @@ class TestFilesystemStorageBackend:
     async def test_path_traversal_prevention(self, filesystem_backend):
         """The two shapes the old denylist caught are still caught.
 
-        The message changed in #1235 (the guard is now root-anchored
-        containment, not a substring check) but the *type* did not:
-        ``PathEscape`` subclasses ``ValueError``, which is what every caller
-        of this backend was already written against.
+        Unchanged from before #1235, assertion included. The guard underneath
+        is now root-anchored containment rather than a substring check, but the
+        backend still raises a ``ValueError`` whose message begins
+        ``Invalid storage key`` — deliberately, because that string reaches a
+        client and the LLM context (see ``_get_full_path``), so the detailed
+        message stays in the server log.
         """
-        with pytest.raises(ValueError, match="outside the storage tree"):
+        with pytest.raises(ValueError, match="Invalid storage key"):
             await filesystem_backend.store_file("../../../etc/passwd", b"malicious")
 
-        with pytest.raises(ValueError, match="outside the storage tree"):
+        with pytest.raises(ValueError, match="Invalid storage key"):
             await filesystem_backend.store_file("/absolute/path", b"malicious")
 
     def test_storage_type(self, filesystem_backend):
@@ -295,7 +297,7 @@ class TestFilesystemPathContainment:
 
         backend = self._backend(temp_storage_dir)
 
-        with pytest.raises(ValueError, match="outside the storage tree"):
+        with pytest.raises(ValueError, match="Invalid storage key"):
             await backend.store_file(key, b"escaped payload")
 
         # And nothing was written through the link.
@@ -313,7 +315,7 @@ class TestFilesystemPathContainment:
 
         backend = self._backend(temp_storage_dir)
 
-        with pytest.raises(ValueError, match="outside the storage tree"):
+        with pytest.raises(ValueError, match="Invalid storage key"):
             await backend.retrieve_file("peek.txt")
 
     @pytest.mark.asyncio
@@ -327,7 +329,7 @@ class TestFilesystemPathContainment:
 
         backend = self._backend(temp_storage_dir)
 
-        with pytest.raises(ValueError, match="outside the storage tree"):
+        with pytest.raises(ValueError, match="Invalid storage key"):
             await backend.delete_file("victim-link.txt")
 
         assert victim.exists()
@@ -348,7 +350,7 @@ class TestFilesystemPathContainment:
         root.mkdir()
         backend = self._backend(root)
 
-        with pytest.raises(ValueError, match="outside the storage tree"):
+        with pytest.raises(ValueError, match="Invalid storage key"):
             await backend.store_file("../sibling/deep/nested/f.txt", b"x")
 
         assert not (Path(temp_storage_dir) / "sibling").exists()
@@ -369,7 +371,7 @@ class TestFilesystemPathContainment:
     async def test_textual_traversal_still_refused(self, temp_storage_dir, key):
         backend = self._backend(temp_storage_dir)
 
-        with pytest.raises(ValueError, match="outside the storage tree"):
+        with pytest.raises(ValueError, match="Invalid storage key"):
             await backend.store_file(key, b"malicious")
 
     @pytest.mark.asyncio
@@ -385,7 +387,7 @@ class TestFilesystemPathContainment:
         """
         backend = self._backend(temp_storage_dir)
 
-        with pytest.raises(ValueError, match="outside the storage tree"):
+        with pytest.raises(ValueError, match="Invalid storage key"):
             await backend.store_file(key, b"x")
 
     @pytest.mark.asyncio
@@ -395,7 +397,7 @@ class TestFilesystemPathContainment:
 
         backend = self._backend(temp_storage_dir)
 
-        with pytest.raises(PathEscape, match="unresolvable storage key"):
+        with pytest.raises(PathEscape, match="Invalid storage key"):
             await backend.store_file("evidence\x00.log", b"x")
 
     # -- No regression on ordinary keys ---------------------------------------
@@ -445,9 +447,140 @@ class TestFilesystemPathContainment:
         await backend.store_file("ok/file.txt", b"fine")
         assert (tmp_path / "data" / "storage" / "ok" / "file.txt").is_file()
 
-        with pytest.raises(ValueError, match="outside the storage tree"):
+        with pytest.raises(ValueError, match="Invalid storage key"):
             await backend.store_file("linked/escaped.txt", b"escaped")
         assert list((tmp_path / "outside").iterdir()) == []
+
+    # -- What the refusal is, and what it says --------------------------------
+
+    @pytest.mark.asyncio
+    async def test_a_storage_refusal_is_never_a_runbook_refusal(self, temp_storage_dir):
+        """The type must distinguish this subsystem from the runbook tree.
+
+        ``RunbookPathEscape`` exists so the knowledge scan and the draft listing
+        can catch it and SKIP one bad row rather than fail. If the storage
+        backend raised that type, an evidence refusal surfacing anywhere near
+        those callers would be silently swallowed as "one bad runbook".
+
+        This asserts against ``FilesystemStorageBackend`` actually raising. An
+        earlier version of this pin exercised the shared primitive with its
+        default error type instead, where the property held by construction and
+        said nothing about the backend — passing ``error=RunbookPathEscape`` in
+        ``_get_full_path`` left the whole suite green.
+        """
+        from faultmaven.utils.path_containment import PathEscape
+        from faultmaven.utils.runbook_id import RunbookPathEscape
+
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(PathEscape) as exc:
+            await backend.store_file("../escape.txt", b"x")
+
+        assert type(exc.value) is PathEscape, (
+            f"the backend raised {type(exc.value).__name__}; a storage refusal "
+            f"must be a plain PathEscape"
+        )
+        assert not isinstance(exc.value, RunbookPathEscape)
+
+    @pytest.mark.asyncio
+    async def test_the_refusal_message_carries_no_server_paths(
+        self, temp_storage_dir, outside_dir, caplog
+    ):
+        """``PathEscape``'s message names resolved absolute paths, and its own
+        docstring says that must never reach a client. This backend's exception
+        does reach one: ``FileStorageService.retrieve_file`` re-wraps it into a
+        ``ServiceError`` and ``read_file_tool`` puts that string into a
+        ``ToolResult``, which enters the LLM context and the case transcript.
+
+        So the message names only the key, and the detail goes to the log.
+        """
+        (Path(temp_storage_dir) / "linked").symlink_to(
+            outside_dir, target_is_directory=True
+        )
+        backend = self._backend(temp_storage_dir)
+
+        with caplog.at_level("WARNING"):
+            with pytest.raises(ValueError) as exc:
+                await backend.store_file("linked/evidence.log", b"x")
+
+        message = str(exc.value)
+        assert str(outside_dir) not in message
+        assert str(temp_storage_dir) not in message
+        assert "linked/evidence.log" in message
+
+        # ...but the operator still gets the whole picture, server-side.
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        assert str(outside_dir) in logged
+        assert "outside the storage tree" in logged
+
+    # -- An in-root symlink is legal, and deleting it deletes the LINK --------
+
+    @pytest.mark.asyncio
+    async def test_delete_unlinks_the_key_not_the_symlink_target(
+        self, temp_storage_dir
+    ):
+        """Containment is decided on the resolved path; the unlink is not.
+
+        In-root symlinks pass the guard (they land inside the root). If the
+        unlink followed the link, deleting key ``a.log`` would destroy
+        ``real.bin`` and leave ``a.log`` dangling — after which ``list_keys``
+        drops it (``is_file()`` is False on a broken link) and the object is
+        unreachable by the orphan sweep and by ``fm-wipe-deployment``. Silent
+        data loss, so it is pinned.
+        """
+        root = Path(temp_storage_dir)
+        (root / "real.bin").write_bytes(b"the actual object")
+        (root / "a.log").symlink_to(root / "real.bin")
+
+        backend = self._backend(temp_storage_dir)
+
+        assert await backend.delete_file("a.log") is True
+
+        assert not (root / "a.log").is_symlink(), "the key itself should be gone"
+        assert (root / "real.bin").read_bytes() == b"the actual object"
+
+    @pytest.mark.asyncio
+    async def test_reads_still_follow_an_in_root_symlink(self, temp_storage_dir):
+        """The read side is unchanged by that: ``open`` follows the link."""
+        root = Path(temp_storage_dir)
+        (root / "real.bin").write_bytes(b"payload")
+        (root / "a.log").symlink_to(root / "real.bin")
+
+        backend = self._backend(temp_storage_dir)
+
+        assert await backend.retrieve_file("a.log") == b"payload"
+        assert await backend.file_exists("a.log")
+
+    # -- Every entry point that touches the filesystem ------------------------
+
+    @pytest.mark.asyncio
+    async def test_file_exists_is_guarded(self, temp_storage_dir, outside_dir):
+        (outside_dir / "secret.txt").write_text("private")
+        (Path(temp_storage_dir) / "peek.txt").symlink_to(outside_dir / "secret.txt")
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(ValueError, match="Invalid storage key"):
+            await backend.file_exists("peek.txt")
+
+    @pytest.mark.asyncio
+    async def test_get_file_info_is_guarded(self, temp_storage_dir, outside_dir):
+        (outside_dir / "secret.txt").write_text("private")
+        (Path(temp_storage_dir) / "peek.txt").symlink_to(outside_dir / "secret.txt")
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(ValueError, match="Invalid storage key"):
+            await backend.get_file_info("peek.txt")
+
+    @pytest.mark.asyncio
+    async def test_generate_download_url_is_guarded(
+        self, temp_storage_dir, outside_dir
+    ):
+        (outside_dir / "secret.txt").write_text("private")
+        (Path(temp_storage_dir) / "peek.txt").symlink_to(outside_dir / "secret.txt")
+        backend = self._backend(temp_storage_dir)
+
+        with pytest.raises(ValueError, match="Invalid storage key"):
+            await backend.generate_download_url("peek.txt")
 
 
 # =============================================================================
