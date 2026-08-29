@@ -912,6 +912,7 @@ class ReportGenerationService:
                 "validated": [],
                 "refuted": [],
                 "inconclusive": [],
+                "retired": [],
                 "other": [],
             }
             for h in hypotheses:
@@ -921,10 +922,17 @@ class ReportGenerationService:
                 else:
                     buckets["other"].append(h)
 
+            # RETIRED is its own bucket rather than falling into "Other". A
+            # retired hypothesis was set aside, not disproven, and most of them
+            # were never linked to any evidence — listing those unlabelled,
+            # beside validated and refuted ones and carrying a confidence
+            # percentage, reads as a candidate the investigation considered and
+            # dispatched. It states more than the record supports.
             bucket_order = [
                 ("validated", "Validated"),
                 ("refuted", "Refuted"),
                 ("inconclusive", "Inconclusive"),
+                ("retired", "Set aside without a verdict"),
                 ("other", "Other"),
             ]
             for key, label in bucket_order:
@@ -941,6 +949,8 @@ class ReportGenerationService:
                         # Two trailing spaces before \n produce a hard
                         # line break within the same list item.
                         line += f"  \n  Refuted by: {h.refutation_reason}"
+                    elif key == "retired" and getattr(h, "retirement_reason", None):
+                        line += f"  \n  Set aside: {h.retirement_reason}"
                     parts.append(line)
                 parts.append("")
             # Trailing empty already appended per-group; no extra needed here.
