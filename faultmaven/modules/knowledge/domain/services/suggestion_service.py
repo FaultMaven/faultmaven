@@ -548,7 +548,7 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         return self.fallback_template(self._case_stem_id(case_id))
 
     @staticmethod
-    def _case_stem_id(case_id: str) -> str:  # noqa: D401 - see _mint_id
+    def _case_stem_id(case_id: str) -> str:
         """The last-resort runbook id: the case's own identifier, slugged.
 
         Opaque, but an internal case identifier and therefore safe to publish —
