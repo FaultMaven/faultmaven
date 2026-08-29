@@ -2761,15 +2761,16 @@ async def submit_turn(
     # that legitimately rides alongside a file as a second attachment, and that
     # is a shipped path — counting it here would break paste+file turns.
     #
-    # Two things this does NOT do, stated so nobody reads more into it:
-    #   * It is correctness-only, not a cost control. Starlette parses and
-    #     spools the ENTIRE multipart body (main.py patches Request.form with
-    #     max_files=1000) before pydantic validates, so a 50-file request is
-    #     fully read off the wire and written to temp files before the 422.
-    #   * It does not fully close the clarification-emitter gap. The emitter
-    #     clarifies only the first `classification_failed` attachment, and a
-    #     one-file turn can still carry two attachments (file + paste) where
-    #     both fail classification — see #1222.
+    # One thing this does NOT do, stated so nobody reads more into it: it is
+    # correctness-only, not a cost control. Starlette parses and spools the
+    # ENTIRE multipart body (main.py patches Request.form with max_files=1000)
+    # before pydantic validates, so a 50-file request is fully read off the
+    # wire and written to temp files before the 422.
+    #
+    # It is also not what bounds the clarification emitter. A one-file turn
+    # still carries two attachments when a paste rides along, and both can
+    # fail classification; the emitter clarifies every failure rather than
+    # reasoning from this cap (#1222).
     files: List[UploadFile] = File(
         default=[],
         max_length=1,
