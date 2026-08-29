@@ -4953,6 +4953,23 @@ class MilestoneEngine:
                 "outcome": TurnOutcome.CONVERSATION,
             }
 
+            # The turn's uploads, derived ONCE, above the path fork (#1229).
+            # Every branch below — the terminal short-circuit, the
+            # deterministic gate/dropdown returns, and the generation path —
+            # reports the same reading, and the two degradation warnings in
+            # ``_report_turn_uploads`` fire wherever the degradation happens
+            # rather than only on the path that used to own the derivation.
+            upload_report = self._report_turn_uploads(case, attachments)
+            metadata.update(upload_report)
+            if upload_report.get("novel_files_uploaded") and not case.is_terminal:
+                # Data the case did not already hold: the same reading
+                # ``_check_if_progress_made`` applies on the generation path,
+                # applied here so it also holds on a branch that returns before
+                # Step 5.8. Reset only — nothing on these paths increments (see
+                # ``_deterministic_turn_metadata``). Terminal cases are
+                # excluded: they are immutable and the counter is inert there.
+                case.turns_without_progress = 0
+
             # 0a. Terminal case handling — Q&A and report regeneration only
             if case.is_terminal:
                 return await self._process_terminal_turn(
@@ -5084,11 +5101,11 @@ class MilestoneEngine:
                                     _resolution_confirmation_suggestions()
                                 ),
                                 "case_updated": case,
-                                "metadata": {
-                                    "turn_number": case.current_turn,
-                                    "milestones_completed": [],
-                                    "progress_made": False,
-                                },
+                                "metadata": self._deterministic_turn_metadata(
+                                    case,
+                                    upload_report,
+                                    progress_made=False,
+                                ),
                             }
 
                         # Persist the terminal status before generating the
@@ -5131,12 +5148,12 @@ class MilestoneEngine:
                             "agent_response": agent_response,
                             "suggested_follow_ups": follow_ups,
                             "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": [],
-                                "progress_made": True,
-                                "status_transitioned": True,
-                            },
+                            "metadata": self._deterministic_turn_metadata(
+                                case,
+                                upload_report,
+                                progress_made=True,
+                                status_transitioned=True,
+                            ),
                         }
                     elif user_declines:
                         # Record the refusal BEFORE cancelling: the cancel is
@@ -5171,11 +5188,11 @@ class MilestoneEngine:
                                 "agent_response": agent_response,
                                 "suggested_follow_ups": [],
                                 "case_updated": case,
-                                "metadata": {
-                                    "turn_number": case.current_turn,
-                                    "milestones_completed": [],
-                                    "progress_made": False,
-                                },
+                                "metadata": self._deterministic_turn_metadata(
+                                    case,
+                                    upload_report,
+                                    progress_made=False,
+                                ),
                             }
                     else:
                         # User said something that isn't a clear yes/no.
@@ -5258,11 +5275,11 @@ class MilestoneEngine:
                                 "agent_response": agent_response,
                                 "suggested_follow_ups": follow_ups,
                                 "case_updated": case,
-                                "metadata": {
-                                    "turn_number": case.current_turn,
-                                    "milestones_completed": [],
-                                    "progress_made": False,
-                                },
+                                "metadata": self._deterministic_turn_metadata(
+                                    case,
+                                    upload_report,
+                                    progress_made=False,
+                                ),
                             }
 
             # 0c. Detect explicit user intent to close/resolve case
@@ -5351,11 +5368,11 @@ class MilestoneEngine:
                             "agent_response": closure.message,
                             "suggested_follow_ups": _resolution_confirmation_suggestions(),
                             "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": [],
-                                "progress_made": False,
-                            },
+                            "metadata": self._deterministic_turn_metadata(
+                                case,
+                                upload_report,
+                                progress_made=False,
+                            ),
                         }
 
                     # Standard close — closure_reason derived inside
@@ -5381,11 +5398,11 @@ class MilestoneEngine:
                         "agent_response": closure.message,
                         "suggested_follow_ups": _close_confirmation_suggestions(),
                         "case_updated": case,
-                        "metadata": {
-                            "turn_number": case.current_turn,
-                            "milestones_completed": [],
-                            "progress_made": False,
-                        },
+                        "metadata": self._deterministic_turn_metadata(
+                            case,
+                            upload_report,
+                            progress_made=False,
+                        ),
                     }
 
                 elif to_status_str == "resolved":
@@ -5445,11 +5462,12 @@ class MilestoneEngine:
                                 case, summary_failed, remaining
                             ),
                             "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": ["solution_verified"],
-                                "progress_made": True,
-                            },
+                            "metadata": self._deterministic_turn_metadata(
+                                case,
+                                upload_report,
+                                milestones_completed=["solution_verified"],
+                                progress_made=True,
+                            ),
                         }
 
                     # No pending transition — check resolution readiness before proposing.
@@ -5482,11 +5500,11 @@ class MilestoneEngine:
                             "agent_response": readiness.message,
                             "suggested_follow_ups": _close_confirmation_suggestions(),
                             "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": [],
-                                "progress_made": False,
-                            },
+                            "metadata": self._deterministic_turn_metadata(
+                                case,
+                                upload_report,
+                                progress_made=False,
+                            ),
                         }
 
                     if readiness.verdict == readiness.NEEDS_INFO:
@@ -5512,11 +5530,11 @@ class MilestoneEngine:
                             "agent_response": readiness.message,
                             "suggested_follow_ups": _resolution_confirmation_suggestions(),
                             "case_updated": case,
-                            "metadata": {
-                                "turn_number": case.current_turn,
-                                "milestones_completed": [],
-                                "progress_made": False,
-                            },
+                            "metadata": self._deterministic_turn_metadata(
+                                case,
+                                upload_report,
+                                progress_made=False,
+                            ),
                         }
 
                     # READY — propose transition via User-Agent Handshake
@@ -5544,11 +5562,11 @@ class MilestoneEngine:
                         "agent_response": _resp,
                         "suggested_follow_ups": _resolution_confirmation_suggestions(),
                         "case_updated": case,
-                        "metadata": {
-                            "turn_number": case.current_turn,
-                            "milestones_completed": [],
-                            "progress_made": True,
-                        },
+                        "metadata": self._deterministic_turn_metadata(
+                            case,
+                            upload_report,
+                            progress_made=True,
+                        ),
                     }
 
                 elif to_status_str == "investigating":
@@ -5819,7 +5837,7 @@ class MilestoneEngine:
 
             # 4. Apply state from the final accepted response (exactly once)
             case_updated, response_metadata = await self._process_response_structured(
-                case, user_message, response_obj, attachments
+                case, user_message, response_obj, attachments, upload_report
             )
             # Merge response metadata with early metadata (which may have transition_proposed_this_turn)
             metadata.update(response_metadata)
@@ -9265,8 +9283,16 @@ class MilestoneEngine:
         user_message: str,
         response_obj: BaseInteractionResponse,
         attachments: list[dict[str, Any]] | None = None,
+        upload_report: dict[str, list[str]] | None = None,
     ) -> tuple[Case, dict[str, Any]]:
-        """Process structured response and update case state."""
+        """Process structured response and update case state.
+
+        ``upload_report`` is the turn's already-derived upload reading (see
+        ``_report_turn_uploads``). ``_process_turn_impl`` derives it once, for
+        EVERY path, and hands it down so the derivation — and its warnings —
+        happen exactly once per turn (#1229). Callers that don't have one (the
+        direct-call tests) pass ``attachments`` and the reading is derived here.
+        """
 
         # NOTE: Validation moved AFTER post-processing to allow fallback evidence creation
         # See line 1500 for actual validation
@@ -9282,56 +9308,11 @@ class MilestoneEngine:
             "status_transitioned": False,
             "outcome": TurnOutcome.CONVERSATION,
         }
-
-        # Report the turn's file uploads. The service owns the rows — it
-        # persists each ``UploadedFile`` and appends it to THIS SAME ``case``
-        # object before ``process_turn`` is called — and the engine only reads
-        # what arrived and records it. See the tombstone at
-        # ``_create_uploaded_file_from_attachment``'s former site (#1210).
-        if attachments:
-            for attachment in attachments:
-                file_id = attachment.get("file_id")
-                if not file_id:
-                    logger.warning(
-                        "Attachment metadata carries no file_id; not reported "
-                        "on turn %s of case %s",
-                        case.current_turn,
-                        case.case_id,
-                    )
-                    continue
-                # Every attachment ON the turn, deduped re-submissions
-                # included.
-                metadata.setdefault("files_uploaded", []).append(file_id)
-                # #1136's stall-net arm: data the case did not already hold.
-                #
-                # Threaded in as a TRI-STATE by
-                # ``investigation_service._engine_attachment_metadata``, because
-                # the engine cannot recover any of it: the authoritative row is
-                # on ``case.uploaded_files`` before this runs, so the old
-                # ``file_id not in {f.file_id for f in case.uploaded_files}``
-                # was False for a brand-new upload as much as for a deduped one
-                # and the arm was dead on every turn (#1210).
-                #
-                # True = dedup ran and found nothing. False = it found the
-                # bytes. None (or absent) = it never ran, so nobody knows —
-                # and "unknown" is scored as NOT novel, the same conservative
-                # direction as the other ``novel_*`` arms. Logged either way: a
-                # silent False is exactly the failure mode #1210 was, and a
-                # silent True on an undetermined signal is that failure
-                # inverted, arming the stall net on a re-submission.
-                is_novel = attachment.get("is_novel")
-                if is_novel is None:
-                    logger.warning(
-                        "Attachment %s carries no novelty signal (undetermined "
-                        "or absent); treating as not novel on turn %s of case "
-                        "%s. #1136's upload progress arm cannot arm for this "
-                        "turn.",
-                        file_id,
-                        case.current_turn,
-                        case.case_id,
-                    )
-                if is_novel:
-                    metadata.setdefault("novel_files_uploaded", []).append(file_id)
+        metadata.update(
+            upload_report
+            if upload_report is not None
+            else self._report_turn_uploads(case, attachments)
+        )
 
         # POST-PROCESSING: Apply LLM failure mitigation (Pattern-based fallback)
         # This repairs LLM classification failures before applying state updates
@@ -12374,6 +12355,128 @@ class MilestoneEngine:
             repair_pattern=repair_pattern,
             validation_repairs=validation_repairs or [],
         )
+
+    def _report_turn_uploads(
+        self,
+        case: Case,
+        attachments: list[dict[str, Any]] | None,
+    ) -> dict[str, list[str]]:
+        """The turn's file uploads, as the two metadata keys that report them.
+
+        The service owns the rows — it persists each ``UploadedFile`` and
+        appends it to THIS SAME ``case`` object before ``process_turn`` is
+        called — and the engine only reads what arrived and records it. See the
+        tombstone at ``_create_uploaded_file_from_attachment``'s former site
+        (#1210).
+
+        Returns ``{}`` when nothing was attached, so a caller can ``update()``
+        a metadata dict with it unconditionally and the keys stay ABSENT on a
+        turn with no uploads (which is what every consumer already expects).
+
+        Called once per turn from ``_process_turn_impl``, ABOVE the path fork,
+        so the reading and its two warnings reach the deterministic
+        early-return branches and the terminal short-circuit as well as the
+        generation path. #1224 derived this inside
+        ``_process_response_structured`` only, so on every other path the
+        upload was invisible AND its degradation was unobservable (#1229).
+        """
+        report: dict[str, list[str]] = {}
+        if not attachments:
+            return report
+        for attachment in attachments:
+            file_id = attachment.get("file_id")
+            if not file_id:
+                logger.warning(
+                    "Attachment metadata carries no file_id; not reported "
+                    "on turn %s of case %s",
+                    case.current_turn,
+                    case.case_id,
+                )
+                continue
+            # Every attachment ON the turn, deduped re-submissions included.
+            report.setdefault("files_uploaded", []).append(file_id)
+            # #1136's stall-net arm: data the case did not already hold.
+            #
+            # Threaded in as a TRI-STATE by
+            # ``investigation_service._engine_attachment_metadata``, because
+            # the engine cannot recover any of it: the authoritative row is
+            # on ``case.uploaded_files`` before this runs, so the old
+            # ``file_id not in {f.file_id for f in case.uploaded_files}``
+            # was False for a brand-new upload as much as for a deduped one
+            # and the arm was dead on every turn (#1210).
+            #
+            # True = dedup ran and found nothing. False = it found the
+            # bytes. None (or absent) = it never ran, so nobody knows —
+            # and "unknown" is scored as NOT novel, the same conservative
+            # direction as the other ``novel_*`` arms. Logged either way: a
+            # silent False is exactly the failure mode #1210 was, and a
+            # silent True on an undetermined signal is that failure
+            # inverted, arming the stall net on a re-submission.
+            is_novel = attachment.get("is_novel")
+            if is_novel is None:
+                logger.warning(
+                    "Attachment %s carries no novelty signal (undetermined "
+                    "or absent); treating as not novel on turn %s of case "
+                    "%s. #1136's upload progress arm cannot arm for this "
+                    "turn.",
+                    file_id,
+                    case.current_turn,
+                    case.case_id,
+                )
+            if is_novel:
+                report.setdefault("novel_files_uploaded", []).append(file_id)
+        return report
+
+    def _deterministic_turn_metadata(
+        self,
+        case: Case,
+        upload_report: dict[str, list[str]],
+        *,
+        milestones_completed: list[str] | None = None,
+        progress_made: bool = False,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        """Turn metadata for a deterministic early-return branch (#1229).
+
+        These branches (pending resolve/close gates, the status-transition
+        dropdown handlers) answer without an LLM call and return a hand-built
+        metadata dict. They used to omit the turn's uploads entirely, so an
+        identical file counted as progress on the generation path and vanished
+        on a gate turn — the two paths silently disagreeing.
+
+        **A genuinely novel upload counts as progress here too.**
+        ``_check_if_progress_made`` defines progress as *advancement, not
+        activity* — "an artifact the case did not already hold" — and a file
+        that survived content-hash dedup is exactly that. Nothing about a gate
+        turn makes that untrue: whether the user accepted a mitigation is
+        orthogonal to whether new data arrived. So this mirrors the generation
+        path's ``novel_files_uploaded`` arm rather than inventing a second
+        reading of the same fact.
+
+        The accounting stays **one-directional**: a novel upload RESETS
+        ``turns_without_progress`` (applied by the caller, before its
+        ``save``), and nothing here ever increments it. That asymmetry is
+        deliberate and it is also what these paths already did — measured, not
+        assumed: the increment at Step 5.8 sits inside the generation block, so
+        a deterministic branch never reached it and the counter was FROZEN, not
+        advanced. (The issue reported it as incrementing; it does not.) Both
+        arms therefore err the same way — against a stall net firing on a turn
+        the engine did no investigative work on.
+
+        Nothing releases a pending gate on ``turns_without_progress``, so
+        resetting it cannot park one open: the gate's own escape lane keys on
+        ``pending_transition["re_presented"]``, and withdraws after at most one
+        re-present.
+        """
+        metadata: dict[str, Any] = {
+            "turn_number": case.current_turn,
+            "milestones_completed": milestones_completed or [],
+            "progress_made": progress_made
+            or bool(upload_report.get("novel_files_uploaded")),
+        }
+        metadata.update(upload_report)
+        metadata.update(extra)
+        return metadata
 
     def _record_deterministic_turn(
         self,

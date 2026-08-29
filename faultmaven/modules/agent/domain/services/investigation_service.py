@@ -894,6 +894,28 @@ class InvestigationService:
             # construction and would have refused to start otherwise.
             dispatch_kind = _INTENT_DISPATCH[intent_type]
 
+            # Attachment metadata for the engine. Post-010: uploads create only
+            # an UploadedFile (no auto-Evidence), so the file facts are sourced
+            # directly from those rows — the #1201 fix: the row is the record of
+            # what was submitted, its filename is not.
+            #
+            # Walks ``preprocess_results`` rather than ``uploaded_files_this_turn``
+            # (the same set, in the same order — one result per attachment, and
+            # that list is built from ``result.uploaded_file``) because the
+            # result also carries ``duplicate_of``, the only place novelty is
+            # still knowable by the time the engine runs (#1210).
+            #
+            # Built HERE, above the dispatch, rather than inside the ENGINE
+            # branch: the SERVICE-routed handlers below delegate to the very
+            # same ``engine.process_turn`` and used to hand it
+            # ``attachments=None`` even though ``_preprocess_attachment`` had
+            # already run and committed a row for every attachment on the turn.
+            # An upload riding a suggestion-chip intent was persisted and
+            # dedup-classified, and the engine was told nothing arrived (#1229).
+            attachment_metadata = [
+                _engine_attachment_metadata(res) for res in preprocess_results
+            ]
+
             if dispatch_kind == _IntentDispatchKind.NOT_IMPLEMENTED:
                 # Intent value is defined in the IntentType enum (API
                 # contract) but no handler exists in this build. Surface as
@@ -920,6 +942,7 @@ class InvestigationService:
                             (intent.user_confirmed or False) if intent else False
                         ),
                         user_id=user_id,
+                        attachments=attachment_metadata or None,
                     )
                 elif intent_type == IntentType.CONFIRMATION:
                     result = await self._handle_confirmation(
@@ -929,6 +952,7 @@ class InvestigationService:
                             intent.confirmation_value if intent else None
                         ),
                         user_id=user_id,
+                        attachments=attachment_metadata or None,
                     )
                 elif intent_type == IntentType.HYPOTHESIS_ACTION:
                     result = await self._handle_hypothesis_action(
@@ -937,6 +961,7 @@ class InvestigationService:
                         hypothesis_id=intent.hypothesis_id if intent else None,
                         action=intent.action if intent else None,
                         user_id=user_id,
+                        attachments=attachment_metadata or None,
                     )
                 elif intent_type == IntentType.GREETING:
                     result = await self._handle_greeting(case=case)
@@ -960,21 +985,7 @@ class InvestigationService:
                 # Engine-routed: thread intent_type + intent_data through
                 # to ``engine.process_turn``, which dispatches internally
                 # to the per-intent handler in milestone_engine.
-                # Build attachment metadata for the engine. Post-010:
-                # uploads create only an UploadedFile (no auto-Evidence),
-                # so the file facts are sourced directly from those rows —
-                # the #1201 fix: the row is the record of what was submitted,
-                # its filename is not.
                 #
-                # Walks ``preprocess_results`` rather than
-                # ``uploaded_files_this_turn`` (the same set, in the same
-                # order — one result per attachment, and the list above is
-                # built from ``result.uploaded_file``) because the result also
-                # carries ``duplicate_of``, the only place novelty is still
-                # knowable by the time the engine runs (#1210).
-                attachment_metadata = [
-                    _engine_attachment_metadata(res) for res in preprocess_results
-                ]
                 # DA evidence search is handled inside MilestoneEngine's
                 # tool loop. The same LLM that tracks hypotheses searches
                 # evidence directly during generation — no pre-fetch or
@@ -1612,6 +1623,7 @@ class InvestigationService:
         to_state: Optional[str],
         user_confirmed: bool,
         user_id: Optional[str] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
 
@@ -1623,6 +1635,11 @@ class InvestigationService:
             user_confirmed: Whether user confirmed the transition
             user_id: Authenticated principal for the turn (keys the agent's
                 KB read allowlist)
+            attachments: The turn's engine attachment metadata. Passed through
+                verbatim — this handler used to hardcode ``None`` while
+                ``_preprocess_attachment`` had already committed a row for every
+                attachment, so an upload riding a dropdown/chip intent was
+                invisible to the engine (#1229).
 
         Returns:
             Result dict with agent response and updated case
@@ -1643,7 +1660,7 @@ class InvestigationService:
         result = await self.engine.process_turn(
             case=case,
             user_message=user_message,
-            attachments=None,
+            attachments=attachments,
             intent_type="status_transition",
             intent_data={
                 "from_state": from_state,
@@ -1704,6 +1721,7 @@ class InvestigationService:
         user_message: str,
         confirmation_value: Optional[bool],
         user_id: Optional[str] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Handle yes/no confirmation intent.
 
@@ -1713,6 +1731,8 @@ class InvestigationService:
             confirmation_value: True for yes, False for no
             user_id: Authenticated principal for the turn (keys the agent's
                 KB read allowlist)
+            attachments: The turn's engine attachment metadata (see
+                ``_handle_status_transition``; #1229).
 
         Returns:
             Result dict with agent response and updated case
@@ -1724,7 +1744,7 @@ class InvestigationService:
         result = await self.engine.process_turn(
             case=case,
             user_message=user_message,
-            attachments=None,
+            attachments=attachments,
             intent_type="confirmation",
             intent_data={"value": confirmation_value},
             user_id=user_id,
@@ -1739,6 +1759,7 @@ class InvestigationService:
         hypothesis_id: Optional[str],
         action: Optional[str],
         user_id: Optional[str] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Handle hypothesis action intent (validate/refute/retire).
 
@@ -1749,6 +1770,8 @@ class InvestigationService:
             action: Action to perform
             user_id: Authenticated principal for the turn (keys the agent's
                 KB read allowlist)
+            attachments: The turn's engine attachment metadata (see
+                ``_handle_status_transition``; #1229).
 
         Returns:
             Result dict with agent response and updated case
@@ -1766,7 +1789,7 @@ class InvestigationService:
         result = await self.engine.process_turn(
             case=case,
             user_message=user_message,
-            attachments=None,
+            attachments=attachments,
             intent_type="hypothesis_action",
             intent_data={"hypothesis_id": hypothesis_id, "action": action},
             user_id=user_id,
