@@ -183,6 +183,11 @@ def comment_spans(text: str) -> list[tuple[int, int]]:
     the rest of the document as text, and swallowing it is the one failure mode
     worse than not masking at all.
     """
+    # Fast path, and the one that matters: no opener means no comment, and the
+    # code scan below is the expensive half. Every shipped runbook takes it.
+    if "<!--" not in text:
+        return []
+
     protected = _protected_spans(text)
 
     def guarded(pos: int) -> bool:
@@ -228,12 +233,17 @@ def mask_html_comments(text: str) -> str:
     copy and slice the RAW text at them. On a document with no comments it is
     the identity.
     """
-    masked = list(text)
-    for start, end in comment_spans(text):
-        for pos in range(start, end):
-            if masked[pos] != "\n":
-                masked[pos] = " "
-    return "".join(masked)
+    spans = comment_spans(text)
+    if not spans:
+        return text
+    out: list[str] = []
+    previous = 0
+    for start, end in spans:
+        out.append(text[previous:start])
+        out.append(COMMENT_BODY_CHAR_RE.sub(" ", text[start:end]))
+        previous = end
+    out.append(text[previous:])
+    return "".join(out)
 
 
 def causes_section(content: str) -> tuple[str, str]:
