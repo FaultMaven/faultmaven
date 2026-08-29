@@ -2352,13 +2352,19 @@ status: draft
                             root=self._data_dir,
                         ).exists()
                     except RunbookPathEscape as exc:
+                        # NOT counted in ``skipped``: that number is returned to
+                        # the client and means "files skipped during the disk
+                        # walk". An escaping DB row is a bad ROW, not a walked
+                        # file, so folding it in (as round 2 did) made "N files
+                        # skipped" stop meaning walk skips. The bad row is
+                        # surfaced by this WARNING, which names it for the
+                        # operator repair it needs (#1213 follow-up).
                         logger.warning(
                             "skipping draft %s during scan reconciliation "
                             "(not discarded): %s",
                             draft_model.id,
                             exc,
                         )
-                        skipped += 1
                         continue
 
                     if not file_exists:
@@ -2789,10 +2795,18 @@ status: draft
             # file.
             #
             # Unlike the write paths this does NOT abort the operation. The
-            # dangerous half is the unlink, and that is refused loudly; the
-            # soft-delete still runs, so a bad row can be cleared rather than
-            # being permanently undeletable. Same treatment as the scan's
-            # reconciliation probe (#1213 follow-up).
+            # dangerous half is the unlink, and it must never keep the ROW from
+            # being discarded — the "permanently undeletable row" this design
+            # exists to prevent. So BOTH the containment refusal AND a failure
+            # of the unlink itself degrade: the soft-delete below always runs.
+            #
+            # ``unlink`` can raise ``OSError`` independently of containment — a
+            # read-only or full filesystem, a permission denial, or a TOCTOU
+            # race where the file vanishes between ``exists()`` and ``unlink()``
+            # (``FileNotFoundError`` is an ``OSError``). Catching only
+            # ``RunbookPathEscape`` here left every one of those propagating
+            # before the status flip. Same degrade-and-continue shape as
+            # ``get_conversion``'s read (#1213 follow-up).
             try:
                 file_path = resolve_runbook_path(
                     dm.file_path,
@@ -2804,6 +2818,13 @@ status: draft
             except RunbookPathEscape as exc:
                 logger.error(
                     "refusing to unlink for draft %s; discarding the row " "anyway: %s",
+                    dm.id,
+                    exc,
+                )
+            except OSError as exc:
+                logger.error(
+                    "failed to unlink the file for draft %s; discarding the "
+                    "row anyway: %s",
                     dm.id,
                     exc,
                 )

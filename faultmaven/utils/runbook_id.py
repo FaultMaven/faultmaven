@@ -308,18 +308,34 @@ def resolve_runbook_path(path: str | Path, *, source: str, root: Path) -> Path:
 
     ``Path.resolve()`` can also fail outright — ``RuntimeError`` on a symlink
     loop (measured on CPython 3.11), ``OSError`` for permissions, a too-long
-    name, or a filesystem that is gone. An unresolvable path is not a
-    containable path, so both become ``RunbookPathEscape`` rather than escaping
-    as themselves: letting a bare ``RuntimeError`` through killed
-    ``delete_draft`` before its soft-delete and aborted whole scans.
+    name, or a filesystem that is gone, and ``ValueError`` on an embedded NUL
+    (``a\x00b`` — a genuinely reachable pre-#1215 DB value, measured). An
+    unresolvable path is not a containable path, so all three become
+    ``RunbookPathEscape`` rather than escaping as themselves: letting a bare
+    ``RuntimeError`` through killed ``delete_draft`` before its soft-delete and
+    aborted whole scans, and a bare ``ValueError`` — the type
+    ``RunbookPathEscape`` itself subclasses — would sail straight past a caller
+    catching only ``RunbookPathEscape``, which is every degrading caller here.
+
+    The two resolves are separated so the error can name **which** path failed.
+    ``root`` (``self._data_dir``) failing is an operator's misconfiguration and
+    names the tree; ``path`` failing is the untrusted DB value and names the
+    row. Conflating them sent an operator chasing the innocent draft file when
+    the root was at fault.
 
     Raises:
         RunbookPathEscape: the path is outside the root, or cannot be resolved.
     """
     try:
         knowledge = root.resolve()
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise RunbookPathEscape(
+            f"refusing to resolve against an unresolvable knowledge root: "
+            f"{root!r} ({type(exc).__name__}: {exc}) (source: {source})"
+        ) from exc
+    try:
         resolved = Path(path).resolve()
-    except (RuntimeError, OSError) as exc:
+    except (RuntimeError, OSError, ValueError) as exc:
         raise RunbookPathEscape(
             f"refusing to touch an unresolvable runbook path: {path!r} "
             f"({type(exc).__name__}: {exc}) (source: {source})"

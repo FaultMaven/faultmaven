@@ -593,6 +593,44 @@ class TestTheHelperItself:
         with pytest.raises(TypeError):
             write_runbook_file("x.md", "c", source="probe")
 
+    def test_an_embedded_nul_is_refused_not_raised_raw(self, tmp_path):
+        """A path with an embedded NUL raises ``ValueError: embedded null byte``
+        from ``Path.resolve()`` — the type ``RunbookPathEscape`` subclasses, so
+        a bare one sails straight past every degrading caller catching only
+        ``RunbookPathEscape``. It is a genuinely reachable pre-#1215 DB value.
+        Must arrive typed."""
+        from faultmaven.utils.runbook_id import resolve_runbook_path
+
+        root = tmp_path / "data" / "knowledge"
+        root.mkdir(parents=True)
+        with pytest.raises(RunbookPathEscape) as exc:
+            resolve_runbook_path("data/knowledge/a\x00b.md", source="probe", root=root)
+        assert "unresolvable" in str(exc.value)
+        assert isinstance(exc.value.__cause__, ValueError)
+
+    def test_an_unresolvable_root_names_the_root_not_the_path(self):
+        """When ``root`` (``self._data_dir``) is what cannot resolve, the error
+        must name the ROOT — an operator misconfiguration of the tree — not the
+        innocent draft path, or it sends them chasing the wrong file."""
+        from faultmaven.utils.runbook_id import resolve_runbook_path
+
+        class _BadRoot:
+            def resolve(self):
+                raise OSError("knowledge root is gone")
+
+            def __repr__(self):
+                return "BADROOT"
+
+        with pytest.raises(RunbookPathEscape) as exc:
+            resolve_runbook_path(
+                "data/knowledge/innocent.md", source="probe", root=_BadRoot()
+            )
+        message = str(exc.value)
+        assert "knowledge root" in message
+        assert "BADROOT" in message
+        assert "innocent.md" not in message
+        assert isinstance(exc.value.__cause__, OSError)
+
 
 class TestASymlinkLoopDoesNotBreakTheDegradingPaths:
     """The two callers that must survive an unresolvable path rather than die
@@ -625,6 +663,89 @@ class TestASymlinkLoopDoesNotBreakTheDegradingPaths:
         )
         assert response is not None
         assert response.drafts[0].content is None
+
+
+class TestAnEmbeddedNulIsRefusedTyped:
+    """An embedded NUL raises ``ValueError`` from ``Path.resolve()`` — the type
+    ``RunbookPathEscape`` subclasses, so a bare one is invisible to every
+    degrading caller. A genuinely reachable pre-#1215 DB value (SQLite stores
+    and returns a NUL in TEXT verbatim, verified)."""
+
+    NUL = "data/knowledge/a\x00b.md"
+
+    async def test_update_draft_answers_typed_409_not_unmapped_500(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data" / "knowledge").mkdir(parents=True)
+        service = _service(_job(), _draft(self.NUL))
+        with pytest.raises(ConflictError):
+            await service.update_draft(
+                conversion_id="conv_x",
+                draft_id="draft_deadbeef",
+                user_id="user_x",
+                content="# x\n" + "y" * 200,
+            )
+
+    async def test_scan_skips_the_nul_row_and_completes(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data" / "knowledge").mkdir(parents=True)
+
+        factory = await _real_db()
+        await _seed_draft(factory, draft_id="d_nul", file_path=self.NUL)
+        service = _real_service(factory)
+
+        with caplog.at_level("WARNING"):
+            result = await service.scan_for_runbooks(user_id="u1")
+
+        assert result is not None, "the NUL row must not abort the scan"
+        assert await _draft_status(factory, "d_nul") == "draft"
+        assert any("d_nul" in r.getMessage() for r in caplog.records)
+
+
+class TestDeleteDraftSurvivesAnUnlinkError:
+    """The unlink can fail on its own — a read-only or full filesystem, a
+    permission denial, or a TOCTOU race where the file vanishes between
+    ``exists()`` and ``unlink()`` (``FileNotFoundError`` is an ``OSError``).
+    Catching only ``RunbookPathEscape`` left every one propagating before the
+    status flip — the exact "permanently undeletable row" the design forbids."""
+
+    async def test_row_still_discards_when_unlink_raises_oserror(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        good = tmp_path / "data" / "knowledge" / "global" / "ok.md"
+        good.parent.mkdir(parents=True)
+        good.write_text("body", encoding="utf-8")
+
+        service = _service(_job(), _draft("data/knowledge/global/ok.md"))
+
+        # Make the resolved path's ``unlink`` raise, leaving ``exists()`` True —
+        # a read-only FS / permission / TOCTOU vanish. Patch the symbol the
+        # service module imported, not the helper module.
+        import faultmaven.modules.knowledge.domain.services.conversion_service as cs
+        from faultmaven.utils.runbook_id import resolve_runbook_path as _real
+
+        def _boom(path, *, source, root):
+            _real(path, source=source, root=root)  # keep the real containment check
+
+            class _P:
+                def exists(self_inner):
+                    return True
+
+                def unlink(self_inner):
+                    raise PermissionError("read-only file system")
+
+            return _P()
+
+        monkeypatch.setattr(cs, "resolve_runbook_path", _boom)
+
+        ok = await service.delete_draft(
+            conversion_id="conv_x", draft_id="draft_deadbeef", user_id="user_x"
+        )
+        assert ok is True, "an unlink OSError must not keep the row from discarding"
 
 
 class TestTheScanSkipsWhatItRefusesToTouch:
@@ -666,6 +787,14 @@ class TestTheScanSkipsWhatItRefusesToTouch:
             "d_escaping" in r.getMessage() and "skipping" in r.getMessage()
             for r in caplog.records
         ), "the skip must be logged, naming the row"
+        # ``skipped`` is returned to the client and means "files skipped on the
+        # disk walk". An escaping DB ROW is not a walked file, so it must not be
+        # folded into that count (it was, in round 2) — the surfacing is the
+        # WARNING above.
+        assert result["skipped"] == 0, (
+            "a reconciliation escape is a bad row, not a walk skip, and must "
+            "not inflate the returned files-skipped count"
+        )
 
     async def test_an_only_escaping_deployment_does_not_abort_every_scan(
         self, tmp_path, monkeypatch
