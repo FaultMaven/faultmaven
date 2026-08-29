@@ -2409,7 +2409,7 @@ class ConversionDraftModel(Base):
             name="conversion_drafts_severity_check",
         ),
         Index("ix_conversion_drafts_tags", "tags", postgresql_using="gin"),
-        # At most one LIVE draft per (tenant, runbook_id) — migration 045.
+        # At most one LIVE draft per (tenant, runbook_id) — migration 046.
         # ``organization_id`` leads the key for confidentiality as well as
         # correctness: a unique index is enforced BELOW row-level security, so
         # a key omitting the tenant would reject an insert because of a row the

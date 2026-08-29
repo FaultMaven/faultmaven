@@ -19,7 +19,7 @@ What each class establishes:
   validator's grammar surfaces here rather than passing a stale copy.
 - ``TestWhatTheMintDeliberatelyDoesNotDo`` — the mint is a pure function and
   stays deterministic, so it cannot make two identically-slugging titles
-  distinct. That is the database's job (migration 045), and stating it here
+  distinct. That is the database's job (migration 046), and stating it here
   keeps a future reader from "fixing" determinism away.
 """
 
@@ -307,7 +307,7 @@ class TestWhatTheMintDeliberatelyDoesNotDo:
         the hash branch keys on the WHOLE pair filtering to nothing, and here
         the service survives. Extending it to "the title contributed nothing"
         would re-mint ids that are valid today, which is the one thing this
-        change may not do — so this is contained by the 045 index and its 409
+        change may not do — so this is contained by the 046 index and its 409
         (``tests/integration/modules/knowledge/test_runbook_id_conflict.py``),
         not by the mint.
 
@@ -348,7 +348,7 @@ class TestWhatTheMintDeliberatelyDoesNotDo:
         deterministic (the disk scan reconciles a file to its row by this id),
         so it cannot see the other rows and cannot make these distinct.
         Uniqueness is enforced where the other rows ARE visible: the partial
-        unique index on ``(organization_id, runbook_id)`` from migration 045,
+        unique index on ``(organization_id, runbook_id)`` from migration 046,
         exercised in ``tests/integration/test_alembic_migrations.py``.
 
         If someone later makes the mint globally unique, this test fails and

@@ -1,4 +1,4 @@
-"""045_conversion_draft_runbook_id_uniqueness
+"""046_conversion_draft_runbook_id_uniqueness
 
 At most one LIVE ``conversion_drafts`` row per ``(organization_id, runbook_id)``.
 
@@ -47,7 +47,7 @@ choosing on the operator's behalf. Re-running after the operator resolves them
 completes normally.
 
 Revision ID: d8e9f0a1b2c3
-Revises: c7d8e9f0a1b2
+Revises: e9f0a1b2c3d4  (045, fm#1227's suggestion store)
 Create Date: 2026-08-29 12:00:00
 """
 
@@ -58,7 +58,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d8e9f0a1b2c3"
-down_revision: Union[str, Sequence[str], None] = "c7d8e9f0a1b2"
+down_revision: Union[str, Sequence[str], None] = "e9f0a1b2c3d4"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -93,7 +93,7 @@ def _abort_message(rows: Sequence[sa.Row]) -> str:
         else ""
     )
     return (
-        f"Migration 045 cannot create {INDEX_NAME}: "
+        f"Migration 046 cannot create {INDEX_NAME}: "
         f"{len(rows)} (organization_id, runbook_id) key(s) are already shared by "
         f"more than one live conversion draft.\n\n"
         f"{listed}{more}\n\n"

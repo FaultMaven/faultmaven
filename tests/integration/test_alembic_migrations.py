@@ -34,7 +34,7 @@ TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
 HEAD_REVISION = (
-    "d8e9f0a1b2c3"  # current head (045 — conversion-draft runbook_id uniqueness)
+    "d8e9f0a1b2c3"  # current head (046 — conversion-draft runbook_id uniqueness)
 )
 # Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
 # (029) regardless of no-op migrations stacked above it — more robust than a
@@ -400,7 +400,7 @@ class TestConversionLiveCaseUniquenessMigration:
                 )
                 conn.execute(
                     # ``runbook_id`` is per-draft, not the shared literal it
-                    # used to be: since 045 two LIVE drafts in one org may not
+                    # used to be: since 046 two LIVE drafts in one org may not
                     # share one, and this fixture's two drafts are both live.
                     # Nothing in this test's subject (``live_case_id``) depends
                     # on the value.
@@ -444,7 +444,7 @@ class TestConversionLiveCaseUniquenessMigration:
 
 
 class TestConversionDraftRunbookIdUniquenessMigration:
-    """Migration 045: one live ``conversion_drafts`` row per (org, runbook_id).
+    """Migration 046: one live ``conversion_drafts`` row per (org, runbook_id).
 
     Three things need executing rather than asserting from the migration's
     docstring: that the index is UNIQUE and PARTIAL and scoped to the tenant,
@@ -456,7 +456,7 @@ class TestConversionDraftRunbookIdUniquenessMigration:
     parent revision and upgrade across the boundary, the way 034's tests do.
     """
 
-    _PARENT = "c7d8e9f0a1b2"  # 044 — the revision before 045
+    _PARENT = "e9f0a1b2c3d4"  # 045 (fm#1227) — the revision before 046
     _INDEX = "uq_conversion_drafts_org_runbook_id"
 
     @staticmethod

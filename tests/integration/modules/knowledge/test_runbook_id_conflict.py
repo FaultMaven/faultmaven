@@ -1,4 +1,4 @@
-"""The 045 unique index, exercised through the real service.
+"""The 046 unique index, exercised through the real service.
 
 ``uq_conversion_drafts_org_runbook_id`` admits one LIVE draft per
 ``(organization_id, runbook_id)`` (#1230). That is a correctness win and a
@@ -8,7 +8,7 @@ so two ordinary user actions can reach the same id, and an unhandled
 
 Everything here runs against a real SQLAlchemy engine with the real schema —
 ``Base.metadata.create_all`` builds the partial unique index from the same
-``Index`` declaration migration 045 creates — so the assertions are about what
+``Index`` declaration migration 046 creates — so the assertions are about what
 the database does, not about a mock.
 
 Three claims:
@@ -129,7 +129,7 @@ class TestTheIndexBitesThroughTheService:
     ):
         """#1230's general defect, driven through the real create path.
 
-        Before 045 this persisted TWO rows sharing one ``runbook_id``, which
+        Before 046 this persisted TWO rows sharing one ``runbook_id``, which
         verify/approve and every id-keyed lookup could not tell apart.
         """
         first = await service.create_runbook_from_template(
