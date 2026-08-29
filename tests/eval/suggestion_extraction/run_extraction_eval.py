@@ -246,6 +246,19 @@ async def run_after(
     rows = []
     for case in cases:
         counting = CountingProvider(provider)
+        # WARNING: ``sanitizer=None`` — the ONE thing this measurement does
+        # not cover, stated rather than left to be discovered. Presidio is a
+        # cloud dependency this driver cannot stand up, so the arm runs the
+        # ``else`` branch of ``_scan_for_pii`` and no redaction happens.
+        #
+        # That gap already hid one release blocker: the scan used to assign the
+        # sanitized ``title + content`` buffer back to ``suggested_content``,
+        # putting the title in front of the frontmatter and failing every
+        # redacted draft on ``No YAML frontmatter found`` — so the pass rate
+        # was 8/8 here and 0/8 anywhere Presidio was on. The redaction path is
+        # covered instead by a rewriting-sanitizer double in
+        # tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py
+        # (TestRedactionKeepsTheDraftPublishable). Read the two together.
         service = SuggestionService(
             case_repository=StubCaseRepository(case),
             knowledge_service=None,

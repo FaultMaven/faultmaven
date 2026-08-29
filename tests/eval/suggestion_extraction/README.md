@@ -143,6 +143,22 @@ distinguish "the prompt is good" from "the repair turn is covering for it".
   runbook from a plausible one — so the human review step stays load-bearing.
   Not something the extractor can fix from its side.
 
+### What this measurement does NOT cover
+
+The `after` arm builds the service with **`sanitizer=None`**, because Presidio
+is a cloud dependency this driver cannot stand up. So it never runs the
+redaction branch of `_scan_for_pii` — and that gap hid a release blocker once
+already: the scan used to write the sanitized `title + content` buffer back
+into `suggested_content`, putting the title in front of the frontmatter, so
+every draft carrying PII failed on `No YAML frontmatter found`. The number
+above was 8/8 here and 0/8 anywhere Presidio was on — which is the population
+this lane exists to serve.
+
+Redaction is covered instead by a rewriting-sanitizer double in
+`tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py`
+(`TestRedactionKeepsTheDraftPublishable`). **A pass rate here is a statement
+about the prompt, not about the pipeline** — read the two together.
+
 These are facts about one model on one fixture set on one day, not invariants.
 The invariants they motivated are pinned in CI, at
 `tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py` — the
