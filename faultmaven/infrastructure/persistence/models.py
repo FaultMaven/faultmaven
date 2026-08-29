@@ -2236,6 +2236,15 @@ class KnowledgeSuggestionModel(Base):
         "metadata", JsonBlob, nullable=False, server_default="{}"
     )
 
+    # Runbook quality gate verdict (#1226 in the domain, migration 045 here).
+    # `validation_passed` is deliberately nullable with NO default: the domain
+    # reads NULL as "not yet evaluated", which is distinct from False
+    # ("evaluated and refused"). Defaulting it would assert a verdict nobody
+    # reached.
+    validation_passed = Column(Boolean, nullable=True)
+    validation_errors = Column(JsonBlob, nullable=False, server_default="[]")
+    validation_warnings = Column(JsonBlob, nullable=False, server_default="[]")
+
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
