@@ -27,6 +27,7 @@ from faultmaven.core.investigation.turn_pipeline import (
     generate_implicit_query,
     submitted_name,
 )
+from faultmaven.core.investigation.turn_uploads import report_turn_uploads
 from faultmaven.exceptions import (
     AuthorizationError,
     ConflictError,
@@ -1046,7 +1047,25 @@ class InvestigationService:
 
             # ── STEP 2: LLM INFERENCE ──
             # Heuristic check for greetings if intent is CONVERSATION (default)
-            if intent_type == IntentType.CONVERSATION and query:
+            #
+            # Never on a turn that carried an attachment (#1229). The heuristic
+            # reads the message text alone, so "hi" plus a genuinely new log
+            # matched ``^(hi|hello|...)$`` and routed to ``_handle_greeting`` —
+            # which answers from a static string, never calls the engine, and
+            # therefore reported no upload, armed no progress arm, and left the
+            # two #1224 degradation warnings unreachable. The row was already
+            # committed and dedup-classified by then; only the engine was not
+            # told. A turn that delivers data is not a greeting, whatever the
+            # covering text says — the same judgement #708 applies one block
+            # below when it re-routes a generic cover note to Directed
+            # Analysis. Any attachment disqualifies, not just a novel one: a
+            # re-submission still belongs on the path that knows what to do
+            # with a duplicate.
+            if (
+                intent_type == IntentType.CONVERSATION
+                and query
+                and not payload.has_attachments
+            ):
                 heuristic_intent = self._detect_intent_heuristic(query)
                 if heuristic_intent:
                     intent_type = heuristic_intent
@@ -1111,6 +1130,28 @@ class InvestigationService:
             # construction and would have refused to start otherwise.
             dispatch_kind = _INTENT_DISPATCH[intent_type]
 
+            # Attachment metadata for the engine. Post-010: uploads create only
+            # an UploadedFile (no auto-Evidence), so the file facts are sourced
+            # directly from those rows — the #1201 fix: the row is the record of
+            # what was submitted, its filename is not.
+            #
+            # Walks ``preprocess_results`` rather than ``uploaded_files_this_turn``
+            # (the same set, in the same order — one result per attachment, and
+            # that list is built from ``result.uploaded_file``) because the
+            # result also carries ``duplicate_of``, the only place novelty is
+            # still knowable by the time the engine runs (#1210).
+            #
+            # Built HERE, above the dispatch, rather than inside the ENGINE
+            # branch: the SERVICE-routed handlers below delegate to the very
+            # same ``engine.process_turn`` and used to hand it
+            # ``attachments=None`` even though ``_preprocess_attachment`` had
+            # already run and committed a row for every attachment on the turn.
+            # An upload riding a suggestion-chip intent was persisted and
+            # dedup-classified, and the engine was told nothing arrived (#1229).
+            attachment_metadata = [
+                _engine_attachment_metadata(res) for res in preprocess_results
+            ]
+
             if dispatch_kind == _IntentDispatchKind.NOT_IMPLEMENTED:
                 # Intent value is defined in the IntentType enum (API
                 # contract) but no handler exists in this build. Surface as
@@ -1137,6 +1178,7 @@ class InvestigationService:
                             (intent.user_confirmed or False) if intent else False
                         ),
                         user_id=user_id,
+                        attachments=attachment_metadata or None,
                     )
                 elif intent_type == IntentType.CONFIRMATION:
                     result = await self._handle_confirmation(
@@ -1146,6 +1188,7 @@ class InvestigationService:
                             intent.confirmation_value if intent else None
                         ),
                         user_id=user_id,
+                        attachments=attachment_metadata or None,
                     )
                 elif intent_type == IntentType.HYPOTHESIS_ACTION:
                     result = await self._handle_hypothesis_action(
@@ -1154,14 +1197,18 @@ class InvestigationService:
                         hypothesis_id=intent.hypothesis_id if intent else None,
                         action=intent.action if intent else None,
                         user_id=user_id,
+                        attachments=attachment_metadata or None,
                     )
                 elif intent_type == IntentType.GREETING:
-                    result = await self._handle_greeting(case=case)
+                    result = await self._handle_greeting(
+                        case=case, attachments=attachment_metadata or None
+                    )
                 elif intent_type == IntentType.FILE_RECLASSIFICATION:
                     result = await self._handle_file_reclassification(
                         case=case,
                         file_id=intent.file_id if intent else None,
                         data_type_value=intent.data_type if intent else None,
+                        attachments=attachment_metadata or None,
                     )
                 else:
                     # Dispatch table claims SERVICE but there's no handler.
@@ -1177,21 +1224,7 @@ class InvestigationService:
                 # Engine-routed: thread intent_type + intent_data through
                 # to ``engine.process_turn``, which dispatches internally
                 # to the per-intent handler in milestone_engine.
-                # Build attachment metadata for the engine. Post-010:
-                # uploads create only an UploadedFile (no auto-Evidence),
-                # so the file facts are sourced directly from those rows —
-                # the #1201 fix: the row is the record of what was submitted,
-                # its filename is not.
                 #
-                # Walks ``preprocess_results`` rather than
-                # ``uploaded_files_this_turn`` (the same set, in the same
-                # order — one result per attachment, and the list above is
-                # built from ``result.uploaded_file``) because the result also
-                # carries ``duplicate_of``, the only place novelty is still
-                # knowable by the time the engine runs (#1210).
-                attachment_metadata = [
-                    _engine_attachment_metadata(res) for res in preprocess_results
-                ]
                 # DA evidence search is handled inside MilestoneEngine's
                 # tool loop. The same LLM that tracks hypotheses searches
                 # evidence directly during generation — no pre-fetch or
@@ -1838,6 +1871,7 @@ class InvestigationService:
         to_state: Optional[str],
         user_confirmed: bool,
         user_id: Optional[str] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Handle status transition intent with validation.
 
@@ -1849,6 +1883,11 @@ class InvestigationService:
             user_confirmed: Whether user confirmed the transition
             user_id: Authenticated principal for the turn (keys the agent's
                 KB read allowlist)
+            attachments: The turn's engine attachment metadata. Passed through
+                verbatim — this handler used to hardcode ``None`` while
+                ``_preprocess_attachment`` had already committed a row for every
+                attachment, so an upload riding a dropdown/chip intent was
+                invisible to the engine (#1229).
 
         Returns:
             Result dict with agent response and updated case
@@ -1869,7 +1908,7 @@ class InvestigationService:
         result = await self.engine.process_turn(
             case=case,
             user_message=user_message,
-            attachments=None,
+            attachments=attachments,
             intent_type="status_transition",
             intent_data={
                 "from_state": from_state,
@@ -1930,6 +1969,7 @@ class InvestigationService:
         user_message: str,
         confirmation_value: Optional[bool],
         user_id: Optional[str] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Handle yes/no confirmation intent.
 
@@ -1939,6 +1979,8 @@ class InvestigationService:
             confirmation_value: True for yes, False for no
             user_id: Authenticated principal for the turn (keys the agent's
                 KB read allowlist)
+            attachments: The turn's engine attachment metadata (see
+                ``_handle_status_transition``; #1229).
 
         Returns:
             Result dict with agent response and updated case
@@ -1950,7 +1992,7 @@ class InvestigationService:
         result = await self.engine.process_turn(
             case=case,
             user_message=user_message,
-            attachments=None,
+            attachments=attachments,
             intent_type="confirmation",
             intent_data={"value": confirmation_value},
             user_id=user_id,
@@ -1965,6 +2007,7 @@ class InvestigationService:
         hypothesis_id: Optional[str],
         action: Optional[str],
         user_id: Optional[str] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Handle hypothesis action intent (validate/refute/retire).
 
@@ -1975,6 +2018,8 @@ class InvestigationService:
             action: Action to perform
             user_id: Authenticated principal for the turn (keys the agent's
                 KB read allowlist)
+            attachments: The turn's engine attachment metadata (see
+                ``_handle_status_transition``; #1229).
 
         Returns:
             Result dict with agent response and updated case
@@ -1992,7 +2037,7 @@ class InvestigationService:
         result = await self.engine.process_turn(
             case=case,
             user_message=user_message,
-            attachments=None,
+            attachments=attachments,
             intent_type="hypothesis_action",
             intent_data={"hypothesis_id": hypothesis_id, "action": action},
             user_id=user_id,
@@ -2061,6 +2106,7 @@ class InvestigationService:
         case: "Case",
         file_id: Optional[str],
         data_type_value: Optional[str],
+        attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Resolve a classification_failed upload by reclassifying its file.
 
@@ -2213,14 +2259,26 @@ class InvestigationService:
                     "from_type": str(previous_type),
                     "to_type": new_source_type.value,
                 },
+                **report_turn_uploads(case.case_id, case.current_turn, attachments),
             },
         }
 
-    async def _handle_greeting(self, case: "Case") -> Dict[str, Any]:
+    async def _handle_greeting(
+        self,
+        case: "Case",
+        attachments: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         """Handle greeting intent without LLM.
 
         Args:
             case: Case entity
+            attachments: The turn's engine attachment metadata (#1229).
+                Normally empty here — the heuristic that mints this intent is
+                now barred from firing on a turn that carried an attachment,
+                and an explicit client-sent GREETING with a file is the only
+                way to arrive with one. Reported anyway, because "normally
+                empty" is not "provably empty" and a dropped signal is exactly
+                what #1229 is about.
 
         Returns:
             Result dict with static agent response and updated case
@@ -2256,8 +2314,18 @@ class InvestigationService:
             ],
             "case_updated": case,
             "metadata": {
+                # These two handlers never reach the engine, so they report the
+                # turn's uploads but do not write engine-owned state: no
+                # progress flag, no ``turns_without_progress`` touch. That is
+                # self-consistent — the flag says False and the counter is
+                # unchanged, which agree — where a True flag beside an untouched
+                # counter would be the disagreement #1229 exists to remove.
+                # ``_check_if_progress_made`` is the sole writer of that
+                # counter and it lives in the engine; a service-side second
+                # writer is the two-derivations shape, not a fix for it.
                 "progress_made": False,
                 "milestones_completed": [],
+                **report_turn_uploads(case.case_id, case.current_turn, attachments),
             },
         }
 
