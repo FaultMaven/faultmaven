@@ -802,6 +802,31 @@ class TestQuotedMarkersRunbookIsInTheCorpus:
         # …while the quoted markers in content are untouched.
         assert "`<!--`" in masked and "`-->`" in masked
 
+    def test_a_naive_strip_visibly_destroys_it(self, monkeypatch):
+        """The positive control for this whole fixture.
+
+        A document that passes either way would prove nothing about the
+        code-awareness. Substituting the naive ``<!--.*?-->`` sweep the first
+        repair used — no fence or code-span exclusion — must visibly wreck it,
+        or this fixture is decoration.
+        """
+        text = self._text()
+        naive = re.compile(r"<!--.*?-->", re.DOTALL)
+        chars = re.compile(r"[^\n]")
+        monkeypatch.setattr(
+            g,
+            "mask_html_comments",
+            lambda t: naive.sub(lambda m: chars.sub(" ", m.group(0)), t),
+        )
+
+        records = {r["cause_letter"]: r for r in extract_causes(text)}
+        # Cause B is swallowed: the span runs from the ``<!--`` quoted in Cause
+        # A's Statement to the ``-->`` quoted in Cause B's.
+        assert sorted(records) == ["A", "Z"]
+        # …and what is left of Cause A's Statement has had its middle blanked.
+        assert "`<!--`" not in records["A"]["cause_statement"]
+        assert not RunbookValidator().validate_content(text).passed
+
 
 def test_the_new_regexes_are_pinned_against_drift():
     """``test_runbook_grammar`` freezes every mirrored pattern; the two the mask
