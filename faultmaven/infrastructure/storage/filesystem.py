@@ -27,6 +27,7 @@ from faultmaven.infrastructure.storage.base import (
     StorageType,
     StoredFile,
 )
+from faultmaven.utils.path_containment import resolve_within_root
 
 logger = logging.getLogger(__name__)
 
@@ -69,22 +70,49 @@ class FilesystemStorageBackend(IFileStorageBackend):
         logger.info(f"Filesystem storage initialized at {self.storage_root}")
 
     def _get_full_path(self, key: str) -> Path:
-        """Get full filesystem path for a key.
+        """Resolve ``key`` to a path, refusing anything outside the root.
+
+        Every filesystem operation in this backend goes through here first, and
+        acts on the **resolved** path this returns — so containment is checked
+        once, before the first ``makedirs``/``open``/``remove``, not after.
+
+        This used to be a denylist (``".." in key or key.startswith("/")``).
+        Two properties the allowlist has that it did not (#1235):
+
+        - A substring check does not resolve symlinks. A key of
+          ``linked/evidence.log`` where ``linked -> /etc`` contains no ``..``
+          and does not start with ``/``, so the denylist admitted it and the
+          write landed in ``/etc``. ``resolve()`` + ``is_relative_to`` refuses
+          it, because containment is about where a path *lands*, not what it is
+          named.
+        - It couples "safe" to the positive property "the resolved path is
+          inside the root" rather than to the absence of two textual markers,
+          which is the invariant that can actually be asserted.
+
+        The rule is ``utils.path_containment.resolve_within_root``, shared with
+        the runbook tree (#1213/#1215/#1225) so the two subsystems cannot drift
+        apart. No known key reaches here from user input — ``storage_key`` is
+        minted by ``FileStorageService._generate_storage_key`` — so this is
+        defense in depth and cross-subsystem consistency, not a live traversal.
 
         Args:
-            key: Storage key/path
+            key: Storage key/path, relative to the storage root.
 
         Returns:
-            Full filesystem path
+            The resolved absolute path, strictly inside the storage root.
 
         Raises:
-            ValueError: If key contains path traversal
+            PathEscape: the key resolves outside the storage root, resolves to
+                the root itself, or cannot be resolved at all. Subclasses
+                ``ValueError``, which is what this raised before.
         """
-        # Prevent path traversal attacks
-        if ".." in key or key.startswith("/"):
-            raise ValueError(f"Invalid storage key: {key}")
-
-        return self.storage_root / key
+        return resolve_within_root(
+            self.storage_root / key,
+            root=self.storage_root,
+            source=f"key={key!r}",
+            subject="storage key",
+            tree="storage",
+        )
 
     async def generate_upload_url(
         self,
@@ -184,6 +212,10 @@ class FilesystemStorageBackend(IFileStorageBackend):
         Returns:
             StoredFile with file metadata
         """
+        # Containment is checked HERE, before the makedirs below. A mkdir on an
+        # escaped path materialises attacker-chosen directories outside the tree
+        # whatever the write then does, and a containment check anchored on the
+        # directory just created is circular (#1215's round-1 defect, #1235).
         full_path = self._get_full_path(key)
 
         # Create parent directories. Async, not Path.mkdir: the storage root
