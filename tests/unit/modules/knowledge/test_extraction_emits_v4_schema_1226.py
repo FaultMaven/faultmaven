@@ -863,14 +863,18 @@ class TestTheSkeletonNeedsRealAuthoring:
         What this pins is a PORTABILITY constraint on emitted content. This
         method returns a runbook document, and a published runbook can be
         committed to the corpus and built into a KB pack by
-        ``faultmaven-kb-toolkit``, whose ``parse_cause_subfields`` has no
-        comment handling (checked at ``371a517``). A grammar token written in
-        this comment is read there as real content, which would make the empty
-        skeleton pass the UPSTREAM gate.
+        ``faultmaven-kb-toolkit``, which carries BOTH halves of the defect
+        (checked at ``371a517``): its ``parse_cause_subfields`` does no comment
+        handling, and its cause walk runs ``CAUSE_HEADING_RE.finditer`` on the
+        raw block. A grammar token written in this comment is read there as
+        real content, which would make the empty skeleton pass the UPSTREAM
+        gate.
 
-        Delete this test the day the mirror carries the countermeasure — and
-        not before. ``**Chain:**`` is included because it is a sub-field label
-        upstream splits on even though this skeleton omits the field.
+        EXPIRY: delete this test when ``FaultMaven/faultmaven-kb-toolkit#29``
+        closes — that issue carries the measured reproduction and the design to
+        copy, and closing it is what retires this restriction. Not before.
+        ``**Chain:**`` is included because it is a sub-field label upstream
+        splits on even though this skeleton omits the field.
         """
         skeleton = SuggestionService.fallback_template("case-example")
         comment = skeleton[skeleton.index("<!--") : skeleton.index("-->")]

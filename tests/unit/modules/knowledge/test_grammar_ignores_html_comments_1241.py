@@ -617,6 +617,14 @@ def _matcher_sites(regex_name: str) -> list[tuple[str, int, str, bool]]:
     ``"<module stem>::<enclosing function>"`` — line numbers move, that key does
     not — and ``masked`` says whether the first argument is syntactically
     ``mask_html_comments(...)``.
+
+    KNOWN LIMIT, stated rather than papered over: the match is on the NAME, so
+    an import alias (``CAUSES_SECTION_RE as _STRAY``) slips it. That is an
+    evasion, not a mistake — a developer adding a stray walk writes the symbol
+    directly and is caught, which is the case this guards. Widening to resolve
+    aliases would mean tracking import bindings per module for no gain against
+    the failure mode that actually occurred twice in #1241. If a stray walk ever
+    does arrive under an alias, resolve bindings then.
     """
     sites: list[tuple[str, int, str, bool]] = []
     for path in sorted(_PACKAGE_ROOT.rglob("*.py")):

@@ -780,9 +780,14 @@ corrected runbook, starting at the opening `---`, and output nothing else.
         producing documents the upstream mirror misparses.
 
         So the rule is now a PORTABILITY constraint on emitted content, not a
-        workaround for a local defect, and it lifts the day the mirror carries
-        the countermeasure — not before. Until then, prose costs nothing: an
-        author reads "Statement" just as well without the asterisks.
+        workaround for a local defect, and it lifts when the mirror carries the
+        countermeasure — tracked as ``FaultMaven/faultmaven-kb-toolkit#29``, so
+        the expiry is a real terminator rather than a hope. Upstream carries
+        BOTH halves of the defect, not just the sub-field one: its
+        ``parse_cause_subfields`` does no comment handling AND its cause walk
+        runs ``CAUSE_HEADING_RE.finditer`` on the raw block. Until #29 closes,
+        prose costs nothing: an author reads "Statement" just as well without
+        the asterisks.
 
         ``tests/unit/modules/knowledge/test_extraction_emits_v4_schema_1226.py``
         pins all of it: v4-shaped, refused, still refused after any single
@@ -837,7 +842,8 @@ level, and the tools needed.]
        carrying its own Risk, Duration and Verification.
      Written without bold markup on purpose: this file can be built into a KB
      pack by faultmaven-kb-toolkit, whose parser does not skip comments, so a
-     grammar token written here would be read there as real content. -->
+     grammar token written here would be read there as real content. Lifts when
+     faultmaven-kb-toolkit#29 closes. -->
 **Statement:**
 **Indicators:**
 **Interventions:**
