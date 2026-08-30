@@ -78,7 +78,25 @@ What the stored entries do carry is a **liveness stamp** — the turn that offer
 - A clarification has to outlive its turn. A user who ignores the question and comes back to it two turns later must still be able to answer, so the set cannot simply be "last turn's output" — but an offer that never expires accumulates, and this resolver picks among the stored choices, so an unbounded set is an unbounded chance of resolving an answer onto the wrong file.
 - `last_suggestions` is rewritten **only** on `process_turn`'s success path. A mid-turn engine save that is never followed by the final one commits turn *N*'s state beside turn *N-1*'s suggestions; the standalone close/transition endpoints move the case without touching the list at all. "It is in the row" is therefore not evidence that a turn put it there *for now*.
 
-So the adoption site matches against the **live** entries, not the raw field: a `file_reclassification` choice is live for 3 turns, capped at 3 attachments (newest first), and only while its file is still present, unreclassified, and the case is open; every other intent is live for exactly one turn. An entry with no stamp is not live — it was not written by the turn seam, so nothing knows what turn it belongs to. See `_live_suggestions` in `investigation_service.py`.
+So the adoption site matches against the **live** entries, not the raw field: a `file_reclassification` choice is live for 3 turns, capped at 3 attachments (newest first), and only while its file is still present, unreclassified, and the case is open; every other intent is live for exactly one turn. An entry with no stamp is not live — it was not written by the turn seam, so nothing knows what turn it belongs to. See `core/investigation/suggestion_liveness.py`.
+
+Both sides of that seam filter at the same number, and the number is `effective_current_turn + 1` — the counter both repositories persist. It is **not** the in-flight `case.current_turn`: only the engine appends `turn_history` (milestone_engine Step 6), so across a SERVICE-dispatched turn (a clarification click, a greeting) the stored counter stands still (#1264), and a writer using the in-flight value ages every entry one turn further than the next read will.
+
+### P7: An answer that could mean two things means neither
+
+The classifier tier has always been told to return `"none"` rather than guess
+between two plausible choices. The exact-match tier used to guess: it returned
+the FIRST payload or label hit, and the choices are ordered newest-first, so
+whenever two attachments shared wording an older card's own text resolved onto
+the newer file. Two pastes always share it ("Treat the text you pasted as
+documentation."), as do two uploads of one filename.
+
+Both tiers now hold the same line. A typed string that would resolve to more
+than one distinct intent resolves to neither, and the message flows on as
+conversation. Assembly is supposed to make that unreachable for clarifications —
+see P6 — but the guard is what makes the property true rather than merely
+intended, and it covers the pairs assembly does not arbitrate, such as a
+clarification and an engine follow-up that happen to share wording.
 
 ---
 
@@ -230,20 +248,26 @@ last_suggestions: Optional[List[Dict[str, Any]]] = Field(
 **Updated after each turn** in `investigation_service.py`, after building `suggested_actions`. As shipped this is not a plain rebuild from the turn's own output — see P6 — but an assembly of this turn's clarification choices, the still-live ones carried from earlier turns, and this turn's engine follow-ups, each stamped with the offering turn:
 
 ```python
+next_read_turn = updated_case.effective_current_turn + 1   # what NEXT turn computes
 carried = _carry_forward_unresolved_clarifications(
     updated_case.last_suggestions, updated_case, resolved_file_id,
-    as_of_turn=updated_case.current_turn + 1,   # what NEXT turn will accept
+    as_of_turn=next_read_turn,
 )
-clarification, note = _build_classification_clarification(
-    preprocess_results, {_entry_file_id(e) for e in carried},
-)
-updated_case.last_suggestions = _stored_suggestions(
+clarification, note = _build_classification_clarification(preprocess_results)
+stored = _stored_suggestions(
     case=updated_case, clarification=clarification, carried=carried,
     follow_ups=raw_follow_ups, offered_turn=updated_case.current_turn,
-) or None
+    as_of_turn=next_read_turn,
+)
+updated_case.last_suggestions = stored or None
+
+# The cards are derived from what survived storage, so one rule decides both.
+offered_ids = {entry_file_id(e) for e in stored}
+clarification = [s for s in clarification
+                 if (s.intent or {}).get("file_id") in offered_ids]
 ```
 
-`as_of_turn` is the **next** turn's number, so what is stored is exactly what the next read will accept — the write site and the adoption site apply one predicate and cannot drift.
+`as_of_turn` is the **next** turn's number, so what is stored is exactly what the next read will accept — the write site and the adoption site apply one predicate and cannot drift. It is `effective_current_turn + 1`, not `current_turn + 1`; see P6.
 
 The stamp rides inside each entry dict, which both repositories persist as opaque JSON (`cases.metadata`), so it needs no migration and no repository change. A per-*entry* key rather than an envelope around the list (`{"turn": N, "suggestions": [...]}`): once anything is carried the set is heterogeneous — this turn's choices and a two-turn-old one share the list and cannot share one stamp.
 
@@ -297,18 +321,23 @@ In `investigation_service.py`, after heuristic greeting detection and before int
 
 ```python
 # Intent resolution: match typed text against the choices still on offer.
-# ``_live_suggestions``, not the raw field — see P6.
-live_suggestions = _live_suggestions(
-    case.last_suggestions, case, as_of_turn=case.current_turn
-)
+# ``live_suggestions``, not the raw field — see P6. Computed inside the
+# guard: the cheap conditions reject most turns, and this walks every
+# stored entry and indexes every uploaded file.
 if (
     intent_type == IntentType.CONVERSATION
     and query
-    and live_suggestions
+    and case.last_suggestions
 ):
-    resolved_intent = await self.intent_resolver.resolve(
-        user_message=query,
-        last_suggestions=live_suggestions,
+    on_offer = live_suggestions(
+        case.last_suggestions, case, as_of_turn=case.current_turn
+    )
+    resolved_intent = (
+        await self.intent_resolver.resolve(
+            user_message=query, last_suggestions=on_offer
+        )
+        if on_offer
+        else None
     )
     if resolved_intent:
         # Re-route through the matched intent's handler

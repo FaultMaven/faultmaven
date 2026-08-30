@@ -38,10 +38,8 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
+from faultmaven.core.investigation.suggestion_liveness import live_suggestions
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.agent.domain.services.investigation_service import (
-    _live_suggestions,
-)
 from faultmaven.modules.case.domain.models import Case, UploadedFile
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
@@ -308,7 +306,7 @@ class TestTurnStampSurvivesBothBackends:
     def _case_with_the_file(case: Case) -> Case:
         """The clarification's target file, unchanged since the offer.
 
-        ``_live_suggestions`` compares the file's current ``data_type``
+        ``live_suggestions`` compares the file's current ``data_type``
         against the stamped one, so the case has to actually hold the row.
         """
         case.uploaded_files = [
@@ -332,13 +330,11 @@ class TestTurnStampSurvivesBothBackends:
         reloaded = await repository.get(case.case_id)
         assert [s["offered_turn"] for s in reloaded.last_suggestions] == [3, 3]
         assert (
-            _live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=4)
+            live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=4)
             == reloaded.last_suggestions
         )
         # Positive control: the same reloaded value IS out of window later.
-        assert (
-            _live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=7) == []
-        )
+        assert live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=7) == []
 
     @pytest.mark.asyncio
     async def test_postgres_reloads_a_live_offer(self):
@@ -356,12 +352,10 @@ class TestTurnStampSurvivesBothBackends:
 
         assert [s["offered_turn"] for s in reloaded.last_suggestions] == [3, 3]
         assert (
-            _live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=4)
+            live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=4)
             == reloaded.last_suggestions
         )
-        assert (
-            _live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=7) == []
-        )
+        assert live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=7) == []
 
 
 @pytest.mark.unit

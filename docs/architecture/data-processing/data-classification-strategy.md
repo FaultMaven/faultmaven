@@ -390,18 +390,23 @@ Each card carries:
 | Field | Content |
 |---|---|
 | `payload` | The click-to-send message, naming the attachment the way the **user** knows it (`_clarification_subject`): a real file is *"Treat the file you shared (\"foo.csv\") as metrics or performance data."*; a paste is *"Treat the text you pasted as …"*, a capture *"Treat the page you captured as …"*. Never the minted `pasted-content-<ts>.txt` transport name (#1198/#666). |
-| `label` | The button. Bare (*"Metrics"*) while one attachment is on offer; otherwise qualified with the attachment's short name — *"Metrics (foo.csv)"*, *"Metrics (pasted text)"* — because two cards reading *"Metrics"* are indistinguishable both on screen and in the resolver's numbered choice list. When the set spans **turns**, the qualifier also carries the turn (*"Metrics (pasted text, turn 4)"*): two pastes are both "pasted text", so only the turn separates them. |
+| `label` | The button, always naming its subject — *"Metrics (foo.csv)"*, *"Metrics (pasted text)"*. Unconditionally, including for a lone attachment: a bare *"Metrics"* is a standing generic, and since a question now outlives its turn, a user typing that shorthand while looking at a later turn's cards resolved onto the earlier file. |
 | `intent` | The engine-owned `file_reclassification` intent — `{"type": "file_reclassification", "file_id": …, "data_type": …}`. |
 
 **The intent is the contract, not the text.** Every card has carried a `file_reclassification` intent since the cross-client resolution contract landed. Clients forward it on click, and the SERVICE handler (`_handle_file_reclassification`) re-runs preprocessing under `user_override` **mechanically — no LLM call**, so the choice can never be misread as an analysis request (e.g. deep-analyzing the file instead of re-labeling it). The `payload` remains the human-readable record of the choice; intent routing takes precedence over it server-side. A user who *types* a choice instead of clicking reaches the same handler through `IntentResolver` — see [choice-response-resolution.md](../investigation-engine/choice-response-resolution.md).
 
 **The question outlives its turn, for a bounded number of turns.** `case.last_suggestions` is server-side memory (never rendered — the cards come from the TurnResponse), and it is rebuilt every turn, so a clarification the user did not answer used to vanish the moment anything else happened: answering one of two questions deleted the other (#1222), and ignoring the question entirely deleted it outright (#1245). Every stored entry now carries the turn that offered it (`offered_turn`) and the target file's `data_type` at that moment (`offered_data_type`), and an unanswered clarification is carried forward while all of:
 
-- it is at most `_CLARIFICATION_CARRY_TURNS` (**3**) turns old — offered on turn *T*, answerable on *T+1…T+3*;
-- at most `_CLARIFICATION_SPAN_CAP` (**3**) attachments are on offer, newest offer first, whole attachments admitted or dropped;
+- it is at most `CLARIFICATION_CARRY_TURNS` (**3**) turns old — offered on turn *T*, answerable on *T+1…T+3*;
+- at most `CLARIFICATION_SPAN_CAP` (**3**) attachments are on offer, newest first, whole attachments admitted or dropped;
+- no already-admitted attachment answers to the same typing (below);
 - the target file is still in the case, the case is not terminal, and the file's `data_type` still matches `offered_data_type` — a change means the file was reclassified by *some* path, so the question is answered, whoever answered it.
 
+**Two attachments a typed answer cannot tell apart are never on offer together.** The card wording is not, and cannot be, unique: two pastes are "the text you pasted" in every payload and "pasted text" in every label — that wording is ours by design, the minted `pasted-content-<ts>.txt` is a transport name the user never saw, and the turn number is not an identity (#1264). So uniqueness is a property of admission rather than of copy: an attachment joins the on-offer set only if none of its matchable strings (payload or label, folded the way `IntentResolver` folds them) already belongs to an admitted one. The older of an indistinguishable pair is simply not offered — which is where it was before #1245, so nothing regresses. Behind that, the resolver refuses outright to resolve a string that would answer two ways.
+
 Engine follow-ups (confirmation, status transition) are not clarifications and expire after one turn. An entry with no `offered_turn` is treated as expired: it was not written by the turn seam, so nothing knows what turn it belongs to.
+
+**A turn that closes the case offers nothing.** `_handle_file_reclassification` refuses on a terminal case, so a card there would be a button that answers 422 while the typed route is dropped by the liveness rule. The cards are derived from what survived storage, so one rule decides both and the note is suppressed with them.
 
 When the user clicks a card, the next turn resolves the intent structurally. No re-classification at the classifier layer, no new LLM integration — deterministic post-turn injection using the existing DECIDE suggestion plumbing.
 

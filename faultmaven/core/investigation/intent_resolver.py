@@ -17,6 +17,7 @@ Design: see docs/architecture/investigation-engine/choice-response-resolution.md
 import logging
 from typing import Any, Dict, List, Optional
 
+from faultmaven.core.investigation.suggestion_liveness import normalize_choice_text
 from faultmaven.infrastructure.llm.providers import ReasoningIntent
 
 logger = logging.getLogger(__name__)
@@ -104,23 +105,51 @@ class IntentResolver:
         user_message: str,
         choices: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Fast path: check if user typed something very close to a suggestion payload."""
-        msg_lower = user_message.lower().strip().rstrip(".!?")
+        """Fast path: the user typed something very close to an offered choice.
 
+        Payload first, then label — the payload is the text a click sends and
+        therefore the text a user retypes.
+
+        A string that would answer to MORE THAN ONE distinct intent resolves
+        to NEITHER. That is the precision-first rule this module already
+        applies to its classifier tier ("return none rather than guess"),
+        stated here for the tier that used to guess by taking the first hit:
+        the choices are ordered newest-first, so an older card's own wording
+        resolved onto a newer file whenever the two shared a payload, which
+        two pastes always do ("Treat the text you pasted as documentation.")
+        and two uploads of one filename always do.
+
+        The assembly seam is supposed to make that unreachable for
+        clarifications — ``_admit_clarification_entries`` will not offer two
+        attachments a typed answer cannot tell apart. This is the guard that
+        makes the property TRUE rather than merely intended, and it also
+        covers the pairs assembly does not arbitrate: a clarification and an
+        engine follow-up that happen to share wording.
+        """
+        msg = normalize_choice_text(user_message)
+        if not msg:
+            return None
+
+        matched: List[Dict[str, Any]] = []
         for choice in choices:
-            payload_lower = choice.get("payload", "").lower().strip().rstrip(".!?")
-            if not payload_lower:
+            intent = choice.get("intent")
+            if not intent:
                 continue
+            if msg in {
+                normalize_choice_text(choice.get("payload")),
+                normalize_choice_text(choice.get("label")),
+            } - {""}:
+                if not any(intent == seen for seen in matched):
+                    matched.append(intent)
 
-            # Exact match
-            if msg_lower == payload_lower:
-                return choice["intent"]
-
-            # User typed the label instead of the payload
-            label_lower = choice.get("label", "").lower().strip().rstrip(".!?")
-            if label_lower and msg_lower == label_lower:
-                return choice["intent"]
-
+        if len(matched) == 1:
+            return matched[0]
+        if matched:
+            logger.info(
+                "Typed text matched %d distinct offered intents; resolving to "
+                "none rather than guessing which was meant",
+                len(matched),
+            )
         return None
 
     async def _classify(

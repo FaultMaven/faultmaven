@@ -16,26 +16,30 @@ import pytest
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.schemas import Attachment, TurnPayload
+from faultmaven.core.investigation.suggestion_liveness import (
+    CLARIFICATION_CARRY_TURNS,
+    CLARIFICATION_SPAN_CAP,
+    entry_file_id,
+    live_suggestions,
+)
 from faultmaven.core.preprocessing.models import UnifiedDataType
 from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
-    _CLARIFICATION_CARRY_TURNS,
-    _CLARIFICATION_SPAN_CAP,
     _DATA_TYPE_TO_SOURCE_TYPE,
     InvestigationService,
+    _admit_clarification_entries,
     _build_classification_clarification,
-    _cap_clarification_span,
     _carry_forward_unresolved_clarifications,
-    _entry_file_id,
-    _live_suggestions,
     _PreprocessedAttachment,
     _sanitize_label_fragment,
 )
 from faultmaven.modules.case.domain.models import (
     CaseState,
     EvidenceSourceType,
+    TurnOutcome,
+    TurnProgress,
     UploadedFile,
 )
 
@@ -140,7 +144,7 @@ class TestClarificationEmitterIntent:
             [_clarification_target(suggested_types=[])]
         )
         assert len(suggestions) == 1
-        assert suggestions[0].label == "Something else"
+        assert suggestions[0].label == "Something else (server.log)"
         assert suggestions[0].intent["data_type"] == "unstructured_text"
 
     def test_no_failure_emits_nothing(self):
@@ -169,10 +173,10 @@ class TestClarificationEmitterIntent:
             "unstructured_text",
         ]
         assert [s.label for s in suggestions] == [
-            "Command output",
-            "Application logs",
-            "Documentation",
-            "Something else",
+            "Command output (pasted text)",
+            "Application logs (pasted text)",
+            "Documentation (pasted text)",
+            "Something else (pasted text)",
         ]
 
     def test_paste_copy_never_names_the_synthetic_snippet(self):
@@ -224,10 +228,19 @@ class TestClarificationEmitterIntent:
             for s in suggestions
         ]
         resolver = IntentResolver(MagicMock())
-        matched = resolver._exact_match("Application logs", choices)
+        matched = resolver._exact_match("Application logs (server.log)", choices)
         assert matched is not None
         assert matched["type"] == IntentType.FILE_RECLASSIFICATION.value
         assert matched["data_type"] == "logs_and_errors"
+
+        # The payload is the other matchable channel, and the one the matcher
+        # tries FIRST — it is the text a click sends, so it is the text a user
+        # retypes. Round one qualified only the label and left this untested,
+        # which is how two pastes came to share every payload they offered.
+        by_payload = resolver._exact_match(
+            'Treat the file you shared ("server.log") as application logs.', choices
+        )
+        assert by_payload == matched
 
 
 class TestEveryFailedAttachmentIsClarified:
@@ -347,27 +360,39 @@ class TestEveryFailedAttachmentIsClarified:
             "Something else (pasted text)",
         ]
 
-    def test_single_failure_is_byte_identical_to_before(self):
-        """The common path — one attachment, one failure — must be untouched:
-        bare labels, same payload, same body, same order."""
+    def test_single_failure_names_its_subject_like_every_other_card(self):
+        """The common path — one attachment, one failure — now carries the
+        qualifier too. #1236 kept it bare and #1245 round one kept that,
+        because the qualifier was understood as a way of separating cards
+        from EACH OTHER, and a lone card has nothing to be separated from.
+
+        What that missed is the bare label as a standing GENERIC. A question
+        outlives its turn now, so "Documentation" minted on a lone turn 1 is
+        still matchable on turn 5, and a user typing that shorthand while
+        looking at turn 5's qualified cards resolved onto turn 1's file —
+        oldest-wins, against every other ordering rule in this seam. A label
+        that always names its subject has no generic form to be captured by.
+
+        Payload, body and order are unchanged.
+        """
         suggestions = _clarification_suggestions([_clarification_target()])
         assert [
             (s.label, s.payload, s.body, s.intent["data_type"]) for s in suggestions
         ] == [
             (
-                "Application logs",
+                "Application logs (server.log)",
                 'Treat the file you shared ("server.log") as application logs.',
                 "Treat as application logs.",
                 "logs_and_errors",
             ),
             (
-                "Configuration",
+                "Configuration (server.log)",
                 'Treat the file you shared ("server.log") as configuration.',
                 "Treat as configuration.",
                 "structured_config",
             ),
             (
-                "Something else",
+                "Something else (server.log)",
                 'Treat the file you shared ("server.log") as unstructured text.',
                 "Treat as unstructured text.",
                 "unstructured_text",
@@ -657,11 +682,12 @@ class TestNoteAndChoicesCannotDisagree:
         assert {s.intent["file_id"] for s in suggestions} == {"file_f11ef11ef11e"}
         assert '"mystery.txt"' in note
         assert "clean.log" not in note
-        # One failure, so no qualifier and singular wording.
+        # The note is singular (one failure); the labels still name their
+        # subject, which they now do unconditionally.
         assert [s.label for s in suggestions] == [
-            "Application logs",
-            "Configuration",
-            "Something else",
+            "Application logs (mystery.txt)",
+            "Configuration (mystery.txt)",
+            "Something else (mystery.txt)",
         ]
         assert "analyzed it yet" in note
 
@@ -984,7 +1010,7 @@ class TestRecoveryLoopSurvivesAnIgnoredQuestion:
         Three diverting turns is a LITERAL, for the reason spelled out on
         ``test_the_question_expires_at_the_end_of_its_window``.
         """
-        assert _CLARIFICATION_CARRY_TURNS == 3
+        assert CLARIFICATION_CARRY_TURNS == 3
         service, repo, case = wired
 
         await self._upload_that_fails(service, case)
@@ -1009,14 +1035,21 @@ class TestRecoveryLoopSurvivesAnIgnoredQuestion:
         preprocessing_service.reclassify_evidence.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_two_single_failure_turns_do_not_mint_the_same_label_twice(
+    async def test_two_single_failure_turns_do_not_mint_the_same_wording_twice(
         self, wired
     ):
         """The emitter's disambiguation premise was "more than one attachment
         failed THIS TURN". Once a question outlives its turn that is the
         wrong question: two single-failure turns would each mint a bare
         "Documentation" for a different file, and ``_exact_match`` returns
-        the first — resolving the newer answer onto the older file."""
+        the first — resolving the newer answer onto the older file.
+
+        Checked on BOTH matchable channels. Round one checked labels only and
+        reported the set unambiguous while every payload collided underneath
+        it, which is precisely the bug the check existed to catch — a probe
+        aimed at the wrong channel is worse than no probe, because its green
+        is evidence of nothing.
+        """
         service, repo, case = wired
 
         await self._upload_that_fails(service, case)
@@ -1038,28 +1071,47 @@ class TestRecoveryLoopSurvivesAnIgnoredQuestion:
 
         saved = await repo.get(case.case_id)
         assert len(self._clarified_file_ids(saved.last_suggestions)) == 2
-        labels = [s["label"] for s in saved.last_suggestions]
-        assert len(labels) == len(set(labels)), f"ambiguous labels: {labels}"
+        for channel in ("label", "payload"):
+            seen = [s[channel] for s in saved.last_suggestions]
+            assert len(seen) == len(set(seen)), f"ambiguous {channel}s: {seen}"
 
         resolver = IntentResolver(MagicMock())
-        second = next(
-            f.file_id for f in saved.uploaded_files if f.filename == "second.txt"
+        first, second = (
+            next(f.file_id for f in saved.uploaded_files if f.filename == name)
+            for name in ("mystery.txt", "second.txt")
         )
-        matched = resolver._exact_match(
-            "Documentation (second.txt, turn 2)", saved.last_suggestions
+        assert (
+            resolver._exact_match("Documentation (second.txt)", saved.last_suggestions)[
+                "file_id"
+            ]
+            == second
         )
-        assert matched is not None and matched["file_id"] == second
+        assert (
+            resolver._exact_match(
+                'Treat the file you shared ("mystery.txt") as documentation or notes.',
+                saved.last_suggestions,
+            )["file_id"]
+            == first
+        )
 
     @pytest.mark.asyncio
-    async def test_two_pastes_from_different_turns_are_told_apart(
+    async def test_two_pastes_cannot_both_be_on_offer(
         self, repo_with_case, preprocessing_service, file_storage
     ):
         """The qualifier's uniqueness rested on "a turn mints at most ONE
         synthetic name" (#1198) — true within a turn, and no longer the
-        question once a question outlives its turn. Two pastes are both
-        "pasted text": the names are OURS, so nothing but the turn can
-        separate them, and two identical lines in the resolver's numbered
-        choice list point at different files.
+        question once a question outlives its turn. Two pastes are both "the
+        text you pasted" in every payload and "pasted text" in every label:
+        the wording is OURS by design, the minted filename is a transport
+        name the user never saw, and the turn number is not unique (#1264).
+        Nothing available can separate them.
+
+        So they are not both offered. Round one qualified the label with the
+        turn and called it solved; the payloads still collided, and the turn
+        was not an identity anyway. Admission refuses the older one instead —
+        which is exactly where it was before #1245, so nothing regresses, and
+        the set the resolver sees is unambiguous by construction rather than
+        by an argument about wording.
         """
         repo, case = repo_with_case
         case.uploaded_files = []
@@ -1096,24 +1148,26 @@ class TestRecoveryLoopSurvivesAnIgnoredQuestion:
             )
 
         saved = await repo.get(case.case_id)
-        assert len(self._clarified_file_ids(saved.last_suggestions)) == 2
-        labels = [s["label"] for s in saved.last_suggestions]
-        assert len(labels) == len(set(labels)), f"ambiguous labels: {labels}"
-        # Turn 1's were minted when nothing else was on offer, so they keep
-        # the bare wording the user saw; turn 2's name their turn. Different
-        # strings, and each is the one the user was shown.
         first, second = (f.file_id for f in saved.uploaded_files)
+        assert self._clarified_file_ids(saved.last_suggestions) == [second], (
+            "the older paste is indistinguishable from the newer, so it must "
+            "not be on offer beside it"
+        )
+        for channel in ("label", "payload"):
+            seen = [s[channel] for s in saved.last_suggestions]
+            assert len(seen) == len(set(seen)), f"ambiguous {channel}s: {seen}"
+
+        # The wording both pastes share resolves to the one attachment that
+        # is on offer — the newest, which is the card the user just saw.
         resolver = IntentResolver(MagicMock())
         assert (
-            resolver._exact_match("Documentation", saved.last_suggestions)["file_id"]
-            == first
-        )
-        assert (
             resolver._exact_match(
-                "Documentation (pasted text, turn 2)", saved.last_suggestions
+                "Treat the text you pasted as documentation or notes.",
+                saved.last_suggestions,
             )["file_id"]
             == second
         )
+        assert first != second
 
 
 def _stored_entry(
@@ -1180,11 +1234,11 @@ class TestCarryForwardSelection:
         expires and the resolver's choice list grows without limit.
 
         The turn numbers are LITERAL. Deriving them from
-        ``_CLARIFICATION_CARRY_TURNS`` makes the test agree with whatever the
+        ``CLARIFICATION_CARRY_TURNS`` makes the test agree with whatever the
         constant says, so widening the window to 10_000 would still pass —
         which is not a bound, it is a restatement.
         """
-        assert _CLARIFICATION_CARRY_TURNS == 3, (
+        assert CLARIFICATION_CARRY_TURNS == 3, (
             "the window is part of the contract — changing it is a deliberate "
             "act that must update these turn numbers too"
         )
@@ -1294,6 +1348,381 @@ class TestCarryForwardSelection:
         )
 
 
+class TestNoTwoAttachmentsAnswerToTheSameTyping:
+    """The wrong-file guarantee, stated on the channel the matcher reads.
+
+    Round one made the LABELS unique and left ``payload`` alone.
+    ``IntentResolver._exact_match`` tests payload FIRST — it is the text a
+    click sends, so it is the text a user retypes — and the payload names the
+    attachment through ``_clarification_subject``, which is "the text you
+    pasted" for every paste and the filename for every file. Two pastes, or
+    two uploads sharing a name, therefore offered byte-identical payloads for
+    different files, and the first hit won.
+
+    The fix is not more wording. It is that such a pair is never on offer
+    together (``_admit_clarification_entries``), and that a string which
+    would resolve two ways resolves to neither (``_exact_match``).
+    """
+
+    @staticmethod
+    def _entries(*specs):
+        """specs: (file_id, label, payload) triples, newest first."""
+        return [
+            {
+                "label": label,
+                "action_type": "DECIDE",
+                "payload": payload,
+                "body": "Treat as documentation.",
+                "intent": {
+                    "type": IntentType.FILE_RECLASSIFICATION.value,
+                    "file_id": file_id,
+                    "data_type": "documentation",
+                },
+                "offered_turn": turn,
+                "offered_data_type": None,
+            }
+            for file_id, label, payload, turn in specs
+        ]
+
+    def test_an_attachment_sharing_only_a_payload_is_not_admitted(self):
+        """Payload alone, with DISTINCT labels — round one's exact shape.
+
+        It qualified the label ("…, turn 2") and left the payload untouched,
+        so a label-only check reports the set unambiguous while the channel
+        the matcher tries FIRST still resolves two ways.
+        """
+        shared = "Treat the text you pasted as documentation or notes."
+        entries = self._entries(
+            ("file_bbbbbbbbbbbb", "Documentation (pasted text, turn 2)", shared, 2),
+            ("file_aaaaaaaaaaaa", "Documentation (pasted text, turn 1)", shared, 1),
+        )
+        assert len({e["label"] for e in entries}) == 2, "labels must NOT collide here"
+        admitted = _admit_clarification_entries(entries)
+        assert [entry_file_id(e) for e in admitted] == ["file_bbbbbbbbbbbb"]
+
+    def test_an_attachment_sharing_only_a_label_is_not_admitted(self):
+        """The mirror image: distinct payloads, colliding labels. The matcher
+        reads both channels, so either one is enough to refuse."""
+        entries = self._entries(
+            ("file_bbbbbbbbbbbb", "Documentation (a.log)", "payload B", 2),
+            ("file_aaaaaaaaaaaa", "Documentation (a.log)", "payload A", 1),
+        )
+        assert len({e["payload"] for e in entries}) == 2, "payloads must NOT collide"
+        admitted = _admit_clarification_entries(entries)
+        assert [entry_file_id(e) for e in admitted] == ["file_bbbbbbbbbbbb"]
+
+    def test_distinguishable_attachments_are_both_admitted(self):
+        """The positive control: refusal is about collisions, not about being
+        second. Without this the rule above passes for a cap of one."""
+        entries = self._entries(
+            ("file_bbbbbbbbbbbb", "Documentation (b.log)", "payload B", 2),
+            ("file_aaaaaaaaaaaa", "Documentation (a.log)", "payload A", 1),
+        )
+        admitted = _admit_clarification_entries(entries)
+        assert [entry_file_id(e) for e in admitted] == [
+            "file_bbbbbbbbbbbb",
+            "file_aaaaaaaaaaaa",
+        ]
+
+    def test_a_collision_refuses_the_whole_attachment_not_one_choice(self):
+        """Dropping the colliding choice alone would leave a menu that looks
+        complete and silently no longer offers that option."""
+        entries = self._entries(
+            ("file_bbbbbbbbbbbb", "Documentation (x)", "shared", 2),
+            ("file_aaaaaaaaaaaa", "Documentation (x)", "shared", 1),
+            ("file_aaaaaaaaaaaa", "Something else (y)", "unique to a", 1),
+        )
+        admitted = _admit_clarification_entries(entries)
+        assert {entry_file_id(e) for e in admitted} == {"file_bbbbbbbbbbbb"}
+
+    def test_the_matcher_refuses_a_string_that_would_resolve_two_ways(self):
+        """The guard behind admission. Admission should make this
+        unreachable for clarifications; this is what makes it TRUE rather
+        than merely intended, and it also covers the pairs admission does not
+        arbitrate — a clarification and an engine follow-up sharing wording.
+        """
+        resolver = IntentResolver(MagicMock())
+        ambiguous = self._entries(
+            ("file_bbbbbbbbbbbb", "Yes", "Yes", 2),
+        ) + [
+            {
+                "label": "Yes",
+                "action_type": "DECIDE",
+                "payload": "Yes",
+                "body": "",
+                "intent": {"type": IntentType.CONFIRMATION.value},
+                "offered_turn": 2,
+            }
+        ]
+        assert resolver._exact_match("yes", ambiguous) is None
+        # Positive control: drop the second, and the same typing resolves.
+        assert resolver._exact_match("yes", ambiguous[:1]) is not None
+
+    def test_two_entries_carrying_the_same_intent_are_not_ambiguous(self):
+        """Ambiguity is about the ANSWER, not about the number of hits: a
+        duplicate row for one attachment resolves normally."""
+        resolver = IntentResolver(MagicMock())
+        duplicated = self._entries(
+            ("file_bbbbbbbbbbbb", "Documentation", "Documentation", 2),
+            ("file_bbbbbbbbbbbb", "Documentation", "Documentation", 2),
+        )
+        matched = resolver._exact_match("documentation", duplicated)
+        assert matched is not None and matched["file_id"] == "file_bbbbbbbbbbbb"
+
+
+class _RecordingRepository(MockCaseRepository):
+    """A repository double that keeps the turn counter the way the real ones do.
+
+    Both ``SQLiteCaseRepository`` and ``PostgreSQLHybridCaseRepository`` write
+    ``"current_turn": case.effective_current_turn`` — the last ``turn_history``
+    number — rather than the in-flight ``current_turn``. ``MockCaseRepository``
+    stores the Case object as-is, so that projection never happens and every
+    agent test built on it is blind to the whole class of bug below.
+    """
+
+    def __init__(self, seed=None):
+        super().__init__()
+        if seed:
+            self._storage.update(seed)
+
+    async def _save(self, case):
+        stored = case.model_copy(update={"current_turn": case.effective_current_turn})
+        self._storage[case.case_id] = stored
+        return stored
+
+
+class _RecordingEngine(MockMilestoneEngine):
+    """A mock engine that records a turn, as the real one does at its Step 6.
+
+    ``MockMilestoneEngine`` appends nothing, which makes ``turn_history`` empty
+    forever — and ``effective_current_turn`` falls back to ``current_turn``
+    when it is empty, so the two counters never diverge and the projection
+    above is a no-op. Without this the test below passes under the mutation it
+    exists to catch.
+    """
+
+    async def _process_turn(self, case, *args, **kwargs):
+        result = await super()._process_turn(case, *args, **kwargs)
+        case.turn_history.append(
+            TurnProgress(
+                turn_number=case.current_turn,
+                progress_made=True,
+                outcome=TurnOutcome.CONVERSATION,
+            )
+        )
+        return result
+
+
+class TestTheWriterStoresWhatTheReaderWillAccept:
+    """One predicate, one clock — the invariant round one asserted and broke.
+
+    Both repositories persist ``effective_current_turn``, which does not
+    advance across a SERVICE-dispatched turn (#1264). The write site filtered
+    at ``current_turn + 1`` — the IN-FLIGHT counter — so on any turn the engine
+    did not record, it aged entries one further than the next read would, and
+    dropped questions that read would have accepted.
+    """
+
+    _failed_classification = staticmethod(
+        TestRecoveryLoopSurvivesResolvingOneAttachment._failed_classification
+    )
+    _clarified_file_ids = staticmethod(
+        TestRecoveryLoopSurvivesResolvingOneAttachment._clarified_file_ids
+    )
+
+    @pytest.mark.asyncio
+    async def test_a_clarification_click_does_not_over_age_the_other_question(
+        self, repo_with_case, preprocessing_service, file_storage
+    ):
+        """Drives the real seam, at the window boundary, over a SERVICE turn.
+
+        Three things have to line up or this passes vacuously, and each was
+        wrong in an earlier draft:
+
+        1. It goes through ``process_turn``. Calling the helper with
+           hand-picked ``as_of_turn`` values tests the arithmetic, and the
+           arithmetic was never in doubt — the call site's choice of clock was.
+        2. The repository projects the counter (``_RecordingRepository``) and
+           the engine records turns (``_RecordingEngine``). Without both, the
+           two counters are equal by construction and nothing can diverge.
+        3. The question is at the LAST turn of its window when the SERVICE
+           turn writes. The mutation is a constant +1, so it only bites at the
+           boundary; anywhere else both clocks keep the entry and the test is
+           green either way.
+
+        Turns 1-3 are engine turns, ageing the paste's question to 3. Turn 4
+        is a clarification click — SERVICE-dispatched, recording no turn — and
+        the paste's question must survive it, because the next read computes
+        age 3 and 3 is still in window.
+        """
+        _, case = repo_with_case
+        repo = _RecordingRepository()
+        case.uploaded_files = []
+        case.evidence = []
+        case.turn_history = []
+        repo._storage[case.case_id] = case
+
+        hashes = iter(["a" * 64, "b" * 64])
+        preprocessing_service.classify_and_extract = AsyncMock(
+            side_effect=lambda *a, **k: self._failed_classification(next(hashes))
+        )
+        blobs = iter([{"storage_key": f"evidence/case_x/b{i}.txt"} for i in range(2)])
+        file_storage.store_file = AsyncMock(side_effect=lambda *a, **k: next(blobs))
+        file_storage.mark_linked = AsyncMock(return_value=True)
+        service = InvestigationService(
+            milestone_engine=_RecordingEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+
+        # ---- turn 1 (engine): a file and a paste, both below threshold.
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(
+                query="the dump plus what I pasted",
+                attachments=[
+                    Attachment(
+                        content=b"ambiguous file bytes",
+                        filename="mystery.txt",
+                        content_type="text/plain",
+                        source_metadata={"source_type": "file_upload"},
+                    ),
+                    Attachment(
+                        content=b"NAME READY STATUS",
+                        filename="pasted-content-20260713T083214.txt",
+                        content_type="text/plain",
+                        source_metadata={"source_type": "text_paste"},
+                    ),
+                ],
+            ),
+        )
+        saved = await repo.get(case.case_id)
+        file_a = next(
+            f.file_id for f in saved.uploaded_files if f.filename == "mystery.txt"
+        )
+        file_b = next(
+            f.file_id for f in saved.uploaded_files if f.filename != "mystery.txt"
+        )
+        assert sorted(self._clarified_file_ids(saved.last_suggestions)) == sorted(
+            [file_a, file_b]
+        )
+
+        # ---- turns 2 and 3 (engine): unrelated, ageing both questions to 3.
+        for text in ("is the pool maxed out?", "what about replication lag?"):
+            await service.process_turn(
+                case_id=case.case_id,
+                user_id="user_owner",
+                payload=TurnPayload(query=text),
+            )
+        saved = await repo.get(case.case_id)
+        assert saved.current_turn == 3, "engine turns advance the persisted counter"
+        assert sorted(self._clarified_file_ids(saved.last_suggestions)) == sorted(
+            [file_a, file_b]
+        )
+
+        # ---- turn 4: a clarification click. SERVICE-dispatched, so it records
+        #      no turn and the persisted counter stays at 3. The paste's
+        #      question is age 3 to the next read — the last turn in window.
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(
+                query="treat it as logs",
+                intent=QueryIntent(
+                    type=IntentType.FILE_RECLASSIFICATION,
+                    file_id=file_a,
+                    data_type="logs_and_errors",
+                ),
+            ),
+        )
+        saved = await repo.get(case.case_id)
+        assert saved.current_turn == 3, "a SERVICE turn records none (#1264)"
+        assert self._clarified_file_ids(saved.last_suggestions) == [file_b], (
+            "the writer aged the surviving question on the in-flight counter, "
+            "which the next read does not share, and dropped a question that "
+            "was still answerable"
+        )
+
+
+class TestATerminalTurnOffersNothing:
+    """A turn can deliver an unclassifiable attachment AND close the case.
+
+    ``_handle_file_reclassification`` refuses on a terminal case, so every
+    card would be a button that answers 422 and every typed choice is dropped
+    by the liveness rule. Round one still rendered the cards, appended the
+    "How should I treat it?" note, and persisted the entries — making
+    ``_stored_suggestions``'s own contract false for exactly the set where it
+    mattered.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_cards_no_note_no_stored_entries(
+        self, repo_with_case, preprocessing_service, file_storage
+    ):
+        repo, case = repo_with_case
+        case.uploaded_files = []
+        case.evidence = []
+        preprocessing_service.classify_and_extract = AsyncMock(
+            return_value=(
+                TestRecoveryLoopSurvivesResolvingOneAttachment._failed_classification(
+                    "e" * 64
+                )
+            )
+        )
+        file_storage.store_file = AsyncMock(
+            return_value={"storage_key": "evidence/case_x/mystery.txt"}
+        )
+        file_storage.mark_linked = AsyncMock(return_value=True)
+
+        engine = MockMilestoneEngine()
+        original = engine._process_turn
+
+        async def close_the_case(case, *a, **kw):
+            result = await original(case, *a, **kw)
+            result["case_updated"] = case.model_copy(
+                update={
+                    "state": CaseState.CLOSED,
+                    "closed_at": datetime.now(UTC),
+                    "closure_reason": "resolved_elsewhere",
+                }
+            )
+            return result
+
+        engine.process_turn = AsyncMock(side_effect=close_the_case)
+
+        service = InvestigationService(
+            milestone_engine=engine,
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(
+                query="closing this out",
+                attachments=[
+                    Attachment(
+                        content=b"ambiguous",
+                        filename="mystery.txt",
+                        content_type="text/plain",
+                        source_metadata={"source_type": "file_upload"},
+                    )
+                ],
+            ),
+        )
+
+        saved = await repo.get(case.case_id)
+        assert saved.is_terminal
+        assert [
+            a for a in response.suggested_actions if (a.intent or {}).get("file_id")
+        ] == []
+        assert "How should I treat" not in response.agent_response
+        assert saved.last_suggestions is None
+
+
 class TestSuggestionLiveness:
     """The stamp, and what an absent or impossible one means."""
 
@@ -1306,21 +1735,21 @@ class TestSuggestionLiveness:
         case = _case_holding(self._A)
         legacy = _stored_entry(self._A)
         del legacy["offered_turn"]
-        assert _live_suggestions([legacy], case, as_of_turn=2) == []
+        assert live_suggestions([legacy], case, as_of_turn=2) == []
         # Positive control: the identical entry WITH a stamp is live.
-        assert _live_suggestions([_stored_entry(self._A)], case, as_of_turn=2) != []
+        assert live_suggestions([_stored_entry(self._A)], case, as_of_turn=2) != []
 
     def test_a_boolean_is_not_a_turn_number(self):
         """``bool`` is an ``int`` subclass, so ``True`` would age as turn 1."""
         case = _case_holding(self._A)
         entry = _stored_entry(self._A)
         entry["offered_turn"] = True
-        assert _live_suggestions([entry], case, as_of_turn=2) == []
+        assert live_suggestions([entry], case, as_of_turn=2) == []
 
     def test_a_stamp_from_the_future_is_not_live(self):
         case = _case_holding(self._A)
         assert (
-            _live_suggestions(
+            live_suggestions(
                 [_stored_entry(self._A, offered_turn=9)], case, as_of_turn=2
             )
             == []
@@ -1336,8 +1765,8 @@ class TestSuggestionLiveness:
         follow_up = _stored_entry(
             self._A, intent_type=IntentType.CONFIRMATION.value, offered_turn=5
         )
-        assert _live_suggestions([follow_up], case, as_of_turn=6) == [follow_up]
-        assert _live_suggestions([follow_up], case, as_of_turn=7) == []
+        assert live_suggestions([follow_up], case, as_of_turn=6) == [follow_up]
+        assert live_suggestions([follow_up], case, as_of_turn=7) == []
 
 
 class TestClarificationSpanCap:
@@ -1348,9 +1777,9 @@ class TestClarificationSpanCap:
             _stored_entry(f"file_{n}", offered_turn=turn)
             for n, turn in [("d", 4), ("c", 3), ("b", 2), ("a", 1)]
         ]
-        kept = _cap_clarification_span(entries)
-        assert [_entry_file_id(e) for e in kept] == ["file_d", "file_c", "file_b"]
-        assert len(kept) == _CLARIFICATION_SPAN_CAP
+        kept = _admit_clarification_entries(entries)
+        assert [entry_file_id(e) for e in kept] == ["file_d", "file_c", "file_b"]
+        assert len(kept) == CLARIFICATION_SPAN_CAP
 
     def test_an_attachment_is_admitted_or_dropped_whole(self):
         """Keeping some of an attachment's choices leaves a menu that looks
@@ -1362,8 +1791,8 @@ class TestClarificationSpanCap:
             _stored_entry("file_b", offered_turn=2),
             _stored_entry("file_a", offered_turn=1),
         ]
-        kept = _cap_clarification_span(entries)
-        assert [_entry_file_id(e) for e in kept] == [
+        kept = _admit_clarification_entries(entries)
+        assert [entry_file_id(e) for e in kept] == [
             "file_d",
             "file_d",
             "file_c",
@@ -1372,8 +1801,8 @@ class TestClarificationSpanCap:
 
     def test_eviction_is_stable_for_offers_from_the_same_turn(self):
         entries = [_stored_entry(f"file_{n}", offered_turn=7) for n in "abcd"]
-        kept = _cap_clarification_span(entries)
-        assert [_entry_file_id(e) for e in kept] == ["file_a", "file_b", "file_c"]
+        kept = _admit_clarification_entries(entries)
+        assert [entry_file_id(e) for e in kept] == ["file_a", "file_b", "file_c"]
 
 
 class TestQueryIntentValidation:
