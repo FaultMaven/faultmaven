@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import AbstractSet, Any, Dict, List, Optional, Tuple
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
@@ -413,7 +413,9 @@ def _sanitize_label_fragment(text: str) -> str:
     return collapsed
 
 
-def _clarification_label_qualifier(target: "_PreprocessedAttachment") -> str:
+def _clarification_label_qualifier(
+    target: "_PreprocessedAttachment", with_turn: bool = False
+) -> str:
     """Short name telling one failed attachment's choices from another's.
 
     The *button* register — third and shortest of the three ways this
@@ -428,14 +430,35 @@ def _clarification_label_qualifier(target: "_PreprocessedAttachment") -> str:
     because a label reaches the intent resolver's prompt — see there. A
     name that sanitises away to nothing falls back to the generic phrase
     rather than an empty parenthetical.
+
+    ``with_turn`` borrows ``display_name``'s trick for the case that broke
+    its premise. The bare noun is unique WITHIN a turn — the route carries
+    at most one file and one paste, and the paste's name is ours (#1198) —
+    but a question now outlives its turn (#1245), so two pastes from
+    different turns are both "pasted text", and two uploads of the same
+    filename are both that filename. Either pair puts two identical lines in
+    the resolver's numbered choice list, pointing at different files. The
+    turn is what separates them, for the same reason ``display_name`` uses
+    it: it is written once at ingestion and never revised.
+
+    Set only when this mint is JOINING attachments from earlier turns, so a
+    label is turn-qualified exactly when a bare one could collide. The turnless
+    wording therefore survives on every set that describes a single turn,
+    which is every set the system produced before #1245. Uniqueness follows by
+    induction: a bare qualifier is minted only when nothing else is on offer
+    (so the set is one turn's, whose names differ), and every later mint is
+    turn-qualified — a different string shape from any bare one, and from any
+    other turn's.
     """
     uf = target.uploaded_file
     if uf.is_page_capture:
-        return "captured page"
-    if uf.is_pasted:
-        return "pasted text"
-    raw = target.attachment_filename or uf.filename or ""
-    return _sanitize_label_fragment(raw) or "the uploaded file"
+        base = "captured page"
+    elif uf.is_pasted:
+        base = "pasted text"
+    else:
+        raw = target.attachment_filename or uf.filename or ""
+        base = _sanitize_label_fragment(raw) or "the uploaded file"
+    return f"{base}, turn {uf.uploaded_at_turn}" if with_turn else base
 
 
 def _reclassification_intent(file_id: str, dt_value: str) -> Dict[str, Any]:
@@ -449,6 +472,7 @@ def _reclassification_intent(file_id: str, dt_value: str) -> Dict[str, Any]:
 
 def _clarification_suggestions_for_failed(
     failed: List["_PreprocessedAttachment"],
+    also_on_offer: AbstractSet[str] = frozenset(),
 ) -> List[SuggestedActionResponse]:
     """Emit DECIDE suggestions for EVERY attachment that hit
     classification_failed.
@@ -484,11 +508,26 @@ def _clarification_suggestions_for_failed(
 
     Labels carry the attachment's short name
     (``_clarification_label_qualifier``) **only** when more than one
-    attachment failed: two cards both reading "Documentation" are
+    attachment is ON OFFER: two cards both reading "Documentation" are
     indistinguishable on screen, and ``IntentResolver._exact_match`` matches
     a typed label against the choices in order — so it would resolve an
     answer meant for the paste onto the file, turning a missing option into
-    a wrong action. A single failure keeps the bare label it has always had.
+    a wrong action. A lone attachment keeps the bare label it has always had.
+
+    "On offer" is this turn's failures PLUS ``also_on_offer`` — the
+    attachments whose earlier choices this turn's set will be stored
+    alongside (see ``_carry_forward_unresolved_clarifications``). The
+    condition used to be ``len(failed) > 1``, which was exactly right while
+    the stored set could only ever describe ONE turn's attachments. Once a
+    question outlives the turn that asked it (#1245), that premise breaks:
+    two single-failure turns each mint a bare "Documentation" for a
+    DIFFERENT file, and the resolver — which sees the stored set, not the
+    screen — gets two identical choices and resolves the newer answer onto
+    the older file. Deciding the qualifier over the on-offer span instead
+    makes the labels unique by construction, and by induction: a bare label
+    is minted only when nothing else is on offer, and every later mint sees
+    it and qualifies itself.
+
     The qualifiers are distinct because a turn mints at most ONE synthetic
     name (#1198): ``pasted_content`` is a single form field, so a turn
     carries one paste or one capture, never two, and everything else is a
@@ -510,13 +549,22 @@ def _clarification_suggestions_for_failed(
     if not failed:
         return []
 
-    qualify = len(failed) > 1
+    failed_ids = {r.uploaded_file.file_id for r in failed}
+    # Attachments from EARLIER turns that this turn's choices will share the
+    # stored set with. An id that is also failing now is not one of them —
+    # this turn's choices supersede its entry, so it contributes no older
+    # label to collide with.
+    older_on_offer = set(also_on_offer) - failed_ids
+    qualify = len(failed_ids | older_on_offer) > 1
+    with_turn = bool(older_on_offer)
     suggestions: List[SuggestedActionResponse] = []
 
     for target in failed:
         subject = _clarification_subject(target)
         file_id = target.uploaded_file.file_id
-        suffix = f" ({_clarification_label_qualifier(target)})" if qualify else ""
+        suffix = (
+            f" ({_clarification_label_qualifier(target, with_turn)})" if qualify else ""
+        )
         candidates = list(target.suggested_types or [])
         if _is_paste_upload(target):
             candidates = _PASTE_CLARIFICATION_SEEDS + candidates
@@ -602,6 +650,7 @@ def _clarification_note_for_failed(
 
 def _build_classification_clarification(
     preprocess_results: List["_PreprocessedAttachment"],
+    also_on_offer: AbstractSet[str] = frozenset(),
 ) -> Tuple[List[SuggestedActionResponse], Optional[str]]:
     """This turn's clarification choices and the note that introduces them.
 
@@ -610,66 +659,393 @@ def _build_classification_clarification(
     set of attachments than the choices target — an invariant that was
     prose (two call sites each re-deriving the filter) until it was made
     structural here. Nothing else should re-derive it.
+
+    ``also_on_offer`` reaches only the CHOICES, never the note. The note
+    narrates what this turn could not classify ("I couldn't confidently
+    classify …"), which is ``failed`` and nothing else; the labels have to
+    stay distinguishable from every choice the resolver can still see,
+    which is a wider set. Two different questions, deliberately answered
+    from two different inputs.
     """
     failed = [r for r in preprocess_results if r.classification_failed]
     return (
-        _clarification_suggestions_for_failed(failed),
+        _clarification_suggestions_for_failed(failed, also_on_offer),
         _clarification_note_for_failed(failed),
     )
 
 
+# ============================================================
+# Suggestion liveness (#1245, fm#918)
+# ============================================================
+#
+# ``case.last_suggestions`` is SERVER-SIDE memory, not a render. The cards
+# the client draws come from ``clarification + suggested_follow_ups`` in the
+# TurnResponse; this list exists so a user who TYPES an answer instead of
+# clicking lands on the same intent a click would have carried. Everything
+# below is therefore about one question: which stored entries may the intent
+# resolver still match a typed message against?
+#
+# Two facts make that question non-trivial:
+#
+#   1. An offer has to outlive its turn (#1245). A user who ignores a
+#      clarification and says something else, then comes back to it, must
+#      still be able to answer — so the set cannot simply be "last turn's
+#      output". But an offer that never expires accumulates, and the
+#      resolver's tier-2 classifier picks among the stored choices, so an
+#      unbounded set is an unbounded chance of resolving an answer onto the
+#      wrong file.
+#   2. The list is rewritten ONLY on ``process_turn``'s success path
+#      (fm#918). A mid-turn engine save that is never followed by the final
+#      one commits turn N's state beside turn N-1's suggestions; the
+#      standalone close/transition endpoints move the case without touching
+#      the list at all. So "it is in the row" does not mean "a turn put it
+#      there for now".
+#
+# One mechanism answers both: every stored entry carries the turn that
+# OFFERED it, and liveness is an age bound on that stamp. Fact 1 is a wide
+# window with a hard span cap; fact 2 is the same predicate applied where no
+# turn wrote — an entry left behind by a non-turn writer ages out on the
+# clock rather than needing every writer to remember to clear it.
+#
+# WHICH clock, precisely. The stamp is ``case.current_turn`` — the in-flight
+# number, assigned unconditionally beside the user message, so it advances on
+# every turn whatever dispatches it. fm#918 proposed comparing against
+# ``effective_current_turn``; that is NOT interchangeable here, because it
+# reads the last ``turn_history`` entry and only the engine appends one (Step
+# 6). A SERVICE-dispatched turn — a clarification click, a greeting — appends
+# nothing, and both repositories persist ``effective_current_turn`` as the
+# ``current_turn`` column, so across a reload the counter does not move on
+# those turns:
+#
+#     in-flight | effective | persisted (sqlite / pg)
+#             1 |         1 | 1   engine turn
+#             2 |         1 | 1   reclassification (SERVICE)
+#             3 |         1 | 1   another SERVICE turn
+#             4 |         4 | 4   engine turn
+#
+# The consequence for this window, stated so it is not mistaken for a bug: it
+# is measured in turns that REACHED THE ENGINE. A run of clarification clicks
+# does not age the remaining questions — which is the behaviour you want,
+# since the user is visibly working through the menu — and the span cap bounds
+# the set regardless of how the clock moves. The lag itself belongs to turn
+# accounting, not here.
+
+#: Turn number the entry was minted on. Rides inside the entry dict, which
+#: both repositories persist as opaque JSON (``to_json_compatible`` on the
+#: way out, ``metadata.get("last_suggestions")`` on the way back), so this
+#: costs no migration and no repository change. fm#918 proposed wrapping the
+#: whole list (``{"turn": N, "suggestions": [...]}``); a per-entry key is
+#: what the carry-forward actually needs, because a stored set is
+#: heterogeneous the moment anything is carried — this turn's choices and a
+#: two-turn-old one sit in the same list and cannot share one stamp.
+_OFFERED_TURN_KEY = "offered_turn"
+
+#: The target file's ``data_type`` as it stood when the question was asked.
+#: A clarification is about a file that has not been classified; the ONLY
+#: writer of ``UploadedFile.data_type`` after intake is
+#: ``_file_row_with_reclassification`` (both reclassification paths), so a
+#: changed value means the question was answered — by this turn's handler,
+#: by ``PATCH /evidence/{id}/classification``, or by anything added later.
+#: Comparing it is what keeps a widened window from also widening fm#918's
+#: out-of-band exposure, and it needs no cooperation from the writer.
+#:
+#: Deliberately lossy in one direction and never the other. ``data_type``
+#: holds an ``EvidenceSourceType``, a 12→6 projection of ``DataType``, so a
+#: reclassification WITHIN a source type (logs_and_errors → command_output,
+#: both ``logs``) leaves it unchanged and the question stays live. That is a
+#: missed drop, never a wrong one: the value cannot change except by
+#: reclassification, so this can never retire a question the user has not
+#: answered.
+_OFFERED_DATA_TYPE_KEY = "offered_data_type"
+
+#: Turns after the offering turn that a clarification choice stays
+#: answerable by typed text. Offered on turn T, answerable on T+1..T+3.
+#:
+#: Alternatives that are not bounds: "until the attachment is referenced
+#: again" and "until the case leaves the stage" are CONDITIONS — neither
+#: terminates, so an ignored question lives forever and the accumulation is
+#: exactly what the tier-2 exposure is made of. A span cap alone is not a
+#: bound either: a single stale question is never evicted by anything.
+#:
+#: Three rather than the ``_ASK_DECAY_AGE_TURNS = 2`` used to stop the
+#: engine's mechanical re-offer of an unanswered evidence ask, because the
+#: costs differ. That ask is RE-RENDERED every turn, so living longer means
+#: nagging; a carried clarification is invisible (see the module note
+#: above), so living longer costs only resolver exposure — which the span
+#: cap bounds independently. Three covers the shape #1245 describes with
+#: room: divert on T+1, come back on T+2 or T+3.
+_CLARIFICATION_CARRY_TURNS = 3
+
+#: Turns an engine follow-up (confirmation, status transition, hypothesis
+#: action) stays answerable: exactly the next one, which is the window the
+#: system has always had. A follow-up is about the turn that produced it —
+#: "Yes, mark as resolved" means nothing once the proposal it belonged to is
+#: gone — so it must NOT inherit the clarification window. This is also the
+#: half that closes fm#918's mid-turn-save exposure: the engine appends
+#: ``turn_history`` at its Step 6 and saves at Step 7, so a row committed by
+#: a save whose final assignment never ran carries turn N in the persisted
+#: counter and a stamp of N-1, which is out of window on the retry turn.
+_FOLLOW_UP_CARRY_TURNS = 1
+
+#: Distinct attachments whose clarification choices may be on offer at once.
+#: A HARD cap on the resolver's choice list, independent of user behaviour.
+#:
+#: Three is the smallest cap that leaves the carry-forward non-vacuous on
+#: every turn shape the route permits: a turn carries at most one file plus
+#: one paste, so it can mint choices for two attachments of its own, and a
+#: cap of two would make a paste+file turn evict every older question by
+#: construction. Three is "this turn's two, plus one question still open
+#: from before". The ceiling on the choice list is therefore 3 attachments ×
+#: 4 choices = 12 clarification entries, against the 2 × 4 = 8 that #1236
+#: assessed and accepted — and against shipped ``main``, where the carried
+#: set has NO cap at all (a reclassification turn that also uploads two
+#: failing attachments grows the span by one every turn, unbounded).
+_CLARIFICATION_SPAN_CAP = 3
+
+
+def _is_clarification_entry(entry: Dict[str, Any]) -> bool:
+    """Is this stored entry one of the clarification choices?"""
+    intent = entry.get("intent") or {}
+    return intent.get("type") == IntentType.FILE_RECLASSIFICATION.value
+
+
+def _entry_file_id(entry: Dict[str, Any]) -> Optional[str]:
+    """The attachment a clarification entry targets, or None."""
+    intent = entry.get("intent") or {}
+    file_id = intent.get("file_id")
+    return file_id if isinstance(file_id, str) and file_id else None
+
+
+def _entry_offered_turn(entry: Dict[str, Any]) -> Optional[int]:
+    """The turn that offered this entry, or None when it carries no stamp.
+
+    ``bool`` is excluded explicitly because it is an ``int`` subclass, so a
+    ``True`` landing here would behave as turn 1 in the arithmetic below.
+    """
+    offered = entry.get(_OFFERED_TURN_KEY)
+    if isinstance(offered, bool) or not isinstance(offered, int):
+        return None
+    return offered
+
+
+def _suggestion_is_live(
+    entry: Dict[str, Any],
+    *,
+    as_of_turn: int,
+    file_data_types: Dict[str, Optional[str]],
+    case_is_terminal: bool,
+) -> bool:
+    """May the resolver still match a typed message against this entry?
+
+    ``as_of_turn`` is the turn doing the asking. The write site passes the
+    NEXT turn's number, so what it stores is exactly what the next read will
+    accept — the two sites cannot drift, and the stored list stays an honest
+    record of what is on offer rather than a superset the reader re-filters.
+
+    An entry with no stamp is NOT live. Every stamped entry was written by
+    the turn seam below; an unstamped one is either a row persisted before
+    this rule existed or something a non-turn writer left behind, and those
+    are the same epistemic position as fm#918's exposures — nothing here
+    knows what turn it belongs to. The deploy-time cost is bounded and
+    one-sided: a case with an in-flight offer loses TYPED matching for one
+    turn (clicking still works — a click sends its intent on the request and
+    never consults this list), and the next turn mints a stamped set.
+    Reading an absent stamp as "current" instead would re-arm every
+    pre-existing row permanently, since the paths that leave one behind are
+    precisely the paths that never rewrite it.
+    """
+    if not isinstance(entry, dict) or not entry.get("intent"):
+        return False
+
+    offered = _entry_offered_turn(entry)
+    if offered is None:
+        return False
+
+    age = as_of_turn - offered
+    if age < 0:
+        # The clock ran backwards (a restored/reconciled turn counter).
+        # Refuse rather than guess: an entry we cannot age is one we cannot
+        # bound.
+        return False
+
+    is_clarification = _is_clarification_entry(entry)
+    window = _CLARIFICATION_CARRY_TURNS if is_clarification else _FOLLOW_UP_CARRY_TURNS
+    if age > window:
+        return False
+
+    if not is_clarification:
+        return True
+
+    # A clarification click mutates files and evidence, so
+    # ``_handle_file_reclassification`` refuses on a terminal case (422).
+    # Minting the intent anyway would turn an ordinary typed message on a
+    # closed case into an error response; drop the choice instead.
+    if case_is_terminal:
+        return False
+
+    file_id = _entry_file_id(entry)
+    if file_id is None or file_id not in file_data_types:
+        return False
+    return file_data_types[file_id] == entry.get(_OFFERED_DATA_TYPE_KEY)
+
+
+def _file_data_types(case: "Case") -> Dict[str, Optional[str]]:
+    """``file_id`` → current ``data_type``, for the referent check."""
+    return {uf.file_id: uf.data_type for uf in (case.uploaded_files or [])}
+
+
+def _live_suggestions(
+    stored: Optional[List[Dict[str, Any]]],
+    case: "Case",
+    *,
+    as_of_turn: int,
+) -> List[Dict[str, Any]]:
+    """The stored entries still answerable on ``as_of_turn``, in order.
+
+    The single liveness rule, used by BOTH sides of the seam: the adoption
+    site filters what the resolver may see, and the write site filters what
+    is stored for next turn. One predicate, so a question cannot be alive in
+    storage and dead to the reader (or the reverse).
+    """
+    if not stored:
+        return []
+    file_data_types = _file_data_types(case)
+    case_is_terminal = bool(getattr(case, "is_terminal", False))
+    return [
+        entry
+        for entry in stored
+        if _suggestion_is_live(
+            entry,
+            as_of_turn=as_of_turn,
+            file_data_types=file_data_types,
+            case_is_terminal=case_is_terminal,
+        )
+    ]
+
+
 def _carry_forward_unresolved_clarifications(
     previous_suggestions: Optional[List[Dict[str, Any]]],
+    case: "Case",
     resolved_file_id: Optional[str],
-    superseded_file_ids: Set[str],
+    *,
+    as_of_turn: int,
 ) -> List[Dict[str, Any]]:
-    """Clarification choices for attachments a reclassification turn left open.
+    """Clarification choices for attachments this turn left open.
 
-    ``last_suggestions`` is rebuilt from scratch every turn, and a
-    reclassification turn normally builds no clarification of its own — a
-    click carries no attachment — so the whole list collapsed to ``None``.
-    (The route permits an attachment alongside the intent, which is what
-    ``superseded_file_ids`` is for; do not read "carries no attachment" as
-    a guarantee.) With one failed
-    attachment that cost nothing — the only pending question had just been
-    answered. Once the emitter clarifies EVERY failure (#1222), answering
-    one question deleted the others: the paste's four choices vanished from
-    server-side memory the moment the user resolved the file, and a typed
-    answer for it resolved to nothing. The recovery path the emitter
-    advertised existed for exactly one of the two attachments.
+    ``last_suggestions`` is rebuilt from scratch every turn, so before
+    #1222 the whole list collapsed the moment a turn produced no
+    clarification of its own. With one failed attachment that cost nothing —
+    the only pending question had just been answered. Once the emitter
+    clarifies EVERY failure, answering one question deleted the others: the
+    paste's four choices vanished from server-side memory the moment the
+    user resolved the file. #1222 fixed that for the turn that RESOLVES an
+    attachment.
 
-    So an answered question is dropped and an unanswered one is kept.
+    It stayed broken for the turn that IGNORES the question (#1245) — the
+    far commoner shape, and identical for one attachment or two. The
+    previous scoping (``resolved_file_id is None`` → carry nothing) was
+    justified as self-limiting, "the carried set only ever shrinks, one file
+    per reclassification". That was false: the turns route accepts an intent
+    ALONGSIDE ``files`` and ``pasted_content``, so a reclassification turn
+    that also uploads two failing attachments carries one file out and mints
+    two in, growing the span by one every turn without limit.
 
-    Deliberately scoped to the turn that RESOLVES an attachment
-    (``resolved_file_id is None`` → carry nothing), for two reasons. It is
-    the turn the emitter's own contract creates: hand out N recovery paths
-    and the user must be able to walk all N. And it is self-limiting —
-    the carried set only ever shrinks, one file per reclassification, so
-    nothing accumulates into the resolver's choice list. A user who instead
-    ignores the question and says something else still loses the choices,
-    which is pre-existing behaviour and identical for one attachment or
-    two; widening to that case would need an expiry rule this does not have.
+    So the scoping is gone in both directions: the carry runs on every turn,
+    and what bounds it is the liveness rule above plus
+    ``_CLARIFICATION_SPAN_CAP`` (applied by the caller, over the whole
+    assembled set). An answered question is still dropped —
+    ``resolved_file_id`` names it exactly, and the referent check in
+    ``_suggestion_is_live`` catches the same thing arriving from anywhere
+    else.
 
-    ``superseded_file_ids`` are files the CURRENT turn built fresh choices
-    for — those entries win, so the same file never appears twice.
+    Only clarification choices are carried. An engine follow-up was about
+    the turn that produced it and does not outlive it; that is the
+    ``_FOLLOW_UP_CARRY_TURNS`` window, and it is enforced by the shared
+    liveness rule rather than by this filter, so both sites agree.
     """
-    if not previous_suggestions or resolved_file_id is None:
-        return []
+    return [
+        entry
+        for entry in _live_suggestions(
+            previous_suggestions, case, as_of_turn=as_of_turn
+        )
+        if _is_clarification_entry(entry) and _entry_file_id(entry) != resolved_file_id
+    ]
 
-    carried: List[Dict[str, Any]] = []
-    for entry in previous_suggestions:
-        intent = entry.get("intent") or {}
-        if intent.get("type") != IntentType.FILE_RECLASSIFICATION.value:
-            # Only clarification choices are re-offered. An engine follow-up
-            # was about the turn that produced it and does not outlive it.
+
+def _cap_clarification_span(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Hold the on-offer set to ``_CLARIFICATION_SPAN_CAP`` attachments.
+
+    Eviction is by attachment, newest offer first, ties broken by position:
+    ``(-offered_turn, index)``. Deterministic and re-derivable from the
+    stored list alone, which matters because a later turn re-applies this to
+    a set it did not build. The list is already newest-first by construction
+    (fresh entries are prepended, carried ones keep their relative order), so
+    the sort is a restatement of that order rather than a reordering — but it
+    is written out because the invariant it would otherwise rely on is
+    inductive, and an inductive invariant is one refactor from being false.
+
+    Whole attachments are admitted or dropped, never split. Keeping two of
+    an attachment's four choices leaves a menu that looks complete and
+    silently no longer offers "documentation" — a wrong answer is worse than
+    a missing question.
+    """
+    order = sorted(
+        range(len(entries)),
+        key=lambda i: (-(_entry_offered_turn(entries[i]) or 0), i),
+    )
+    admitted: List[str] = []
+    for i in order:
+        file_id = _entry_file_id(entries[i])
+        if file_id is None or file_id in admitted:
             continue
-        file_id = intent.get("file_id")
-        if not file_id or file_id == resolved_file_id:
+        if len(admitted) >= _CLARIFICATION_SPAN_CAP:
             continue
-        if file_id in superseded_file_ids:
-            continue
-        carried.append(entry)
-    return carried
+        admitted.append(file_id)
+    keep = set(admitted)
+    return [e for e in entries if _entry_file_id(e) in keep]
+
+
+def _stored_suggestions(
+    *,
+    case: "Case",
+    clarification: List[SuggestedActionResponse],
+    carried: List[Dict[str, Any]],
+    follow_ups: List[Dict[str, Any]],
+    offered_turn: int,
+) -> List[Dict[str, Any]]:
+    """The ``last_suggestions`` value to persist at the end of a turn.
+
+    Order is load-bearing twice over: ``IntentResolver._exact_match`` returns
+    the FIRST payload/label match, and ``_cap_clarification_span`` reads
+    position as the tie-break. Newest first — this turn's choices, then the
+    carried ones oldest-last, then the engine's follow-ups.
+
+    Follow-ups are stamped too. They are not carried (their window is one
+    turn), but the stamp is what makes them EXPIRE rather than linger when
+    no turn rewrites the list — fm#918's mid-turn-save exposure is exactly a
+    follow-up outliving the state it was about.
+    """
+    file_types = _file_data_types(case)
+    fresh = [
+        {
+            "label": s.label,
+            "action_type": s.type,
+            "payload": s.payload,
+            "body": s.body,
+            "intent": s.intent,
+            _OFFERED_TURN_KEY: offered_turn,
+            _OFFERED_DATA_TYPE_KEY: file_types.get((s.intent or {}).get("file_id")),
+        }
+        for s in clarification
+    ]
+    # Files this turn built fresh choices for win: the same attachment must
+    # never appear twice, and the surviving wording has to be the one the
+    # user was just shown.
+    fresh_ids = {(s.intent or {}).get("file_id") for s in clarification}
+    kept = fresh + [e for e in carried if _entry_file_id(e) not in fresh_ids]
+    return _cap_clarification_span(kept) + [
+        {**f, _OFFERED_TURN_KEY: offered_turn} for f in follow_ups if f.get("intent")
+    ]
 
 
 @dataclass
@@ -1073,18 +1449,28 @@ class InvestigationService:
                         f"Heuristic detected intent {intent_type.value} for message: '{query}'"
                     )
 
-            # Intent resolution: match typed text against last turn's suggestions.
-            # Only runs when no structured intent and the case has suggestions
-            # with intent metadata from the previous turn.
+            # Intent resolution: match typed text against the choices still
+            # on offer. Only runs when no structured intent was sent and the
+            # case has live intent-bearing suggestions.
+            #
+            # ``_live_suggestions``, not the raw field: the row is rewritten
+            # only on this method's success path, so what is stored is not
+            # by itself evidence that a turn put it there for now (fm#918).
+            # ``case.current_turn`` is already this turn's number here (set
+            # just above with the user message), so an entry offered on the
+            # immediately preceding turn ages to 1.
+            live_suggestions = _live_suggestions(
+                case.last_suggestions, case, as_of_turn=case.current_turn
+            )
             if (
                 intent_type == IntentType.CONVERSATION
                 and query
                 and not payload.has_attachments
-                and case.last_suggestions
+                and live_suggestions
             ):
                 resolved_intent = await self.intent_resolver.resolve(
                     user_message=query,
-                    last_suggestions=case.last_suggestions,
+                    last_suggestions=live_suggestions,
                 )
                 if resolved_intent:
                     try:
@@ -1271,50 +1657,55 @@ class InvestigationService:
             #      here — before the save — so a user who *types* a choice
             #      ("application logs") instead of clicking resolves to the
             #      same file_reclassification intent as a click.
-            # Choices and the note that introduces them come back together
-            # from one filter pass, so the note cannot name a different set
-            # of attachments than the choices target.
-            clarification, clarification_note = _build_classification_clarification(
-                preprocess_results
-            )
-            if clarification_note:
-                agent_response_text += clarification_note
-
-            # Questions this turn ANSWERED stop being offered; questions it
-            # left open keep their choices. Rebuilding the list from
-            # ``clarification`` alone deleted the second attachment's
-            # recovery path the moment the user resolved the first — see
-            # ``_carry_forward_unresolved_clarifications``. Read off
-            # ``updated_case`` because the reclassification handler
-            # ``model_copy``s the case, so this is still the PREVIOUS turn's
-            # list at this point.
+            #
+            # Order matters: the questions still open from EARLIER turns are
+            # resolved first, because they are an input to this turn's own
+            # emitter. Two attachments on offer means the labels have to name
+            # which attachment they belong to, and "on offer" spans turns now
+            # (#1245) — deciding that from this turn's failures alone mints a
+            # second bare "Documentation" for a different file.
+            #
+            # Read the carry off ``updated_case``: the reclassification
+            # handler ``model_copy``s the case, so this is still the PREVIOUS
+            # turn's list at this point. ``as_of_turn`` is the NEXT turn, so
+            # what is stored is exactly what the next read will accept.
             resolved_file_id = (
                 (result.get("metadata") or {})
                 .get("file_reclassified", {})
                 .get("file_id")
             )
-            fresh_entries = [
-                {
-                    "label": s.label,
-                    "action_type": s.type,
-                    "payload": s.payload,
-                    "body": s.body,
-                    "intent": s.intent,
-                }
-                for s in clarification
-            ]
             carried_entries = _carry_forward_unresolved_clarifications(
                 updated_case.last_suggestions,
+                updated_case,
                 resolved_file_id,
-                {s.intent["file_id"] for s in clarification if s.intent},
+                as_of_turn=updated_case.current_turn + 1,
             )
+
+            # Choices and the note that introduces them come back together
+            # from one filter pass, so the note cannot name a different set
+            # of attachments than the choices target.
+            clarification, clarification_note = _build_classification_clarification(
+                preprocess_results,
+                {
+                    file_id
+                    for file_id in (_entry_file_id(e) for e in carried_entries)
+                    if file_id is not None
+                },
+            )
+            if clarification_note:
+                agent_response_text += clarification_note
 
             raw_follow_ups = result.get("suggested_follow_ups", [])
             updated_case.last_suggestions = (
-                fresh_entries
-                + carried_entries
-                + [s for s in raw_follow_ups if s.get("intent")]
-            ) or None
+                _stored_suggestions(
+                    case=updated_case,
+                    clarification=clarification,
+                    carried=carried_entries,
+                    follow_ups=raw_follow_ups,
+                    offered_turn=updated_case.current_turn,
+                )
+                or None
+            )
 
             # 4. Append the agent response and save.
             #    ⚠️ This is NOT an atomic commit of both messages, though it used

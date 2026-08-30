@@ -1482,11 +1482,20 @@ class TestMintedIntentTerminalConsentAdoption:
     for the predicate-level matrix — these tests drive the REAL adoption
     path in process_turn with the resolver mocked at its boundary."""
 
+    # ``offered_turn`` is not decoration: the adoption site only lets the
+    # resolver see LIVE entries (#1245), and an unstamped one is not live.
+    # Without it these tests would pass the resolver an empty list, never
+    # reach the INV-26 guard at all, and land on ``conversation`` — which is
+    # what the substantive-message test asserts, so it would go green
+    # vacuously while the guard it exists to pin went unexercised.
+    # ``create_sample_case`` starts at turn 0, so the offer is turn 0 and the
+    # turn under test is turn 1 — one turn old, the follow-up window.
     RESOLVE_SUGGESTIONS = [
         {
             "label": "Yes, mark as resolved",
             "payload": "Yes, mark as resolved",
             "intent": {"type": "confirmation", "confirmation_value": True},
+            "offered_turn": 0,
         }
     ]
 

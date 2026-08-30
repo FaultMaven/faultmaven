@@ -21,10 +21,15 @@ from faultmaven.exceptions import NotFoundError, ValidationException
 from faultmaven.models.api import DataType
 from faultmaven.models.api_models import IntentType, QueryIntent
 from faultmaven.modules.agent.domain.services.investigation_service import (
+    _CLARIFICATION_CARRY_TURNS,
+    _CLARIFICATION_SPAN_CAP,
     _DATA_TYPE_TO_SOURCE_TYPE,
     InvestigationService,
     _build_classification_clarification,
+    _cap_clarification_span,
     _carry_forward_unresolved_clarifications,
+    _entry_file_id,
+    _live_suggestions,
     _PreprocessedAttachment,
     _sanitize_label_fragment,
 )
@@ -860,79 +865,515 @@ class TestRecoveryLoopSurvivesResolvingOneAttachment:
         assert self._clarified_file_ids(saved.last_suggestions) == []
 
 
-class TestCarryForwardSelection:
-    """Direct coverage of which stored entries survive a resolving turn.
+class TestRecoveryLoopSurvivesAnIgnoredQuestion:
+    """#1245: the user who does not answer the clarification.
 
-    The end-to-end flow above exercises the common shape; these pin the
-    selection rules themselves, including the supersede guard, which no
-    shipped path can reach today (a fresh upload always mints a new
-    file_id, and the dedup short-circuit returns
-    ``classification_failed=False``) but which keeps a future
-    file_id-reusing path from offering the same file twice.
+    The commoner shape by far, and the one #1222 left open: a reply that is
+    neither a choice nor a reclassification intent rebuilt
+    ``last_suggestions`` from that turn's own output, so the standing
+    question was gone by the time the user came back to it. The attachment
+    stayed misclassified with no server-side recovery path.
     """
 
-    @staticmethod
-    def _entry(file_id, data_type="documentation", intent_type=None):
-        return {
-            "label": f"Documentation ({file_id})",
-            "action_type": "DECIDE",
-            "payload": "…",
-            "body": "…",
-            "intent": {
-                "type": intent_type or IntentType.FILE_RECLASSIFICATION.value,
-                "file_id": file_id,
-                "data_type": data_type,
-            },
-        }
+    _failed_classification = staticmethod(
+        TestRecoveryLoopSurvivesResolvingOneAttachment._failed_classification
+    )
+    _clarified_file_ids = staticmethod(
+        TestRecoveryLoopSurvivesResolvingOneAttachment._clarified_file_ids
+    )
 
-    def test_nothing_is_carried_when_no_attachment_was_resolved(self):
-        """Scoped to the resolving turn — the set only ever shrinks, so it
-        cannot accumulate into the resolver's choice list."""
-        stored = [self._entry("file_aaaaaaaaaaaa")]
-        assert _carry_forward_unresolved_clarifications(stored, None, set()) == []
+    @pytest.fixture
+    def wired(self, repo_with_case, preprocessing_service, file_storage):
+        repo, case = repo_with_case
+        case.uploaded_files = []
+        case.evidence = []
+        preprocessing_service.classify_and_extract = AsyncMock(
+            return_value=self._failed_classification("d" * 64)
+        )
+        file_storage.store_file = AsyncMock(
+            return_value={"storage_key": "evidence/case_x/mystery.txt"}
+        )
+        file_storage.mark_linked = AsyncMock(return_value=True)
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+        return service, repo, case
+
+    @staticmethod
+    async def _upload_that_fails(service, case):
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(
+                query="what is this?",
+                attachments=[
+                    Attachment(
+                        content=b"ambiguous",
+                        filename="mystery.txt",
+                        content_type="text/plain",
+                        source_metadata={"source_type": "file_upload"},
+                    )
+                ],
+            ),
+        )
+
+    @staticmethod
+    async def _unrelated(service, case, text):
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(query=text),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_diverted_user_can_still_answer_two_turns_later(
+        self, wired, preprocessing_service
+    ):
+        service, repo, case = wired
+
+        # ---- turn 1: the upload fails classification, choices are offered.
+        await self._upload_that_fails(service, case)
+        saved = await repo.get(case.case_id)
+        only = saved.uploaded_files[0].file_id
+        assert self._clarified_file_ids(saved.last_suggestions) == [only]
+        answer = next(
+            s["payload"]
+            for s in saved.last_suggestions
+            if s["intent"]["data_type"] == "documentation"
+        )
+
+        # ---- turns 2 and 3: the user ignores the question entirely.
+        await self._unrelated(service, case, "is the connection pool maxed out?")
+        saved = await repo.get(case.case_id)
+        assert self._clarified_file_ids(saved.last_suggestions) == [
+            only
+        ], "an ignored question must not delete the recovery path"
+
+        await self._unrelated(service, case, "what about replication lag?")
+        saved = await repo.get(case.case_id)
+        assert self._clarified_file_ids(saved.last_suggestions) == [only]
+
+        # ---- turn 4: they come back to it and type the choice.
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(query=answer),
+        )
+        assert "Got it" in response.agent_response
+        preprocessing_service.reclassify_evidence.assert_awaited_once()
+        assert (
+            preprocessing_service.reclassify_evidence.call_args.kwargs["user_override"]
+            == DataType.DOCUMENTATION
+        )
+
+        # Answered: nothing is left pending.
+        saved = await repo.get(case.case_id)
+        assert self._clarified_file_ids(saved.last_suggestions) == []
+
+    @pytest.mark.asyncio
+    async def test_the_question_is_off_the_menu_once_the_window_closes(
+        self, wired, preprocessing_service
+    ):
+        """The bound has to BITE, or #1245's fix is just unbounded growth
+        with a nicer docstring: a question nobody answered stops being
+        answerable, and the typed reply flows on as an ordinary turn.
+
+        Three diverting turns is a LITERAL, for the reason spelled out on
+        ``test_the_question_expires_at_the_end_of_its_window``.
+        """
+        assert _CLARIFICATION_CARRY_TURNS == 3
+        service, repo, case = wired
+
+        await self._upload_that_fails(service, case)
+        saved = await repo.get(case.case_id)
+        answer = next(
+            s["payload"]
+            for s in saved.last_suggestions
+            if s["intent"]["data_type"] == "documentation"
+        )
+
+        for n in range(3):
+            await self._unrelated(service, case, f"unrelated question {n}")
+        saved = await repo.get(case.case_id)
+        assert saved.last_suggestions is None
+
+        response = await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(query=answer),
+        )
+        assert "Got it" not in response.agent_response
+        preprocessing_service.reclassify_evidence.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_two_single_failure_turns_do_not_mint_the_same_label_twice(
+        self, wired
+    ):
+        """The emitter's disambiguation premise was "more than one attachment
+        failed THIS TURN". Once a question outlives its turn that is the
+        wrong question: two single-failure turns would each mint a bare
+        "Documentation" for a different file, and ``_exact_match`` returns
+        the first — resolving the newer answer onto the older file."""
+        service, repo, case = wired
+
+        await self._upload_that_fails(service, case)
+        await service.process_turn(
+            case_id=case.case_id,
+            user_id="user_owner",
+            payload=TurnPayload(
+                query="here is another one",
+                attachments=[
+                    Attachment(
+                        content=b"also ambiguous",
+                        filename="second.txt",
+                        content_type="text/plain",
+                        source_metadata={"source_type": "file_upload"},
+                    )
+                ],
+            ),
+        )
+
+        saved = await repo.get(case.case_id)
+        assert len(self._clarified_file_ids(saved.last_suggestions)) == 2
+        labels = [s["label"] for s in saved.last_suggestions]
+        assert len(labels) == len(set(labels)), f"ambiguous labels: {labels}"
+
+        resolver = IntentResolver(MagicMock())
+        second = next(
+            f.file_id for f in saved.uploaded_files if f.filename == "second.txt"
+        )
+        matched = resolver._exact_match(
+            "Documentation (second.txt, turn 2)", saved.last_suggestions
+        )
+        assert matched is not None and matched["file_id"] == second
+
+    @pytest.mark.asyncio
+    async def test_two_pastes_from_different_turns_are_told_apart(
+        self, repo_with_case, preprocessing_service, file_storage
+    ):
+        """The qualifier's uniqueness rested on "a turn mints at most ONE
+        synthetic name" (#1198) — true within a turn, and no longer the
+        question once a question outlives its turn. Two pastes are both
+        "pasted text": the names are OURS, so nothing but the turn can
+        separate them, and two identical lines in the resolver's numbered
+        choice list point at different files.
+        """
+        repo, case = repo_with_case
+        case.uploaded_files = []
+        case.evidence = []
+        hashes = iter(["e" * 64, "f" * 64])
+        preprocessing_service.classify_and_extract = AsyncMock(
+            side_effect=lambda *a, **k: self._failed_classification(next(hashes))
+        )
+        blobs = iter([{"storage_key": f"evidence/case_x/p{i}.txt"} for i in range(2)])
+        file_storage.store_file = AsyncMock(side_effect=lambda *a, **k: next(blobs))
+        file_storage.mark_linked = AsyncMock(return_value=True)
+        service = InvestigationService(
+            milestone_engine=MockMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+
+        for turn in (1, 2):
+            await service.process_turn(
+                case_id=case.case_id,
+                user_id="user_owner",
+                payload=TurnPayload(
+                    query=f"paste {turn}",
+                    attachments=[
+                        Attachment(
+                            content=f"NAME READY\nsvc-{turn} 1/1".encode(),
+                            filename=f"pasted-content-2026071{turn}T083214.txt",
+                            content_type="text/plain",
+                            source_metadata={"source_type": "text_paste"},
+                        )
+                    ],
+                ),
+            )
+
+        saved = await repo.get(case.case_id)
+        assert len(self._clarified_file_ids(saved.last_suggestions)) == 2
+        labels = [s["label"] for s in saved.last_suggestions]
+        assert len(labels) == len(set(labels)), f"ambiguous labels: {labels}"
+        # Turn 1's were minted when nothing else was on offer, so they keep
+        # the bare wording the user saw; turn 2's name their turn. Different
+        # strings, and each is the one the user was shown.
+        first, second = (f.file_id for f in saved.uploaded_files)
+        resolver = IntentResolver(MagicMock())
+        assert (
+            resolver._exact_match("Documentation", saved.last_suggestions)["file_id"]
+            == first
+        )
+        assert (
+            resolver._exact_match(
+                "Documentation (pasted text, turn 2)", saved.last_suggestions
+            )["file_id"]
+            == second
+        )
+
+
+def _stored_entry(
+    file_id,
+    *,
+    offered_turn=1,
+    offered_data_type=None,
+    data_type="documentation",
+    intent_type=None,
+    label=None,
+):
+    """A ``last_suggestions`` entry in the shape the write site persists."""
+    return {
+        "label": label if label is not None else f"Documentation ({file_id})",
+        "action_type": "DECIDE",
+        "payload": f"Treat {file_id} as documentation.",
+        "body": "Treat as documentation.",
+        "intent": {
+            "type": intent_type or IntentType.FILE_RECLASSIFICATION.value,
+            "file_id": file_id,
+            "data_type": data_type,
+        },
+        "offered_turn": offered_turn,
+        "offered_data_type": offered_data_type,
+    }
+
+
+def _case_holding(*file_ids, current_turn=1, state=CaseState.INQUIRY, **kw):
+    """A case whose ``uploaded_files`` are exactly ``file_ids``.
+
+    The referent check reads ``UploadedFile.data_type``, so a case that does
+    not hold the file makes every clarification for it dead — which is why
+    every carry-forward test has to build one.
+    """
+    case = create_sample_case(current_turn=current_turn, state=state, **kw)
+    case.uploaded_files = [make_uploaded_file(file_id=f) for f in file_ids]
+    case.evidence = []
+    return case
+
+
+class TestCarryForwardSelection:
+    """Direct coverage of which stored entries survive into the next turn.
+
+    The end-to-end flow above exercises the common shape; these pin the
+    selection rules themselves.
+    """
+
+    _A, _B = "file_aaaaaaaaaaaa", "file_bbbbbbbbbbbb"
+
+    def test_an_ignored_question_survives_a_turn_that_resolved_nothing(self):
+        """#1245: a reply that is neither a choice nor a reclassification
+        used to rebuild the list from that turn's own output, dropping the
+        standing question and leaving the attachment misclassified with no
+        server-side recovery path."""
+        case = _case_holding(self._A, current_turn=1)
+        stored = [_stored_entry(self._A, offered_turn=1)]
+        assert _carry_forward_unresolved_clarifications(
+            stored, case, None, as_of_turn=2
+        ) == [stored[0]]
+
+    def test_the_question_expires_at_the_end_of_its_window(self):
+        """The bound, from both sides: still on offer on the last turn of the
+        window, gone on the next. Without it an ignored question never
+        expires and the resolver's choice list grows without limit.
+
+        The turn numbers are LITERAL. Deriving them from
+        ``_CLARIFICATION_CARRY_TURNS`` makes the test agree with whatever the
+        constant says, so widening the window to 10_000 would still pass —
+        which is not a bound, it is a restatement.
+        """
+        assert _CLARIFICATION_CARRY_TURNS == 3, (
+            "the window is part of the contract — changing it is a deliberate "
+            "act that must update these turn numbers too"
+        )
+        case = _case_holding(self._A, current_turn=1)
+        stored = [_stored_entry(self._A, offered_turn=1)]
+
+        # Offered on turn 1: answerable on turns 2, 3 and 4.
+        for as_of in (2, 3, 4):
+            assert (
+                _carry_forward_unresolved_clarifications(
+                    stored, case, None, as_of_turn=as_of
+                )
+                == stored
+            ), f"still within the window at turn {as_of}"
+        assert (
+            _carry_forward_unresolved_clarifications(stored, case, None, as_of_turn=5)
+            == []
+        )
 
     def test_the_resolved_file_is_dropped_and_the_rest_kept(self):
-        a, b = self._entry("file_aaaaaaaaaaaa"), self._entry("file_bbbbbbbbbbbb")
+        case = _case_holding(self._A, self._B)
+        a, b = _stored_entry(self._A), _stored_entry(self._B)
         assert _carry_forward_unresolved_clarifications(
-            [a, b], "file_aaaaaaaaaaaa", set()
+            [a, b], case, self._A, as_of_turn=2
         ) == [b]
 
-    def test_a_file_reoffered_this_turn_is_not_carried_twice(self):
-        a, b = self._entry("file_aaaaaaaaaaaa"), self._entry("file_bbbbbbbbbbbb")
+    def test_a_file_reclassified_out_of_band_stops_being_offered(self):
+        """fm#918 exposure 1: nothing outside ``process_turn`` rewrites
+        ``last_suggestions``, so a file resolved through another path would
+        keep its choices armed. The file's ``data_type`` is the marker —
+        only reclassification writes it after intake."""
+        case = _case_holding(self._A)
+        case.uploaded_files = [make_uploaded_file(file_id=self._A, data_type="logs")]
+        armed = _stored_entry(self._A, offered_data_type=None)
+        assert (
+            _carry_forward_unresolved_clarifications([armed], case, None, as_of_turn=2)
+            == []
+        )
+        # Positive control: unchanged since the offer, it IS still carried.
+        still_open = _stored_entry(self._A, offered_data_type="logs")
+        assert _carry_forward_unresolved_clarifications(
+            [still_open], case, None, as_of_turn=2
+        ) == [still_open]
+
+    def test_a_file_the_case_no_longer_holds_is_dropped(self):
+        case = _case_holding(self._B)
         assert (
             _carry_forward_unresolved_clarifications(
-                [a, b], "file_aaaaaaaaaaaa", {"file_bbbbbbbbbbbb"}
+                [_stored_entry(self._A)], case, None, as_of_turn=2
+            )
+            == []
+        )
+
+    def test_a_terminal_case_offers_no_clarification(self):
+        """The handler refuses to reclassify on a closed case (422), so
+        minting the intent would turn an ordinary typed message into an
+        error response."""
+        case = _case_holding(self._A).model_copy(
+            update={"state": CaseState.CLOSED, "closed_at": datetime.now(UTC)}
+        )
+        assert case.is_terminal
+        assert (
+            _carry_forward_unresolved_clarifications(
+                [_stored_entry(self._A)], case, None, as_of_turn=2
             )
             == []
         )
 
     def test_non_clarification_intents_do_not_outlive_their_turn(self):
         """An engine follow-up was about the turn that produced it."""
-        follow_up = self._entry(
-            "file_bbbbbbbbbbbb", intent_type=IntentType.CONFIRMATION.value
+        case = _case_holding(self._B)
+        follow_up = _stored_entry(
+            self._B, intent_type=IntentType.CONFIRMATION.value, offered_turn=1
         )
         assert (
             _carry_forward_unresolved_clarifications(
-                [follow_up], "file_aaaaaaaaaaaa", set()
+                [follow_up], case, self._A, as_of_turn=2
             )
             == []
         )
 
     def test_entries_without_intent_or_file_id_are_skipped(self):
+        case = _case_holding(self._A, self._B)
         malformed = [
-            {"label": "no intent", "action_type": "DECIDE"},
-            {"label": "no file", "intent": {"type": "file_reclassification"}},
+            {"label": "no intent", "action_type": "DECIDE", "offered_turn": 1},
+            {
+                "label": "no file",
+                "intent": {"type": "file_reclassification"},
+                "offered_turn": 1,
+            },
         ]
         assert (
             _carry_forward_unresolved_clarifications(
-                malformed, "file_aaaaaaaaaaaa", set()
+                malformed, case, self._A, as_of_turn=2
             )
             == []
         )
 
     def test_empty_history_is_safe(self):
-        assert _carry_forward_unresolved_clarifications(None, "file_a", set()) == []
-        assert _carry_forward_unresolved_clarifications([], "file_a", set()) == []
+        case = _case_holding(self._A)
+        assert (
+            _carry_forward_unresolved_clarifications(None, case, "f", as_of_turn=2)
+            == []
+        )
+        assert (
+            _carry_forward_unresolved_clarifications([], case, "f", as_of_turn=2) == []
+        )
+
+
+class TestSuggestionLiveness:
+    """The stamp, and what an absent or impossible one means."""
+
+    _A = "file_aaaaaaaaaaaa"
+
+    def test_an_unstamped_entry_is_not_live(self):
+        """Rows persisted before the stamp existed, and anything a non-turn
+        writer left behind, are the same epistemic position: nothing here
+        knows what turn they belong to."""
+        case = _case_holding(self._A)
+        legacy = _stored_entry(self._A)
+        del legacy["offered_turn"]
+        assert _live_suggestions([legacy], case, as_of_turn=2) == []
+        # Positive control: the identical entry WITH a stamp is live.
+        assert _live_suggestions([_stored_entry(self._A)], case, as_of_turn=2) != []
+
+    def test_a_boolean_is_not_a_turn_number(self):
+        """``bool`` is an ``int`` subclass, so ``True`` would age as turn 1."""
+        case = _case_holding(self._A)
+        entry = _stored_entry(self._A)
+        entry["offered_turn"] = True
+        assert _live_suggestions([entry], case, as_of_turn=2) == []
+
+    def test_a_stamp_from_the_future_is_not_live(self):
+        case = _case_holding(self._A)
+        assert (
+            _live_suggestions(
+                [_stored_entry(self._A, offered_turn=9)], case, as_of_turn=2
+            )
+            == []
+        )
+
+    def test_a_follow_up_dies_one_turn_after_it_was_offered(self):
+        """fm#918 exposure 2: the engine appends ``turn_history`` at Step 6
+        and saves at Step 7, so a row committed when the final assignment
+        never ran carries turn N in the persisted counter beside a stamp of
+        N-1. On the retry turn that ages to 2 — out of window — so a typed
+        "yes" cannot consent to a proposal that no longer exists."""
+        case = _case_holding(self._A)
+        follow_up = _stored_entry(
+            self._A, intent_type=IntentType.CONFIRMATION.value, offered_turn=5
+        )
+        assert _live_suggestions([follow_up], case, as_of_turn=6) == [follow_up]
+        assert _live_suggestions([follow_up], case, as_of_turn=7) == []
+
+
+class TestClarificationSpanCap:
+    """The hard bound on the resolver's choice list."""
+
+    def test_the_span_is_capped_and_the_oldest_offer_is_evicted(self):
+        entries = [
+            _stored_entry(f"file_{n}", offered_turn=turn)
+            for n, turn in [("d", 4), ("c", 3), ("b", 2), ("a", 1)]
+        ]
+        kept = _cap_clarification_span(entries)
+        assert [_entry_file_id(e) for e in kept] == ["file_d", "file_c", "file_b"]
+        assert len(kept) == _CLARIFICATION_SPAN_CAP
+
+    def test_an_attachment_is_admitted_or_dropped_whole(self):
+        """Keeping some of an attachment's choices leaves a menu that looks
+        complete and silently no longer offers the dropped option."""
+        entries = [
+            _stored_entry("file_d", offered_turn=4, label="Logs (d)"),
+            _stored_entry("file_d", offered_turn=4, label="Something else (d)"),
+            _stored_entry("file_c", offered_turn=3),
+            _stored_entry("file_b", offered_turn=2),
+            _stored_entry("file_a", offered_turn=1),
+        ]
+        kept = _cap_clarification_span(entries)
+        assert [_entry_file_id(e) for e in kept] == [
+            "file_d",
+            "file_d",
+            "file_c",
+            "file_b",
+        ]
+
+    def test_eviction_is_stable_for_offers_from_the_same_turn(self):
+        entries = [_stored_entry(f"file_{n}", offered_turn=7) for n in "abcd"]
+        kept = _cap_clarification_span(entries)
+        assert [_entry_file_id(e) for e in kept] == ["file_a", "file_b", "file_c"]
 
 
 class TestQueryIntentValidation:

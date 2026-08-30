@@ -42,7 +42,7 @@ Submitted content can have overlapping characteristics (logs contain errors, met
 2. **Robustness** — graceful degradation on ambiguous cases.
 3. **Speed** — <100 ms, zero LLM calls in Tier 0.
 4. **Explainability** — every decision carries a `source` tag (user_override / agent_hint / source_url / browser_context / rule_based / rule_based_best_effort).
-5. **Cooperative-clarification fallback** — when confidence falls below 0.50 the classifier sets `classification_failed=True` and populates `suggested_types`. The agent still runs the turn best-effort on the raw file; after the turn, `InvestigationService` injects DECIDE suggestions the user can click to re-prompt with the correct type.
+5. **Cooperative-clarification fallback** — when confidence falls below 0.50 the classifier sets `classification_failed=True` and populates `suggested_types`. The agent still runs the turn best-effort on the raw file; after the turn, `InvestigationService` injects DECIDE suggestions — one set per failed attachment — that reclassify the file mechanically when clicked or typed.
 
 ### Architectural Position
 
@@ -381,12 +381,29 @@ Every classification_failed path populates `ClassificationResult.suggested_types
 - Content: a user-facing text like `[Classification uncertain for 'foo.csv' — requesting user input] Suggested types: metrics_and_performance, unstructured_text`
 - `extraction_metadata.suggested_types`: list of candidate DataType values (as strings)
 
-The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `InvestigationService._build_classification_clarification` injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`:
+The agent still runs the turn using its file-reading tools (`search_file`, `deep_analysis`), producing a best-effort answer from the raw bytes. After the turn runs, `InvestigationService._build_classification_clarification` injects **DECIDE suggestions** ahead of the engine's follow-ups in `TurnResponse.suggested_actions`.
 
-- Up to 3 pre-composed click-to-send messages, one per suggested type: *"Treat the previously uploaded file ('foo.csv') as metrics or performance data and analyze it."*
-- Plus a **"Something else"** fallback that submits *"Treat the previously uploaded file as unstructured text and try to analyze it."*
+**One set of cards per failed attachment, not per turn.** The `files` cap is `maxItems: 1`, but `pasted_content` is a separate form field that legitimately rides alongside a file, and the paste arm reaches `classification_failed` on its own — so a turn carries up to **two** attachments and both can fail. Each failed attachment gets up to 3 type-specific cards plus a **"Something else"** fallback, so a paste+file turn where both fell below threshold emits up to **8** cards spanning two attachments (#1222). The emitter does not reason from any field's cap; it clarifies whatever failed.
 
-When the user clicks a card, the next turn runs normally with the pre-composed message. The agent reads the raw file again with the user-provided type hint in its context. No re-classification at the classifier layer, no Evidence mutation, no new LLM integration — deterministic post-turn injection using the existing DECIDE suggestion plumbing.
+Each card carries:
+
+| Field | Content |
+|---|---|
+| `payload` | The click-to-send message, naming the attachment the way the **user** knows it (`_clarification_subject`): a real file is *"Treat the file you shared (\"foo.csv\") as metrics or performance data."*; a paste is *"Treat the text you pasted as …"*, a capture *"Treat the page you captured as …"*. Never the minted `pasted-content-<ts>.txt` transport name (#1198/#666). |
+| `label` | The button. Bare (*"Metrics"*) while one attachment is on offer; otherwise qualified with the attachment's short name — *"Metrics (foo.csv)"*, *"Metrics (pasted text)"* — because two cards reading *"Metrics"* are indistinguishable both on screen and in the resolver's numbered choice list. When the set spans **turns**, the qualifier also carries the turn (*"Metrics (pasted text, turn 4)"*): two pastes are both "pasted text", so only the turn separates them. |
+| `intent` | The engine-owned `file_reclassification` intent — `{"type": "file_reclassification", "file_id": …, "data_type": …}`. |
+
+**The intent is the contract, not the text.** Every card has carried a `file_reclassification` intent since the cross-client resolution contract landed. Clients forward it on click, and the SERVICE handler (`_handle_file_reclassification`) re-runs preprocessing under `user_override` **mechanically — no LLM call**, so the choice can never be misread as an analysis request (e.g. deep-analyzing the file instead of re-labeling it). The `payload` remains the human-readable record of the choice; intent routing takes precedence over it server-side. A user who *types* a choice instead of clicking reaches the same handler through `IntentResolver` — see [choice-response-resolution.md](../investigation-engine/choice-response-resolution.md).
+
+**The question outlives its turn, for a bounded number of turns.** `case.last_suggestions` is server-side memory (never rendered — the cards come from the TurnResponse), and it is rebuilt every turn, so a clarification the user did not answer used to vanish the moment anything else happened: answering one of two questions deleted the other (#1222), and ignoring the question entirely deleted it outright (#1245). Every stored entry now carries the turn that offered it (`offered_turn`) and the target file's `data_type` at that moment (`offered_data_type`), and an unanswered clarification is carried forward while all of:
+
+- it is at most `_CLARIFICATION_CARRY_TURNS` (**3**) turns old — offered on turn *T*, answerable on *T+1…T+3*;
+- at most `_CLARIFICATION_SPAN_CAP` (**3**) attachments are on offer, newest offer first, whole attachments admitted or dropped;
+- the target file is still in the case, the case is not terminal, and the file's `data_type` still matches `offered_data_type` — a change means the file was reclassified by *some* path, so the question is answered, whoever answered it.
+
+Engine follow-ups (confirmation, status transition) are not clarifications and expire after one turn. An entry with no `offered_turn` is treated as expired: it was not written by the turn seam, so nothing knows what turn it belongs to.
+
+When the user clicks a card, the next turn resolves the intent structurally. No re-classification at the classifier layer, no new LLM integration — deterministic post-turn injection using the existing DECIDE suggestion plumbing.
 
 A rejected alternative: an "LLM rescue" pass that would auto-classify ambiguous files via a cheap LLM call. Rejected because DECIDE suggestions are zero-cost, user-authoritative (ground truth), and have no telemetry prerequisite. See [data-preprocessing-design-specification.md](./data-preprocessing-design-specification.md) §2.5.
 
@@ -416,4 +433,4 @@ This lets us query classification distributions (e.g., "what fraction of turns h
 ## Future Work
 
 - **Classification telemetry dashboard.** Use the Opik tags above to visualise classification outcomes over time and flag pattern drift (e.g., new URL patterns that should be added, command-output variants that are being missed).
-- **Cooperative-clarification "pick one" visual grouping** (frontend UX polish). Today 3–4 clarification suggestions render as a flat list of clickable bullets — functionally correct but not visually framed as mutually-exclusive alternatives. A dedicated `<ClarificationGroup>` component with a "Is this …?" header would improve discoverability. Tracked as a Dashboard/Copilot frontend task; not blocking any backend behavior.
+- **Cooperative-clarification "pick one" visual grouping** (frontend UX polish). Today up to 8 clarification suggestions — 3–4 per failed attachment, and a turn can carry two — render as a flat list of clickable bullets. Functionally correct, but not framed as mutually-exclusive alternatives, and with two attachments in play the grouping is carried only by the label qualifier (*"Metrics (foo.csv)"* vs *"Metrics (pasted text)"*). A `<ClarificationGroup>` component per attachment, with an "Is this …?" header naming its subject, would improve discoverability and make the per-attachment structure visible rather than inferred. Tracked as a Dashboard/Copilot frontend task; not blocking any backend behavior.

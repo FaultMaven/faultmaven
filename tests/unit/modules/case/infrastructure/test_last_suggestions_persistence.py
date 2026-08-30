@@ -39,7 +39,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.infrastructure.persistence.models import Base
-from faultmaven.modules.case.domain.models import Case
+from faultmaven.modules.agent.domain.services.investigation_service import (
+    _live_suggestions,
+)
+from faultmaven.modules.case.domain.models import Case, UploadedFile
 from faultmaven.modules.case.infrastructure.postgresql_hybrid_case_repository import (
     PostgreSQLHybridCaseRepository,
 )
@@ -94,6 +97,15 @@ def _clarification_suggestions() -> list[dict]:
     ``investigation_service.py`` for a classification clarification: the
     stored dicts carry ``action_type`` (not ``type``) plus the engine-owned
     ``file_reclassification`` intent.
+
+    They also carry the liveness bookkeeping added for #1245 —
+    ``offered_turn`` and ``offered_data_type``. Those keys are what bound the
+    carried set and what tells a live offer from one a non-turn writer left
+    behind, so a repository that drops them does not merely lose detail: the
+    reader treats an unstamped entry as expired, and typed choice-matching
+    goes dead on that backend only. Included in the shared fixture rather
+    than in one dedicated test so EVERY assertion in this module is an
+    assertion about the full stored shape.
     """
     return [
         {
@@ -106,6 +118,8 @@ def _clarification_suggestions() -> list[dict]:
                 "file_id": "file_0d4bea692dd1",
                 "data_type": "logs_and_errors",
             },
+            "offered_turn": 3,
+            "offered_data_type": "text",
         },
         {
             "label": "Something else",
@@ -117,6 +131,8 @@ def _clarification_suggestions() -> list[dict]:
                 "file_id": "file_0d4bea692dd1",
                 "data_type": "unstructured_text",
             },
+            "offered_turn": 3,
+            "offered_data_type": "text",
         },
     ]
 
@@ -273,6 +289,79 @@ class TestPostgresLastSuggestionsPersistence:
         case = await repo._row_to_case(_pg_row({}))
 
         assert case.last_suggestions is None
+
+
+@pytest.mark.unit
+class TestTurnStampSurvivesBothBackends:
+    """#1245's bound is only as durable as its stamp.
+
+    A stamp that survives SQLite and is dropped in PostgreSQL is a silent
+    tenancy-dependent bug: every local test would report "expiry works" while
+    the cloud backend reloads unstamped entries, which the liveness rule
+    reads as expired — so typed choice-matching dies on that backend and
+    nowhere else. Both sides are checked here, and both are checked by
+    running the real reader over the reloaded value rather than by
+    eyeballing the dict.
+    """
+
+    @staticmethod
+    def _case_with_the_file(case: Case) -> Case:
+        """The clarification's target file, unchanged since the offer.
+
+        ``_live_suggestions`` compares the file's current ``data_type``
+        against the stamped one, so the case has to actually hold the row.
+        """
+        case.uploaded_files = [
+            UploadedFile(
+                file_id="file_0d4bea692dd1",
+                filename="pasted-content-20260713T083214.txt",
+                size_bytes=100,
+                storage_ref="evidence/case_x/paste.txt",
+                uploaded_at_turn=3,
+                data_type="text",
+            )
+        ]
+        return case
+
+    @pytest.mark.asyncio
+    async def test_sqlite_reloads_a_live_offer(self, repository):
+        case = self._case_with_the_file(_make_case(current_turn=3))
+        case.last_suggestions = _clarification_suggestions()
+        await repository.save(case)
+
+        reloaded = await repository.get(case.case_id)
+        assert [s["offered_turn"] for s in reloaded.last_suggestions] == [3, 3]
+        assert (
+            _live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=4)
+            == reloaded.last_suggestions
+        )
+        # Positive control: the same reloaded value IS out of window later.
+        assert (
+            _live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=7) == []
+        )
+
+    @pytest.mark.asyncio
+    async def test_postgres_reloads_a_live_offer(self):
+        repo = _pg_repo()
+        repo._load_case_actions = AsyncMock(return_value=[])
+        case = self._case_with_the_file(_make_case(current_turn=3))
+        case.last_suggestions = _clarification_suggestions()
+
+        params = repo._case_record_params(case, datetime.now(timezone.utc))
+        reloaded = await repo._row_to_case(_pg_row(json.loads(params["metadata"])))
+        # ``uploaded_files`` ride a separate column the stub row nulls out;
+        # the point under test is the metadata bag, so restore the row the
+        # referent check reads.
+        reloaded = self._case_with_the_file(reloaded)
+
+        assert [s["offered_turn"] for s in reloaded.last_suggestions] == [3, 3]
+        assert (
+            _live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=4)
+            == reloaded.last_suggestions
+        )
+        assert (
+            _live_suggestions(reloaded.last_suggestions, reloaded, as_of_turn=7) == []
+        )
 
 
 @pytest.mark.unit
