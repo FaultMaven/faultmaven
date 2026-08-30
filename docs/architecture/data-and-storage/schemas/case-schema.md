@@ -1140,6 +1140,8 @@ COMMENT ON TABLE reports IS 'Auto-generated case-summary documents (resolution /
 **Design Notes**:
 
 - `report_type` is restricted to `resolution_summary` and `closure_summary`. Runbooks are reusable knowledge and live in `knowledge_items`; per-case incident-report and post-mortem types are not part of the schema.
+- The Python `ReportType` enum is deliberately **wider** than this CHECK: it also carries `runbook`, which is API/projection surface (`GET /cases/{id}/reports?report_type=runbook` projects case-linked `conversion_drafts` into the report shape) and is never a `reports` row. The storable subset is declared as `PERSISTED_REPORT_TYPES` in `modules/case/domain/owned_models/report.py`, and `tests/unit/modules/case/test_report_vocabulary.py` pins it against this CHECK and against the migration that owns it (fm#520).
+- `format` admits `markdown` and `html`. Nothing writes `html` today, but the Pydantic `CaseReport.format` must keep admitting it: the hydration path builds the model straight from the row, so a narrower type turns a storable row into a 500 on read (fm#520).
 - Versioning support: up to 5 versions per report_type per case (`reports_version_check`).
 - `is_current` flags the latest version of each `(case_id, report_type)` pair.
 - `linked_to_closure` marks reports attached during case closure.

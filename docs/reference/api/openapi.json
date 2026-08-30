@@ -1560,9 +1560,12 @@
             "type": "string"
           },
           "format": {
-            "const": "markdown",
             "default": "markdown",
             "description": "Report format",
+            "enum": [
+              "markdown",
+              "html"
+            ],
             "title": "Format",
             "type": "string"
           },

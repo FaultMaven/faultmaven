@@ -24,6 +24,7 @@ from faultmaven.modules.case.domain.owned_models.evidence import (
 
 # Report models (Case owns reports table per module-organization-design.md)
 from faultmaven.modules.case.domain.owned_models.report import (
+    PERSISTED_REPORT_TYPES,
     CaseClosureRequest,
     CaseClosureResponse,
     CaseReport,
@@ -47,6 +48,7 @@ __all__ = [
     "EvidenceListFilter",
     # Report models
     "ReportType",
+    "PERSISTED_REPORT_TYPES",
     "ReportStatus",
     "RunbookSource",
     "RunbookMetadata",

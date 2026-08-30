@@ -30,6 +30,7 @@ from faultmaven.infrastructure.observability.tracing import trace
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts).
 # Report models are Case-owned and live in case.contracts.
 from faultmaven.modules.case.contracts import (
+    PERSISTED_REPORT_TYPES,
     TERMINAL_HYPOTHESIS_STATES,
     Case,
     CaseReport,
@@ -115,9 +116,31 @@ class ReportGenerationService:
             ReportGenerationResponse with generated reports
 
         Raises:
-            ValidationException: If case not in valid state or regeneration limit exceeded
+            ValidationException: If a requested type is not a ``reports`` row,
+                the case is not in a valid state, or the regeneration limit is
+                exceeded
             LockAcquisitionError: If cannot acquire lock (another generation in progress)
         """
+        # Refuse a type the ``reports`` table cannot hold, before anything else
+        # and by name. ``ReportType`` is deliberately wider than
+        # ``reports_type_check`` (see PERSISTED_REPORT_TYPES), so
+        # ``report_types=["runbook"]`` is a request the OpenAPI schema accepts
+        # and no repository can commit. It used to fail four layers down, get
+        # swallowed by the per-type ``except Exception: continue`` below, and
+        # surface as "Failed to generate any reports" — the caller was told the
+        # generation failed rather than that the type is not generatable here.
+        # #520.
+        unsupported = [t for t in report_types if t not in PERSISTED_REPORT_TYPES]
+        if unsupported:
+            supported = sorted(t.value for t in PERSISTED_REPORT_TYPES)
+            raise ValidationException(
+                "invalid_report_type",
+                f"{', '.join(sorted(t.value for t in unsupported))} is not a "
+                f"generatable report type (supported: {', '.join(supported)}). "
+                f"Runbooks are produced by the conversion pipeline and live in "
+                f"the knowledge base, not the reports table.",
+            )
+
         # Validate case state
         self._validate_case_for_report_generation(case)
 
@@ -267,6 +290,11 @@ class ReportGenerationService:
             title = f"Closure Summary: {case.title}"
             auto_generated = True
         else:
+            # Unreachable via ``generate_reports``, which screens against
+            # PERSISTED_REPORT_TYPES up front. Kept as defence in depth for a
+            # future member of that set that arrives without a generator — and
+            # deliberately NOT the place the RUNBOOK refusal happens, because
+            # the caller of this method swallows exceptions per type.
             raise ValidationException(
                 "invalid_report_type", f"Unknown report type: {report_type}"
             )

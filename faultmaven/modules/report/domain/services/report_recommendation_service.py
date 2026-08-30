@@ -146,6 +146,12 @@ class ReportRecommendationService:
 
         # Both actions leave generation available — the user judges. (The
         # retired "reuse" action was the only one that withheld it.)
+        #
+        # RUNBOOK here means "you can make a runbook from this case", and the
+        # ConversionService is what makes it — NOT ``POST /reports/generate``,
+        # which refuses it by name because a runbook is not a ``reports`` row
+        # (see PERSISTED_REPORT_TYPES). The two summary types above are the ones
+        # this list offers to the report generator.
         available_types.append(ReportType.RUNBOOK)
 
         recommendation = ReportRecommendation(

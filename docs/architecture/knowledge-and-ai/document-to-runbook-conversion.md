@@ -874,6 +874,8 @@ class ConversionStatus(str, Enum):
     COMPLETED = "completed"
     PARTIAL = "partial"        # Some drafts failed validation
     FAILED = "failed"
+    CANCELLED = "cancelled"    # No writer; admitted by the CHECK, so it must
+                               # be parseable on read (fm#520)
 
 
 class DraftStatus(str, Enum):
