@@ -45,8 +45,12 @@ logger = logging.getLogger(__name__)
 try:
     import tiktoken
 
+    # Derived from the encoder, not asserted: `import tiktoken` succeeds
+    # against an empty leftover directory (PEP 420 namespace package), and a
+    # literal True there would survive the shadow. Building the encoder is the
+    # proof, and the broad handler below already covers the AttributeError.
     _ENCODING = tiktoken.get_encoding("cl100k_base")
-    _TIKTOKEN_AVAILABLE = True
+    _TIKTOKEN_AVAILABLE = _ENCODING is not None
 except Exception:  # tiktoken missing, or encoding download failed offline
     _ENCODING = None
     _TIKTOKEN_AVAILABLE = False

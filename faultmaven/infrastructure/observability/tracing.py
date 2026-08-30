@@ -61,6 +61,12 @@ except ImportError:
 try:
     import opik
 
+    # No `attr` deliberately. The symbols this module calls
+    # (set_tracing_active, reset_tracing_to_config_default) are version-
+    # sensitive, and probing one would turn an SDK rename into tracing
+    # silently switching OFF — #1121's defect class inverted. `__file__`
+    # cannot misfire that way. Callers whose symbol is stable (boto3.client,
+    # tiktoken.get_encoding) do pass one.
     OPIK_AVAILABLE = module_is_usable(opik)
     if OPIK_AVAILABLE:
         logging.debug("Opik SDK loaded successfully")

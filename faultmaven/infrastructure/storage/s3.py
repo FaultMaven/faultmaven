@@ -47,17 +47,21 @@ try:
     from botocore.exceptions import ClientError
 
     BOTO3_AVAILABLE = module_is_usable(boto3, "client")
-    if not BOTO3_AVAILABLE:
-        boto3 = None
-        BotoConfig = None
-        ClientError = Exception
-        logger.debug("boto3 resolved to a namespace package - S3 backend unavailable")
+    _boto3_reason = None if BOTO3_AVAILABLE else "resolved to a namespace package"
 except ImportError:
     BOTO3_AVAILABLE = False
+    _boto3_reason = "not installed"
+
+if not BOTO3_AVAILABLE:
+    # One cleanup for both causes — duplicating it meant a fifth symbol later
+    # had to be remembered twice. Note `ClientError = Exception` widens every
+    # `except ClientError` in this file to a catch-all; that is only sound
+    # because S3StorageBackend.__init__ refuses to construct when the flag is
+    # False, so none of those handlers is reachable in this state.
     boto3 = None
     BotoConfig = None
     ClientError = Exception
-    logger.debug("boto3 not installed - S3 backend unavailable")
+    logger.debug("boto3 %s - S3 backend unavailable", _boto3_reason)
 
 
 class S3StorageBackend(IFileStorageBackend):
