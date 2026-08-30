@@ -1255,6 +1255,44 @@ def _build_hash_first_seen(case) -> Dict[str, int]:
     return seen
 
 
+def _file_observed_attr(uf) -> str:
+    """Observation time for an un-promoted ``UploadedFile``.
+
+    States exactly what an Evidence row citing this file would inherit, and
+    nothing more: a POINT span only, the same guard
+    ``milestone_engine._evidence_coverage`` applies. Three reasons, and the
+    first decides it:
+
+    A RANGED span makes ``age`` a lie by omission. ``age`` is computed from the
+    span END, so a dump covering 12:00-19:45 whose symptom sits at 12:05 reads
+    ``age="3h"`` — masking exactly the staleness this machinery exists to
+    surface, which is why ``_evidence_coverage`` refuses ranged inheritance in
+    the first place. ``observed_through`` alone would be honest; the pair is
+    what the model reads.
+
+    A RANGED span is also where mis-parsed coverage lands.
+    ``extract_time_range_ts`` runs on every upload, ungated by data type, and
+    its ``epoch_s`` pattern is ``\b([12]\d{9})\b`` — so a config carrying
+    ``maxBytes: 2147483647`` parses as 2009-02-13 to 2038-01-19. The point-span
+    guard is what has kept those out of prompts; this block honours it rather
+    than becoming the one surface that does not.
+
+    And a span rendered here but refused on inheritance would be RETRACTED —
+    asserted while the file is an orphan, gone the turn an Evidence row cites
+    it. Matching the guard keeps the two renders agreeing.
+
+    Provenance is still unverified for point spans: a lone epoch-shaped integer,
+    or a yearless syslog line stamped with a synthetic year, both survive this.
+    That is the inheritance contract as it already ships, not something this
+    block invents — fixing it belongs where ``coverage_source`` is computed and
+    then dropped (``preprocessing_service`` to ``investigation_service``).
+    """
+    start = getattr(uf, "coverage_start_ts", None)
+    if start is None or start != getattr(uf, "coverage_end_ts", None):
+        return ""
+    return _observed_attr(uf)
+
+
 def _identical_to_prior_attr(uf, hash_first_seen: Dict[str, int]) -> str:
     """XML attribute marking a re-uploaded byte-identical file.
 
@@ -1335,8 +1373,14 @@ def _symptom_currency_note(case, indicator: str) -> str:
     )
 
 
-def _observed_attr(ev) -> str:
-    """XML attributes for WHEN the evidence's content was observed.
+def _observed_attr(item) -> str:
+    """XML attributes for WHEN the item's content was observed.
+
+    ``item`` is an Evidence row, or an ``UploadedFile`` via
+    :func:`_file_observed_attr`. The two arrive with different provenance — an
+    Evidence row's span was already filtered by ``_evidence_coverage``, a
+    file's is whatever the extractor parsed — so the caller does the gating and
+    this function only formats.
 
     Distinct from ``fresh_this_turn``, which is about when the AGENT saw the
     row — a two-hour-old alert pasted this turn is ``fresh_this_turn="true"``
@@ -1350,7 +1394,7 @@ def _observed_attr(ev) -> str:
     absence means unknown, never fresh, and the model must not read a missing
     attribute as an assurance.
     """
-    end_ts = getattr(ev, "coverage_end_ts", None)
+    end_ts = getattr(item, "coverage_end_ts", None)
     if end_ts is None:
         return ""
     if end_ts.tzinfo is None:
@@ -1492,8 +1536,23 @@ def _render_orphan_file_block(
     ``UploadedFile.display_name`` — the filename for a chosen file, "pasted
     text (turn N)" for a paste (#666).
 
+    ``observed_attr`` renders the file's observation instant (see
+    :func:`_file_observed_attr` for why a ranged span is withheld), the same
+    way the three ``<evidence>`` tiers render theirs. Without it this block emitted
+    ``fresh_this_turn`` alone — the half of the pair that answers "when did the
+    AGENT see this", never "how old is the observation" — which is precisely the
+    misreading :func:`_observed_attr` exists to break. It matters most here:
+    INV-07 forbids Evidence creation during INQUIRY, so turn 1 of every
+    forwarded alert is rendered by this function and by nothing else, and turn 1
+    is where "is this still firing?" decides whether there is an incident at
+    all. Note this is three of the FOUR ``<uploaded_file>`` renderers: the
+    degraded ``templates._fallback_stub_block`` still emits only the
+    addressable essentials and carries neither half of the pair, so it states
+    nothing misleading — it states nothing at all.
+
     ``summary_only=True`` emits just the opening/closing tag (id, label,
-    data_type, freshness, ``searchable``) without the ``file_extract`` body —
+    data_type, freshness, observation time, ``searchable``) without the
+    ``file_extract`` body —
     the graceful-degradation render used when a current-turn file can't fit its
     full structural index within the reserve. The file stays present and
     addressable (the LLM can still ``search_file`` it by ``file_id``) instead of
@@ -1514,11 +1573,12 @@ def _render_orphan_file_block(
     name_attr = _label_attr(uf)
     data_type_attr = _attr("data_type", uf.data_type)
     fresh_attr = _fresh_this_turn_attr(uf.uploaded_at_turn, current_turn)
+    observed_attr = _file_observed_attr(uf)
     duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
     entry = "  " + fence.open(
         "uploaded_file",
         f"{file_id_attr}{name_attr}"
-        f"{data_type_attr}{fresh_attr}{duplicate_attr}"
+        f"{data_type_attr}{fresh_attr}{observed_attr}{duplicate_attr}"
         f' searchable="true"',
     )
     entry += "\n"

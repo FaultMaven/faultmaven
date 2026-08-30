@@ -16,7 +16,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import _evidence_coverage
-from faultmaven.core.investigation.prompts.context_builder import _observed_attr
+from faultmaven.core.investigation.prompts.context_builder import (
+    _file_observed_attr,
+    _observed_attr,
+    _render_orphan_file_block,
+)
+from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -133,6 +138,31 @@ def test_future_coverage_withholds_the_age_instead_of_printing_a_negative():
     assert "age=" not in attr
 
 
+# -- the contract the model is given for reading any of it --------------------
+def test_the_prompt_defines_the_pair_it_renders():
+    """Rendering the attribute is half a fix. `fresh_this_turn` has had a stated
+    rule since it shipped; `observed_through`/`age` had none, so the documented
+    attribute had every reason to win the currency judgement — the original
+    defect wearing a new attribute."""
+
+    from faultmaven.core.investigation.prompts.templates import (
+        _EVIDENCE_GROUNDING_BLOCK,
+        INQUIRY_TEMPLATE,
+    )
+
+    # BOTH states. INV-07 keeps a forwarded alert un-promoted through INQUIRY,
+    # so turn 1 — where the age decides whether there is an incident at all —
+    # is rendered by the state whose template used to say nothing about it.
+    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+        # the pair, and which half governs currency
+        assert "observed_through" in block and "fresh_this_turn" in block
+        assert "not a contradiction" in block
+        # absence means unknown, never fresh — _observed_attr's own contract
+        assert "UNKNOWN" in block
+        # and the second element kind that carries them
+        assert "<uploaded_file>" in block
+
+
 # -- the clock that makes all of the above interpretable ----------------------
 def test_prompt_states_the_current_time():
     """Without this the model cannot compute an age at all: its own sense of
@@ -148,3 +178,98 @@ def test_prompt_states_the_current_time():
     identity = sections["identity"]
     assert "CURRENT_TIME:" in identity
     assert str(datetime.now(timezone.utc).year) in identity
+
+
+# -- the render an UN-PROMOTED file gets --------------------------------------
+# INV-07 forbids Evidence creation during INQUIRY, so a forwarded alert has no
+# Evidence row on turn 1 and is rendered by _render_orphan_file_block — shared
+# by the INQUIRY fallback, the INV-EC-1 current-turn floor and the Tier-D fill.
+# Every assertion above is about a row this file may never become.
+def _orphan(uf, turn=3, **kw) -> str:
+    return _render_orphan_file_block(
+        uf, {}, turn, fence=PromptFence(mint_token()), **kw
+    )
+
+
+def test_orphan_file_block_states_when_its_content_was_observed():
+    """The case that reopened this: an alert forwarded 7h35m after it fired was
+    rendered with ``fresh_this_turn="true"`` and nothing else, so the engine told
+    the reporter it had no firing time — while the instant sat on the file."""
+
+    posted = datetime.now(timezone.utc) - timedelta(hours=7, minutes=35)
+    block = _orphan(_file(posted, posted))
+
+    assert f'observed_through="{posted.isoformat()}"' in block
+    assert 'age="7h"' in block
+
+
+def test_orphan_file_block_renders_both_halves_of_the_pair():
+    """``fresh_this_turn`` answers when the AGENT looked, ``observed_through``
+    how old the observation is. Emitting the first alone is what made a stale
+    alert read as current."""
+
+    posted = datetime.now(timezone.utc) - timedelta(hours=2)
+    block = _orphan(_file(posted, posted))
+
+    assert 'fresh_this_turn="true"' in block
+    assert "observed_through=" in block
+
+
+def test_orphan_file_without_coverage_claims_nothing():
+    """Same contract as the evidence tiers: absent means unknown, never fresh."""
+
+    assert "observed_through=" not in _orphan(_file(None, None))
+
+
+def test_degraded_orphan_render_keeps_the_observation_time():
+    """``summary_only`` drops the body to fit the budget. Dropping the age with
+    it would make a budget decision silently change what the file claims."""
+
+    posted = datetime.now(timezone.utc) - timedelta(hours=7)
+    block = _orphan(_file(posted, posted), summary_only=True)
+
+    assert "file_extract" in block  # the degraded stub, not the content
+    assert 'age="7h"' in block
+
+
+def test_ranged_orphan_file_states_nothing():
+    """``age`` is computed from the span END, so a dump covering 12:00-19:45
+    whose symptom sits at 12:05 would read ``age="3h"`` — the staleness masking
+    ``_evidence_coverage`` refuses ranged inheritance to prevent."""
+
+    end = datetime.now(timezone.utc) - timedelta(hours=3)
+    block = _orphan(_file(end - timedelta(hours=7), end))
+
+    assert "observed_through=" not in block
+    assert "age=" not in block
+
+
+def test_the_two_renders_agree_on_what_may_be_claimed():
+    """The block states exactly what an Evidence row citing the file would
+    inherit. Anything wider is asserted on turn 1 and RETRACTED the turn the
+    row is written, when _evidence_coverage refuses it."""
+
+    point = datetime.now(timezone.utc) - timedelta(hours=7)
+    for f in (
+        _file(point, point),
+        _file(point - timedelta(hours=7), point),
+        _file(None, None),
+    ):
+        inheritable = _evidence_coverage(_case([f]), f.file_id) != (None, None)
+        assert bool(_file_observed_attr(f)) is inheritable
+
+
+def test_mis_parsed_epoch_coverage_never_reaches_the_prompt():
+    """``extract_time_range_ts`` runs on every upload, ungated by data type,
+    and its ``epoch_s`` pattern matches ordinary config integers. The point-span
+    guard is what keeps the resulting 29-year span out of the prompt."""
+
+    from faultmaven.modules.preprocessing.extractors.utils import (
+        extract_time_range_ts,
+    )
+
+    start, end, _ = extract_time_range_ts(
+        "serverId: 1234567890\nmaxBytes: 2147483647\n"
+    )
+    assert start is not None and start != end  # parsed as 2009-02-13 -> 2038-01-19
+    assert "observed_through=" not in _orphan(_file(start, end))
