@@ -17,6 +17,7 @@ import pytest
 
 from faultmaven.core.investigation.milestone_engine import _evidence_coverage
 from faultmaven.core.investigation.prompts.context_builder import (
+    _file_observed_attr,
     _observed_attr,
     _render_orphan_file_block,
 )
@@ -206,13 +207,44 @@ def test_degraded_orphan_render_keeps_the_observation_time():
     assert 'age="7h"' in block
 
 
-def test_ranged_orphan_file_reports_the_end_of_its_own_span():
-    """_evidence_coverage refuses to INHERIT a ranged span onto a narrower
-    slice. Stating a file's own span on the file's own block asserts nothing
-    about any slice, so it is rendered whatever its shape."""
+def test_ranged_orphan_file_states_nothing():
+    """``age`` is computed from the span END, so a dump covering 12:00-19:45
+    whose symptom sits at 12:05 would read ``age="3h"`` — the staleness masking
+    ``_evidence_coverage`` refuses ranged inheritance to prevent."""
 
     end = datetime.now(timezone.utc) - timedelta(hours=3)
     block = _orphan(_file(end - timedelta(hours=7), end))
 
-    assert f'observed_through="{end.isoformat()}"' in block
-    assert 'age="3h"' in block
+    assert "observed_through=" not in block
+    assert "age=" not in block
+
+
+def test_the_two_renders_agree_on_what_may_be_claimed():
+    """The block states exactly what an Evidence row citing the file would
+    inherit. Anything wider is asserted on turn 1 and RETRACTED the turn the
+    row is written, when _evidence_coverage refuses it."""
+
+    point = datetime.now(timezone.utc) - timedelta(hours=7)
+    for f in (
+        _file(point, point),
+        _file(point - timedelta(hours=7), point),
+        _file(None, None),
+    ):
+        inheritable = _evidence_coverage(_case([f]), f.file_id) != (None, None)
+        assert bool(_file_observed_attr(f)) is inheritable
+
+
+def test_mis_parsed_epoch_coverage_never_reaches_the_prompt():
+    """``extract_time_range_ts`` runs on every upload, ungated by data type,
+    and its ``epoch_s`` pattern matches ordinary config integers. The point-span
+    guard is what keeps the resulting 29-year span out of the prompt."""
+
+    from faultmaven.modules.preprocessing.extractors.utils import (
+        extract_time_range_ts,
+    )
+
+    start, end, _ = extract_time_range_ts(
+        "serverId: 1234567890\nmaxBytes: 2147483647\n"
+    )
+    assert start is not None and start != end  # parsed as 2009-02-13 -> 2038-01-19
+    assert "observed_through=" not in _orphan(_file(start, end))
