@@ -33,9 +33,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_DB = str(PROJECT_ROOT / "test_migration.db")
 
 # Current head revision
-HEAD_REVISION = (
-    "d8e9f0a1b2c3"  # current head (046 — conversion-draft runbook_id uniqueness)
-)
+HEAD_REVISION = "b2c3d4e5f6a7"  # current head (048 — conversion_jobs warnings)
 # Parent of the RBAC-seed migration (029). Downgrading here reverses the seed
 # (029) regardless of no-op migrations stacked above it — more robust than a
 # relative "downgrade -1", which follows whatever the current head is.
@@ -634,7 +632,13 @@ class TestConversionDraftRunbookIdUniquenessMigration:
             f"WHERE name = '{self._INDEX}'",
         ), "nothing to downgrade — the index was never created"
 
-        assert run_alembic("downgrade -1", database_url).returncode == 0
+        # Target 046's parent EXPLICITLY, for the reason the RBAC-seed test
+        # gives: a relative "downgrade -1" follows whatever the current head
+        # is, so the first migration stacked on top of 046 silently redirects
+        # it. 047 was that migration, and this is where it landed — one step
+        # back from the new head reversed 047 and left 046's index in place,
+        # so the assertion below saw revision 046 rather than 045.
+        assert run_alembic(f"downgrade {self._PARENT}", database_url).returncode == 0
         assert get_current_revision(database_url) == self._PARENT
         assert not query_rows(
             TEST_DB,

@@ -150,7 +150,7 @@ def safe_path_component(value: str | None, *, fallback: str = "unknown") -> str:
 
 
 def runbook_filename(title: str | None, document_id: str | None) -> str:
-    """Safe on-disk filename for a runbook, derived from its ``title``.
+    r"""Safe on-disk filename for a runbook, derived from its ``title``.
 
     ``title`` is caller-supplied — a form field on ``POST /knowledge/documents``
     and, on the suggestion-approval path, an LLM-generated ``suggested_title`` —
@@ -269,11 +269,25 @@ def runbook_id_from_parts(service: str | None, title: str | None) -> str:
       valid today, which is the one thing this change is not allowed to do.
 
     (Two long titles cut to the same 55 characters are NOT in that list — the
-    md5 disambiguator separates those.)
+    md5 is taken over the FULL slug, so it separates those. It is 4 hex
+    characters, i.e. 65536 values, so two distinct long slugs can still land on
+    one id; that is a residual of the length bound, not a shape of the slug
+    rule, and the guards below catch it the same way because they key on this
+    function's OUTPUT rather than on its inputs.)
 
-    Both are enforced where the other rows are visible: the partial unique
-    index on ``(organization_id, runbook_id)`` from migration 046, surfaced as
-    a 409 by ``ConversionService._raise_if_runbook_id_taken``.
+    Uniqueness is therefore not this function's job; it is enforced twice
+    downstream, once for each place another draft can be:
+
+    - **Against committed rows** — the partial unique index on
+      ``(organization_id, runbook_id)`` from migration 046, checked ahead of
+      the write by ``ConversionService.refuse_if_draft_slot_taken`` and
+      surfaced as a 409 by ``_raise_if_runbook_id_taken``.
+    - **Against the rest of its own job** — ``_partition_failure_modes``
+      (#1258). Nothing is committed while a multi-failure-mode conversion runs,
+      so the index and the re-read above are both blind to two drafts in ONE
+      job minting one id; that pair used to write both runbooks to a single
+      file and then fail the commit with a bare ``IntegrityError``. It is now
+      refused before either conversion runs.
 
     The md5 is a disambiguator, not a secret: its input is the slug (or, on the
     empty branch, the pair the caller supplied), neither of which the id hides.

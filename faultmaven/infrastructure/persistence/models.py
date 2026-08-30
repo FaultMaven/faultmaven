@@ -2335,6 +2335,11 @@ class ConversionJobModel(Base):
     source_type = Column(String(20), nullable=False, server_default="document")
     failure_modes_detected = Column(Integer, nullable=False, server_default="0")
     analysis_result = Column(JSON, nullable=True)
+    # Why a partial conversion is partial (migration 048). 047 made
+    # ``status='partial'`` storable; without this the reason lived only in the
+    # in-memory response and vanished on the next read. NULL means "no warnings
+    # recorded" (a pre-048 row), which ``get_conversion`` collapses to ``[]``.
+    warnings = Column(JSON, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -2349,7 +2354,14 @@ class ConversionJobModel(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('processing', 'completed', 'failed', 'cancelled')",
+            # ``'partial'`` (migration 047): ``ConversionStatus.PARTIAL`` is what
+            # ``convert_document`` selects for the ordinary outcome of a
+            # multi-failure-mode document — some drafts produced, some failure
+            # modes refused. The baseline CHECK omitted it, so that outcome
+            # could not be written and the commit failed with a bare
+            # ``IntegrityError``. Keep this list and ``ConversionStatus`` in
+            # step; ``'cancelled'`` is admitted but has no writer.
+            "status IN ('processing', 'completed', 'partial', 'failed', 'cancelled')",
             name="conversion_jobs_status_check",
         ),
         CheckConstraint(
