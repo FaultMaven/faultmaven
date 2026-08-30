@@ -369,6 +369,7 @@ def _transform_investigating(case: Case) -> CaseUIResponse_Investigating:
                     state=hyp.state,
                     evidence_count=len(hyp.evidence_links),
                     refutation_reason=hyp.refutation_reason,
+                    retirement_reason=hyp.retirement_reason,
                 )
             )
 

@@ -155,6 +155,7 @@ def _make_hypothesis(
     statement: str = "DNS cache stale",
     turn: int = 2,
     refutation_reason: str | None = None,
+    retirement_reason: str | None = None,
 ) -> Hypothesis:
     """Create a Hypothesis object.
 
@@ -173,6 +174,7 @@ def _make_hypothesis(
         rationale="DNS TTL expired",
         generated_at_turn=turn,
         refutation_reason=refutation_reason,
+        retirement_reason=retirement_reason,
     )
 
 
@@ -367,6 +369,44 @@ class TestTransformInvestigating:
             result.active_hypotheses[0].likelihood
             >= result.active_hypotheses[1].likelihood
         )
+
+    def test_retirement_reason_reaches_the_api_seam(self):
+        """A RETIRED hypothesis and a REFUTED one are different outcomes, and
+        the Hypotheses tab could not tell them apart: ``refutation_reason`` was
+        carried and ``retirement_reason`` was not. In the corpus the engine
+        discarding a hypothesis it never grounded is the LARGER cause of
+        hypothesis death (40 retired against 8 refuted in the corpus), so the
+        missing half was the more common one (#1142)."""
+        case = _make_investigating_case()
+        retired = _make_hypothesis(
+            state=HypothesisState.RETIRED,
+            likelihood=0.2,
+            statement="Disk pressure",
+            retirement_reason=(
+                "Anti-anchoring: retired a hypothesis that was never linked to evidence"
+            ),
+        )
+        refuted = _make_hypothesis(
+            state=HypothesisState.REFUTED,
+            likelihood=0.3,
+            statement="Network partition",
+            refutation_reason="packet capture shows consistent connectivity",
+        )
+        case.hypotheses[retired.hypothesis_id] = retired
+        case.hypotheses[refuted.hypothesis_id] = refuted
+
+        by_id = {
+            h.hypothesis_id: h for h in transform_case_for_ui(case).active_hypotheses
+        }
+
+        assert by_id[retired.hypothesis_id].retirement_reason == (
+            "Anti-anchoring: retired a hypothesis that was never linked to evidence"
+        )
+        assert by_id[retired.hypothesis_id].refutation_reason is None
+        # The sibling field must stay pinned to its own outcome, or the tab
+        # gains a column that is populated on every terminal hypothesis and
+        # distinguishes nothing.
+        assert by_id[refuted.hypothesis_id].retirement_reason is None
 
     def test_working_conclusion_from_best_hypothesis(self):
         case = _make_investigating_case()
