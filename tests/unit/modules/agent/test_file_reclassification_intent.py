@@ -1210,6 +1210,130 @@ def _case_holding(*file_ids, current_turn=1, state=CaseState.INQUIRY, **kw):
     return case
 
 
+class TestAClarificationClickCostsAWindowTurn:
+    """The one deliberate behaviour change in #1264, pinned.
+
+    ``CLARIFICATION_CARRY_TURNS = 3`` bounds how long an unanswered
+    classification question stays answerable. The window is measured on the
+    PERSISTED clock, and before #1264 a route that did not reach the engine — a
+    greeting, a clarification click, a terminal answer — consumed a turn number
+    without recording one, so the persisted clock stood still across it. The
+    effective reach was "3 engine turns, plus unlimited non-engine turns". It is
+    now 3 turns of any kind.
+
+    That is the constant meaning what it says. But it IS a behaviour change to
+    #1263's recovery path, and the product question — should a turn spent
+    elsewhere cost a question its window? — belongs to that lane's owner, not to
+    a turn-accounting fix. If the old reach is wanted, the lever is
+    ``CLARIFICATION_CARRY_TURNS``; the turn clock is not the place to buy it
+    back.
+
+    The two tests below differ by exactly one non-engine turn, so the delta
+    between them IS the semantics. Written after review caught that the
+    docstrings in ``suggestion_liveness`` and above
+    ``test_a_clarification_click_does_not_over_age_the_other_question`` named a
+    pinning test that did not exist: the change was documented, intended and
+    unprotected.
+    """
+
+    _clarified_file_ids = staticmethod(
+        TestRecoveryLoopSurvivesResolvingOneAttachment._clarified_file_ids
+    )
+    _upload_that_fails = staticmethod(
+        TestRecoveryLoopSurvivesAnIgnoredQuestion._upload_that_fails
+    )
+    _unrelated = staticmethod(TestRecoveryLoopSurvivesAnIgnoredQuestion._unrelated)
+    _failed_classification = staticmethod(
+        TestRecoveryLoopSurvivesAnIgnoredQuestion._failed_classification
+    )
+
+    @pytest.fixture
+    def wired(self, preprocessing_service, file_storage):
+        """BOTH recording doubles, and neither is optional.
+
+        ``MockCaseRepository`` stores the ``Case`` as handed to it, so the
+        ``effective_current_turn`` projection the real repositories apply never
+        happens. ``MockMilestoneEngine`` records no turn, so ``turn_history``
+        stays empty and ``effective_current_turn`` falls back to
+        ``current_turn`` — which makes the projection a no-op even when it IS
+        applied. Either double alone leaves the two counters unable to diverge,
+        and a window test built on them passes whether or not the turn clock
+        works. Verified: with the plain pair, removing the backstop entirely
+        left both tests below green.
+        """
+        repo = RecordingCaseRepository()
+        case = create_sample_case(user_id="user_owner")
+        case.uploaded_files = []
+        case.evidence = []
+        repo._storage[case.case_id] = case
+        preprocessing_service.classify_and_extract = AsyncMock(
+            return_value=self._failed_classification("d" * 64)
+        )
+        file_storage.store_file = AsyncMock(
+            return_value={"storage_key": "evidence/case_x/mystery.txt"}
+        )
+        file_storage.mark_linked = AsyncMock(return_value=True)
+        service = InvestigationService(
+            milestone_engine=RecordingMilestoneEngine(),
+            case_repository=repo,
+            preprocessing_service=preprocessing_service,
+            file_storage_service=file_storage,
+        )
+        return service, repo, case
+
+    @pytest.mark.asyncio
+    async def test_the_question_survives_three_engine_turns(
+        self, wired, preprocessing_service
+    ):
+        """The control. Offered on turn 1, read on turn 4: age 3, the last turn
+        in window."""
+        assert CLARIFICATION_CARRY_TURNS == 3
+        service, repo, case = wired
+
+        await self._upload_that_fails(service, case)
+        for n in range(2):
+            await self._unrelated(service, case, f"unrelated question {n}")
+
+        saved = await repo.get(case.case_id)
+        assert saved.current_turn == 3
+        assert self._clarified_file_ids(saved.last_suggestions), (
+            "the control must leave the question live, or the comparison below "
+            "shows nothing"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_greeting_in_the_middle_spends_one_of_those_turns(
+        self, wired, preprocessing_service
+    ):
+        """Same three turns after the offer, but one of them is a GREETING —
+        answered in the service, never reaching the engine.
+
+        Before #1264 that turn recorded nothing, the persisted clock stood still
+        across it, and the question was read at age 3 and survived. Now the turn
+        counts, the question is read at age 4, and it is gone. One non-engine
+        turn is the entire difference between this test and the one above.
+        """
+        assert CLARIFICATION_CARRY_TURNS == 3
+        service, repo, case = wired
+
+        await self._upload_that_fails(service, case)
+        await self._unrelated(service, case, "unrelated question 0")
+        await self._unrelated(service, case, "unrelated question 1")
+        await self._unrelated(service, case, "hi")  # GREETING: never reaches the engine
+
+        saved = await repo.get(case.case_id)
+        assert saved.current_turn == 4, (
+            "the greeting must advance the persisted clock; if it does not, "
+            "this test is measuring the same window as the control"
+        )
+        assert self._clarified_file_ids(saved.last_suggestions) == [], (
+            "the greeting spent a turn of the question's window — that is the "
+            "#1264 semantics change. If this fails, a non-engine turn has "
+            "stopped costing window and the change has been reverted; the "
+            "docstrings in suggestion_liveness are then also wrong."
+        )
+
+
 class TestCarryForwardSelection:
     """Direct coverage of which stored entries survive into the next turn.
 
@@ -1575,8 +1699,8 @@ class TestTheWriterStoresWhatTheReaderWillAccept:
         # turn of the surviving question's window — where before it was free.
         # The claim this test makes is unchanged (answering one question must
         # not drop another that is still in window); only the budget moved.
-        # ``TestAClarificationClickCostsAWindowTurn`` pins the new semantics
-        # directly.
+        # ``TestAClarificationClickCostsAWindowTurn`` (this file) pins the new
+        # semantics directly.
         for text in ("is the pool maxed out?",):
             await service.process_turn(
                 case_id=case.case_id,

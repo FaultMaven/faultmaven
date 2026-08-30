@@ -343,6 +343,46 @@ class TestTheBackfilledTurnIsHonest:
         assert case.turn_history[-1].progress_made is True, "overwrote a real turn"
 
 
+class TestTheNamedPinExists:
+    """A doc that names a test is only as good as the test existing.
+
+    #1264's one deliberate behaviour change — a non-engine turn now costs a
+    suggestion-window turn — is documented in ``suggestion_liveness``'s module
+    docstring, which names the test that pins it. The first version of this PR
+    named a class that a later refactor had silently deleted: a slice
+    replacement spanning two class boundaries took a third class with it, the
+    file's test count dropped by one, and nothing failed. The change was then
+    documented, intended, and unprotected.
+
+    This guard lives in a DIFFERENT file from the class it checks, on purpose.
+    A check inside that class would be deleted along with it — which is exactly
+    the failure that occurred.
+    """
+
+    def test_the_class_suggestion_liveness_names_is_real(self):
+        import importlib
+        import inspect
+        import re
+
+        from faultmaven.core.investigation import suggestion_liveness
+
+        named = re.findall(
+            r"(tests/[\w/]+\.py)::\s*\n?(Test\w+)",
+            suggestion_liveness.__doc__ or "",
+        )
+        assert named, (
+            "suggestion_liveness's docstring no longer names a pinning test for "
+            "the #1264 window-semantics change. If the change was reverted, say "
+            "so there; if it still holds, it needs a named pin."
+        )
+        for path, class_name in named:
+            module = importlib.import_module(path.removesuffix(".py").replace("/", "."))
+            assert inspect.isclass(getattr(module, class_name, None)), (
+                f"{path}::{class_name} is named as the pin for the #1264 window "
+                f"semantics but does not exist"
+            )
+
+
 class TestTheDoublesCanActuallyExpressTheDefect:
     """A guard on the guard.
 

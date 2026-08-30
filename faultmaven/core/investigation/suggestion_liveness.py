@@ -46,8 +46,9 @@ them was the behaviour you want because the user is visibly working through the
 menu. That argument is still worth making; it is simply no longer made by the
 turn clock. If the old reach is wanted, raise ``CLARIFICATION_CARRY_TURNS``,
 which now means what it says. Pinned by
-``tests/unit/modules/agent/test_turn_counter_advances_1264.py::
-TestAClarificationClickCostsAWindowTurn``.
+``tests/unit/modules/agent/test_file_reclassification_intent.py::
+TestAClarificationClickCostsAWindowTurn`` — two tests differing by exactly one
+non-engine turn, so the delta between them is this semantics.
 
 Still load-bearing, and unaffected: two different turns could historically mint
 the same ``offered_turn``, so it is not an identity and must never be used as a
