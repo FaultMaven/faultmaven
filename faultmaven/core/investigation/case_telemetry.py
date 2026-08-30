@@ -122,6 +122,9 @@ logger.setLevel(logging.INFO)
 
 _diag = logging.getLogger(__name__)
 
+#: Edge trigger for the emission-failure WARNING (see ``emit_case_turn``).
+_emit_failure_reported = False
+
 
 class TurnPath(str, Enum):
     """Which route consumed this turn.
@@ -142,40 +145,54 @@ class TurnPath(str, Enum):
     ERROR = "error"
 
 
-#: The exact metadata keys ``MilestoneEngine._check_if_progress_made`` reads.
-#: Kept in one place so the event cannot drift from the predicate it audits: a
-#: new arm added to the predicate without a matching entry here shows up as a
-#: turn where ``progress_made`` is True and every recorded arm is 0, which is
-#: the same tripwire shape the counter-integrity rule keys on.
-PROGRESS_ARM_KEYS: tuple[str, ...] = (
+#: Every arm ``MilestoneEngine._check_if_progress_made`` actually scores, as a
+#: count. An arm missing from here is not a cosmetic gap: the turn it fires on
+#: emits ``progress_made=True`` with every recorded arm 0, which is exactly the
+#: shape the counter-integrity rule reads as a LYING COUNTER, and — if the arm is
+#: engine-side — ``engine_advanced=False`` on a turn the engine worked. Both are
+#: false accusations aimed at the engine, so the set is pinned by a test that
+#: parses the predicate's own source (``test_case_telemetry``).
+#:
+#: ``outcome_progress`` is the one arm with no metadata key of its own: the
+#: predicate reads ``outcome in (DATA_REQUESTED, HYPOTHESIS_TESTED)``.
+#: ``collect_progress_arms`` derives it from the same ``outcome`` value, so it
+#: is summable beside the rest.
+PREDICATE_ARM_KEYS: tuple[str, ...] = (
     "milestones_completed",
-    "evidence_added",
     "novel_evidence_added",
     "hypotheses_generated",
     "hypotheses_validated",
-    "solutions_proposed",
     "novel_solutions_proposed",
-    "files_uploaded",
     "novel_files_uploaded",
     "hypothesis_evidence_links_applied",
     "status_transitioned",
+    "outcome_progress",
 )
+
+#: Counts carried for diagnosis that the predicate deliberately does NOT score.
+#: #1136 narrowed every artifact arm to its ``novel_*`` form because the LLM
+#: restates constantly; keeping the RAW count beside the novel one is what makes
+#: that restatement visible — a turn with ``evidence_added: 4`` and
+#: ``novel_evidence_added: 0`` is the engine re-emitting what the case already
+#: holds, which no other field in the row shows.
+DIAGNOSTIC_ARM_KEYS: tuple[str, ...] = (
+    "evidence_added",
+    "solutions_proposed",
+    "files_uploaded",
+)
+
+PROGRESS_ARM_KEYS: tuple[str, ...] = PREDICATE_ARM_KEYS + DIAGNOSTIC_ARM_KEYS
+
+#: The outcomes the predicate treats as progress in its own right.
+_PROGRESS_OUTCOMES = frozenset({"data_requested", "hypothesis_tested"})
 
 #: Arms attributable to the ENGINE. ``files_uploaded`` / ``novel_files_uploaded``
 #: are the user's contribution and are excluded, which is what lets the two
 #: sides be told apart. ``status_transitioned`` counts as engine work because a
 #: transition is the engine acting on the case, not the user supplying data.
-_ENGINE_ARM_KEYS: frozenset[str] = frozenset(
-    {
-        "milestones_completed",
-        "novel_evidence_added",
-        "hypotheses_generated",
-        "hypotheses_validated",
-        "novel_solutions_proposed",
-        "hypothesis_evidence_links_applied",
-        "status_transitioned",
-    }
-)
+_ENGINE_ARM_KEYS: frozenset[str] = frozenset(PREDICATE_ARM_KEYS) - {
+    "novel_files_uploaded"
+}
 
 FIELD_ALLOWLIST: frozenset[str] = frozenset(
     {
@@ -274,25 +291,36 @@ def _sanitize(payload: Mapping[str, Any]) -> dict[str, Any]:
         if key not in FIELD_ALLOWLIST:
             _diag.warning("case telemetry dropped non-allowlisted field %r", key)
             continue
-        try:
-            if isinstance(value, Mapping):
-                # Histogram keys are themselves data (an enum value, an arm
-                # name), so they get the same shape check as values — a
-                # histogram keyed by a free-text label would otherwise be the
-                # one place prose could still ride out.
-                bucket: dict[str, Any] = {}
-                for k, v in value.items():
-                    if not _is_token(str(k)):
-                        _diag.warning(
-                            "case telemetry dropped %r bucket with non-token key", key
-                        )
-                        continue
+        if isinstance(value, Mapping):
+            # Histogram keys are themselves data (an enum value, an arm name),
+            # so they get the same shape check as values — a histogram keyed by
+            # a free-text label would otherwise be the one place prose could
+            # still ride out.
+            #
+            # Rejected PER ENTRY, never per mapping. Dropping the whole dict
+            # over one bad member is the failure the rest of this module works
+            # to avoid: a row carrying ``progress_made`` with no ``arms`` key at
+            # all makes the counter-integrity rule silently UNEVALUABLE rather
+            # than false, which is worse than any single wrong count.
+            bucket: dict[str, Any] = {}
+            for k, v in value.items():
+                if not _is_token(str(k)):
+                    _diag.warning(
+                        "case telemetry dropped %r bucket with non-token key", key
+                    )
+                    continue
+                try:
                     bucket[str(k)] = _scalar(v)
-                clean[key] = bucket
-            else:
+                except ValueError as exc:
+                    _diag.warning(
+                        "case telemetry dropped %r bucket %r: %s", key, str(k), exc
+                    )
+            clean[key] = bucket
+        else:
+            try:
                 clean[key] = _scalar(value)
-        except ValueError as exc:
-            _diag.warning("case telemetry dropped field %r: %s", key, exc)
+            except ValueError as exc:
+                _diag.warning("case telemetry dropped field %r: %s", key, exc)
     return clean
 
 
@@ -306,7 +334,13 @@ def collect_progress_arms(metadata: Mapping[str, Any]) -> dict[str, int]:
     as 0 or 1 so every arm is summable.
     """
     arms: dict[str, int] = {}
+    outcome = metadata.get("outcome")
+    arms["outcome_progress"] = int(
+        getattr(outcome, "value", outcome) in _PROGRESS_OUTCOMES
+    )
     for key in PROGRESS_ARM_KEYS:
+        if key == "outcome_progress":
+            continue
         value = metadata.get(key)
         if isinstance(value, bool):
             arms[key] = int(value)
@@ -440,9 +474,15 @@ def _frontier(case: "Case") -> dict[str, Any]:
 def _assessment(case: "Case") -> dict[str, Any]:
     """The grounding readings, so this event and the DEBUG grounding trace agree.
 
-    Every value is read from the persisted progress blob or recomputed from it
-    by a pure function, so the two channels cannot report different states for
-    the same turn.
+    Most values are read straight off the persisted progress blob, which the
+    turn has already settled. Two are not: ``work_gate_passed`` and
+    ``is_progress_stalled`` are pure predicates over ``case.hypotheses`` /
+    ``case.evidence`` / the causal chain, recomputed here exactly as the
+    grounding trace recomputes them — the same functions over the same
+    post-turn aggregate, so the channels still cannot disagree, but the
+    mechanism is recomputation rather than a shared read. Measured at
+    0.067 ms/turn together on a 12-hypothesis / 40-evidence case, so the
+    recompute is not worth a cache that could go stale.
     """
     from faultmaven.core.investigation.cause_assurance import CauseAssuranceGrade
     from faultmaven.core.investigation.verification_status import (
@@ -549,4 +589,20 @@ def emit_case_turn(case: "Case", **kwargs: Any) -> None:
             extra=payload,
         )
     except Exception:  # noqa: BLE001 - observability must never break a turn
-        _diag.debug("case telemetry emission failed", exc_info=True)
+        # Edge-triggered at WARNING. Failure isolation must not become failure
+        # INVISIBILITY: a builder broken by a renamed model field silences the
+        # whole stream, and total absence of rows is indistinguishable from
+        # "no turns happened" — which is precisely the level-gate failure that
+        # made the DEBUG grounding trace useless. One WARNING with the traceback
+        # per process says it out loud; the rest stay at DEBUG so a systematic
+        # break does not also flood the log it is trying to appear in.
+        global _emit_failure_reported
+        if not _emit_failure_reported:
+            _emit_failure_reported = True
+            _diag.warning(
+                "case telemetry emission failed; the stream is now silent for "
+                "this process. Further failures log at DEBUG.",
+                exc_info=True,
+            )
+        else:
+            _diag.debug("case telemetry emission failed", exc_info=True)

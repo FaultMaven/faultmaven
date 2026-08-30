@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from faultmaven.core.investigation.case_telemetry import (
     TELEMETRY_HANDOFF_KEY,
     TurnPath,
+    collect_progress_arms,
     emit_case_turn,
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
@@ -898,7 +899,25 @@ class InvestigationService:
         # failure AFTER the success row is emitted does not produce a second row
         # for the same turn.
         case = None
+        turn_consumed = False
         turn_row_emitted = False
+
+        def _emit_error_row() -> None:
+            """One row for a turn that was consumed and then failed (#1142).
+
+            Carries the volume facts off ``payload`` — they are known whatever
+            failed, and omitting them reports the user as having gone silent on
+            a turn they pasted 4 KB into, which is the mirror image of the
+            misattribution the ``error`` label exists to prevent.
+            """
+            if turn_consumed and not turn_row_emitted and case is not None:
+                emit_case_turn(
+                    case,
+                    path=TurnPath.ERROR,
+                    user_message_chars=len(payload.query or ""),
+                    attachment_count=len(payload.attachments or []),
+                )
+
         try:
             # 1. Retrieve case and verify access
             case = await self.repository.get(case_id)
@@ -1063,6 +1082,14 @@ class InvestigationService:
             # short-circuit returns before any turn bookkeeping, so afterwards
             # nothing distinguishes it from a generation turn that did nothing.
             was_terminal = case.is_terminal
+            # Gates the error-path row. ``case is not None`` is NOT the same
+            # question: a failure between the load and this line (an extractor
+            # or storage error inside attachment preprocessing, say) leaves a
+            # bound ``case`` whose ``current_turn`` is still the PREVIOUS turn's
+            # — a row emitted there would collide with that turn's real row on
+            # the documented (case_id, turn) dedup key, and on turn 1 would
+            # invent a row for turn 0.
+            turn_consumed = True
 
             # ── STEP 2: LLM INFERENCE ──
             # Heuristic check for greetings if intent is CONVERSATION (default)
@@ -1389,6 +1416,18 @@ class InvestigationService:
             # stream GAPS — and a gap silently shortens every streak a consumer
             # computes, making a correct handshake read as an engine-dry run.
             turn_metadata = result.get("metadata") or {}
+            # No handoff means the route never reached the engine's progress
+            # decision — but it still reported its uploads, because every route
+            # runs ``report_turn_uploads``. Reading the arms off the returned
+            # metadata rather than defaulting to all-zero is what keeps
+            # ``user_supplied_new`` true on a turn where the user DID upload
+            # (a file riding a clarification click, or arriving on a closed
+            # case). All-zero there would print "the user supplied nothing" on
+            # exactly the engine-dry-user-supplying turn this stream exists to
+            # surface.
+            turn_arms = turn_telemetry.get("arms") or collect_progress_arms(
+                turn_metadata
+            )
             if turn_telemetry.get("path"):
                 turn_path = turn_telemetry["path"]
             elif intent_type == IntentType.GREETING:
@@ -1402,13 +1441,19 @@ class InvestigationService:
             emit_case_turn(
                 updated_case,
                 path=turn_path,
-                arms=turn_telemetry.get("arms"),
+                arms=turn_arms,
                 gate_name=turn_telemetry.get("gate_name"),
                 progress_made=bool(turn_metadata.get("progress_made", False)),
                 outcome=turn_metadata.get("outcome") or turn_telemetry.get("outcome"),
                 validation_repairs=int(turn_telemetry.get("validation_repairs", 0)),
                 repair_pattern=turn_telemetry.get("repair_pattern"),
-                user_message_chars=len(query or ""),
+                # ``payload.query``, not ``query``: on an attachment-only turn
+                # ``query`` has been replaced by ``generate_implicit_query``'s
+                # engine-composed sentence, and reporting its length would say
+                # the user wrote a paragraph on a turn they typed nothing. This
+                # field's whole job is telling "user went silent" apart from
+                # "user wrote a paragraph that produced nothing".
+                user_message_chars=len(payload.query or ""),
                 attachment_count=len(attachment_metadata or []),
             )
             turn_row_emitted = True
@@ -1514,6 +1559,14 @@ class InvestigationService:
             # All must pass through unwrapped so the FastAPI exception
             # handlers can map them to the correct HTTP status; wrapping
             # them in ServiceException would mask the contract error as 500.
+            #
+            # #1142: these get a row too when the turn was already consumed.
+            # StaleCaseException is the case that matters — on an engine-routed
+            # turn the engine has ALREADY committed the incremented
+            # ``current_turn`` at its own save, so an OCC conflict on the
+            # service's save leaves a durably consumed turn with no row, and a
+            # gap shortens every streak computed over the stream.
+            _emit_error_row()
             raise
         except Exception as e:
             # #1142: the turn number was consumed at STEP 1 and the request then
@@ -1524,8 +1577,7 @@ class InvestigationService:
             # the load, and the case may never have been saved at this turn
             # number, so a consumer dedups on (case_id, turn) preferring the
             # non-error row.
-            if case is not None and not turn_row_emitted:
-                emit_case_turn(case, path=TurnPath.ERROR)
+            _emit_error_row()
             logger.error(f"Failed to process turn for case {case_id}: {e}")
             # Preserve a typed error_code (e.g. QUOTA_EXHAUSTED billing) through
             # the wrap so the route handler can map it to a precise HTTP status

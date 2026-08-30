@@ -139,9 +139,18 @@ class HypothesisSummary(BaseModel):
         ),
     )
 
+    # No ``max_length``, unlike its ``refutation_reason`` sibling, and the
+    # asymmetry mirrors the domain: ``Hypothesis.refutation_reason`` carries a
+    # hard 200-char bound, while ``Hypothesis.retirement_reason`` deliberately
+    # does NOT — it truncates in a before-validator, because the user-retire
+    # path writes the user's own message into it and a bound there would be a
+    # hydration constraint that makes one over-length legacy row unloadable.
+    # Re-imposing the bound at this seam would recreate that failure one layer
+    # out: a value that slipped past truncation would raise ValidationError on
+    # the whole ``GET /cases/{id}/ui`` response instead of costing one string
+    # its tail.
     retirement_reason: Optional[str] = Field(
         default=None,
-        max_length=200,
         description=(
             "Why the hypothesis was set aside WITHOUT a verdict. Populated only "
             "when status=RETIRED; None otherwise. Carried beside "
@@ -149,9 +158,9 @@ class HypothesisSummary(BaseModel):
             "tell a hypothesis that was TESTED and abandoned from one the "
             "engine discarded having never grounded it — and retirement is by "
             "far the commoner end (40 retired against 8 refuted in the corpus), "
-            "so the missing half was the larger one (#1142). Bounded to "
-            "200 by the domain model, which TRUNCATES rather than rejects: the "
-            "user-retire path writes the user's own message into this field."
+            "so the missing half was the larger one (#1142). The domain model "
+            "truncates this to 200 characters rather than rejecting it, because "
+            "the user-retire path writes the user's own message into the field."
         ),
     )
 

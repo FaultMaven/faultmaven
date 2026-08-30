@@ -5382,7 +5382,7 @@ Summary of a hypothesis for INVESTIGATING phase UI.
 - `hypothesis_id` (string, required) — Hypothesis identifier
 - `likelihood` (number, required) — Likelihood score (0.0-1.0)
 - `refutation_reason` (object, optional) — Reason the hypothesis was refuted. Populated only when status=REFUTED; None otherwise. Mirrors the domain model's pair-integrity invariant.
-- `retirement_reason` (object, optional) — Why the hypothesis was set aside WITHOUT a verdict. Populated only when status=RETIRED; None otherwise. Carried beside ``refutation_reason`` because without it the Hypotheses tab cannot tell a hypothesis that was TESTED and abandoned from one the engine discarded having never grounded it — and retirement is by far the commoner end (40 retired against 8 refuted in the corpus), so the missing half was the larger one (#1142). Bounded to 200 by the domain model, which TRUNCATES rather than rejects: the user-retire path writes the user's own message into this field.
+- `retirement_reason` (object, optional) — Why the hypothesis was set aside WITHOUT a verdict. Populated only when status=RETIRED; None otherwise. Carried beside ``refutation_reason`` because without it the Hypotheses tab cannot tell a hypothesis that was TESTED and abandoned from one the engine discarded having never grounded it — and retirement is by far the commoner end (40 retired against 8 refuted in the corpus), so the missing half was the larger one (#1142). The domain model truncates this to 200 characters rather than rejecting it, because the user-retire path writes the user's own message into the field.
 - `state` (object, required) — Status: CAPTURED | ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED
 - `text` (string, required) — Hypothesis statement
 

@@ -146,35 +146,83 @@ def _hyp(case: Case, label: str, state: HypothesisState) -> None:
 def test_every_arm_the_predicate_reads_is_recorded():
     """The event audits ``_check_if_progress_made``, so it must cover its arms.
 
-    Read off the predicate's own source rather than a copied list: an arm added
-    there without a matching entry in ``PROGRESS_ARM_KEYS`` produces turns where
-    ``progress_made`` is True and every recorded arm is 0, which is precisely
-    the shape the counter-integrity rule treats as a lying counter.
+    The keys are EXTRACTED from the predicate's source, not intersected with a
+    list written here. That difference is the whole test: a hard-coded candidate
+    set can only notice a key going missing from ``PROGRESS_ARM_KEYS``, and the
+    direction that actually hurts is an arm being ADDED to the predicate — the
+    turn it fires on then emits ``progress_made=True`` with every recorded arm
+    0, which the counter-integrity rule reads as a lying counter and, for an
+    engine-side arm, as an idle engine. Both are false accusations aimed at the
+    engine this stream exists to judge.
     """
     import inspect
+    import re
 
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
     src = inspect.getsource(MilestoneEngine._check_if_progress_made)
-    # Keys the predicate scores, excluding ``outcome`` (an enum read, carried on
-    # the event as its own field rather than as an arm).
-    read_keys = {
-        key
-        for key in (
-            "milestones_completed",
-            "novel_evidence_added",
-            "hypotheses_generated",
-            "hypotheses_validated",
-            "novel_solutions_proposed",
-            "novel_files_uploaded",
-            "status_transitioned",
-            "hypothesis_evidence_links_applied",
-        )
-        if f'"{key}"' in src
-    }
-    assert read_keys, "predicate source did not parse — update this test"
+    body = src[src.index('"""', src.index('"""') + 3) :]  # skip the docstring
+
+    read_keys = set(re.findall(r'metadata\.get\(\s*"(\w+)"', body))
+    # ``structural_keys`` is a list literal the predicate then loops over.
+    listed = re.search(r"structural_keys = \[(.*?)\]", body, re.S)
+    if listed:
+        read_keys |= set(re.findall(r'"(\w+)"', listed.group(1)))
+    # The outcome arm has no metadata key of its own — the predicate reads
+    # ``outcome in (...)``. It is carried as the derived ``outcome_progress``.
+    if "TurnOutcome." in body:
+        read_keys.add("outcome_progress")
+    read_keys.discard("outcome")
+
+    assert len(read_keys) >= 8, f"predicate source did not parse: {read_keys}"
     missing = read_keys - set(PROGRESS_ARM_KEYS)
-    assert not missing, f"progress arms not carried by the telemetry event: {missing}"
+    assert not missing, (
+        f"arms scored by _check_if_progress_made but not carried by the "
+        f"telemetry event: {sorted(missing)}"
+    )
+    # Every predicate arm must also count toward attribution, or a turn the
+    # engine advanced on reads as idle.
+    from faultmaven.core.investigation.case_telemetry import (
+        _ENGINE_ARM_KEYS,
+        PREDICATE_ARM_KEYS,
+    )
+
+    assert read_keys <= set(PREDICATE_ARM_KEYS)
+    unattributed = set(PREDICATE_ARM_KEYS) - _ENGINE_ARM_KEYS - {"novel_files_uploaded"}
+    assert (
+        not unattributed
+    ), f"predicate arms attributed to neither side: {sorted(unattributed)}"
+
+
+def test_an_outcome_only_progress_turn_is_not_reported_as_an_idle_engine():
+    """The arm with no metadata key of its own.
+
+    ``HYPOTHESIS_TESTED`` means the engine tested a hypothesis this turn and it
+    came back neither validated nor refuted — real engine work that touches no
+    artifact list. Before ``outcome_progress`` existed the row read
+    ``progress_made=true`` with every arm 0 and ``engine_advanced=false``: a
+    counter-integrity violation and an idle-engine flag, both on a healthy turn.
+    """
+    case = _case()
+    for outcome in (TurnOutcome.HYPOTHESIS_TESTED, TurnOutcome.DATA_REQUESTED):
+        event = build_case_turn_event(
+            case,
+            path=TurnPath.LLM,
+            arms=collect_progress_arms({"outcome": outcome}),
+            progress_made=True,
+            outcome=outcome,
+        )
+        assert event["engine_advanced"] is True, outcome
+        assert event["arms"]["outcome_progress"] == 1, outcome
+        assert any(event["arms"].values()), outcome
+
+    quiet = build_case_turn_event(
+        case,
+        path=TurnPath.LLM,
+        arms=collect_progress_arms({"outcome": TurnOutcome.CONVERSATION}),
+    )
+    assert quiet["arms"]["outcome_progress"] == 0
+    assert quiet["engine_advanced"] is False
 
 
 def test_arms_are_counts_not_identifiers():
@@ -356,6 +404,61 @@ def test_a_histogram_key_carrying_prose_is_dropped():
     assert clean["hypothesis_states"] == {"active": 2}
 
 
+def test_one_bad_value_does_not_erase_the_whole_mapping():
+    """Rejection is per entry, never per mapping.
+
+    Dropping the entire ``arms`` dict over one malformed member ships a row with
+    ``progress_made`` and NO ``arms`` key, which makes the counter-integrity
+    rule silently UNEVALUABLE rather than false — strictly worse than one wrong
+    count, and the exact failure ``build_case_turn_event``'s arm normalisation
+    exists to prevent.
+    """
+    import datetime
+
+    from faultmaven.core.investigation.case_telemetry import _sanitize
+
+    clean = _sanitize(
+        {
+            "arms": {
+                "novel_evidence_added": 2,
+                "novel_files_uploaded": datetime.datetime.now(),
+            },
+            "progress_made": True,
+        }
+    )
+    assert "arms" in clean, "one bad member erased the whole mapping"
+    assert clean["arms"] == {"novel_evidence_added": 2}
+
+
+def test_a_broken_builder_says_so_once_at_warning(caplog):
+    """Failure isolation must not become failure INVISIBILITY.
+
+    A builder broken by a renamed model field silences the stream, and a total
+    absence of rows is indistinguishable from "no turns happened" — the same
+    level-gate failure that made the DEBUG grounding trace useless. One WARNING
+    per process says it out loud; the rest stay at DEBUG so a systematic break
+    does not flood the log it is trying to appear in.
+    """
+    import faultmaven.core.investigation.case_telemetry as telemetry
+
+    original = telemetry._emit_failure_reported
+    telemetry._emit_failure_reported = False
+    try:
+        with caplog.at_level(logging.WARNING, logger=telemetry.__name__):
+            emit_case_turn(object(), path=TurnPath.LLM)  # no .progress at all
+            emit_case_turn(object(), path=TurnPath.LLM)
+    finally:
+        telemetry._emit_failure_reported = original
+
+    warnings = [
+        r
+        for r in caplog.records
+        if r.name == telemetry.__name__ and r.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1, "expected exactly one WARNING for a broken builder"
+    assert not [r for r in caplog.records if r.name == TELEMETRY_LOGGER_NAME]
+
+
 def test_real_gate_names_survive_the_guard():
     """The guard must not be so tight that it eats the field it protects."""
     from faultmaven.core.investigation.case_telemetry import _sanitize
@@ -402,13 +505,19 @@ def test_stream_survives_a_root_logger_raised_above_info(caplog):
     """The defect that made the pre-existing grounding trace useless was a level
     gate, not a missing field: 0 hits in 5,576 lines of a real run. Pinning the
     stream's own level is what stops that recurring."""
-    logging.getLogger().setLevel(logging.WARNING)
+    root = logging.getLogger()
+    original = root.level
+    root.setLevel(logging.WARNING)
     try:
         with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
             emit_case_turn(_case(), path=TurnPath.LLM)
         assert [r for r in caplog.records if r.name == TELEMETRY_LOGGER_NAME]
     finally:
-        logging.getLogger().setLevel(logging.WARNING)
+        # The level that was THERE, not a hardcoded WARNING. Restoring a
+        # constant leaves the root logger permanently lowered for every test
+        # that runs after this one in the same worker — the process-global
+        # leak class that makes whole-suite runs flaky.
+        root.setLevel(original)
 
     assert logging.getLogger(TELEMETRY_LOGGER_NAME).level == logging.INFO
 

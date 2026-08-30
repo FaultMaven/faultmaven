@@ -77,8 +77,13 @@ correct multi-turn confirmation handshake reads as an engine-dry run.
 `llm` · `deterministic` · `terminal` · `greeting` · `reclassification` · `error`
 
 `error` marks a turn whose number was consumed before the request failed. It is
-worth a row so a provider outage is not read as an idle engine. Because the case
-may not have been saved at that turn number, a consumer dedups on
+worth a row so a provider outage is not read as an idle engine, and it carries
+`user_message_chars` / `attachment_count` for the same reason — a failed turn on
+which the user supplied data must not read as the user going quiet. It is gated
+on the turn having been **consumed**, not merely on the case having loaded: a
+failure before `current_turn` is advanced would otherwise emit a row carrying the
+previous turn's number and collide with that turn's real row. Because the case
+may not have been saved at that turn number, a consumer still dedups on
 `(case_id, turn)` preferring the non-`error` row.
 
 ## Schema
@@ -89,8 +94,33 @@ it; changing a field's meaning or removing one does.
 **Identity** — `schema_version`, `case_id`, `turn`, `path`, `case_state`
 
 **The progress decision** — `progress_made`, `outcome`, `turns_without_progress`
-(the settled post-turn value), `arms` (per-arm counts, one key per arm of
-`_check_if_progress_made`), `user_supplied_new`, `engine_advanced`, `gate_name`
+(the settled post-turn value), `arms`, `user_supplied_new`, `engine_advanced`,
+`gate_name`
+
+`arms` carries two groups. The **predicate arms** are every arm
+`_check_if_progress_made` actually scores, including `outcome_progress` — a
+derived 0/1 for the one arm with no metadata key of its own, which the predicate
+expresses as `outcome in (DATA_REQUESTED, HYPOTHESIS_TESTED)`. An arm missing
+from that set is not cosmetic: the turn it fires on emits `progress_made=true`
+with every recorded arm 0, which reads as a lying counter and, for an
+engine-side arm, as an idle engine — both false accusations aimed at the engine
+this stream exists to judge. The set is pinned by a test that parses the
+predicate's own source, so an arm added there fails rather than shipping
+unrecorded.
+
+The **diagnostic counts** (`evidence_added`, `solutions_proposed`,
+`files_uploaded`) are deliberately NOT scored by the predicate. #1136 narrowed
+every artifact arm to its `novel_*` form because the LLM restates constantly;
+carrying the raw count beside the novel one is what makes that restatement
+visible — `evidence_added: 4` with `novel_evidence_added: 0` is the engine
+re-emitting what the case already holds, which no other field shows.
+
+Every arm is present on every row, zero rather than absent. Absent and zero read
+differently to a rule keyed on "progress was claimed and every arm was 0": an
+absent arm makes that rule silently unevaluable instead of false. For the same
+reason the content guard rejects a malformed value **per entry**, never per
+mapping — dropping a whole `arms` object over one bad member is worse than any
+single wrong count.
 
 **Input-disposition ledger** — `inputs_total`, `inputs_disposed`,
 `inputs_undisposed`, `oldest_undisposed_input_age`
@@ -167,7 +197,15 @@ run before emission and **both** are load-bearing:
 
 The guard fails **closed**: a rejected field is dropped and warned about rather
 than emitted, because a leak cannot be un-shipped, whereas a field dropped by
-mistake is visible as a missing column on the very first row. It exists because
+mistake is visible as a missing column on the very first row. Rejection inside a
+histogram or the `arms` object is **per entry**, so one malformed member cannot
+erase the whole mapping.
+
+A failure in the payload builder is isolated — it must never break the turn it
+observes — but not silent: the first one per process logs a WARNING with its
+traceback, the rest DEBUG. Failure isolation becoming failure invisibility is the
+same defect as a level gate; a total absence of rows is indistinguishable from
+"no turns happened". It exists because
 the natural way to extend this event is to lift a field off `TurnProgress` —
 which carries `user_message_summary` and `agent_response_summary`, i.e. raw
 transcript text.
