@@ -86,6 +86,35 @@ previous turn's number and collide with that turn's real row. Because the case
 may not have been saved at that turn number, a consumer still dedups on
 `(case_id, turn)` preferring the non-`error` row.
 
+## ⚠️ The turn key repeats until #1264 lands
+
+`turn` is not yet a reliable key, and analysis over this stream must not treat
+`(case_id, turn)` as unique until [#1264](https://github.com/FaultMaven/faultmaven/issues/1264)
+is fixed.
+
+`turn_history` has two writers, both in the milestone engine, so a route that
+never reaches it — a greeting, a file reclassification — appends nothing. The
+repositories persist `Case.effective_current_turn`, which reads the last
+`turn_history` entry, so on those turns the persisted counter stands still while
+the in-flight one advances. `process_turn` reloads the case on every request and
+derives `next_turn` from the persisted value, so **the very next turn re-derives
+the number that was just used**. No process boundary is required; measured:
+
+```
+request                in-flight  persisted  telemetry row
+"what is happening?"       1          1      (llm, turn 1)
+"hi"          (greeting)   2          1      (greeting, turn 2)
+"and now?"                 2          2      (llm, turn 2)   ← duplicate
+```
+
+Every row is individually correct — the arms, ledgers and counter all describe
+the turn that actually ran. Only the *key* collides. The practical consequences:
+a streak computed over a window containing a greeting is short by one, and a
+simulator persona that opens with "hi" makes that run's streaks wrong.
+
+Rows emitted before #1264 lands should be treated as an ordered sequence per
+case (use arrival order, not `turn`) or excluded from turn-keyed analysis.
+
 ## Schema
 
 `schema_version` is `1`. Adding a field is backwards-compatible and does not bump
