@@ -2662,7 +2662,7 @@ You are an ADVISOR.
 #    all. A rule that tells the model to authenticate delimiters which are not
 #    in the prompt is worse than a shorter one that describes what is.
 # 2. Token cost, measured with ``utils.token_estimation`` (openai/gpt-4o):
-#    ``_PROMPT_FENCE_RULE`` + declaration is 724 tokens (613 before #1256
+#    ``_PROMPT_FENCE_RULE`` + declaration is 856 tokens (613 before #1256
 #    widened it to five blocks); the rule below + declaration is ~280. The
 #    gap grew with the widening, so the case for a compact rule here is
 #    stronger, not weaker. The fallback is chosen precisely when
