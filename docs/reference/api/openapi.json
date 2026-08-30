@@ -2820,6 +2820,19 @@
             "description": "Reason the hypothesis was refuted. Populated only when status=REFUTED; None otherwise. Mirrors the domain model's pair-integrity invariant.",
             "title": "Refutation Reason"
           },
+          "retirement_reason": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the hypothesis was set aside WITHOUT a verdict. Populated only when status=RETIRED; None otherwise. Carried beside ``refutation_reason`` because without it the Hypotheses tab cannot tell a hypothesis that was TESTED and abandoned from one the engine discarded having never grounded it \u2014 and retirement is by far the commoner end (40 retired against 8 refuted in the corpus), so the missing half was the larger one (#1142). Bounded to 200 by the domain model, which TRUNCATES rather than rejects: the user-retire path writes the user's own message into this field.",
+            "title": "Retirement Reason"
+          },
           "state": {
             "$ref": "#/components/schemas/HypothesisState",
             "description": "Status: CAPTURED | ACTIVE | VALIDATED | REFUTED | INCONCLUSIVE | RETIRED"
@@ -6236,7 +6249,7 @@
   "info": {
     "description": "AI-powered troubleshooting copilot for Engineers, SREs, and DevOps professionals",
     "title": "FaultMaven API",
-    "version": "2.2.0"
+    "version": "2.3.0"
   },
   "openapi": "3.1.0",
   "paths": {

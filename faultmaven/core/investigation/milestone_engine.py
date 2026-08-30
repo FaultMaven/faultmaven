@@ -35,6 +35,11 @@ from uuid import uuid4
 # Module initialization
 logger = logging.getLogger(__name__)
 
+from faultmaven.core.investigation.case_telemetry import (
+    TELEMETRY_HANDOFF_KEY,
+    TurnPath,
+    collect_progress_arms,
+)
 from faultmaven.core.investigation.causal_graph import (
     any_chain_root_inconclusive,
     any_chain_root_validated,
@@ -1972,6 +1977,17 @@ def _log_grounding_assessment(case: "Case") -> None:
     persisted) costs nothing above DEBUG, and
     the whole body is failure-isolated: a diagnostic trace must never break the
     turn pipeline it runs inside, whatever shape the case is in.
+
+    **Not the progress ledger.** This runs inside response application — before
+    the turn's progress decision and before the counter update at Step 5.8 — so
+    its ``turns_without_progress`` / ``is_progress_stalled`` are the PREVIOUS
+    turn's values, and it fires only on the generation path. Those fields are
+    kept because they are useful context for the grounding readings around them,
+    not because they are authoritative. Anything asking "did the engine stall
+    this case?" wants the always-on per-turn stream in
+    ``core/investigation/case_telemetry.py`` (#1142), which is emitted after the
+    counter update, on every path, and carries the per-arm counts this trace
+    does not.
     """
     if not logger.isEnabledFor(logging.DEBUG):
         return
@@ -6517,6 +6533,27 @@ class MilestoneEngine:
                         k: metadata[k]
                         for k in ("files_uploaded", "novel_files_uploaded")
                         if k in metadata
+                    },
+                    # #1142 handoff. Four of the nine arms
+                    # ``_check_if_progress_made`` scores — ``novel_evidence_added``,
+                    # ``novel_solutions_proposed``, ``status_transitioned``,
+                    # ``hypothesis_evidence_links_applied`` — live only on the
+                    # working dict above and are written nowhere, so
+                    # ``progress_made`` is currently recorded without the evidence
+                    # for WHY. Counted here, at the point of decision, and read by
+                    # the service one frame up.
+                    #
+                    # Underscore-prefixed and POPPED by the service before the
+                    # returned metadata is persisted onto the assistant
+                    # ``case_messages`` row: unlike the keys above this is
+                    # monitoring data, and that row is readable through the
+                    # transcript API.
+                    TELEMETRY_HANDOFF_KEY: {
+                        "path": TurnPath.LLM,
+                        "arms": collect_progress_arms(metadata),
+                        "gate_name": gate_result[0] if gate_result else None,
+                        "validation_repairs": len(validation_repairs),
+                        "repair_pattern": stagnation_str,
                     },
                 },
             }
@@ -12491,6 +12528,21 @@ class MilestoneEngine:
         )
         if metadata["progress_made"]:
             case.turns_without_progress = 0
+        # #1142: the same handoff the generation path builds, so a deterministic
+        # turn is a ROW in the stream rather than a gap. A gap is worse than an
+        # uninteresting row: streaks computed over the stream silently shorten,
+        # and a correct multi-turn confirmation handshake — which is exactly
+        # what these branches serve — would read as an engine-dry run.
+        metadata[TELEMETRY_HANDOFF_KEY] = {
+            "path": TurnPath.DETERMINISTIC,
+            "arms": collect_progress_arms(metadata),
+            "gate_name": None,
+            # Carried in the handoff rather than written onto ``metadata``: the
+            # TurnProgress these branches record is CONVERSATION, but the
+            # returned dict is persisted onto the assistant message row and
+            # adding a key there is a wire-visible change this does not need.
+            "outcome": TurnOutcome.CONVERSATION,
+        }
         return metadata
 
     def _check_if_progress_made(self, metadata: dict[str, Any]) -> bool:

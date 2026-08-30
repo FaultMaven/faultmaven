@@ -30,6 +30,18 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 2.3.0 — MINOR. `HypothesisSummary` gains an optional `retirement_reason`
+# (#1142). The schema already carried `refutation_reason`, so a client rendering
+# a terminal hypothesis could say why one was REFUTED but not why one was
+# RETIRED — and retirement is the commoner end (40 retired against 8 refuted in
+# the corpus), so the half that was missing was the larger one. A hypothesis the
+# engine set aside having never grounded it and one it tested and abandoned
+# looked identical at this seam.
+#
+# MINOR rather than MAJOR because it is a new nullable response field on a
+# response-only schema: no request shape changes, no existing field changes
+# meaning, and a client that ignores it renders exactly what it renders today.
+#
 # 2.2.0 — MINOR. `POST /cases/{case_id}/turns` publishes `maxItems: 1` on its
 # `files` field (#694). The one-file-per-turn rule was always the supported
 # contract — it is what the clarification emitter is written against — but it
@@ -72,4 +84,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.2.0"
+API_CONTRACT_VERSION = "2.3.0"

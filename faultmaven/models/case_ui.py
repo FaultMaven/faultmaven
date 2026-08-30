@@ -139,6 +139,22 @@ class HypothesisSummary(BaseModel):
         ),
     )
 
+    retirement_reason: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Why the hypothesis was set aside WITHOUT a verdict. Populated only "
+            "when status=RETIRED; None otherwise. Carried beside "
+            "``refutation_reason`` because without it the Hypotheses tab cannot "
+            "tell a hypothesis that was TESTED and abandoned from one the "
+            "engine discarded having never grounded it — and retirement is by "
+            "far the commoner end (40 retired against 8 refuted in the corpus), "
+            "so the missing half was the larger one (#1142). Bounded to "
+            "200 by the domain model, which TRUNCATES rather than rejects: the "
+            "user-retire path writes the user's own message into this field."
+        ),
+    )
+
 
 class EvidenceSummary(BaseModel):
     """Summary of evidence for INVESTIGATING phase UI."""
