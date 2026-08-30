@@ -24,15 +24,58 @@ from pydantic import BaseModel, Field
 from faultmaven.utils.serialization import to_json_compatible
 
 
+# ``ReportType`` is a WIDER vocabulary than ``reports.report_type``, and the
+# asymmetry is deliberate rather than drift (#520). Kept as a comment, not as
+# the enum's docstring: that docstring is published verbatim as the schema
+# description in ``docs/reference/api/openapi.json``, and this is internal
+# rationale.
+#
+# Two members are ``reports`` rows. ``RUNBOOK`` is not, and never was:
+# ``reports_type_check`` has admitted exactly ``resolution_summary`` and
+# ``closure_summary`` since the clean baseline, and a runbook lives in
+# ``conversion_drafts`` / ``knowledge_items`` instead. It is a member because
+# the API genuinely uses it as a *projection* vocabulary —
+# ``GET /cases/{id}/reports?report_type=runbook`` filters case-linked drafts
+# projected into the report shape, and the report recommendation advertises it
+# as something the user can go and make (via ConversionService).
+#
+#   - The STORAGE vocabulary is ``PERSISTED_REPORT_TYPES`` below, and it must
+#     equal ``reports_type_check`` exactly. That is what a repository may write
+#     and what ``ReportType(row.report_type)`` may have to parse.
+#   - The API vocabulary is the enum, and it is a strict superset.
+#
+# Widening the CHECK to admit ``runbook`` was the other way to close the
+# divergence and would have been wrong: it makes half-formed runbook rows
+# writable into a table whose whole point is that runbooks are not in it.
+# Narrowing the enum would have been wrong too — it is reachable API surface.
+# What was missing is that the subset relation was undeclared, so nothing
+# stopped a writer reaching for ``RUNBOOK`` and getting a bare
+# ``IntegrityError``, and nothing kept the two halves in step.
+#
+# ``tests/unit/modules/case/test_report_vocabulary.py`` pins the storage half
+# against the ORM CheckConstraint AND against the migration that owns it, and
+# pins the non-persistable remainder to exactly ``{RUNBOOK}`` so a new member
+# cannot be added without deciding which half it belongs to.
 class ReportType(str, Enum):
     """Type of case documentation report"""
 
-    # Auto-generated on terminal transition
+    # Auto-generated on terminal transition — these ARE ``reports`` rows.
     RESOLUTION_SUMMARY = "resolution_summary"  # RESOLVED cases
     CLOSURE_SUMMARY = "closure_summary"  # CLOSED cases
 
-    # User-requested via ConversionService
+    # User-requested via ConversionService — NOT a ``reports`` row; the
+    # artifact lands in conversion_drafts/knowledge_items.
     RUNBOOK = "runbook"  # From RESOLVED cases (requires root cause)
+
+
+#: The subset of :class:`ReportType` that ``reports_type_check`` admits, i.e.
+#: the only values a repository may write to ``reports.report_type``.
+#: Single source of truth for that judgment — the generation service refuses
+#: anything outside it up front rather than letting the database do it with a
+#: bare ``IntegrityError``, and the vocabulary test pins it to the constraint.
+PERSISTED_REPORT_TYPES: frozenset[ReportType] = frozenset(
+    {ReportType.RESOLUTION_SUMMARY, ReportType.CLOSURE_SUMMARY}
+)
 
 
 class ReportStatus(str, Enum):
@@ -101,7 +144,18 @@ class CaseReport(BaseModel):
         ..., min_length=10, max_length=200, description="Human-readable title"
     )
     content: str = Field(..., description="Full report content in Markdown format")
-    format: Literal["markdown"] = Field(default="markdown", description="Report format")
+    # ``reports_format_check`` admits 'markdown' and 'html'; this Literal
+    # admitted only 'markdown'. That is a load-path constraint, not a write-path
+    # one: a stored 'html' row is hydrated straight into this model by
+    # ``_row_to_report``, so the narrow Literal turned a row the database
+    # accepts into a ValidationError — a 500 on read of an already-persisted
+    # report (#520). The database is the wider half of this pair, so the code
+    # side is what widens; the alternative, dropping 'html' from the CHECK, is a
+    # tightening that could reject a row valid today. Nothing writes 'html'
+    # today, which bounds the blast radius but does not remove the hazard.
+    format: Literal["markdown", "html"] = Field(
+        default="markdown", description="Report format"
+    )
     generation_status: ReportStatus = Field(..., description="Generation status")
     generated_at: str = Field(
         default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)),
@@ -233,6 +287,7 @@ class CaseClosureResponse(BaseModel):
 __all__ = [
     # Enumerations
     "ReportType",
+    "PERSISTED_REPORT_TYPES",
     "ReportStatus",
     "RunbookSource",
     # Models

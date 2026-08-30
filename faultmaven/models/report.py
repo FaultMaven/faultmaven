@@ -1,116 +1,45 @@
+"""Report models — compatibility surface over the Case-owned canon.
+
+The Case module owns the ``reports`` table, so the report models live in
+``faultmaven.modules.case.domain.owned_models.report`` and are published
+through ``faultmaven.modules.case.contracts`` — which is what this module
+re-exports from, per the cross-module rule (importing the owned_models
+directly would put ``faultmaven.models`` on a path from Case infrastructure
+into Case domain and break import-linter contract 5). This module used to carry a
+second, hand-maintained copy of ``ReportType`` / ``ReportStatus`` /
+``CaseReport`` / ``RunbookSource`` / ``RunbookMetadata`` / the request-response
+DTOs — a fork that had already drifted (it lacked ``auto_generated`` and
+``updated_at``) and that carried both halves of #520's report arm a second
+time, where a fix to the canonical models would not have reached it.
+
+Nothing imported those duplicates: ``faultmaven.models.__init__`` re-exports the
+canonical ones from ``case.contracts``, and every live importer of this module
+wanted ``RunbookMatch``. So the duplicates are gone and the names are re-exported
+instead — one definition per concept, which is what stops the drift class from
+regrowing here.
+
+``RunbookMatch`` is genuinely owned here: it is the dedup search-result type,
+defined at the models layer so infrastructure (``RunbookKnowledgeBase``) can
+return it without importing module internals.
 """
-Report Generation Models - Case Documentation & Closure (FR-CM-006)
-
-Data models for the case documentation generation feature including:
-- Report types (Incident Report, Runbook, Post-Mortem)
-- Report metadata and versioning
-- Intelligent runbook recommendations with similarity search
-- Dual-source runbook support (incident-driven + document-driven)
-
-Version: 2.0 (Updated with intelligent recommendations)
-"""
-
-import uuid
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from faultmaven.utils.serialization import to_json_compatible
-
-
-class ReportType(str, Enum):
-    """Type of case documentation report"""
-
-    RESOLUTION_SUMMARY = "resolution_summary"
-    CLOSURE_SUMMARY = "closure_summary"
-    RUNBOOK = "runbook"
-
-
-class ReportStatus(str, Enum):
-    """Report generation status"""
-
-    GENERATING = "generating"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class RunbookSource(str, Enum):
-    """Origin of runbook content"""
-
-    INCIDENT_DRIVEN = "incident_driven"  # Generated from resolved incident
-    DOCUMENT_DRIVEN = "document_driven"  # Generated from uploaded documentation
-
-
-class RunbookMetadata(BaseModel):
-    """
-    Metadata for runbook reports supporting dual sources.
-    Tracks origin (incident vs document) for transparency.
-    """
-
-    source: RunbookSource = Field(..., description="Origin of runbook")
-
-    # For incident-driven runbooks
-    case_context: Optional[Dict[str, Any]] = Field(
-        None, description="Case investigation context (incident-driven only)"
-    )
-
-    # For document-driven runbooks
-    document_title: Optional[str] = Field(
-        None, description="Source document title (document-driven only)"
-    )
-    original_document_id: Optional[str] = Field(
-        None, description="Reference to uploaded document (document-driven only)"
-    )
-
-    # Common metadata
-    domain: str = Field(..., description="Technology domain for filtering")
-    tags: List[str] = Field(default_factory=list, description="Classification tags")
-    llm_model: Optional[str] = Field(None, description="LLM model used for generation")
-    embedding_model: Optional[str] = Field(
-        None, description="Embedding model for vector search"
-    )
-
-
-class CaseReport(BaseModel):
-    """
-    Generated case documentation report (DR-005).
-    Supports DUAL runbook sources:
-    - Incident-driven: Generated from case resolution
-    - Document-driven: Generated from uploaded documentation
-    """
-
-    report_id: str = Field(
-        default_factory=lambda: str(uuid.uuid4()),
-        description="Unique report identifier (UUID v4)",
-    )
-    case_id: str = Field(
-        ...,
-        description="Foreign key to parent case (or 'doc-derived' for document-driven)",
-    )
-    report_type: ReportType = Field(..., description="Type of report")
-    title: str = Field(
-        ..., min_length=10, max_length=200, description="Human-readable title"
-    )
-    content: str = Field(..., description="Full report content in Markdown format")
-    format: Literal["markdown"] = Field(default="markdown", description="Report format")
-    generation_status: ReportStatus = Field(..., description="Generation status")
-    generated_at: str = Field(
-        default_factory=lambda: to_json_compatible(datetime.now(timezone.utc)),
-        description="ISO 8601 timestamp",
-    )
-    generation_time_ms: int = Field(
-        ..., ge=0, le=120000, description="Generation time (ms)"
-    )
-    is_current: bool = Field(
-        default=True, description="Latest version for this report_type"
-    )
-    version: int = Field(default=1, ge=1, le=5, description="Version number")
-    linked_to_closure: bool = Field(default=False, description="Linked to case closure")
-    metadata: Optional[RunbookMetadata] = Field(
-        None, description="Runbook-specific metadata"
-    )
+from faultmaven.modules.case.contracts import (
+    PERSISTED_REPORT_TYPES,
+    CaseClosureRequest,
+    CaseClosureResponse,
+    CaseReport,
+    ReportGenerationRequest,
+    ReportGenerationResponse,
+    ReportRecommendation,
+    ReportStatus,
+    ReportType,
+    RunbookMetadata,
+    RunbookRecommendation,
+    RunbookRef,
+    RunbookSource,
+)
 
 
 class RunbookMatch(BaseModel):
@@ -138,93 +67,20 @@ class RunbookMatch(BaseModel):
     )
 
 
-class RunbookRef(BaseModel):
-    """Reference to an existing published runbook in the knowledge base."""
-
-    item_id: str = Field(..., description="KB item id (knowledge_items.item_id)")
-    title: str = Field(..., description="Runbook title")
-    scope: str = Field(
-        ..., description="Visibility floor of the KB item ('personal' or 'global')"
-    )
-
-
-class RunbookRecommendation(BaseModel):
-    """Runbook-specific recommendation with similarity analysis"""
-
-    action: Literal["review_or_generate", "generate"] = Field(
-        ...,
-        description=(
-            "Recommended action:\n"
-            "- review_or_generate: A similar runbook exists (≥70% best-chunk "
-            "similarity); review it or generate a new one\n"
-            "- generate: Low/no similarity (<70%), recommend generating new runbook"
-        ),
-    )
-    existing_runbook: Optional[RunbookRef] = Field(
-        None, description="Existing similar runbook in the KB (if found)"
-    )
-    similarity_score: Optional[float] = Field(
-        None, ge=0.0, le=1.0, description="Semantic similarity score (0.0-1.0)"
-    )
-    reason: str = Field(
-        ..., max_length=500, description="Human-readable explanation of recommendation"
-    )
-
-
-class ReportRecommendation(BaseModel):
-    """Intelligent recommendations for report generation"""
-
-    case_id: str = Field(..., description="Case identifier")
-    available_for_generation: List[ReportType] = Field(
-        ...,
-        description=(
-            "Report types available for generation.\n"
-            "- Auto-generated: resolution_summary (RESOLVED), closure_summary (CLOSED)\n"
-            "- Conditionally includes: runbook (based on similarity search, RESOLVED only)"
-        ),
-    )
-    runbook_recommendation: RunbookRecommendation = Field(
-        ..., description="Runbook-specific recommendation"
-    )
-
-
-class ReportGenerationRequest(BaseModel):
-    """Request to generate case documentation reports"""
-
-    report_types: List[ReportType] = Field(
-        ..., min_length=1, max_length=3, description="Types of reports to generate"
-    )
-
-
-class ReportGenerationResponse(BaseModel):
-    """Response after generating reports"""
-
-    case_id: str = Field(..., description="Case identifier")
-    reports: List[CaseReport] = Field(..., description="Generated reports")
-    remaining_regenerations: int = Field(
-        ...,
-        ge=0,
-        le=5,
-        description="Number of regenerations remaining (max 5 per report type)",
-    )
-
-
-class CaseClosureRequest(BaseModel):
-    """Request to close a case"""
-
-    closure_note: Optional[str] = Field(
-        None, max_length=500, description="Optional closure note"
-    )
-
-
-class CaseClosureResponse(BaseModel):
-    """Response after closing a case"""
-
-    case_id: str = Field(..., description="Case identifier")
-    closed_at: str = Field(..., description="Closure timestamp (ISO 8601)")
-    archived_reports: List[CaseReport] = Field(
-        ..., description="Reports linked to closure"
-    )
-    download_available_until: str = Field(
-        ..., description="Reports download expiry (ISO 8601, 90 days from closure)"
-    )
+__all__ = [
+    "RunbookMatch",
+    # Re-exported from the Case-owned canon — see the module docstring.
+    "PERSISTED_REPORT_TYPES",
+    "CaseClosureRequest",
+    "CaseClosureResponse",
+    "CaseReport",
+    "ReportGenerationRequest",
+    "ReportGenerationResponse",
+    "ReportRecommendation",
+    "ReportStatus",
+    "ReportType",
+    "RunbookMetadata",
+    "RunbookRecommendation",
+    "RunbookRef",
+    "RunbookSource",
+]
