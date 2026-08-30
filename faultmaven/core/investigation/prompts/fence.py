@@ -261,11 +261,12 @@ escape merely being replaced in kind on the one channel it did reach:
    which passes through ``sanitize_user_input`` on its own path". That was
    false. ``sanitize_user_input`` is called once, on THIS turn's
    ``user_message`` argument; the history is replayed from ``case.messages``,
-   which ``CaseService.add_case_query`` persists as ``query_text.strip()``.
-   Measured on this deployment's dev database: 42 stored user messages contain
-   a raw ``<`` and 1 contains ``&lt;``. So the block was not
-   "protected differently" — it was the one unprotected caller-controlled
-   channel on the main prompt, and it is now fenced like the rest.
+   which ``InvestigationService.process_turn`` appends as ``"content": query``
+   — ``payload.query`` verbatim, nothing rewrites it on the way in. Measured
+   on this deployment's dev database: 42 stored user messages contain a raw
+   ``<`` and 1 contains ``&lt;``. So the block was not "protected
+   differently" — it was the one unprotected caller-controlled channel on the
+   main prompt, and it is now fenced like the rest.
 
 ``<conversation_history>`` is fenced as a LEAF element, so the tag-shaped
 scaffolding it renders around the quoted turns — ``<state_summary>``,

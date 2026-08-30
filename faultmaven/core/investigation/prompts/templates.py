@@ -137,7 +137,8 @@ explicitly. The latest turn is not the only input.\
 # decodes, so the model just echoed &lt; back at the user (#666), and it
 # mangled ordinary prose ("lag went from <1000 to >250000") — and for the
 # transcript it was not protection at all: the escape only ever saw THIS
-# turn's argument, never the persisted messages the history replays.
+# turn's argument, while InvestigationService.process_turn persists each
+# message raw and the history replays it from there.
 #
 # Why ONE token for the whole prompt rather than one per block: the rule below
 # has a single anchor ("read the token from the one declaration"), and a token

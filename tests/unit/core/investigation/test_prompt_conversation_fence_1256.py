@@ -22,7 +22,9 @@ token.
 passes through ``sanitize_user_input`` on its own path". That premise was
 false. ``sanitize_user_input`` is called once, on THIS turn's ``user_message``
 argument; the history is replayed out of ``case.messages``, which
-``CaseService.add_case_query`` persists as ``query_text.strip()``. So the
+``InvestigationService.process_turn`` appends verbatim as ``"content": query``
+(``payload.query``, unrewritten — the ``CaseService.add_case_query`` helper
+that strips is dead code with no caller). So the
 block was not protected differently — it was unprotected, which is why the
 forgery tests below run against a PRIOR turn as well as the current one.
 

@@ -2249,12 +2249,12 @@ def _fence_conversation(body: str, fence: PromptFence) -> str:
 
     The conversation section is a caller-controlled channel (#1256): every
     prior USER turn is replayed here byte-verbatim from ``case.messages``,
-    which persist what the reporter typed (``CaseService.add_case_query``
-    stores ``query_text.strip()`` — nothing rewrites it on the way in). Before
-    #1256 it was left unfenced on the premise that "it carries user text, which
-    passes through ``sanitize_user_input`` on its own path"; that premise was
-    false — ``sanitize_user_input`` only ever saw THIS turn's message argument,
-    never the replayed transcript.
+    which persist what the reporter typed (``InvestigationService.process_turn``
+    appends ``"content": query`` — ``payload.query`` verbatim, nothing rewrites
+    it on the way in). Before #1256 it was left unfenced on the premise that
+    "it carries user text, which passes through ``sanitize_user_input`` on its
+    own path"; that premise was false — ``sanitize_user_input`` only ever saw
+    THIS turn's message argument, never the replayed transcript.
 
     A LEAF element, not a container: the tag-shaped scaffolding the fidelities
     below emit inside the body (``<state_summary>``, ``<previous_turn>``,
