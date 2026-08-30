@@ -1492,8 +1492,22 @@ def _render_orphan_file_block(
     ``UploadedFile.display_name`` — the filename for a chosen file, "pasted
     text (turn N)" for a paste (#666).
 
+    ``observed_attr`` renders the file's own coverage span, the same way the
+    three ``<evidence>`` tiers render theirs. Without it this block emitted
+    ``fresh_this_turn`` alone — the half of the pair that answers "when did the
+    AGENT see this", never "how old is the observation" — which is precisely the
+    misreading :func:`_observed_attr` exists to break. It matters most here:
+    INV-07 forbids Evidence creation during INQUIRY, so turn 1 of every
+    forwarded alert is rendered by this function and by nothing else, and turn 1
+    is where "is this still firing?" decides whether there is an incident at
+    all. Unlike :func:`_evidence_coverage`, which refuses to inherit a RANGED
+    file span onto a narrower slice, stating a file's own span on that file's
+    own block asserts nothing about any slice — it is the file's coverage, so it
+    is rendered whatever its shape.
+
     ``summary_only=True`` emits just the opening/closing tag (id, label,
-    data_type, freshness, ``searchable``) without the ``file_extract`` body —
+    data_type, freshness, observation time, ``searchable``) without the
+    ``file_extract`` body —
     the graceful-degradation render used when a current-turn file can't fit its
     full structural index within the reserve. The file stays present and
     addressable (the LLM can still ``search_file`` it by ``file_id``) instead of
@@ -1514,11 +1528,12 @@ def _render_orphan_file_block(
     name_attr = _label_attr(uf)
     data_type_attr = _attr("data_type", uf.data_type)
     fresh_attr = _fresh_this_turn_attr(uf.uploaded_at_turn, current_turn)
+    observed_attr = _observed_attr(uf)
     duplicate_attr = _identical_to_prior_attr(uf, hash_first_seen)
     entry = "  " + fence.open(
         "uploaded_file",
         f"{file_id_attr}{name_attr}"
-        f"{data_type_attr}{fresh_attr}{duplicate_attr}"
+        f"{data_type_attr}{fresh_attr}{observed_attr}{duplicate_attr}"
         f' searchable="true"',
     )
     entry += "\n"

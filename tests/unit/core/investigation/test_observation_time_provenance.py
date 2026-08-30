@@ -16,7 +16,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from faultmaven.core.investigation.milestone_engine import _evidence_coverage
-from faultmaven.core.investigation.prompts.context_builder import _observed_attr
+from faultmaven.core.investigation.prompts.context_builder import (
+    _observed_attr,
+    _render_orphan_file_block,
+)
+from faultmaven.core.investigation.prompts.fence import PromptFence, mint_token
 from faultmaven.modules.case.contracts import (
     Case,
     CaseSeverity,
@@ -148,3 +152,67 @@ def test_prompt_states_the_current_time():
     identity = sections["identity"]
     assert "CURRENT_TIME:" in identity
     assert str(datetime.now(timezone.utc).year) in identity
+
+
+# -- the render an UN-PROMOTED file gets --------------------------------------
+# INV-07 forbids Evidence creation during INQUIRY, so a forwarded alert has no
+# Evidence row on turn 1 and is rendered by _render_orphan_file_block — shared
+# by the INQUIRY fallback, the INV-EC-1 current-turn floor and the Tier-D fill.
+# Every assertion above is about a row this file may never become.
+def _orphan(uf, turn=3, **kw) -> str:
+    return _render_orphan_file_block(
+        uf, {}, turn, fence=PromptFence(mint_token()), **kw
+    )
+
+
+def test_orphan_file_block_states_when_its_content_was_observed():
+    """The case that reopened this: an alert forwarded 7h35m after it fired was
+    rendered with ``fresh_this_turn="true"`` and nothing else, so the engine told
+    the reporter it had no firing time — while the instant sat on the file."""
+
+    posted = datetime.now(timezone.utc) - timedelta(hours=7, minutes=35)
+    block = _orphan(_file(posted, posted))
+
+    assert f'observed_through="{posted.isoformat()}"' in block
+    assert 'age="7h"' in block
+
+
+def test_orphan_file_block_renders_both_halves_of_the_pair():
+    """``fresh_this_turn`` answers when the AGENT looked, ``observed_through``
+    how old the observation is. Emitting the first alone is what made a stale
+    alert read as current."""
+
+    posted = datetime.now(timezone.utc) - timedelta(hours=2)
+    block = _orphan(_file(posted, posted))
+
+    assert 'fresh_this_turn="true"' in block
+    assert "observed_through=" in block
+
+
+def test_orphan_file_without_coverage_claims_nothing():
+    """Same contract as the evidence tiers: absent means unknown, never fresh."""
+
+    assert "observed_through=" not in _orphan(_file(None, None))
+
+
+def test_degraded_orphan_render_keeps_the_observation_time():
+    """``summary_only`` drops the body to fit the budget. Dropping the age with
+    it would make a budget decision silently change what the file claims."""
+
+    posted = datetime.now(timezone.utc) - timedelta(hours=7)
+    block = _orphan(_file(posted, posted), summary_only=True)
+
+    assert "file_extract" in block  # the degraded stub, not the content
+    assert 'age="7h"' in block
+
+
+def test_ranged_orphan_file_reports_the_end_of_its_own_span():
+    """_evidence_coverage refuses to INHERIT a ranged span onto a narrower
+    slice. Stating a file's own span on the file's own block asserts nothing
+    about any slice, so it is rendered whatever its shape."""
+
+    end = datetime.now(timezone.utc) - timedelta(hours=3)
+    block = _orphan(_file(end - timedelta(hours=7), end))
+
+    assert f'observed_through="{end.isoformat()}"' in block
+    assert 'age="3h"' in block
