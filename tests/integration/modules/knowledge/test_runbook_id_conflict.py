@@ -11,7 +11,7 @@ Everything here runs against a real SQLAlchemy engine with the real schema —
 ``Index`` declaration migration 046 creates — so the assertions are about what
 the database does, not about a mock.
 
-Three claims:
+Four claims:
 
 1. The index BITES through the service: a second live draft on the same key is
    refused rather than silently persisted (the #1230 defect).
@@ -19,14 +19,18 @@ Three claims:
    ``IntegrityError`` (500).
 3. The scan DEGRADES: one unmintable file is skipped with an error entry, and
    the walk over the rest completes.
+4. And the case the index CANNOT see — two drafts in ONE job, where nothing is
+   committed yet — is refused before either is written, as the losing failure
+   mode's own error rather than as that bare ``IntegrityError`` (#1258).
 """
 
 from __future__ import annotations
 
 import pathlib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy import func, select
@@ -41,6 +45,13 @@ from faultmaven.infrastructure.persistence.models import (
     EnterpriseModel,
     OrganizationModel,
     UploadedFileModel,
+)
+from faultmaven.modules.knowledge.domain.models.conversion import (
+    AnalysisResult,
+    ConversionStatus,
+    FailureModeAnalysis,
+    PreprocessingResult,
+    SourceAssessment,
 )
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
     ConversionService,
@@ -493,3 +504,228 @@ class TestTheCaseRaceStillReturnsTheWinner:
         )
         with pytest.raises(ConflictError):
             await service._raise_if_runbook_id_taken(ORG, [first["draft"].runbook_id])
+
+
+# ---------------------------------------------------------------------------
+# #1258 — the INTRA-job half: two drafts in ONE conversion minting one id
+# ---------------------------------------------------------------------------
+
+
+class TestTwoDraftsInOneJobCannotMintOneId:
+    """The half #1230 left open, driven through ``convert_document``.
+
+    ``refuse_if_draft_slot_taken`` and ``_raise_if_runbook_id_taken`` both work
+    by reading COMMITTED rows. A multi-failure-mode conversion commits nothing
+    until ``_persist_job``, so two modes whose ``(service, title)`` slug
+    identically were invisible to both: they wrote both runbooks to one file and
+    then failed the commit with a bare ``IntegrityError`` — a 500, on a document
+    the user has every reason to expect a partial result from.
+
+    Everything here runs against the real engine and the real 046 index, so the
+    ``IntegrityError`` these assertions exclude is the one the database actually
+    raises.
+    """
+
+    #: A body that passes every gate in ``_convert_single_failure_mode``:
+    #: >100 chars, frontmatter delimiters, and a required section heading.
+    RUNBOOK = """---
+id: placeholder
+title: "Generated"
+domain: platform
+service: redis
+symptom_class: [saturation]
+scope: global
+tags: []
+difficulty: medium
+severity: high
+version: "1.0.0"
+last_updated: "2026-01-01"
+verified_by: ""
+status: draft
+---
+
+# Runbook: Generated
+
+## Symptom Recognition
+Redis begins evicting keys and clients see OOM errors on every write path.
+
+## Applicability
+Any Redis deployment running with a maxmemory bound.
+
+## Diagnostic Steps
+### Step 1. Read INFO memory
+
+## Causes
+### Cause A: maxmemory is below the working set
+Statement: the instance reached its configured cap.
+
+## Prevention
+Alert on the used_memory to maxmemory ratio.
+"""
+
+    @staticmethod
+    def _mode(fm_id: str, title: str, symptom_class: list[str]) -> FailureModeAnalysis:
+        return FailureModeAnalysis(
+            id=fm_id,
+            title=title,
+            domain="platform",
+            service="redis",
+            # DIFFERENT symptom classes on purpose: the pre-existing dedup in
+            # ``_convert_all_failure_modes`` keys on ``(service, symptom_class)``,
+            # so identical classes would be dropped by that and this test would
+            # pass without exercising the id collision at all.
+            symptom_class=symptom_class,
+            severity="high",
+            symptoms_summary="Writes fail.",
+            resolution_summary="Raise the cap.",
+        )
+
+    async def _convert(self, service, tmp_path, titles):
+        """Drive the real ``convert_document`` over ``titles`` as failure modes.
+
+        Only the two LLM calls are stubbed — preprocessing (which needs a real
+        file parser) and analysis (which needs a model that emits failure-mode
+        JSON). Everything the defect lives in — the batch walk, the per-mode
+        conversion, the disk write, and the single ``_persist_job`` commit — is
+        the production path.
+        """
+        modes = [
+            self._mode(f"fm-{i}", t, [c])
+            for i, (t, c) in enumerate(zip(titles, ["saturation", "latency", "errors"]))
+        ]
+        source = tmp_path / "doc.md"
+        source.write_text("source material", encoding="utf-8")
+
+        service._preprocessor.preprocess = AsyncMock(
+            return_value=PreprocessingResult(
+                extracted_text="source material", source_metadata={}
+            )
+        )
+        service._llm_router.route = AsyncMock(
+            return_value=SimpleNamespace(content=self.RUNBOOK, is_truncated=False)
+        )
+        with patch.object(
+            ConversionService,
+            "_analyze_document",
+            AsyncMock(
+                return_value=AnalysisResult(
+                    is_actionable=True,
+                    failure_modes=modes,
+                    source_assessment=SourceAssessment(
+                        content_type="doc",
+                        actionability_rating="high",
+                        missing_information=[],
+                    ),
+                )
+            ),
+        ):
+            return await service.convert_document(
+                file_path=source,
+                content_type="text/markdown",
+                original_filename="doc.md",
+                scope="global",
+                user_id="user_x",
+                organization_id=ORG,
+            )
+
+    async def test_the_colliding_mode_is_refused_not_raised_as_IntegrityError(
+        self, service, session_factory, tmp_path
+    ):
+        """The issue's own measurement: ``"Redis OOM"`` and ``"redis oom"``
+        under service ``"redis"`` both mint ``redis-redis-oom``.
+
+        Pre-fix this call raises ``sqlalchemy.exc.IntegrityError`` out of
+        ``_persist_job``. The assertion is that it RETURNS, with the collision
+        reported as the losing mode's own failure.
+        """
+        response = await self._convert(service, tmp_path, ["Redis OOM", "redis oom"])
+
+        # One runbook, not two, and not a 500.
+        assert [d.runbook_id for d in response.drafts] == ["redis-redis-oom"]
+        assert response.status == ConversionStatus.PARTIAL
+        assert await _live_draft_count(session_factory, "redis-redis-oom") == 1
+
+        # The refusal names BOTH failure modes, so the user can act on it.
+        assert len(response.warnings) == 1, response.warnings
+        warning = response.warnings[0]
+        assert "fm-0" in warning and "fm-1" in warning, warning
+        assert "Redis OOM" in warning and "redis oom" in warning, warning
+        assert "redis-redis-oom" in warning, warning
+
+    async def test_the_loser_never_writes_over_the_winners_file(
+        self, service, tmp_path
+    ):
+        """The half that is worse than the 500 and invisible without this.
+
+        Both ids resolve to one ``draft_filename``, so pre-fix the second mode's
+        content replaced the first mode's on disk BEFORE the commit failed. The
+        refusal happens before any conversion runs, so exactly one file exists
+        and it belongs to the surviving draft.
+        """
+        response = await self._convert(service, tmp_path, ["Redis OOM", "redis oom"])
+
+        scope_dir = tmp_path / "data/knowledge/global"
+        written = sorted(p.name for p in scope_dir.glob("*.md"))
+        assert written == ["redis-redis-oom.md"], written
+        assert Path(response.drafts[0].file_path).read_text(encoding="utf-8")
+
+    async def test_the_non_colliding_modes_in_the_same_job_still_yield(
+        self, service, session_factory, tmp_path
+    ):
+        """The degradation contract this path inherits, stated as a claim.
+
+        A document analysed into three failure modes, two of which collide, must
+        still produce the two distinct runbooks. Collapsing to a whole-job
+        refusal would take the LLM path's per-mode degradation and make it the
+        manual path's outright one.
+        """
+        response = await self._convert(
+            service, tmp_path, ["Redis OOM", "redis oom", "Redis Slow"]
+        )
+
+        assert sorted(d.runbook_id for d in response.drafts) == [
+            "redis-redis-oom",
+            "redis-redis-slow",
+        ]
+        assert response.status == ConversionStatus.PARTIAL
+        assert len(response.warnings) == 1, response.warnings
+        assert await _live_draft_count(session_factory) == 2
+
+    async def test_a_job_with_no_collision_is_unchanged(
+        self, service, session_factory, tmp_path
+    ):
+        """The negative control. Without it every assertion above is satisfied
+        by a guard that refuses everything.
+        """
+        response = await self._convert(service, tmp_path, ["Redis OOM", "Redis Slow"])
+
+        assert sorted(d.runbook_id for d in response.drafts) == [
+            "redis-redis-oom",
+            "redis-redis-slow",
+        ]
+        assert response.status == ConversionStatus.COMPLETED
+        assert response.warnings == []
+        assert await _live_draft_count(session_factory) == 2
+
+    async def test_the_manual_path_still_refuses_OUTRIGHT(
+        self, service, session_factory, tmp_path
+    ):
+        """The two write paths degrade differently BY DESIGN, and #1258 must not
+        collapse them.
+
+        The LLM path turns a taken id into that one mode's ``ConversionError``
+        (above). A manual create is one runbook, so refusing it IS the answer
+        and the caller gets the 409 — unchanged.
+        """
+        await service.create_runbook_from_template(
+            title="Connection Pool Exhausted",
+            service_name="checkout-api",
+            **TEMPLATE_ARGS,
+        )
+        with pytest.raises(ConflictError):
+            await service.create_runbook_from_template(
+                title="connection pool exhausted!",
+                service_name="Checkout-API",
+                **TEMPLATE_ARGS,
+            )
+        assert await _live_draft_count(session_factory) == 1

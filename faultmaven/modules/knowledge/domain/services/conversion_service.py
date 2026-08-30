@@ -323,6 +323,116 @@ def _force_frontmatter_id(content: str, runbook_id: str) -> str:
     return head + new_body + tail + content[fm_match.end() :]
 
 
+def _partition_by_minted_runbook_id(
+    failure_modes: List[FailureModeAnalysis],
+) -> Tuple[List[FailureModeAnalysis], List[ConversionError]]:
+    """Split one job's failure modes into those that can be persisted and those
+    that cannot, because a mode earlier in the batch already claimed their id.
+
+    **The intra-job half of #1230's uniqueness rule (#1258).** Migration 046's
+    ``uq_conversion_drafts_org_runbook_id`` admits one live draft per
+    ``(organization_id, runbook_id)``. ``refuse_if_draft_slot_taken`` catches a
+    duplicate of an id some COMMITTED draft holds; it cannot catch two drafts in
+    ONE job colliding with each other, because at that point nothing is
+    committed and there is no row to re-read. That case used to reach
+    ``_persist_job`` and surface as a bare ``IntegrityError`` — a 500 that says
+    nothing — and it did so only AFTER the second draft's write had already
+    replaced the first one's file on disk (both ids resolve to the same
+    ``draft_filename``, so both writes land on one path). Measured on
+    ``e1cf27371``: two failure modes titled ``"Redis OOM"`` and ``"redis oom"``
+    under service ``"redis"`` both mint ``redis-redis-oom``, both write
+    ``global/redis-redis-oom.md``, and the commit raises ``UNIQUE constraint
+    failed: conversion_drafts.organization_id, conversion_drafts.runbook_id``.
+
+    Called BEFORE any conversion runs, which is what makes it a fix rather than
+    a nicer error: the whole batch is knowable up front (``runbook_id_from_parts``
+    is a pure function of ``(service, title)``), so the losing mode never spends
+    an LLM call and never touches the filesystem. It also cannot race — the
+    parallel branch dispatches with ``asyncio.gather``, so a check made inside
+    the per-mode coroutine would be two concurrent readers of one unsynchronised
+    set.
+
+    **Refusal, not disambiguation.** The alternative — mint a distinct id for
+    the second mode, the way the empty-slug branch appends a hash — cannot be
+    made deterministic, and determinism is not optional here (the disk scan
+    reconciles a file to its row by this id). A disambiguator has to be a
+    function of something that DIFFERS between the two modes; but "collide"
+    means their ``(service, title)`` are identical after normalisation, and
+    every other field on a ``FailureModeAnalysis`` is LLM output for this one
+    analysis pass, so hashing any of them gives a different id on a re-run.
+    An ordinal suffix is worse still: it keys on position in
+    ``analysis.failure_modes``, which is the model's own ordering. And even with
+    a stable disambiguator, minting one would persist two runbooks that every
+    normalised signal says are the same failure mode — exactly the
+    indistinguishable pair migration 046 exists to reject, recreated one hash
+    apart.
+
+    **Shape-agnostic on purpose.** It compares minted IDS, not titles, so it
+    covers every shape ``_slug`` collapses without enumerating any of them:
+    case, punctuation, underscore/hyphen, whitespace runs, leading/trailing
+    trim, tabs and control characters, NBSP and zero-width joiners, emoji,
+    accents and non-latin scripts, full-width forms; the ``service``/``title``
+    join, which makes the delimiter part of the data (``("redis-cache", "OOM")``
+    and ``("redis", "cache OOM")`` both mint ``redis-cache-oom``); and the
+    over-length branch, both when two titles differ only where the slug rule
+    normalises and when two genuinely distinct long slugs land on the same
+    4-hex disambiguator. A future tightening of the slug rule is covered for
+    free. The mint itself is deliberately untouched: it is a PERSISTED id, and
+    re-minting it would orphan rows that already exist — the boundary #1230 and
+    #1243 both drew.
+
+    Keyed on the resolved draft FILENAME as well as the id, for the reason
+    ``_find_live_draft_owning`` gives for its second key: a draft occupies two
+    slots and losing either loses a runbook. Today the mint cannot produce two
+    distinct ids that share a filename (ids are kebab and bounded at
+    ``_MAX_RUNBOOK_ID_CHARS``, which ``draft_filename`` re-slugs to themselves),
+    so this key guards a state that was not reproduced — but the id bound and
+    the filename bound are deliberately SEPARATE constants, and keying on the
+    slot rather than on the id that is supposed to imply it is what survives one
+    of them moving.
+    """
+    survivors: List[FailureModeAnalysis] = []
+    errors: List[ConversionError] = []
+    claimed_id: Dict[str, FailureModeAnalysis] = {}
+    claimed_file: Dict[str, FailureModeAnalysis] = {}
+
+    for fm in failure_modes:
+        # The same pure function ``_convert_single_failure_mode`` calls, so the
+        # id decided here and the id it mints for itself agree by construction
+        # rather than by a parameter that could drift.
+        runbook_id = generate_runbook_id(fm)
+        filename = draft_filename(runbook_id)
+        holder = claimed_id.get(runbook_id) or claimed_file.get(filename)
+        if holder is not None:
+            errors.append(
+                ConversionError(
+                    failure_mode_id=fm.id,
+                    error=(
+                        f"Runbook id {runbook_id!r} was already claimed in this "
+                        f"conversion by failure mode {holder.id!r} "
+                        f"(service {holder.service!r}, title {holder.title!r}). "
+                        f"This failure mode (service {fm.service!r}, title "
+                        f"{fm.title!r}) mints the same id, because the id is "
+                        f"derived from service and title with case, punctuation, "
+                        f"whitespace and non-latin characters normalised away — "
+                        f"so the two would produce one runbook, not two. Give "
+                        f"them distinct titles in the source document, or merge "
+                        f"them into a single failure mode."
+                    ),
+                    # Nothing about retrying frees the id — the same wording and
+                    # the same reason as the committed-duplicate branch in
+                    # ``_convert_single_failure_mode``.
+                    retryable=False,
+                )
+            )
+            continue
+        claimed_id[runbook_id] = fm
+        claimed_file[filename] = fm
+        survivors.append(fm)
+
+    return survivors, errors
+
+
 # =============================================================================
 # ConversionService
 # =============================================================================
@@ -976,6 +1086,22 @@ class ConversionService:
                 seen.add(key)
                 unique_modes.append(fm)
 
+        # Then by the id each surviving mode would actually MINT, which the
+        # key above only approximates: two modes with the same service and
+        # DIFFERENT symptom classes pass the dedup and can still slug to one
+        # ``runbook_id``. Before #1258 that pair reached ``_persist_job`` as a
+        # bare ``IntegrityError``, having already written both drafts to one
+        # file. Refused here, before any LLM call or write, and degraded to the
+        # loser's own ``ConversionError`` so the rest of the document still
+        # yields — the same per-mode degradation this function's caller already
+        # applies to a committed-duplicate id. See
+        # ``_partition_by_minted_runbook_id`` for why this refuses rather than
+        # disambiguating.
+        unique_modes, duplicate_id_errors = _partition_by_minted_runbook_id(
+            unique_modes
+        )
+        errors.extend(duplicate_id_errors)
+
         if len(unique_modes) < PARALLEL_THRESHOLD:
             # Parallel conversion
             tasks = [
@@ -1521,10 +1647,17 @@ class ConversionService:
         (``get_conversion_by_case``), which is the discriminator that actually
         distinguishes the two. Anything it cannot confirm it re-raises.
 
-        Two drafts in ONE job colliding with each other is not covered: nothing
-        committed, so there is nothing to re-read. That needs the LLM to emit
-        two identical ``(service, title)`` pairs in one analysis, and the fix
-        belongs where the duplicate is produced rather than here.
+        Two drafts in ONE job colliding with each other no longer reaches here
+        (#1258), and could never have been resolved here: nothing is committed,
+        so the re-read finds nothing, this returns, and the caller re-raises the
+        bare ``IntegrityError`` — a 500 that says nothing, after the second
+        draft's write has already replaced the first one's file (both ids
+        resolve to one ``draft_filename``). It is refused where the duplicate is
+        produced instead: ``_partition_by_minted_runbook_id`` mints every id in
+        the batch before any conversion runs and degrades each repeat to that
+        failure mode's ``ConversionError``, so every draft list reaching
+        ``_persist_job`` carries distinct ids and what arrives here is a
+        cross-job duplicate or the live-case race.
         """
         taken = await self._find_live_draft_owning(org_id, runbook_ids)
         if taken:
