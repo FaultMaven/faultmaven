@@ -69,9 +69,34 @@ when `CHAT_PROVIDER` changes.
 
 If the classifier is unsure, the message goes through normal LLM processing. False negatives (missed intent → conversation) are safe. False positives (misclassified conversation → state change) are dangerous. Optimize for precision.
 
-### P6: No pending choice state
+### P6: No pending choice state, but a bounded lifetime
 
-The case model does not track "pending choices." The agent's last response and its suggestions *are* the visible pending state. The system reads `last_suggestions` from the case to know what was offered, but no lock or gate is created.
+No lock, no gate, no "awaiting answer" flag: the agent's last response and its suggestions *are* the visible pending state, and the system reads `last_suggestions` to know what was offered.
+
+What the stored entries do carry is a **liveness stamp** — the turn that offered them (`offered_turn`), and for a clarification the target file's `data_type` at that moment (`offered_data_type`). Two things forced it (#1245, fm#918):
+
+- A clarification has to outlive its turn. A user who ignores the question and comes back to it two turns later must still be able to answer, so the set cannot simply be "last turn's output" — but an offer that never expires accumulates, and this resolver picks among the stored choices, so an unbounded set is an unbounded chance of resolving an answer onto the wrong file.
+- `last_suggestions` is rewritten **only** on `process_turn`'s success path. A mid-turn engine save that is never followed by the final one commits turn *N*'s state beside turn *N-1*'s suggestions; the standalone close/transition endpoints move the case without touching the list at all. "It is in the row" is therefore not evidence that a turn put it there *for now*.
+
+So the adoption site matches against the **live** entries, not the raw field: a `file_reclassification` choice is live for 3 turns, capped at 3 attachments (newest first), and only while its file is still present, unreclassified, and the case is open; every other intent is live for exactly one turn. An entry with no stamp is not live — it was not written by the turn seam, so nothing knows what turn it belongs to. See `core/investigation/suggestion_liveness.py`.
+
+Both sides of that seam filter at the same number, and the number is `effective_current_turn + 1` — the counter both repositories persist. It is **not** the in-flight `case.current_turn`: only the engine appends `turn_history` (milestone_engine Step 6), so across a SERVICE-dispatched turn (a clarification click, a greeting) the stored counter stands still (#1264), and a writer using the in-flight value ages every entry one turn further than the next read will.
+
+### P7: An answer that could mean two things means neither
+
+The classifier tier has always been told to return `"none"` rather than guess
+between two plausible choices. The exact-match tier used to guess: it returned
+the FIRST payload or label hit, and the choices are ordered newest-first, so
+whenever two attachments shared wording an older card's own text resolved onto
+the newer file. Two pastes always share it ("Treat the text you pasted as
+documentation."), as do two uploads of one filename.
+
+Both tiers now hold the same line. A typed string that would resolve to more
+than one distinct intent resolves to neither, and the message flows on as
+conversation. Assembly is supposed to make that unreachable for clarifications —
+see P6 — but the guard is what makes the property true rather than merely
+intended, and it covers the pairs assembly does not arbitrate, such as a
+clarification and an engine follow-up that happen to share wording.
 
 ---
 
@@ -86,8 +111,10 @@ User submits message
        NO                             CONFIRMATION, HYPOTHESIS_ACTION)
        |
        v
-  Case has last_suggestions
+  Case has LIVE suggestions
   with intent metadata?  ----NO-----> Normal LLM processing
+  (in window, referent
+   still open — see P6)
        |
        YES
        |
@@ -218,15 +245,31 @@ last_suggestions: Optional[List[Dict[str, Any]]] = Field(
 )
 ```
 
-**Updated after each turn** in `investigation_service.py`, after building `suggested_actions`:
+**Updated after each turn** in `investigation_service.py`, after building `suggested_actions`. As shipped this is not a plain rebuild from the turn's own output — see P6 — but an assembly of this turn's clarification choices, the still-live ones carried from earlier turns, and this turn's engine follow-ups, each stamped with the offering turn:
 
 ```python
-# Store suggestions with intent for next turn's intent resolver
-updated_case.last_suggestions = [
-    s for s in raw_follow_ups
-    if s.get("intent")
-]
+next_read_turn = updated_case.effective_current_turn + 1   # what NEXT turn computes
+carried = _carry_forward_unresolved_clarifications(
+    updated_case.last_suggestions, updated_case, resolved_file_id,
+    as_of_turn=next_read_turn,
+)
+clarification, note = _build_classification_clarification(preprocess_results)
+stored = _stored_suggestions(
+    case=updated_case, clarification=clarification, carried=carried,
+    follow_ups=raw_follow_ups, offered_turn=updated_case.current_turn,
+    as_of_turn=next_read_turn,
+)
+updated_case.last_suggestions = stored or None
+
+# The cards are derived from what survived storage, so one rule decides both.
+offered_ids = {entry_file_id(e) for e in stored}
+clarification = [s for s in clarification
+                 if (s.intent or {}).get("file_id") in offered_ids]
 ```
+
+`as_of_turn` is the **next** turn's number, so what is stored is exactly what the next read will accept — the write site and the adoption site apply one predicate and cannot drift. It is `effective_current_turn + 1`, not `current_turn + 1`; see P6.
+
+The stamp rides inside each entry dict, which both repositories persist as opaque JSON (`cases.metadata`), so it needs no migration and no repository change. A per-*entry* key rather than an envelope around the list (`{"turn": N, "suggestions": [...]}`): once anything is carried the set is heterogeneous — this turn's choices and a two-turn-old one share the list and cannot share one stamp.
 
 ### 6.2 Intent Resolver Module
 
@@ -277,15 +320,24 @@ class IntentResolver:
 In `investigation_service.py`, after heuristic greeting detection and before intent routing:
 
 ```python
-# Intent resolution: match typed text against last turn's suggestions
+# Intent resolution: match typed text against the choices still on offer.
+# ``live_suggestions``, not the raw field — see P6. Computed inside the
+# guard: the cheap conditions reject most turns, and this walks every
+# stored entry and indexes every uploaded file.
 if (
     intent_type == IntentType.CONVERSATION
     and query
     and case.last_suggestions
 ):
-    resolved_intent = await self.intent_resolver.resolve(
-        user_message=query,
-        last_suggestions=case.last_suggestions,
+    on_offer = live_suggestions(
+        case.last_suggestions, case, as_of_turn=case.current_turn
+    )
+    resolved_intent = (
+        await self.intent_resolver.resolve(
+            user_message=query, last_suggestions=on_offer
+        )
+        if on_offer
+        else None
     )
     if resolved_intent:
         # Re-route through the matched intent's handler
@@ -303,7 +355,9 @@ The handler lives at [`milestone_engine.py:2520`](../../../faultmaven/core/inves
 
 ### User ignores choices and asks something new
 
-Classifier returns `"none"` → normal LLM processing. The stale suggestions sit in the UI as non-interactive (only current turn's suggestions are interactive). No problem.
+Classifier returns `"none"` → normal LLM processing. The cards sit in the transcript as non-interactive (only the current turn's suggestions are interactive).
+
+For an engine follow-up that is the end of it — it was about the turn that produced it, and it expires with that turn. A **clarification** is different: the attachment is still misclassified and the user has been offered the only server-side way to fix it. Rebuilding the list from the new turn's output silently withdrew that offer, leaving the file misclassified with no recovery path (#1245). Those choices are carried instead, for the bounded lifetime in P6, so coming back to the question two turns later still works — and stops working after that, which is what keeps the classifier's choice list from growing without limit.
 
 ### User's message is ambiguous
 
