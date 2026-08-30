@@ -320,8 +320,11 @@ def test_allocator_conversation_cap_does_not_starve_journal():
     from faultmaven.core.investigation.prompts.context_builder import (
         _build_graduated_history,
     )
+    from faultmaven.core.investigation.prompts.fence import PromptFence
 
-    assert _count(_build_graduated_history(case)) > conv_cap
+    # The history is rendered inside the assembly's fence (#1256), so it needs
+    # one here too; the token is irrelevant to what this measures.
+    assert _count(_build_graduated_history(case, PromptFence("deadbeef"))) > conv_cap
     ctx = build_investigation_context(
         case,
         "continue",

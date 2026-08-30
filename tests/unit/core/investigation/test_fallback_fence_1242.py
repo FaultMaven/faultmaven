@@ -517,9 +517,13 @@ class TestThePayloadReachesTheModelVerbatim:
         assert "<uploaded_file file_id=" in prompt
 
     def test_the_user_message_is_not_escaped_on_the_way_in(self):
-        """The main path runs ``user_message`` through ``sanitize_user_input``,
-        which escapes ``<``/``>``. The fallback takes the raw argument, so this
-        channel is fenced rather than escaped — and the bytes stay."""
+        """The fallback takes the raw argument and fences it rather than
+        escaping it, so the bytes stay.
+
+        This used to be the point where the two paths disagreed: the main path
+        ran ``user_message`` through ``sanitize_user_input``, which escaped
+        ``<``/``>``. #1256 converged them on this answer — see
+        ``test_prompt_conversation_fence_1256.py``."""
         prompt = _render("user_message", TERMINATED)
         assert f'<uploaded_file file_id="{FORGED_ID}"' in prompt
 
