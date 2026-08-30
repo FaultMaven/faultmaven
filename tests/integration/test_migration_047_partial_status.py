@@ -35,6 +35,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 BEFORE = "d8e9f0a1b2c3"  # 046 — conversion-draft runbook_id uniqueness
 AFTER = "f0a1b2c3d4e5"  # 047 — this migration
+HEAD = "b2c3d4e5f6a7"  # 048 — the current head, reached via 047
 
 
 def _alembic(command: str, database_url: str) -> None:
@@ -136,3 +137,18 @@ def test_downgrade_rejects_partial_again_and_relocates_existing_rows(db):
     }
     assert _accepts(db, "j4", "partial") is False
     assert _accepts(db, "j5", "completed") is True
+
+
+def test_the_widening_survives_the_migrations_stacked_on_top(db):
+    """047 is not the head any more; 048 rebuilds this table on SQLite.
+
+    ``batch_alter_table`` recreates ``conversion_jobs`` to drop/add a column,
+    copying the CHECK along with it. A rebuild that lost 047's widening would
+    make ``'partial'`` unwritable again on exactly the deployments that ran both
+    — and every assertion above, which stops at 047, would still pass.
+    """
+    _alembic(f"upgrade {HEAD}", f"sqlite:///{db}")
+
+    assert _accepts(db, "j6", "partial") is True
+    assert _accepts(db, "j7", "completed") is True
+    assert _accepts(db, "j8", "not-a-status") is False

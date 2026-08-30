@@ -27,10 +27,33 @@ from faultmaven.utils.runbook_id import runbook_id_from_parts
 
 
 class ConversionStatus(str, Enum):
+    """The states a ``conversion_jobs`` row may hold.
+
+    This set and ``conversion_jobs_status_check`` are ONE vocabulary, and the
+    database is the wider half of the pair — so this enum must admit every value
+    the CHECK does, or a row the database accepts cannot be read back.
+    ``get_conversion`` calls ``ConversionStatus(job.status)``, which raises
+    ``ValueError`` on an unknown value, i.e. a 500 on
+    ``GET /knowledge/conversions/{id}``.
+
+    ``CANCELLED`` is here for exactly that reason and has **no writer** today.
+    It is admitted by the CHECK (since the clean baseline), so a row carrying it
+    is representable; removing it from the CHECK instead would be a tightening
+    that can reject an existing row, whereas widening the enum cannot reject
+    anything. Closing the divergence on the side that cannot fail is the whole
+    argument. ``PARTIAL`` was the mirror-image half — in the enum, absent from
+    the CHECK — and migration 047 closed it.
+
+    ``tests/unit/modules/knowledge/test_conversion_status_vocabulary.py`` pins
+    the two halves against each other so this cannot drift again silently; see
+    #520 for the same drift class in other enum/CHECK pairs.
+    """
+
     PROCESSING = "processing"
     COMPLETED = "completed"
     PARTIAL = "partial"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class DraftStatus(str, Enum):

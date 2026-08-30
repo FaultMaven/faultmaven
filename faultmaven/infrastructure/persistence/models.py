@@ -2335,6 +2335,11 @@ class ConversionJobModel(Base):
     source_type = Column(String(20), nullable=False, server_default="document")
     failure_modes_detected = Column(Integer, nullable=False, server_default="0")
     analysis_result = Column(JSON, nullable=True)
+    # Why a partial conversion is partial (migration 048). 047 made
+    # ``status='partial'`` storable; without this the reason lived only in the
+    # in-memory response and vanished on the next read. NULL means "no warnings
+    # recorded" (a pre-048 row), which ``get_conversion`` collapses to ``[]``.
+    warnings = Column(JSON, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -56,6 +56,7 @@ from faultmaven.modules.knowledge.domain.models.conversion import (
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
     ConversionService,
 )
+from faultmaven.utils.runbook_id import RunbookPathEscape
 
 pytestmark = pytest.mark.integration
 
@@ -729,3 +730,200 @@ Alert on the used_memory to maxmemory ratio.
                 **TEMPLATE_ARGS,
             )
         assert await _live_draft_count(session_factory) == 1
+
+
+class TestATakenIdCostsNoGeneration:
+    """The cost half of "refuse where the duplicate is produced".
+
+    #1258 hoisted the INTRA-job check ahead of the LLM calls on the argument
+    that the batch is knowable up front. The identical argument applies to a
+    duplicate of an id some COMMITTED draft already holds — and that check ran
+    inside the per-mode coroutine, after generation. Re-converting a document
+    whose modes all already have live drafts burned one full generation per
+    mode before refusing each one.
+    """
+
+    async def _seed_live_draft_for(self, service, title):
+        """Create a live draft holding the id ``title`` mints, via the real
+        manual-create path."""
+        return await service.create_runbook_from_template(
+            title=title, service_name="redis", **TEMPLATE_ARGS
+        )
+
+    async def test_no_llm_call_is_made_when_every_id_is_already_taken(
+        self, service, tmp_path
+    ):
+        first = await self._seed_live_draft_for(service, "Redis OOM")
+        taken_id = first["draft"].runbook_id
+
+        modes = [
+            FailureModeAnalysis(
+                id="fm-0",
+                title="Redis OOM",
+                domain="platform",
+                service="redis",
+                symptom_class=["saturation"],
+                severity="high",
+                symptoms_summary="x",
+                resolution_summary="y",
+            )
+        ]
+        route = AsyncMock(
+            return_value=SimpleNamespace(content="unused", is_truncated=False)
+        )
+        service._llm_router.route = route
+
+        drafts, errors = await service._convert_all_failure_modes(
+            "source text",
+            modes,
+            "global",
+            "doc.md",
+            "conv_probe",
+            "user_x",
+            None,
+            organization_id=ORG,
+        )
+
+        assert drafts == []
+        assert [e.failure_mode_id for e in errors] == ["fm-0"]
+        assert taken_id in errors[0].error
+        # The claim. Pre-fix this was 1: the generation was paid for and then
+        # thrown away by refuse_if_draft_slot_taken inside the coroutine.
+        assert route.await_count == 0, (
+            f"a mode whose id is already held must not spend a generation; "
+            f"made {route.await_count} LLM call(s)"
+        )
+
+    async def test_only_the_taken_modes_are_refused(self, service, tmp_path):
+        """The negative control: a free id in the same batch still converts, so
+        the pre-filter is not simply refusing everything."""
+        await self._seed_live_draft_for(service, "Redis OOM")
+
+        modes = [
+            FailureModeAnalysis(
+                id="fm-taken",
+                title="Redis OOM",
+                domain="platform",
+                service="redis",
+                symptom_class=["saturation"],
+                severity="high",
+                symptoms_summary="x",
+                resolution_summary="y",
+            ),
+            FailureModeAnalysis(
+                id="fm-free",
+                title="Redis Slow",
+                domain="platform",
+                service="redis",
+                symptom_class=["latency"],
+                severity="high",
+                symptoms_summary="x",
+                resolution_summary="y",
+            ),
+        ]
+        route = AsyncMock(
+            return_value=SimpleNamespace(
+                content=TestTwoDraftsInOneJobCannotMintOneId.RUNBOOK,
+                is_truncated=False,
+            )
+        )
+        service._llm_router.route = route
+
+        drafts, errors = await service._convert_all_failure_modes(
+            "source text",
+            modes,
+            "global",
+            "doc.md",
+            "conv_probe2",
+            "user_x",
+            None,
+            organization_id=ORG,
+        )
+
+        assert [d.runbook_id for d in drafts] == ["redis-redis-slow"]
+        assert [e.failure_mode_id for e in errors] == ["fm-taken"]
+        # Exactly one generation: the free mode's. The taken one cost nothing.
+        assert route.await_count == 1, route.await_count
+
+
+class TestAPathEscapeIsNeverLaunderedIntoAResponse:
+    """``RunbookPathEscape`` carries RESOLVED SERVER PATHS in its message.
+
+    ``_convert_single_failure_mode`` re-raises it bare, deliberately, so it can
+    never become a ``ConversionError`` — whose ``error`` string
+    ``convert_document`` appends to ``response.warnings``, i.e. a 201 body
+    (#866). The parallel branch dispatches with
+    ``asyncio.gather(return_exceptions=True)``, which turns that re-raise into a
+    RETURNED value, so the escape was being caught by the generic
+    ``isinstance(result, Exception)`` arm and laundered into exactly the channel
+    the re-raise exists to avoid. The sequential branch propagated it. Identical
+    events behaved differently purely on how many failure modes the document had.
+    """
+
+    @staticmethod
+    def _escaping_mode(fm_id, title, symptom_class):
+        return FailureModeAnalysis(
+            id=fm_id,
+            title=title,
+            domain="platform",
+            service="redis",
+            symptom_class=[symptom_class],
+            severity="high",
+            symptoms_summary="x",
+            resolution_summary="y",
+        )
+
+    async def _run(self, service, n_modes):
+        modes = [
+            self._escaping_mode(f"fm-{i}", f"Redis Failure {i}", c)
+            for i, c in enumerate(
+                ["saturation", "latency", "errors", "other", "x", "y"][:n_modes]
+            )
+        ]
+        service._llm_router.route = AsyncMock(
+            return_value=SimpleNamespace(
+                content=TestTwoDraftsInOneJobCannotMintOneId.RUNBOOK,
+                is_truncated=False,
+            )
+        )
+        with patch.object(
+            ConversionService,
+            "refuse_if_draft_slot_taken",
+            AsyncMock(
+                side_effect=RunbookPathEscape(
+                    "/srv/secret/etc/passwd is outside /srv/kb"
+                )
+            ),
+        ):
+            return await service._convert_all_failure_modes(
+                "source text",
+                modes,
+                "global",
+                "doc.md",
+                f"conv_esc_{n_modes}",
+                "user_x",
+                None,
+                organization_id=ORG,
+            )
+
+    async def test_the_parallel_branch_propagates_instead_of_warning(self, service):
+        """2 modes -> parallel branch (below PARALLEL_THRESHOLD)."""
+        with pytest.raises(RunbookPathEscape):
+            await self._run(service, 2)
+
+    async def test_the_sequential_branch_propagates_too(self, service):
+        """6 modes -> sequential branch. The two branches must agree."""
+        with pytest.raises(RunbookPathEscape):
+            await self._run(service, 6)
+
+    async def test_the_resolved_path_never_reaches_a_conversion_error(self, service):
+        """The property that actually matters, stated over the message text."""
+        for n in (2, 6):
+            try:
+                drafts, errors = await self._run(service, n)
+            except RunbookPathEscape:
+                continue
+            raise AssertionError(
+                f"{n} modes: escape was swallowed into "
+                f"{[e.error for e in errors]} instead of propagating"
+            )

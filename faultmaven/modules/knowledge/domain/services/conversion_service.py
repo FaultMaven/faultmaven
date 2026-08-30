@@ -323,86 +323,117 @@ def _force_frontmatter_id(content: str, runbook_id: str) -> str:
     return head + new_body + tail + content[fm_match.end() :]
 
 
-def _partition_by_minted_runbook_id(
+def _partition_failure_modes(
     failure_modes: List[FailureModeAnalysis],
 ) -> Tuple[List[FailureModeAnalysis], List[ConversionError]]:
-    """Split one job's failure modes into those that can be persisted and those
-    that cannot, because a mode earlier in the batch already claimed their id.
+    """Decide which of one job's failure modes can yield a runbook, and why not.
 
-    **The intra-job half of #1230's uniqueness rule (#1258).** Migration 046's
-    ``uq_conversion_drafts_org_runbook_id`` admits one live draft per
-    ``(organization_id, runbook_id)``. ``refuse_if_draft_slot_taken`` catches a
-    duplicate of an id some COMMITTED draft holds; it cannot catch two drafts in
-    ONE job colliding with each other, because at that point nothing is
-    committed and there is no row to re-read. That case used to reach
-    ``_persist_job`` and surface as a bare ``IntegrityError`` — a 500 that says
-    nothing — and it did so only AFTER the second draft's write had already
-    replaced the first one's file on disk (both ids resolve to the same
-    ``draft_filename``, so both writes land on one path). Measured on
-    ``e1cf27371``: two failure modes titled ``"Redis OOM"`` and ``"redis oom"``
-    under service ``"redis"`` both mint ``redis-redis-oom``, both write
-    ``global/redis-redis-oom.md``, and the commit raises ``UNIQUE constraint
-    failed: conversion_drafts.organization_id, conversion_drafts.runbook_id``.
+    Two keys, applied in order, both meaning "an earlier mode already covers
+    this one". They are in ONE function because they are one decision — which
+    modes survive — and because splitting them is what let the second key's
+    outcome be reported while the first key's stayed silent:
 
-    Called BEFORE any conversion runs, which is what makes it a fix rather than
-    a nicer error: the whole batch is knowable up front (``runbook_id_from_parts``
-    is a pure function of ``(service, title)``), so the losing mode never spends
-    an LLM call and never touches the filesystem. It also cannot race — the
-    parallel branch dispatches with ``asyncio.gather``, so a check made inside
-    the per-mode coroutine would be two concurrent readers of one unsynchronised
-    set.
+    1. ``(service, sorted(symptom_class))`` — the pre-existing collapse. It is
+       deliberately coarse: an analysis routinely emits near-duplicate modes for
+       one document. **Kept as a product behaviour, not endorsed as a key** —
+       it also collapses modes that mint DIFFERENT ids and are therefore
+       genuinely different runbooks (``"PostgreSQL Lag A"`` / ``"Lag B"`` under
+       one service and symptom class), which is a real loss. What changed here
+       is that it no longer collapses them **silently**: before #1258's follow-up
+       it dropped them with no error, no warning, and a COMPLETED status, so a
+       document that produced one runbook out of two looked like a clean run.
+       Now every dropped mode is accounted for by its own ``ConversionError``,
+       exactly like key 2, which also makes the job's status PARTIAL — the
+       truthful answer for a document that yielded fewer runbooks than it
+       analysed into.
+    2. The minted ``runbook_id`` (#1258). Migration 046 admits one live draft
+       per ``(organization_id, runbook_id)``, and nothing is committed while a
+       multi-mode conversion runs, so two modes minting one id were invisible to
+       both ``refuse_if_draft_slot_taken`` and ``_raise_if_runbook_id_taken``.
+       They wrote both runbooks to a single file (both ids resolve to one
+       ``draft_filename``) and then failed the commit with a bare
+       ``IntegrityError`` — a 500 that says nothing, after silent data loss.
+       Measured on ``e1cf27371``: ``"Redis OOM"`` and ``"redis oom"`` under
+       service ``"redis"`` both mint ``redis-redis-oom``.
 
-    **Refusal, not disambiguation.** The alternative — mint a distinct id for
-    the second mode, the way the empty-slug branch appends a hash — cannot be
-    made deterministic, and determinism is not optional here (the disk scan
-    reconciles a file to its row by this id). A disambiguator has to be a
-    function of something that DIFFERS between the two modes; but "collide"
-    means their ``(service, title)`` are identical after normalisation, and
-    every other field on a ``FailureModeAnalysis`` is LLM output for this one
-    analysis pass, so hashing any of them gives a different id on a re-run.
-    An ordinal suffix is worse still: it keys on position in
-    ``analysis.failure_modes``, which is the model's own ordering. And even with
-    a stable disambiguator, minting one would persist two runbooks that every
-    normalised signal says are the same failure mode — exactly the
-    indistinguishable pair migration 046 exists to reject, recreated one hash
-    apart.
+    Called BEFORE any conversion runs, which is what makes key 2 a fix rather
+    than a nicer error: ``runbook_id_from_parts`` is a pure function of
+    ``(service, title)``, so the whole batch is knowable up front and a losing
+    mode never spends an LLM call or touches the filesystem. It also cannot race
+    — the parallel branch dispatches with ``asyncio.gather``, so a check made
+    inside the per-mode coroutine would be concurrent readers of one
+    unsynchronised set.
 
-    **Shape-agnostic on purpose.** It compares minted IDS, not titles, so it
-    covers every shape ``_slug`` collapses without enumerating any of them:
+    **Key 2 refuses rather than disambiguating.** Minting a distinct id for the
+    second mode — the way the empty-slug branch appends a hash — cannot be made
+    deterministic, and determinism is not optional (the disk scan reconciles a
+    file to its row by this id). A disambiguator must be a function of something
+    that DIFFERS between the two modes; but "collide" means their
+    ``(service, title)`` are identical after normalisation, and every other
+    field on a ``FailureModeAnalysis`` is LLM output for this one analysis pass,
+    so hashing any of them gives a different id on a re-run. An ordinal suffix
+    is worse still: it keys on position in ``analysis.failure_modes``, the
+    model's own ordering. And even given a stable disambiguator, minting one
+    would persist two runbooks that every normalised signal says are the same
+    failure mode — exactly the indistinguishable pair migration 046 exists to
+    reject, recreated one hash apart.
+
+    **Key 2 is shape-agnostic on purpose.** It compares minted IDS, not titles,
+    so it covers every shape ``_slug`` collapses without enumerating any:
     case, punctuation, underscore/hyphen, whitespace runs, leading/trailing
     trim, tabs and control characters, NBSP and zero-width joiners, emoji,
     accents and non-latin scripts, full-width forms; the ``service``/``title``
     join, which makes the delimiter part of the data (``("redis-cache", "OOM")``
     and ``("redis", "cache OOM")`` both mint ``redis-cache-oom``); and the
     over-length branch, both when two titles differ only where the slug rule
-    normalises and when two genuinely distinct long slugs land on the same
-    4-hex disambiguator. A future tightening of the slug rule is covered for
-    free. The mint itself is deliberately untouched: it is a PERSISTED id, and
-    re-minting it would orphan rows that already exist — the boundary #1230 and
-    #1243 both drew.
+    normalises and when two distinct long slugs land on the same 4-hex
+    disambiguator. A future tightening of the slug rule is covered for free. The
+    mint itself is deliberately untouched: it is a PERSISTED id, and re-minting
+    it would orphan rows that already exist — the boundary #1230 and #1243 drew.
 
-    Keyed on the resolved draft FILENAME as well as the id, for the reason
-    ``_find_live_draft_owning`` gives for its second key: a draft occupies two
-    slots and losing either loses a runbook. Today the mint cannot produce two
-    distinct ids that share a filename (ids are kebab and bounded at
-    ``_MAX_RUNBOOK_ID_CHARS``, which ``draft_filename`` re-slugs to themselves),
-    so this key guards a state that was not reproduced — but the id bound and
-    the filename bound are deliberately SEPARATE constants, and keying on the
-    slot rather than on the id that is supposed to imply it is what survives one
-    of them moving.
+    Keying on the id ALONE is safe because ``draft_filename`` is injective over
+    the ids this mint produces: they match ``^[a-z0-9]+(-[a-z0-9]+)*$`` and are
+    bounded by ``_MAX_RUNBOOK_ID_CHARS``, which is ``<= _MAX_SLUG_CHARS``, so
+    ``draft_filename`` neither re-slugs nor truncates them. That is a property
+    of two constants that are deliberately SEPARATE, so it is pinned by a test
+    rather than trusted; a second index over filenames here would be dead code
+    whose failure mode is looking like coverage.
     """
     survivors: List[FailureModeAnalysis] = []
     errors: List[ConversionError] = []
+    claimed_coarse: Dict[Tuple[str, Tuple[str, ...]], FailureModeAnalysis] = {}
     claimed_id: Dict[str, FailureModeAnalysis] = {}
-    claimed_file: Dict[str, FailureModeAnalysis] = {}
 
     for fm in failure_modes:
+        coarse_key = (fm.service, tuple(sorted(fm.symptom_class)))
+        # ``is not None``, never truthiness: the value is a model instance and
+        # ``FailureModeAnalysis`` does not promise to be truthy. Same rule
+        # ``_find_live_draft_owning`` states for its own id filter, and for the
+        # same reason — a falsy-but-present value would read as "free slot".
+        holder = claimed_coarse.get(coarse_key)
+        if holder is not None:
+            errors.append(
+                ConversionError(
+                    failure_mode_id=fm.id,
+                    error=(
+                        f"Failure mode {fm.id!r} ({fm.title!r}) was collapsed "
+                        f"into {holder.id!r} ({holder.title!r}): both describe "
+                        f"service {fm.service!r} with symptom class "
+                        f"{sorted(fm.symptom_class)!r}, and this conversion "
+                        f"produces one runbook per (service, symptom class). "
+                        f"Give them distinct symptom classes in the source "
+                        f"document if they are genuinely different failures."
+                    ),
+                    retryable=False,
+                )
+            )
+            continue
+
         # The same pure function ``_convert_single_failure_mode`` calls, so the
         # id decided here and the id it mints for itself agree by construction
         # rather than by a parameter that could drift.
         runbook_id = generate_runbook_id(fm)
-        filename = draft_filename(runbook_id)
-        holder = claimed_id.get(runbook_id) or claimed_file.get(filename)
+        holder = claimed_id.get(runbook_id)
         if holder is not None:
             errors.append(
                 ConversionError(
@@ -426,8 +457,9 @@ def _partition_by_minted_runbook_id(
                 )
             )
             continue
+
+        claimed_coarse[coarse_key] = fm
         claimed_id[runbook_id] = fm
-        claimed_file[filename] = fm
         survivors.append(fm)
 
     return survivors, errors
@@ -682,6 +714,7 @@ class ConversionService:
             analysis=analysis,
             drafts=drafts,
             created_at=created_at,
+            warnings=warnings,
         )
 
         logger.info(
@@ -948,6 +981,7 @@ class ConversionService:
                 created_at=created_at,
                 source_type="case",
                 case_id=request.case_id,
+                warnings=warnings,
             )
         except (IntegrityError, ConflictError):
             logger.warning(
@@ -1077,32 +1111,42 @@ class ConversionService:
         drafts: List[ConversionDraft] = []
         errors: List[ConversionError] = []
 
-        # Deduplicate by (service, symptom_class tuple)
-        seen = set()
-        unique_modes = []
-        for fm in failure_modes:
-            key = (fm.service, tuple(sorted(fm.symptom_class)))
-            if key not in seen:
-                seen.add(key)
-                unique_modes.append(fm)
+        # Which modes can yield a runbook at all — both intra-job keys, with a
+        # per-mode ``ConversionError`` for every one that cannot. See
+        # ``_partition_failure_modes``.
+        unique_modes, partition_errors = _partition_failure_modes(failure_modes)
+        errors.extend(partition_errors)
 
-        # Then by the id each surviving mode would actually MINT, which the
-        # key above only approximates: two modes with the same service and
-        # DIFFERENT symptom classes pass the dedup and can still slug to one
-        # ``runbook_id``. Before #1258 that pair reached ``_persist_job`` as a
-        # bare ``IntegrityError``, having already written both drafts to one
-        # file. Refused here, before any LLM call or write, and degraded to the
-        # loser's own ``ConversionError`` so the rest of the document still
-        # yields — the same per-mode degradation this function's caller already
-        # applies to a committed-duplicate id. See
-        # ``_partition_by_minted_runbook_id`` for why this refuses rather than
-        # disambiguating.
-        unique_modes, duplicate_id_errors = _partition_by_minted_runbook_id(
-            unique_modes
+        # And which of the survivors are refused by a draft that is ALREADY
+        # COMMITTED. The same argument that moved the intra-job check ahead of
+        # the LLM calls applies verbatim here: the ids are knowable up front, so
+        # a mode whose id some live draft already holds should not spend a
+        # generation first. Re-converting a document whose modes all already
+        # have drafts used to burn one full generation per mode before refusing
+        # each one; this refuses them all in a single query.
+        #
+        # This does NOT replace ``refuse_if_draft_slot_taken`` inside
+        # ``_convert_single_failure_mode``. That one is the authoritative
+        # pre-write guard and still keys on the resolved file path as well as
+        # the id; it also closes the window between this query and the write,
+        # which is exactly the cross-replica race migration 046 backstops. This
+        # is a cost pre-filter in front of it, and the two agree because both
+        # ask ``_find_live_draft_owning``.
+        unique_modes, taken_errors = await self._refuse_modes_whose_id_is_taken(
+            unique_modes, organization_id
         )
-        errors.extend(duplicate_id_errors)
+        errors.extend(taken_errors)
 
-        if len(unique_modes) < PARALLEL_THRESHOLD:
+        # The concurrency decision is a property of the DOCUMENT — how many
+        # failure modes it analysed into — not of how many of them turned out to
+        # be duplicates. Keying it on the survivor count let a collision flip a
+        # 6-mode document from the sequential rate-limit-avoiding path to
+        # concurrent dispatch, which is a provider-load decision made by the
+        # model's choice of titles. ``len(failure_modes)`` is also the
+        # conservative direction: it is never smaller than the survivor count,
+        # so this can only ever choose sequential where the old expression chose
+        # parallel.
+        if len(failure_modes) < PARALLEL_THRESHOLD:
             # Parallel conversion
             tasks = [
                 self._convert_single_failure_mode(
@@ -1119,6 +1163,18 @@ class ConversionService:
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for i, result in enumerate(results):
+                if isinstance(result, RunbookPathEscape):
+                    # Re-raised, never laundered into a ``ConversionError``.
+                    # ``return_exceptions=True`` turns the deliberate
+                    # ``except RunbookPathEscape: raise`` in
+                    # ``_convert_single_failure_mode`` into a returned value,
+                    # and appending ``str(result)`` here would put the resolved
+                    # SERVER PATHS the message carries into ``response.warnings``
+                    # — a 200/201 body (#866), which is precisely what that
+                    # bare re-raise exists to prevent. The sequential branch
+                    # below propagates it, so without this the same event
+                    # behaved differently purely on failure-mode count.
+                    raise result
                 if isinstance(result, Exception):
                     errors.append(
                         ConversionError(
@@ -1376,6 +1432,7 @@ class ConversionService:
         created_at: datetime,
         source_type: str = "document",
         case_id: str = None,
+        warnings: Optional[List[str]] = None,
     ) -> None:
         """Persist conversion job and drafts to database."""
         if not self._db_session_factory:
@@ -1396,6 +1453,7 @@ class ConversionService:
                 created_at=created_at,
                 source_type=source_type,
                 case_id=case_id,
+                warnings=warnings,
             )
         except IntegrityError:
             # Classified AFTER the session block has exited, never inside it:
@@ -1434,6 +1492,7 @@ class ConversionService:
         created_at: datetime,
         source_type: str,
         case_id: Optional[str],
+        warnings: Optional[List[str]] = None,
     ) -> None:
         """The upload + job + drafts write, as ONE transaction and one session.
 
@@ -1486,6 +1545,10 @@ class ConversionService:
                 live_case_id=live_case_id,
                 failure_modes_detected=len(analysis.failure_modes),
                 analysis_result=analysis.model_dump(),
+                # ``None`` rather than ``[]`` when there is nothing to say, so a
+                # job with no warnings and a pre-048 job are not conflated at
+                # the storage layer (migration 048).
+                warnings=list(warnings) if warnings else None,
                 created_at=created_at,
                 completed_at=datetime.now(timezone.utc),
             )
@@ -1582,6 +1645,97 @@ class ConversionService:
             conflict_reason="duplicate_runbook_id",
         )
 
+    async def _refuse_modes_whose_id_is_taken(
+        self,
+        failure_modes: List[FailureModeAnalysis],
+        organization_id: Optional[str],
+    ) -> Tuple[List[FailureModeAnalysis], List[ConversionError]]:
+        """Drop the modes whose minted id a LIVE draft already holds, in ONE query.
+
+        The cost pre-filter described at the call site. ``refuse_if_draft_slot_taken``
+        asks the same question one id at a time, from inside the per-mode
+        coroutine — i.e. after that mode's generation has already been paid for.
+        Both remain: this one saves the call, that one is the authoritative
+        pre-write guard and closes the race this query cannot.
+
+        Degrades per mode, exactly like the committed-duplicate branch in
+        ``_convert_single_failure_mode``: a taken id is a fact about ONE failure
+        mode, and a document analysed into five of them should still yield the
+        other four. The wording is ``_duplicate_draft_conflict``'s, so a
+        duplicate refused here and one refused at the write site read the same.
+
+        Returns ``(survivors, errors)``. Inert with no database (nothing is
+        written, so nothing can be taken) — the same early return
+        ``refuse_if_draft_slot_taken`` and ``_persist_job`` make, and for the
+        same reason: ``writable_org_id`` raises on an unscoped context, which
+        must not become a failure on a path that writes nothing.
+        """
+        if not self._db_session_factory or not failure_modes:
+            return list(failure_modes), []
+
+        minted = {fm.id: generate_runbook_id(fm) for fm in failure_modes}
+        taken = await self._find_live_drafts_owning(
+            writable_org_id(organization_id), list(minted.values())
+        )
+        if not taken:
+            return list(failure_modes), []
+
+        survivors: List[FailureModeAnalysis] = []
+        errors: List[ConversionError] = []
+        for fm in failure_modes:
+            row = taken.get(minted[fm.id])
+            if row is None:
+                survivors.append(fm)
+                continue
+            logger.warning(
+                "conversion_draft_id_taken",
+                extra={"failure_mode_id": fm.id, "runbook_id": minted[fm.id]},
+            )
+            errors.append(
+                ConversionError(
+                    failure_mode_id=fm.id,
+                    error=str(self._duplicate_draft_conflict(row)),
+                    retryable=False,
+                )
+            )
+        return survivors, errors
+
+    async def _find_live_drafts_owning(
+        self, org_id: str, runbook_ids: Sequence[Optional[str]]
+    ) -> Dict[str, Tuple[str, str, str]]:
+        """``{runbook_id: (runbook_id, file_path, draft_id)}`` for every live
+        draft in this tenant holding one of these ids.
+
+        The batch form of ``_find_live_draft_owning``. That one answers "is this
+        ONE slot free" and stops at the first row, which is right for a
+        pre-write guard and wrong for a pre-flight over a whole batch: five
+        taken ids would need five queries, or one query that names only one of
+        them.
+
+        Ordered, and the FIRST row per id wins, so the draft this names is the
+        same one ``_find_live_draft_owning`` would name for that id — the two
+        refusals must not point at different rows for the same collision.
+        """
+        ids = [rid for rid in runbook_ids if rid is not None]
+        if not ids:
+            return {}
+        async with self._db_session_factory() as probe:
+            result = await probe.execute(
+                select(
+                    ConversionDraftModel.runbook_id,
+                    ConversionDraftModel.file_path,
+                    ConversionDraftModel.id,
+                )
+                .where(ConversionDraftModel.organization_id == org_id)
+                .where(ConversionDraftModel.runbook_id.in_(ids))
+                .where(ConversionDraftModel.status != "discarded")
+                .order_by(ConversionDraftModel.created_at, ConversionDraftModel.id)
+            )
+            found: Dict[str, Tuple[str, str, str]] = {}
+            for row in result.all():
+                found.setdefault(row[0], (row[0], row[1], row[2]))
+            return found
+
     async def refuse_if_draft_slot_taken(
         self, organization_id: Optional[str], runbook_id: str, draft_path: str
     ) -> None:
@@ -1653,8 +1807,8 @@ class ConversionService:
         bare ``IntegrityError`` — a 500 that says nothing, after the second
         draft's write has already replaced the first one's file (both ids
         resolve to one ``draft_filename``). It is refused where the duplicate is
-        produced instead: ``_partition_by_minted_runbook_id`` mints every id in
-        the batch before any conversion runs and degrades each repeat to that
+        produced instead: ``_partition_failure_modes`` mints every id in the
+        batch before any conversion runs and degrades each repeat to that
         failure mode's ``ConversionError``, so every draft list reaching
         ``_persist_job`` carries distinct ids and what arrives here is a
         cross-job duplicate or the live-case race.
@@ -1801,6 +1955,12 @@ class ConversionService:
                 source_file=source_file,
                 analysis=analysis,
                 drafts=drafts,
+                # NULL (a pre-048 row, or a job with nothing to report) becomes
+                # ``[]`` here because the response field is non-optional. This
+                # is the one place that distinction is collapsed; see migration
+                # 048. Without this the field was ALWAYS ``[]`` on read-back, so
+                # the reason a job was PARTIAL survived exactly one response.
+                warnings=job.warnings or [],
                 created_at=job.created_at,
             )
 

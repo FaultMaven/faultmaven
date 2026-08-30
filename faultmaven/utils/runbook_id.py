@@ -150,7 +150,7 @@ def safe_path_component(value: str | None, *, fallback: str = "unknown") -> str:
 
 
 def runbook_filename(title: str | None, document_id: str | None) -> str:
-    """Safe on-disk filename for a runbook, derived from its ``title``.
+    r"""Safe on-disk filename for a runbook, derived from its ``title``.
 
     ``title`` is caller-supplied — a form field on ``POST /knowledge/documents``
     and, on the suggestion-approval path, an LLM-generated ``suggested_title`` —
@@ -282,7 +282,7 @@ def runbook_id_from_parts(service: str | None, title: str | None) -> str:
       ``(organization_id, runbook_id)`` from migration 046, checked ahead of
       the write by ``ConversionService.refuse_if_draft_slot_taken`` and
       surfaced as a 409 by ``_raise_if_runbook_id_taken``.
-    - **Against the rest of its own job** — ``_partition_by_minted_runbook_id``
+    - **Against the rest of its own job** — ``_partition_failure_modes``
       (#1258). Nothing is committed while a multi-failure-mode conversion runs,
       so the index and the re-read above are both blind to two drafts in ONE
       job minting one id; that pair used to write both runbooks to a single

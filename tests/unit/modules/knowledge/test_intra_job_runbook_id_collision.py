@@ -2,7 +2,7 @@
 
 ``('redis', 'Redis OOM')`` / ``('redis', 'redis oom')`` is what the issue
 measured, but case folding is only one of the things ``_slug`` collapses. The
-guard in ``_partition_by_minted_runbook_id`` compares minted IDS rather than
+guard in ``_partition_failure_modes`` (key 2) compares minted IDS rather than
 titles, so it covers every such shape by construction; this file is what turns
 that claim into a measurement, by enumerating the shapes and driving each one
 through the guard.
@@ -18,7 +18,7 @@ import pytest
 
 from faultmaven.modules.knowledge.domain.models.conversion import FailureModeAnalysis
 from faultmaven.modules.knowledge.domain.services.conversion_service import (
-    _partition_by_minted_runbook_id,
+    _partition_failure_modes,
 )
 from faultmaven.utils.runbook_id import runbook_id_from_parts
 
@@ -98,7 +98,7 @@ def test_every_enumerated_pair_really_does_collide(shape, a, b):
     "shape,a,b", COLLIDING_SHAPES, ids=[s[0] for s in COLLIDING_SHAPES]
 )
 def test_the_second_mode_of_a_colliding_pair_is_refused(shape, a, b):
-    survivors, errors = _partition_by_minted_runbook_id(
+    survivors, errors = _partition_failure_modes(
         [
             _mode("fm-a", a[0], a[1], "saturation"),
             _mode("fm-b", b[0], b[1], "latency"),
@@ -126,7 +126,7 @@ def test_an_invisible_difference_is_shown_escaped():
     mint the same id", which looks like a bug in FaultMaven rather than a
     duplicate in the document. ``repr`` shows the ``\\xa0``.
     """
-    _, errors = _partition_by_minted_runbook_id(
+    _, errors = _partition_failure_modes(
         [
             _mode("fm-a", "redis", "Redis\xa0OOM", "saturation"),
             _mode("fm-b", "redis", "Redis OOM", "latency"),
@@ -139,7 +139,7 @@ def test_an_invisible_difference_is_shown_escaped():
 def test_distinct_failure_modes_are_untouched():
     """The negative control. Without it every assertion above is satisfied by a
     guard that refuses the second of any pair."""
-    survivors, errors = _partition_by_minted_runbook_id(
+    survivors, errors = _partition_failure_modes(
         [
             _mode("fm-a", "redis", "Redis OOM", "saturation"),
             _mode("fm-b", "redis", "Redis Slow", "latency"),
@@ -165,8 +165,8 @@ def test_the_survivors_do_not_depend_on_the_orders_arrival():
         _mode("fm-b", "redis", "redis oom", "latency"),
         _mode("fm-c", "redis", "Redis Slow", "errors"),
     ]
-    forward, forward_errors = _partition_by_minted_runbook_id(modes)
-    reverse, reverse_errors = _partition_by_minted_runbook_id(list(reversed(modes)))
+    forward, forward_errors = _partition_failure_modes(modes)
+    reverse, reverse_errors = _partition_failure_modes(list(reversed(modes)))
 
     assert (
         {runbook_id_from_parts(fm.service, fm.title) for fm in forward}
@@ -179,7 +179,7 @@ def test_the_survivors_do_not_depend_on_the_orders_arrival():
 
 def test_three_modes_on_one_id_refuse_two_and_keep_one():
     """The guard is not a pairwise check that a third repeat slips past."""
-    survivors, errors = _partition_by_minted_runbook_id(
+    survivors, errors = _partition_failure_modes(
         [
             _mode("fm-a", "redis", "Redis OOM", "saturation"),
             _mode("fm-b", "redis", "redis oom", "latency"),
@@ -194,7 +194,7 @@ def test_three_modes_on_one_id_refuse_two_and_keep_one():
 
 
 def test_an_empty_batch_is_not_a_special_case():
-    assert _partition_by_minted_runbook_id([]) == ([], [])
+    assert _partition_failure_modes([]) == ([], [])
 
 
 def test_the_mint_itself_is_unchanged():
@@ -212,3 +212,132 @@ def test_the_mint_itself_is_unchanged():
         "checkout-api-connection-pool-exhausted"
     )
     assert len(runbook_id_from_parts("svc", "x" * 500)) == 60
+
+
+# ---------------------------------------------------------------------------
+# Key 1 — the coarse (service, symptom_class) collapse, and its VISIBILITY
+# ---------------------------------------------------------------------------
+
+
+def _mode2(fm_id, service, title, symptom_class):
+    return FailureModeAnalysis(
+        id=fm_id,
+        title=title,
+        domain="platform",
+        service=service,
+        symptom_class=list(symptom_class),
+        severity="high",
+        symptoms_summary="x",
+        resolution_summary="y",
+    )
+
+
+class TestTheCoarseCollapseIsAccountedFor:
+    """It still collapses; it no longer collapses silently.
+
+    The pre-existing dedup drops a mode whose ``(service, symptom_class)`` an
+    earlier mode already claimed — including modes that mint DIFFERENT ids and
+    are therefore genuinely different runbooks. That behaviour is kept (it is a
+    product decision about what an analysis pass means, not a defect in this
+    seam). What is fixed is that it reported nothing: no error, no warning, and
+    a COMPLETED status on a document that yielded fewer runbooks than it
+    analysed into.
+    """
+
+    def test_the_collapse_still_happens(self):
+        survivors, _ = _partition_failure_modes(
+            [
+                _mode("fm-a", "postgresql", "PostgreSQL Lag A", "replication_lag"),
+                _mode("fm-b", "postgresql", "PostgreSQL Lag B", "replication_lag"),
+            ]
+        )
+        assert [fm.id for fm in survivors] == ["fm-a"]
+
+    def test_the_collapsed_mode_mints_a_DIFFERENT_id(self):
+        """The premise that makes this a loss worth reporting.
+
+        If the two collapsed modes minted the same id, key 2 would have caught
+        them and the outcome would be identical. They do not: these are two
+        distinct runbooks, one of which is dropped.
+        """
+        a = runbook_id_from_parts("postgresql", "PostgreSQL Lag A")
+        b = runbook_id_from_parts("postgresql", "PostgreSQL Lag B")
+        assert a != b, (a, b)
+
+    def test_the_collapse_is_reported_and_names_both_modes(self):
+        _, errors = _partition_failure_modes(
+            [
+                _mode("fm-a", "postgresql", "PostgreSQL Lag A", "replication_lag"),
+                _mode("fm-b", "postgresql", "PostgreSQL Lag B", "replication_lag"),
+            ]
+        )
+        assert [e.failure_mode_id for e in errors] == ["fm-b"]
+        message = errors[0].error
+        assert "fm-a" in message and "PostgreSQL Lag A" in message, message
+        assert "PostgreSQL Lag B" in message, message
+        assert "symptom class" in message, message
+
+    def test_symptom_class_ORDER_still_collapses(self):
+        """The key is the SORTED tuple; a pre-existing test names this."""
+        survivors, errors = _partition_failure_modes(
+            [
+                _mode2(
+                    "fm-a", "postgresql", "Lag A", ["replication_lag", "high_latency"]
+                ),
+                _mode2(
+                    "fm-b", "postgresql", "Lag B", ["high_latency", "replication_lag"]
+                ),
+            ]
+        )
+        assert [fm.id for fm in survivors] == ["fm-a"]
+        assert len(errors) == 1
+
+    def test_the_two_keys_report_DIFFERENT_reasons(self):
+        """A collapsed mode and a colliding id are not the same event, and a
+        user acting on one message must not be handed the other's remedy."""
+        _, coarse = _partition_failure_modes(
+            [
+                _mode("fm-a", "postgresql", "Lag A", "replication_lag"),
+                _mode("fm-b", "postgresql", "Lag B", "replication_lag"),
+            ]
+        )
+        _, minted = _partition_failure_modes(
+            [
+                _mode("fm-a", "redis", "Redis OOM", "saturation"),
+                _mode("fm-b", "redis", "redis oom", "latency"),
+            ]
+        )
+        assert "symptom class" in coarse[0].error
+        assert "Runbook id" in minted[0].error
+        assert coarse[0].error != minted[0].error
+
+
+class TestKeyingOnTheIdAloneIsSafe:
+    """``_partition_failure_modes`` indexes minted ids and NOT the filenames
+    they resolve to. That is sound only while ``draft_filename`` is injective
+    over the ids the mint produces, which rests on two constants that are
+    deliberately SEPARATE — so it is pinned here rather than trusted.
+    """
+
+    def test_the_id_bound_does_not_exceed_the_filename_bound(self):
+        from faultmaven.utils import runbook_id as rid
+
+        assert rid._MAX_RUNBOOK_ID_CHARS <= rid._MAX_SLUG_CHARS, (
+            "draft_filename truncates at _MAX_SLUG_CHARS, so an id bound above "
+            "it lets two distinct ids resolve to one file and the id-only index "
+            "in _partition_failure_modes stops being sufficient"
+        )
+
+    def test_distinct_minted_ids_resolve_to_distinct_filenames(self):
+        """Executed over every shape this suite enumerates, plus the bound."""
+        from faultmaven.utils.runbook_id import draft_filename
+
+        ids = set()
+        for _, a, b in COLLIDING_SHAPES:
+            ids.add(runbook_id_from_parts(*a))
+            ids.add(runbook_id_from_parts(*b))
+        ids.add(runbook_id_from_parts("svc", "x" * 500))
+        ids.add(runbook_id_from_parts("svc", "y" * 500))
+        ids.add(runbook_id_from_parts("a", "b"))
+        names = {draft_filename(i) for i in ids}
+        assert len(names) == len(ids), sorted(ids)
