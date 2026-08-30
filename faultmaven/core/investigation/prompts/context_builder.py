@@ -47,6 +47,7 @@ from faultmaven.core.investigation.prompts.fence import (
     delimiter_overhead_chars,
     render_fenced,
     reseal,
+    split_fenced,
     terminate_dangling,
 )
 from faultmaven.core.preprocessing.evidence_metadata import (
@@ -2265,8 +2266,13 @@ def _fence_conversation(body: str, fence: PromptFence) -> str:
     milestone blocks, which stay outside the fence. Fencing them instead would
     nest fenced delimiters inside a body routed through :meth:`PromptFence.data`,
     which reads as a token collision and re-mints until it raises.
+
+    The body is passed through UNMODIFIED — no ``strip``, not even of trailing
+    newlines. This module's whole premise is that the renderer does not touch
+    quoted bytes, and the collision corpus is only an exhaustive proof about
+    the transcript if what it records IS the transcript (#1256 review).
     """
-    return fence.element("conversation_history", body.rstrip("\n"))
+    return fence.element("conversation_history", body)
 
 
 def _build_graduated_history(case: Case, fence: PromptFence) -> str:
@@ -2865,6 +2871,61 @@ def _cap_text_tokens(
     return tb.use(text)
 
 
+#: Fallback when settings are unavailable. One definition, because the cap is
+#: read at two altitudes now: ``build_investigation_context`` applies it before
+#: the fence, and ``_allocate_sections`` counts the result.
+_USER_MESSAGE_CAP_FALLBACK = 4000
+
+
+def _user_message_cap() -> int:
+    """``prompt_budget.user_message_max_tokens``, or the fallback."""
+    try:
+        from faultmaven.config.settings import get_settings
+
+        return get_settings().prompt_budget.user_message_max_tokens
+    except Exception:
+        return _USER_MESSAGE_CAP_FALLBACK
+
+
+def _shrink_fenced_tail(fenced: str, alloc: int, budget: "TokenBudget") -> str:
+    """Shrink a fenced block to ``alloc`` tokens, keeping its BODY's tail.
+
+    The conversation section is the one variable section whose value is at its
+    END — the latest turn — so it is sized with ``keep="tail"``. Cutting the
+    RENDERED element that way removes its opening delimiter, and below the ~40
+    characters of the CLOSING delimiter it removes that too, at which point
+    neither is intact and ``reseal`` can only drop the section (#1256 review).
+    That drop is the worst possible outcome here: it violates
+    ``_truncate_to``'s INV-4 ("never silently dropped") and it takes the most
+    recent turn with it, under exactly the budget pressure where continuity
+    matters most.
+
+    So the delimiters are reserved FIRST and the remaining allotment buys body.
+    Both are then present by construction rather than by repair, and the
+    content gets the room the delimiters were otherwise consuming.
+
+    ``terminate_dangling`` is re-applied because the surviving tail is a
+    different string from the body the fence terminated. Cutting the HEAD can
+    only remove a ``<``, never add one, so this is only ever a no-op or a
+    correction — never a new hole.
+    """
+    parts = split_fenced(fenced)
+    if parts is None:  # not a fenced element — size it as an ordinary section
+        return budget._truncate_to(fenced, alloc, keep="tail")
+    opening, body, closing = parts
+    room = alloc - budget.count(opening) - budget.count(closing)
+    if room <= 2:
+        # No room for even a token of body. Emit the same non-silent marker
+        # ``_truncate_to`` would, rather than a pair of empty delimiters or
+        # nothing at all: it carries no caller bytes and no fenced delimiter,
+        # so there is nothing to forge with and nothing to absorb.
+        return "[...]"
+    kept = budget._truncate_to(body, room, keep="tail")
+    if not kept:
+        return "[...]"
+    return f"{opening}\n{terminate_dangling(kept)}\n{closing}"
+
+
 def _allocate_sections(
     *,
     budget: "TokenBudget",
@@ -2926,11 +2987,9 @@ def _allocate_sections(
             budget.used_tokens += budget.count(text)
         return text
 
-    # ``user_message_block`` arrives already capped AND already fenced: the cap
-    # has to run BEFORE the fence, or it cuts the rendered element and takes
-    # the closing delimiter (and the terminator) with it. #1254's reproduction
-    # was exactly this shape — a renderer cap turning a terminated forgery into
-    # an unterminated one — so the order is load-bearing, not stylistic.
+    # ``user_message_block`` arrives already capped AND already fenced (the cap
+    # runs before the fence in ``build_investigation_context``, or it would cut
+    # the rendered element), so it is only counted here.
     capped_feedback = _cap_text_tokens(
         feedback_str, feedback_cap, provider_name, model_name
     )
@@ -3053,15 +3112,7 @@ def _allocate_sections(
             elif alloc >= compact_tokens:
                 rendered = compact_history
             else:
-                # keep="tail" drops the HEAD, which for a fenced block is its
-                # OPENING delimiter — the mirror of the loss ``reseal`` was
-                # written for, and no less serious: a closing delimiter with
-                # nothing open before it reads as though every earlier section
-                # of the prompt sat inside the quoted transcript (#1256).
-                rendered = reseal(
-                    budget._truncate_to(compact_history, alloc, keep="tail"),
-                    compact_history,
-                )
+                rendered = _shrink_fenced_tail(compact_history, alloc, budget)
         elif not text or alloc <= 0:
             rendered = ""
         elif size <= alloc:
@@ -3367,14 +3418,8 @@ def build_investigation_context(
 
     # The user-message cap runs BEFORE the fence, never after: capping a
     # rendered element would cut its closing delimiter and its terminator.
-    try:
-        from faultmaven.config.settings import get_settings as _gs
-
-        _user_cap = _gs().prompt_budget.user_message_max_tokens
-    except Exception:
-        _user_cap = 4000
     capped_user = _cap_text_tokens(
-        user_message_safe, _user_cap, provider_name, model_name
+        user_message_safe, _user_message_cap(), provider_name, model_name
     )
 
     # Determine token budget (Gap #6: Provider-Specific Limits)
@@ -3512,17 +3557,21 @@ def build_investigation_context(
             tools_available=tools_available,
             fence=fence,
         )
-        # Conversation history — two fidelities, both fenced. The fuller one
-        # is the graduated transcript unless the case is long enough to have
-        # switched to the state summary; the compact one is the continuity
-        # floor and always carries the latest turn.
-        _fenced["graduated_history"] = (
-            _build_compact_history(case, user_message_safe, fence)
+        # Conversation history — two fidelities, both fenced. ``floor`` is the
+        # compact one, which always carries the latest turn; ``full`` is the
+        # graduated transcript, or the SAME compact string once the case is
+        # long enough to have switched to the state summary. Named for what
+        # they hold rather than for the fidelity they usually hold: calling the
+        # upper rung "graduated" while it holds compact content collapses two
+        # rungs of the ladder invisibly. Built once and shared in that case, so
+        # a re-mint re-renders it once rather than twice.
+        _fenced["conversation_floor"] = _build_compact_history(
+            case, user_message_safe, fence
+        )
+        _fenced["conversation_full"] = (
+            _fenced["conversation_floor"]
             if use_state_summary
             else _build_graduated_history(case, fence)
-        )
-        _fenced["compact_history"] = _build_compact_history(
-            case, user_message_safe, fence
         )
         _fenced["user_message"] = (
             fence.element("user_message", capped_user) if capped_user else ""
@@ -3633,7 +3682,7 @@ def build_investigation_context(
     # The state-summary mode used to be an inline second copy of
     # ``_build_compact_history``; it is now that function, so there is one
     # place the conversation channel is fenced rather than two (#1256).
-    recent_history = _fenced["graduated_history"]
+    recent_history = _fenced["conversation_full"]
 
     # 7. Knowledge Base Results
     # Cap individual solution text to prevent a single verbose runbook from
@@ -3816,7 +3865,7 @@ def build_investigation_context(
     # history fidelities so it can pick the one that fits; the compact one is the
     # continuity floor (always carries the latest turn). Both were rendered
     # inside the shared fence above.
-    compact_history = _fenced["compact_history"]
+    compact_history = _fenced["conversation_floor"]
     ctx = _allocate_sections(
         budget=budget,
         case=case,

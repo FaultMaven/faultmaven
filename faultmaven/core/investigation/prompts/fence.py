@@ -333,6 +333,7 @@ __all__ = [
     "mint_token",
     "render_fenced",
     "reseal",
+    "split_fenced",
     "terminate_dangling",
 ]
 
@@ -376,6 +377,42 @@ def delimiter_overhead_chars() -> int:
     return len(f' {FENCE_ATTR}=""') + 2 * _TOKEN_BYTES
 
 
+#: What may follow ``<`` for it to open a tag. A NameStartChar (letter, ``_``,
+#: ``:``), or the punctuation that opens a close tag, a declaration/comment or
+#: a processing instruction. NOT a digit and NOT whitespace.
+#:
+#: This is the whole of the false-positive bias, and it is what keeps ordinary
+#: prose out of :func:`terminate_dangling` (#1256). ``a < b``, ``<1000`` and
+#: ``latency <500ms`` are inequalities, not markup, and the message channel
+#: they arrive on is the one the model quotes back at the user.
+_TAG_OPENERS = "/!?_:"
+
+
+#: The only characters that can change :func:`_ends_inside_tag`'s state.
+_STATE_CHARS = re.compile(r"""[<>"']""")
+
+
+def _opens_a_tag(text: str, i: int) -> bool:
+    """Would ``<`` at ``text[i]`` be read as opening a tag?
+
+    Conservative in the direction that matters. It costs an ATTACKER nothing:
+    a forgery has to name a plausible element (``<uploaded_file …``) for the
+    model to read it as renderer structure at all, and every such name starts
+    with a NameStartChar. It costs ORDINARY PROSE everything: ``<`` followed by
+    a space, a digit or nothing cannot begin any element, so treating it as one
+    is a pure false positive — and after #1256 that false positive lands as a
+    renderer note glued to the user's own sentence.
+    """
+    nxt = text[i + 1 : i + 2]
+    # End of string stays True. Nothing follows to disqualify it, and it is the
+    # shape a cut through ``<uploaded_file`` leaves behind, so the conservative
+    # reading is the right one — and it is not the shape #1256 is about, which
+    # is a ``<`` with prose after it.
+    if not nxt:
+        return True
+    return nxt.isalpha() or nxt in _TAG_OPENERS
+
+
 def _ends_inside_tag(text: str) -> tuple[bool, str]:
     """Does ``text`` end part-way through a tag, and inside which quote?
 
@@ -384,14 +421,30 @@ def _ends_inside_tag(text: str) -> tuple[bool, str]:
     text that FOLLOWS gets absorbed into the tag by any reader lenient enough
     to be reading pseudo-XML in the first place.
 
-    Deliberately biased toward false positives — a trailing ``a < b`` in a log
-    line reports True and earns a harmless terminator, while a false NEGATIVE
-    is a hole. Cost of a false positive is one line of noise at the very tail
-    of one body; cost of a false negative is a forged fenced tag.
+    Still biased toward false positives within the tag-shaped class — a
+    trailing ``<Foo``, and a trailing bare ``<``, both report True and earn a
+    harmless terminator, while a false NEGATIVE is a hole. What no longer
+    counts is a ``<`` that provably cannot open a tag because of the character
+    AFTER it (:func:`_opens_a_tag`). That bias was free on evidence bodies and
+    is not free on ``<user_message>``: it rewrote ``a < b`` — issue #1256's own
+    example of prose the renderer must not touch — into ``a < b>[fence: …]``.
+
+    Relaxing it costs an attacker nothing, which is the argument that makes it
+    safe. Absorption is only useful to a forgery if the swallowed delimiter
+    completes a tag the ATTACKER named; the name has to come from the
+    attacker's own bytes, and every name starts with a NameStartChar. A ``<``
+    followed by a space or a digit supplies no name, so what it could swallow
+    is the renderer's delimiter into a tag the renderer also named.
     """
     in_tag = False
     quote = ""
-    for ch in text:
+    # Driven over the four characters that can change state, not over every
+    # character. Identical state machine — the skipped characters are exactly
+    # the ones every branch above ignored — but it is the difference between
+    # 53 ms and 3 ms on a 512 KB evidence block, paid on every section of
+    # every assembly and again on a re-assembly (#1256 review).
+    for m in _STATE_CHARS.finditer(text):
+        ch = m.group()
         if quote:
             if ch == quote:
                 quote = ""
@@ -400,7 +453,7 @@ def _ends_inside_tag(text: str) -> tuple[bool, str]:
                 quote = ch
             elif ch == ">":
                 in_tag = False
-        elif ch == "<":
+        elif ch == "<" and _opens_a_tag(text, m.start()):
             in_tag = True
     return in_tag, quote
 
@@ -617,8 +670,38 @@ def absorbed_delimiters(text: str, token: str) -> list[str]:
 _LEADING_OPEN_RE = re.compile(rf'<([a-z_]+)[^>]*?\s{FENCE_ATTR}="([0-9a-f]+)"\s*>')
 
 
+def split_fenced(text: str) -> Optional[tuple[str, str, str]]:
+    """``(opening, body, closing)`` for a complete fenced element, else ``None``.
+
+    Exists so a caller that must SHRINK a fenced block can shrink the BODY and
+    re-wrap, instead of cutting the rendered element and repairing the damage
+    afterwards (#1256). The difference is not stylistic:
+
+    - Cutting the element spends the allotment on delimiters first. At small
+      allotments they consume it entirely and the block reduces to a fragment
+      of a delimiter — which :func:`reseal` can only answer by dropping the
+      section, taking the most recent turn with it.
+    - Shrinking the body reserves the delimiters up front, so whatever
+      allotment is left buys content, and both delimiters are present by
+      construction rather than by repair.
+
+    Returns ``None`` for anything that is not a complete fenced element, which
+    is the caller's signal to leave it alone.
+    """
+    m = _LEADING_OPEN_RE.search(text or "")
+    if not m:
+        return None
+    opening, name, token = m.group(0), m.group(1), m.group(2)
+    closing = f'</{name} {FENCE_ATTR}="{token}">'
+    if not text.rstrip().endswith(closing):
+        return None
+    start = text.index(opening) + len(opening)
+    end = text.rindex(closing)
+    return opening, text[start:end], closing
+
+
 def reseal(text: str, original: str) -> str:
-    """Restore the delimiters a budget truncation cut off a fenced block.
+    """Re-close a fenced block whose tail a budget truncation cut off.
 
     ``text`` is the section as truncated; ``original`` is the same section as
     the fence rendered it. Both are needed: only ``original`` can say whether
@@ -628,13 +711,11 @@ def reseal(text: str, original: str) -> str:
     completely alone).
 
     The allocator sizes variable sections to their allotment with
-    ``TokenBudget._truncate_to``, and neither loss it inflicts is caught
-    upstream: :func:`render_fenced`'s checks run on the finished render, BEFORE
-    the allocator ever sees it. Which delimiter is lost depends on which end
-    the allocator kept:
-
-    ``keep="head"`` (evidence, entity highlights, journal, KB) removes the
-    CLOSING delimiter and the terminator :meth:`PromptFence.element` appended.
+    ``TokenBudget._truncate_to(..., keep="head")``, which for a fenced block
+    removes the CLOSING delimiter and the terminator :meth:`PromptFence.element`
+    appended. Both losses matter, and neither is caught upstream:
+    :func:`render_fenced`'s checks run on the finished render, BEFORE the
+    allocator ever sees it.
 
     - The element stays open, so everything after it in the prompt — including
       the trust rule itself, which ``INVESTIGATION_BASE`` renders *after*
@@ -643,31 +724,29 @@ def reseal(text: str, original: str) -> str:
       absorb whatever delimiter comes next. That is the #1217 absorption hole,
       reopened by an operation that runs after the fence was verified.
 
-    ``keep="tail"`` (the conversation section, whose most-recent turns are at
-    the end — #1256) removes the OPENING delimiter instead, which is the same
-    defect mirrored: a closing delimiter with nothing open before it reads as
-    though every earlier section of the prompt were inside the quoted block.
-    The terminator survives there, because it sits at the tail.
+    A block that must SHRINK rather than be cut — the conversation section,
+    which keeps its tail — does not come here at all: it goes through
+    :func:`split_fenced`, shrinks its BODY and re-wraps, so its delimiters are
+    never lost in the first place. Repairing a tail cut is not possible in
+    general, because below ~40 characters the cut lands inside the closing
+    delimiter and there is nothing left to re-open (#1256).
 
     The invariant this restores, and the one to test against, is: **if any part
     of a fenced block survives, its opening and closing delimiters both do, and
     the section does not end inside an unterminated tag.**
 
-    Four outcomes:
+    Three outcomes:
 
     - ``original`` is not a fenced block → ``text`` unchanged.
     - the complete opening delimiter survived → terminator (only if the
       surviving body now ends mid-tag) plus the closing delimiter, APPENDED.
       Never alters a surviving byte — the fence's whole premise is that the
       renderer does not touch quoted content.
-    - only the CLOSING delimiter survived → the opening delimiter, PREPENDED.
-      Same rule: renderer bytes are added around the survivors, never into
-      them.
-    - neither delimiter survived intact → ``""``. The cut landed inside the
-      renderer's own delimiter (``<entity_highlights fence="d924``), so there
-      is no element to close and no content worth keeping — what remains is at
-      most the block's renderer preamble. Left in place, the half-written tag
-      would absorb the next ``>`` in the assembled prompt.
+    - the opening delimiter did NOT survive intact → ``""``. The cut landed
+      inside the renderer's own delimiter (``<entity_highlights fence="d924``),
+      so there is no element to close and no content worth keeping — what
+      remains is at most the block's renderer preamble. Left in place, the
+      half-written tag would absorb the next ``>`` in the assembled prompt.
     """
     m_orig = _LEADING_OPEN_RE.search(original or "")
     if not m_orig:
@@ -675,12 +754,6 @@ def reseal(text: str, original: str) -> str:
     opening, name, token = m_orig.group(0), m_orig.group(1), m_orig.group(2)
     closing = f'</{name} {FENCE_ATTR}="{token}">'
     if opening not in (text or ""):
-        if (text or "").rstrip().endswith(closing):
-            # keep="tail": the head went, the closing delimiter is still here.
-            # Re-open so the close has something to close. No terminator is
-            # needed — the body's tail, and any terminator ``element`` put
-            # there, are exactly what survived.
-            return f"{opening}\n{text}"
         logger.warning(
             "prompt_fence_truncated_opening_delimiter",
             extra={"element": name, "kept_chars": len(text or "")},
