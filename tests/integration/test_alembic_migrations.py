@@ -632,7 +632,13 @@ class TestConversionDraftRunbookIdUniquenessMigration:
             f"WHERE name = '{self._INDEX}'",
         ), "nothing to downgrade — the index was never created"
 
-        assert run_alembic("downgrade -1", database_url).returncode == 0
+        # Target 046's parent EXPLICITLY, for the reason the RBAC-seed test
+        # gives: a relative "downgrade -1" follows whatever the current head
+        # is, so the first migration stacked on top of 046 silently redirects
+        # it. 047 was that migration, and this is where it landed — one step
+        # back from the new head reversed 047 and left 046's index in place,
+        # so the assertion below saw revision 046 rather than 045.
+        assert run_alembic(f"downgrade {self._PARENT}", database_url).returncode == 0
         assert get_current_revision(database_url) == self._PARENT
         assert not query_rows(
             TEST_DB,
