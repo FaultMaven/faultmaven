@@ -31,7 +31,7 @@ faultmaven/
 ├── api/                    # Shared API middleware, dependencies, error handling
 │   ├── dependencies.py     # DI for legacy code
 │   ├── exception_handlers.py
-│   ├── middleware/         # 12 middleware modules
+│   ├── middleware/         # request middleware (see the directory)
 │   │   ├── auth.py                    # JWT/OAuth authentication
 │   │   ├── client_ip.py               # Trusted-proxy client IP resolution
 │   │   ├── contract_probe.py          # API contract validation
@@ -70,7 +70,7 @@ faultmaven/
 │   │       └── context_builder.py   # Token-aware context assembly
 │   ├── preprocessing/      # Tier 0/1 mechanical preprocessor
 │   └── processing/         # Log analyzer, pattern learner
-├── infrastructure/         # Shared adapters (13 subdirectories)
+├── infrastructure/         # Shared adapters
 │   ├── llm/                # LLM provider routing, caching
 │   │   ├── providers/      # 9 LLM providers (see Supported LLM Providers)
 │   │   ├── router.py       # Provider routing with fallback chain
@@ -192,7 +192,8 @@ from faultmaven.modules.evidence.domain.validators import validate_evidence
 
 ### Architecture Enforcement
 
-Architecture is enforced via **import-linter** with 13 contracts (`.importlinter`):
+Architecture is enforced via **import-linter** (`.importlinter`). For the
+authoritative contract list and which are active, run `lint-imports`:
 
 | Contract | Description | Status |
 |----------|-------------|--------|
@@ -839,7 +840,7 @@ alembic upgrade head
 alembic downgrade -1
 ```
 
-### Key Tables (31 total, 4 domains)
+### Key Tables (4 domains)
 
 **User domain:** `users`, `organizations`, `organization_members`, `roles`, `permissions`, `role_permissions`, `teams`, `team_members`, `user_audit_log`, `oauth_authorization_codes`
 
@@ -859,7 +860,7 @@ All tables have SQLAlchemy ORM models in `faultmaven/infrastructure/persistence/
 
 ### Migration
 
-Baseline `001_clean_baseline` (revision `c4689af8aa3f`) creates 32 tables + RBAC seed data. Subsequent migrations 002–010 cover the post-baseline cleanups: evidence `summary`/`extract` two-field shape (002), enterprise-tier transitional nullability (003), uploaded_files cleanup (004), description CHECK relaxation (005), enterprise-tier NOT NULL tightening (006), drop `users_password_or_sso` CHECK to permit dev-login (007), `case_actions.triggered_by` audit column + read-path wiring (008), Evidence/Solution audit fields (009), and the strict evidence-model redesign (010 — preprocessing artifacts move to `uploaded_files`; `evidence.form` dropped; `evidence_source_invariant` CHECK added so every Evidence row has a known source). Migrations continue through 011–031 (evidence-needs, `status`→`state`, RLS tenant isolation, causal-graph chain model, PostgreSQL type-divergence fixes, causal-table RLS, provenance-column drop, `account_kind`+source, plan-tier rename, drop orphaned `organization` KB scope, the polymorphic `resource_shares` table replacing the nullable `team_id` columns (028), RBAC role/permission seed (029), `team_members` RLS (030), dropping the never-written `oauth_revoked_tokens` table — token revocation is Redis-only via the single deployment-wide store (031, #767), `user_audit_log` `success`/`session_id` columns for the SSO JIT audit trail (032, ADR-015 PR 7), and the global-KB platform tier (033, #770 — `knowledge_items.organization_id` nullable with `(scope='global') ⟺ (organization_id IS NULL)` CHECK; the single FOR ALL RLS policy replaced by four per-command policies granting every tenant read access to global rows while confining global writes to single-tenant sentinel sessions or the audited maintenance path)). Migrations continue through 035 (durable append-only `operator_access_audit` for platform-operator access to tenant data) and 036 (`operator_access_grants` — break-glass grants over Cloud tenant case content; the justification columns are pinned by triggers and DELETE is rejected, plus a `BEFORE TRUNCATE` statement trigger and the `grant_id` index on 035's table), 037 (`case_messages.author_id` — per-turn authorship capture; nullable, deliberately not an FK so attribution outlives the account, ADR-013 D4/ADR-011 D5), and 038 (`sso_org_mappings` — IdP organization → FaultMaven organization, so a multi-tenant SSO login lands in its own tenant; deliberately **not** RLS-tenanted because the callback that reads it is unauthenticated and no tenant is bound yet, #869), and 039 (`oauth_authorization_codes.organization_id` — the OAuth-PKCE authorize leg captures the request's tenant so the *unauthenticated* token exchange has something to mint from; nullable, no FK, not RLS-tenanted for 038's reason, #872). Current head: `d2e3f4a5b6c7`. See `docs/architecture/data-and-storage/schemas/case-schema.md` for the full migration table.
+Baseline `001_clean_baseline` (revision `c4689af8aa3f`) creates 32 tables + RBAC seed data. Subsequent migrations 002–010 cover the post-baseline cleanups: evidence `summary`/`extract` two-field shape (002), enterprise-tier transitional nullability (003), uploaded_files cleanup (004), description CHECK relaxation (005), enterprise-tier NOT NULL tightening (006), drop `users_password_or_sso` CHECK to permit dev-login (007), `case_actions.triggered_by` audit column + read-path wiring (008), Evidence/Solution audit fields (009), and the strict evidence-model redesign (010 — preprocessing artifacts move to `uploaded_files`; `evidence.form` dropped; `evidence_source_invariant` CHECK added so every Evidence row has a known source). Migrations continue through 011–031 (evidence-needs, `status`→`state`, RLS tenant isolation, causal-graph chain model, PostgreSQL type-divergence fixes, causal-table RLS, provenance-column drop, `account_kind`+source, plan-tier rename, drop orphaned `organization` KB scope, the polymorphic `resource_shares` table replacing the nullable `team_id` columns (028), RBAC role/permission seed (029), `team_members` RLS (030), dropping the never-written `oauth_revoked_tokens` table — token revocation is Redis-only via the single deployment-wide store (031, #767), `user_audit_log` `success`/`session_id` columns for the SSO JIT audit trail (032, ADR-015 PR 7), and the global-KB platform tier (033, #770 — `knowledge_items.organization_id` nullable with `(scope='global') ⟺ (organization_id IS NULL)` CHECK; the single FOR ALL RLS policy replaced by four per-command policies granting every tenant read access to global rows while confining global writes to single-tenant sentinel sessions or the audited maintenance path)). Migrations continue through 035 (durable append-only `operator_access_audit` for platform-operator access to tenant data) and 036 (`operator_access_grants` — break-glass grants over Cloud tenant case content; the justification columns are pinned by triggers and DELETE is rejected, plus a `BEFORE TRUNCATE` statement trigger and the `grant_id` index on 035's table), 037 (`case_messages.author_id` — per-turn authorship capture; nullable, deliberately not an FK so attribution outlives the account, ADR-013 D4/ADR-011 D5), and 038 (`sso_org_mappings` — IdP organization → FaultMaven organization, so a multi-tenant SSO login lands in its own tenant; deliberately **not** RLS-tenanted because the callback that reads it is unauthenticated and no tenant is bound yet, #869), and 039 (`oauth_authorization_codes.organization_id` — the OAuth-PKCE authorize leg captures the request's tenant so the *unauthenticated* token exchange has something to mint from; nullable, no FK, not RLS-tenanted for 038's reason, #872). **For the current head run `alembic heads`; for the full chain see `docs/architecture/data-and-storage/schemas/case-schema.md`.** The narration above records *why* particular migrations exist, and is deliberately NOT extended per migration — a hand-maintained head and range re-drift on the next merge, which is what #1246 was filed for. Do not restore a literal revision id here: a lane that parents a new migration onto a revision read from this file parents onto one that may no longer be the head.
 
 ## Key Patterns
 
@@ -987,7 +988,7 @@ Implemented in `core/investigation/milestone_engine.py` with hypothesis manageme
 | `.env.example` | Configuration template |
 | `pyproject.toml` | Dependencies, tool config, and `[project.scripts]` (the `fm-*` operator entrypoints) |
 | `faultmaven/cli/` | Operator console entrypoint modules targeted by `[project.scripts]` |
-| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (all 31 tables) |
+| `faultmaven/infrastructure/persistence/models.py` | SQLAlchemy ORM models (every table) |
 | `faultmaven/config/llm_config_overrides.py` | Config override application + hot-reload (cloud mode only) |
 | `faultmaven/api/routes/admin_config.py` | Admin endpoints: LLM config, env status, features, connection test |
 | `.importlinter` | Architecture contracts (13 rules) |
