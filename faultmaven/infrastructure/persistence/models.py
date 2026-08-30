@@ -945,6 +945,10 @@ class UploadedFileModel(Base):
     data_type = Column(String(50), nullable=True)
     coverage_start_ts = Column(DateTime(timezone=True), nullable=True)
     coverage_end_ts = Column(DateTime(timezone=True), nullable=True)
+    # Which pattern produced the span beside it (or ``caller_declared``).
+    # Promoted with the span because it decides what may be asserted from
+    # it — see migration 049.
+    coverage_source = Column(String(50), nullable=True)
 
     uploaded_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -1040,6 +1044,10 @@ class EvidenceModel(Base):
     collected_at_turn = Column(Integer, nullable=True, index=True)
     coverage_start_ts = Column(DateTime(timezone=True), nullable=True)
     coverage_end_ts = Column(DateTime(timezone=True), nullable=True)
+    # Which pattern produced the span beside it (or ``caller_declared``).
+    # Promoted with the span because it decides what may be asserted from
+    # it — see migration 049.
+    coverage_source = Column(String(50), nullable=True)
 
     # Lifecycle: True once vectorized into the case vector store.
     vectorized = Column(Boolean, nullable=False, server_default="0")

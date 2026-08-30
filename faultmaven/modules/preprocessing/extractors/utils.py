@@ -212,11 +212,18 @@ def _extract_timestamp_with_source(line: str) -> tuple[datetime | None, str | No
                         name,
                     )
 
+                # No year in the line, so one is invented. Report that under a
+                # DIFFERENT source name: the instant is a guess about which year
+                # this "Mon DD HH:MM:SS" belongs to, and a consumer that states
+                # it as an absolute observation time would be asserting the
+                # guess. ``extract_time_range`` already refuses to print the
+                # year for this reason; naming it here lets every other consumer
+                # make the same distinction instead of re-deriving it.
                 now = datetime.now(tz=UTC)
                 dt = datetime(now.year, month, day, hh, mm, ss, tzinfo=UTC)
                 if dt > now:
                     dt = dt.replace(year=now.year - 1)
-                return dt, name
+                return dt, "syslog_bsd_noyear"
             if name == "yymmdd":
                 yy, mo, dd, hh, mm, ss = (int(x) for x in m.groups())
                 year = 2000 + yy

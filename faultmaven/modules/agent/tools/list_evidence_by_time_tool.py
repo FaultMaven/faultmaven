@@ -17,7 +17,7 @@ Design Reference:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from faultmaven.models.interfaces import ToolResult
@@ -153,6 +153,12 @@ class ListEvidenceByTimeTool(AgentTool):
             )
 
         results = _format_evidence_summaries(evidence_list, context.in_memory_case)
+        results.extend(
+            _format_unpromoted_files(context.in_memory_case, start_ts, end_ts)
+        )
+        # One ordering across both kinds — the note below promises it, and a
+        # merged list sorted only within each half would quietly break that.
+        results.sort(key=_coverage_sort_key)
         return ToolResult(
             success=True,
             data={
@@ -162,11 +168,91 @@ class ListEvidenceByTimeTool(AgentTool):
                 "count": len(results),
                 "evidence": results,
                 "note": (
-                    "Evidence ordered by coverage_start_ts ascending. "
-                    "Timeless evidence (NULL coverage) is excluded."
+                    "Ordered by coverage_start_ts ascending. Timeless items "
+                    "(NULL coverage) are excluded. Rows carry either "
+                    "evidence_id or file_id — a file_id row is an upload not "
+                    "yet recorded as evidence, addressable by search_file just "
+                    "the same. coverage_source says what produced the span: "
+                    "caller_declared and the dated formats are stated instants, "
+                    "while epoch_s/epoch_ms are bare-integer regex hits and "
+                    "syslog_bsd_noyear carries a year the parser invented — "
+                    "weigh those accordingly. A null coverage_source means the "
+                    "provenance was never recorded, so the span is unverified: "
+                    "treat it as unknown, not as confirmed."
                 ),
             },
         )
+
+
+def _coverage_sort_key(row: Dict[str, Any]) -> datetime:
+    """Order both row kinds by when their content starts.
+
+    Parsed rather than string-compared: PostgreSQL returns TZ-aware bounds and
+    SQLite naive ones, so ``"2026-08-30T11:38:37"`` and
+    ``"2026-08-30T11:38:37+00:00"`` are the same instant with different
+    lengths, and lexical order puts them in the wrong sequence the moment a
+    deployment holds both shapes. Naive is read as UTC — the same wire contract
+    ``_parse_iso_bound`` documents. Unparseable or missing sorts first, where a
+    row with no known start belongs.
+    """
+    raw = row.get("coverage_start_ts")
+    if not raw:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _format_unpromoted_files(case: Any, start, end) -> List[Dict[str, Any]]:
+    """Dated files that have no Evidence row yet, in the same window.
+
+    INV-07 forbids Evidence creation during INQUIRY, so a forwarded alert is
+    an ``<uploaded_file>`` for its whole first turn — and it is precisely the
+    kind of thing "what was observed when" is asking about. Answering with
+    silence, while the prompt shows that same file carrying
+    ``observed_through``, teaches the model to distrust the attribute: tool
+    output reads as the authoritative check.
+
+    Keyed by ``file_id`` rather than ``evidence_id`` because that is what the
+    row IS, and the sibling tools already accept either form (``search_file``
+    resolves a ``file_id`` from an ``<uploaded_file>`` tag or an ``id`` from an
+    ``<evidence>`` tag).
+    """
+    if case is None or not getattr(case, "uploaded_files", None):
+        return []
+    promoted = {
+        str(ev.source_file_id)
+        for ev in getattr(case, "evidence", None) or []
+        if getattr(ev, "source_file_id", None) is not None
+    }
+    rows: List[Dict[str, Any]] = []
+    for uf in case.uploaded_files:
+        if uf.file_id is None or str(uf.file_id) in promoted:
+            continue
+        f_start = getattr(uf, "coverage_start_ts", None)
+        f_end = getattr(uf, "coverage_end_ts", None)
+        if f_start is None or f_end is None:
+            continue  # timeless, same exclusion the repository query applies
+        if start is not None and f_end < start:
+            continue
+        if end is not None and f_start > end:
+            continue
+        rows.append(
+            {
+                "file_id": uf.file_id,
+                "label": uf.display_name,
+                "data_type": uf.data_type,
+                "coverage_start_ts": f_start.isoformat(),
+                "coverage_end_ts": f_end.isoformat(),
+                "coverage_source": getattr(uf, "coverage_source", None),
+                "summary": uf.summary,
+            }
+        )
+    return rows
 
 
 def _format_evidence_summaries(
@@ -201,6 +287,7 @@ def _format_evidence_summaries(
                 "data_type": source_type.value if source_type else None,
                 "coverage_start_ts": start.isoformat() if start else None,
                 "coverage_end_ts": end.isoformat() if end else None,
+                "coverage_source": getattr(ev, "coverage_source", None),
                 "summary": getattr(ev, "summary", None),
             }
         )

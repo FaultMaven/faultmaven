@@ -59,6 +59,7 @@ class _PreprocessingDouble:
             content_hash=CONTENT_HASH,
             coverage_start_ts=None,
             coverage_end_ts=None,
+            coverage_source=None,
             extraction_method="structure_extraction",
             extraction_metadata={},
         )

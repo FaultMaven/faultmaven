@@ -1137,8 +1137,8 @@ def _apply_symptom_retraction(
 
 def _evidence_coverage(
     case: "Case", source_file_id: str | None, extract: str | None = None
-) -> "tuple[datetime | None, datetime | None]":
-    """The time span this evidence's CONTENT covers.
+) -> "tuple[datetime | None, datetime | None, str | None]":
+    """The time span this evidence's CONTENT covers, and where it came from.
 
     ``Evidence.coverage_start_ts`` / ``coverage_end_ts`` have existed (with a DB
     index) since the case-timeline work, and the model docstring has always said
@@ -1173,7 +1173,7 @@ def _evidence_coverage(
         )
 
         try:
-            start_ts, end_ts, _ = extract_time_range_ts(extract)
+            start_ts, end_ts, source = extract_time_range_ts(extract)
         except Exception:  # noqa: BLE001 - a parse failure must not lose the turn
             logger.warning(
                 "Could not parse timestamps from an evidence extract; falling "
@@ -1186,18 +1186,22 @@ def _evidence_coverage(
             # starts AND ends there; leaving the end None would read as UNDATED
             # and discard the very observation time this exists to capture.
             if start_ts is not None or end_ts is not None:
-                return start_ts or end_ts, end_ts or start_ts
+                # The slice's own timestamps, so the slice's own provenance.
+                return start_ts or end_ts, end_ts or start_ts, source
 
     if source_file_id is None:
-        return None, None
+        return None, None, None
     uploaded = case.find_uploaded_file(source_file_id)
     if uploaded is None:
-        return None, None
+        return None, None, None
     file_start = getattr(uploaded, "coverage_start_ts", None)
     file_end = getattr(uploaded, "coverage_end_ts", None)
     if file_start is not None and file_start == file_end:
-        return file_start, file_end
-    return None, None
+        # Inherit the provenance with the span. A row that inherits an
+        # ``epoch_s`` guess is exactly as unfounded as the file it came from,
+        # and losing that here would put the trust decision back where it was.
+        return file_start, file_end, getattr(uploaded, "coverage_source", None)
+    return None, None, None
 
 
 def _resolve_evidence_source(
@@ -10513,7 +10517,7 @@ class MilestoneEngine:
                     case, ev_item.source_file_id, ev_item.source_type
                 )
 
-                coverage_start, coverage_end = _evidence_coverage(
+                coverage_start, coverage_end, coverage_source = _evidence_coverage(
                     case, source_file_id, ev_item.extract
                 )
                 ev = Evidence(
@@ -10530,6 +10534,7 @@ class MilestoneEngine:
                     primary_purpose="Investigation context",
                     coverage_start_ts=coverage_start,
                     coverage_end_ts=coverage_end,
+                    coverage_source=coverage_source,
                 )
                 # #1136: does this row carry a datum the case did not already
                 # hold? Computed BEFORE the append, or the row would match

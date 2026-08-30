@@ -463,7 +463,7 @@ class TestEvidenceCoverageResolution:
             datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc),
             datetime(2026, 8, 4, 19, 45, tzinfo=timezone.utc),
         )
-        assert _evidence_coverage(case, fid) == (None, None)
+        assert _evidence_coverage(case, fid)[:2] == (None, None)
 
     def test_a_point_in_time_file_is_inherited(self):
         """The motivating path: an alert stamped from a forwarding caller's
@@ -472,7 +472,7 @@ class TestEvidenceCoverageResolution:
 
         instant = datetime(2026, 8, 4, 17, 36, 17, tzinfo=timezone.utc)
         case, fid = self._case_with_file(instant, instant)
-        assert _evidence_coverage(case, fid) == (instant, instant)
+        assert _evidence_coverage(case, fid)[:2] == (instant, instant)
 
     def test_the_extract_beats_the_file(self):
         """An evidence row is a SLICE; its own quoted lines are the authority."""
@@ -483,7 +483,7 @@ class TestEvidenceCoverageResolution:
             datetime(2026, 8, 4, 19, 45, tzinfo=timezone.utc),
         )
         extract = "2026-08-04 17:36:17 ERROR etcdserver: no leader\n"
-        start, end = _evidence_coverage(case, fid, extract)
+        start, end, _ = _evidence_coverage(case, fid, extract)
         assert end is not None and end.hour == 17
         # ...and crucially NOT the file's 19:45 end.
         assert end.hour != 19

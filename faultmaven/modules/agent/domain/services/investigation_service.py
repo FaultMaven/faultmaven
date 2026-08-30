@@ -2243,6 +2243,11 @@ class InvestigationService:
         ).value
         uploaded_file.coverage_start_ts = preprocessing_result.coverage_start_ts
         uploaded_file.coverage_end_ts = preprocessing_result.coverage_end_ts
+        # WHICH pattern produced that span, carried with it. Consumers state the
+        # span as an absolute observation time; this is how they know whether
+        # they may. Computed by ``extract_time_range_ts`` and, until #1274, put
+        # in a metadata object nobody persisted.
+        uploaded_file.coverage_source = preprocessing_result.coverage_source
 
         # Fall back to the caller's declared observation time when the content
         # carries no parseable timestamps of its own. Alert notifications are
@@ -2263,6 +2268,13 @@ class InvestigationService:
         ):
             uploaded_file.coverage_start_ts = attachment.observed_at
             uploaded_file.coverage_end_ts = attachment.observed_at
+            # Named distinctly from every parsed source: this instant was not
+            # read out of the content at all. It is the strongest provenance
+            # available — a client that watched the content arrive, validated
+            # by ``_parse_observed_at`` — and it is also the one case a
+            # metadata blob written during extraction could never express,
+            # because it is applied here, afterwards.
+            uploaded_file.coverage_source = "caller_declared"
             logger.info(
                 "Seeded coverage for %s from caller-declared observed_at %s "
                 "(content had no parseable timestamps)",

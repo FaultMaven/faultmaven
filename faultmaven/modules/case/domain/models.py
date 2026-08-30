@@ -2038,6 +2038,21 @@ class UploadedFile(BaseModel):
         ),
     )
 
+    coverage_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Which timestamp-format pattern produced the coverage span, or "
+            "``caller_declared`` when a forwarding client supplied it via "
+            "``observed_at``. Promoted alongside the span it qualifies "
+            "because it decides what may be ASSERTED from it: ``epoch_s`` / "
+            "``epoch_ms`` are bare-integer regexes that match ordinary config "
+            "values, and ``syslog_bsd_noyear`` carries a year the parser "
+            "invented. NULL means the provenance was never recorded (rows "
+            "written before this column existed) — unknown, not trusted."
+        ),
+        max_length=50,
+    )
+
     # ------------------------------------------------------------------
     # Display identity (#666)
     #
@@ -2434,6 +2449,21 @@ class Evidence(BaseModel):
             "Latest timestamp parsed from the evidence's content. "
             "None when the content has no parseable timestamps."
         ),
+    )
+
+    coverage_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Which timestamp-format pattern produced the coverage span, or "
+            "``caller_declared`` when a forwarding client supplied it via "
+            "``observed_at``. Promoted alongside the span it qualifies "
+            "because it decides what may be ASSERTED from it: ``epoch_s`` / "
+            "``epoch_ms`` are bare-integer regexes that match ordinary config "
+            "values, and ``syslog_bsd_noyear`` carries a year the parser "
+            "invented. NULL means the provenance was never recorded (rows "
+            "written before this column existed) — unknown, not trusted."
+        ),
+        max_length=50,
     )
 
     @model_validator(mode="after")

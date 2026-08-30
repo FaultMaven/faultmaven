@@ -212,6 +212,18 @@ class PreprocessingResult(BaseModel):
             "None when the content has no parseable timestamps."
         ),
     )
+    coverage_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Which timestamp-format pattern produced the coverage span — "
+            "how much the parse can be trusted, not just what it produced. "
+            "``epoch_s``/``epoch_ms`` are bare-integer regexes that match "
+            "ordinary config values; ``syslog_bsd_noyear`` carries an invented "
+            "year. Consumers that state the span as an absolute observation "
+            "time need this to know whether they may. None when no pattern "
+            "matched."
+        ),
+    )
 
     # Phase 4 — case-level entity registry. Observations produced by
     # the EntityExtractor for this data type. Keyed by

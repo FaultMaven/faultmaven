@@ -133,3 +133,98 @@ class TestDelegation:
         result = await tool.execute_with_context(params={}, context=_ctx())
         assert result.success is False
         assert "DB connection lost" in result.error
+
+
+# ---------------------------------------------------------------------------
+# #1271 item 4 / #1274 — un-promoted files, and the provenance of every span
+# ---------------------------------------------------------------------------
+
+
+def _uploaded_stub(file_id, start, end, source="caller_declared"):
+    uf = MagicMock()
+    uf.file_id = file_id
+    uf.display_name = "pasted text (turn 1)"
+    uf.data_type = "alert"
+    uf.coverage_start_ts = start
+    uf.coverage_end_ts = end
+    uf.coverage_source = source
+    uf.summary = "forwarded alert"
+    return uf
+
+
+def _case_with(files, evidence=()):
+    case = MagicMock()
+    case.uploaded_files = list(files)
+    case.evidence = list(evidence)
+    return case
+
+
+class TestUnpromotedFilesAreAnswersToo:
+    @pytest.mark.asyncio
+    async def test_a_dated_file_with_no_evidence_row_is_returned(self, tool):
+        """INV-07 keeps a forwarded alert un-promoted through INQUIRY. Answering
+        "what was observed when" with silence, while the prompt shows that same
+        file carrying observed_through, teaches the model to distrust the
+        attribute."""
+
+        instant = datetime(2026, 8, 30, 11, 38, 37, tzinfo=timezone.utc)
+        ctx = _ctx()
+        ctx.in_memory_case = _case_with([_uploaded_stub("file_abc", instant, instant)])
+
+        result = await tool.execute_with_context({}, ctx)
+
+        assert result.success
+        rows = result.data["evidence"]
+        assert [r["file_id"] for r in rows] == ["file_abc"]
+        assert rows[0]["coverage_source"] == "caller_declared"
+
+    @pytest.mark.asyncio
+    async def test_a_promoted_file_is_not_listed_twice(self, tool):
+        """Once an Evidence row cites the file, the repository query returns it;
+        emitting the file as well would double-count one observation."""
+
+        instant = datetime(2026, 8, 30, 11, 38, 37, tzinfo=timezone.utc)
+        ev = MagicMock()
+        ev.source_file_id = "file_abc"
+        ctx = _ctx()
+        ctx.in_memory_case = _case_with(
+            [_uploaded_stub("file_abc", instant, instant)], evidence=[ev]
+        )
+
+        result = await tool.execute_with_context({}, ctx)
+        assert result.data["evidence"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_timeless_file_stays_excluded(self, tool):
+        """Same exclusion the repository query applies to evidence."""
+
+        ctx = _ctx()
+        ctx.in_memory_case = _case_with([_uploaded_stub("file_abc", None, None)])
+        result = await tool.execute_with_context({}, ctx)
+        assert result.data["evidence"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_file_outside_the_window_is_excluded(self, tool):
+        instant = datetime(2026, 8, 30, 11, 38, 37, tzinfo=timezone.utc)
+        ctx = _ctx()
+        ctx.in_memory_case = _case_with([_uploaded_stub("file_abc", instant, instant)])
+
+        result = await tool.execute_with_context(
+            {"start_ts": "2026-08-30T20:00:00+00:00"}, ctx
+        )
+        assert result.data["evidence"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_unvouched_source_is_reported_not_hidden(self, tool):
+        """The prompt withholds an epoch_s span; the tool must not silently
+        present it as fact instead — it reports the span WITH its provenance so
+        both surfaces say the same thing about how much it is worth."""
+
+        instant = datetime(2026, 8, 30, 11, 38, 37, tzinfo=timezone.utc)
+        ctx = _ctx()
+        ctx.in_memory_case = _case_with(
+            [_uploaded_stub("file_abc", instant, instant, source="epoch_s")]
+        )
+
+        rows = (await tool.execute_with_context({}, ctx)).data["evidence"]
+        assert rows[0]["coverage_source"] == "epoch_s"
