@@ -46,6 +46,8 @@ from faultmaven.modules.case.domain.models import (
 from .conftest import (
     MockCaseRepository,
     MockMilestoneEngine,
+    RecordingCaseRepository,
+    RecordingMilestoneEngine,
     create_sample_case,
     make_evidence,
     make_preprocessing_result,
@@ -1470,49 +1472,6 @@ class TestNoTwoAttachmentsAnswerToTheSameTyping:
         assert matched is not None and matched["file_id"] == "file_bbbbbbbbbbbb"
 
 
-class _RecordingRepository(MockCaseRepository):
-    """A repository double that keeps the turn counter the way the real ones do.
-
-    Both ``SQLiteCaseRepository`` and ``PostgreSQLHybridCaseRepository`` write
-    ``"current_turn": case.effective_current_turn`` — the last ``turn_history``
-    number — rather than the in-flight ``current_turn``. ``MockCaseRepository``
-    stores the Case object as-is, so that projection never happens and every
-    agent test built on it is blind to the whole class of bug below.
-    """
-
-    def __init__(self, seed=None):
-        super().__init__()
-        if seed:
-            self._storage.update(seed)
-
-    async def _save(self, case):
-        stored = case.model_copy(update={"current_turn": case.effective_current_turn})
-        self._storage[case.case_id] = stored
-        return stored
-
-
-class _RecordingEngine(MockMilestoneEngine):
-    """A mock engine that records a turn, as the real one does at its Step 6.
-
-    ``MockMilestoneEngine`` appends nothing, which makes ``turn_history`` empty
-    forever — and ``effective_current_turn`` falls back to ``current_turn``
-    when it is empty, so the two counters never diverge and the projection
-    above is a no-op. Without this the test below passes under the mutation it
-    exists to catch.
-    """
-
-    async def _process_turn(self, case, *args, **kwargs):
-        result = await super()._process_turn(case, *args, **kwargs)
-        case.turn_history.append(
-            TurnProgress(
-                turn_number=case.current_turn,
-                progress_made=True,
-                outcome=TurnOutcome.CONVERSATION,
-            )
-        )
-        return result
-
-
 class TestTheWriterStoresWhatTheReaderWillAccept:
     """One predicate, one clock — the invariant round one asserted and broke.
 
@@ -1556,7 +1515,7 @@ class TestTheWriterStoresWhatTheReaderWillAccept:
         age 3 and 3 is still in window.
         """
         _, case = repo_with_case
-        repo = _RecordingRepository()
+        repo = RecordingCaseRepository()
         case.uploaded_files = []
         case.evidence = []
         case.turn_history = []
@@ -1570,7 +1529,7 @@ class TestTheWriterStoresWhatTheReaderWillAccept:
         file_storage.store_file = AsyncMock(side_effect=lambda *a, **k: next(blobs))
         file_storage.mark_linked = AsyncMock(return_value=True)
         service = InvestigationService(
-            milestone_engine=_RecordingEngine(),
+            milestone_engine=RecordingMilestoneEngine(),
             case_repository=repo,
             preprocessing_service=preprocessing_service,
             file_storage_service=file_storage,

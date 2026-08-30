@@ -3834,6 +3834,85 @@ def _balance_code_fences(text: str) -> str:
     return text + "\n```"
 
 
+def check_if_progress_made(metadata: dict[str, Any]) -> bool:
+    """Whether the investigation ADVANCED this turn — the sole writer of
+    ``turns_without_progress``, and therefore of every stall net downstream.
+
+    The distinction this draws is *advancement*, not *activity* (#1136). The
+    predicate used to accept any touched artifact, on the reasoning that "a
+    skilled troubleshooter gathering information IS making progress". That is
+    true of gathering something NEW and false of restating what the case
+    already holds — and because the LLM restates constantly while it waits for
+    the user (re-proposing the standing fix, re-quoting the same log lines),
+    the counter reset almost every turn. It reached the ``EXHAUSTION_*``
+    thresholds on 8 of 103 real cases past the turn floor, so ``is_stalled``,
+    ``is_progress_stalled``, ``INSUFFICIENT_EVIDENCE``, ``TREATMENT_BLOCKED``,
+    the exhaustion detector and the LOW/BLOCKED momentum bands were all
+    effectively unreachable together.
+
+    Each arm is therefore keyed to something the case did not already have:
+
+    - ``novel_*`` rather than the raw ``evidence_added`` / ``solutions_proposed``
+      / ``files_uploaded`` lists. Those keep every minted id — positional
+      ``new_index_N`` resolution, milestone attribution and the turn record all
+      depend on them — so the narrowing lives here, in the progress reading,
+      not in what gets written. See ``_restates_standing_solution`` /
+      ``_restates_standing_evidence`` for the per-arm bars.
+    - ``DATA_PROVIDED`` is **dropped** as a separate arm. It is set from
+      ``evidence_added`` (``turn_outcome.determine_turn_outcome``), so keeping
+      it would readmit through the outcome label exactly the duplicate rows the
+      ``novel_evidence_added`` key exists to exclude. Genuinely new evidence
+      still lands via that key; nothing else was ever reaching this arm.
+    - ``DATA_REQUESTED`` stays, and is now structural — a NEW outstanding
+      ``EvidenceNeed`` raised this turn, not a keyword scan of the previous
+      turn's prose (``turn_outcome._new_data_request_raised``). Re-asking for
+      data the case is already waiting on no longer counts, which is the
+      behaviour a parked investigation actually exhibits.
+    - ``HYPOTHESIS_TESTED`` stays as-is: it reads ``tested_at ==
+      current_turn``, already state-backed and already per-turn.
+
+    Note this makes the counter honest for its OTHER readers too, all of which
+    were reading the same inflated signal: ``progress_monitor``'s exhaustion
+    detector, the LOW/BLOCKED momentum bands in
+    ``working_conclusion_generator``, the "M turns since last progress" line in
+    ``prompts/context_builder``, and the ``evidence_need_surfacing`` page
+    cursor (which now rotates on genuinely barren turns, as it was meant to).
+    """
+    # Structural progress: an artifact the case did not already hold.
+    structural_keys = [
+        "milestones_completed",
+        "novel_evidence_added",
+        "hypotheses_generated",
+        "hypotheses_validated",
+        "novel_solutions_proposed",
+        "novel_files_uploaded",
+    ]
+    for key in structural_keys:
+        if metadata.get(key):
+            return True
+
+    if metadata.get("status_transitioned"):
+        return True
+
+    # Investigative progress: active diagnostic behaviors
+    outcome = metadata.get("outcome")
+    if outcome in (
+        TurnOutcome.DATA_REQUESTED,
+        TurnOutcome.HYPOTHESIS_TESTED,
+    ):
+        return True
+
+    # A NEW or materially revised evidence link counts as progress. The
+    # caller gates this counter on what ``link_evidence`` reports, so a
+    # re-emitted standing link never reaches here (#1136) — linking storage
+    # is an upsert, so counting per call was the same restatement leak the
+    # ``novel_*`` keys close on the other arms.
+    if metadata.get("hypothesis_evidence_links_applied"):
+        return True
+
+    return False
+
+
 class MilestoneEngine:
     """
     Data-Driven and Opportunistic Investigation Engine.
@@ -12546,82 +12625,14 @@ class MilestoneEngine:
         return metadata
 
     def _check_if_progress_made(self, metadata: dict[str, Any]) -> bool:
-        """Whether the investigation ADVANCED this turn — the sole writer of
-        ``turns_without_progress``, and therefore of every stall net downstream.
+        """Thin delegate to :func:`check_if_progress_made`.
 
-        The distinction this draws is *advancement*, not *activity* (#1136). The
-        predicate used to accept any touched artifact, on the reasoning that "a
-        skilled troubleshooter gathering information IS making progress". That is
-        true of gathering something NEW and false of restating what the case
-        already holds — and because the LLM restates constantly while it waits for
-        the user (re-proposing the standing fix, re-quoting the same log lines),
-        the counter reset almost every turn. It reached the ``EXHAUSTION_*``
-        thresholds on 8 of 103 real cases past the turn floor, so ``is_stalled``,
-        ``is_progress_stalled``, ``INSUFFICIENT_EVIDENCE``, ``TREATMENT_BLOCKED``,
-        the exhaustion detector and the LOW/BLOCKED momentum bands were all
-        effectively unreachable together.
-
-        Each arm is therefore keyed to something the case did not already have:
-
-        - ``novel_*`` rather than the raw ``evidence_added`` / ``solutions_proposed``
-          / ``files_uploaded`` lists. Those keep every minted id — positional
-          ``new_index_N`` resolution, milestone attribution and the turn record all
-          depend on them — so the narrowing lives here, in the progress reading,
-          not in what gets written. See ``_restates_standing_solution`` /
-          ``_restates_standing_evidence`` for the per-arm bars.
-        - ``DATA_PROVIDED`` is **dropped** as a separate arm. It is set from
-          ``evidence_added`` (``turn_outcome.determine_turn_outcome``), so keeping
-          it would readmit through the outcome label exactly the duplicate rows the
-          ``novel_evidence_added`` key exists to exclude. Genuinely new evidence
-          still lands via that key; nothing else was ever reaching this arm.
-        - ``DATA_REQUESTED`` stays, and is now structural — a NEW outstanding
-          ``EvidenceNeed`` raised this turn, not a keyword scan of the previous
-          turn's prose (``turn_outcome._new_data_request_raised``). Re-asking for
-          data the case is already waiting on no longer counts, which is the
-          behaviour a parked investigation actually exhibits.
-        - ``HYPOTHESIS_TESTED`` stays as-is: it reads ``tested_at ==
-          current_turn``, already state-backed and already per-turn.
-
-        Note this makes the counter honest for its OTHER readers too, all of which
-        were reading the same inflated signal: ``progress_monitor``'s exhaustion
-        detector, the LOW/BLOCKED momentum bands in
-        ``working_conclusion_generator``, the "M turns since last progress" line in
-        ``prompts/context_builder``, and the ``evidence_need_surfacing`` page
-        cursor (which now rotates on genuinely barren turns, as it was meant to).
+        The reading moved to module scope so callers outside this class — the
+        service's consumed-turn backstop (#1264) — can score a turn with the
+        SAME predicate rather than reimplementing it or hardcoding a verdict.
+        Kept as a method because every existing call site and test targets it.
         """
-        # Structural progress: an artifact the case did not already hold.
-        structural_keys = [
-            "milestones_completed",
-            "novel_evidence_added",
-            "hypotheses_generated",
-            "hypotheses_validated",
-            "novel_solutions_proposed",
-            "novel_files_uploaded",
-        ]
-        for key in structural_keys:
-            if metadata.get(key):
-                return True
-
-        if metadata.get("status_transitioned"):
-            return True
-
-        # Investigative progress: active diagnostic behaviors
-        outcome = metadata.get("outcome")
-        if outcome in (
-            TurnOutcome.DATA_REQUESTED,
-            TurnOutcome.HYPOTHESIS_TESTED,
-        ):
-            return True
-
-        # A NEW or materially revised evidence link counts as progress. The
-        # caller gates this counter on what ``link_evidence`` reports, so a
-        # re-emitted standing link never reaches here (#1136) — linking storage
-        # is an upsert, so counting per call was the same restatement leak the
-        # ``novel_*`` keys close on the other arms.
-        if metadata.get("hypothesis_evidence_links_applied"):
-            return True
-
-        return False
+        return check_if_progress_made(metadata)
 
     def _summarize_text(self, text: str, max_length: int = 200) -> str:
         """Summarize long text for storage."""

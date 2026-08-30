@@ -24,7 +24,10 @@ from faultmaven.core.investigation.case_telemetry import (
     emit_case_turn,
 )
 from faultmaven.core.investigation.intent_resolver import IntentResolver
-from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+from faultmaven.core.investigation.milestone_engine import (
+    MilestoneEngine,
+    check_if_progress_made,
+)
 from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
 )
@@ -68,13 +71,17 @@ from faultmaven.models.api_models import (
 )
 
 # Cross-module imports via contracts (Principle 2: Vertical Modules with Contracts)
-from faultmaven.modules.case.contracts import Case, CaseState, VerificationStatus
+from faultmaven.modules.case.contracts import (
+    Case,
+    CaseState,
+    TurnOutcome,
+    TurnProgress,
+    VerificationStatus,
+)
 from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceSourceType,
-    TurnOutcome,
-    TurnProgress,
     UploadedFile,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
@@ -83,13 +90,19 @@ from faultmaven.utils.serialization import to_json_compatible
 logger = logging.getLogger(__name__)
 
 
-def _backfill_consumed_turn(case: "Case") -> None:
+def _backfill_consumed_turn(
+    case: "Case",
+    *,
+    user_message: str,
+    agent_response: str,
+    metadata: dict[str, Any],
+) -> None:
     """Record a ``TurnProgress`` for a consumed turn that recorded none (#1264).
 
     A no-op whenever the turn already has an entry, which is every route that
     reaches the milestone engine's turn bookkeeping. It fires for the three that
     do not: ``GREETING`` and ``FILE_RECLASSIFICATION`` (answered in this service,
-    never calling the engine) and the engine's own terminal short-circuit, which
+    never calling the engine) and the engine's terminal short-circuit, which
     returns before Step 6.
 
     Keyed on the LAST entry's number rather than on membership, because
@@ -98,29 +111,63 @@ def _backfill_consumed_turn(case: "Case") -> None:
     "this turn was not recorded", and the check stays O(1) on a list that grows
     with the case.
 
-    The entry is deliberately minimal and honest: no milestone, no artifact, no
-    progress. It says a turn was consumed and the investigation did not advance,
-    which is what happened. It must NOT claim progress — ``progress_made`` feeds
-    ``turns_without_progress``, and a greeting resetting the stall counter would
-    hide the stalls the counter exists to surface.
+    **The record is a real one, not a placeholder.** ``turn_history`` is not
+    only a counter: ``prompts/context_builder`` renders it as the prompt's
+    EARLIER TURNS block and reads ``[-1].system_feedback``, and
+    ``working_conclusion_generator`` / ``progress_monitor`` window it for
+    momentum and loop detection. A minimal entry is therefore not "honest but
+    small" — it actively destroys what those readers need:
+
+    * ``progress_made`` comes from :func:`check_if_progress_made`, the same
+      predicate the engine's own deterministic branches use, NOT a hardcoded
+      ``False``. The turns route accepts an intent alongside files, so a
+      clarification click can carry a genuinely novel upload — and
+      ``_finish_deterministic_turn`` is explicit that such an upload counts.
+      Hardcoding False would report an inert turn on one where the user supplied
+      new data, and leave the stall counter climbing through it.
+    * the summaries carry the real text. ``_build_graduated_history`` renders
+      from the record when one exists and falls back to the message text only
+      when it is MISSING, so an empty record does not leave the text alone — it
+      REPLACES it with "User message → conversation".
+    * ``system_feedback`` is FORWARDED from the previous turn. It is read off
+      ``turn_history[-1]`` and is meant for the next prompt; these routes build
+      no prompt, so they have not consumed it. Dropping it would silently
+      swallow a reasoning-validation error whenever a greeting landed between
+      two engine turns.
     """
     if case.turn_history and case.turn_history[-1].turn_number == case.current_turn:
         return
+
+    previous = case.turn_history[-1] if case.turn_history else None
+    progress_made = check_if_progress_made(metadata)
     case.turn_history.append(
         TurnProgress(
             turn_number=case.current_turn,
             timestamp=datetime.now(timezone.utc),
-            milestones_completed=[],
+            milestones_completed=list(metadata.get("milestones_completed") or []),
             evidence_added=[],
             hypotheses_generated=[],
             hypotheses_validated=[],
             solutions_proposed=[],
-            progress_made=False,
-            outcome=TurnOutcome.CONVERSATION,
-            user_message_summary="",
-            agent_response_summary="",
+            progress_made=progress_made,
+            outcome=metadata.get("outcome") or TurnOutcome.CONVERSATION,
+            user_message_summary=_summarize_for_history(user_message, 200),
+            agent_response_summary=_summarize_for_history(agent_response, 500),
+            system_feedback=(previous.system_feedback if previous else None),
         )
     )
+    # One-directional, matching ``_finish_deterministic_turn``: progress RESETS
+    # the stall counter and nothing here ever increments it.
+    if progress_made:
+        case.turns_without_progress = 0
+
+
+def _summarize_for_history(text: str, max_length: int) -> str:
+    """Bound a message for the turn record, as the engine's own recorder does."""
+    text = text or ""
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3] + "..."
 
 
 _DATA_TYPE_TO_SOURCE_TYPE: dict[DataType, EvidenceSourceType] = {
@@ -1592,7 +1639,12 @@ class InvestigationService:
             # turn number is consumed, so a backstop here cannot be missed by a
             # route added later. It is a no-op on every path that already
             # recorded, which is the overwhelming majority.
-            _backfill_consumed_turn(updated_case)
+            _backfill_consumed_turn(
+                updated_case,
+                user_message=query or "",
+                agent_response=agent_response_text,
+                metadata=result.get("metadata") or {},
+            )
 
             # Placed HERE, not beside the save: ``next_read_turn`` below is
             # ``effective_current_turn + 1``, and every consumer of the turn
@@ -1631,10 +1683,13 @@ class InvestigationService:
             # ``next_read_turn`` is the number the NEXT turn's adoption site
             # will compute, and BOTH sides of the seam are filtered at it, so
             # what is stored is exactly what the next read accepts. It is
-            # ``effective_current_turn + 1``, not ``current_turn + 1``: the
-            # repositories persist ``effective_current_turn``, which does not
-            # advance across a SERVICE-dispatched turn (#1264), so the
-            # in-flight counter runs one ahead of what the next turn reloads.
+            # ``effective_current_turn + 1``, not ``current_turn + 1``. Since
+            # #1264 those agree on every route — the backfill above guarantees
+            # this turn is recorded before the counter is read — but deriving
+            # from the persisted clock keeps the seam correct BY CONSTRUCTION
+            # rather than by the two happening to match. If a route ever stops
+            # recording again, that shows up as a clock bug, not as silently
+            # dropped clarification questions.
             # Filtering at the wrong one is not a rounding error — it ages
             # every entry an extra turn after every clarification click and
             # permanently drops questions the reader would still have taken.

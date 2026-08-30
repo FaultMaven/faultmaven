@@ -27,29 +27,33 @@ hard span cap; fact 2 is the same predicate applied where no turn wrote — an
 entry left behind by a non-turn writer ages out on the clock rather than
 needing every writer to remember to clear it.
 
-WHICH clock, precisely. The stamp is the in-flight ``case.current_turn``, but
-the number a LATER turn compares it against is the one that survives a save,
-and that is ``effective_current_turn`` — the last ``turn_history`` entry, which
-only the engine appends (milestone_engine Step 6). A SERVICE-dispatched turn (a
-clarification click, a greeting) appends nothing, so the persisted counter
-stands still across it (#1264)::
+WHICH clock, precisely. The stamp is the in-flight ``case.current_turn``, and
+the number a LATER turn compares it against is the one that survives a save —
+``effective_current_turn``, the last ``turn_history`` entry.
 
-    in-flight | effective | persisted (sqlite / pg)
-            1 |         1 | 1   engine turn
-            2 |         1 | 1   reclassification (SERVICE)
-            3 |         1 | 1   another SERVICE turn
-            4 |         4 | 4   engine turn
+**Since #1264 those are equal on every route.** ``turn_history`` used to be
+appended only by the engine, so a SERVICE-dispatched turn (a clarification
+click, a greeting) or a terminal short-circuit appended nothing and the
+persisted counter stood still across it. It no longer does:
+``investigation_service._backfill_consumed_turn`` records a turn for every route
+that consumes a number, so the two clocks advance together.
 
-Nothing here may depend on that counter being unique or monotone per turn. Two
-consequences are load-bearing and are handled where they arise, NOT by wishing
-for a better clock:
+What that changed here, and it is a real behaviour change rather than a
+tidy-up: **the window is now measured in turns of any kind, not in turns that
+reached the engine.** A run of clarification clicks DOES age the remaining
+questions — where before it did not, and this module argued that not ageing
+them was the behaviour you want because the user is visibly working through the
+menu. That argument is still worth making; it is simply no longer made by the
+turn clock. If the old reach is wanted, raise ``CLARIFICATION_CARRY_TURNS``,
+which now means what it says. Pinned by
+``tests/unit/modules/agent/test_turn_counter_advances_1264.py::
+TestAClarificationClickCostsAWindowTurn``.
 
-  - The window is measured in turns that reached the engine. A run of
-    clarification clicks does not age the remaining questions, which is the
-    behaviour you want — the user is visibly working through the menu.
-  - Two different turns can mint the same ``offered_turn``, so it is not an
-    identity and must never be used as a discriminator, in copy or in
-    ordering. See ``investigation_service._admit_clarification_entries``.
+Still load-bearing, and unaffected: two different turns could historically mint
+the same ``offered_turn``, so it is not an identity and must never be used as a
+discriminator, in copy or in ordering. See
+``investigation_service._admit_clarification_entries``. Legacy cases persisted
+before #1264 still contain such collisions.
 """
 
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
@@ -220,10 +224,12 @@ def suggestion_is_live(
     ``as_of_turn`` is the turn doing the asking, on the PERSISTED clock: the
     reader passes the in-flight ``case.current_turn`` (which is the reloaded
     counter plus one), and the writer passes ``effective_current_turn + 1``,
-    which is the same number the next read will compute. Passing the writer's
-    own in-flight ``current_turn + 1`` instead looks equivalent and is not —
-    it runs one ahead of the reader after any SERVICE-dispatched turn, and
-    permanently drops questions the reader would still have accepted.
+    which is the same number the next read will compute. Since #1264 those two
+    expressions agree on every route, because every consumed turn now records
+    one — but the writer keeps deriving from ``effective_current_turn`` so the
+    seam stays correct by construction rather than by the two happening to
+    match, and so a route that ever stops recording again shows up as a bug in
+    the clock rather than as silently dropped questions here.
 
     An entry with no stamp is NOT live. Every stamped entry was written by the
     turn seam; an unstamped one is either a row persisted before this rule

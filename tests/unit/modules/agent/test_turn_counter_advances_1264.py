@@ -30,7 +30,11 @@ from faultmaven.modules.agent.domain.services.investigation_service import (
     InvestigationService,
     _backfill_consumed_turn,
 )
-from faultmaven.modules.case.domain.models import CaseState
+from faultmaven.modules.case.domain.models import (
+    CaseState,
+    TurnOutcome,
+    TurnProgress,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -112,17 +116,25 @@ class TestTheTerminalShortCircuit:
     """The route the issue does not mention, and the worst of the three.
 
     A terminal case answers Q&A, report regeneration and runbook creation
-    through ``_process_terminal_turn``, which returns before the engine's turn
-    bookkeeping. Every one of those turns consumed a number and recorded none,
-    so a resolved case's counter froze indefinitely. Corpus evidence: one
-    resolved case has THREE user turns all stamped turn 9 — a regen, a second
-    regen, and a runbook request.
+    through ``MilestoneEngine._process_terminal_turn``, which returns before the
+    engine's turn bookkeeping. Every one of those turns consumed a number and
+    recorded none, so a resolved case's counter froze indefinitely. Corpus
+    evidence: one resolved case has THREE user turns all stamped turn 9 — a
+    regen, a second regen, and a runbook request.
+
+    Driven through the REAL engine method, not a hand-written stub of its shape.
+    Stubbing ``engine.process_turn`` would leave ``_process_terminal_turn``
+    unentered and the terminal branch unexercised, so a regression that made the
+    real short-circuit record a turn (or stop consuming one) would keep the test
+    green — which is the whole failure this class exists to catch.
     """
 
-    async def test_a_result_that_records_no_turn_still_advances_the_counter(
-        self, recording_case_repository, recording_milestone_engine, sample_case
+    async def test_a_real_terminal_case_advances_its_counter(
+        self, recording_case_repository, sample_case
     ):
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, MagicMock
+
+        from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 
         case = sample_case
         case.inquiry.problem_statement_confirmed = True
@@ -130,91 +142,159 @@ class TestTheTerminalShortCircuit:
         case.inquiry.decided_to_investigate = True
         case.inquiry.decision_made_at = datetime.now(timezone.utc)
         case.state = CaseState.INVESTIGATING
+        # A recorded history, so ``effective_current_turn`` reads the tail rather
+        # than falling back to ``current_turn`` — without it the projection is a
+        # no-op and this test cannot express the defect at all.
+        case.turn_history = [
+            TurnProgress(
+                turn_number=1, progress_made=True, outcome=TurnOutcome.CONVERSATION
+            )
+        ]
+        case.current_turn = 1
+        # Both at once: the model refuses ``resolved_at`` outside RESOLVED and
+        # refuses RESOLVED without it, so neither assignment can come first.
+        case = case.model_copy(
+            update={
+                "state": CaseState.RESOLVED,
+                "resolved_at": datetime.now(timezone.utc),
+                "closed_at": datetime.now(timezone.utc),
+            }
+        )
+        assert case.is_terminal, "the fixture must actually be terminal"
 
-        # The terminal short-circuit's shape: answers, records nothing.
-        async def terminal_shaped(*, case, **_kwargs):
-            case.updated_at = datetime.now(timezone.utc)
+        # A real engine, with only the LLM boundary doubled: the terminal Q&A
+        # path calls the provider and nothing else that matters here.
+        import asyncio
+        from collections import defaultdict
+
+        engine = MilestoneEngine.__new__(MilestoneEngine)
+        engine.llm_provider = MagicMock()
+        engine.repository = recording_case_repository
+        engine._case_locks = defaultdict(asyncio.Lock)
+
+        # Returns the case it was HANDED, not a closure over the outer one:
+        # the service increments the reloaded object, and returning the stale
+        # local would hide the very counter movement under test.
+        async def answer(case_arg, *_args, **_kwargs):
             return {
-                "case_updated": case,
-                "agent_response": "that case is closed",
+                "case_updated": case_arg,
+                "agent_response": "That case is resolved.",
                 "metadata": {"milestones_completed": [], "progress_made": False},
             }
 
+        answered = AsyncMock(side_effect=answer)
+        engine._process_terminal_qa = answered
+
         service = InvestigationService(
-            milestone_engine=recording_milestone_engine,
-            case_repository=recording_case_repository,
+            milestone_engine=engine, case_repository=recording_case_repository
         )
         await recording_case_repository.save(case)
 
-        # Two real investigative turns FIRST. Without them ``turn_history`` is
-        # empty, ``effective_current_turn`` falls back to ``current_turn``, the
-        # projection is a no-op, and this test passes with or without the fix —
-        # verified. The corpus shape is 8 recorded turns and THEN terminal turns
-        # that record none, so the history must be non-empty for the defect to
-        # exist at all.
-        await _turn(service, case, "what is happening?")
-        await _turn(service, case, "and now?")
-        assert (await recording_case_repository.get(case.case_id)).current_turn == 2
-
-        recording_milestone_engine.process_turn = AsyncMock(side_effect=terminal_shaped)
-
-        for q in [
-            "please regenerate the report",
-            "regenerate it again",
-            "generate a runbook from this case",
-        ]:
+        for q in ["what was the root cause?", "and the fix?", "anything else?"]:
             await _turn(service, case, q)
 
+        assert answered.await_count == 3, "the real terminal Q&A path did not run"
         saved = await recording_case_repository.get(case.case_id)
-        assert saved.current_turn == 5, (
+        assert saved.current_turn == 4, (
             "three terminal turns consumed three numbers; the counter must "
-            "advance or all three stamp the same turn (corpus: all stamped 9)"
+            "advance or they all stamp the same turn (corpus: all stamped 9)"
         )
         numbers = [m["turn_number"] for m in saved.messages if m.get("role") == "user"]
         assert numbers == sorted(set(numbers)), f"turn numbers repeat: {numbers}"
 
 
-class TestAClarificationClickCostsAWindowTurn:
-    """A deliberate, reversible semantics change — pinned so it is visible.
+class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
+    """``turn_history`` is not only a counter.
 
-    ``CLARIFICATION_CARRY_TURNS = 3`` bounds how long an unanswered
-    classification question stays answerable. Before #1264 a clarification click
-    consumed a turn number but recorded none, so it did not advance the clock
-    the window is measured on: the effective reach was "3 engine turns, plus
-    unlimited clarification clicks". Now it is 3 turns of any kind.
-
-    That is the constant meaning what it says, and it is the direction #1264
-    argues for ("a counter that does not move does not decay"). But it IS a
-    behaviour change to #1263's recovery path, and the product question — should
-    answering question A spend a turn of question B's window? — is the owner's,
-    not this lane's. If the old reach is wanted, the lever is
-    ``CLARIFICATION_CARRY_TURNS``, not the turn clock.
-
-    Pinned here rather than left implicit in #1263's scenario arithmetic so that
-    reversing it is a one-line decision against a named test.
+    ``prompts/context_builder`` renders it as the prompt's EARLIER TURNS block
+    and reads ``[-1].system_feedback``; ``working_conclusion_generator`` and
+    ``progress_monitor`` window it. Adding a MINIMAL entry is therefore not a
+    harmless placeholder — it displaces the tail and replaces real text. Each
+    test below fails against the first version of this fix, which recorded an
+    empty record.
     """
 
-    async def test_a_non_engine_turn_advances_the_window_clock(self, wired):
-        from faultmaven.core.investigation.suggestion_liveness import (
-            CLARIFICATION_CARRY_TURNS,
+    def test_it_forwards_unconsumed_system_feedback(self, sample_case):
+        """Feedback is read off ``turn_history[-1]`` and is meant for the NEXT
+        prompt. These routes build no prompt, so they have not consumed it —
+        dropping it silently swallows a reasoning-validation error whenever a
+        greeting lands between two engine turns."""
+        from faultmaven.modules.case.domain.models import TurnOutcome, TurnProgress
+
+        case = sample_case
+        case.turn_history = [
+            TurnProgress(
+                turn_number=1,
+                progress_made=True,
+                outcome=TurnOutcome.CONVERSATION,
+                system_feedback="REASONING VALIDATION: provide milestone_justifications.",
+            )
+        ]
+        case.current_turn = 2
+
+        _backfill_consumed_turn(
+            case, user_message="hi", agent_response="hello", metadata={}
         )
 
-        assert CLARIFICATION_CARRY_TURNS == 3
-        service, repo, case = wired
-        await repo.save(case)
+        assert case.turn_history[-1].system_feedback == (
+            "REASONING VALIDATION: provide milestone_justifications."
+        ), "the greeting swallowed feedback the next engine turn still needs"
 
-        await _turn(service, case, "what is happening?")
-        before = (await repo.get(case.case_id)).current_turn
+    def test_it_records_the_real_text(self, sample_case):
+        """``_build_graduated_history`` renders from the record when one exists
+        and falls back to the message text only when it is MISSING. An empty
+        record does not leave the text alone — it replaces it."""
+        case = sample_case
+        case.turn_history = []
+        case.current_turn = 1
 
-        await _turn(service, case, "hi")
-
-        after = (await repo.get(case.case_id)).current_turn
-        assert after == before + 1, (
-            "a greeting must advance the clock every turn-aged window is "
-            "measured on — clarification carry, hypothesis decay, evidence-need "
-            "ages. Before #1264 it did not, so those windows silently reached "
-            "further than their constants say."
+        _backfill_consumed_turn(
+            case,
+            user_message="treat the mystery file as application logs",
+            agent_response="Got it — reclassified.",
+            metadata={},
         )
+
+        recorded = case.turn_history[-1]
+        assert "mystery file" in recorded.user_message_summary
+        assert "reclassified" in recorded.agent_response_summary
+
+    def test_a_novel_upload_on_a_bypass_route_counts_as_progress(self, sample_case):
+        """The turns route accepts an intent alongside files, so a clarification
+        click can carry a genuinely novel upload. ``_finish_deterministic_turn``
+        is explicit that such an upload counts; hardcoding ``False`` would report
+        an inert turn on a turn the user supplied new data — and would leave the
+        stall counter climbing through it."""
+        case = sample_case
+        case.turn_history = []
+        case.current_turn = 1
+        case.turns_without_progress = 4
+
+        _backfill_consumed_turn(
+            case,
+            user_message="treat it as logs",
+            agent_response="done",
+            metadata={"novel_files_uploaded": ["file_0123456789ab"]},
+        )
+
+        assert case.turn_history[-1].progress_made is True
+        assert case.turns_without_progress == 0
+
+    def test_the_predicate_is_the_engine_s_own(self):
+        """Scored with the same function the engine's deterministic branches
+        use, so a progress arm added there lands here too rather than needing a
+        second edit nobody remembers to make."""
+        import inspect
+
+        from faultmaven.core.investigation.milestone_engine import (
+            check_if_progress_made,
+        )
+        from faultmaven.modules.agent.domain.services import investigation_service
+
+        assert "check_if_progress_made" in inspect.getsource(
+            investigation_service._backfill_consumed_turn
+        )
+        assert check_if_progress_made({"novel_files_uploaded": ["f"]}) is True
 
 
 class TestTheBackfilledTurnIsHonest:
@@ -226,7 +306,9 @@ class TestTheBackfilledTurnIsHonest:
         case.current_turn = 4
         case.turn_history = []
 
-        _backfill_consumed_turn(case)
+        _backfill_consumed_turn(
+            case, user_message="hi", agent_response="hello", metadata={}
+        )
 
         recorded = case.turn_history[-1]
         assert recorded.turn_number == 4
@@ -253,7 +335,9 @@ class TestTheBackfilledTurnIsHonest:
             ),
         ]
 
-        _backfill_consumed_turn(case)
+        _backfill_consumed_turn(
+            case, user_message="hi", agent_response="hello", metadata={}
+        )
 
         assert [t.turn_number for t in case.turn_history] == [1, 2]
         assert case.turn_history[-1].progress_made is True, "overwrote a real turn"

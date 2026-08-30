@@ -158,9 +158,16 @@ def test_every_arm_the_predicate_reads_is_recorded():
     import inspect
     import re
 
-    from faultmaven.core.investigation.milestone_engine import MilestoneEngine
+    # The module-level predicate, not the method: #1264 moved the reading out
+    # so the service's consumed-turn backstop could score with the same
+    # predicate, leaving ``MilestoneEngine._check_if_progress_made`` a thin
+    # delegate whose source contains no arms at all. Reading the delegate would
+    # make this guard silently vacuous.
+    from faultmaven.core.investigation.milestone_engine import (
+        check_if_progress_made,
+    )
 
-    src = inspect.getsource(MilestoneEngine._check_if_progress_made)
+    src = inspect.getsource(check_if_progress_made)
     body = src[src.index('"""', src.index('"""') + 3) :]  # skip the docstring
 
     read_keys = set(re.findall(r'metadata\.get\(\s*"(\w+)"', body))

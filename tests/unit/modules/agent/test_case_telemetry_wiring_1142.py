@@ -487,25 +487,48 @@ class TestPathCoverageIsExhaustive:
         )
 
         def _calls_engine(fn) -> bool:
-            # Comments stripped first. ``_handle_file_reclassification`` carries
-            # the line "protection by delegating to engine.process_turn" in a
-            # comment explaining that it does NOT do so — a raw substring scan
-            # reads that as a call, silently drops the route from this set, and
-            # stops guarding the very route it was written for (found by #1264).
-            body = "\n".join(
-                line
-                for line in inspect.getsource(fn).split("\n")
-                if not line.strip().startswith("#")
-            )
-            return "engine.process_turn" in body
+            """Does the handler actually CALL ``self.engine.process_turn``?
+
+            Parsed, not string-scanned. ``_handle_file_reclassification`` carries
+            the line "protection by delegating to engine.process_turn" in a
+            comment explaining that it does NOT do so, and a substring scan reads
+            that as a call — silently dropping the route from this set and
+            leaving it unguarded (found by #1264). Stripping full-line ``#``
+            comments is not enough either: a trailing inline comment or a
+            docstring mention slips straight back through. Walking the AST for a
+            real attribute call is the only form that cannot be fooled by prose.
+            """
+            import ast
+            import textwrap
+
+            tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "process_turn"
+                    and isinstance(func.value, ast.Attribute)
+                    and func.value.attr == "engine"
+                ):
+                    return True
+            return False
 
         bypasses_engine = {
             intent for intent in service_routed if not _calls_engine(handlers[intent])
         }
-        assert IntentType.FILE_RECLASSIFICATION in bypasses_engine, (
-            "the reclassification handler answers without the engine; if this "
-            "fails, the comment-stripping above has regressed and the set is "
-            "being read off prose again"
+        # Both engine-bypassing routes pinned by name. ``assert bypasses_engine``
+        # alone is satisfied by any non-empty set, so either route could vanish
+        # from it undetected — which is the same silent set-shrink the AST walk
+        # above exists to prevent.
+        assert bypasses_engine == {
+            IntentType.FILE_RECLASSIFICATION,
+            IntentType.GREETING,
+        }, (
+            f"the set of engine-bypassing routes changed: {bypasses_engine}. "
+            "Either a route was added/removed, or the detection above regressed "
+            "and is reading prose again."
         )
         assert bypasses_engine, "expected at least GREETING to bypass the engine"
 
