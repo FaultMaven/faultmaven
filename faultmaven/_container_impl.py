@@ -1307,40 +1307,6 @@ class DIContainer(BaseDIContainer):
                     debug_info=debug_info,
                 )
 
-            async def add_case_query(
-                self, case_id: str, query_text: str, user_id: Optional[str] = None
-            ) -> bool:
-                """Add a query message to a case.
-
-                Parameter is ``query_text``, matching
-                ``CaseService.add_case_query`` — the stand-in previously named
-                it ``query``, so a keyword call that bound here failed on the
-                real service.
-                """
-                if case_id not in self.cases:
-                    return False
-
-                if case_id not in self.case_messages:
-                    self.case_messages[case_id] = []
-
-                # Add user query message
-                query_msg = {
-                    "message_id": f"query_{len(self.case_messages[case_id])}_{case_id}",
-                    "case_id": case_id,
-                    "message_type": "user_query",
-                    "content": query_text.strip(),
-                    "timestamp": datetime.now(timezone.utc),
-                    "user_id": user_id or "anonymous",
-                }
-                self.case_messages[case_id].append(query_msg)
-
-                # Update case metadata
-                case = self.cases[case_id]
-                case.message_count = len(self.case_messages[case_id])
-                case.updated_at = datetime.now(timezone.utc)
-
-                return True
-
             async def get_case_conversation_context(
                 self, case_id: str, limit: int = 10
             ) -> str:

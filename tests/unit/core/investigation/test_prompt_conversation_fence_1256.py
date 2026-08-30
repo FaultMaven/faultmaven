@@ -23,8 +23,8 @@ passes through ``sanitize_user_input`` on its own path". That premise was
 false. ``sanitize_user_input`` is called once, on THIS turn's ``user_message``
 argument; the history is replayed out of ``case.messages``, which
 ``InvestigationService.process_turn`` appends verbatim as ``"content": query``
-(``payload.query``, unrewritten — the ``CaseService.add_case_query`` helper
-that strips is dead code with no caller). So the
+(``payload.query``, unrewritten — a rival ``add_case_query`` helper that
+stripped was dead code and has since been removed). So the
 block was not protected differently — it was unprotected, which is why the
 forgery tests below run against a PRIOR turn as well as the current one.
 
