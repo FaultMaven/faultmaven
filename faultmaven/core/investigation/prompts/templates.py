@@ -451,6 +451,31 @@ the regression. Could you share the deployment diff to confirm what changed?"
 
 """
 
+# Stated in BOTH states, from one definition. INV-07 forbids Evidence creation
+# during INQUIRY, so a forwarded alert spends its first turn as an
+# ``<uploaded_file>`` — and turn 1 is where "is this still firing?" decides
+# whether there is an incident, and where INQUIRY is asked to name a temporal
+# state (ongoing / historical). A rule that lived only in the INVESTIGATING
+# block would miss the turn it matters most on. ``fresh_this_turn`` has had a
+# stated rule since it shipped and this pair had none, so the documented half
+# had every reason to win the currency judgement.
+_OBSERVATION_TIME_BLOCK = """
+TIME ATTRIBUTES — arrival and age answer DIFFERENT questions:
+  • fresh_this_turn="true" — when YOU received it: submitted on this turn. It
+    says nothing about how old the content is.
+  • observed_through="<instant>" age="<Nm|Nh|Nd>" — when the CONTENT was
+    observed. This is the one that decides whether a symptom is current.
+An item can carry fresh_this_turn="true" and age="7h" at once — an alert
+forwarded seven hours after it fired. That is not a contradiction, and age is
+what governs: do not read "it arrived this turn" as "it is happening now", and
+do not ask the user for a firing time or duration the item already states.
+When observed_through is ABSENT the observation window is UNKNOWN — never
+assume recent. Say the window is unestablished and name what would date it.
+These appear on <evidence> items and on <uploaded_file> items (files not yet
+recorded as evidence), and mean the same thing on both.
+"""
+
+
 # Evidence grounding block — injected into INVESTIGATION_BASE before YOUR TASK.
 # Set to empty string for knowledge_query mode to avoid sandwiching the exemption.
 _EVIDENCE_GROUNDING_BLOCK = (
@@ -553,6 +578,7 @@ pleasantries, and general-knowledge questions):
 4. Only ask the user for data no accessible file can supply.
 
 """
+    + _OBSERVATION_TIME_BLOCK
     + _FILE_SELECTION_DEFAULT
     + """
 
@@ -761,7 +787,9 @@ solving intent is clear.)
 ON SUBSEQUENT TURNS (statement proposed, awaiting confirmation):
 Follow "TURNS WHERE STATEMENT IS PROPOSED BUT NOT YET CONFIRMED"
 under TWO-STEP CONFIRMATION below.
-
+"""
+    + _OBSERVATION_TIME_BLOCK
+    + """
 If the user submits a file without asking a question: respond with a characterization
 of what the file shows, drawing from <file_extract> inside <evidence_collected>. Lead
 with the pattern or dominant finding (FILE SUMMARY), then name key entities and

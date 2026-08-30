@@ -138,6 +138,31 @@ def test_future_coverage_withholds_the_age_instead_of_printing_a_negative():
     assert "age=" not in attr
 
 
+# -- the contract the model is given for reading any of it --------------------
+def test_the_prompt_defines_the_pair_it_renders():
+    """Rendering the attribute is half a fix. `fresh_this_turn` has had a stated
+    rule since it shipped; `observed_through`/`age` had none, so the documented
+    attribute had every reason to win the currency judgement — the original
+    defect wearing a new attribute."""
+
+    from faultmaven.core.investigation.prompts.templates import (
+        _EVIDENCE_GROUNDING_BLOCK,
+        INQUIRY_TEMPLATE,
+    )
+
+    # BOTH states. INV-07 keeps a forwarded alert un-promoted through INQUIRY,
+    # so turn 1 — where the age decides whether there is an incident at all —
+    # is rendered by the state whose template used to say nothing about it.
+    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+        # the pair, and which half governs currency
+        assert "observed_through" in block and "fresh_this_turn" in block
+        assert "not a contradiction" in block
+        # absence means unknown, never fresh — _observed_attr's own contract
+        assert "UNKNOWN" in block
+        # and the second element kind that carries them
+        assert "<uploaded_file>" in block
+
+
 # -- the clock that makes all of the above interpretable ----------------------
 def test_prompt_states_the_current_time():
     """Without this the model cannot compute an age at all: its own sense of
