@@ -1609,22 +1609,37 @@ class TestTheWriterStoresWhatTheReaderWillAccept:
             [file_a, file_b]
         )
 
-        # ---- turns 2 and 3 (engine): unrelated, ageing both questions to 3.
-        for text in ("is the pool maxed out?", "what about replication lag?"):
+        # ---- turn 2 (engine): unrelated, ageing both questions to 2.
+        #
+        # One diverting turn, not two. Since #1264 a clarification click records
+        # a turn like every other consuming route, so the click below COSTS a
+        # turn of the surviving question's window — where before it was free.
+        # The claim this test makes is unchanged (answering one question must
+        # not drop another that is still in window); only the budget moved.
+        # ``TestAClarificationClickCostsAWindowTurn`` pins the new semantics
+        # directly.
+        for text in ("is the pool maxed out?",):
             await service.process_turn(
                 case_id=case.case_id,
                 user_id="user_owner",
                 payload=TurnPayload(query=text),
             )
         saved = await repo.get(case.case_id)
-        assert saved.current_turn == 3, "engine turns advance the persisted counter"
+        assert saved.current_turn == 2, "engine turns advance the persisted counter"
         assert sorted(self._clarified_file_ids(saved.last_suggestions)) == sorted(
             [file_a, file_b]
         )
 
-        # ---- turn 4: a clarification click. SERVICE-dispatched, so it records
-        #      no turn and the persisted counter stays at 3. The paste's
-        #      question is age 3 to the next read — the last turn in window.
+        # ---- turn 3: a clarification click. SERVICE-dispatched, and since
+        #      #1264 it records a turn like every other consuming route, so the
+        #      persisted counter advances to 3. The paste's question is age 3 to
+        #      the next read — the last turn in window.
+        #
+        #      Before #1264 the counter froze here, and this assertion read
+        #      ``== 3`` with the note "a SERVICE turn records none". That was
+        #      pinning the defect as a precondition. The claim the test actually
+        #      exists to make — the surviving question is not over-aged out — is
+        #      unchanged and still holds; only the arithmetic became honest.
         await service.process_turn(
             case_id=case.case_id,
             user_id="user_owner",
@@ -1638,7 +1653,7 @@ class TestTheWriterStoresWhatTheReaderWillAccept:
             ),
         )
         saved = await repo.get(case.case_id)
-        assert saved.current_turn == 3, "a SERVICE turn records none (#1264)"
+        assert saved.current_turn == 3, "every consumed turn records one (#1264)"
         assert self._clarified_file_ids(saved.last_suggestions) == [file_b], (
             "the writer aged the surviving question on the in-flight counter, "
             "which the next read does not share, and dropped a question that "

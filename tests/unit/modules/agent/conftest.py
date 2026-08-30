@@ -12,7 +12,12 @@ from faultmaven.exceptions import (
     PermissionDeniedException,
     ServiceException,
 )
-from faultmaven.modules.case.domain.models import Case, CaseState
+from faultmaven.modules.case.domain.models import (
+    Case,
+    CaseState,
+    TurnOutcome,
+    TurnProgress,
+)
 
 if TYPE_CHECKING:
     from faultmaven.core.investigation.milestone_engine import MilestoneEngine
@@ -177,10 +182,74 @@ def mock_case_repository() -> MockCaseRepository:
     return MockCaseRepository()
 
 
+class RecordingCaseRepository(MockCaseRepository):
+    """A repository double that keeps the turn counter the way the real ones do.
+
+    Both ``SQLiteCaseRepository`` and ``PostgreSQLHybridCaseRepository`` write
+    ``"current_turn": case.effective_current_turn`` — the LAST ``turn_history``
+    number — rather than the in-flight ``current_turn``. ``MockCaseRepository``
+    stores the ``Case`` object as handed to it, so that projection never
+    happens, and every test built on it is structurally blind to the class of
+    defect where a route consumes a turn number without recording one: the two
+    counters simply cannot diverge.
+
+    That blindness is not hypothetical. It is why #1264 survived — a mutation of
+    the write-site clock passed through ``MockCaseRepository`` — and it is why a
+    fix for it validated on the plain double would be validated against a
+    repository that does not model the behaviour being fixed.
+
+    Use this double for anything that asserts on turn numbering, turn history,
+    or a value derived from a turn clock. Generalised here from the two doubles
+    the #1245 lane (PR #1263) had to build locally, so the third lane to need
+    them does not build a third copy.
+    """
+
+    async def _save(self, case: Case) -> Case:
+        self._storage[case.case_id] = case.model_copy(
+            update={"current_turn": case.effective_current_turn}
+        )
+        return case
+
+
+class RecordingMilestoneEngine(MockMilestoneEngine):
+    """A mock engine that records a turn, as the real one does at its Step 6.
+
+    ``MockMilestoneEngine`` appends nothing, so ``turn_history`` stays empty
+    forever — and ``effective_current_turn`` falls back to ``current_turn`` when
+    it is empty, which makes :class:`RecordingCaseRepository`'s projection a
+    no-op. Pairing the two is what lets the counters diverge at all; either one
+    alone still hides the defect.
+    """
+
+    async def _process_turn(self, case: Case, *args: Any, **kwargs: Any):
+        result = await super()._process_turn(case, *args, **kwargs)
+        case.turn_history.append(
+            TurnProgress(
+                turn_number=case.current_turn,
+                progress_made=True,
+                outcome=TurnOutcome.CONVERSATION,
+            )
+        )
+        return result
+
+
 @pytest.fixture
 def mock_milestone_engine() -> MockMilestoneEngine:
     """Create a mock MilestoneEngine."""
     return MockMilestoneEngine()
+
+
+@pytest.fixture
+def recording_case_repository() -> RecordingCaseRepository:
+    """A repository double that applies the real ``effective_current_turn``
+    projection. Required for any assertion about turn numbering (#1264)."""
+    return RecordingCaseRepository()
+
+
+@pytest.fixture
+def recording_milestone_engine() -> RecordingMilestoneEngine:
+    """An engine double that records a ``TurnProgress``, as the real one does."""
+    return RecordingMilestoneEngine()
 
 
 @pytest.fixture

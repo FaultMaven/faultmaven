@@ -486,11 +486,27 @@ class TestPathCoverageIsExhaustive:
             "whether it needs its own TurnPath label"
         )
 
+        def _calls_engine(fn) -> bool:
+            # Comments stripped first. ``_handle_file_reclassification`` carries
+            # the line "protection by delegating to engine.process_turn" in a
+            # comment explaining that it does NOT do so — a raw substring scan
+            # reads that as a call, silently drops the route from this set, and
+            # stops guarding the very route it was written for (found by #1264).
+            body = "\n".join(
+                line
+                for line in inspect.getsource(fn).split("\n")
+                if not line.strip().startswith("#")
+            )
+            return "engine.process_turn" in body
+
         bypasses_engine = {
-            intent
-            for intent in service_routed
-            if "engine.process_turn" not in inspect.getsource(handlers[intent])
+            intent for intent in service_routed if not _calls_engine(handlers[intent])
         }
+        assert IntentType.FILE_RECLASSIFICATION in bypasses_engine, (
+            "the reclassification handler answers without the engine; if this "
+            "fails, the comment-stripping above has regressed and the set is "
+            "being read off prose again"
+        )
         assert bypasses_engine, "expected at least GREETING to bypass the engine"
 
         # Just the emission block: from the label decision to the emit call.

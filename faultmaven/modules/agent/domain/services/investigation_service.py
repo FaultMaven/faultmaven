@@ -73,12 +73,55 @@ from faultmaven.modules.case.contracts import ICaseRepository as CaseRepository
 from faultmaven.modules.case.domain.models import (
     Evidence,
     EvidenceSourceType,
+    TurnOutcome,
+    TurnProgress,
     UploadedFile,
 )
 from faultmaven.modules.case.exceptions import StaleCaseException
 from faultmaven.utils.serialization import to_json_compatible
 
 logger = logging.getLogger(__name__)
+
+
+def _backfill_consumed_turn(case: "Case") -> None:
+    """Record a ``TurnProgress`` for a consumed turn that recorded none (#1264).
+
+    A no-op whenever the turn already has an entry, which is every route that
+    reaches the milestone engine's turn bookkeeping. It fires for the three that
+    do not: ``GREETING`` and ``FILE_RECLASSIFICATION`` (answered in this service,
+    never calling the engine) and the engine's own terminal short-circuit, which
+    returns before Step 6.
+
+    Keyed on the LAST entry's number rather than on membership, because
+    ``turn_history`` is maintained strictly consecutive by
+    ``Case.reconcile_turn_sequence`` — so "the tail is not this turn" is exactly
+    "this turn was not recorded", and the check stays O(1) on a list that grows
+    with the case.
+
+    The entry is deliberately minimal and honest: no milestone, no artifact, no
+    progress. It says a turn was consumed and the investigation did not advance,
+    which is what happened. It must NOT claim progress — ``progress_made`` feeds
+    ``turns_without_progress``, and a greeting resetting the stall counter would
+    hide the stalls the counter exists to surface.
+    """
+    if case.turn_history and case.turn_history[-1].turn_number == case.current_turn:
+        return
+    case.turn_history.append(
+        TurnProgress(
+            turn_number=case.current_turn,
+            timestamp=datetime.now(timezone.utc),
+            milestones_completed=[],
+            evidence_added=[],
+            hypotheses_generated=[],
+            hypotheses_validated=[],
+            solutions_proposed=[],
+            progress_made=False,
+            outcome=TurnOutcome.CONVERSATION,
+            user_message_summary="",
+            agent_response_summary="",
+        )
+    )
+
 
 _DATA_TYPE_TO_SOURCE_TYPE: dict[DataType, EvidenceSourceType] = {
     DataType.LOGS_AND_ERRORS: EvidenceSourceType.LOGS,
@@ -1519,6 +1562,45 @@ class InvestigationService:
             # 3. Processing succeeded — extract updated case
             updated_case = result["case_updated"]
             agent_response_text = result["agent_response"]
+
+            # 3a. #1264: every consumed turn gets a ``turn_history`` entry.
+            #
+            # Both repositories persist ``Case.effective_current_turn`` — the
+            # last recorded turn number — rather than the in-flight
+            # ``current_turn``. That is #500's prevention half, and it is still
+            # right: it stops the stored counter running ahead of the history,
+            # which is what let one interrupted turn permanently wedge a case.
+            # But it means a route that consumes a turn number WITHOUT recording
+            # one freezes the persisted counter. ``process_turn`` reloads the
+            # case every request and derives ``next_turn`` from that column, so
+            # the very next turn re-derives the number just used — no process
+            # boundary required. Measured on the corpus: 7 cases carry a
+            # ``(case_id, turn_number)`` pair with two user messages, and one
+            # resolved case has THREE user turns all stamped turn 9.
+            #
+            # The rule this restores is one the engine already states: its
+            # deterministic branches record a TurnProgress because "a
+            # deterministic branch still consumes a turn number"
+            # (``_finish_deterministic_turn``). So ``turn_history`` is already a
+            # record of CONSUMED turns rather than of engine turns, and the
+            # routes that skip it — greeting, file reclassification, and the
+            # terminal short-circuit — are the ones that were missed, not a
+            # different kind of turn.
+            #
+            # Placed at the chokepoint rather than at those three sites for the
+            # reason the telemetry emission is here too: this method is where a
+            # turn number is consumed, so a backstop here cannot be missed by a
+            # route added later. It is a no-op on every path that already
+            # recorded, which is the overwhelming majority.
+            _backfill_consumed_turn(updated_case)
+
+            # Placed HERE, not beside the save: ``next_read_turn`` below is
+            # ``effective_current_turn + 1``, and every consumer of the turn
+            # clock on this path reads it after this point. Recording the turn
+            # after them would leave them reading a counter that is one behind
+            # for this turn — which is the same off-by-one this issue is about,
+            # just relocated. Caught by #1263's window test, which stopped
+            # closing its recovery window.
 
             # #1142: lift the engine's progress-arm reading out of the returned
             # metadata BEFORE step 4 persists that dict onto the assistant

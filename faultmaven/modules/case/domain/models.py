@@ -5537,8 +5537,24 @@ class Case(BaseModel):
 
         Repositories persist THIS (not the raw ``current_turn``) so the stored
         counter can never run ahead of ``turn_history`` — the drift that wedged
-        cases. The in-memory ``current_turn`` (the in-flight turn number business
-        logic reads) is left untouched; on a successful turn the two are equal.
+        cases (#500). The in-memory ``current_turn`` (the in-flight turn number
+        business logic reads) is left untouched.
+
+        The two are equal on a successful turn **only because every consuming
+        route records a turn**. That is not automatic: it is maintained by the
+        milestone engine's two writers plus the
+        ``investigation_service._backfill_consumed_turn`` backstop, which covers
+        the routes that never reach them (greeting, file reclassification, the
+        terminal short-circuit). Before that backstop existed this docstring
+        asserted the equality as an invariant and it did not hold — the counter
+        froze on those turns, and because ``process_turn`` re-derives
+        ``next_turn`` from the persisted column on every request, the NEXT turn
+        reused the number. Corpus evidence at the time: 7 cases with a
+        ``(case_id, turn_number)`` pair carrying two user messages, and one
+        resolved case with three user turns all stamped turn 9 (#1264).
+
+        So: if you add a route that consumes a turn number, it must end up with
+        a ``turn_history`` entry, or this property silently stops holding again.
         """
         return (
             self.turn_history[-1].turn_number
