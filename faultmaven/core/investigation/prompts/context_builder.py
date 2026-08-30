@@ -47,6 +47,8 @@ from faultmaven.core.investigation.prompts.fence import (
     delimiter_overhead_chars,
     render_fenced,
     reseal,
+    split_fenced,
+    terminate_dangling,
 )
 from faultmaven.core.preprocessing.evidence_metadata import (
     LOW_CONFIDENCE_THRESHOLD,
@@ -573,16 +575,36 @@ class SanitizedInput:
 
 def sanitize_user_input(message: str, max_length: int = 10000) -> SanitizedInput:
     """
-    Sanitize user input for prompt injection patterns.
+    Bound and inspect user input for the prompt. Does NOT rewrite its bytes.
 
     Reference: Prompt Engineering Guide Section 16.2 - Input Sanitization
+
+    **It does not escape angle brackets, and must not (#1256).** It used to,
+    and the escape was the main path's only defence against a message forging
+    prompt structure. #1228 fenced the other caller-controlled blocks and
+    #1242 fenced the fallback's ``<user_message>``; this path is now fenced
+    too — ``<user_message>`` and ``<conversation_history>`` carry the
+    assembly's token on their delimiters — so the escape had nothing left to
+    protect and cost what escaping always costs here: nothing on this path
+    decodes, so ``&lt;`` is four literal characters the model reasons about
+    and echoes back at the user (the #666 failure mode named in
+    :mod:`~faultmaven.core.investigation.prompts.fence`). It also corrupted
+    ordinary prose: "consumer lag went from <1000 to >250000" is an inequality,
+    not markup, and reached the model as ``&lt;1000``.
+
+    Escaping is still correct where something DOES decode —
+    ``causal_map._sanitize_label`` escapes for mermaid, and stays as it is.
+
+    What survives here is everything that does not touch the bytes except to
+    bound them: the length cap, and the injection / state-manipulation
+    detectors, which only warn.
 
     Args:
         message: User input message
         max_length: Maximum allowed message length
 
     Returns:
-        SanitizedInput with sanitized content and warnings
+        SanitizedInput with bounded content and warnings
     """
     warnings = []
     was_modified = False
@@ -607,15 +629,7 @@ def sanitize_user_input(message: str, max_length: int = 10000) -> SanitizedInput
             )
             # Don't modify - log for transparency but allow investigation of injection attempts
 
-    # 2. Escape XML-like tags to prevent structure manipulation
-    # Preserve structure by escaping < and >
-    original_length = len(sanitized)
-    sanitized = sanitized.replace("<", "&lt;").replace(">", "&gt;")
-    if len(sanitized) != original_length:
-        was_modified = True
-        warnings.append("XML-like tags escaped to prevent structure manipulation")
-
-    # 3. Limit message length
+    # 2. Limit message length
     if len(sanitized) > max_length:
         sanitized = sanitized[:max_length]
         was_modified = True
@@ -623,7 +637,7 @@ def sanitize_user_input(message: str, max_length: int = 10000) -> SanitizedInput
             f"Message truncated from {len(message)} to {max_length} characters"
         )
 
-    # 4. Detect state manipulation attempts
+    # 3. Detect state manipulation attempts
     state_manipulation_patterns = [
         r"(milestone|progress|status)\s*=\s*(true|false)",
         r"set\s+(milestone|status|stage)",
@@ -2231,7 +2245,37 @@ def _build_turn_summary(turn) -> str:
     return f"TURN {turn.turn_number}: {user_part}{agent_part}"
 
 
-def _build_graduated_history(case: Case) -> str:
+def _fence_conversation(body: str, fence: PromptFence) -> str:
+    """Wrap a rendered transcript in the assembly's fenced ``<conversation_history>``.
+
+    The conversation section is a caller-controlled channel (#1256): every
+    prior USER turn is replayed here byte-verbatim from ``case.messages``,
+    which persist what the reporter typed (``InvestigationService.process_turn``
+    appends ``"content": query`` — ``payload.query`` verbatim, nothing rewrites
+    it on the way in). Before #1256 it was left unfenced on the premise that
+    "it carries user text, which passes through ``sanitize_user_input`` on its
+    own path"; that premise was false — ``sanitize_user_input`` only ever saw
+    THIS turn's message argument, never the replayed transcript.
+
+    A LEAF element, not a container: the tag-shaped scaffolding the fidelities
+    below emit inside the body (``<state_summary>``, ``<previous_turn>``,
+    ``<current_turn>``, ``<evidence_digest>``) is deliberately left unfenced
+    and therefore demoted to quoted data by the trust rule. That is what it is
+    — every one of them wraps material quoted from an earlier turn, and the
+    authoritative copy of the state they echo is ``<case_identity>`` and the
+    milestone blocks, which stay outside the fence. Fencing them instead would
+    nest fenced delimiters inside a body routed through :meth:`PromptFence.data`,
+    which reads as a token collision and re-mints until it raises.
+
+    The body is passed through UNMODIFIED — no ``strip``, not even of trailing
+    newlines. This module's whole premise is that the renderer does not touch
+    quoted bytes, and the collision corpus is only an exhaustive proof about
+    the transcript if what it records IS the transcript (#1256 review).
+    """
+    return fence.element("conversation_history", body)
+
+
+def _build_graduated_history(case: Case, fence: PromptFence) -> str:
     """Build graduated conversation history: recent turns verbatim, older summarized.
 
     Recent turns (last HISTORY_VERBATIM_TURNS): full user messages + smart-truncated
@@ -2243,9 +2287,7 @@ def _build_graduated_history(case: Case) -> str:
     turn_records = case.turn_history or []
 
     if not messages:
-        return (
-            "<conversation_history>\nNo previous conversation.\n</conversation_history>"
-        )
+        return _fence_conversation("No previous conversation.", fence)
 
     # Determine the turn number boundary between "earlier" and "recent"
     # Get all unique turn numbers from messages, sorted
@@ -2255,13 +2297,13 @@ def _build_graduated_history(case: Case) -> str:
 
     if len(all_turn_nums) <= HISTORY_VERBATIM_TURNS:
         # Few enough turns — all verbatim, no summarization needed
-        return _build_verbatim_history(messages)
+        return _build_verbatim_history(messages, fence)
 
     # Split: recent turns get verbatim, older turns get summarized
     recent_turn_nums = set(all_turn_nums[-HISTORY_VERBATIM_TURNS:])
     earlier_turn_nums = all_turn_nums[:-HISTORY_VERBATIM_TURNS]
 
-    result = "<conversation_history>\n"
+    result = ""
 
     # --- EARLIER TURNS (summarized from TurnProgress) ---
     if earlier_turn_nums and turn_records:
@@ -2324,13 +2366,12 @@ def _build_graduated_history(case: Case) -> str:
 
         result += f"{role}: {content}\n"
 
-    result += "</conversation_history>"
-    return result
+    return _fence_conversation(result, fence)
 
 
-def _build_verbatim_history(messages: list) -> str:
+def _build_verbatim_history(messages: list, fence: PromptFence) -> str:
     """Build full verbatim history for short conversations (≤3 turns)."""
-    result = "<conversation_history>\n"
+    result = ""
     current_turn_num = None
 
     for msg in messages[-20:]:
@@ -2348,8 +2389,7 @@ def _build_verbatim_history(messages: list) -> str:
 
         result += f"{role}: {content}\n"
 
-    result += "</conversation_history>"
-    return result
+    return _fence_conversation(result, fence)
 
 
 # =============================================================================
@@ -2781,7 +2821,9 @@ def _build_candidate_solutions_block(case: Case) -> str:
     return "\n".join(lines)
 
 
-def _build_compact_history(case: Case, user_message_safe: str) -> str:
+def _build_compact_history(
+    case: Case, user_message_safe: str, fence: PromptFence
+) -> str:
     """State-summary + previous-turn + current-turn (the low-fidelity history).
 
     Extracted so the allocator can choose between this and the fuller graduated
@@ -2790,6 +2832,10 @@ def _build_compact_history(case: Case, user_message_safe: str) -> str:
     conversational continuity is preserved — this is what lets the allocator
     guarantee continuity via the conversation section's floor instead of a
     separately-reserved last exchange.
+
+    Fenced under the assembly's token like the other fidelity (#1256): the
+    state summary carries ``case.description`` and hypothesis statements, and
+    ``<current_turn>`` carries the user's message verbatim.
     """
     recent_history = _build_state_summary(case)
     if case.turn_history:
@@ -2805,7 +2851,7 @@ def _build_compact_history(case: Case, user_message_safe: str) -> str:
     recent_history += "\n\n<current_turn>\n"
     recent_history += f"User: {user_message_safe}\n"
     recent_history += "</current_turn>"
-    return recent_history
+    return _fence_conversation(recent_history, fence)
 
 
 # =============================================================================
@@ -2825,6 +2871,61 @@ def _cap_text_tokens(
     return tb.use(text)
 
 
+#: Fallback when settings are unavailable. One definition, because the cap is
+#: read at two altitudes now: ``build_investigation_context`` applies it before
+#: the fence, and ``_allocate_sections`` counts the result.
+_USER_MESSAGE_CAP_FALLBACK = 4000
+
+
+def _user_message_cap() -> int:
+    """``prompt_budget.user_message_max_tokens``, or the fallback."""
+    try:
+        from faultmaven.config.settings import get_settings
+
+        return get_settings().prompt_budget.user_message_max_tokens
+    except Exception:
+        return _USER_MESSAGE_CAP_FALLBACK
+
+
+def _shrink_fenced_tail(fenced: str, alloc: int, budget: "TokenBudget") -> str:
+    """Shrink a fenced block to ``alloc`` tokens, keeping its BODY's tail.
+
+    The conversation section is the one variable section whose value is at its
+    END — the latest turn — so it is sized with ``keep="tail"``. Cutting the
+    RENDERED element that way removes its opening delimiter, and below the ~40
+    characters of the CLOSING delimiter it removes that too, at which point
+    neither is intact and ``reseal`` can only drop the section (#1256 review).
+    That drop is the worst possible outcome here: it violates
+    ``_truncate_to``'s INV-4 ("never silently dropped") and it takes the most
+    recent turn with it, under exactly the budget pressure where continuity
+    matters most.
+
+    So the delimiters are reserved FIRST and the remaining allotment buys body.
+    Both are then present by construction rather than by repair, and the
+    content gets the room the delimiters were otherwise consuming.
+
+    ``terminate_dangling`` is re-applied because the surviving tail is a
+    different string from the body the fence terminated. Cutting the HEAD can
+    only remove a ``<``, never add one, so this is only ever a no-op or a
+    correction — never a new hole.
+    """
+    parts = split_fenced(fenced)
+    if parts is None:  # not a fenced element — size it as an ordinary section
+        return budget._truncate_to(fenced, alloc, keep="tail")
+    opening, body, closing = parts
+    room = alloc - budget.count(opening) - budget.count(closing)
+    if room <= 2:
+        # No room for even a token of body. Emit the same non-silent marker
+        # ``_truncate_to`` would, rather than a pair of empty delimiters or
+        # nothing at all: it carries no caller bytes and no fenced delimiter,
+        # so there is nothing to forge with and nothing to absorb.
+        return "[...]"
+    kept = budget._truncate_to(body, room, keep="tail")
+    if not kept:
+        return "[...]"
+    return f"{opening}\n{terminate_dangling(kept)}\n{closing}"
+
+
 def _allocate_sections(
     *,
     budget: "TokenBudget",
@@ -2837,7 +2938,7 @@ def _allocate_sections(
     milestones_str: str,
     inquiry_state_str: str,
     pending_action_str: str,
-    user_message_safe: str,
+    user_message_block: str,
     feedback_str: str,
     # variable sections (priority order is fixed below)
     evidence_str: str,
@@ -2864,12 +2965,11 @@ def _allocate_sections(
 
     try:
         pb = get_settings().prompt_budget
-        user_cap = pb.user_message_max_tokens
         feedback_cap = pb.system_feedback_max_tokens
         journal_cap = pb.journal_max_tokens
         conversation_cap = pb.conversation_history_max_tokens
     except Exception:
-        user_cap, feedback_cap, journal_cap = 4000, 1500, 1500
+        feedback_cap, journal_cap = 1500, 1500
         conversation_cap = 8000
 
     try:
@@ -2887,9 +2987,9 @@ def _allocate_sections(
             budget.used_tokens += budget.count(text)
         return text
 
-    capped_user = _cap_text_tokens(
-        user_message_safe, user_cap, provider_name, model_name
-    )
+    # ``user_message_block`` arrives already capped AND already fenced (the cap
+    # runs before the fence in ``build_investigation_context``, or it would cut
+    # the rendered element), so it is only counted here.
     capped_feedback = _cap_text_tokens(
         feedback_str, feedback_cap, provider_name, model_name
     )
@@ -2899,7 +2999,7 @@ def _allocate_sections(
     ctx["inquiry_state"] = _reserve(inquiry_state_str)
     ctx["pending_action"] = _reserve(pending_action_str)
     ctx["system_feedback"] = _reserve(capped_feedback)
-    ctx["user_message"] = _reserve(capped_user)
+    ctx["user_message"] = _reserve(user_message_block)
 
     reserve_tokens = budget.used_tokens
     section_budget = max(0, budget.limit_tokens - reserve_tokens)
@@ -3012,7 +3112,7 @@ def _allocate_sections(
             elif alloc >= compact_tokens:
                 rendered = compact_history
             else:
-                rendered = budget._truncate_to(compact_history, alloc, keep="tail")
+                rendered = _shrink_fenced_tail(compact_history, alloc, budget)
         elif not text or alloc <= 0:
             rendered = ""
         elif size <= alloc:
@@ -3048,6 +3148,29 @@ def _allocate_sections(
         # flows down to lower-priority sections instead of being stranded.
         if used < alloc:
             remaining += alloc - used
+
+    # --- 3. No section may end part-way through a tag (#1254, #1256) ---
+    #
+    # Forgery and absorption are different questions and only the first is
+    # about authorship. Every section below is renderer-, engine- or
+    # model-authored, so none of them can FORGE a fenced delimiter — but any of
+    # them can SWALLOW one. A section ending in ``<uploaded_file file_id="…``
+    # with no ``>`` absorbs whatever comes next in the assembled prompt, and
+    # after #1256 what comes next may be ``<conversation_history fence="…">``
+    # or ``<user_message fence="…">``: the half-written tag then carries the
+    # live token, which is exactly the hole #1254 closed on the fallback.
+    #
+    # Applied to EVERY section, not to the ones that are adjacent today: a
+    # section can render empty, which promotes the one before it to adjacent.
+    # ``render_fenced``'s own checks cannot cover this — they run on the fenced
+    # parts, before the allocator lays the prompt out. Cost is zero except on
+    # the shape that is mid-forgery, and a fenced section that survived
+    # ``reseal`` ends in its closing delimiter, so this is a no-op there.
+    for _key, _text in list(ctx.items()):
+        guarded = terminate_dangling(_text)
+        if guarded is not _text:
+            ctx[_key] = guarded
+            budget.used_tokens += budget.count(guarded) - budget.count(_text)
 
     if logger.isEnabledFor(logging.DEBUG):
         logger.debug(
@@ -3251,9 +3374,10 @@ def build_investigation_context(
     """
     Gather and format context elements within token budget.
 
-    **One fence token per assembly (#1228).** ``<problem_context>``,
-    ``<entity_highlights>`` and ``<evidence_collected>`` are the prompt's
-    caller-controlled blocks; all three are rendered inside a single
+    **One fence token per assembly (#1228, widened in #1256).**
+    ``<problem_context>``, ``<entity_highlights>``, ``<evidence_collected>``,
+    ``<conversation_history>`` and ``<user_message>`` are the prompt's
+    caller-controlled blocks; all five are rendered inside a single
     :func:`~faultmaven.core.investigation.prompts.fence.render_fenced`, so one
     token governs the prompt and one declaration names it. A token per block
     was rejected: it turns the rule the model must follow from one anchor into
@@ -3278,13 +3402,25 @@ def build_investigation_context(
     Returns:
         Dictionary of formatted context sections
     """
-    # Sanitize user input (Gap #9: Input Sanitization)
+    # Bound and inspect user input (Gap #9). Its BYTES are untouched — the
+    # fence below is what makes them structurally inert (#1256).
     sanitized_input = sanitize_user_input(user_message)
     if sanitized_input.warnings:
         logger.warning(
             f"Input sanitization warnings for case {case.case_id}: {', '.join(sanitized_input.warnings)}"
         )
     user_message_safe = sanitized_input.content
+
+    # Which conversation fidelity the fuller slot renders. Resolved here rather
+    # than at the section-build site below because the fenced render needs it.
+    if use_state_summary is None:
+        use_state_summary = case.current_turn > STATE_SUMMARY_TURN_THRESHOLD
+
+    # The user-message cap runs BEFORE the fence, never after: capping a
+    # rendered element would cut its closing delimiter and its terminator.
+    capped_user = _cap_text_tokens(
+        user_message_safe, _user_message_cap(), provider_name, model_name
+    )
 
     # Determine token budget (Gap #6: Provider-Specific Limits)
     if max_tokens is None:
@@ -3385,15 +3521,21 @@ def build_investigation_context(
         evidence_char_override = max(
             2 * EVIDENCE_CONTEXT_MAX_CHARS_PER_ITEM, int(max_tokens * _frac * 4)
         )
-    # --- ONE fence for the whole assembly (#1228) ---
-    # ``<problem_context>``, ``<entity_highlights>`` and
-    # ``<evidence_collected>`` are the prompt's three caller-controlled blocks.
-    # They are rendered together under a single ``render_fenced`` so ONE token
-    # is live per prompt: the model gets one anchor to read it from, and a
-    # forgery in any of the three cannot carry a genuine token borrowed from
-    # another. The collision corpus is correspondingly the union of all three
-    # blocks' channels, so the token is provably absent from every
-    # caller-controlled string in the prompt rather than from one block's own.
+    # --- ONE fence for the whole assembly (#1228, widened in #1256) ---
+    # ``<problem_context>``, ``<entity_highlights>``, ``<evidence_collected>``,
+    # ``<conversation_history>`` and ``<user_message>`` are the prompt's
+    # caller-controlled blocks. They are rendered together under a single
+    # ``render_fenced`` so ONE token is live per prompt: the model gets one
+    # anchor to read it from, and a forgery in any of them cannot carry a
+    # genuine token borrowed from another. The collision corpus is
+    # correspondingly the union of every block's channels, so the token is
+    # provably absent from every caller-controlled string in the prompt rather
+    # than from one block's own.
+    #
+    # BOTH conversation fidelities are rendered here, because the allocator
+    # picks between them by budget AFTER the fence has been verified; a
+    # fidelity rendered outside the fence would be the one channel the corpus
+    # never saw.
     #
     # The callable may run more than once (a re-mint re-renders), so it must
     # stay pure — which is why the entity rows are FETCHED by the caller and
@@ -3414,6 +3556,25 @@ def build_investigation_context(
             char_budget_override=evidence_char_override,
             tools_available=tools_available,
             fence=fence,
+        )
+        # Conversation history — two fidelities, both fenced. ``floor`` is the
+        # compact one, which always carries the latest turn; ``full`` is the
+        # graduated transcript, or the SAME compact string once the case is
+        # long enough to have switched to the state summary. Named for what
+        # they hold rather than for the fidelity they usually hold: calling the
+        # upper rung "graduated" while it holds compact content collapses two
+        # rungs of the ladder invisibly. Built once and shared in that case, so
+        # a re-mint re-renders it once rather than twice.
+        _fenced["conversation_floor"] = _build_compact_history(
+            case, user_message_safe, fence
+        )
+        _fenced["conversation_full"] = (
+            _fenced["conversation_floor"]
+            if use_state_summary
+            else _build_graduated_history(case, fence)
+        )
+        _fenced["user_message"] = (
+            fence.element("user_message", capped_user) if capped_user else ""
         )
         # Checked as one corpus; the parts are what the templates interpolate.
         return "\n\n".join(part for part in _fenced.values() if part)
@@ -3514,41 +3675,14 @@ def build_investigation_context(
                 pending_action_str += f"ENGINE_NOTE: {action.downgrade_reason}\n"
             pending_action_str += "</pending_action>"
 
-    # 6. Conversation History
-    # Two modes:
+    # 6. Conversation History — rendered inside the shared fence above, in two
+    # modes:
     # - State Summary (>15 turns): Minimal summary + last turn only
     # - Graduated History (≤15 turns): Recent turns verbatim, older summarized
-    if use_state_summary is None:
-        use_state_summary = case.current_turn > STATE_SUMMARY_TURN_THRESHOLD
-
-    if use_state_summary:
-        # State Summary + Last Turn pattern (~200 tokens vs ~2000)
-        recent_history = _build_state_summary(case)
-
-        # Add previous turn context if available
-        if case.turn_history:
-            last_turn = case.turn_history[-1]
-            recent_history += "\n\n<previous_turn>\n"
-
-            # What user provided
-            if last_turn.evidence_added:
-                recent_history += f"User provided: {len(last_turn.evidence_added)} evidence artifacts\n"
-
-            # What agent requested or concluded
-            if last_turn.agent_response_summary:
-                summary = last_turn.agent_response_summary[:200]
-                recent_history += f"Agent: {summary}\n"
-
-            recent_history += "</previous_turn>"
-
-        # Current turn (using sanitized input)
-        recent_history += "\n\n<current_turn>\n"
-        recent_history += f"User: {user_message_safe}\n"
-        recent_history += "</current_turn>"
-
-    else:
-        # Graduated history: recent turns verbatim, older turns summarized
-        recent_history = _build_graduated_history(case)
+    # The state-summary mode used to be an inline second copy of
+    # ``_build_compact_history``; it is now that function, so there is one
+    # place the conversation channel is fenced rather than two (#1256).
+    recent_history = _fenced["conversation_full"]
 
     # 7. Knowledge Base Results
     # Cap individual solution text to prevent a single verbose runbook from
@@ -3729,8 +3863,9 @@ def build_investigation_context(
     # =====================================================================
     # Priority-greedy allocator (the token-budget allocation model). Needs both
     # history fidelities so it can pick the one that fits; the compact one is the
-    # continuity floor (always carries the latest turn).
-    compact_history = _build_compact_history(case, user_message_safe)
+    # continuity floor (always carries the latest turn). Both were rendered
+    # inside the shared fence above.
+    compact_history = _fenced["conversation_floor"]
     ctx = _allocate_sections(
         budget=budget,
         case=case,
@@ -3741,7 +3876,7 @@ def build_investigation_context(
         milestones_str=milestones_str,
         inquiry_state_str=inquiry_state_str,
         pending_action_str=pending_action_str,
-        user_message_safe=user_message_safe,
+        user_message_block=_fenced["user_message"],
         feedback_str=feedback_str,
         evidence_str=evidence_str,
         graduated_history=recent_history,

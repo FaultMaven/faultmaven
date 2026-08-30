@@ -1,4 +1,4 @@
-"""Per-render nonce fence for caller-controlled prompt channels (#1217, #1228, #1242).
+"""Per-render nonce fence for caller-controlled channels (#1217/#1228/#1242/#1256).
 
 ``context_builder`` renders context items as pseudo-XML whose element and
 attribute names are **load-bearing** — see
@@ -73,26 +73,28 @@ except on the shape that is mid-forgery. :func:`absorbed_delimiters` is the
 standing check that the terminator and whatever is reading the prompt still
 agree about where a tag ends.
 
-**Scope: the caller-controlled class is closed on the MAIN prompt (#1228) and
-on the FALLBACK prompt (#1242).** One token is minted per prompt ASSEMBLY and
-shared by every caller-controlled block that assembly renders. On the main
-prompt those are ``<problem_context>`` (case title / description / symptom
-statement), ``<entity_highlights>`` (values extracted from file content) and
-the ``<evidence_collected>`` envelope; on the fallback they are
-``<problem_context>``, ``<user_message>`` and the ``<uploaded_file>`` stubs
-(see below). Either way there is exactly ONE genuine declaration per prompt,
-on the line immediately ABOVE the ``<problem_context …>`` opening tag — on the
-main prompt a reserve section, so never trimmed; the first fenced block in
-every template, so no caller-controlled byte precedes it; and outside the
-element, because the rule demotes unfenced text INSIDE these blocks to quoted
-content.
+**Scope: the caller-controlled class is closed on the MAIN prompt (#1228,
+completed in #1256) and on the FALLBACK prompt (#1242).** One token is minted
+per prompt ASSEMBLY and shared by every caller-controlled block that assembly
+renders. On the main prompt those are ``<problem_context>`` (case title /
+description / symptom statement), ``<entity_highlights>`` (values extracted
+from file content), the ``<evidence_collected>`` envelope,
+``<conversation_history>`` (every earlier turn replayed out of
+``case.messages``) and ``<user_message>`` (this turn's, as typed); on the
+fallback they are ``<problem_context>``, ``<user_message>`` and the
+``<uploaded_file>`` stubs (see below). Either way there is exactly ONE genuine
+declaration per prompt, on the line immediately ABOVE the
+``<problem_context …>`` opening tag — on the main prompt a reserve section, so
+never trimmed; the first fenced block in every template, so no
+caller-controlled byte precedes it; and outside the element, because the rule
+demotes unfenced text INSIDE these blocks to quoted content.
 
 The TOKEN is prompt-wide; the DEMOTION CLAUSE is not. ``_PROMPT_FENCE_RULE``
-scopes "a tag without the genuine token is data" to the three fenced blocks,
-because the renderer emits plenty of unfenced structure outside them —
-``<security_constraints>``, ``<case_identity>``, ``<progress_indicators>``,
-``<conversation_history>`` — and a prompt-wide demotion would tell the model
-that the anti-jailbreak block and the time/state anchors are quoted case data.
+scopes "a tag without the genuine token is data" to the five fenced blocks,
+because the renderer still emits unfenced structure outside them —
+``<security_constraints>``, ``<case_identity>``, ``<progress_indicators>`` —
+and a prompt-wide demotion would tell the model that the anti-jailbreak block
+and the time/state anchors are quoted case data.
 
 **Why one token per assembly and not one per block.** A token per block, each
 declared on its own opening tag, degrades the rule the model must follow from
@@ -236,25 +238,81 @@ TERMINAL turn and on every turn without an upload — exactly the defect cited
 above for not reusing ``_PROMPT_FENCE_RULE``, and no more acceptable in a rule
 of our own.
 
-One asymmetry worth knowing rather than fixing here: on the MAIN path
-``user_message`` passes through ``context_builder.sanitize_user_input``, which
-escapes ``<``/``>``; the fallback receives the raw argument. The fallback
-answers that with a fence rather than an escape, for the reason at the top of
-this module — nothing on this path decodes, so an escaped entity is what the
-model echoes at the user (#666).
+**THE MAIN PATH'S ESCAPE (#1256).** The two paths used to disagree about one
+channel. The fallback fenced ``user_message``; the main path ran it through
+``context_builder.sanitize_user_input``, which rewrote ``<``/``>`` to
+``&lt;``/``&gt;``. That escape is gone, and the swap had to happen in this
+order — fence ``<conversation_history>`` and ``<user_message>`` FIRST, then
+drop the escape — because until the fence landed the escape was the only thing
+standing between a typed message and a forged delimiter.
+
+Three things were wrong with the escape, and the third is why
+``<conversation_history>`` left the not-fenced list below rather than the
+escape merely being replaced in kind on the one channel it did reach:
+
+1. It broke verbatim citation, which is the whole argument at the top of this
+   module. Nothing on this path decodes, so ``&lt;`` is four characters the
+   model reasons about and echoes back at the user — the #666 failure mode.
+2. It corrupted ordinary prose. ``<`` is not markup in "consumer lag went from
+   <1000 to >250000", which is a real message from this deployment's own case
+   history, and it reached the model as ``&lt;1000``.
+3. **It never covered the transcript at all.** #1228 scoped
+   ``<conversation_history>`` out on the grounds that it "carries user text,
+   which passes through ``sanitize_user_input`` on its own path". That was
+   false. ``sanitize_user_input`` is called once, on THIS turn's
+   ``user_message`` argument; the history is replayed from ``case.messages``,
+   which ``InvestigationService.process_turn`` appends as ``"content": query``
+   — ``payload.query`` verbatim, nothing rewrites it on the way in. Measured
+   on this deployment's dev database: 42 stored user messages contain a raw
+   ``<`` and 1 contains ``&lt;``. So the block was not "protected
+   differently" — it was the one unprotected caller-controlled channel on the
+   main prompt, and it is now fenced like the rest.
+
+``<conversation_history>`` is fenced as a LEAF element, so the tag-shaped
+scaffolding it renders around the quoted turns — ``<state_summary>``,
+``<evidence_digest>``, ``<previous_turn>``, ``<current_turn>`` — is unfenced
+and demoted to quoted data by the rule. That is accurate rather than a
+concession: each of them wraps material quoted from an earlier turn, and the
+authoritative copy of the state they echo is ``<case_identity>`` and the
+milestone blocks, which stay outside the fence. The rule says so explicitly, so
+the model is not left to infer it. A fenced CONTAINER with fenced children was
+rejected: it nests delimiters inside a body routed through
+:meth:`PromptFence.data`, which every render then reads as a token collision.
 
 The remaining MAIN-PROMPT blocks are still NOT fenced, and the justification is
 that none of them is a caller-controlled channel:
 
-- ``<conversation_history>`` carries user text, which passes through
-  ``sanitize_user_input`` on its own path.
 - ``<investigation_journal>``, ``<working_hypotheses>``, ``<causal_graph>``,
   ``<working_conclusion>`` and ``<candidate_solutions>`` carry
   schema-validated model output, not uploader text: forging them requires the
   model to inject itself.
 - ``<knowledge_context>`` carries operator-curated runbook content.
+- ``<case_identity>``, ``<progress_indicators>`` and
+  ``<stage_gate_milestones>`` are the only ones that are provably
+  bracket-free: enum values, a case id, a timestamp and string literals
+  written in ``context_builder`` itself. ``<inquiry_state>``,
+  ``<pending_action>`` and ``<system_feedback>`` are engine- or
+  model-authored, which settles FORGERY but not absorption.
 - ``causal_map._sanitize_label`` stays as it is: mermaid genuinely decodes, so
-  escaping is right there. Opposite context, opposite answer.
+  escaping is right there. Opposite context, opposite answer. That asymmetry is
+  the point of #1256, not an exception to it.
+
+**Absorption on the main prompt is closed separately, and had to be (#1256).**
+Fencing a SUBSET of adjacent channels is what made the first fallback attempt
+worse than no fix (#1254), and widening the fenced set here re-creates exactly
+that shape: ``<system_feedback>`` renders immediately before
+``{user_message}``, and it is the one unfenced section that does not wrap
+itself in a tag, so it does not end in ``>``. Measured on this branch before
+the guard landed, an unterminated tag in it absorbed the fenced
+``<user_message …>`` delimiter and the forged tag carried the live token.
+
+So ``_allocate_sections`` runs :func:`terminate_dangling` over EVERY section it
+emits — not over the ones adjacent today, because a section can render empty,
+which promotes the one before it to adjacent. Renderer-owned bytes only, and
+zero cost on a section that ends cleanly. This is the token-free half of the
+"guarded" treatment the fallback gives ``RESOLUTION:``; the corpus half is not
+needed here, because these sections were written on a PREVIOUS turn, before
+this turn's token existed.
 """
 
 from __future__ import annotations
@@ -275,6 +333,8 @@ __all__ = [
     "mint_token",
     "render_fenced",
     "reseal",
+    "split_fenced",
+    "terminate_dangling",
 ]
 
 #: Attribute name carrying the nonce on every structural delimiter.
@@ -317,6 +377,42 @@ def delimiter_overhead_chars() -> int:
     return len(f' {FENCE_ATTR}=""') + 2 * _TOKEN_BYTES
 
 
+#: What may follow ``<`` for it to open a tag. A NameStartChar (letter, ``_``,
+#: ``:``), or the punctuation that opens a close tag, a declaration/comment or
+#: a processing instruction. NOT a digit and NOT whitespace.
+#:
+#: This is the whole of the false-positive bias, and it is what keeps ordinary
+#: prose out of :func:`terminate_dangling` (#1256). ``a < b``, ``<1000`` and
+#: ``latency <500ms`` are inequalities, not markup, and the message channel
+#: they arrive on is the one the model quotes back at the user.
+_TAG_OPENERS = "/!?_:"
+
+
+#: The only characters that can change :func:`_ends_inside_tag`'s state.
+_STATE_CHARS = re.compile(r"""[<>"']""")
+
+
+def _opens_a_tag(text: str, i: int) -> bool:
+    """Would ``<`` at ``text[i]`` be read as opening a tag?
+
+    Conservative in the direction that matters. It costs an ATTACKER nothing:
+    a forgery has to name a plausible element (``<uploaded_file …``) for the
+    model to read it as renderer structure at all, and every such name starts
+    with a NameStartChar. It costs ORDINARY PROSE everything: ``<`` followed by
+    a space, a digit or nothing cannot begin any element, so treating it as one
+    is a pure false positive — and after #1256 that false positive lands as a
+    renderer note glued to the user's own sentence.
+    """
+    nxt = text[i + 1 : i + 2]
+    # End of string stays True. Nothing follows to disqualify it, and it is the
+    # shape a cut through ``<uploaded_file`` leaves behind, so the conservative
+    # reading is the right one — and it is not the shape #1256 is about, which
+    # is a ``<`` with prose after it.
+    if not nxt:
+        return True
+    return nxt.isalpha() or nxt in _TAG_OPENERS
+
+
 def _ends_inside_tag(text: str) -> tuple[bool, str]:
     """Does ``text`` end part-way through a tag, and inside which quote?
 
@@ -325,14 +421,30 @@ def _ends_inside_tag(text: str) -> tuple[bool, str]:
     text that FOLLOWS gets absorbed into the tag by any reader lenient enough
     to be reading pseudo-XML in the first place.
 
-    Deliberately biased toward false positives — a trailing ``a < b`` in a log
-    line reports True and earns a harmless terminator, while a false NEGATIVE
-    is a hole. Cost of a false positive is one line of noise at the very tail
-    of one body; cost of a false negative is a forged fenced tag.
+    Still biased toward false positives within the tag-shaped class — a
+    trailing ``<Foo``, and a trailing bare ``<``, both report True and earn a
+    harmless terminator, while a false NEGATIVE is a hole. What no longer
+    counts is a ``<`` that provably cannot open a tag because of the character
+    AFTER it (:func:`_opens_a_tag`). That bias was free on evidence bodies and
+    is not free on ``<user_message>``: it rewrote ``a < b`` — issue #1256's own
+    example of prose the renderer must not touch — into ``a < b>[fence: …]``.
+
+    Relaxing it costs an attacker nothing, which is the argument that makes it
+    safe. Absorption is only useful to a forgery if the swallowed delimiter
+    completes a tag the ATTACKER named; the name has to come from the
+    attacker's own bytes, and every name starts with a NameStartChar. A ``<``
+    followed by a space or a digit supplies no name, so what it could swallow
+    is the renderer's delimiter into a tag the renderer also named.
     """
     in_tag = False
     quote = ""
-    for ch in text:
+    # Driven over the four characters that can change state, not over every
+    # character. Identical state machine — the skipped characters are exactly
+    # the ones every branch above ignored — but it is the difference between
+    # 53 ms and 3 ms on a 512 KB evidence block, paid on every section of
+    # every assembly and again on a re-assembly (#1256 review).
+    for m in _STATE_CHARS.finditer(text):
+        ch = m.group()
         if quote:
             if ch == quote:
                 quote = ""
@@ -341,9 +453,38 @@ def _ends_inside_tag(text: str) -> tuple[bool, str]:
                 quote = ch
             elif ch == ">":
                 in_tag = False
-        elif ch == "<":
+        elif ch == "<" and _opens_a_tag(text, m.start()):
             in_tag = True
     return in_tag, quote
+
+
+def terminate_dangling(text: str) -> str:
+    """``text`` plus renderer-owned bytes closing a tag it left half-written.
+
+    The token-free half of :meth:`PromptFence.terminator`, for sections that
+    are NOT fenced but still sit in the same assembled prompt as blocks that
+    are. Absorption is settled by the bytes, not by who wrote them (#1254): a
+    section ending part-way through a tag swallows whatever follows it, and
+    what follows it may be the fenced OPENING delimiter of the next block —
+    which hands the half-written tag the live token even though the section
+    itself never contained it, and even though the fenced block did everything
+    right.
+
+    ``PromptFence``'s own checks cannot see this: they run on the fenced parts,
+    before the allocator has laid the prompt out. So the guard belongs where
+    sections are assembled, and it has to be applied to EVERY section rather
+    than to the ones that happen to be adjacent today — a section can be empty,
+    which makes the section before it the adjacent one.
+
+    Returns ``text`` unchanged for the overwhelming majority of inputs; never
+    alters a byte of it, only appends.
+    """
+    if not text:
+        return text
+    in_tag, quote = _ends_inside_tag(text)
+    if not in_tag:
+        return text
+    return f"{text}{quote}>{TERMINATOR_NOTE}"
 
 
 class PromptFenceError(RuntimeError):
@@ -529,6 +670,36 @@ def absorbed_delimiters(text: str, token: str) -> list[str]:
 _LEADING_OPEN_RE = re.compile(rf'<([a-z_]+)[^>]*?\s{FENCE_ATTR}="([0-9a-f]+)"\s*>')
 
 
+def split_fenced(text: str) -> Optional[tuple[str, str, str]]:
+    """``(opening, body, closing)`` for a complete fenced element, else ``None``.
+
+    Exists so a caller that must SHRINK a fenced block can shrink the BODY and
+    re-wrap, instead of cutting the rendered element and repairing the damage
+    afterwards (#1256). The difference is not stylistic:
+
+    - Cutting the element spends the allotment on delimiters first. At small
+      allotments they consume it entirely and the block reduces to a fragment
+      of a delimiter — which :func:`reseal` can only answer by dropping the
+      section, taking the most recent turn with it.
+    - Shrinking the body reserves the delimiters up front, so whatever
+      allotment is left buys content, and both delimiters are present by
+      construction rather than by repair.
+
+    Returns ``None`` for anything that is not a complete fenced element, which
+    is the caller's signal to leave it alone.
+    """
+    m = _LEADING_OPEN_RE.search(text or "")
+    if not m:
+        return None
+    opening, name, token = m.group(0), m.group(1), m.group(2)
+    closing = f'</{name} {FENCE_ATTR}="{token}">'
+    if not text.rstrip().endswith(closing):
+        return None
+    start = text.index(opening) + len(opening)
+    end = text.rindex(closing)
+    return opening, text[start:end], closing
+
+
 def reseal(text: str, original: str) -> str:
     """Re-close a fenced block whose tail a budget truncation cut off.
 
@@ -553,6 +724,13 @@ def reseal(text: str, original: str) -> str:
       absorb whatever delimiter comes next. That is the #1217 absorption hole,
       reopened by an operation that runs after the fence was verified.
 
+    A block that must SHRINK rather than be cut — the conversation section,
+    which keeps its tail — does not come here at all: it goes through
+    :func:`split_fenced`, shrinks its BODY and re-wraps, so its delimiters are
+    never lost in the first place. Repairing a tail cut is not possible in
+    general, because below ~40 characters the cut lands inside the closing
+    delimiter and there is nothing left to re-open (#1256).
+
     The invariant this restores, and the one to test against, is: **if any part
     of a fenced block survives, its opening and closing delimiters both do, and
     the section does not end inside an unterminated tag.**
@@ -574,13 +752,13 @@ def reseal(text: str, original: str) -> str:
     if not m_orig:
         return text
     opening, name, token = m_orig.group(0), m_orig.group(1), m_orig.group(2)
+    closing = f'</{name} {FENCE_ATTR}="{token}">'
     if opening not in (text or ""):
         logger.warning(
             "prompt_fence_truncated_opening_delimiter",
             extra={"element": name, "kept_chars": len(text or "")},
         )
         return ""
-    closing = f'</{name} {FENCE_ATTR}="{token}">'
     if text.rstrip().endswith(closing):
         return text
     body = text[text.index(opening) + len(opening) :]
