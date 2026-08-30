@@ -175,12 +175,21 @@ def _migration_011_source() -> str:
     return (_REPO_ROOT / "alembic" / "versions" / _DRAFT_CHECK_OWNER).read_text()
 
 
-def _draft_check_from_postgres_branch() -> str:
-    """The expression migration 011 hands ``op.create_check_constraint``.
+#: Migration 011 spells the constraint FOUR times: raw SQLite table-rebuild DDL
+#: and a PostgreSQL ``create_check_constraint``, once each in ``upgrade`` and in
+#: ``downgrade``. The helpers below return them in source order — [0] upgrade,
+#: [1] downgrade — and assert the count, so a fifth spelling (or a lost one)
+#: fails rather than silently shifting which one is compared.
+_SPELLINGS_PER_BRANCH = 2
+
+
+def _draft_checks_from_postgres_branch() -> list[str]:
+    """Every expression migration 011 hands ``op.create_check_constraint``.
 
     Read from the AST, so a mention in a comment or docstring cannot be
     mistaken for the constraint itself.
     """
+    found = []
     tree = ast.parse(_migration_011_source())
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -197,24 +206,39 @@ def _draft_check_from_postgres_branch() -> str:
             and first.value == _DRAFT_CHECK
             and isinstance(expr, ast.Constant)
         ):
-            return expr.value
-    raise AssertionError(f"{_DRAFT_CHECK} not created in {_DRAFT_CHECK_OWNER}")
+            found.append((node.lineno, expr.value))
+    assert len(found) == _SPELLINGS_PER_BRANCH, (
+        f"expected {_SPELLINGS_PER_BRANCH} create_check_constraint calls for "
+        f"{_DRAFT_CHECK} in {_DRAFT_CHECK_OWNER}, found {len(found)}"
+    )
+    return [expr for _, expr in sorted(found)]
 
 
-def _draft_check_from_sqlite_branch() -> str:
+def _draft_checks_from_sqlite_branch() -> list[str]:
     """The same constraint as spelled in 011's SQLite table-rebuild DDL.
 
     SQLite cannot ALTER a CHECK, so 011 rebuilds the table from raw DDL. That
     branch is the one every developer machine and every CI database actually
     runs, and it is a SEPARATE spelling of the constraint from the PostgreSQL
-    branch below it — so the two can disagree, and nothing but this would say so.
+    branch — so the two can disagree, and nothing but this would say so.
     """
-    match = re.search(
+    found = re.findall(
         rf"CONSTRAINT\s+{_DRAFT_CHECK}\s*\n?\s*CHECK\s*\(([^)]*\([^)]*\))\s*\)",
         _migration_011_source(),
     )
-    assert match, f"{_DRAFT_CHECK} DDL not found in 011's SQLite branch"
-    return match.group(1)
+    assert len(found) == _SPELLINGS_PER_BRANCH, (
+        f"expected {_SPELLINGS_PER_BRANCH} raw-DDL spellings of {_DRAFT_CHECK} "
+        f"in {_DRAFT_CHECK_OWNER}, found {len(found)}"
+    )
+    return found
+
+
+def _draft_check_from_postgres_branch() -> str:
+    return _draft_checks_from_postgres_branch()[0]
+
+
+def _draft_check_from_sqlite_branch() -> str:
+    return _draft_checks_from_sqlite_branch()[0]
 
 
 def test_the_draft_orm_check_is_present_and_parses():
@@ -243,6 +267,15 @@ def test_the_two_branches_of_migration_011_agree():
     assert _statuses_in(_draft_check_from_sqlite_branch()) == _statuses_in(
         _draft_check_from_postgres_branch()
     )
+
+
+def test_the_downgrade_restores_the_baseline_vocabulary_on_both_branches():
+    """A downgrade that does not restore what it replaced leaves the schema in a
+    state no migration describes. Both branches' downgrade spellings must put
+    back the clean baseline's four values."""
+    baseline = {"draft", "verified", "rejected", "archived"}
+    assert _statuses_in(_draft_checks_from_sqlite_branch()[1]) == baseline
+    assert _statuses_in(_draft_checks_from_postgres_branch()[1]) == baseline
 
 
 def test_the_draft_orm_check_matches_the_owning_migration():
