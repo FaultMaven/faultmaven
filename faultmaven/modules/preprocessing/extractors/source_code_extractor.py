@@ -20,12 +20,11 @@ from faultmaven.modules.preprocessing.extractors.utils import (
 )
 from faultmaven.utils.optional_dependency import module_is_usable
 
-# NOT `TREE_SITTER_AVAILABLE = True`: an empty leftover directory for ANY of
-# these eight imports cleanly as a PEP 420 namespace package (see
-# faultmaven/utils/optional_dependency.py), and one shadow among eight is
-# enough — the flag would read True and the first `_ts.Language(...)` /
-# `_tsc.language()` would raise AttributeError mid-extraction. Each grammar is
-# checked for the symbol this module actually calls on it.
+# NOT `TREE_SITTER_AVAILABLE = True`: an empty leftover `site-packages/
+# tree_sitter/` tree imports cleanly as a PEP 420 namespace package (see
+# faultmaven/utils/optional_dependency.py), so the flag would read True and the
+# first `_ts.Language(...)` would raise AttributeError with no tree-sitter
+# there at all.
 try:
     import tree_sitter as _ts
     import tree_sitter_c as _tsc
@@ -36,19 +35,16 @@ try:
     import tree_sitter_rust as _tsrust
     import tree_sitter_typescript as _tsts
 
-    # Attribute names taken from the call sites in _language_loaders() below —
-    # note typescript exposes `language_typescript`, not `language`.
-    TREE_SITTER_AVAILABLE = module_is_usable(_ts, "Language") and all(
-        module_is_usable(_grammar, _symbol)
-        for _grammar, _symbol in (
-            (_tsc, "language"),
-            (_tsgo, "language"),
-            (_tsjava, "language"),
-            (_tsjs, "language"),
-            (_tspy, "language"),
-            (_tsrust, "language"),
-            (_tsts, "language_typescript"),
-        )
+    # Gated on the CORE library only, and on both symbols _get_ts_parser calls.
+    #
+    # NOT on the seven grammars: a per-grammar failure is already handled one
+    # language at a time — _get_ts_parser wraps the factory in
+    # `except Exception: return None` and _detect_language_tree_sitter skips a
+    # parser it could not build. Folding them into this flag would make ONE
+    # shadowed grammar drop all seven languages to regex extraction, which is
+    # strictly worse degradation than the code already had.
+    TREE_SITTER_AVAILABLE = module_is_usable(_ts, "Language") and module_is_usable(
+        _ts, "Parser"
     )
 except ImportError:
     TREE_SITTER_AVAILABLE = False

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 from faultmaven.models.api import ClassificationResult, DataType
+from faultmaven.utils.optional_dependency import module_is_usable
 
 if TYPE_CHECKING:
     from faultmaven.models.api import SourceMetadata
@@ -39,11 +40,15 @@ if TYPE_CHECKING:
 # buckets, classification_failed rate) without touching logs.
 # =============================================================================
 
+# See the equivalent block in infrastructure/llm/router.py for why the
+# from-import is not relied on as the guard.
 try:
     import opik
     from opik import opik_context
 
-    _OPIK_AVAILABLE = True
+    _OPIK_AVAILABLE = module_is_usable(opik) and module_is_usable(
+        opik_context, "update_current_span"
+    )
 except ImportError:
     _OPIK_AVAILABLE = False
 
