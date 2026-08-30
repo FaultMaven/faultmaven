@@ -30,6 +30,24 @@ decide MINOR versus MAJOR: that judgement is the thing the clients are being
 asked to accept, and it belongs to a person.
 """
 
+# 2.4.0 — MINOR. `CaseReport.format` widens from `const: "markdown"` to
+# `enum: ["markdown", "html"]` (#520). `reports_format_check` has admitted both
+# since the clean baseline, and the repository hydrates `format=row.format`
+# straight into the model — so the narrower type turned a row the database
+# accepts into a 500 on READ. The document now says what the storage layer has
+# always permitted.
+#
+# MINOR rather than MAJOR because no existing client can break on it, on two
+# independent grounds. First, the server still cannot emit `html`: nothing
+# writes it, so the set of values actually returned is unchanged and this is a
+# published latitude rather than a behaviour change. Second, no client reads the
+# field — verified by reading them: the Dashboard and Copilot carry it only in
+# `src/types/api.generated.ts` (TypeScript, compile-time, and widening a
+# response type is a superset none of them narrows), and the Slack agent's
+# `Literal["markdown"]` lives in `faultmaven/api_generated.py` on a `CaseReport`
+# that nothing outside that generated module references. A client that
+# regenerates picks up the wider type and compiles unchanged.
+#
 # 2.3.0 — MINOR. `HypothesisSummary` gains an optional `retirement_reason`
 # (#1142). The schema already carried `refutation_reason`, so a client rendering
 # a terminal hypothesis could say why one was REFUTED but not why one was
@@ -84,4 +102,4 @@ asked to accept, and it belongs to a person.
 # cannot tell two contracts apart is not doing its job. The first act of the
 # version is therefore to give the contract on main an identity distinct from
 # the 1.0.0 the clients are written against.
-API_CONTRACT_VERSION = "2.3.0"
+API_CONTRACT_VERSION = "2.4.0"
