@@ -28,17 +28,26 @@ from faultmaven.infrastructure.shims import (
 )
 from faultmaven.models import DataType
 from faultmaven.models.interfaces import ILLMProvider
+from faultmaven.utils.optional_dependency import module_is_usable
 from faultmaven.utils.token_estimation import estimate_tokens
 
 from .cache import LLMResponseCache
 from .providers import LLMResponse, ReasoningIntent, StopReason, get_registry
 
-# Opik native tracing for LLM calls
+# Opik native tracing for LLM calls.
+#
+# The `from opik import opik_context` below protects only while opik_context is
+# a MODULE FILE — an uninstall leaves directories, so were it ever shipped as a
+# subpackage the from-import would succeed against the leftover tree just as
+# the bare import does. Depending on that distinction is not worth it when the
+# check is one call; see faultmaven/utils/optional_dependency.py.
 try:
     import opik
     from opik import opik_context
 
-    OPIK_AVAILABLE = True
+    OPIK_AVAILABLE = module_is_usable(opik) and module_is_usable(
+        opik_context, "update_current_span"
+    )
 except ImportError:
     OPIK_AVAILABLE = False
 

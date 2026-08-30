@@ -24,20 +24,35 @@ It is not hypothetical. This repo's own venv was in that state for ``opik``
 ``sentence-transformers`` (#1233), where a wrong True reached an ``import
 torch`` — the ~690 MiB that #868 exists to keep out of 512Mi CronJobs.
 
-Two shapes are already safe and need nothing:
+Two shapes are usually safe:
 
-* ``from X import Y`` — raises ImportError on a shadow, because ``Y`` is not
-  there. Most of this codebase's optional imports are this shape.
-* ``import X.Y`` — same, the submodule cannot resolve (ModuleNotFoundError).
+* ``from X import Y`` where ``Y`` is a SYMBOL — raises ImportError on a shadow,
+  because the symbol is not there. Most of this codebase's optional imports are
+  this shape.
+* ``import X.Y`` — the submodule cannot resolve (ModuleNotFoundError).
 
-Only a **top-level bare** ``import X`` succeeds against an empty directory.
+``from X import Y`` where ``Y`` is a SUBPACKAGE is **not** safe: an uninstall
+leaves nested directories too, so ``X/Y/`` resolves as a nested namespace
+package and the from-import succeeds. Measured, not assumed. AST cannot tell a
+symbol from a subpackage, which is why the enforcement scan does not treat a
+from-import as exempting anything.
+
+A **top-level bare** ``import X`` always succeeds against an empty directory.
 
 **What this is NOT a general rule for.** ``origin is None`` means "namespace
 package", and some distributions ship that way legitimately — measured in this
 repo's venv, ``google``, ``zope`` and ``backports`` all resolve with
-``origin is None`` and are correctly installed. So this asks about a REGULAR
-package. Pass ``attr`` whenever the caller knows a symbol it needs; that is
-both stronger and immune to the namespace-distribution case.
+``origin is None`` and are correctly installed. So the spec-based check asks
+about a REGULAR package.
+
+**``attr`` is only consulted when the module is already imported.** Checking an
+attribute requires the module object, and the whole point of the spec-based
+path is to answer without importing (#868). So ``dependency_is_usable(name,
+attr)`` gives the strong answer for a module in ``sys.modules`` and the
+spec-based one otherwise — it never silently imports to satisfy ``attr``. Pass
+it anyway: it costs nothing and it is what makes the already-imported path
+correct, which is the path a namespace shadow actually reaches (an earlier
+importer is how the shadow gets into ``sys.modules`` at all).
 """
 
 import importlib.util
@@ -57,11 +72,16 @@ def module_is_usable(module: Optional[ModuleType], attr: Optional[str] = None) -
     Use this when the caller already holds the module — after its own
     ``try: import X`` — so nothing extra is imported.
 
-    ``attr`` is the stronger test and should be passed whenever the caller
-    knows a symbol it needs: it distinguishes a usable package from both a
-    namespace shadow AND a partially-removed tree whose ``__init__.py``
+    ``attr`` is the stronger test: it distinguishes a usable package from both
+    a namespace shadow AND a partially-removed tree whose ``__init__.py``
     survived. Without it the check falls back to ``__file__``, which only
     separates a real package from a namespace one.
+
+    Pass it when the symbol is STABLE. A version-sensitive symbol turns an
+    upstream rename into the dependency silently reading as absent, which for
+    an observability SDK means tracing switching itself off — see the call site
+    in ``infrastructure/observability/tracing.py``, which deliberately passes
+    nothing for that reason.
     """
     if module is None:
         return False
@@ -89,6 +109,10 @@ def dependency_is_usable(name: str, attr: Optional[str] = None) -> bool:
     does. ``attr`` matters most there — a ``ModuleType`` double has no
     ``__file__`` either, so only a named symbol tells a stand-in apart from a
     shadow.
+
+    On the spec path ``attr`` is NOT consulted: it would require importing the
+    module, which this function exists to avoid. That path answers the weaker
+    "is it a regular package" question. See the module docstring.
     """
     imported = sys.modules.get(name)
     if imported is not None:

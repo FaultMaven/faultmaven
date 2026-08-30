@@ -29,12 +29,13 @@ logger = logging.getLogger(__name__)
 # NOT `TIKTOKEN_AVAILABLE = True`: an empty leftover `site-packages/tiktoken/`
 # tree imports cleanly as a PEP 420 namespace package (see
 # faultmaven/utils/optional_dependency.py). The flag would read True and
-# `tiktoken.encoding_for_model` would raise AttributeError instead of this
-# module taking its documented character-based fallback.
+# `tiktoken.get_encoding` (the symbol _get_tiktoken_encoder actually calls)
+# would raise AttributeError instead of this module taking its documented
+# character-based fallback.
 try:
     import tiktoken
 
-    TIKTOKEN_AVAILABLE = module_is_usable(tiktoken, "encoding_for_model")
+    TIKTOKEN_AVAILABLE = module_is_usable(tiktoken, "get_encoding")
 except ImportError:
     TIKTOKEN_AVAILABLE = False
 
