@@ -246,8 +246,9 @@ order — fence ``<conversation_history>`` and ``<user_message>`` FIRST, then
 drop the escape — because until the fence landed the escape was the only thing
 standing between a typed message and a forged delimiter.
 
-Three things were wrong with the escape, and the third is why the block list
-below shrank rather than the escape merely being replaced in kind:
+Three things were wrong with the escape, and the third is why
+``<conversation_history>`` left the not-fenced list below rather than the
+escape merely being replaced in kind on the one channel it did reach:
 
 1. It broke verbatim citation, which is the whole argument at the top of this
    module. Nothing on this path decodes, so ``&lt;`` is four characters the
