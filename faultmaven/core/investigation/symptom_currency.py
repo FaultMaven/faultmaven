@@ -49,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
+from faultmaven.core.investigation.coverage_trust import is_vouched
 from faultmaven.modules.case.contracts import CaseState, EvidenceCategory
 
 if TYPE_CHECKING:
@@ -122,12 +123,22 @@ def newest_symptom_observation(case: "Case") -> Optional[datetime]:
     proof the problem stopped would register as proof it is present.
 
     Returns None when no symptom evidence carries a coverage timestamp.
+
+    VOUCHED provenance only — stricter than the prompt, deliberately. The
+    prompt can render an INFERRED instant with ``observed_basis`` and let the
+    model weigh it; this function feeds a binary CURRENT/STALE classification
+    with nowhere to put a caveat. ``syslog_bsd_noyear``'s year comes from the
+    wall clock, so its age can be wrong by a whole year — the one error size
+    that flips that classification. Unrecorded provenance is likewise not
+    counted: a span nobody vouched for cannot establish the symptom was seen
+    recently.
     """
     observations = [
         ev.coverage_end_ts
         for ev in case.evidence
         if ev.category == EvidenceCategory.SYMPTOM_EVIDENCE
         and getattr(ev, "coverage_end_ts", None) is not None
+        and is_vouched(getattr(ev, "coverage_source", None))
     ]
     if not observations:
         return None

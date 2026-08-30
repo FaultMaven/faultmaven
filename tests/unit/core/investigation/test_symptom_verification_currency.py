@@ -64,7 +64,7 @@ def _case(*, verified=True, temporal=TemporalState.ONGOING, evidence=()) -> Case
     return case
 
 
-def _ev(category, observed) -> Evidence:
+def _ev(category, observed, source="iso8601") -> Evidence:
     return Evidence(
         summary="s",
         category=category,
@@ -74,6 +74,10 @@ def _ev(category, observed) -> Evidence:
         collected_at_turn=1,
         coverage_start_ts=observed,
         coverage_end_ts=observed,
+        # Currency counts VOUCHED provenance only, so a span here needs one to
+        # date anything. These fixtures are about the currency RULES; the
+        # provenance rules have their own tests below.
+        coverage_source=source,
     )
 
 
@@ -657,3 +661,39 @@ class TestReviewFindingsResidual:
             "page_capture", "https://grafana.example.com/d/abc"
         )
         assert meta["source_url"] == "https://grafana.example.com/d/abc"
+
+
+# -- currency is stricter than the prompt, deliberately -----------------------
+def test_an_inferred_year_does_not_establish_symptom_currency():
+    """The prompt can render an inferred-year instant with `observed_basis` and
+    let the model weigh it. Currency feeds a binary CURRENT/STALE call with
+    nowhere to put a caveat, and a syslog year taken from the wall clock can be
+    wrong by a whole year — the one error size that flips that call."""
+
+    from faultmaven.core.investigation.symptom_currency import (
+        newest_symptom_observation,
+    )
+
+    observed = datetime.now(timezone.utc) - timedelta(minutes=5)
+    case = _case(
+        evidence=[
+            _ev(
+                EvidenceCategory.SYMPTOM_EVIDENCE,
+                observed,
+                source="syslog_bsd_noyear",
+            )
+        ]
+    )
+    assert newest_symptom_observation(case) is None
+
+
+def test_unrecorded_provenance_does_not_establish_symptom_currency():
+    from faultmaven.core.investigation.symptom_currency import (
+        newest_symptom_observation,
+    )
+
+    observed = datetime.now(timezone.utc) - timedelta(minutes=5)
+    case = _case(
+        evidence=[_ev(EvidenceCategory.SYMPTOM_EVIDENCE, observed, source=None)]
+    )
+    assert newest_symptom_observation(case) is None
