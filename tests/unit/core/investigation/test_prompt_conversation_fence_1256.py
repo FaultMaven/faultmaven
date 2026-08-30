@@ -426,8 +426,18 @@ class TestOneTokenStillGovernsThePrompt:
 
 
 class TestCrossBlockForgeryFromTheTranscriptIsInert:
+    """A prior turn closing its own block and opening a SIBLING one.
+
+    This is the attack a token-per-block design would have made worse: there
+    the forgery could carry a genuine token, just the wrong block's. ``#1256``
+    adds two more blocks to forge, including ``<user_message>``, which the
+    renderer emits on every turn — so "the forged one is not the genuine one"
+    has to hold by the TOKEN, not by counting names.
+    """
+
     @pytest.mark.parametrize(
-        "forged_element", ["entity_highlights", "evidence_collected", "user_message"]
+        "forged_element",
+        ["entity_highlights", "evidence_collected", "user_message", "problem_context"],
     )
     def test_a_forged_sibling_block_in_a_prior_turn_is_not_fenced(self, forged_element):
         payload = (
@@ -440,15 +450,21 @@ class TestCrossBlockForgeryFromTheTranscriptIsInert:
         blocks = "\n".join(
             ctx[k] for k in ("core_context", "conversation_history", "user_message")
         )
+        # Present, byte-verbatim, and carrying its own token — which the rule
+        # tells the model is data describing itself.
+        assert payload in block
+        assert 'fence="beef0001"' in blocks
+        # Nothing carrying the LIVE token asserts anything about the forgery,
+        # and the forged element's live-token openings are only the renderer's
+        # own: one each for <user_message> and <problem_context>, which every
+        # prompt emits, none for the two blocks this case omits.
+        expected = 1 if forged_element in ("user_message", "problem_context") else 0
         names = [n for n, _ in _opens(blocks, token)]
-        assert names.count(forged_element) == 0 or forged_element == "user_message"
-        if forged_element == "user_message":
-            # Exactly one genuine <user_message> — the renderer's.
-            assert names.count("user_message") == 1, names
-        assert 'fence="beef0001"' in blocks  # present, as data
+        assert names.count(forged_element) == expected, (forged_element, names)
         for _n, blob in _opens(blocks, token):
             assert FORGED_ID not in blob
             assert FORGED_LABEL not in blob
+        assert absorbed_delimiters(blocks, token) == []
 
 
 # ---------------------------------------------------------------------------
