@@ -557,6 +557,28 @@ class LLMErrorHandler:
                 retry_count=retry_count,
             )
 
+        # Context-window overflow, ahead of the declaration gate below.
+        #
+        # COMPRESS_MEMORY is not a permanence claim, it is a DIFFERENT RECOVERY:
+        # the prompt did not fit, so shrinking it is the only thing that helps,
+        # and an identical retry cannot. That holds even when the raising code
+        # declared the failure retryable — a gateway can answer 5xx with
+        # "context length exceeded" in the body — so the gate must not let a
+        # declaration divert an overflow onto the ladder, where it would spend
+        # every attempt re-sending the same oversized prompt.
+        #
+        # Safe to put ahead of the gate, unlike the classifiers below it: this
+        # one keys on multi-word overflow SIGNATURES ("context length",
+        # "prompt is too long", …), never on a bare number, so no ``host:port``
+        # can reach it. That difference is the whole reason the ordering splits
+        # here rather than moving every classifier to one side.
+        if self.is_token_limit_error(error):
+            return ErrorResult(
+                action=ErrorAction.COMPRESS_MEMORY,
+                message="Context too large. Compressing conversation history...",
+                error_code=TOKEN_LIMIT,
+            )
+
         # A DECLARED transient failure goes straight to the ladder, without
         # passing under the prose classifiers below (#1287 follow-up).
         #
@@ -624,14 +646,6 @@ class LLMErrorHandler:
                 action=ErrorAction.ESCALATE,
                 message=f"503 LLM service unavailable: Model not found or inaccessible. Please check LLM provider configuration. Details: {error_details}",
                 error_code="MODEL_NOT_FOUND",
-            )
-
-        # Check for token limit errors
-        if self.is_token_limit_error(error):
-            return ErrorResult(
-                action=ErrorAction.COMPRESS_MEMORY,
-                message="Context too large. Compressing conversation history...",
-                error_code=TOKEN_LIMIT,
             )
 
         # Check for retryable errors

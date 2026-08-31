@@ -727,6 +727,55 @@ class TestDeclarationOutranksProse:
         assert result.error_code == "MODEL_NOT_FOUND"
 
     @pytest.mark.asyncio
+    async def test_overflow_wording_still_compresses_despite_a_declaration(
+        self, fast_handler
+    ):
+        """The gate must not divert a CONTEXT OVERFLOW onto the retry ladder.
+
+        COMPRESS_MEMORY is not a permanence claim, it is a different RECOVERY:
+        the prompt did not fit, so shrinking it is the only thing that helps and
+        an identical retry cannot. A gateway can answer 5xx with "context length
+        exceeded" in the body, so ``retryable=True`` and overflow wording do
+        co-occur — and the first version of this gate sent exactly that case to
+        the ladder, where it would re-send the same oversized prompt on every
+        attempt. Caught by CI, not by the gate's own tests.
+        """
+        from faultmaven.exceptions import TOKEN_LIMIT, LLMException
+
+        result = await fast_handler.handle_error(
+            LLMException(
+                "Request rejected: input truncated, context length exceeded",
+                retryable=True,
+            ),
+            0,
+        )
+        assert result.action == ErrorAction.COMPRESS_MEMORY
+        assert result.error_code == TOKEN_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_the_split_is_between_signature_and_bare_number_matchers(
+        self, fast_handler
+    ):
+        """Why the ordering splits where it does, asserted rather than argued.
+
+        ``is_token_limit_error`` sits AHEAD of the gate and the other two sit
+        behind it. That is not arbitrary: the overflow classifier keys on
+        multi-word SIGNATURES, which a ``host:port`` cannot contain, while
+        ``is_auth_error`` and ``is_model_not_found_error`` key on bare numbers,
+        which it can. If a future edit gives the overflow classifier a
+        bare-number pattern, moving it ahead of the gate stops being safe — and
+        this fails.
+        """
+        connect_failure = (
+            "Gemini connection error: Cannot connect to host svc:4040 "
+            "ssl:default [Connect call failed]"
+        )
+        assert fast_handler.is_token_limit_error(Exception(connect_failure)) is False
+        # ...while the classifiers behind the gate DO match it, which is exactly
+        # why they must stay behind it.
+        assert fast_handler.is_model_not_found_error(Exception(connect_failure)) is True
+
+    @pytest.mark.asyncio
     async def test_billing_still_outranks_the_declaration_gate(self, fast_handler):
         """Quota exhaustion is permanent whatever the transport declared, and
         its check sits ahead of the gate. A 429 body naming billing must still
