@@ -158,7 +158,11 @@ async def test_a_backstopped_upload_turn_agrees_with_itself(
             ),
         )
 
-    row = _rows(caplog)[0]
+    rows = _rows(caplog)
+    assert (
+        len(rows) == 1
+    ), f"denominator: expected one row for one turn, got {len(rows)}"
+    row = rows[0]
     recorded = case.turn_history[-1]
 
     # Positive controls: the backstop fired on a turn that really did carry a
@@ -187,6 +191,13 @@ async def test_no_backstopped_row_carries_a_fired_arm_beside_progress_false(
 
     Named by no arm: a row carrying ANY fired arm alongside
     ``progress_made: false`` is self-contradictory, whichever arm it is.
+
+    **The denominator is asserted before the universal.** "No emitted row
+    violates X" is trivially true when NO row was emitted — a wrong logger
+    name, telemetry disabled in the test config, or a turn that never reaches
+    the emit site all produce that, and none of them error. So the row count is
+    pinned at exactly one (one turn was driven), and at least one arm must have
+    fired, before the verdict is checked.
     """
     await repo.save(case)
     with caplog.at_level(logging.INFO, logger=TELEMETRY_LOGGER_NAME):
@@ -205,9 +216,17 @@ async def test_no_backstopped_row_carries_a_fired_arm_beside_progress_false(
             ),
         )
 
-    row = _rows(caplog)[0]
+    rows = _rows(caplog)
+    assert len(rows) == 1, (
+        f"denominator: one turn was driven, so exactly one row must exist for "
+        f"the invariant to quantify over; got {len(rows)}"
+    )
+    row = rows[0]
     fired = {k: v for k, v in row.arms.items() if v}
-    assert fired, "positive control: no arm fired, so the invariant is vacuous"
+    assert fired, (
+        "denominator: no arm fired on this row, so the universal has nothing "
+        "to quantify over and would pass on unfixed code"
+    )
     assert (
         row.progress_made is True
     ), f"row claims progress_made=false while these arms fired: {fired}"

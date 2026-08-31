@@ -161,11 +161,23 @@ async def test_no_emitted_row_carries_a_fired_arm_beside_progress_false(
     Stated over the arm counts as a whole rather than over ``status_transitioned``:
     a row with ANY arm fired and ``progress_made: false`` is self-contradictory,
     whichever arm it is.
+
+    **The denominator is asserted before the universal.** "No row violates X" is
+    trivially true over zero rows, and over rows with no arm fired — either way
+    the assertion would pass on a completely broken fix. So this establishes,
+    in order: a handoff exists, it carries arms, at least one arm actually
+    fired, and only then that the row's verdict agrees with them.
     """
     engine, llm = engine_and_llm
     result = await _two_turn_transition(engine, llm)
     metadata = result["metadata"]
+
+    assert TELEMETRY_HANDOFF_KEY in metadata, (
+        "denominator: the turn produced no telemetry handoff, so there is no "
+        "row for the invariant to quantify over"
+    )
     arms = metadata[TELEMETRY_HANDOFF_KEY]["arms"]
+    assert arms, "denominator: the handoff carried no arm counts at all"
 
     event = build_case_turn_event(
         result["case_updated"],
@@ -175,7 +187,10 @@ async def test_no_emitted_row_carries_a_fired_arm_beside_progress_false(
         outcome=metadata.get("outcome"),
     )
     fired = {k: v for k, v in event["arms"].items() if v}
-    assert fired, "positive control: no arm fired, so the invariant is vacuous here"
+    assert fired, (
+        "denominator: no arm fired on this turn, so the universal has nothing "
+        "to quantify over and would pass on unfixed code"
+    )
     assert (
         event["progress_made"] is True
     ), f"row claims progress_made=false while these arms fired: {fired}"
@@ -191,6 +206,11 @@ async def test_the_last_reading_of_the_turn_saw_every_arm_the_row_reports(
     at that moment. The LAST one is the one that lands in ``progress_made``, so
     it must have seen the same arms the emitted row reports — otherwise some
     writer ran after the decision, which is #1270 whatever the key is called.
+
+    **Denominators first, again.** ``late`` is empty both when nothing was
+    written late and when the row reports no arms at all, so the count of fired
+    arms in the row is asserted before the comparison — otherwise a turn that
+    fired nothing would satisfy this on unfixed code.
     """
     engine, llm = engine_and_llm
     seen: list[dict[str, int]] = []
@@ -205,7 +225,10 @@ async def test_the_last_reading_of_the_turn_saw_every_arm_the_row_reports(
     result = await _two_turn_transition(engine, llm)
     reported = result["metadata"][TELEMETRY_HANDOFF_KEY]["arms"]
 
-    assert seen, "positive control: the predicate was never called on this turn"
+    assert seen, "denominator: the predicate was never called on this turn"
+    assert any(
+        reported.values()
+    ), f"denominator: the row reports no fired arm, nothing to compare: {reported}"
     last = seen[-1]
     late = {k: reported[k] for k in reported if reported[k] and not last.get(k)}
     assert not late, (
