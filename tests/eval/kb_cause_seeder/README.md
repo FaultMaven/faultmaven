@@ -45,7 +45,18 @@ it is deterministic and re-runnable offline:
 python tests/eval/kb_cause_seeder/run_corroboration_eval.py guards   # the table that chose the guard
 python tests/eval/kb_cause_seeder/run_corroboration_eval.py sweep    # why no score floor works
 python tests/eval/kb_cause_seeder/run_corroboration_eval.py e2e      # real wrapper, guard off vs on
+python tests/eval/kb_cause_seeder/run_corroboration_eval.py grounding                  # what each ground decides
+python tests/eval/kb_cause_seeder/run_corroboration_eval.py grounding --no-term-index  # ... in the other term-index state
 ```
+
+`grounding` applies the **engine's** `kb_hit_grounding`, never a copy of it: a
+driver that re-implements the predicate reports on a gate it does not share,
+which is how #1285 — a ground whose firings were 36:1 wrong — stayed invisible
+here while this mode said the gate was working. It prints the per-verdict
+decision rate with its denominator, because "the gate turned nothing away" and
+"the gate is not applying" are the same number in the seed columns. Run it in
+**both** term-index states: without the index `term_coverage` degrades to an
+unweighted binary fraction, a different quantity on the same scale.
 
 Paths default to `data/chroma-kb` and `data/faultmaven.db`; override with
 `--chroma` / `--db`. The 24 problem statements live in

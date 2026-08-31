@@ -654,7 +654,10 @@ class KnowledgeService:
                             # "unmeasured, therefore not judged" and admits
                             # everything. The floor is dropped too. A caller
                             # that ASKED for hybrid and did not get it must be
-                            # able to find out why.
+                            # able to find out why. The seeder counts the same
+                            # event from its own side
+                            # (``kb_cause_seed_grounding_unmeasured_total``,
+                            # #1285); this is the half that says WHY.
                             logger.warning(
                                 "KB search asked for hybrid retrieval but the "
                                 "vector store does not provide it — falling "

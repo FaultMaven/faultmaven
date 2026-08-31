@@ -236,23 +236,97 @@ was about a different platform; three of them cleared #1144's corroboration
 guard too, because that guard asks whether a runbook matched *broadly*, which a
 wrong one can.
 
-**The gate.** A runbook may seed only if **the query named it** (one of its
-title or `service` terms appears in the query) **or** **it covers the query**
-(a chunk's IDF-weighted `term_coverage` ≥ `KB_SEED_MIN_TERM_COVERAGE`). Two
-grounds because there are two legitimate shapes of a correct match, and each arm
-alone loses one:
-
-| shape | example | why the other arm fails it |
-|---|---|---|
-| named | "Nginx is returning 502 Bad Gateway" → *NGINX 502 Bad Gateway* | coverage is 0.21–0.52 here: such statements carry incident specifics (percentages, timestamps) no runbook can contain |
-| covers | "Services fail to start or crash with write errors referencing ENOSPC" → *Linux Disk Full*, whose symptom section states it verbatim (coverage 1.00) | the query names no platform — and symptom-phrased queries are the normal shape for this product |
+**The gate.** A runbook may seed only if **the query named it** — one of its
+title or `service` terms appears in the query, matched at token level under a
+plural fold. `identity_terms_in_query` carries the answer with the hit, because
+only the reranker holds both the chunk metadata and the query.
 
 Judged **per runbook**, never per chunk: grounding decides whether the document
 belongs, corroboration decides whether it matched broadly. Judging each chunk
 separately makes grounding do corroboration's job a second time and silently
-tightens it — a runbook admitted on its verbatim symptom chunk is then declined
-for want of a second, even though its other retrieved chunks are the breadth
-#1144 asks for.
+tightens it — a runbook admitted on the chunk whose metadata named it is then
+declined for want of a second, even though its other retrieved chunks are the
+breadth #1144 asks for.
+
+A hit that carries **no grounding evidence at all** (`term_coverage is None` —
+the pure-vector path, where no reranker ran) is **not judged** and passes
+through: an absent measurement must not authorise what the gate withholds, and
+must not silently disable seeding either. That pass-through is the one state in
+which nothing is being checked, so it increments
+`kb_cause_seed_grounding_unmeasured_total` rather than being inferred from the
+silence of the counter above. `None` means "no reranker ran" and nothing else —
+without a corpus term index the reranker still writes a float (see below), so a
+term-index outage cannot reach this branch.
+
+**There is no second, "covers" ground (#1285).** #1272 shipped one: a runbook
+could also seed if a chunk's `term_coverage` reached `KB_SEED_MIN_TERM_COVERAGE`
+(0.90). It was sized on "Services fail to start or crash with write errors
+referencing ENOSPC" → *Linux Disk Full* at coverage 1.00 — a runbook sentence
+typed back in, and 1.00 for the same reason the arm does not work.
+
+`term_coverage` is a share **of the query**. It is maximised by queries with the
+least vocabulary, not by runbooks that cover the problem, so an absolute
+threshold on it selects for queries that identify nothing. Measured over 226
+queries / 1296 (query, runbook) pairs against the shipped pack — the 24 labelled
+statements, 14 symptom-phrased paraphrases, and 178 real `case.description`
+narratives:
+
+| | pairs |
+|---|---|
+| decided by the names arm | 574 |
+| left undecided by it | 722 |
+| of those, decided by the covers arm | 37 |
+| — on-domain | **1** |
+| — off-domain | **36** |
+| covers-arm firings over the 178 real `case.description` narratives (1026 pairs) | **0** |
+
+All 36 wrong admissions come from content-free statements. "The application is
+slow." — one of the project's own labelled *negatives*, whose correct outcome is
+to seed nothing — reaches coverage 1.000 against eight runbooks at once, seven
+of which it names nothing of: Kinesis, Elasticsearch, Kafka, Lambda, NGINX,
+PostgreSQL and ALB. Its two words appear in all of them.
+
+No threshold repairs that, because the **ordering** is wrong: the highest
+coverage reached by any off-domain pair is 1.000 and the highest by any
+on-domain pair is 0.926 (a disk-full paraphrase). Every bar at or below 0.926
+admits both; every bar above it admits only the content-free queries. 0.90 sat
+in the first regime — admitting those 36 while refusing a correct **rank-1**
+retrieval of the same runbook phrased at 0.885. The arm was not inert and it was
+not mis-calibrated; it was measuring the wrong thing, and it is gone.
+
+**What the surviving ground costs.** The residue account above lists the arm's
+MISSES. Its wrong ADMISSIONS were never written down, and they are the same
+failure shape the coverage ground was removed for: over the labelled
+*negatives* — statements carrying no concrete failure signature, whose correct
+outcome is to seed nothing — the names arm admits **16 of 51** pairs, across
+**8 of 12** such queries, every one on a single generic title word:
+
+| statement | runbook admitted | on |
+|---|---|---|
+| "Latency is high." | AWS Kinesis Data Streams High Iterator Age | `high` |
+| "The service is down." | HAProxy 503 Service Unavailable | `service` |
+| "The cluster is unhealthy." | Envoy returns 503 'no healthy upstream' | `cluster` |
+| "The application is slow." | MongoDB Lock Contention and Slow Operations | `slow` |
+
+Six of those statements clear #1144's corroboration guard as well, so they seed.
+This is #1272's acknowledged residue — it measured requiring two matched terms,
+one above an IDF floor, and a share of the document's identity mass, each
+costing four to nine correct seeds — and it is now **bounded by assertion**
+(`test_the_surviving_arms_wrong_admissions_are_bounded`) rather than only
+described. A query-level precondition ("refuse when the query carries no
+corpus-identifying vocabulary at all") was measured against #1285's corpus and
+rejected on the same grounds: it costs 3 correct queries to save 6 content-free
+ones, which lands inside the same 4–9 band.
+
+What a replacement for the removed COVERAGE ground would have to be, if one is
+ever wanted: not a share of the
+query. Restricting coverage to the query's corpus-*identifying* terms (df ≤
+`IDENTIFIER_DF_RATIO`) does order them correctly — it scores those content-free
+statements 0.000 — but on this labelled set its best bar still admits 9
+off-domain pairs for 4 on-domain, and that bar would be a number chosen from the
+data it is scored on. The residue it would address is real and small: **12**
+on-domain pairs the names arm misses, listed in
+`tests/fixtures/kb_grounding_1285/`.
 
 **Alternatives, measured and rejected.** All against the shipped pack over 34
 statements (the 24 labelled ones in `tests/eval/kb_cause_seeder` plus #1272's
@@ -265,24 +339,38 @@ queries and adversarial variants):
 | "the query names something the corpus never indexed" | false-blocks ordinary prose: on "postgres connections exhausted since Tuesday afternoon" the unseen words are `tuesday` and `afternoon` |
 | a lexical-distinctiveness ratio (best chunk vs a corpus percentile) | measures query *specificity*, not answer correctness — the QEMU queries score above the generic-but-correctly-answered ones |
 
-**What it costs and buys.** Against main's pure-vector seeding path, correct
-seeds 21 → 21 and wrong seeds 24 → 9. Isolating the gate alone (hybrid with it
-off vs on) it costs nothing and *gains* a statement, because excluding an
-ungrounded runbook frees a `MAX_SEEDED_RUNBOOKS` slot for a grounded one that
-was being crowded out:
+**What it costs and buys — CURRENT (one ground, #1285).** Through
+`run_corroboration_eval.py grounding` over the 24 labelled statements, in both
+term-index states:
+
+| | on-domain seeds | off-domain seeds |
+|---|---|---|
+| pure vector | 14 | 27 |
+| hybrid, gate off | 15 | 28 |
+| hybrid + gate | **18** | **12** |
+
+Removing the coverage ground changed that from 18/14 to 18/12: no on-domain
+seed lost, two off-domain seeds withdrawn, identically with and without the
+term index.
+
+**Superseded (two grounds, #1272).** Kept because the reasoning it prompted is
+the reason #1285 happened, not because the numbers still describe the gate:
 
 | | correct seeds | wrong seeds | statements with a correct seed |
 |---|---|---|---|
 | gate off | 21 | 28 | 19 / 21 |
 | gate on (any bar 0.80–1.00) | 21 | 9 | 20 / 21 |
 
-`KB_SEED_MIN_TERM_COVERAGE` is insensitive across that whole range — it is a
-shape, not a tuned number. A hit carrying no grounding evidence at all — the
-pure-vector path, or no term index — is **not judged**: an absent measurement
-must not authorise what the gate withholds, and must not silently disable
-seeding either. `kb_cause_seed_ungrounded_total` is how the constant gets
-re-sized on evidence; `run_corroboration_eval.py grounding` re-runs the
-measurement.
+That insensitivity across 0.80–1.00 was read at the time as "a shape, not a
+tuned number". It was the first sign of #1285: an arm whose value does not
+matter across a fifth of its range is an arm that is barely deciding anything,
+and the measurement that would have distinguished the two readings is the
+per-arm **decision rate with its denominator**, which is now what
+`run_corroboration_eval.py grounding` prints. Run it in **both** term-index
+states (`--no-term-index`) before changing what grounds a seed;
+`kb_cause_seed_ungrounded_total` is what says the gate is refusing more than it
+used to, and `kb_cause_seed_grounding_unmeasured_total` is what says it has
+stopped applying at all.
 
 ### Tool Path
 
@@ -499,7 +587,7 @@ This maps onto FaultMaven's existing hypothesis lifecycle (CAPTURED → ACTIVE �
 | Corpus IDF (term index) | **Implemented** | `CorpusTermStats` — per-collection inverted index; weights term overlap, orders keyword probes, and decides query specificity (#1272) |
 | Dynamic hybrid weights | **Implemented** | Queries naming something rare (`IDENTIFIER_DF_RATIO`, 2% of chunks) shift term overlap to 40%, vector to 25% |
 | Hybrid on the seeding path | **Implemented** | `search_knowledge(use_hybrid=True, min_score=…)` from `_prefetch_kb_context`; the floor is applied at admission, before the top-k cut (#1272) |
-| Seeding grounding gate | **Implemented** | A runbook may seed a candidate cause only if the query named it or it covers the query (`KB_SEED_MIN_TERM_COVERAGE`, #1272) |
+| Seeding grounding gate | **Implemented** | A runbook may seed a candidate cause only if the query named it — one title or `service` term, token-level (#1272). The second, `term_coverage`-threshold ground was removed in #1285: it decided 37 chunks over 226 queries, 36 of them off-domain |
 | Hard pre-filter mode | **Implemented (mechanism only)** | `filter_mode="hard"` injects domain/service into the ChromaDB where clause (`_apply_hard_metadata_filter`). Not yet invoked end-to-end — see "Extension context → KB metadata filters" below. |
 | Fast search mode | **Not done** | Declared in the `search_mode` property docstring, but no config returns `"fast"` and nothing dispatches it. Planned low-latency path (§3 Dual Retrieval Paths). |
 | Scope tiebreaking | **Implemented** | personal > team > global secondary sort in `_rerank()` |

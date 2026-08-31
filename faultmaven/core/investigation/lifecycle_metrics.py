@@ -683,11 +683,13 @@ prompt_context_recovery_total = Counter(
 #                            ``kb_cause_seed_uncorroborated_total``.
 #   not_lexically_grounded — EVERY retrieved chunk was turned away by the #1272
 #                            grounding gate: the query named none of their
-#                            runbooks and none covered the query. Distinct from
-#                            the labels above, which are statements about one
-#                            runbook's match; this one says the corpus does not
-#                            cover the incident at all. Read it with
-#                            ``kb_cause_seed_ungrounded_total``.
+#                            runbooks. Distinct from the labels above, which are
+#                            statements about one runbook's match; this one says
+#                            the corpus does not cover the incident at all. Read
+#                            it with ``kb_cause_seed_ungrounded_total``, and
+#                            against ``kb_cause_seed_grounding_unmeasured_total``
+#                            below — a gate that has stopped applying reports
+#                            nothing here at all.
 #   crashed                — a seeder bug; the transition still completed.
 #
 # No level is "healthy" in the abstract — this is a rate to watch for movement.
@@ -778,9 +780,30 @@ kb_cause_seed_uncorroborated_total = Counter(
 kb_cause_seed_ungrounded_total = Counter(
     "faultmaven_kb_cause_seed_ungrounded_total",
     "Seeding attempts in which retrieved chunks were excluded because the "
-    "query neither named their runbook nor was covered by it (fm#1272). One "
-    "increment per affected attempt. A coverage measure, not an alarm — no "
-    "value is 'healthy'.",
+    "query did not name their runbook (fm#1272). One increment per affected "
+    "attempt. A coverage measure, not an alarm — no value is 'healthy'.",
+)
+
+
+# The gate NOT APPLYING, which is a different event from the gate applying and
+# turning nothing away — and indistinguishable from it in every other signal.
+# A hit carries grounding evidence only if the reranker ran; on the pure-vector
+# path it carries none, and the seeder passes such hits through (an absent
+# measurement must not authorise what the gate withholds, but neither may it
+# disable seeding wholesale). That pass-through is deliberate and it is also
+# the one state in which nothing is being checked, so it is counted rather than
+# inferred from the silence of the counter above (fm#1285).
+#
+# One increment per seeding attempt carrying at least one unmeasured hit.
+# Expected to sit at zero in a normal deployment: KnowledgeVectorStore provides
+# hybrid retrieval, and KnowledgeService warns from the other side when a store
+# that cannot is asked for it. A sustained non-zero rate means KB searches are
+# reaching the seeder without a reranker, and the gate is off for them.
+kb_cause_seed_grounding_unmeasured_total = Counter(
+    "faultmaven_kb_cause_seed_grounding_unmeasured_total",
+    "Seeding attempts in which at least one retrieved chunk carried no lexical "
+    "grounding evidence, so the #1272 grounding gate did not apply to it "
+    "(fm#1285). One increment per affected attempt.",
 )
 
 

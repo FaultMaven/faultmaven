@@ -32,9 +32,12 @@ Modes:
              them; keep it runnable so the claim can be re-checked, not
              re-asserted.
     grounding compare pure-vector, hybrid, and hybrid + the #1272 grounding
-             gate over the same statements. This is the evidence behind
-             KB_SEED_MIN_TERM_COVERAGE and the thing to re-run before re-sizing
-             it. Guarded against the vacuous zero: the corpus is asserted loaded
+             gate over the same statements, applying the ENGINE's
+             ``kb_hit_grounding`` rather than a copy. Prints the per-verdict
+             decision rate with its denominator, so an arm that decides nothing
+             is visible as such. Re-run it, in BOTH term-index states
+             (``--no-term-index``), before changing what grounds a seed.
+             Guarded against the vacuous zero: the corpus is asserted loaded
              and a positive control must fire in the same run.
     e2e      drive the REAL wrapper (_prefetch_kb_context ->
              _seed_candidate_causes_from_kb) with live retrieval and print which
@@ -152,7 +155,9 @@ async def retrieve_hybrid(store, query):
     """The same turn, through the HYBRID path the prefetch now uses (#1272).
 
     Carries the grounding evidence the seeding gate reads — ``term_coverage``
-    and ``identity_terms_in_query`` — which only the reranker can compute.
+    and ``identity_terms_in_query`` — which only the reranker can compute. The
+    field NAMES are the engine's, not this driver's, so ``kb_hit_grounding``
+    can be applied to these objects directly instead of re-implemented here.
     """
     from faultmaven.core.investigation.milestone_engine import (
         KB_PREFETCH_FETCH_LIMIT,
@@ -181,8 +186,8 @@ async def retrieve_hybrid(store, query):
                 parent_document_id=meta.get("parent_document_id"),
                 total_chunks=_read_total_chunks(meta),
                 letters=_read_stamped_cause_letters(meta, hit.get("content") or ""),
-                coverage=hit.get("term_coverage"),
-                named=hit.get("identity_terms_in_query") or [],
+                term_coverage=hit.get("term_coverage"),
+                identity_terms_in_query=hit.get("identity_terms_in_query") or [],
             )
         )
     return hits
@@ -430,12 +435,34 @@ async def mode_e2e(store, corpus, statements):
         )
 
 
-async def mode_grounding(store, corpus, statements):
+async def mode_grounding(store, corpus, statements, no_term_index=False):
     """#1272 grounding gate: what the hybrid path + gate seed, vs pure vector.
 
-    Re-runnable evidence for ``KB_SEED_MIN_TERM_COVERAGE``. Same shape as
-    ``guards``: every candidate is collected before the gate is applied, so the
-    gate's COST is visible and not only its survivors.
+    Re-runnable evidence for the gate, and the thing to re-run before changing
+    what grounds a seed. Same shape as ``guards``: every candidate is collected
+    before the gate is applied, so the gate's COST is visible and not only its
+    survivors.
+
+    It applies the ENGINE's ``kb_hit_grounding``, never a copy of it. A driver
+    that re-implements the predicate reports on a gate it does not share, which
+    is how #1285 — an arm whose firings were 36:1 wrong — stayed invisible here
+    while this mode said the gate was working.
+
+    Prints the per-ARM decision RATE with its denominator, because "the gate
+    turned nothing away" and "the gate is not applying" are the same number in
+    the seed columns and different facts.
+
+    ``--no-term-index`` runs the whole pipeline without corpus statistics. Read
+    it as an END-TO-END comparison, NOT a controlled one: dropping the index
+    also changes which keywords Stage 1 probes with
+    (``_extract_search_keywords``) and which weight profile the reranker picks
+    (``_query_has_identifier``), so the two runs differ in their candidate sets
+    as well as in what ``term_coverage`` means. That is the right question for
+    "does the gate still behave in a deployment with no index", and the wrong
+    one for "does the index change a verdict". The controlled version of the
+    latter holds the candidate set fixed and varies only ``stats``:
+    ``test_kb_seed_grounding_reachability_1285.py``
+    ::``TestATermIndexOutageCannotSwitchTheGateOff``.
 
     Guarded against the vacuous zero. A gate that turns everything away and a
     retrieval that returned nothing produce identical counts, so the corpus is
@@ -443,9 +470,17 @@ async def mode_grounding(store, corpus, statements):
     number below is printed.
     """
     from faultmaven.core.investigation.kb_cause_seeder import MAX_SEEDED_RUNBOOKS
-    from faultmaven.core.investigation.milestone_engine import (
-        KB_SEED_MIN_TERM_COVERAGE,
+    from faultmaven.core.investigation.kb_grounding import (
+        KBSeedGrounding,
+        kb_hit_grounding,
     )
+    from faultmaven.infrastructure.knowledge.knowledge_vector_store import (
+        KnowledgeVectorStore,
+    )
+
+    if no_term_index:
+        KnowledgeVectorStore._corpus_term_stats = lambda self, c: None
+        print("[mode] term index DISABLED for this run")
 
     # --- guard 1: the corpus is loaded -------------------------------------
     collection = store._get_or_create_collection(KB_COLLECTION_NAME)
@@ -466,12 +501,8 @@ async def mode_grounding(store, corpus, statements):
     if not probe:
         sys.exit("COULD NOT ASK: the positive control returned nothing")
 
-    def grounded(hit):
-        if hit.coverage is None and not hit.named:
-            return True  # unmeasured, not ungrounded
-        return bool(hit.named) or hit.coverage >= KB_SEED_MIN_TERM_COVERAGE
-
     totals = {"vector": [0, 0], "hybrid": [0, 0], "hybrid+gate": [0, 0]}
+    verdicts = {v: 0 for v in KBSeedGrounding}
     asked = 0
     pairs = [(q, e) for q, e in statements["positive"]]
     pairs += [(q, []) for q in statements["negative"]]
@@ -481,7 +512,12 @@ async def mode_grounding(store, corpus, statements):
             "vector": await retrieve(store, query),
             "hybrid": await retrieve_hybrid(store, query),
         }
-        ok_parents = {h.parent_document_id for h in arms["hybrid"] if grounded(h)}
+        ok_parents = set()
+        for hit in arms["hybrid"]:
+            verdict = kb_hit_grounding(hit)
+            verdicts[verdict] += 1
+            if verdict is not KBSeedGrounding.UNGROUNDED:
+                ok_parents.add(hit.parent_document_id)
         arms["hybrid+gate"] = [
             h for h in arms["hybrid"] if h.parent_document_id in ok_parents
         ]
@@ -494,9 +530,43 @@ async def mode_grounding(store, corpus, statements):
     print(f"\n{'arm':<14}{'on-domain seeds':>18}{'off-domain seeds':>19}")
     for name, (ok, bad) in totals.items():
         print(f"{name:<14}{ok:>18}{bad:>19}")
+
+    judged = sum(verdicts.values())
+    print(f"\ngrounding verdicts over {judged} retrieved chunks (the denominator):")
+    for verdict, n in verdicts.items():
+        share = f"{100.0 * n / judged:.1f}%" if judged else "n/a"
+        print(f"  {verdict.value:<12}{n:>6}{share:>9}")
+    if not judged:
+        sys.exit("COULD NOT ASK: no chunk reached the gate at all")
+    if verdicts[KBSeedGrounding.UNMEASURED] == judged:
+        sys.exit(
+            "COULD NOT ASK: every chunk was UNMEASURED — no reranker ran, so the "
+            "gate did not apply to anything and the seed columns above say "
+            "nothing about it"
+        )
+    # --- guard 3: a positive control on the GATE ---------------------------
+    # The two guards above prove the corpus loaded and that retrieval returned
+    # something. Neither says the gate DECIDED anything: a gate that grounds
+    # nothing prints a clean table of zeros and exits 0, which reads as "the
+    # guard is working" and is the failure mode this whole mode exists to make
+    # visible. The seed columns cannot distinguish it either — they fall to
+    # zero for a gate that is broken and for a corpus that covers nothing.
+    if not verdicts[KBSeedGrounding.NAMED]:
+        sys.exit(
+            "COULD NOT ASK: the gate grounded NOTHING across every statement. "
+            "Either the corpus is unrelated to them or the gate is broken, and "
+            "the numbers above cannot tell you which"
+        )
+    if not verdicts[KBSeedGrounding.UNGROUNDED]:
+        sys.exit(
+            "COULD NOT ASK: the gate turned NOTHING away, so it is not "
+            "discriminating on this input and its 'cost' below is zero by "
+            "construction"
+        )
     print(
-        f"\nKB_SEED_MIN_TERM_COVERAGE = {KB_SEED_MIN_TERM_COVERAGE}. The gate is "
-        "sized on the on-domain column: it must not fall."
+        "\nThe gate is sized on the on-domain column: it must not fall. A ground "
+        "that decides nothing but UNGROUNDED->NAMED is not a ground; #1285 "
+        "removed one that decided 37 chunks, 36 of them wrong."
     )
 
 
@@ -507,6 +577,16 @@ async def main():
     ap.add_argument("--db", default=DEFAULT_DB)
     ap.add_argument("--statements", default=DEFAULT_STATEMENTS)
     ap.add_argument("--json", dest="json_out")
+    ap.add_argument(
+        "--no-term-index",
+        action="store_true",
+        help="grounding mode: run the whole pipeline with the corpus term "
+        "index forced off. End-to-end, not controlled — it also changes Stage-1 "
+        "keyword probes and the reranker weight profile. A gate validated in "
+        "only one of the two states is not validated, but attributing a "
+        "difference between them to term_coverage alone is not supported by "
+        "this flag.",
+    )
     args = ap.parse_args()
 
     for path in (args.chroma, args.db, args.statements):
@@ -522,7 +602,7 @@ async def main():
         return
 
     if args.mode == "grounding":
-        await mode_grounding(store, corpus, statements)
+        await mode_grounding(store, corpus, statements, args.no_term_index)
         return
 
     rows = await collect(store, corpus, statements)
