@@ -84,6 +84,25 @@ class TestPrefetchUsesHybridRetrieval:
         assert kwargs["limit"] == KB_PREFETCH_FETCH_LIMIT
 
 
+class TestStaleContextIsCleared:
+    @pytest.mark.asyncio
+    async def test_a_trigger_that_finds_nothing_clears_earlier_context(self):
+        """A later trigger's miss must not leave the earlier one's runbooks up.
+
+        The floor moved to admission, which made `relevant` identical to
+        `results` and left the clearing branch — written as `elif results:` —
+        unreachable. Stale runbooks then stood in the prompt as if they still
+        matched.
+        """
+        service = MagicMock()
+        service.search_knowledge = AsyncMock(return_value=[])
+        engine = _engine(service)
+        case = _case()
+        case.kb_context = [{"title": "Something From An Earlier Turn"}]
+        await engine._prefetch_kb_context(case, "root cause query", "root_cause")
+        assert case.kb_context is None
+
+
 class TestSeedingGroundingGate:
     """A runbook may seed only if the query NAMED it or it COVERS the query."""
 

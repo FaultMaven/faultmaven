@@ -11750,11 +11750,27 @@ class MilestoneEngine:
                     f"KB pre-fetch ({trigger}): {len(case.kb_context)} matches "
                     f"for case {case.case_id}"
                 )
-            elif results:
-                # Got results but none cleared the relevance bar → clear stale
-                # context. When the search returned nothing at all, leave any
-                # existing kb_context untouched (a later trigger's empty search
-                # must not wipe context an earlier trigger established).
+            else:
+                # Nothing usable this trigger → clear stale context, so a later
+                # trigger's miss cannot leave an earlier trigger's runbooks
+                # standing in the prompt as if they still matched.
+                #
+                # This used to read ``elif results:``, distinguishing "searched
+                # and found only weak matches" (clear) from "searched and found
+                # nothing at all" (leave alone, in case the search itself had
+                # failed). Moving the floor to admission collapsed that
+                # distinction — `results` is already floored, so `relevant` is
+                # empty exactly when `results` is — which left the branch
+                # unreachable and the stale context never cleared.
+                #
+                # `else` is the right resolution rather than a way to restore
+                # the old shape: the hazard the old guard existed for is
+                # already handled above. A search that genuinely FAILS raises
+                # (the embedder guard turns an unavailable model into an
+                # exception rather than an empty list), and the handler below
+                # returns without touching `kb_context`. So reaching here means
+                # the search ran and produced nothing worth showing, which is
+                # precisely when stale context should go.
                 case.kb_context = None
             return relevant
         except Exception:

@@ -199,6 +199,25 @@ def _flatten_filter_keys(where: dict) -> set:
 _TOKEN_SEPARATORS = re.compile(r"[\s,;:!?.()\[\]{}<>\"'`|/\\=+*#]+")
 
 
+_INFLECTIONAL_SUFFIXES = ("ies", "es", "s")
+
+
+def _fold_plural(term: str) -> str:
+    """Fold an English plural onto its singular, and nothing else.
+
+    Deliberately the crudest possible rule. Its whole job is to let a runbook
+    titled ``Connection`` be named by "connections" without also letting ``Pod``
+    be named by "podman" — so it must recognise inflection and must NOT
+    recognise mere shared prefixes. Anything smarter (a real stemmer) would
+    start folding unrelated words together again, which is the defect it exists
+    to close.
+    """
+    for suffix in _INFLECTIONAL_SUFFIXES:
+        if len(term) > len(suffix) + 2 and term.endswith(suffix):
+            return term[: -len(suffix)] + ("y" if suffix == "ies" else "")
+    return term
+
+
 def _tokenize(text: str) -> List[str]:
     """Split text into lowercased tokens, stripping punctuation."""
     return [t for t in _TOKEN_SEPARATORS.split(text.lower()) if t and len(t) >= 2]
@@ -922,15 +941,47 @@ class KnowledgeVectorStore(BaseExternalClient):
     ) -> List[str]:
         """Which of the document's own identity terms the query actually used.
 
-        Substring rather than token containment, and deliberately in this
-        direction: it lets the runbook's ``Connection`` be named by a user who
-        typed "connections", which is the common shape. The reverse direction
-        would let a runbook titled ``Pod`` be named by "podman".
+        Matched at TOKEN level, under a plural fold. This began as a raw
+        substring test — ``term in query_lower`` — which reads as generous and
+        is in fact a false-positive channel, because a title word is a
+        substring of every longer word that happens to start the same way.
+        Measured against the shipped 91-runbook pack, that grounded:
+
+            "servicenow tickets are not syncing"  -> 6 runbooks
+                                                     (`service`, `sync`)
+            "podman containers exit immediately"  -> 4 Kubernetes runbooks
+                                                     (`pod`)
+            "users cannot login to the portal"    -> 1 (`port`)
+
+        None of those queries is about the runbook it grounded, and grounding is
+        the one check standing between retrieval and asserting a candidate root
+        cause to the user — so this was the gate handing back exactly what it
+        was added to stop.
+
+        The plural fold is what the substring test was really buying: a runbook
+        titled ``Connection`` named by a user who typed "connections", or
+        ``Pod`` by "pods". Folding both sides keeps those and keeps nothing
+        else — ``podman`` does not fold to ``pod``, ``servicenow`` does not fold
+        to ``service``, ``portal`` does not fold to ``port``.
+
+        **What this deliberately does NOT do is require the matched term to be
+        discriminating.** A query that genuinely contains "node" still names
+        "Kubernetes Node NotReady". Every rule that closes that residue was
+        measured and every one is worse: requiring two matched terms, or one
+        above an IDF floor, or a share of the document's identity mass, each
+        cost between four and nine correct seeds and between four and nine
+        statements out of twenty-one — against a residue that grounding alone
+        cannot act on, since a runbook must still clear the similarity floor,
+        name a cause, and corroborate itself on a second chunk before anything
+        is seeded.
         """
         if not query_lower:
             return []
+        folded = {_fold_plural(token) for token in _tokenize(query_lower)}
         return sorted(
-            t for t in cls._document_identity_terms(metadata) if t in query_lower
+            t
+            for t in cls._document_identity_terms(metadata)
+            if _fold_plural(t) in folded
         )
 
     @staticmethod
