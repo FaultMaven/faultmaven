@@ -44,6 +44,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from faultmaven.exceptions import (
+    PROVIDER_CIRCUIT_OPEN,
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
     AuthorizationError,
@@ -143,9 +144,12 @@ def _first_engine_error_code(exc: BaseException) -> Optional[str]:
 
 # Semantic engine error codes (``LLMErrorHandler`` → ``MilestoneEngineError``)
 # that describe a transient LLM-call failure worth retrying: retries were
-# exhausted, the context/output hit a token limit, or the failure could not be
-# classified but still originated from an LLM call (not arbitrary server logic).
-_RETRYABLE_ENGINE_CODES = frozenset({"RETRY_EXHAUSTED", TOKEN_LIMIT, "UNKNOWN_ERROR"})
+# exhausted, the circuit breaker is open, the context/output hit a token limit,
+# or the failure could not be classified but still originated from an LLM call
+# (not arbitrary server logic).
+_RETRYABLE_ENGINE_CODES = frozenset(
+    {"RETRY_EXHAUSTED", PROVIDER_CIRCUIT_OPEN, TOKEN_LIMIT, "UNKNOWN_ERROR"}
+)
 # Semantic engine codes describing a permanent provider/config rejection — the
 # model is misnamed or the credentials are bad; retrying cannot help.
 _TERMINAL_ENGINE_CODES = frozenset({"MODEL_NOT_FOUND", "AUTH_FAILED"})
@@ -200,7 +204,7 @@ def llm_service_error_http_exception(
         LLMException, no status, retryable     → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
         LLMException, no status, terminal      → 502  LLM_PROVIDER_ERROR        (no retry)
         engine RETRY_EXHAUSTED/TOKEN_LIMIT/    → 503  LLM_PROVIDER_UNAVAILABLE  (retry 30)
-          UNKNOWN_ERROR
+          PROVIDER_CIRCUIT_OPEN/UNKNOWN_ERROR
         engine MODEL_NOT_FOUND/AUTH_FAILED     → 502  LLM_PROVIDER_ERROR        (no retry)
         schema-parse failure on the chain      → 503  LLM_INVALID_RESPONSE      (retry 30)
         anything else                          → 500  SERVICE_ERROR             (retry 10)

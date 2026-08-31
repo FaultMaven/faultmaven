@@ -941,6 +941,31 @@ class TestLLMServiceErrorHttpException:
         exc = self._by_engine_code("TOKEN_LIMIT")
         assert exc.status_code == 503
 
+    def test_engine_circuit_open_maps_to_503(self):
+        """fm#1287 — an open LLM breaker is transient and must answer 503 with a
+        Retry-After, the same as RETRY_EXHAUSTED.
+
+        Before it had a code of its own, an open breaker reached this mapping as
+        UNKNOWN_ERROR, which lands on the same 503 by accident. The status is
+        unchanged; what changes is the ``x-error-code`` an operator reads and
+        the engine message behind it, which no longer says "unknown" about a
+        failure the system understands completely.
+        """
+        from faultmaven.exceptions import PROVIDER_CIRCUIT_OPEN
+
+        exc = self._by_engine_code(PROVIDER_CIRCUIT_OPEN)
+        assert exc.status_code == 503
+        assert exc.headers["x-error-code"] == "LLM_PROVIDER_UNAVAILABLE"
+        assert exc.headers["Retry-After"] == "30"
+
+    def test_unknown_engine_code_still_falls_through_to_500(self):
+        """POSITIVE CONTROL for the mapping tests above: a code the table does
+        NOT know must still reach the generic 500, or "maps to 503" would be
+        true of every string."""
+        exc = self._by_engine_code("SOMETHING_NOBODY_DEFINED")
+        assert exc.status_code == 500
+        assert exc.headers["x-error-code"] == "SERVICE_ERROR"
+
     def test_engine_model_not_found_maps_to_502(self):
         exc = self._by_engine_code("MODEL_NOT_FOUND")
         assert exc.status_code == 502

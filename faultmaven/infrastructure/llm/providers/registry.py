@@ -782,7 +782,26 @@ class ProviderRegistry:
             routing_order = self._get_routing_order()
 
         if not routing_order:
-            # All providers unhealthy — force retry primary as last resort
+            # All providers unhealthy — force retry primary as last resort.
+            #
+            # Guarded, because indexing the chain is only safe if there IS one:
+            # an empty ``_fallback_chain`` (no provider initialised — every key
+            # missing or every configured name unknown) raised a bare
+            # ``IndexError`` whose ``str()`` is "list index out of range". That
+            # reached the engine as an unclassifiable failure and the turn
+            # reported "LLM error (IndexError)" — a Python traceback artefact
+            # standing in for the one diagnosis an operator actually needs,
+            # which is that nothing is configured (#1287).
+            if not self._fallback_chain:
+                from faultmaven.models.exceptions import LLMProviderError
+
+                raise LLMProviderError(
+                    "No LLM providers are configured: the fallback chain is "
+                    "empty, so there is nothing to route this request to. Set "
+                    "CHAT_PROVIDER and the matching *_API_KEY.",
+                    error_code="LLM_CONFIG_ERROR",
+                    context={"initialized_providers": sorted(self._providers)},
+                )
             self.logger.warning("⚠️ All providers unhealthy, forcing primary retry")
             routing_order = [self._fallback_chain[0]]
 

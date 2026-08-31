@@ -137,9 +137,12 @@ class LocalProvider(BaseLLMProvider):
             or "ollama" in effective_model.lower()
         ):
             # Ollama-specific API
-            return await self._call_ollama_api(
-                prompt, effective_model, max_tokens, temperature, **kwargs
-            )
+            try:
+                return await self._call_ollama_api(
+                    prompt, effective_model, max_tokens, temperature, **kwargs
+                )
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                raise self._transport_error("Ollama", e) from e
 
         # First try OpenAI-compatible API (most common for modern local LLM servers)
         try:
@@ -153,14 +156,49 @@ class LocalProvider(BaseLLMProvider):
                     return await self._call_llamacpp_api(
                         prompt, effective_model, max_tokens, temperature, **kwargs
                     )
+                except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                    raise self._transport_error("llama.cpp", e) from e
                 except Exception as llamacpp_error:
-                    # If both fail, raise the more informative error
+                    # If both fail, raise the more informative error.
+                    #
+                    # Retryability is carried forward from whichever underlying
+                    # failure declared it. Without that this composite declares
+                    # nothing, defaults to non-retryable, and converts two
+                    # TRANSIENT transport failures into one permanent one — the
+                    # #1287 shape, one layer up.
                     raise LLMException(
-                        f"Local LLM server failed with both API formats. OpenAI-compatible: {openai_error}. Raw llama.cpp: {llamacpp_error}"
+                        f"Local LLM server failed with both API formats. "
+                        f"OpenAI-compatible: {openai_error}. "
+                        f"Raw llama.cpp: {llamacpp_error}",
+                        retryable=(
+                            getattr(openai_error, "retryable", None) is True
+                            or getattr(llamacpp_error, "retryable", None) is True
+                        ),
                     )
             else:
                 # For non-404 errors, re-raise the OpenAI error
                 raise openai_error
+
+    def _transport_error(self, transport: str, error: BaseException) -> LLMException:
+        """Type a transport-layer failure from one of the three local transports.
+
+        ``_call_ollama_api`` and ``_call_llamacpp_api`` do no error handling of
+        their own, so a hung or restarting local server surfaced as a bare
+        ``asyncio.TimeoutError`` — whose ``str()`` is the EMPTY STRING — or as
+        raw aiohttp wording. Neither can be classified downstream by message,
+        and both were therefore treated as permanent (#1287). Retryability is
+        declared here instead, matching what ``_call_openai_compatible_api``
+        already does inline for the third transport.
+        """
+        if isinstance(error, asyncio.TimeoutError):
+            return LLMException(
+                f"Local LLM ({transport}) request timed out after "
+                f"{self.config.timeout} seconds",
+                status_code=504,  # gateway timeout — transient/retryable
+            )
+        return LLMException(
+            f"Local LLM ({transport}) connection error: {str(error)}", retryable=True
+        )
 
     async def _call_ollama_api(
         self, prompt: str, model: str, max_tokens: int, temperature: float, **kwargs
@@ -367,6 +405,17 @@ class LocalProvider(BaseLLMProvider):
                 raise LLMException(
                     f"Local LLM request timed out after {self.config.timeout} seconds",
                     status_code=504,  # gateway timeout — transient/retryable
+                )
+
+            except aiohttp.ClientError as e:
+                # Transport failure with no HTTP status — typed so retryability
+                # is DECLARED rather than inferred from aiohttp's wording
+                # (#1287). Especially load-bearing here: a local Ollama/vLLM
+                # process restarting is exactly a connect failure, and it is
+                # back seconds later.
+                self.logger.warning(f"Local LLM connection error: {e}")
+                raise LLMException(
+                    f"Local LLM connection error: {str(e)}", retryable=True
                 )
 
             except Exception as e:

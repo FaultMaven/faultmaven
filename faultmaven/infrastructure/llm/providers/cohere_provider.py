@@ -227,4 +227,7 @@ class CohereProvider(BaseLLMProvider):
                 status_code=504,  # gateway timeout — transient/retryable
             )
         except aiohttp.ClientError as e:
+            # Transport failure with no HTTP status — typed so retryability is
+            # DECLARED rather than inferred from aiohttp's wording (#1287).
+            # This was the only provider that did so; the other seven now match.
             raise LLMException(f"Cohere connection error: {str(e)}", retryable=True)

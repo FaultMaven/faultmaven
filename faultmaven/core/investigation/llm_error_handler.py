@@ -19,11 +19,14 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
 from faultmaven.exceptions import (
+    PROVIDER_AUTH_FAILED,
+    PROVIDER_CIRCUIT_OPEN,
     QUOTA_EXHAUSTED,
     TOKEN_LIMIT,
-    LLMException,
     is_billing_error,
+    walk_cause_chain,
 )
+from faultmaven.infrastructure.base_client import CircuitBreakerError
 
 logger = logging.getLogger(__name__)
 
@@ -204,13 +207,24 @@ class RetryConfig:
     max_delay_seconds: float = 30.0
     exponential_base: float = 2.0
 
-    # Error message patterns that indicate retryable errors. Used as a fallback
-    # when the exception is not an LLMException (which carries authoritative
-    # retryable/status_code metadata) and not a typed engine signal. All 5xx
-    # codes are listed explicitly because partial matching ("50") would catch
-    # unrelated numbers.
+    # LAST-RESORT error message patterns. Reached only for an exception that
+    # declares no ``retryable`` flag anywhere on its ``__cause__`` chain and is
+    # not a typed engine or timeout signal — i.e. an untyped third-party
+    # exception whose wording is genuinely all there is. All 5xx codes are
+    # listed explicitly because partial matching ("50") would catch unrelated
+    # numbers.
     #
-    # Truncation is deliberately NOT extended here. The engine raises
+    # Nothing FaultMaven raises should need this list, and a fix that ADDS a
+    # phrase here is almost always the wrong one: prose is not a contract, the
+    # raising code is free to reword it, and nothing couples the two. #1287 is
+    # the worked example — "timed out after 30.0s" against a list containing
+    # ``"timeout"``, which is not a substring of ``"timed out"``. The fix was to
+    # make the raising site declare ``retryable`` (``ExternalCallTimeout``) and
+    # to dispatch ``TimeoutError`` on type, so ``"timeout"`` was REMOVED rather
+    # than a second spelling added. ``"gateway timeout"`` stays: it is a
+    # provider-body phrase, and it is the kind of thing this list is for.
+    #
+    # Truncation is deliberately NOT extended here either. The engine raises
     # ``OutputTruncationError`` for it, which is dispatched on type before any
     # of this runs; adding JSON-decoder phrasing would only add entries that
     # never decide anything (and, as #513 showed, entries that look like
@@ -227,7 +241,6 @@ class RetryConfig:
         "429",
         "bad gateway",
         "gateway timeout",
-        "timeout",
         "connection",
         "temporary",
         "overloaded",
@@ -273,24 +286,53 @@ class LLMErrorHandler:
     def is_retryable_error(self, error: Exception) -> bool:
         """Check if error is retryable.
 
-        Prefers the authoritative `LLMException.retryable` flag (set from
-        `status_code` per the 4xx/5xx contract in `faultmaven.exceptions`),
-        walking `__cause__` for cases where a typed exception is the cause
-        of a generic wrapper. Falls back to string-pattern matching for
-        non-LLM errors.
+        Four tiers, in strict precedence order:
+
+        1. The engine's own typed truncation signal.
+        2. **A DECLARED ``retryable`` flag** on any exception in the ``__cause__``
+           chain. The raising code states what it knows; nothing downstream
+           re-derives it. ``LLMException`` sets it from ``status_code`` per the
+           4xx/5xx contract in ``faultmaven.exceptions``, and
+           ``ExternalCallTimeout`` declares it directly.
+        3. ``TimeoutError`` by TYPE — a deadline expiring means the call did not
+           finish, which no message needs to say. This catches a bare
+           ``asyncio.TimeoutError`` from any ``wait_for`` that is not wrapped
+           (``str()`` on one is the EMPTY STRING, so the phrase fallback below
+           can never see a timeout at all).
+        4. Only then, phrase matching — a last resort for untyped third-party
+           exceptions whose wording is all there is.
+
+        Tier 2 replaced an ``isinstance(cursor, LLMException)`` test. Keying on
+        one concrete class meant every other typed exception — including the
+        timeout ``BaseExternalClient`` raises for the LLM router — fell to tier
+        4 and was classified by prose. That prose said "timed out"; the phrase
+        list said "timeout"; a hung provider got zero retries while a provider's
+        own 504 timeout got three (#1287).
+
+        The flag must be a genuine ``bool``. ``getattr`` alone would accept a
+        ``Mock``'s auto-attribute (truthy — every mocked error retryable
+        forever) or an unset/``None`` marker (falsy — a permanent verdict from a
+        class that never made one). Anything that is not ``True``/``False`` is
+        no declaration, so the walk continues past it.
         """
         # The engine's typed truncation signal: retryable exactly while raising
-        # the generation cap is still an option. Checked before the LLMException
+        # the generation cap is still an option. Checked before the declared-flag
         # walk, because the provider exception it was built from may be on the
         # chain and would answer for the wrong question.
         if isinstance(error, OutputTruncationError):
             return not error.cap_reached
 
-        cursor: Optional[BaseException] = error
-        while cursor is not None:
-            if isinstance(cursor, LLMException):
-                return cursor.retryable
-            cursor = cursor.__cause__
+        chain = list(walk_cause_chain(error))
+
+        for cursor in chain:
+            declared = getattr(cursor, "retryable", None)
+            if isinstance(declared, bool):
+                return declared
+
+        # A declaration outranks the type rule, so this runs only when nothing
+        # on the chain declared anything.
+        if any(isinstance(cursor, TimeoutError) for cursor in chain):
+            return True
 
         error_str = str(error).lower()
         return any(pattern in error_str for pattern in self.config.retryable_patterns)
@@ -409,6 +451,59 @@ class LLMErrorHandler:
                     "Once that's done, resend your message to continue."
                 ),
                 error_code=QUOTA_EXHAUSTED,
+            )
+
+        # The LLM circuit breaker is open: this request never reached a
+        # provider, so there is no provider status and no provider wording to
+        # classify from. Dispatched on TYPE, before the prose-matching
+        # classifiers below — its message ("Circuit breaker is open for
+        # LLM_Providers") matches no retry phrase, so it used to fall all the
+        # way through to the UNKNOWN_ERROR tail and report the one failure the
+        # system understands completely as unclassified (#1287).
+        #
+        # Placed AFTER the billing check on purpose: the breaker latches the
+        # error_code of the failure that opened it, and a quota-latched breaker
+        # must keep escalating as QUOTA_EXHAUSTED (the case_b639fac38fe0 chain).
+        # A latched credential rejection is the same shape — permanent until an
+        # operator rotates the key — so it is routed to the same terminal
+        # AUTH_FAILED an unwrapped 401 gets, rather than to a transient code
+        # that invites the user to resend.
+        #
+        # NOT retryable: the breaker's recovery window (30s) outlasts the whole
+        # backoff ladder (2+4+8 = 14s), so every retry would be spent on a
+        # breaker guaranteed to still be open.
+        #
+        # Tested on ``error`` itself rather than walked down ``__cause__``,
+        # because on this path it arrives unwrapped and that is a property of
+        # the path, not an accident: the router re-raises it bare (``except
+        # Exception as e: ... raise``) and ``milestone_engine.llm_operation``
+        # re-raises it bare too (its only wrap is the truncation branch, which
+        # this message cannot enter). If a future wrapper is introduced between
+        # them, this must become a chain walk — a wrapped breaker error would
+        # otherwise silently fall back to the UNKNOWN_ERROR tail this branch
+        # exists to prevent.
+        if isinstance(error, CircuitBreakerError):
+            latched = getattr(error, "error_code", None)
+            if latched == PROVIDER_AUTH_FAILED:
+                logger.error(
+                    f"LLM circuit breaker open on rejected credential: {error}"
+                )
+                return ErrorResult(
+                    action=ErrorAction.ESCALATE,
+                    message="System configuration error. Please contact support.",
+                    error_code="AUTH_FAILED",
+                    retry_count=retry_count,
+                )
+            logger.error(f"LLM circuit breaker open: {error}")
+            return ErrorResult(
+                action=ErrorAction.FAIL,
+                message=(
+                    "The AI provider failed repeatedly, so calls to it are "
+                    "paused briefly to let it recover. Please try again in a "
+                    "minute."
+                ),
+                error_code=PROVIDER_CIRCUIT_OPEN,
+                retry_count=retry_count,
             )
 
         # Check for auth errors (non-retryable)

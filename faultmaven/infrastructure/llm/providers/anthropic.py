@@ -364,6 +364,10 @@ class AnthropicProvider(BaseLLMProvider):
                 f"(model: {selected_model})",
                 status_code=504,  # gateway timeout — transient/retryable
             )
+        except aiohttp.ClientError as e:
+            # Transport failure with no HTTP status — typed so retryability is
+            # DECLARED rather than inferred from aiohttp's wording (#1287).
+            raise LLMException(f"Anthropic connection error: {str(e)}", retryable=True)
 
         # Extract content from Anthropic response format
         content = ""

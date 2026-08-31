@@ -119,7 +119,7 @@ provider condition presented to the user as a FaultMaven bug.
 | provider status 4xx (other, e.g. Gemini 400) | 502 | `LLM_PROVIDER_ERROR` | — |
 | `LLMException`, no status, `retryable` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
 | `LLMException`, no status, terminal | 502 | `LLM_PROVIDER_ERROR` | — |
-| engine `RETRY_EXHAUSTED` / `TOKEN_LIMIT` / `UNKNOWN_ERROR` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
+| engine `RETRY_EXHAUSTED` / `PROVIDER_CIRCUIT_OPEN` / `TOKEN_LIMIT` / `UNKNOWN_ERROR` | 503 | `LLM_PROVIDER_UNAVAILABLE` | 30 |
 | engine `MODEL_NOT_FOUND` / `AUTH_FAILED` | 502 | `LLM_PROVIDER_ERROR` | — |
 | direct schema-parse failure (`ValidationError` / `JSONDecodeError`) | 503 | `LLM_INVALID_RESPONSE` | 30 |
 | anything else | 500 | `SERVICE_ERROR` | 10 |
@@ -133,6 +133,25 @@ because a BEST_EFFORT model may emit valid JSON on the next attempt. Every
 provider stamps `status_code=504` on a client/read timeout
 (`asyncio.TimeoutError`) so the contract classifies timeouts by typed
 status, not the wording of the message.
+
+The same rule holds one layer up. `BaseExternalClient.call_external` bounds
+each attempt with its own deadline and has no provider status to stamp, so it
+raises `ExternalCallTimeout`, which declares `retryable = True` on the
+exception. It previously raised a bare `TimeoutError("… timed out after
+30.0s")` and the engine's retry ladder decided by substring — against a list
+containing `"timeout"`, which is not a substring of `"timed out"` — so a hung
+provider got zero retries while a provider's own 504 got three (#1287). The
+ladder now reads a declared `retryable` flag anywhere on the `__cause__`
+chain, then `TimeoutError` by type (a bare `asyncio.TimeoutError` stringifies
+to the EMPTY STRING, so no phrase list can ever classify one), and only then
+falls back to phrases. Adding a phrase is almost always the wrong fix.
+
+`PROVIDER_CIRCUIT_OPEN` is the engine code for a request the open LLM breaker
+stopped before it reached any provider. It is transient like `RETRY_EXHAUSTED`
+and maps to the same 503, but it names a condition an operator can act on
+instead of reporting the one failure the system understands completely as
+`UNKNOWN_ERROR`. A breaker that latched `QUOTA_EXHAUSTED` or
+`PROVIDER_AUTH_FAILED` keeps that classification instead.
 
 ## Service-Layer Usage Example
 

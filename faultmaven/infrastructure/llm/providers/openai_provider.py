@@ -716,3 +716,10 @@ class OpenAIProvider(BaseLLMProvider):
                 f"(model: {effective_model})",
                 status_code=504,  # gateway timeout — transient/retryable
             )
+        except aiohttp.ClientError as e:
+            # Transport failure with no HTTP status — typed so retryability is
+            # DECLARED rather than inferred from aiohttp's wording (#1287).
+            # Inherited by OpenRouter, which subclasses this provider.
+            raise LLMException(
+                f"{self.provider_name} connection error: {str(e)}", retryable=True
+            )

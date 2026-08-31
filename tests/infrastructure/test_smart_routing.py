@@ -367,6 +367,59 @@ class TestAllProvidersDown:
         with pytest.raises(Exception, match="Fireworks error"):
             await registry.route_request("test prompt")
 
+    @pytest.mark.asyncio
+    async def test_empty_fallback_chain_raises_a_described_error(self, registry):
+        """fm#1287 — the "force primary retry" last resort must not index an
+        EMPTY chain.
+
+        With no provider initialised (every API key missing, or every configured
+        name unknown) ``_fallback_chain`` is empty and ``routing_order =
+        [self._fallback_chain[0]]`` raised a bare ``IndexError`` whose ``str()``
+        is "list index out of range". That reached the engine as an
+        unclassifiable failure and the user was shown "LLM error (IndexError)" —
+        a Python traceback artefact standing in for the one diagnosis an
+        operator actually needs.
+        """
+        from faultmaven.models.exceptions import LLMProviderError
+
+        registry._fallback_chain = []
+        registry._providers = {}
+        registry._provider_states = {}
+
+        with pytest.raises(LLMProviderError) as exc_info:
+            await registry.route_request("test prompt")
+
+        message = str(exc_info.value)
+        assert "No LLM providers are configured" in message
+        assert "CHAT_PROVIDER" in message
+
+    @pytest.mark.asyncio
+    async def test_non_empty_chain_still_forces_the_primary(self, registry):
+        """POSITIVE CONTROL for the guard above: it must fire ONLY on an empty
+        chain. A chain that still has a primary keeps the existing last-resort
+        behaviour — otherwise the guard would have replaced a working recovery
+        path with a hard failure and the test above would pass for the wrong
+        reason."""
+        for state in registry._provider_states.values():
+            state.health = ProviderHealth.UNHEALTHY
+            state.consecutive_failures = 3
+            state.last_failure_time = time.monotonic()
+            state._recovery_cooldown = 60.0
+
+        registry._providers["gemini"].generate = AsyncMock(
+            return_value=LLMResponse(
+                content="response",
+                confidence=0.9,
+                model="gemini-1.5-pro",
+                provider="gemini",
+                tokens_used=100,
+                response_time_ms=250.0,
+            )
+        )
+
+        response = await registry.route_request("test prompt")
+        assert response.provider == "gemini"
+
 
 class TestRoutingOrder:
     """Test provider routing order logic"""
