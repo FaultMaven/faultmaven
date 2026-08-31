@@ -26,7 +26,7 @@ from faultmaven.core.investigation.case_telemetry import (
 from faultmaven.core.investigation.intent_resolver import IntentResolver
 from faultmaven.core.investigation.milestone_engine import (
     MilestoneEngine,
-    check_if_progress_made,
+    score_progress,
 )
 from faultmaven.core.investigation.prompts.context_builder import (
     structural_index_is_searchable,
@@ -118,13 +118,28 @@ def _backfill_consumed_turn(
     momentum and loop detection. A minimal entry is therefore not "honest but
     small" — it actively destroys what those readers need:
 
-    * ``progress_made`` comes from :func:`check_if_progress_made`, the same
-      predicate the engine's own deterministic branches use, NOT a hardcoded
-      ``False``. The turns route accepts an intent alongside files, so a
-      clarification click can carry a genuinely novel upload — and
-      ``_finish_deterministic_turn`` is explicit that such an upload counts.
-      Hardcoding False would report an inert turn on one where the user supplied
-      new data, and leave the stall counter climbing through it.
+    * ``progress_made`` comes from :func:`score_progress` — the same predicate
+      the engine's own deterministic branches use, applied with the same
+      monotone write, NOT a hardcoded ``False``. The turns route accepts an
+      intent alongside files, so a clarification click can carry a genuinely
+      novel upload — and ``_finish_deterministic_turn`` is explicit that such an
+      upload counts. Hardcoding False would report an inert turn on one where
+      the user supplied new data, and leave the stall counter climbing through
+      it.
+
+      The score is written BACK onto *metadata* (#1270), not merely consumed
+      here. All three backstopped routes hand over a dict carrying a hardcoded
+      ``progress_made: False`` beside the turn's upload keys, and that same dict
+      is what the #1142 telemetry row, ``TurnResponse.progress_made`` and the
+      persisted assistant ``case_messages`` row all read. Scoring without
+      writing back left them reporting ``progress_made: false`` beside
+      ``arms.novel_files_uploaded: 1`` and ``turns_without_progress: 0`` — one
+      turn, one decision, three surfaces disagreeing. (The GREETING handler's
+      "the flag says False and the counter is unchanged, which agree" was true
+      when written; #1264 made this function touch the counter and left the flag
+      behind.) The early return above is what keeps the write off every route
+      that reached the engine's Step 6, where ``progress_made`` is already
+      authoritative.
     * the summaries carry the real text. ``_build_graduated_history`` renders
       from the record when one exists and falls back to the message text only
       when it is MISSING, so an empty record does not leave the text alone — it
@@ -139,7 +154,7 @@ def _backfill_consumed_turn(
         return
 
     previous = case.turn_history[-1] if case.turn_history else None
-    progress_made = check_if_progress_made(metadata)
+    progress_made = score_progress(metadata)
     case.turn_history.append(
         TurnProgress(
             turn_number=case.current_turn,
@@ -1639,11 +1654,25 @@ class InvestigationService:
             # turn number is consumed, so a backstop here cannot be missed by a
             # route added later. It is a no-op on every path that already
             # recorded, which is the overwhelming majority.
+            # ONE binding of the turn's metadata dict, shared by every reader
+            # and by the backfill that WRITES to it (#1270). ``or {}`` cannot be
+            # used here: ``{}`` is falsy, so a route returning ``{"metadata":
+            # {}}`` -- or omitting the key -- got a FRESH dict, the backfill's
+            # progress reading was written into that throwaway, and the three
+            # surfaces below (the persisted assistant message, the #1142 row,
+            # ``TurnResponse.progress_made``) went on reading
+            # ``result["metadata"]``, which never received it. That is exactly
+            # the one-turn-three-verdicts split this fix exists to close,
+            # re-opened by a defensive default. ``setdefault`` binds the real
+            # dict and installs one when the key is absent, so the write always
+            # lands where the reads look.
+            turn_meta: dict[str, Any] = result.setdefault("metadata", {})
+
             _backfill_consumed_turn(
                 updated_case,
                 user_message=query or "",
                 agent_response=agent_response_text,
-                metadata=result.get("metadata") or {},
+                metadata=turn_meta,
             )
 
             # Placed HERE, not beside the save: ``next_read_turn`` below is
@@ -1659,9 +1688,7 @@ class InvestigationService:
             # ``case_messages`` row. Popped rather than copied: the row is
             # readable through the transcript API, and this is monitoring data
             # collected like logging data, not part of the product surface.
-            turn_telemetry = (result.get("metadata") or {}).pop(
-                TELEMETRY_HANDOFF_KEY, None
-            ) or {}
+            turn_telemetry = turn_meta.pop(TELEMETRY_HANDOFF_KEY, None) or {}
 
             # Reverse-substitute PII placeholders so user sees real values.
             # The LLM worked with redacted content; the user should not.
@@ -1693,11 +1720,7 @@ class InvestigationService:
             # Filtering at the wrong one is not a rounding error — it ages
             # every entry an extra turn after every clarification click and
             # permanently drops questions the reader would still have taken.
-            resolved_file_id = (
-                (result.get("metadata") or {})
-                .get("file_reclassified", {})
-                .get("file_id")
-            )
+            resolved_file_id = turn_meta.get("file_reclassified", {}).get("file_id")
             next_read_turn = updated_case.effective_current_turn + 1
             carried_entries = _carry_forward_unresolved_clarifications(
                 updated_case.last_suggestions,
@@ -1770,7 +1793,7 @@ class InvestigationService:
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "author_id": None,
                 "token_count": None,
-                "metadata": result.get("metadata", {}),
+                "metadata": turn_meta,
             }
             updated_case.messages.append(agent_message)
             updated_case.message_count += 1
@@ -1789,7 +1812,7 @@ class InvestigationService:
             # case short-circuits inside it, so all three would otherwise be
             # stream GAPS — and a gap silently shortens every streak a consumer
             # computes, making a correct handshake read as an engine-dry run.
-            turn_metadata = result.get("metadata") or {}
+            turn_metadata = turn_meta
             # No handoff means the route never reached the engine's progress
             # decision — but it still reported its uploads, because every route
             # runs ``report_turn_uploads``. Reading the arms off the returned
@@ -1874,11 +1897,9 @@ class InvestigationService:
             response = TurnResponse(
                 agent_response=agent_response_text,
                 turn_number=updated_case.current_turn,
-                milestones_completed=result.get("metadata", {}).get(
-                    "milestones_completed", []
-                ),
+                milestones_completed=turn_meta.get("milestones_completed", []),
                 case_state=updated_case.state,
-                progress_made=result.get("metadata", {}).get("progress_made", False),
+                progress_made=turn_meta.get("progress_made", False),
                 attachments_processed=[
                     AttachmentResult(
                         file_id=res.uploaded_file.file_id,
@@ -1908,7 +1929,7 @@ class InvestigationService:
                 ],
                 suggested_actions=suggested_actions,
                 progress_transparency=self._build_progress_transparency(
-                    result.get("metadata", {}), updated_case
+                    turn_meta, updated_case
                 ),
                 cause_assurance=turn_cause_assurance,
                 cause_overclaim=turn_cause_overclaim,
@@ -2829,14 +2850,17 @@ class InvestigationService:
             "case_updated": case,
             "metadata": {
                 # These two handlers never reach the engine, so they report the
-                # turn's uploads but do not write engine-owned state: no
-                # progress flag, no ``turns_without_progress`` touch. That is
-                # self-consistent — the flag says False and the counter is
-                # unchanged, which agree — where a True flag beside an untouched
-                # counter would be the disagreement #1229 exists to remove.
-                # ``_check_if_progress_made`` is the sole writer of that
-                # counter and it lives in the engine; a service-side second
-                # writer is the two-derivations shape, not a fix for it.
+                # turn's uploads but decide nothing about progress themselves.
+                # ``False`` is the SEED, not the verdict: ``_backfill_consumed_turn``
+                # scores this dict with ``score_progress`` at the chokepoint and
+                # writes the reading back, so a greeting that carried a genuinely
+                # novel upload reports progress on every surface at once (#1270).
+                #
+                # This comment used to argue the hardcoded flag was
+                # self-consistent because the counter was untouched too. #1264
+                # made the backstop touch the counter and left the flag behind,
+                # which is the disagreement #1229 exists to remove — one
+                # decision, not two derivations.
                 "progress_made": False,
                 "milestones_completed": [],
                 **report_turn_uploads(case.case_id, case.current_turn, attachments),

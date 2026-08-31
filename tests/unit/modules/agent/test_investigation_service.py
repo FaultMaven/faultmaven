@@ -604,17 +604,45 @@ class TestInvestigationServiceProcessTurn:
         sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
 
+        # Self-consistent on purpose (#1270): a fired ``milestones_completed``
+        # beside ``progress_made: False`` is the shape the predicate cannot
+        # produce and the telemetry reference calls unemittable, so asserting
+        # that it round-trips would pin a row the engine must never write. The
+        # milestone is what makes the turn a progress turn, so the fixture says
+        # so, and propagation is still measured across all three keys.
         engine_metadata = {
             "milestones_completed": ["symptom_verified"],
-            "progress_made": False,
+            "progress_made": True,
             "next_steps": ["check db connection pool size"],
         }
-        mock_milestone_engine.process_turn = AsyncMock(
-            return_value={
-                "case_updated": sample_case,
+
+        async def _engine_that_recorded_its_turn(*, case, **_kwargs):
+            """Record the turn the way the real engine's Step 6 does.
+
+            Without it ``_backfill_consumed_turn`` treats this as one of the
+            three engine-bypassing routes and re-scores the dict (#1270), which
+            would make this test measure the backstop rather than propagation.
+            """
+            from faultmaven.core.investigation.turn_outcome import TurnOutcome
+            from faultmaven.modules.case.domain.models import TurnProgress
+
+            case.turn_history.append(
+                TurnProgress(
+                    turn_number=case.current_turn,
+                    timestamp=datetime.now(timezone.utc),
+                    milestones_completed=["symptom_verified"],
+                    progress_made=True,
+                    outcome=TurnOutcome.CONVERSATION,
+                )
+            )
+            return {
+                "case_updated": case,
                 "agent_response": "agent response text",
                 "metadata": engine_metadata,
             }
+
+        mock_milestone_engine.process_turn = AsyncMock(
+            side_effect=_engine_that_recorded_its_turn
         )
 
         await service.process_turn(
@@ -631,7 +659,7 @@ class TestInvestigationServiceProcessTurn:
         persisted = assistant_messages[-1].get("metadata") or {}
 
         assert persisted.get("milestones_completed") == ["symptom_verified"]
-        assert persisted.get("progress_made") is False
+        assert persisted.get("progress_made") is True
         assert persisted.get("next_steps") == ["check db connection pool size"]
 
     @pytest.mark.asyncio
