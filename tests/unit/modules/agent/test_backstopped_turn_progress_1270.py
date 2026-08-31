@@ -263,15 +263,39 @@ def test_the_backfill_writes_its_score_back_onto_the_dict(sample_case):
 
 
 def test_the_backfill_does_not_take_back_a_progress_true(sample_case):
-    """Monotone, like the engine's own scorer.
+    """Monotone, like the engine's own scorer — and NOT an endorsement.
 
     ``check_if_progress_made`` reads the arms, never the ``progress_made`` key,
     so an unguarded write-back would clobber a ``True`` a caller had already
-    decided on.
+    decided on. That is the rule being pinned.
+
+    **What is deliberately NOT pinned here:** that a caller-supplied ``True``
+    with every arm zero is a legitimate turn. It is not — it is the mirror of
+    the shape ``docs/reference/case-telemetry-stream.md`` calls unemittable
+    (``progress_made: true`` with every arm 0 reads as a lying counter). This
+    asserts only that the DECISION survives the write-back, so the invariant can
+    be enforced at this seam later without deleting the test. The consequences
+    of an unsupported ``True`` — the ``TurnProgress`` it records and the counter
+    reset it triggers — are left unasserted on purpose. That omission is
+    deliberate, not an oversight: the counter consequence of a SUPPORTED
+    reading is asserted in ``test_the_backfill_writes_its_score_back_onto_the
+    _dict``, which drives a real novel upload and pins
+    ``turns_without_progress == 0``. Covered where it is legitimate, left open
+    where it is not.
+
+    Unreachable at this seam today, and pinned as such by
+    ``test_no_backstopped_route_seeds_an_unsupported_progress_true``: all three
+    routes seed ``False``.
     """
     sample_case.current_turn = 3
     sample_case.turn_history = []
     metadata: dict[str, Any] = {"progress_made": True, "milestones_completed": []}
+
+    # Positive control: the arms alone say False, so a non-monotone write-back
+    # would visibly clobber and this test would not be measuring monotonicity.
+    from faultmaven.core.investigation.milestone_engine import check_if_progress_made
+
+    assert check_if_progress_made(metadata) is False
 
     _backfill_consumed_turn(
         sample_case,
@@ -281,7 +305,34 @@ def test_the_backfill_does_not_take_back_a_progress_true(sample_case):
     )
 
     assert metadata["progress_made"] is True
-    assert sample_case.turn_history[-1].progress_made is True
+
+
+def test_no_backstopped_route_seeds_an_unsupported_progress_true():
+    """The reason the monotone arm above cannot fire in production.
+
+    Monotonicity means the backfill honours a caller-supplied ``True``. If a
+    route ever seeded one with no arm behind it, the result would be a
+    ``TurnProgress(progress_made=True)``, a counter reset, and a row with every
+    arm 0 — the lying-counter shape. None do: all three engine-bypassing routes
+    hand over ``progress_made: False`` and let the backfill decide.
+
+    Read off the source of the handlers themselves rather than a list written
+    here, so a fourth route that seeds ``True`` fails this rather than shipping.
+    """
+    import inspect
+    import re
+
+    from faultmaven.modules.agent.domain.services.investigation_service import (
+        InvestigationService,
+    )
+
+    src = inspect.getsource(InvestigationService)
+    seeds = re.findall(r'"progress_made":\s*(True|False)', src)
+    assert seeds, "denominator: no ``progress_made`` seed found in the service at all"
+    assert set(seeds) == {"False"}, (
+        f"a service route seeds progress_made={set(seeds)}; a True with no arm "
+        "behind it becomes a counter reset and an all-zero-arms row"
+    )
 
 
 def test_an_already_recorded_turn_is_left_alone(sample_case):

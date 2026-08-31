@@ -3917,13 +3917,46 @@ def check_if_progress_made(metadata: dict[str, Any]) -> bool:
     return False
 
 
+def confirmed_transition_arms(case: "Case", executed: bool) -> dict[str, Any]:
+    """Arms for a deterministic branch that just confirmed a terminal proposal.
+
+    Two branches confirm a standing terminal proposal without an LLM call — the
+    step-0b pending-transition short-circuit and the 0c status-transition
+    dropdown — and they were hand-writing this answer differently for the SAME
+    state change: 0c passed ``milestones_completed=["solution_verified"]`` and
+    0b passed none, so a consumer counting gate completions off the #1142 stream
+    mis-counted by which UI affordance the user happened to use.
+
+    Derived from what actually happened rather than from which branch is asking:
+
+    * ``status_transitioned`` is ``executed`` — the value
+      ``confirm_pending_transition`` RETURNED, not an assumption. It returns
+      ``False`` when a pending CLOSE pivots to a RESOLVED proposal, in which
+      case nothing terminal committed and the arm would be a lie.
+    * ``solution_verified`` is claimed only for a RESOLVED landing. It is a
+      resolution milestone, so asserting it on a CLOSED confirmation — which
+      0b also serves — would manufacture a gate completion the case never had.
+    """
+    transitioned = bool(executed)
+    resolved = transitioned and case.state == CaseState.RESOLVED
+    return {
+        "status_transitioned": transitioned,
+        "milestones_completed": ["solution_verified"] if resolved else [],
+    }
+
+
 def score_progress(metadata: dict[str, Any]) -> bool:
     """Score ``progress_made`` onto *metadata*, **monotonically** (#1270).
 
-    The one place the write is defined, because there are three of them: the
-    generation path scores twice (before and after ``_check_automatic_transitions``
-    writes the ``status_transitioned`` arm), and the service's consumed-turn
-    backstop scores once for the routes that never reach Step 6.
+    The one place the write is DEFINED, and every caller routes through it: the
+    generation path scores once at step 4b (after ``_check_automatic_transitions``
+    has written the ``status_transitioned`` arm), the ten deterministic branches
+    score through ``_finish_deterministic_turn``, and the service's consumed-turn
+    backstop scores for the three routes that never reach Step 6. A copy of this
+    expression spelled out at any of them means a refinement here silently skips
+    that path -- which is the divergence-between-copies failure this function
+    exists to prevent, so the count is deliberately not restated as a number
+    that can rot.
 
     Monotone because :func:`check_if_progress_made` reads the nine ARMS and
     never the ``progress_made`` key. A plain
@@ -5267,7 +5300,7 @@ class MilestoneEngine:
                             agent_response,
                             upload_report,
                             progress_made=True,
-                            status_transitioned=True,
+                            **confirmed_transition_arms(case, executed),
                         )
                         await self.repository.save(case)
 
@@ -5570,7 +5603,7 @@ class MilestoneEngine:
                             confirm_pending_transition,
                         )
 
-                        confirm_pending_transition(case, case.user_id)
+                        executed = confirm_pending_transition(case, case.user_id)
 
                         logger.info(
                             f"INVESTIGATING->RESOLVED dropdown: confirmed existing pending "
@@ -5591,16 +5624,15 @@ class MilestoneEngine:
                             user_message or "",
                             _resp,
                             upload_report,
-                            milestones_completed=["solution_verified"],
                             progress_made=True,
-                            # The case DID transition on this turn, so the arm
-                            # belongs on the dict the row is built from — as its
-                            # sibling branch (the pending-transition confirm
-                            # short-circuit) already passes it. This used to be
-                            # written onto the OUTER metadata, which this branch
-                            # never returns, so the arm was reported by one of
-                            # the two confirm paths and not the other.
-                            status_transitioned=True,
+                            # Both confirm branches answer this the SAME way, from
+                            # what the transition actually did — including
+                            # ``confirm_pending_transition``'s return value rather
+                            # than an assumption that it committed. The arm used to
+                            # be written onto the OUTER metadata here, which this
+                            # branch never returns, so it was reported by one of the
+                            # two confirm paths and not the other.
+                            **confirmed_transition_arms(case, executed),
                         )
                         await self.repository.save(case)
 
@@ -5997,9 +6029,22 @@ class MilestoneEngine:
             # structured response; side effects are applied in
             # _apply_investigation_updates → _apply_stage_gate_side_effects.
 
-            # Phase 1: No-Op Detection. Provisional — re-scored at 4b once the
-            # last arm writer has run.
-            self._score_progress(metadata)
+            # Phase 1: No-Op Detection happens at 4b below, not here. This is
+            # where the reading USED to be taken, five lines before
+            # ``_check_automatic_transitions`` wrote the arm it scores (#1270).
+            #
+            # The provisional reading that briefly stood here is gone rather than
+            # kept: nothing between this point and 4b reads ``progress_made``
+            # (``_check_automatic_transitions`` writes ``status_transitioned``
+            # and the readiness verdicts, and reads neither), so it decided
+            # nothing — while leaving a value on the shared dict that is
+            # provisional BY DESIGN, which is the read-before-write hazard this
+            # fix exists to remove, re-armed for whatever gets inserted here
+            # next. One decision point per turn.
+            #
+            # This is not the "move the block" the issue warned against: the
+            # block's other statements stay where they are, and deleting a dead
+            # call touches less than keeping it.
             # Outcome is already set by _process_response_structured (default) or applied updates (LLM choice)
 
             # 4. Check for automatic status transitions
@@ -12657,12 +12702,17 @@ class MilestoneEngine:
         }
         if status_transitioned:
             metadata["status_transitioned"] = status_transitioned
-        # Upload keys before the progress read: ``_check_if_progress_made``
+        # Upload keys before the progress read: ``check_if_progress_made``
         # scores ``novel_files_uploaded`` off this same dict.
         metadata.update(upload_report)
-        metadata["progress_made"] = progress_made or self._check_if_progress_made(
-            metadata
-        )
+        # The SHARED monotone write, not a fourth copy of it (#1270). ``metadata
+        # ["progress_made"]`` is already seeded with the caller's ``progress_made``
+        # above, and ``score_progress`` is ``seeded or predicate(...)`` -- the same
+        # expression this line used to spell out. Spelling it out again meant a
+        # refinement to ``score_progress`` silently skipped all ten deterministic
+        # branches, which is the divergence-between-copies failure the rest of
+        # this work exists to close.
+        self._score_progress(metadata)
 
         case.turn_history.append(
             TurnProgress(

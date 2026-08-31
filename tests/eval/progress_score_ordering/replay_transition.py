@@ -19,6 +19,7 @@ Corpus override: ``FM_CASES_DB``. Sample cap for a quick pass: ``FM_LIMIT``.
 """
 
 import asyncio
+import contextlib
 import json
 import os
 import sqlite3
@@ -98,7 +99,11 @@ def transition_index(turns: list[dict]) -> int | None:
 
 
 def load_corpus() -> list[dict]:
-    conn = sqlite3.connect(DB)
+    with contextlib.closing(sqlite3.connect(DB)) as conn:
+        return _load_corpus(conn)
+
+
+def _load_corpus(conn: sqlite3.Connection) -> list[dict]:
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         "select case_id, user_id, organization_id, title, description, "

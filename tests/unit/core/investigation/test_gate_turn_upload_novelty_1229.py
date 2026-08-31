@@ -41,6 +41,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import faultmaven.core.investigation.milestone_engine as milestone_engine_module
 import faultmaven.core.investigation.prompts.context_builder as context_builder
 from faultmaven.core.investigation.milestone_engine import MilestoneEngine
 from faultmaven.core.investigation.schemas import InvestigationResponse_Diagnosis
@@ -564,20 +565,24 @@ class TestTheStoredTurnAgreesWithTheReportedTurn:
         assert case.turn_history[-1].progress_made is False
         assert case.turns_without_progress == STANDING_STALL
 
-    async def test_the_reading_is_check_if_progress_made_itself(self):
+    async def test_the_reading_is_check_if_progress_made_itself(self, monkeypatch):
         """Not a copy of its upload arm — so a progress arm added there in
         future lands on the deterministic paths too, instead of on the
         generation path alone."""
         engine = _engine()
         case = _investigating_case(pending="closed")
         scored: list[dict] = []
-        original = engine._check_if_progress_made
+        # Spy the MODULE function, not the bound method: #1270 routed the
+        # deterministic write through the shared ``score_progress``, which calls
+        # ``check_if_progress_made`` at module scope. Patching the method here
+        # would silently observe nothing and make this guard vacuous.
+        original = milestone_engine_module.check_if_progress_made
 
         def _spy(metadata):
             scored.append(dict(metadata))
             return original(metadata)
 
-        engine._check_if_progress_made = _spy
+        monkeypatch.setattr(milestone_engine_module, "check_if_progress_made", _spy)
 
         await _gate_turn(engine, case, [_novel()])
 

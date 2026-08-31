@@ -23,6 +23,7 @@ Corpus override: ``FM_CASES_DB``.
 """
 
 import collections
+import contextlib
 import json
 import os
 import sqlite3
@@ -79,12 +80,12 @@ def run_counter(scores: list[bool], deterministic: list[bool]) -> list[int]:
 
 
 def main() -> None:
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "select case_id, turns_without_progress, metadata from cases "
-        "where metadata is not null"
-    ).fetchall()
+    with contextlib.closing(sqlite3.connect(DB)) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "select case_id, turns_without_progress, metadata from cases "
+            "where metadata is not null"
+        ).fetchall()
 
     model_ok = model_bad = 0
     rescored = 0
@@ -136,10 +137,20 @@ def main() -> None:
                 ever_before[name] += 1
             if hit_a is not None:
                 ever_after[name] += 1
-            if hit_b is not None and hit_a is not None and hit_a != hit_b:
-                delay[(name, hit_a - hit_b)] += 1
+            # All four transitions, including the FALSIFYING one. The fix can
+            # only ever delay a stall signal, so a band crossed in AFTER but not
+            # in BEFORE -- or crossed EARLIER -- would contradict the claim this
+            # script exists to support. Dropping those cases meant the output
+            # could not disagree with its own thesis.
+            if hit_b is not None and hit_a is not None:
+                if hit_a > hit_b:
+                    delay[(name, f"later by {hit_a - hit_b}")] += 1
+                elif hit_a < hit_b:
+                    delay[(name, f"EARLIER by {hit_b - hit_a}")] += 1
             elif hit_b is not None and hit_a is None:
-                delay[(name, "never")] += 1
+                delay[(name, "never crossed after")] += 1
+            elif hit_b is None and hit_a is not None:
+                delay[(name, "NEWLY crossed after")] += 1
 
         final_before.append(before[-1])
         final_after.append(after[-1])
@@ -193,9 +204,17 @@ def main() -> None:
         f"after {ever_after['blocked']}"
     )
     print()
-    print("how much LATER the first crossing happens ('never' = no longer crossed)")
+    print("when the first band crossing happens, after vs before")
+    if not delay:
+        print("  (no case crosses a band on either side)")
     for key in sorted(delay, key=lambda k: (k[0], str(k[1]))):
-        print(f"  {key[0]:8s} +{key[1]}: {delay[key]} cases")
+        print(f"  {key[0]:8s} {key[1]}: {delay[key]} cases")
+    wrong_way = {k: v for k, v in delay.items() if "EARLIER" in k[1] or "NEWLY" in k[1]}
+    if wrong_way:
+        print(
+            "  CONTRADICTION: the fix can only delay a stall signal, but these "
+            f"cases cross a band sooner or newly: {wrong_way}"
+        )
 
 
 if __name__ == "__main__":

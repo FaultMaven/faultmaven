@@ -604,9 +604,15 @@ class TestInvestigationServiceProcessTurn:
         sample_case.user_id = sample_user_id
         await mock_case_repository.save(sample_case)
 
+        # Self-consistent on purpose (#1270): a fired ``milestones_completed``
+        # beside ``progress_made: False`` is the shape the predicate cannot
+        # produce and the telemetry reference calls unemittable, so asserting
+        # that it round-trips would pin a row the engine must never write. The
+        # milestone is what makes the turn a progress turn, so the fixture says
+        # so, and propagation is still measured across all three keys.
         engine_metadata = {
             "milestones_completed": ["symptom_verified"],
-            "progress_made": False,
+            "progress_made": True,
             "next_steps": ["check db connection pool size"],
         }
 
@@ -624,7 +630,8 @@ class TestInvestigationServiceProcessTurn:
                 TurnProgress(
                     turn_number=case.current_turn,
                     timestamp=datetime.now(timezone.utc),
-                    progress_made=False,
+                    milestones_completed=["symptom_verified"],
+                    progress_made=True,
                     outcome=TurnOutcome.CONVERSATION,
                 )
             )
@@ -652,7 +659,7 @@ class TestInvestigationServiceProcessTurn:
         persisted = assistant_messages[-1].get("metadata") or {}
 
         assert persisted.get("milestones_completed") == ["symptom_verified"]
-        assert persisted.get("progress_made") is False
+        assert persisted.get("progress_made") is True
         assert persisted.get("next_steps") == ["check db connection pool size"]
 
     @pytest.mark.asyncio

@@ -1654,11 +1654,25 @@ class InvestigationService:
             # turn number is consumed, so a backstop here cannot be missed by a
             # route added later. It is a no-op on every path that already
             # recorded, which is the overwhelming majority.
+            # ONE binding of the turn's metadata dict, shared by every reader
+            # and by the backfill that WRITES to it (#1270). ``or {}`` cannot be
+            # used here: ``{}`` is falsy, so a route returning ``{"metadata":
+            # {}}`` -- or omitting the key -- got a FRESH dict, the backfill's
+            # progress reading was written into that throwaway, and the three
+            # surfaces below (the persisted assistant message, the #1142 row,
+            # ``TurnResponse.progress_made``) went on reading
+            # ``result["metadata"]``, which never received it. That is exactly
+            # the one-turn-three-verdicts split this fix exists to close,
+            # re-opened by a defensive default. ``setdefault`` binds the real
+            # dict and installs one when the key is absent, so the write always
+            # lands where the reads look.
+            turn_meta: dict[str, Any] = result.setdefault("metadata", {})
+
             _backfill_consumed_turn(
                 updated_case,
                 user_message=query or "",
                 agent_response=agent_response_text,
-                metadata=result.get("metadata") or {},
+                metadata=turn_meta,
             )
 
             # Placed HERE, not beside the save: ``next_read_turn`` below is
@@ -1674,9 +1688,7 @@ class InvestigationService:
             # ``case_messages`` row. Popped rather than copied: the row is
             # readable through the transcript API, and this is monitoring data
             # collected like logging data, not part of the product surface.
-            turn_telemetry = (result.get("metadata") or {}).pop(
-                TELEMETRY_HANDOFF_KEY, None
-            ) or {}
+            turn_telemetry = turn_meta.pop(TELEMETRY_HANDOFF_KEY, None) or {}
 
             # Reverse-substitute PII placeholders so user sees real values.
             # The LLM worked with redacted content; the user should not.
@@ -1708,11 +1720,7 @@ class InvestigationService:
             # Filtering at the wrong one is not a rounding error — it ages
             # every entry an extra turn after every clarification click and
             # permanently drops questions the reader would still have taken.
-            resolved_file_id = (
-                (result.get("metadata") or {})
-                .get("file_reclassified", {})
-                .get("file_id")
-            )
+            resolved_file_id = turn_meta.get("file_reclassified", {}).get("file_id")
             next_read_turn = updated_case.effective_current_turn + 1
             carried_entries = _carry_forward_unresolved_clarifications(
                 updated_case.last_suggestions,
@@ -1785,7 +1793,7 @@ class InvestigationService:
                 "created_at": to_json_compatible(datetime.now(timezone.utc)),
                 "author_id": None,
                 "token_count": None,
-                "metadata": result.get("metadata", {}),
+                "metadata": turn_meta,
             }
             updated_case.messages.append(agent_message)
             updated_case.message_count += 1
@@ -1804,7 +1812,7 @@ class InvestigationService:
             # case short-circuits inside it, so all three would otherwise be
             # stream GAPS — and a gap silently shortens every streak a consumer
             # computes, making a correct handshake read as an engine-dry run.
-            turn_metadata = result.get("metadata") or {}
+            turn_metadata = turn_meta
             # No handoff means the route never reached the engine's progress
             # decision — but it still reported its uploads, because every route
             # runs ``report_turn_uploads``. Reading the arms off the returned
@@ -1889,11 +1897,9 @@ class InvestigationService:
             response = TurnResponse(
                 agent_response=agent_response_text,
                 turn_number=updated_case.current_turn,
-                milestones_completed=result.get("metadata", {}).get(
-                    "milestones_completed", []
-                ),
+                milestones_completed=turn_meta.get("milestones_completed", []),
                 case_state=updated_case.state,
-                progress_made=result.get("metadata", {}).get("progress_made", False),
+                progress_made=turn_meta.get("progress_made", False),
                 attachments_processed=[
                     AttachmentResult(
                         file_id=res.uploaded_file.file_id,
@@ -1923,7 +1929,7 @@ class InvestigationService:
                 ],
                 suggested_actions=suggested_actions,
                 progress_transparency=self._build_progress_transparency(
-                    result.get("metadata", {}), updated_case
+                    turn_meta, updated_case
                 ),
                 cause_assurance=turn_cause_assurance,
                 cause_overclaim=turn_cause_overclaim,

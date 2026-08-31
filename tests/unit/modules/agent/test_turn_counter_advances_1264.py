@@ -280,27 +280,68 @@ class TestTheRecordDoesNotDestroyWhatTurnHistoryFeeds:
         assert case.turn_history[-1].progress_made is True
         assert case.turns_without_progress == 0
 
-    def test_the_predicate_is_the_engine_s_own(self):
+    def test_the_predicate_is_the_engine_s_own(self, sample_case, monkeypatch):
         """Scored with the same function the engine's deterministic branches
         use, so a progress arm added there lands here too rather than needing a
-        second edit nobody remembers to make."""
+        second edit nobody remembers to make.
+
+        Two hops since #1270: the backfill calls ``score_progress``, the
+        engine-side monotone write, which is itself defined in terms of the
+        predicate.
+
+        **Matched against the BODY, and then proved by execution.** Both
+        functions NAME the other in their prose, so a substring search over the
+        whole source is satisfied by documentation alone — gutting
+        ``score_progress`` to ``return bool(metadata.get("progress_made"))``
+        leaves two occurrences in its docstring and a naive search still passes.
+        A guard written to prevent divergence that is satisfied by prose IS the
+        divergence it was meant to catch. So the docstring is stripped before
+        the match, and a spy on the predicate then shows the delegation is a
+        CALL rather than a mention.
+        """
         import inspect
 
+        import faultmaven.core.investigation.milestone_engine as engine_module
         from faultmaven.core.investigation.milestone_engine import (
             check_if_progress_made,
             score_progress,
         )
         from faultmaven.modules.agent.domain.services import investigation_service
 
-        # Two hops since #1270: the backfill calls ``score_progress``, the
-        # engine-side monotone write, which is itself defined in terms of the
-        # predicate. Both links are asserted so replacing either with a local
-        # copy still fails here.
-        assert "score_progress" in inspect.getsource(
-            investigation_service._backfill_consumed_turn
-        )
-        assert "check_if_progress_made" in inspect.getsource(score_progress)
+        def _body(fn) -> str:
+            src = inspect.getsource(fn)
+            doc = inspect.getdoc(fn)
+            for line in (doc or "").splitlines():
+                src = src.replace(line, "")
+            return src
+
+        backfill_body = _body(investigation_service._backfill_consumed_turn)
+        score_body = _body(score_progress)
+        assert "score_progress" in backfill_body, backfill_body
+        assert "check_if_progress_made" in score_body, score_body
         assert check_if_progress_made({"novel_files_uploaded": ["f"]}) is True
+
+        # Executed, not merely spelled: patching the predicate must change what
+        # the backfill records. A source match cannot tell a call from a mention.
+        case = sample_case
+        case.turn_history = []
+        case.current_turn = 3
+        calls: list[dict] = []
+        original = engine_module.check_if_progress_made
+
+        def _spy(metadata):
+            calls.append(dict(metadata))
+            return original(metadata)
+
+        monkeypatch.setattr(engine_module, "check_if_progress_made", _spy)
+        _backfill_consumed_turn(
+            case,
+            user_message="here",
+            agent_response="ack",
+            metadata={"novel_files_uploaded": ["file_0123456789ab"]},
+        )
+        assert calls, "the backfill never reached the predicate at all"
+        assert case.turn_history[-1].progress_made is True
 
 
 class TestTheBackfilledTurnIsHonest:
