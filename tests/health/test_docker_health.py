@@ -1,119 +1,79 @@
-"""Docker and infrastructure health checks.
+"""Infrastructure smoke check against the database a deployment configures.
 
-Smoke tests to verify Docker services (Redis, PostgreSQL, etc.) are accessible.
-These tests are skipped if services are not running.
+This verifies that the PostgreSQL a deployment *says* it has is actually
+reachable and answering. It is a smoke test: its whole value is failing when
+the infrastructure is down, so its skip guard deliberately asks "has this
+environment been told where the database is?" and never "is the database up?"
+— gating on reachability would make it a tautology that can only run when it is
+already going to pass.
 
-NOTE: These tests require the cloud profile with infrastructure services.
+Until #1257 all three tests in this file carried
+``@pytest.mark.skipif(condition=True, ...)``. A literal condition evaluates
+nothing, so none of them had ever run, in CI or anywhere else, and the
+endpoints they hardcoded (``redis.faultmaven.local``, a ``faultmaven_dev``
+database on localhost) appear nowhere else in the repo.
+
+Two of the three were dropped rather than repaired:
+
+* ``test_docker_compose_services`` asserted the reachability of Redis and
+  PostgreSQL *as Docker Compose services*, and this repo's
+  ``docker-compose.yml`` defines neither — it runs the API and Dashboard, with
+  Redis in-process as FakeRedis.
+* ``test_redis_connection`` was strictly weaker than a check that already
+  gates the same job. ``scripts/check_redis_pairing.py`` runs as a step before
+  the Test Cloud suite; it resolves Redis through the app's own
+  ``get_async_redis_client()`` and **fails on a silent FakeRedis fallback**,
+  which is fm#1031 and the failure that actually happens. A test that builds
+  ``redis.Redis(host=...)`` by hand cannot see that fallback at all — it would
+  pass green in exactly the scenario the script exists to catch — and its
+  set/get round-trip is a subset of what the script already does. Keeping it
+  would have been coverage theatre.
 """
 
+import os
+
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, make_url, text
 
-# Conditional redis import - only available in the cloud profile
-try:
-    import redis
+pytestmark = pytest.mark.cloud
 
-    REDIS_AVAILABLE = True
-except ImportError:
-    redis = None
-    REDIS_AVAILABLE = False
-
-pytestmark = [
-    pytest.mark.cloud,
-    pytest.mark.skipif(
-        not REDIS_AVAILABLE, reason="Redis not available - requires the cloud profile"
-    ),
-]
+# A Postgres smoke check is only meaningful where a Postgres is configured.
+# Same condition the `postgres` marker documents.
+_DATABASE_URL = os.environ.get("DATABASE_URL", "")
+_POSTGRES_CONFIGURED = _DATABASE_URL.startswith("postgresql")
 
 
+@pytest.mark.postgres
 @pytest.mark.skipif(
-    condition=True, reason="Requires Docker services - run manually when Docker is up"
-)
-def test_redis_connection():
-    """Test Redis connection via Docker.
-
-    Verifies that Redis is accessible at the default Docker host/port.
-    This is a smoke test to catch basic connectivity issues.
-
-    Requires the cloud profile with redis installed.
-    """
-    if not REDIS_AVAILABLE:
-        pytest.skip("Redis not available - requires the cloud profile")
-    try:
-        client = redis.Redis(
-            host="redis.faultmaven.local",
-            port=6379,
-            decode_responses=True,
-            socket_connect_timeout=5,
-        )
-        # Ping Redis
-        assert client.ping() is True
-        # Set and get a test value
-        client.set("health_check", "ok", ex=60)
-        assert client.get("health_check") == "ok"
-        client.delete("health_check")
-    except redis.ConnectionError as e:
-        pytest.fail(f"Redis connection failed: {e}")
-
-
-@pytest.mark.skipif(
-    condition=True, reason="Requires Docker services - run manually when Docker is up"
+    not _POSTGRES_CONFIGURED,
+    reason="DATABASE_URL is not a PostgreSQL URL - no Postgres configured",
 )
 def test_postgres_connection():
-    """Test PostgreSQL connection via Docker.
+    """The configured PostgreSQL accepts a connection and answers a query.
 
-    Verifies that PostgreSQL is accessible at the default Docker host/port.
-    This is a smoke test to catch basic connectivity issues.
+    Marked ``postgres`` so it is SELECTED by the Test PostgreSQL Integration
+    job, which is the only job that configures a Postgres. Without that marker
+    the gate below is true in every job that selects the test and false in the
+    only job that could satisfy it — a guard that evaluates but never opens,
+    which is #1257 respelled with an environment variable. Review caught it
+    where the guard could not: the postgres job's own anti-silent-skip check
+    greps the summary for "N skipped", and a DESELECTED test produces no such
+    line, so deselection is invisible to it.
     """
+    # DATABASE_URL carries the app's async driver (postgresql+asyncpg://).
+    # This check is synchronous, so drop the driver and let SQLAlchemy pick the
+    # sync default rather than handing asyncpg to create_engine().
+    url = make_url(_DATABASE_URL).set(drivername="postgresql")
+
+    engine = create_engine(
+        url,
+        pool_pre_ping=True,
+        connect_args={"connect_timeout": 5},
+    )
     try:
-        # Use synchronous engine for simple health check
-        engine = create_engine(
-            "postgresql://faultmaven:faultmaven@localhost:5432/faultmaven_dev",
-            pool_pre_ping=True,
-            connect_args={"connect_timeout": 5},
-        )
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT 1"))
-            assert result.scalar() == 1
+            assert conn.execute(text("SELECT 1")).scalar() == 1
     except Exception as e:
         pytest.fail(f"PostgreSQL connection failed: {e}")
-
-
-@pytest.mark.skipif(
-    condition=True, reason="Requires Docker services - run manually when Docker is up"
-)
-def test_docker_compose_services():
-    """Test that all expected Docker Compose services are reachable.
-
-    This test verifies connectivity to all infrastructure services
-    defined in docker-compose.yml.
-    """
-    services_status = {}
-
-    # Test Redis (only if available)
-    if REDIS_AVAILABLE:
-        try:
-            client = redis.Redis(
-                host="redis.faultmaven.local", port=6379, socket_connect_timeout=2
-            )
-            services_status["redis"] = client.ping()
-        except:
-            services_status["redis"] = False
-    else:
-        services_status["redis"] = False  # Redis runs in-process in standalone
-
-    # Test PostgreSQL
-    try:
-        engine = create_engine(
-            "postgresql://faultmaven:faultmaven@localhost:5432/faultmaven_dev",
-            connect_args={"connect_timeout": 2},
-        )
-        with engine.connect() as conn:
-            services_status["postgres"] = conn.execute(text("SELECT 1")).scalar() == 1
-    except:
-        services_status["postgres"] = False
-
-    # Report results
-    failed_services = [name for name, status in services_status.items() if not status]
-    if failed_services:
-        pytest.fail(f"Services unreachable: {', '.join(failed_services)}")
+    finally:
+        engine.dispose()

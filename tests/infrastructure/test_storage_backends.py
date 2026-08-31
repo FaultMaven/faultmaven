@@ -12,7 +12,7 @@ import os
 import tempfile
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -47,6 +47,12 @@ _BOTO3_AVAILABLE = _boto3_spec is not None and _boto3_spec.origin is not None
 _REQUIRES_BOTO3 = pytest.mark.skipif(
     not _BOTO3_AVAILABLE, reason="boto3 is a cloud-only dependency"
 )
+
+# What the mocked client hands back for a presigned request. A module constant
+# so the tests can assert the backend returns it VERBATIM: asserting a substring
+# of the mock's own return value ("X-Amz" is in it) tests the fixture, not the
+# backend, and cannot fail however the backend mangles the URL.
+PRESIGNED_URL = "https://bucket.s3.amazonaws.com/key?X-Amz-Signature=abc123"
 
 # =============================================================================
 # Fixtures
@@ -89,13 +95,47 @@ def filesystem_backend(temp_storage_dir):
 
 @pytest.fixture
 def mock_boto3_client():
-    """Create mock boto3 S3 client."""
-    mock_client = MagicMock()
+    """A stand-in for the boto3 S3 client, specced against the real one.
+
+    ``create_autospec`` rather than a bare ``MagicMock``: a bare mock answers
+    to any attribute with any arguments, so a backend that called a method S3
+    does not have — or passed ``generate_presigned_url`` a keyword it does not
+    take — would still sail through every assertion below. botocore generates
+    its API methods as ``(*args, **kwargs)``, so the spec buys method-name
+    enforcement there rather than signature enforcement; ``generate_presigned_url``
+    is a hand-written method and *is* signature-checked.
+
+    Requires boto3. Every consumer carries ``_REQUIRES_BOTO3``; the check
+    below is what makes that a mechanism rather than a convention kept in a
+    comment.
+
+    Deliberately NOT ``pytest.importorskip("boto3")``, which was the obvious
+    alternative: it would turn a test that forgot its guard into a SILENT SKIP
+    in Test Standalone — green, invisible, and the exact defect #1257 is about.
+    A loud failure naming the missing decorator is the outcome that gets fixed.
+    """
+    if not _BOTO3_AVAILABLE:
+        raise RuntimeError(
+            "mock_boto3_client needs boto3, so the requesting test must carry "
+            "@_REQUIRES_BOTO3. Add it. (Not importorskip: a silent skip here "
+            "is the failure mode this file exists to demonstrate.)"
+        )
+
+    import boto3
+
+    # Explicit dummy credentials and region: client construction reads local
+    # config but never the network, and passing both keeps it off the IMDS
+    # lookup path on a runner with no AWS environment.
+    real_client = boto3.client(
+        "s3",
+        region_name="us-east-1",
+        aws_access_key_id="testing",
+        aws_secret_access_key="testing",
+    )
+    mock_client = create_autospec(real_client, instance=True)
 
     # Mock presigned URL generation
-    mock_client.generate_presigned_url.return_value = (
-        "https://bucket.s3.amazonaws.com/key?X-Amz-Signature=abc123"
-    )
+    mock_client.generate_presigned_url.return_value = PRESIGNED_URL
 
     # Mock head_object (file exists check)
     mock_client.head_object.return_value = {
@@ -611,118 +651,180 @@ class TestFilesystemPathContainment:
 # =============================================================================
 
 
-@pytest.mark.skipif(
-    condition=True, reason="boto3 not installed"  # Skip S3 tests - requires boto3
-)
 class TestS3StorageBackend:
-    """Tests for S3 storage backend (with mocked boto3)."""
+    """Tests for S3 storage backend (with mocked boto3).
+
+    This class carried ``@pytest.mark.skipif(condition=True, ...)`` until
+    #1257. A literal condition evaluates nothing, so every test below was
+    skipped in every job — including Test Cloud, which installs boto3 — and
+    none of them had ever run. Each test now carries the real guard, and the
+    ``try/except ImportError: pytest.skip`` each body used to wrap itself in
+    is gone: it turned any ImportError raised *anywhere* in the test, the
+    backend included, into a green skip.
+    """
 
     def test_s3_backend_requires_boto3(self):
-        """Test S3 backend raises ImportError if boto3 not installed."""
-        with patch.dict("sys.modules", {"boto3": None}):
-            # Force reimport
-            import importlib
+        """Without boto3 the backend must refuse to construct, not half-work.
 
-            from faultmaven.infrastructure.storage import s3
+        Runs in EVERY job, boto3 present or not, because it drives the module's
+        own availability flag — which is what the backend branches on — rather
+        than the interpreter's import state. The flag is what makes this
+        assertable: with boto3 genuinely absent the failure mode would be a
+        ``TypeError`` from ``BotoConfig`` being ``None``, which is exactly the
+        half-working construction this guard exists to prevent.
+        """
+        from faultmaven.infrastructure.storage import s3
 
-            # Check BOTO3_AVAILABLE flag
-            # (actual test would need more complex import mocking)
+        with patch.object(s3, "BOTO3_AVAILABLE", False):
+            with pytest.raises(ImportError, match="boto3 is required"):
+                s3.S3StorageBackend(bucket_name="test-bucket", region="us-east-1")
 
+    @_REQUIRES_BOTO3
     @pytest.mark.asyncio
     async def test_generate_upload_url_shape(self, mock_boto3_client):
-        """Test S3 upload URL has presigned URL shape."""
+        """An upload URL is a presigned PUT over the prefixed key."""
+        from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+
         with patch("boto3.client", return_value=mock_boto3_client):
-            try:
-                from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+            backend = S3StorageBackend(
+                bucket_name="test-bucket",
+                region="us-east-1",
+                prefix="evidence",
+            )
 
-                backend = S3StorageBackend(
-                    bucket_name="test-bucket",
-                    region="us-east-1",
-                )
+            url = await backend.generate_upload_url(
+                key="case456/file.log",
+                content_type="text/plain",
+                expires_in=timedelta(minutes=15),
+            )
 
-                url = await backend.generate_upload_url(
-                    key="evidence/file.log",
-                    content_type="text/plain",
-                )
+        # The signed URL reaches the caller unaltered.
+        assert url.url == PRESIGNED_URL
+        assert url.method == "PUT"
+        assert url.headers.get("Content-Type") == "text/plain"
 
-                # Verify presigned URL shape
-                assert "s3.amazonaws.com" in url.url or "X-Amz" in url.url
-                assert url.method == "PUT"
-                assert url.headers.get("Content-Type") == "text/plain"
+        mock_boto3_client.generate_presigned_url.assert_called_once()
+        kwargs = mock_boto3_client.generate_presigned_url.call_args.kwargs
+        assert kwargs["ClientMethod"] == "put_object"
+        # The timedelta is converted to whole seconds for S3.
+        assert kwargs["ExpiresIn"] == 900
+        # The configured prefix is applied to the caller's key, once.
+        assert kwargs["Params"] == {
+            "Bucket": "test-bucket",
+            "Key": "evidence/case456/file.log",
+            "ContentType": "text/plain",
+        }
 
-                # Verify boto3 was called correctly
-                mock_boto3_client.generate_presigned_url.assert_called_once()
-                call_args = mock_boto3_client.generate_presigned_url.call_args
-                assert call_args[1]["ClientMethod"] == "put_object"
-
-            except ImportError:
-                pytest.skip("boto3 not installed")
-
+    @_REQUIRES_BOTO3
     @pytest.mark.asyncio
     async def test_generate_download_url_shape(self, mock_boto3_client):
-        """Test S3 download URL has presigned URL shape."""
+        """A download URL is a presigned GET, minted only for a key that exists."""
+        from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+
         with patch("boto3.client", return_value=mock_boto3_client):
-            try:
-                from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+            backend = S3StorageBackend(
+                bucket_name="test-bucket",
+                region="us-east-1",
+                prefix="evidence",
+            )
 
-                backend = S3StorageBackend(
-                    bucket_name="test-bucket",
-                    region="us-east-1",
-                )
+            url = await backend.generate_download_url(
+                key="case456/file.log",
+                filename="file.log",
+            )
 
-                url = await backend.generate_download_url(
-                    key="evidence/file.log",
-                    filename="file.log",
-                )
+        assert url.url == PRESIGNED_URL
+        assert url.method == "GET"
 
-                # Verify presigned URL shape
-                assert "s3.amazonaws.com" in url.url or "X-Amz" in url.url
-                assert url.method == "GET"
+        # Existence is checked before a URL is handed out, on the prefixed key.
+        mock_boto3_client.head_object.assert_called_once_with(
+            Bucket="test-bucket", Key="evidence/case456/file.log"
+        )
 
-            except ImportError:
-                pytest.skip("boto3 not installed")
+        kwargs = mock_boto3_client.generate_presigned_url.call_args.kwargs
+        assert kwargs["ClientMethod"] == "get_object"
+        assert kwargs["Params"] == {
+            "Bucket": "test-bucket",
+            "Key": "evidence/case456/file.log",
+            # The download name the user sees comes from `filename`, not the key.
+            "ResponseContentDisposition": 'attachment; filename="file.log"',
+        }
 
+    @_REQUIRES_BOTO3
     @pytest.mark.asyncio
     async def test_s3_store_and_retrieve(self, mock_boto3_client):
-        """Test S3 store and retrieve operations."""
+        """Bytes written under a key come back from that same key.
+
+        The client double is a one-key store rather than two independent
+        canned answers, because a `get_object` that returns a FIXED payload
+        cannot tell a round-trip from a backend that reads a different key
+        entirely — assert `retrieved == <the fixture's canned value>` and the
+        write and the read never have to agree about anything. Here the read
+        resolves through the dict the write populated, so a disagreement about
+        the prefix, or about which key to read, raises KeyError.
+        """
+        from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+
+        payload = b"kernel panic at 03:14"
+        written: dict[str, bytes] = {}
+
+        def _put(**kwargs):
+            written[kwargs["Key"]] = kwargs["Body"]
+            return {}
+
+        def _get(**kwargs):
+            body = written[kwargs["Key"]]  # KeyError if the read missed
+            return {"Body": MagicMock(read=lambda: body)}
+
+        mock_boto3_client.put_object.side_effect = _put
+        mock_boto3_client.get_object.side_effect = _get
+
         with patch("boto3.client", return_value=mock_boto3_client):
-            try:
-                from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+            backend = S3StorageBackend(
+                bucket_name="test-bucket",
+                region="us-east-1",
+                prefix="evidence",
+            )
 
-                backend = S3StorageBackend(
-                    bucket_name="test-bucket",
-                    region="us-east-1",
-                )
+            stored = await backend.store_file(
+                key="test/file.txt",
+                data=payload,
+                content_type="text/plain",
+            )
+            retrieved = await backend.retrieve_file("test/file.txt")
 
-                # Store file
-                stored = await backend.store_file(
-                    key="test/file.txt",
-                    data=b"test content",
-                    content_type="text/plain",
-                )
+        # The bytes came back through the store, not from a canned answer.
+        assert retrieved == payload
+        assert written == {"evidence/test/file.txt": payload}
 
-                assert stored.key == "test/file.txt"
-                mock_boto3_client.put_object.assert_called_once()
+        # The caller's key round-trips unprefixed; the prefix is S3's business.
+        assert stored.key == "test/file.txt"
+        assert stored.size_bytes == len(payload)
+        assert stored.content_type == "text/plain"
 
-            except ImportError:
-                pytest.skip("boto3 not installed")
+        mock_boto3_client.put_object.assert_called_once_with(
+            Bucket="test-bucket",
+            Key="evidence/test/file.txt",
+            Body=payload,
+            ContentType="text/plain",
+        )
+        mock_boto3_client.get_object.assert_called_once_with(
+            Bucket="test-bucket", Key="evidence/test/file.txt"
+        )
 
+    @_REQUIRES_BOTO3
     def test_s3_storage_type(self, mock_boto3_client):
-        """Test S3 storage type."""
+        """The backend identifies itself as S3 to the factory and callers."""
+        from faultmaven.infrastructure.storage.base import StorageType
+        from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+
         with patch("boto3.client", return_value=mock_boto3_client):
-            try:
-                from faultmaven.infrastructure.storage.base import StorageType
-                from faultmaven.infrastructure.storage.s3 import S3StorageBackend
+            backend = S3StorageBackend(
+                bucket_name="test-bucket",
+                region="us-east-1",
+            )
 
-                backend = S3StorageBackend(
-                    bucket_name="test-bucket",
-                    region="us-east-1",
-                )
-
-                assert backend.get_storage_type() == StorageType.S3
-
-            except ImportError:
-                pytest.skip("boto3 not installed")
+        assert backend.get_storage_type() is StorageType.S3
 
 
 # =============================================================================
