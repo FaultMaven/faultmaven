@@ -241,9 +241,25 @@ async def main() -> None:
         twp[counter] = twp.get(counter, 0) + 1
 
     total = scored_true + scored_false
-    print(
-        f"corpus transition cases replayed    : {total} (of {len(corpus)} candidates)"
-    )
+    # DENOMINATOR FIRST. "0 mis-scored" means nothing without it: a detector
+    # that silently matched no turns prints a perfect zero that actually says
+    # "I could not ask". Three outcomes, never two -- fixed / not fixed /
+    # could not ask -- so a run that found nothing to replay says so loudly
+    # and exits non-zero rather than reading as a pass.
+    print(f"transition cases FOUND in the corpus  : {len(corpus)}")
+    print(f"transition cases REPLAYED (denominator): {total}")
+    if not corpus or not total:
+        print(
+            "COULD NOT ASK: the detector matched no replayable transition turn, "
+            "so the numerator below is meaningless."
+        )
+        if skipped:
+            print(f"  skipped (replay did not transition) : {skipped}")
+        if errors:
+            print(f"  errors: {len(errors)}")
+            for case_id, message in errors[:5]:
+                print(f"    {case_id}: {message[:200]}")
+        raise SystemExit(2)
     print(f"  transition turn progress_made=True  : {scored_true}")
     print(f"  transition turn progress_made=False : {scored_false}")
     print(f"  turns_without_progress after the turn: {sorted(twp.items())}")

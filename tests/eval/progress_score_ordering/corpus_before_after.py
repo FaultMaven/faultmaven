@@ -144,11 +144,32 @@ def main() -> None:
         final_before.append(before[-1])
         final_after.append(after[-1])
 
+    # DENOMINATORS FIRST, and a hard stop if either is empty. A before/after
+    # over zero cases, or a re-score count of zero, prints a clean-looking
+    # result that actually means "I could not ask" -- the detector matched
+    # nothing, or the model never reproduced the stored counter it is supposed
+    # to be perturbing. Three outcomes, never two.
     print(f"cases with turn history                  : {len(final_before)}")
     print(
         f"counter model reproduces stored column   : {model_ok}/{model_ok + model_bad}"
     )
     print(f"cases whose transition turn is re-scored : {rescored}")
+    if not final_before or not rescored or model_bad:
+        print(
+            "COULD NOT ASK: "
+            + (
+                "no cases with turn history; "
+                if not final_before
+                else (
+                    "the counter model does not reproduce the stored column, so "
+                    "its after-values are not trustworthy; "
+                    if model_bad
+                    else "the detector matched no transition turn to re-score; "
+                )
+            )
+            + "the comparison below is meaningless."
+        )
+        raise SystemExit(2)
     print()
     print("turns_without_progress (final, summed over the corpus)")
     print(f"  before {sum(final_before)}   after {sum(final_after)}")
