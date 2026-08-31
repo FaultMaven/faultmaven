@@ -76,9 +76,12 @@ never linked to an Evidence row.
 ### `evidence_mark_linked_failures`
 
 **Fires when:** the best-effort sidecar flip fails after an upload is already
-persisted. Post-#1232 this can no longer cause deletion — the sweep asks the
-database — so it counts a storage **leak**: the object is protected forever
-and will never be reclaimed.
+persisted. Post-#1232 the stale flag is **harmless**, and self-healing rather
+than merely tolerated: the object is protected exactly while its `uploaded_files` row exists, and once the case is deleted the row goes with it (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`), leaving an ordinary unreferenced orphan the sweep reclaims normally. Nothing leaks and nothing is lost.
+
+So this alert is about the **cause**, not the consequence: a failure here means
+the storage backend erred on a small write. It is also the measurement that
+would justify retrying the call (#1232 direction 3, deliberately not taken).
 
 ```promql
 - alert: evidence_mark_linked_failures
@@ -91,11 +94,12 @@ and will never be reclaimed.
     summary: "Sidecar mark_linked failing — {{ $value }} in the last hour"
     description: |
       An upload was persisted but its storage sidecar was left at
-      linked=false. The orphan sweep will now refuse to reclaim that object
-      forever (it cross-checks uploaded_files.storage_ref), so this leaks
-      storage rather than risking data. Check
-      `investigation_service.py::_preprocess_attachment` and the storage
-      backend for errors on the mark_linked call.
+      linked=false. Since #1232 that is harmless — the orphan sweep asks
+      uploaded_files.storage_ref, and the row's ON DELETE CASCADE lifetime
+      reclaims the object normally once the case is deleted — so this is a
+      signal about the STORAGE BACKEND, not about data at risk. Check
+      `investigation_service.py::_preprocess_attachment` and the backend for
+      errors on the mark_linked write.
 ```
 
 ### `evidence_turn_terminal_failure`

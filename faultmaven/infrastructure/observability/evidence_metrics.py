@@ -79,10 +79,12 @@ if PROMETHEUS_AVAILABLE:
         "Number of times the best-effort sidecar mark_linked step failed after "
         "an upload was already persisted, leaving the sidecar stale at "
         "linked=False. Labeled by outcome (returned_false | raised). Since "
-        "#1232 this no longer risks deletion — the sweep asks the database — "
-        "so it counts a storage LEAK (the object can never be reclaimed) "
-        "rather than a data-loss window. Emitted from the API process, which "
-        "is scraped; the sweep's own counters are not.",
+        "#1232 the stale flag is harmless — the sweep asks the database, and "
+        "the row's ON DELETE CASCADE lifetime makes it self-healing — so this "
+        "counts the CAUSE (a failed storage write) rather than a data-loss "
+        "window, and is the measurement that would justify retrying the call. "
+        "Emitted from the API process, which is scraped; the sweep's own "
+        "counters are not.",
         labelnames=["outcome"],
     )
 

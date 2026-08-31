@@ -31,7 +31,8 @@ revisited, and it goes stale in *both* directions:
 - stale `linked: false` beside a live row (a failed best-effort `mark_linked`)
   — the sweep used to delete a file the case still referenced. The DB
   cross-check makes that impossible; the rescue is counted as
-  `skipped_db_referenced` and logged with the file's key.
+  `skipped_db_referenced` and logged with the file's key. The drift is then
+  self-healing: the object is protected exactly while its `uploaded_files` row exists, and once the case is deleted the row goes with it (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`), leaving an ordinary unreferenced orphan the sweep reclaims normally.
 - stale `linked: true` with no row behind it. On a measured production corpus
   of 850 candidates, 160 had no row and **every one of them** said
   `linked: true`. So the tidier-sounding inverse — "the DB is the authority,
@@ -181,8 +182,10 @@ There is no per-file deletion-failure counter; failures are logged
 Every run ends with one summary line at INFO, whatever the outcome:
 
 ```text
-Storage cleanup DRY RUN — scanned=N, found=N, deleted=N, skipped_linked=N,
-skipped_within_ttl=N, skipped_no_sidecar=N, stray_sidecars=N, errors=N
+Storage cleanup DRY RUN — scanned=N, found=N, deleted=N,
+skipped_db_referenced=N, skipped_linked=N, skipped_within_ttl=N,
+skipped_no_sidecar=N, stray_sidecars=N, errors=N | authority:
+referenced_refs=N, referenced_by_db=N, unreferenced_by_db=N
 ```
 
 Alert on these lines via the log pipeline (Loki queries below):
@@ -190,10 +193,18 @@ Alert on these lines via the log pipeline (Loki queries below):
 | Signal | Level | Meaning |
 |--------|-------|---------|
 | `found=` high in the summary line | INFO | Systematic link/store failure upstream |
+| `skipped_db_referenced=` non-zero | INFO (+ a WARNING per file) | **The cross-check saved a live file.** Sidecar drift is happening — the pre-#1232 sweep would have deleted referenced evidence here. Investigate the `mark_linked` path |
+| `Sidecar drift: … NOT deleting` | WARNING | The same event, naming the file |
+| `referenced_by_db=0` with `scanned` non-zero | INFO | The authority is answering, but references nothing it enumerated — on a live deployment this usually means an RLS-scoped view, not the truth. (A total zero refuses the run outright; this is the partial case, which cannot be distinguished automatically) |
+| `Storage cleanup REFUSED: …` | ERROR | Zero referenced refs beside live candidates — nothing deleted, exit 1 |
 | `Failed to delete orphan …` | ERROR | Storage backend rejecting deletes |
 | `Unreadable sidecar for … — skipping` | WARNING | Corrupt or unreachable sidecar |
 | `sidecar(s) have no corresponding file` | WARNING | Stray sidecars nothing will ever sweep |
 | No summary line at all for a scheduled run | — | Job never reached the sweep (see boot gates) |
+
+The two refusals also exit **non-zero**, so on Kubernetes they surface without
+the log pipeline at all: the Job fails and `FaultMavenCronJobRunFailed` fires.
+That is the only sweep signal today that reaches alerting without a log query.
 
 [`docs/operations/monitoring/evidence-metrics.md`](monitoring/evidence-metrics.md)
 remains the canonical home for the metric and alert *definitions*; its
@@ -988,6 +999,55 @@ metrics note under [Storage Cleanup Job](#1-storage-cleanup-job)):
 - If LLM timeouts high: Increase timeout threshold or switch provider
 - If DB failures high: Check database health, connection pool
 - If storage issues: Check S3 permissions, disk space
+
+### Sidecar Drift (`skipped_db_referenced` non-zero)
+
+**Symptoms:** the summary line reports `skipped_db_referenced=N` with `N > 0`,
+and one `Sidecar drift: <key> … NOT deleting` WARNING per file.
+
+**What it means:** the cross-check saved a live file. Its `uploaded_files` row
+exists and the case references it, but its sidecar still says `linked: false`
+past the TTL — so `mark_linked` failed for that upload. Before #1232 the sweep
+would have **deleted** it. Nothing is wrong with the sweep; something is wrong
+upstream.
+
+**Investigation:**
+1. `faultmaven_evidence_mark_linked_failures_total{outcome}` on the **API**
+   pod (that one IS scraped) — `returned_false` means the sidecar was missing
+   when the flip was attempted; `raised` means the storage backend errored.
+2. The API logs for `mark_linked returned False for <key>` / `mark_linked
+   failed for <key>` around that upload's time.
+3. Storage backend health at that moment (the flip is a small write; a
+   transient 5xx is enough).
+
+**Resolution:** fix the upstream storage flakiness. Nothing needs doing to the
+affected objects themselves — the object is protected exactly while its `uploaded_files` row exists, and once the case is deleted the row goes with it (`uploaded_files.case_id` is `ON DELETE CASCADE`, enforced on both backends — SQLite runs with `PRAGMA foreign_keys=ON`), leaving an ordinary unreferenced orphan the sweep reclaims normally. There is no leak and no loss to
+clean up; the urgency is entirely about the backend write that failed.
+
+### Sweep Refused (`status="failed"`, exit 1)
+
+**Symptoms:** the Job fails, `FaultMavenCronJobRunFailed` fires, and the logs
+carry `reason=reference_authority_unavailable` or a
+`Storage cleanup REFUSED: … ZERO referenced storage refs` ERROR.
+
+**What it means:** the sweep could not decide safely and deleted nothing. This
+is the designed behaviour, not a bug — but it also means orphan reclamation is
+not happening, so it needs fixing rather than silencing.
+
+**Investigation:**
+1. `reference_authority_unavailable` — the DI container had no case
+   repository, or the query raised. Check DB reachability from the job pod and
+   the container-init logs above the refusal.
+2. `reference_set_empty` — the DB answered with zero referenced refs while
+   sweep candidates exist. Under `TENANT_PROVIDER=multi` the overwhelmingly
+   likely cause is that the run is **not** on the maintenance DB role:
+   `uploaded_files` is RLS-tenanted and fail-closed, so an app-role session
+   with no org bound sees zero rows. Confirm the CronJob carries
+   `--cross-tenant-maintenance` **and** the `MAINTENANCE_DATABASE_URL`
+   override (`overlays/onprem/storage-cleanup-maintenance.yaml` in
+   `faultmaven-enterprise-infra`).
+3. Only if both are ruled out: the deployment genuinely references no stored
+   objects, which on a live install means something deleted the rows.
 
 ### Cleanup Job Failures
 
