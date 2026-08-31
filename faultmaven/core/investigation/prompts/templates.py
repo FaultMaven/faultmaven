@@ -471,6 +471,12 @@ what governs: do not read "it arrived this turn" as "it is happening now", and
 do not ask the user for a firing time or duration the item already states.
 When observed_through is ABSENT the observation window is UNKNOWN — never
 assume recent. Say the window is unestablished and name what would date it.
+An item may also carry observed_basis="inferred_year". The time of day and
+date are real; the YEAR was filled in by the parser because the log format
+carries none (classic syslog). Use it to judge whether something looks recent
+or old, but do not state an exact duration from it without confirming the
+year — say the window is approximate and ask for a dated export if the
+difference matters.
 These appear on <evidence> items and on <uploaded_file> items (files not yet
 recorded as evidence), and mean the same thing on both.
 """

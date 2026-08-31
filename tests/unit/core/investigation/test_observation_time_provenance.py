@@ -103,8 +103,9 @@ def test_file_without_parseable_timestamps_yields_unknown_coverage():
 
 # -- rendering: the model has to be able to READ the age ----------------------
 class _Ev:
-    def __init__(self, end):
+    def __init__(self, end, source="caller_declared"):
         self.coverage_end_ts = end
+        self.coverage_source = source
 
 
 def test_age_is_rendered_for_a_stale_observation():
@@ -310,3 +311,94 @@ def test_mis_parsed_epoch_coverage_never_reaches_the_prompt():
     )
     assert start is not None and start != end  # parsed as 2009-02-13 -> 2038-01-19
     assert "observed_through=" not in _orphan(_file(start, end))
+
+
+# -- what each provenance licenses --------------------------------------------
+def test_a_vouched_span_is_stated_plainly():
+    stale = datetime.now(timezone.utc) - timedelta(hours=7)
+    for source in ("caller_declared", "iso8601", "iso8601_t", "syslog_bsd", "epoch_s"):
+        attr = _observed_attr(_Ev(stale, source))
+        assert 'age="7h"' in attr, source
+        assert "observed_basis" not in attr, source
+
+
+def test_an_inferred_year_is_stated_with_its_uncertainty_not_withheld():
+    """Classic syslog carries no year, so silence here would put the engine
+    back to asking for a timestamp it very nearly has — #1271's failure, for
+    one of the commonest formats a troubleshooting product ingests."""
+
+    stale = datetime.now(timezone.utc) - timedelta(hours=7)
+    attr = _observed_attr(_Ev(stale, "syslog_bsd_noyear"))
+
+    assert 'age="7h"' in attr
+    assert 'observed_basis="inferred_year"' in attr
+
+
+def test_unrecorded_provenance_is_not_trusted():
+    """NULL means nobody recorded where the span came from (rows predating the
+    column). Unknown is not the same as fine."""
+
+    assert _observed_attr(_Ev(datetime.now(timezone.utc), None)) == ""
+
+
+def test_an_unclassified_pattern_defaults_to_withholding():
+    """A pattern added to _TS_PATTERNS later must not start asserting instants
+    just by existing — the change that adds it has to classify it."""
+
+    assert _observed_attr(_Ev(datetime.now(timezone.utc), "some_new_pattern")) == ""
+
+
+def test_the_prompt_defines_the_inferred_marker():
+    from faultmaven.core.investigation.prompts.templates import (
+        _EVIDENCE_GROUNDING_BLOCK,
+        INQUIRY_TEMPLATE,
+    )
+
+    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+        assert "observed_basis" in block
+        assert "approximate" in block
+
+
+# -- the false positive is prevented at the source, not distrusted downstream --
+def test_bare_integers_are_not_read_as_dates_in_a_config():
+    """`maxBytes: 2147483647` is a size. Gating the pattern by data type is why
+    epoch_s can stay trusted for the logs where it is a real timestamp."""
+
+    from faultmaven.modules.preprocessing.extractors.utils import (
+        extract_time_range_ts,
+    )
+
+    config = "serverId: 1234567890\nmaxBytes: 2147483647\n"
+    assert extract_time_range_ts(config, allow_bare_epoch=False) == (None, None, None)
+    # ...and the same content ungated is exactly the 29-year span this prevents
+    start, end, source = extract_time_range_ts(config)
+    assert source == "epoch_s" and start.year == 2009 and end.year == 2038
+
+
+def test_a_log_keeps_its_epoch_timestamps():
+    """The cure must not be worse than the disease: epoch-formatted logs are
+    common and their integers ARE timestamps."""
+
+    from faultmaven.modules.preprocessing.extractors.utils import (
+        extract_time_range_ts,
+    )
+
+    log = (
+        "1700000000 service started\n"
+        + "\n".join(["noise"] * 20)
+        + "\n1700003600 service stopped"
+    )
+    assert extract_time_range_ts(log)[2] == "epoch_s"
+
+
+def test_the_service_gates_by_data_type():
+    from faultmaven.models.api import DataType
+    from faultmaven.modules.preprocessing.preprocessing_service import (
+        _NO_BARE_EPOCH_TYPES,
+    )
+
+    assert DataType.STRUCTURED_CONFIG in _NO_BARE_EPOCH_TYPES
+    assert DataType.SOURCE_CODE in _NO_BARE_EPOCH_TYPES
+    # stream-shaped types keep parsing epochs
+    assert DataType.LOGS_AND_ERRORS not in _NO_BARE_EPOCH_TYPES
+    assert DataType.METRICS_AND_PERFORMANCE not in _NO_BARE_EPOCH_TYPES

@@ -213,6 +213,29 @@ def _build_content_preview(filename: str, content: str) -> Optional[str]:
     return "Preview:\n" + "\n".join(preview_lines)
 
 
+# Data types where a bare integer is not a timestamp. ``epoch_s`` matches
+# ``\b([12]\d{9})\b``, so ``maxBytes: 2147483647`` in a config reads as
+# 2038-01-19 and a two-line YAML file reports a 29-year coverage span — while
+# the comment on the coverage phase below promises configs yield ``(None,
+# None)``.
+#
+# A denylist, not an allowlist: the fix is aimed at the shapes where the
+# pattern is provably wrong, and every stream-shaped type (logs, metrics,
+# traces, profiles, command output, error reports, and the unstructured pastes
+# that are usually log snippets) keeps parsing epoch timestamps exactly as
+# before. Narrowing it further would start discarding real timestamps to avoid
+# a mistake those types do not make.
+_NO_BARE_EPOCH_TYPES = frozenset(
+    {
+        DataType.STRUCTURED_CONFIG,
+        DataType.SOURCE_CODE,
+        DataType.VISUAL_EVIDENCE,
+        DataType.DOCUMENTATION,
+        DataType.UNANALYZABLE,
+    }
+)
+
+
 class PreprocessingService:
     """Tier 0+1 pipeline orchestrator for data preprocessing."""
 
@@ -882,7 +905,8 @@ class PreprocessingService:
         coverage_source: str | None = None
         try:
             coverage_start_ts, coverage_end_ts, coverage_source = extract_time_range_ts(
-                content
+                content,
+                allow_bare_epoch=detailed_data_type not in _NO_BARE_EPOCH_TYPES,
             )
         except Exception:
             # extract_time_range_ts already swallows per-line parse

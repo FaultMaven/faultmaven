@@ -141,6 +141,20 @@ _TS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("epoch_s", re.compile(r"\b([12]\d{9})\b")),
 ]
 
+# The two patterns above match a bare integer and nothing else — no date
+# punctuation, no field separator, no anchor. In a log line that is almost
+# always a timestamp; in a config it is almost always a size, an id, a port
+# range or a counter. ``maxBytes: 2147483647`` parses as 2038-01-19, and
+# ``serverId: 1234567890`` as 2009-02-13, so a two-line YAML file reports a
+# 29-year coverage span.
+#
+# Callers that know the content is not a timestamped stream pass
+# ``allow_bare_epoch=False``. That is the fix at the layer where the mistake is
+# made: the alternative — distrusting every epoch-dated span downstream —
+# would also discard the real timestamps in epoch-formatted logs, which are
+# common and correct.
+_BARE_INTEGER_PATTERNS = frozenset({"epoch_ms", "epoch_s"})
+
 _SYSLOG_MONTHS = {
     "Jan": 1,
     "Feb": 2,
@@ -157,14 +171,23 @@ _SYSLOG_MONTHS = {
 }
 
 
-def _extract_timestamp_with_source(line: str) -> tuple[datetime | None, str | None]:
+def _extract_timestamp_with_source(
+    line: str, *, allow_bare_epoch: bool = True
+) -> tuple[datetime | None, str | None]:
     """Extract the first recognisable timestamp and its pattern name from *line*.
 
     Returns ``(dt, pattern_name)`` on success, ``(None, None)`` on no match.
     Pattern names match the keys in ``_TS_PATTERNS`` and the documented
     vocabulary of ``CoverageMetadata.source``.
+
+    ``allow_bare_epoch=False`` skips the two patterns that match a bare integer
+    (see ``_BARE_INTEGER_PATTERNS``). Callers that know the content is not a
+    timestamped stream pass it so a config's ordinary numbers are not read as
+    dates.
     """
     for name, pat in _TS_PATTERNS:
+        if not allow_bare_epoch and name in _BARE_INTEGER_PATTERNS:
+            continue
         m = pat.search(line)
         if not m:
             continue
@@ -292,7 +315,7 @@ def has_yearless_timestamps(content: str) -> tuple[bool, str | None]:
 
 
 def extract_time_range_ts(
-    content: str,
+    content: str, *, allow_bare_epoch: bool = True
 ) -> tuple[Optional["datetime"], Optional["datetime"], Optional[str]]:
     """Return ``(start_ts, end_ts, source)`` from *content*.
 
@@ -311,6 +334,11 @@ def extract_time_range_ts(
     without having to re-parse the strings emitted by
     ``extract_time_range``.
 
+    ``allow_bare_epoch=False`` suppresses the bare-integer patterns
+    (``epoch_s`` / ``epoch_ms``) for content that is not a timestamped stream —
+    a config's ``maxBytes: 2147483647`` is a size, not 2038-01-19. Defaults to
+    True so log-shaped callers are unchanged.
+
     ``source`` is the name of the ``_TS_PATTERNS`` entry that matched the
     head timestamp (one of ``iso8601_t``, ``iso8601``, ``healthapp``,
     ``syslog_bsd``, ``yymmdd``, ``yy_slash_mmdd``, ``epoch_ms``,
@@ -327,7 +355,9 @@ def extract_time_range_ts(
     source: str | None = None
     head_match_idx: int | None = None
     for i, line in enumerate(head):
-        ts, src = _extract_timestamp_with_source(line)
+        ts, src = _extract_timestamp_with_source(
+            line, allow_bare_epoch=allow_bare_epoch
+        )
         if ts:
             first_ts = ts
             source = src
@@ -352,12 +382,17 @@ def extract_time_range_ts(
     tail_start = max(tail_floor, len(lines) - _TAIL_SCAN_LINES)
     last_ts: datetime | None = None
     for line in reversed(lines[tail_start:]):
-        last_ts = extract_timestamp(line)
+        # Not ``extract_timestamp`` — the tail has to honour the same gating as
+        # the head, or a config suppressed at one end still acquires a bound at
+        # the other and reports a span built from one real parse and one
+        # integer.
+        last_ts, tail_src = _extract_timestamp_with_source(
+            line, allow_bare_epoch=allow_bare_epoch
+        )
         if last_ts:
             # If the head never matched, fall back to the tail's pattern
             # so a single-bounded file still gets a ``source`` value.
             if source is None:
-                _, tail_src = _extract_timestamp_with_source(line)
                 source = tail_src
             break
 

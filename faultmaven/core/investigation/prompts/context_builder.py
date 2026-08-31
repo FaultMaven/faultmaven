@@ -38,6 +38,7 @@ from faultmaven.core.investigation.causal_graph import (
     restatement_held_root_ids,
     root_support_block_reasons,
 )
+from faultmaven.core.investigation.coverage_trust import is_inferred, is_vouched
 from faultmaven.core.investigation.evidence_need_surfacing import (
     is_ask_exhausted,
     select_surfaced_causal_needs,
@@ -1355,9 +1356,17 @@ def _symptom_currency_note(case, indicator: str) -> str:
     if currency == SymptomCurrency.NOT_APPLICABLE:
         return ""
     if currency == SymptomCurrency.UNDATED:
+        # "the SYMPTOM evidence", not "the evidence". This reads only
+        # ``newest_symptom_observation``, which is scoped to SYMPTOM_EVIDENCE
+        # rows AND to vouched provenance. Other items — an un-promoted alert,
+        # a syslog dump with an inferred year — can carry their own
+        # ``observed_through`` in the same prompt, and the looser wording made
+        # two true statements read as a contradiction.
         return (
-            " — the evidence behind this carries no observation time, so how "
-            "recently the problem was seen is UNKNOWN (not confirmed recent)"
+            " — the symptom evidence carries no observation time you can rely "
+            "on, so how recently the problem was seen is UNKNOWN (not "
+            "confirmed recent). Other items may carry their own observation "
+            "times; those date the item, not the symptom"
         )
 
     observed = newest_symptom_observation(case)
@@ -1397,6 +1406,15 @@ def _observed_attr(item) -> str:
     end_ts = getattr(item, "coverage_end_ts", None)
     if end_ts is None:
         return ""
+    source = getattr(item, "coverage_source", None)
+    if is_inferred(source):
+        basis_attr = ' observed_basis="inferred_year"'
+    elif is_vouched(source):
+        basis_attr = ""
+    else:
+        # Provenance never recorded (rows predating the column). Unknown is not
+        # the same as fine, and absence already reads as UNKNOWN to the model.
+        return ""
     if end_ts.tzinfo is None:
         end_ts = end_ts.replace(tzinfo=timezone.utc)
     delta = datetime.now(timezone.utc) - end_ts
@@ -1404,14 +1422,14 @@ def _observed_attr(item) -> str:
     if total_minutes < 0:
         # Future coverage: a clock skew or a mis-parsed year. Show the instant
         # and withhold the age rather than printing a negative one.
-        return f' observed_through="{end_ts.isoformat()}"'
+        return f' observed_through="{end_ts.isoformat()}"{basis_attr}'
     if total_minutes < 60:
         age = f"{total_minutes}m"
     elif total_minutes < 60 * 24:
         age = f"{total_minutes // 60}h"
     else:
         age = f"{total_minutes // (60 * 24)}d"
-    return f' observed_through="{end_ts.isoformat()}" age="{age}"'
+    return f' observed_through="{end_ts.isoformat()}" age="{age}"{basis_attr}'
 
 
 def _evidence_label(ev, case=None, ev_file_meta=None) -> str:
