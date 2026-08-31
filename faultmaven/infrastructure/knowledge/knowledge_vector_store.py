@@ -300,11 +300,13 @@ class KnowledgeVectorStore(BaseExternalClient):
     def _corpus_term_stats(self, collection_name: str) -> Optional[CorpusTermStats]:
         """Term index for a collection, built once and reused.
 
-        Synchronous and blocking by design: it is called from inside the
-        ``call_external`` wrapper of ``hybrid_search``'s own recall pass, where
-        the ChromaDB round-trips already are. Bounded by
-        ``MAX_TERM_INDEX_CHUNKS`` and cheap to lose — every caller handles
-        ``None``.
+        Synchronous and blocking, and deliberately OUTSIDE ``call_external`` —
+        beside the query embedding, for the same reason it is: a failure here is
+        a deterministic local fault, not a ChromaDB one, and raising it inside
+        the wrapper would burn the retry budget and charge the circuit breaker
+        this store shares with the KB read path. It does not raise at all: every
+        failure returns ``None`` and every caller handles it. Bounded by
+        ``MAX_TERM_INDEX_CHUNKS``.
         """
         try:
             collection = self._get_or_create_collection(collection_name)
