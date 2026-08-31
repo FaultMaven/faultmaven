@@ -31,6 +31,11 @@ Modes:
              drops, per population. This is the evidence that NO floor separates
              them; keep it runnable so the claim can be re-checked, not
              re-asserted.
+    grounding compare pure-vector, hybrid, and hybrid + the #1272 grounding
+             gate over the same statements. This is the evidence behind
+             KB_SEED_MIN_TERM_COVERAGE and the thing to re-run before re-sizing
+             it. Guarded against the vacuous zero: the corpus is asserted loaded
+             and a positive control must fire in the same run.
     e2e      drive the REAL wrapper (_prefetch_kb_context ->
              _seed_candidate_causes_from_kb) with live retrieval and print which
              runbooks actually seed, with the guard off vs on.
@@ -61,6 +66,7 @@ DEFAULT_DB = os.path.join(REPO_ROOT, "data", "faultmaven.db")
 DEFAULT_STATEMENTS = os.path.join(
     os.path.dirname(__file__), "corroboration-statements.json"
 )
+KB_COLLECTION_NAME = "faultmaven_kb"
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +143,46 @@ async def retrieve(store, query):
                 parent_document_id=meta.get("parent_document_id"),
                 total_chunks=_read_total_chunks(meta),
                 letters=_read_stamped_cause_letters(meta, hit.get("content") or ""),
+            )
+        )
+    return hits
+
+
+async def retrieve_hybrid(store, query):
+    """The same turn, through the HYBRID path the prefetch now uses (#1272).
+
+    Carries the grounding evidence the seeding gate reads — ``term_coverage``
+    and ``identity_terms_in_query`` — which only the reranker can compute.
+    """
+    from faultmaven.core.investigation.milestone_engine import (
+        KB_PREFETCH_FETCH_LIMIT,
+        KB_PREFETCH_RELEVANCE_THRESHOLD,
+    )
+    from faultmaven.modules.knowledge.domain.services.knowledge_service import (
+        KB_COLLECTION,
+        _read_stamped_cause_letters,
+        _read_total_chunks,
+    )
+
+    raw = await store.hybrid_search(
+        collection_name=KB_COLLECTION,
+        query=query,
+        k=KB_PREFETCH_FETCH_LIMIT,
+        where={"scope": "global"},
+        min_score=KB_PREFETCH_RELEVANCE_THRESHOLD,
+    )
+    hits = []
+    for hit in raw:
+        meta = hit.get("metadata") or {}
+        hits.append(
+            SimpleNamespace(
+                chunk_id=hit.get("id"),
+                score=hit["score"],
+                parent_document_id=meta.get("parent_document_id"),
+                total_chunks=_read_total_chunks(meta),
+                letters=_read_stamped_cause_letters(meta, hit.get("content") or ""),
+                coverage=hit.get("term_coverage"),
+                named=hit.get("identity_terms_in_query") or [],
             )
         )
     return hits
@@ -384,9 +430,79 @@ async def mode_e2e(store, corpus, statements):
         )
 
 
+async def mode_grounding(store, corpus, statements):
+    """#1272 grounding gate: what the hybrid path + gate seed, vs pure vector.
+
+    Re-runnable evidence for ``KB_SEED_MIN_TERM_COVERAGE``. Same shape as
+    ``guards``: every candidate is collected before the gate is applied, so the
+    gate's COST is visible and not only its survivors.
+
+    Guarded against the vacuous zero. A gate that turns everything away and a
+    retrieval that returned nothing produce identical counts, so the corpus is
+    asserted loaded and a positive control must fire in this same run before any
+    number below is printed.
+    """
+    from faultmaven.core.investigation.kb_cause_seeder import MAX_SEEDED_RUNBOOKS
+    from faultmaven.core.investigation.milestone_engine import (
+        KB_SEED_MIN_TERM_COVERAGE,
+    )
+
+    # --- guard 1: the corpus is loaded -------------------------------------
+    collection = store._get_or_create_collection(KB_COLLECTION_NAME)
+    payload = collection.get(where={"scope": "global"}, include=["metadatas"])
+    parents = {m.get("parent_document_id") for m in payload["metadatas"]}
+    print(
+        f"[guard] corpus: {collection.count()} chunks, {len(parents)} global runbooks"
+    )
+    if len(parents) < 2:
+        sys.exit(
+            "COULD NOT ASK: the corpus is empty or unscoped — no zero below means anything"
+        )
+
+    # --- guard 2: a positive control, in this run --------------------------
+    control = statements["positive"][0][0]
+    probe = await retrieve_hybrid(store, control)
+    print(f"[guard] positive control {control[:48]!r}... -> {len(probe)} hits")
+    if not probe:
+        sys.exit("COULD NOT ASK: the positive control returned nothing")
+
+    def grounded(hit):
+        if hit.coverage is None and not hit.named:
+            return True  # unmeasured, not ungrounded
+        return bool(hit.named) or hit.coverage >= KB_SEED_MIN_TERM_COVERAGE
+
+    totals = {"vector": [0, 0], "hybrid": [0, 0], "hybrid+gate": [0, 0]}
+    asked = 0
+    pairs = [(q, e) for q, e in statements["positive"]]
+    pairs += [(q, []) for q in statements["negative"]]
+    for query, expected in pairs:
+        asked += 1
+        arms = {
+            "vector": await retrieve(store, query),
+            "hybrid": await retrieve_hybrid(store, query),
+        }
+        ok_parents = {h.parent_document_id for h in arms["hybrid"] if grounded(h)}
+        arms["hybrid+gate"] = [
+            h for h in arms["hybrid"] if h.parent_document_id in ok_parents
+        ]
+        for name, hits in arms.items():
+            for cand in candidates(hits)[:MAX_SEEDED_RUNBOOKS]:
+                on = labelled(corpus, cand, expected) if expected else False
+                totals[name][0 if on else 1] += 1
+
+    print(f"\n[guard] evaluated {asked} statements (denominator, not assumed)")
+    print(f"\n{'arm':<14}{'on-domain seeds':>18}{'off-domain seeds':>19}")
+    for name, (ok, bad) in totals.items():
+        print(f"{name:<14}{ok:>18}{bad:>19}")
+    print(
+        f"\nKB_SEED_MIN_TERM_COVERAGE = {KB_SEED_MIN_TERM_COVERAGE}. The gate is "
+        "sized on the on-domain column: it must not fall."
+    )
+
+
 async def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("mode", choices=("guards", "sweep", "e2e"))
+    ap.add_argument("mode", choices=("guards", "sweep", "e2e", "grounding"))
     ap.add_argument("--chroma", default=DEFAULT_CHROMA)
     ap.add_argument("--db", default=DEFAULT_DB)
     ap.add_argument("--statements", default=DEFAULT_STATEMENTS)
@@ -403,6 +519,10 @@ async def main():
 
     if args.mode == "e2e":
         await mode_e2e(store, corpus, statements)
+        return
+
+    if args.mode == "grounding":
+        await mode_grounding(store, corpus, statements)
         return
 
     rows = await collect(store, corpus, statements)

@@ -1031,16 +1031,29 @@ def test_scope_filter_owner_condition_keyed_on_owner_only():
 class _SearchRecordingStub:
     """Records the ``filters`` + ``limit`` passed to ``search_knowledge`` and
     returns a configured result list (so the pre-fetch can build
-    ``case.kb_context``)."""
+    ``case.kb_context``).
+
+    The retrieval-mode arguments are recorded too rather than absorbed by a
+    bare ``**kwargs``: the pre-fetch's choice of hybrid retrieval and its
+    admission floor are part of the seam this class exists to pin (#1272), and
+    a stub that silently swallowed them would keep passing if the engine
+    stopped asking for either.
+    """
 
     def __init__(self, results=None):
         self.results = results or []
         self.filters_seen = []
         self.limits_seen = []
+        self.hybrid_seen = []
+        self.min_score_seen = []
 
-    async def search_knowledge(self, query, limit=10, filters=None):
+    async def search_knowledge(
+        self, query, limit=10, filters=None, use_hybrid=False, min_score=None
+    ):
         self.filters_seen.append(filters)
         self.limits_seen.append(limit)
+        self.hybrid_seen.append(use_hybrid)
+        self.min_score_seen.append(min_score)
         return self.results
 
 
@@ -1239,9 +1252,13 @@ class _PrefetchAndCausesStub:
         self.search_results = search_results
         self.causes_by_id = causes_by_id
         self.limits_seen = []
+        self.hybrid_seen = []
 
-    async def search_knowledge(self, query, limit=10, filters=None):
+    async def search_knowledge(
+        self, query, limit=10, filters=None, use_hybrid=False, min_score=None
+    ):
         self.limits_seen.append(limit)
+        self.hybrid_seen.append(use_hybrid)
         return self.search_results
 
     async def get_runbook_causes(self, item_id):

@@ -1949,7 +1949,7 @@ Maps case data to the 7 canonical runbook sections and checks coverage.
 3. `RunbookValidator` checks structure; `QualityScorer` evaluates completeness, clarity, actionability (0-100 score)
 4. Draft created in `draft` status for user review
 5. User edits draft → re-validates → verifies → ingests into ChromaDB vector DB
-6. Verified runbook is chunked (512 tokens, 50-token overlap), embedded (BGE-M3, 1024 dims), indexed for future similarity search
+6. Verified runbook is chunked by `ContentChunker` (structure-aware markdown splits at every H1-H4 heading, 100-3000 chars, no fixed overlap — measured on the shipped pack: median 1726 chars), embedded (BGE-M3, 1024 dims), indexed for future similarity search. The "512 tokens with 50-token overlap" figure this line used to quote describes the *planned* evidence chunking, not KB chunking, which has never had a token budget or an overlap
 
 **Canonical runbook sections**: Problem Definition, Diagnostic Steps, Mitigation, Root Cause Resolution, Verification, Prevention, Sources.
 

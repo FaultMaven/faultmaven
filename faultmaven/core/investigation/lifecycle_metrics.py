@@ -681,6 +681,13 @@ prompt_context_recovery_total = Counter(
 #                            ``no_cause_chunk_matched`` because it is the guard's
 #                            cost, not retrieval's: read it with
 #                            ``kb_cause_seed_uncorroborated_total``.
+#   not_lexically_grounded — EVERY retrieved chunk was turned away by the #1272
+#                            grounding gate: the query named none of their
+#                            runbooks and none covered the query. Distinct from
+#                            the labels above, which are statements about one
+#                            runbook's match; this one says the corpus does not
+#                            cover the incident at all. Read it with
+#                            ``kb_cause_seed_ungrounded_total``.
 #   crashed                — a seeder bug; the transition still completed.
 #
 # No level is "healthy" in the abstract — this is a rate to watch for movement.
@@ -690,9 +697,9 @@ kb_cause_seed_attempt_total = Counter(
     "faultmaven_kb_cause_seed_attempt_total",
     "KB cause-seeding attempts at the INQUIRY->INVESTIGATING transition, labeled "
     "by ``outcome`` (seeded | all_causes_skipped | no_cause_chunk_matched | "
-    "no_corroborated_runbook | no_seedable_cause | crashed). Labels are "
-    "exclusive and sum to attempts, so ``seeded``/total is the seeding yield "
-    "(fm#1092, fm#1144).",
+    "no_corroborated_runbook | not_lexically_grounded | no_seedable_cause | "
+    "crashed). Labels are exclusive and sum to attempts, so ``seeded``/total is "
+    "the seeding yield (fm#1092, fm#1144, fm#1272).",
     ["outcome"],
 )
 
@@ -745,6 +752,35 @@ kb_cause_seed_uncorroborated_total = Counter(
     "declined runbook per seeding attempt, counting only runbooks that would "
     "otherwise have been consulted. A cost measure, not an alarm — no value is "
     "'healthy'.",
+)
+
+
+# fm#1272 sizing surface for the seeding GROUNDING gate. Retrieved chunks were
+# excluded from seeding because the query neither named their runbook nor was
+# covered by it — the shape of a plausible-looking match to a problem the KB
+# does not actually hold a runbook for.
+#
+# Sibling of the corroboration counter above, asking a different question.
+# Corroboration asks "did THIS runbook match broadly?"; grounding asks "was the
+# query about it at all?" — and a corpus that does not cover the incident fails
+# only the second. The distinction matters because the failure it closes is the
+# CONFIDENT WRONG ANSWER: on #1272's own query eight runbooks cleared the
+# similarity floor and every one of them was about a different platform.
+#
+# Deliberately does not restate the threshold, for the same reason as above.
+# One increment per seeding attempt in which ANY hit was excluded — never per
+# hit, so it counts affected attempts rather than corpus size. Read it against
+# ``kb_cause_seed_attempt_total``: sustained fires with a steady ``seeded``
+# share are the gate turning away uncovered topics (the KB's coverage speaking,
+# not a defect); fires that track a falling ``seeded`` share mean the gate is
+# refusing real matches, and the lever to reach for first is retrieval quality,
+# not the constant.
+kb_cause_seed_ungrounded_total = Counter(
+    "faultmaven_kb_cause_seed_ungrounded_total",
+    "Seeding attempts in which retrieved chunks were excluded because the "
+    "query neither named their runbook nor was covered by it (fm#1272). One "
+    "increment per affected attempt. A coverage measure, not an alarm — no "
+    "value is 'healthy'.",
 )
 
 
