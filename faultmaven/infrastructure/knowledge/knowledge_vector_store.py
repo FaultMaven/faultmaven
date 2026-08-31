@@ -114,6 +114,12 @@ _METADATA_SCORE_MIN = -0.3
 # Collection name that requires scope filtering
 KB_COLLECTION = "faultmaven_kb"
 
+# The one tier whose CONTENT any principal may read. Platform-curated, and
+# readable by every tenant by construction (migration 033's per-command RLS
+# policies). Used to scope the term-index build — the store's only content read
+# — so that corpus statistics are never derived from another tenant's runbooks.
+_GLOBAL_TIER = {"scope": "global"}
+
 # Keys that indicate a scope filter is present in a where clause. Team
 # visibility is no longer a metadata key — it is resolved to an id allowlist
 # (parent_document_id ∈ {...}) from the share table (ADR-013 §D4). The KB read
@@ -300,48 +306,62 @@ class KnowledgeVectorStore(BaseExternalClient):
     def _corpus_term_stats(self, collection_name: str) -> Optional[CorpusTermStats]:
         """Term index for a collection, built once and reused.
 
+        **Built over the GLOBAL tier only, and that is a tenant-isolation
+        property, not a convenience.** This is the one read in the store that
+        needs chunk TEXT rather than ids, and an unscoped content read of
+        ``faultmaven_kb`` would pull every tenant's personal and team runbooks
+        into one process-wide index — the exact shape
+        ``tests/integration/security/test_kb_tenant_isolation_probe.py`` exists
+        to refuse. Global chunks are platform-curated and readable by every
+        tenant by construction (migration 033), so their document frequencies
+        cross no boundary. The cost is that a tenant's own runbooks do not
+        influence the IDF weights; that is the right trade, and on the shipped
+        corpus the global tier IS the corpus.
+
         Synchronous and blocking, and deliberately OUTSIDE ``call_external`` —
         beside the query embedding, for the same reason it is: a failure here is
         a deterministic local fault, not a ChromaDB one, and raising it inside
         the wrapper would burn the retry budget and charge the circuit breaker
         this store shares with the KB read path. It does not raise at all: every
-        failure returns ``None`` and every caller handles it. Bounded by
-        ``MAX_TERM_INDEX_CHUNKS``.
+        failure returns ``None`` and every caller handles it — including a
+        collection whose ``count()`` is not a number, which is why the size
+        comparison lives inside the guarded block rather than after it. Bounded
+        by ``MAX_TERM_INDEX_CHUNKS``.
         """
         try:
             collection = self._get_or_create_collection(collection_name)
-            size = collection.count()
-        except Exception as e:  # noqa: BLE001
-            self.logger.debug(f"Term index unavailable for {collection_name}: {e}")
-            return None
+            size = int(collection.count())
 
-        cached = self._term_stats.get(collection_name)
-        if cached is not None and cached.signature == size:
-            return cached
+            cached = self._term_stats.get(collection_name)
+            if cached is not None and cached.signature == size:
+                return cached
 
-        if size > MAX_TERM_INDEX_CHUNKS:
-            self.logger.warning(
-                f"KB term index skipped: collection '{collection_name}' holds "
-                f"{size} chunks, over the {MAX_TERM_INDEX_CHUNKS} cap — "
-                f"reranking falls back to unweighted term overlap"
-            )
-            return None
+            if size > MAX_TERM_INDEX_CHUNKS:
+                self.logger.warning(
+                    f"KB term index skipped: collection '{collection_name}' holds "
+                    f"{size} chunks, over the {MAX_TERM_INDEX_CHUNKS} cap — "
+                    f"reranking falls back to unweighted term overlap"
+                )
+                return None
 
-        try:
-            payload = collection.get(include=["documents"])
+            # Signature is the WHOLE collection's size, while the documents read
+            # are the global ones: coarser than the thing it guards, so it
+            # over-invalidates and can never serve a stale index.
+            payload = collection.get(where=_GLOBAL_TIER, include=["documents"])
             stats = CorpusTermStats(
                 documents=payload.get("documents") or [], signature=size
             )
         except Exception as e:  # noqa: BLE001
             self.logger.warning(
-                f"KB term index build failed for '{collection_name}': {e} — "
+                f"KB term index unavailable for '{collection_name}': {e} — "
                 f"reranking falls back to unweighted term overlap"
             )
             return None
 
         self._term_stats[collection_name] = stats
         self.logger.info(
-            f"KB term index built for '{collection_name}': {stats.n_chunks} chunks"
+            f"KB term index built for '{collection_name}': {stats.n_chunks} "
+            f"global chunks"
         )
         return stats
 
@@ -780,15 +800,24 @@ class KnowledgeVectorStore(BaseExternalClient):
         """Extract meaningful keywords for keyword-constrained search.
 
         Only the first three survive into probes, so the ORDER is the whole
-        decision. With corpus statistics the order is by IDF — the rarest term
-        first, because that is the one an embedding is most likely to have
-        smoothed away — and terms the corpus has never indexed are dropped
-        outright: a probe for them is guaranteed to return nothing and would
-        spend one of the three slots proving it. On "qemu cannot write its PID
-        file" the shape-based order spends its slots on ``qemu`` (0 chunks),
-        ``cannot`` (241) and ``write`` (98); the IDF order spends them on
-        ``PID``, ``write`` and ``file``, and that is what puts the right runbook
-        back in the candidate set.
+        decision. With corpus statistics the order is: terms the index has SEEN
+        first, rarest of those first — the rarest is the one an embedding is
+        most likely to have smoothed away — and terms it has not seen last. On
+        "qemu cannot write its PID file" the shape-based order spends its slots
+        on ``qemu``, ``cannot`` (241 chunks) and ``write`` (98); this order
+        spends them on ``PID``, ``write`` and ``file``, and that is what puts
+        the right runbook back in the candidate set.
+
+        **Unseen terms are ranked last but never dropped.** The index is built
+        over the global tier alone (see :meth:`_corpus_term_stats`), so a term
+        with a document frequency of zero is one of two things: unmatchable
+        anywhere, in which case the probe costs one cheap filtered query and
+        returns nothing — or present only in the CALLER's own personal or
+        team runbooks, in which case that probe is the only thing that will
+        ever find them. The probes carry the caller's scope filter, not the
+        index's, so they can reach content the index cannot see. Dropping them
+        would have made a personal runbook's own identifiers permanently
+        unprobeable, which is the flywheel's core case.
 
         Without statistics, falls back to the shape patterns as before.
         """
@@ -804,8 +833,14 @@ class KnowledgeVectorStore(BaseExternalClient):
             keywords.append(clean)
 
         if stats is not None:
-            keywords = [k for k in keywords if stats.document_frequency(k.lower()) > 0]
-            keywords.sort(key=lambda t: stats.idf(t.lower()), reverse=True)
+
+            def rank(token: str) -> tuple:
+                term = token.lower()
+                seen = stats.document_frequency(term) > 0
+                # Certain yield before speculative yield; rarest first within each.
+                return (0 if seen else 1, -stats.idf(term))
+
+            keywords.sort(key=rank)
             return keywords
 
         # Sort: identifier-like tokens first (highest keyword search value)
@@ -973,7 +1008,10 @@ class KnowledgeVectorStore(BaseExternalClient):
             w_fresh = RERANK_WEIGHT_FRESHNESS
 
         scored: List[tuple] = []
-        query_lower = query.lower()
+        # ``query`` is typed ``str`` with a "" default, but callers reach this
+        # through layers that can hand it None; crashing here would surface as
+        # "the knowledge base failed" on a search that was fine.
+        query_lower = (query or "").lower()
 
         for candidate in candidates:
             content = candidate.get("content", "")

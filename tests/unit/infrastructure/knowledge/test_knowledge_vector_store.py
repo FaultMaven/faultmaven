@@ -138,11 +138,24 @@ class TestComputeMetadataScore:
         assert score >= 0.6
 
     def test_no_context_metadata(self):
-        """No case context means no domain/service boost."""
+        """No case context means no domain/service boost.
+
+        "No boost" is now the NEUTRAL point of the mapped range, not 0.0. The
+        components sum on [-0.3, 1.0] and are mapped affinely onto [0, 1] so
+        that the demotion half of the status signal survives; 0.0 is reserved
+        for the most-demoted state (#1272). What this test pins is that an
+        unboosted chunk scores exactly what a status-less, context-less chunk
+        scores — no more, no less.
+        """
         score = KnowledgeVectorStore._compute_metadata_score(
             {"domain": "networking"}, {}
         )
-        assert score == 0.0
+        assert score == KnowledgeVectorStore._compute_metadata_score({}, {})
+        assert (
+            0.0
+            < score
+            < KnowledgeVectorStore._compute_metadata_score({"status": "verified"}, {})
+        )
 
     def test_verified_status_boost(self):
         score = KnowledgeVectorStore._compute_metadata_score({"status": "verified"}, {})
@@ -161,7 +174,10 @@ class TestComputeMetadataScore:
             {"domain": "networking"},
             {"domain": "database"},
         )
-        assert score == 0.0
+        assert score == KnowledgeVectorStore._compute_metadata_score({}, {})
+        assert score < KnowledgeVectorStore._compute_metadata_score(
+            {"domain": "networking"}, {"domain": "networking"}
+        )
 
     def test_service_match_is_case_insensitive_and_trimmed(self):
         """Free-text case service ("PostgreSQL") must match curated frontmatter

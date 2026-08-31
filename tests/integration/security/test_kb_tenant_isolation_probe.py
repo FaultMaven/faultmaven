@@ -1130,11 +1130,33 @@ def test_the_unfiltered_kb_readers_stay_id_only():
     any of these to ``include=["documents", "metadatas"]`` would turn an id
     reconciliation into an unfiltered content read of every tenant's KB, and
     nothing else in this file would notice.
+
+    **One content read is permitted, and only on the global tier.** The #1272
+    term index needs chunk TEXT to compute document frequencies, which no
+    id-level get can supply. It is allowed to read documents *because* it
+    carries ``where={"scope": "global"}``: global chunks are platform-curated
+    and readable by every tenant by construction (migration 033), so no tenant
+    boundary is crossed. The pairing is what makes it safe, so the pairing is
+    what is asserted — a content read must carry the global filter, and an
+    unfiltered read must stay id-only. Neither half is waived on its own.
     """
     module = _SOURCE_ROOT / "infrastructure/knowledge/knowledge_vector_store.py"
     tree = ast.parse(module.read_text(encoding="utf-8"))
 
+    def _is_global_tier(expression):
+        """Does this ``where`` argument pin the read to scope == global?"""
+        if isinstance(expression, ast.Name):
+            return expression.id == "_GLOBAL_TIER"
+        if isinstance(expression, ast.Dict):
+            return [
+                (k.value, v.value)
+                for k, v in zip(expression.keys, expression.values)
+                if isinstance(k, ast.Constant) and isinstance(v, ast.Constant)
+            ] == [("scope", "global")]
+        return False
+
     unfiltered = []
+    global_content_reads = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
@@ -1144,11 +1166,18 @@ def test_the_unfiltered_kb_readers_stay_id_only():
             continue
         kwargs = {kw.arg: kw.value for kw in node.keywords}
         include = kwargs.get("include")
-        assert isinstance(include, ast.List) and not include.elts, (
-            f"knowledge_vector_store.py:{node.lineno} reads the KB collection "
-            "with a non-empty `include` — an id-level get must not carry "
-            "content or metadata out of the store"
-        )
+        id_only = isinstance(include, ast.List) and not include.elts
+        where = kwargs.get("where")
+        if not id_only:
+            assert where is not None and _is_global_tier(where), (
+                f"knowledge_vector_store.py:{node.lineno} reads the KB "
+                "collection with a non-empty `include` and without "
+                "`where=_GLOBAL_TIER` — a content read of this collection may "
+                "only ever see the platform-curated global tier, or it becomes "
+                "a read of every tenant's runbooks"
+            )
+            global_content_reads.append(node.lineno)
+            continue
         if "where" not in kwargs:
             unfiltered.append(node.lineno)
 
@@ -1156,6 +1185,12 @@ def test_the_unfiltered_kb_readers_stay_id_only():
         "the number of UNFILTERED reads of the KB collection changed "
         f"(lines {unfiltered}). One is expected: the boot-time reconcile "
         "enumeration in list_parent_document_ids."
+    )
+    assert len(global_content_reads) == 1, (
+        "the number of CONTENT reads of the KB collection changed "
+        f"(lines {global_content_reads}). One is expected: the global-tier "
+        "term-index build in _corpus_term_stats. A second one needs its own "
+        "argument for why the tier it reads is safe to pool across tenants."
     )
 
 

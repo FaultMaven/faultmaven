@@ -238,14 +238,26 @@ class TestIdentifierDetection:
 
 
 class TestKeywordArm:
-    def test_keywords_are_ordered_by_rarity_and_unseen_terms_dropped(self, stats):
+    def test_seen_terms_rank_before_unseen_ones_rarest_first(self, stats):
         out = KnowledgeVectorStore._extract_search_keywords(
             "qemu wrote its pid to enospc", stats=stats
         )
-        assert "qemu" not in out, "a term in 0 chunks can only waste a probe slot"
         assert out.index("enospc") < out.index(
             "pid"
-        ), "the rarest surviving term must get the first of only three probes"
+        ), "the rarest SEEN term must get the first of only three probes"
+        assert out.index("pid") < out.index("qemu"), (
+            "a term the index has never seen is speculative — it goes after "
+            "every term known to match something"
+        )
+
+    def test_unseen_terms_are_never_dropped(self, stats):
+        """The index sees only the global tier, so a personal runbook's own
+        identifiers have df 0 there and dropping them would make them
+        permanently unprobeable — the flywheel's core case."""
+        out = KnowledgeVectorStore._extract_search_keywords(
+            "acme-billing-svc is throwing errors", stats=stats
+        )
+        assert "acme-billing-svc" in out
 
     def test_without_statistics_the_shape_ordering_is_unchanged(self):
         out = KnowledgeVectorStore._extract_search_keywords(
