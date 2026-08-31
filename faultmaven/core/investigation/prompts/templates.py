@@ -460,25 +460,34 @@ the regression. Could you share the deployment diff to confirm what changed?"
 # stated rule since it shipped and this pair had none, so the documented half
 # had every reason to win the currency judgement.
 _OBSERVATION_TIME_BLOCK = """
-TIME ATTRIBUTES — arrival and age answer DIFFERENT questions:
-  • fresh_this_turn="true" — when YOU received it: submitted on this turn. It
-    says nothing about how old the content is.
-  • observed_through="<instant>" age="<Nm|Nh|Nd>" — when the CONTENT was
-    observed. This is the one that decides whether a symptom is current.
-An item can carry fresh_this_turn="true" and age="7h" at once — an alert
-forwarded seven hours after it fired. That is not a contradiction, and age is
-what governs: do not read "it arrived this turn" as "it is happening now", and
-do not ask the user for a firing time or duration the item already states.
-When observed_through is ABSENT the observation window is UNKNOWN — never
-assume recent. Say the window is unestablished and name what would date it.
-An item may also carry observed_basis="inferred_year". The time of day and
-date are real; the YEAR was filled in by the parser because the log format
-carries none (classic syslog). Use it to judge whether something looks recent
-or old, but do not state an exact duration from it without confirming the
-year — say the window is approximate and ask for a dated export if the
-difference matters.
-These appear on <evidence> items and on <uploaded_file> items (files not yet
-recorded as evidence), and mean the same thing on both.
+TIME ATTRIBUTES — two attributes, two different questions:
+  - fresh_this_turn="true" — when YOU received the item. Says nothing about how
+    old its content is.
+  - observed_through="<instant>" age="<Nm|Nh|Nd>" — when the CONTENT was
+    observed. This is what settles temporal state (ongoing / historical).
+Both can hold at once: an item received this turn can carry age="7h". That is
+not a contradiction, and age is what governs — never read "it arrived this
+turn" as "it is happening now".
+
+observed_through PRESENT — the item's time is KNOWN. Treat the question as
+ANSWERED. The content was observed no later than that instant, so whatever it
+reports happened at or before it. Say when it was observed and what that makes
+it: a small age is current, a large one may be stale. Do NOT list a timestamp,
+firing time, occurrence time, start time or duration among the missing data,
+and do NOT ask for one — the case already holds it, and asking sends the reader
+to fetch what they have. Requesting an exact source timestamp is a REFINEMENT
+when a precise duration matters; never a gap, never a blocker.
+
+observed_through ABSENT — the window is UNKNOWN. Never assume recent. Say it is
+unestablished and name what would date it.
+
+observed_basis="inferred_year" — the date and time of day are real; the YEAR
+was supplied by the parser, from a log format that carries none. Judge recency
+with it, but treat the window as approximate: do not state an exact duration
+without confirming the year.
+
+Both attributes appear on <evidence> and <uploaded_file> items and mean the
+same on each.
 """
 
 

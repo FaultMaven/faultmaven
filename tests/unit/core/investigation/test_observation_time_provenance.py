@@ -348,6 +348,51 @@ def test_an_unclassified_pattern_defaults_to_withholding():
     assert _observed_attr(_Ev(datetime.now(timezone.utc), "some_new_pattern")) == ""
 
 
+def test_a_known_observation_time_is_never_reported_as_missing():
+    """The point of capturing `observed_at` is that the engine stops asking for
+    the time. Verified on the onprem cluster (case_7bad3d1ac083): intake logged
+    `Seeded coverage … observed_at 2026-08-31T04:13:38`, so the prompt carried
+    `observed_through` with `age="3m"` — and the reply still said *"The pasted
+    alert does not include the firing timestamp"*, sending the reporter to fetch
+    a value the case already held.
+
+    The old wording said not to ask for a time "the item already states". An
+    alert's TEXT states no firing time; the observation time is a separate
+    attribute, so the rule read as inapplicable and the model listed the
+    timestamp as a gap. It must instead be told the question is answered.
+    """
+
+    import re
+
+    from faultmaven.core.investigation.prompts.templates import (
+        _EVIDENCE_GROUNDING_BLOCK,
+        INQUIRY_TEMPLATE,
+    )
+
+    for block in (INQUIRY_TEMPLATE, _EVIDENCE_GROUNDING_BLOCK):
+        text = re.sub(r"\s+", " ", block)
+        # the question is answered, not open
+        assert "Treat the question as ANSWERED" in text
+        # and specifically must not be enumerated as absent data
+        assert "Do NOT list a timestamp, firing time" in text
+        # asking for the source timestamp is allowed, but only as a refinement
+        assert "is a REFINEMENT when a precise duration" in text
+
+    # The rule must not explain itself in terms of one client's UX. The server
+    # cannot tell a Slack forward from a Copilot capture and must not describe
+    # a user action only one of them performs — the first draft justified
+    # itself "by forwarding it", which is meaningless to a browser capture and
+    # doubly so because the Copilot does not send observed_at at all today.
+    # Scoped to the block: "forward" occurs in unrelated prose elsewhere.
+    from faultmaven.core.investigation.prompts.templates import (
+        _OBSERVATION_TIME_BLOCK,
+    )
+
+    block = _OBSERVATION_TIME_BLOCK.lower()
+    for client_shaped in ("forward", "slack", "copilot", "browser", "paste"):
+        assert client_shaped not in block, client_shaped
+
+
 def test_the_prompt_defines_the_inferred_marker():
     from faultmaven.core.investigation.prompts.templates import (
         _EVIDENCE_GROUNDING_BLOCK,
