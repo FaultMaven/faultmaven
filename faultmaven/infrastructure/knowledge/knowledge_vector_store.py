@@ -1071,7 +1071,11 @@ class KnowledgeVectorStore(BaseExternalClient):
         ``term_coverage`` and ``identity_terms_in_query`` are written back for
         the same reason: a consumer that must decide whether to ACT on a result
         (rather than merely show it) needs the lexical evidence, and only this
-        function holds both the corpus statistics and the full chunk text.
+        function holds both the corpus statistics and the full chunk text. They
+        are not interchangeable — ``identity_terms_in_query`` answers whether
+        the query was ABOUT the document and is what the cause seeder grounds
+        on; ``term_coverage`` is the ranking signal above and no admission may
+        be expressed in it, for the reason ``_compute_term_overlap`` records.
 
         Ties broken by scope priority: personal > team > global.
         """
@@ -1134,12 +1138,22 @@ class KnowledgeVectorStore(BaseExternalClient):
             # list (#1272).
             candidate["rerank_score"] = final_score
 
-            # The two halves of the grounding question, carried out with the
-            # result so a consumer deciding whether to ACT on it does not have
-            # to re-derive them (and cannot re-derive them: the corpus
-            # statistics and the full chunk text live only here).
-            #   term_coverage           — does this chunk cover the query?
-            #   identity_terms_in_query — was the query about this document?
+            # Carried out with the result because a consumer deciding whether
+            # to ACT on it cannot re-derive either: the corpus statistics and
+            # the full chunk text live only here.
+            #
+            #   identity_terms_in_query — was the query ABOUT this document?
+            #       The grounding question, and the one the cause seeder gates
+            #       on. Token-level under a plural fold.
+            #   term_coverage           — the ranking term-overlap signal
+            #       above, reported for diagnosis. NOT a second grounding
+            #       ground: it is a share of the QUERY, so it rises as the
+            #       query says less, and thresholding it admitted content-free
+            #       statements against every runbook at once (#1285). Written
+            #       on every path this function takes — a float even with no
+            #       term index, where the blend degrades to a binary fraction —
+            #       so ``None`` distinguishes "no reranker ran" and nothing
+            #       else.
             candidate["term_coverage"] = term_overlap
             candidate["identity_terms_in_query"] = cls._identity_terms_in_query(
                 metadata, query_lower
@@ -1182,6 +1196,16 @@ class KnowledgeVectorStore(BaseExternalClient):
         substring hit on a longer word costs a little accuracy in an ordering,
         whereas that one ADMITS a runbook to being asserted as a candidate root
         cause and so cannot afford `pod` to be matched by "podman".
+
+        **Nothing admits on this value, and nothing should.** It is a share of
+        the QUERY's vocabulary, so it is highest for queries that identify
+        least: "The application is slow." scores 1.000 against seven runbooks it
+        names nothing of, above the 0.926 a specific symptom statement reaches
+        against its correct one. #1272's seeding gate thresholded it
+        and admitted 36 off-domain runbooks for 1 on-domain one before that
+        arm was removed in #1285 — see ``milestone_engine.kb_hit_grounding``.
+        A ranking signal is not an admission criterion, which is the same
+        distinction ``rerank_score`` and ``score`` keep in the module docstring.
         """
         if not query_terms:
             return 0.0

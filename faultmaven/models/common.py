@@ -227,25 +227,36 @@ class SearchResult(BaseModel):
     term_coverage: Optional[float] = Field(
         default=None,
         description=(
-            "Share of the query's IDF-weighted discriminating vocabulary that "
-            "THIS hit's chunk carries, in [0, 1]. Answers 'does this chunk "
-            "cover the query?' — the half of relevance a cosine cannot "
-            "separate from topical adjacency. None on the pure-vector path and "
-            "whenever no corpus term index was available; consumers must read "
-            "None as 'unknown', never as 'high'."
+            "Share of the query's vocabulary that THIS hit's chunk carries, in "
+            "[0, 1] — the reranker's own term-overlap signal, reported for "
+            "diagnosis. A RANKING quantity, and NOT an admission criterion: it "
+            "is a share OF THE QUERY, so it is maximised by queries that say "
+            "the least. 'The application is slow.' scores 1.000 against seven "
+            "runbooks it names nothing of, above anything a specific query "
+            "reaches against its correct one, which is why the #1272 seeding "
+            "gate no longer thresholds it (#1285). "
+            "Two things it is NOT: it is not IDF-weighted when no corpus term "
+            "index was available — there it silently degrades to an unweighted "
+            "binary fraction on the same [0, 1] scale, a different quantity "
+            "wearing the same units — and it is not token-level: terms are "
+            "matched as substrings, so `pod` is carried by 'podman'. None "
+            "means only that no reranker ran (the pure-vector path); consumers "
+            "must read None as 'unknown', never as 'high'."
         ),
     )
     identity_terms_in_query: List[str] = Field(
         default_factory=list,
         description=(
             "Words naming the hit's own document — its title's terms and its "
-            "``service`` — that appear in the query. Answers the CONVERSE "
-            "question to ``term_coverage``: was the query about this document? "
-            "Retrieval never asks it, which is how a Kubernetes runbook comes "
-            "back for a QEMU incident and looks plausible (#1272). Empty on "
-            "the pure-vector path and for a genuinely unnamed document, so "
-            "emptiness alone is not evidence against a hit — it is one of two "
-            "grounds a consumer may seed on."
+            "``service`` — that appear in the query, matched at TOKEN level "
+            "under a plural fold. Answers the question retrieval never asks: "
+            "was the query ABOUT this document? Its absence is how a Kubernetes "
+            "runbook comes back for a QEMU incident and looks plausible "
+            "(#1272), and it is the sole ground the cause seeder grounds on "
+            "(#1285). Empty both on the pure-vector path and for a genuinely "
+            "unnamed document — emptiness alone cannot tell those apart, so a "
+            "consumer needing to must read ``term_coverage is None`` for the "
+            "first."
         ),
     )
 

@@ -18,7 +18,6 @@ import pytest
 from faultmaven.core.investigation.milestone_engine import (
     KB_PREFETCH_FETCH_LIMIT,
     KB_PREFETCH_RELEVANCE_THRESHOLD,
-    KB_SEED_MIN_TERM_COVERAGE,
     MilestoneEngine,
 )
 from faultmaven.models.common import SearchResult
@@ -104,7 +103,16 @@ class TestStaleContextIsCleared:
 
 
 class TestSeedingGroundingGate:
-    """A runbook may seed only if the query NAMED it or it COVERS the query."""
+    """A runbook may seed only if the query NAMED it.
+
+    #1272 also admitted a runbook that COVERED the query at
+    ``term_coverage >= 0.90``. That arm was removed in #1285: measured over the
+    shipped corpus it decided 37 chunks, 36 of them off-domain, because
+    ``term_coverage`` is a share of the QUERY and so peaks on queries that
+    identify nothing. The measurement and its pins live in
+    ``test_kb_seed_grounding_reachability_1285.py``; what remains here is
+    #1272's own behaviour, which the removal did not change.
+    """
 
     async def _seed(self, hits, monkeypatch):
         seen = {}
@@ -152,39 +160,34 @@ class TestSeedingGroundingGate:
         assert [r.item_id for r in seeded] == ["kb_nginx"]
 
     @pytest.mark.asyncio
-    async def test_a_covering_runbook_seeds_even_when_unnamed(self, monkeypatch):
-        # The symptom-phrased query: the runbook states the symptom verbatim
-        # and the query never names the platform.
+    async def test_an_unnamed_runbook_does_not_seed_at_any_coverage(self, monkeypatch):
+        """Coverage no longer admits anything, including at its maximum.
+
+        This was ``test_a_covering_runbook_seeds_even_when_unnamed``, sized on
+        a query copied out of a runbook. On real queries the value it asserted
+        is reached by statements that identify nothing at all — see #1285's
+        measurement.
+        """
         hits = [
             _result("ldf_1", "kb_ldf", coverage=1.0, named=[]),
             _result("ldf_2", "kb_ldf", coverage=0.4, named=[]),
         ]
-        seeded = await self._seed(hits, monkeypatch)
-        assert [r.item_id for r in seeded] == ["kb_ldf"]
+        assert await self._seed(hits, monkeypatch) == []
 
     @pytest.mark.asyncio
     async def test_grounding_is_per_runbook_not_per_chunk(self, monkeypatch):
-        """One grounded chunk admits the runbook; its siblings then corroborate.
+        """One naming chunk admits the runbook; its siblings then corroborate.
 
-        Judged per chunk, this runbook is admitted on its covering chunk and
-        then declined by #1144 for want of a second — grounding would be doing
-        corroboration's job a second time.
+        Judged per chunk, this runbook is admitted on the chunk whose metadata
+        carried the identity terms and then declined by #1144 for want of a
+        second — grounding would be doing corroboration's job a second time.
         """
         hits = [
-            _result("ldf_1", "kb_ldf", coverage=1.0, named=[], letters=("A",)),
+            _result("ldf_1", "kb_ldf", coverage=0.4, named=["disk"], letters=("A",)),
             _result("ldf_2", "kb_ldf", coverage=0.3, named=[], letters=("B",)),
         ]
         seeded = await self._seed(hits, monkeypatch)
         assert [r.item_id for r in seeded] == ["kb_ldf"]
-
-    @pytest.mark.asyncio
-    async def test_coverage_just_below_the_bar_is_not_grounded(self, monkeypatch):
-        below = KB_SEED_MIN_TERM_COVERAGE - 0.01
-        hits = [
-            _result("x_1", "kb_x", coverage=below, named=[]),
-            _result("x_2", "kb_x", coverage=below, named=[]),
-        ]
-        assert await self._seed(hits, monkeypatch) == []
 
     @pytest.mark.asyncio
     async def test_unmeasured_hits_are_not_judged(self, monkeypatch):
@@ -207,7 +210,7 @@ class TestSeedingGroundingGate:
         hits = [
             _result("k8s_1", "kb_k8s", score=0.80, coverage=0.5, named=[]),
             _result("k8s_2", "kb_k8s", score=0.79, coverage=0.5, named=[]),
-            _result("ldf_1", "kb_ldf", score=0.60, coverage=1.0, named=[]),
+            _result("ldf_1", "kb_ldf", score=0.60, coverage=0.4, named=["disk"]),
             _result("ldf_2", "kb_ldf", score=0.59, coverage=0.2, named=[]),
         ]
         seeded = await self._seed(hits, monkeypatch)
