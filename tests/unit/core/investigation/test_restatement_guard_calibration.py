@@ -558,7 +558,6 @@ def test_symptom_restatement_is_not_excused_by_a_covering_sibling():
     ), "fixture no longer exercises the anchors arm"
     (sibling,) = case.hypotheses.values()
     sib = _content_tokens(sibling.statement)
-    assert (st - (anchors | sib)) == (st - (anchors | sib)), "unreachable"
     assert not (st - (anchors | sib)), (
         "fixture no longer discriminates: with the anchors arm removed the "
         "attribution loop must be able to attribute the hold to this sibling"
@@ -618,6 +617,17 @@ def test_attribution_only_releases_never_holds():
     assert checked > 400, f"sweep did not run: {checked} causes"
     assert plain_held > 0, "the plain frame test never held anything to compare"
     assert held > 0, "the guard never fired: the implication is vacuous"
+    # The corpus's unattached same-runbook frames are the shape attribution was
+    # NOT built for, so it releases nothing here (measured 0). That is worth
+    # recording rather than hiding: this sweep proves the SAFETY direction only,
+    # and a mutation to the release condition is invisible to it. The release
+    # direction is pinned on real cases instead (the population pins above).
+    released = plain_held - held
+    assert released == 0, (
+        f"attribution released {released} corpus roots; this sweep is the "
+        "safety-direction pin and its release count is a documented 0 — a "
+        "change here needs the release pins re-measured, not this assert moved"
+    )
 
 
 def test_a_roots_own_hypothesis_cannot_attribute_the_frame_away():
@@ -687,3 +697,230 @@ def test_a_roots_own_hypothesis_cannot_attribute_the_frame_away():
         "the frame's, or an owner-leaking attribution loop would not release it"
     )
     assert root_restates_case_frame(root, case) is True
+
+
+def test_population_pin_multi_element_attached_frame():
+    """fm#1122 POPULATION PIN — distilled verbatim from ``case_c26d7905f26d``
+    (dev corpus), the multi-element member of the five real holds.
+
+    Deliberately NOT the single-sibling shape. With exactly one frame element
+    ``frame == anchors | tokens``, so ``statement_tokens - (anchors | tokens)
+    == residue`` is a TAUTOLOGY and the attribution loop releases under set
+    equality, subset, and a second-threshold implementation alike — such a pin
+    cannot discriminate the rule it is supposed to pin. Here TWO standing
+    hypotheses sit on a near-duplicate sibling root, so the residue test has to
+    pick the one that actually accounts for the frame, and the subsumption
+    condition has to find the other one covered by it.
+
+    On the pre-fix engine this case derived ``cause_assurance=no_root`` with
+    zero VALIDATED roots."""
+    from faultmaven.core.investigation.causal_graph import (
+        _content_tokens,
+        _node_restates,
+    )
+
+    symptom = (
+        "The production PostgreSQL primary is currently rejecting new "
+        "connections with a connection-limit error, and the web tier is "
+        "failing writes with 500s during ongoing business-hours traffic."
+    )
+    sib_a = (
+        "etl-reporting's direct PostgreSQL pool is exhausting available server "
+        "connections"
+    )
+    sib_b = (
+        "Aggregate client pools exceed max_connections because etl-reporting "
+        "opens a direct PostgreSQL pool instead of using PgBouncer"
+    )
+    case = _case(
+        symptom,
+        chains=[
+            (
+                "etl-reporting opens a large direct connection pool to the "
+                "PostgreSQL primary",
+                [sib_a, sib_b],
+            )
+        ],
+    )
+    root = _root("etl-reporting opens a direct PostgreSQL pool that bypasses PgBouncer")
+    # Its own two hypotheses, as the real graph has them (owner-excluded).
+    case.causal_nodes[root.node_id] = root
+    for stmt in (sib_a, sib_b):
+        h = Hypothesis(
+            statement=stmt,
+            category=HypothesisCategory.OTHER,
+            state=HypothesisState.ACTIVE,
+            generation_mode=HypothesisGenerationMode.OPPORTUNISTIC,
+            rationale="posited",
+            generated_at_turn=1,
+            root_node_id=root.node_id,
+        )
+        case.hypotheses[h.hypothesis_id] = h
+
+    # PREMISES. The frame must really carry TWO elements, or this is the
+    # single-element tautology again and pins nothing.
+    st = _content_tokens(root.statement)
+    anchors = _content_tokens(symptom)
+    elements = [
+        _content_tokens(h.statement)
+        for h in case.hypotheses.values()
+        if h.root_node_id != root.node_id
+    ]
+    assert len(elements) == 2, f"not a multi-element frame: {len(elements)}"
+    frame = set(anchors)
+    for e in elements:
+        frame |= e
+    residue = st - frame
+    solo = [st - (anchors | e) for e in elements]
+    assert sum(r == residue for r in solo) == 1, (
+        "fixture no longer discriminates: exactly one element must account for "
+        f"the frame's coverage, got {sum(r == residue for r in solo)}"
+    )
+    assert any(r != residue for r in solo), "the second element is inert"
+    assert (
+        _node_restates(st, root.node_id, anchors, [(None, e) for e in elements])
+        is False
+    )
+    assert root_restates_case_frame(root, case) is False  # released
+
+
+def test_656_disjunction_blocked_when_the_anchor_pre_names_a_disjunct():
+    """REGRESSION PIN — the #656 boundary crossed with a CONTAMINATED anchor.
+
+    The attribution test subtracts the anchors before asking whether one
+    sibling accounts for the root. When the problem statement itself pre-names
+    a disjunct (the #661 contaminated-anchor class — 6 of the 7 roots still
+    held in the dev corpus), that subtraction DELETES the disjunct, and the
+    remaining fragment is covered by the other disjunct alone: a distributed
+    aggregation presents as attributable-to-one and the #656 root releases.
+
+    Caught by review, reproduced on both trees: ``main`` HELD, the first cut of
+    this fix RELEASED. Held now by the two conditions read off the root's FULL
+    token set — no rival may contribute root content the attributing claim
+    lacks, and the attributing claim must out-cover the problem statement."""
+    from faultmaven.core.investigation.causal_graph import (
+        ROOT_NOVELTY_MIN_FRACTION,
+        _content_tokens,
+    )
+
+    case = _case(
+        "Intermittent 502 errors under load, possibly from transient network "
+        "congestion",
+        hyp_statements=[
+            "Transient network congestion",
+            "Resource contention on the backend",
+        ],
+    )
+    root = _root(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors"
+    )
+    # PREMISE: the anchors arm must NOT be what holds it, or the pin tests the
+    # wrong arm and the regression walks straight back in.
+    st = _content_tokens(root.statement)
+    anchors = _content_tokens(case.problem_verification.symptom_statement)
+    assert len(st - anchors) / len(st) >= ROOT_NOVELTY_MIN_FRACTION, (
+        "fixture drifted into the anchors arm; it no longer exercises "
+        "attribution under a contaminated anchor"
+    )
+    assert root_restates_case_frame(root, case) is True
+
+
+def test_656_disjunction_blocked_when_the_anchor_pre_names_the_only_rival():
+    """The same boundary with NO rival standing for the pre-named disjunct, so
+    the subsumption condition is vacuous and only the principal-source
+    condition can hold it. Without that condition this releases."""
+    from faultmaven.core.investigation.causal_graph import (
+        ROOT_NOVELTY_MIN_FRACTION,
+        _content_tokens,
+    )
+
+    case = _case(
+        "Intermittent 502 errors under load, possibly from transient network "
+        "congestion",
+        hyp_statements=["Resource contention on the backend"],
+    )
+    root = _root(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors"
+    )
+    st = _content_tokens(root.statement)
+    anchors = _content_tokens(case.problem_verification.symptom_statement)
+    assert len(case.hypotheses) == 1, "the subsumption arm must be vacuous here"
+    assert len(st - anchors) / len(st) >= ROOT_NOVELTY_MIN_FRACTION
+    assert len(st & anchors) > len(
+        st & _content_tokens("Resource contention on the backend")
+    ), "fixture no longer exercises the principal-source condition"
+    assert root_restates_case_frame(root, case) is True
+
+
+def test_656_disjunction_blocked_under_contaminated_anchor_with_verbose_rivals():
+    """The contaminated anchor at realistic sibling length — the shape where the
+    principal-source condition alone is not enough and subsumption carries it."""
+    case = _case(
+        "Intermittent 502 errors under load, possibly from transient network "
+        "congestion",
+        hyp_statements=[
+            "Transient network congestion between the ingress controller and "
+            "the backend pods causes intermittent 502 errors whenever request "
+            "volume rises under load",
+            "Resource contention on the backend host - CPU and memory pressure "
+            "from co-tenant workloads - causes intermittent 502 errors under load",
+        ],
+    )
+    root = _root(
+        "Transient network congestion or resource contention causing "
+        "intermittent 502 errors"
+    )
+    assert root_restates_case_frame(root, case) is True
+
+
+def test_known_limit_lopsided_disjunction_escapes():
+    """KNOWN LIMIT, pinned as CURRENT behaviour on BOTH trees (documented in
+    §7.1 alongside filler padding, and NOT introduced by the attribution test).
+
+    A disjunction with one dominant disjunct escapes through the PRE-EXISTING
+    presumptive-owner arm: the dominant sibling mutually mirrors the root at
+    0.647 against ``_FRAME_OWNER_JACCARD`` 0.6, so it is excluded from the frame
+    as the root's own not-yet-attached hypothesis, and what remains ("a config
+    bug") leaves the root 0.643 novel. Attribution is never consulted. Pinned
+    with that mechanism asserted, so the pin cannot silently start passing for a
+    different reason."""
+    from faultmaven.core.investigation.causal_graph import (
+        _FRAME_OWNER_JACCARD,
+        ROOT_NOVELTY_MIN_FRACTION,
+        _content_tokens,
+        _mutual_mirror,
+        _node_restates,
+    )
+
+    case = _case(
+        "Intermittent 502 errors under load",
+        hyp_statements=[
+            "Transient network congestion between the ingress controller and "
+            "the backend pods causes intermittent 502 errors under load",
+            "A config bug",
+        ],
+    )
+    root = _root(
+        "Transient network congestion between the ingress controller and the "
+        "backend pods, or a config bug, causing intermittent 502 errors"
+    )
+    st = _content_tokens(root.statement)
+    anchors = _content_tokens(case.problem_verification.symptom_statement)
+    elements = [_content_tokens(h.statement) for h in case.hypotheses.values()]
+    mirrored = [e for e in elements if _mutual_mirror(st, e, _FRAME_OWNER_JACCARD)]
+    assert len(mirrored) == 1, (
+        "fixture no longer escapes through the presumptive-owner arm: "
+        f"{len(mirrored)} of {len(elements)} siblings mirror the root"
+    )
+    frame = set(anchors)
+    for e in elements:
+        if e not in mirrored:
+            frame |= e
+    assert len(st - frame) / len(st) >= ROOT_NOVELTY_MIN_FRACTION, (
+        "the surviving frame no longer leaves the root novel, so this is not "
+        "the documented escape any more"
+    )
+    assert _node_restates(st, "cn_x", anchors, [(None, e) for e in elements]) is False
+    assert root_restates_case_frame(root, case) is False  # escapes — known limit

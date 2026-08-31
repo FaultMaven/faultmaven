@@ -1619,3 +1619,117 @@ def test_mirror_collapsed_supports_are_not_reported_as_restatement_held():
             e.extract = None
     derive_node_states(case)
     assert restatement_held_root_ids(case) == set()
+
+
+def test_released_duplicate_pair_moves_the_block_from_restatement_to_mece():
+    """DOCUMENTED CROSS-GUARD INTERACTION (fm#1122 review).
+
+    Two near-duplicate ROOTs that mutually attribute each other both release
+    from the §7.1 restatement guard, and if BOTH independently clear the
+    grounding bar both then VALIDATE. §7.1.2 MECE arbitration collapses
+    same-cause roots at ``_ROOT_DISTINCT_JACCARD`` = 0.6, but this pair scores
+    0.545, so they survive as DISTINCT causes, contest, and
+    ``synthesize_rcc_from_validated_root`` refuses — a NULL
+    ``root_cause_conclusion`` reached by a different route.
+
+    Pinned as CURRENT behaviour rather than fixed here, with the comparison that
+    makes it a non-regression explicit: ``main`` reaches the SAME NULL
+    conclusion on this graph, because there the restatement guard holds both
+    roots instead. What changes is the grade — ``no_root`` on main,
+    ``mechanistic`` here — and which guard owns the block. The residual is the
+    MECE collapse bar, a separately calibrated §7.1.2 knob, not this one.
+
+    Not observed in the dev corpus: in every real duplicate pair the evidence is
+    split, so only ONE member clears the §7.1 grounding bar (the #699
+    terse-only fragmentation). Absence there is not evidence it cannot happen,
+    which is why it is pinned from a constructed graph."""
+    from faultmaven.core.investigation.causal_graph import (
+        _ROOT_DISTINCT_JACCARD,
+        _content_tokens,
+        any_chain_root_validated,
+        mece_contested_root_ids,
+        project_hypothesis_states_from_roots,
+        root_restates_case_frame,
+        synthesize_rcc_from_validated_root,
+    )
+
+    symptom = (
+        "The checkout-service is experiencing 500 errors due to Postgres "
+        "connection pool exhaustion following the 14:00 deployment."
+    )
+    a_stmt = (
+        "14:00 deployment introduced a code change causing connection leaks "
+        "in checkout-service"
+    )
+    b_stmt = "14:00 deployment introduced a change causing connection pool exhaustion"
+
+    problem = CausalNode(
+        node_id=_nid(0x1122A0),
+        statement=symptom,
+        node_type=NodeType.PROBLEM,
+        generated_at_turn=1,
+    )
+    a = CausalNode(
+        node_id=_nid(0x1122A1),
+        statement=a_stmt,
+        node_type=NodeType.ROOT,
+        generated_at_turn=5,
+        evidence_links=[
+            _link("mece-a1", EvidenceStance.SUPPORTS, 0.95),
+            _link("mece-a2", EvidenceStance.SUPPORTS, 0.95),
+        ],
+    )
+    b = CausalNode(
+        node_id=_nid(0x1122A2),
+        statement=b_stmt,
+        node_type=NodeType.ROOT,
+        generated_at_turn=6,
+        evidence_links=[
+            _link("mece-b1", EvidenceStance.SUPPORTS, 0.95),
+            _link("mece-b2", EvidenceStance.SUPPORTS, 0.95),
+        ],
+    )
+    case = _case(
+        [problem, a, b],
+        edges=[
+            CausalEdge(cause_node_id=a.node_id, effect_node_id=problem.node_id),
+            CausalEdge(cause_node_id=b.node_id, effect_node_id=problem.node_id),
+        ],
+        evidence=[
+            _evidence("mece-a1", EvidenceCategory.CAUSAL_EVIDENCE),
+            _evidence("mece-a2", EvidenceCategory.CAUSAL_EVIDENCE),
+            _evidence("mece-b1", EvidenceCategory.CAUSAL_EVIDENCE),
+            _evidence("mece-b2", EvidenceCategory.CAUSAL_EVIDENCE),
+        ],
+        hyps=[
+            _hyp(a_stmt, root_node_id=a.node_id),
+            _hyp(b_stmt, root_node_id=b.node_id),
+        ],
+    )
+    case.problem_verification.symptom_statement = symptom
+    case.inquiry.proposed_problem_statement = symptom
+
+    ta, tb = _content_tokens(a_stmt), _content_tokens(b_stmt)
+    jaccard = len(ta & tb) / len(ta | tb)
+    assert jaccard < _ROOT_DISTINCT_JACCARD, (
+        f"fixture no longer survives MECE collapse: {jaccard:.3f} >= "
+        f"{_ROOT_DISTINCT_JACCARD}, so the pair would be one cause and this "
+        "interaction would not arise"
+    )
+    # Both release from the restatement guard...
+    assert root_restates_case_frame(a, case) is False
+    assert root_restates_case_frame(b, case) is False
+    derive_node_states(case)
+    project_hypothesis_states_from_roots(case)
+    validated = {
+        n.node_id
+        for n in case.causal_nodes.values()
+        if n.node_type == NodeType.ROOT and n.node_state == NodeState.VALIDATED
+    }
+    assert validated == {a.node_id, b.node_id}, "both must clear the grounding bar"
+    assert any_chain_root_validated(case) is True
+    # ...and the block moves to MECE, which still refuses the conclusion.
+    assert mece_contested_root_ids(case) == {a.node_id, b.node_id}
+    case.root_cause_conclusion = None
+    assert synthesize_rcc_from_validated_root(case) is False
+    assert case.root_cause_conclusion is None

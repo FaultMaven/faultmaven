@@ -810,11 +810,12 @@ def root_restates_case_frame(node: "CausalNode", case: Case) -> bool:
 
     Non-novelty is then ATTRIBUTED (fm#1122, ``_node_restates``): a root held
     by the anchors alone is the symptom dressed as a cause and stays held; a
-    root whose whole deficit is attributable to ONE standing hypothesis is that
-    hypothesis's own cause said twice — a duplicate, released — and a root that
-    is non-novel only against the UNION of several standing causes is
-    aggregating the case's open candidates, which is the #656 shape and stays
-    held. This replaces the fm#1137 known limit (a standing duplicate framing
+    root whose whole deficit is attributable to ONE standing hypothesis — which
+    must also be the root's PRINCIPAL source, covering at least as much of it as
+    the anchors do — is that hypothesis's own cause said twice, a duplicate,
+    released; and a root that is non-novel only against the UNION of several
+    standing causes is aggregating the case's open candidates, which is the #656
+    shape and stays held. This replaces the fm#1137 known limit (a standing duplicate framing
     its own root and holding it at INCONCLUSIVE indefinitely, with "collect
     more evidence" as the only advice against a bar evidence cannot move). It
     is a quantifier, not a threshold: fm#1137/#1140 swept "how much does one
@@ -930,9 +931,31 @@ def _node_restates(
     # SUPERSET of ``residue``; comparing the two by length is therefore the same
     # predicate as comparing them by identity (a known equivalent mutant — do
     # not read a surviving length-based mutation as a missing pin).
+    anchor_cover = statement_tokens & anchors
     for tokens in elements:
-        if statement_tokens - (anchors | tokens) == residue:
-            return False
+        if statement_tokens - (anchors | tokens) != residue:
+            continue
+        # PRINCIPAL SOURCE (fm#1122 review). Subtracting the anchors is what
+        # makes the residue test above blind to a DISJUNCT the problem
+        # statement happens to pre-name — the #661 contaminated-anchor class,
+        # which is 6 of the 7 roots still held in the dev corpus. Delete that
+        # disjunct along with the anchors and the remaining fragment is covered
+        # by the other disjunct alone, so a DISTRIBUTED aggregation presents as
+        # attributable-to-one and a #656 root releases. Review caught exactly
+        # that, reproduced on both trees.
+        #
+        # So the attributing claim must be where most of the root actually
+        # comes from, measured on the root's FULL token set rather than on its
+        # non-anchor remainder: a root is a hypothesis's duplicate only when
+        # that hypothesis, not the problem statement, is its principal source.
+        # When the problem statement supplies more, the root is leaning on the
+        # problem framing — or on cause content smuggled into it — which is the
+        # restatement shape this guard exists for.
+        #
+        # A comparison between two measured quantities, not a new constant.
+        if len(statement_tokens & tokens) < len(anchor_cover):
+            continue
+        return False
     return True
 
 

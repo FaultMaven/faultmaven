@@ -25,12 +25,14 @@ Each of those, and the sibling-overlap discrimination in the affordance, was
 added because the first cut got it wrong in a way that produced the same class
 of wrong guidance this issue exists to remove, inverted.
 
-These pins fix the contradiction ONLY. They do **not** release the held root —
-that is the open #1122 product decision — so
-``test_known_limit_unattached_duplicate_frames_its_own_root`` and
-``test_656_disjunction_root_stays_blocked_against_verbose_siblings``
-(``test_restatement_guard_calibration.py``) are untouched and still assert the
-hold, and ``ROOT_NOVELTY_MIN_FRACTION`` / ``_FRAME_OWNER_JACCARD`` are unchanged.
+These pins fixed the contradiction only; releasing the held root was left open
+as the #1122 product decision. fm#1122 has since taken it: a root whose whole
+overlap ONE standing explanation accounts for is released as a DUPLICATE
+(``test_unattached_duplicate_no_longer_frames_its_own_root``), while a root the
+standing explanations SPAN stays held (the #656 pins in
+``test_restatement_guard_calibration.py``, which are untouched). The disposition
+and closure behaviour below is unchanged — only which roots reach it. Neither
+``ROOT_NOVELTY_MIN_FRACTION`` nor ``_FRAME_OWNER_JACCARD`` moved.
 
 The fixture is the live incident's own statements: a terse ROOT, its ATTACHED
 hypothesis, and the turn-11 near-duplicate whose ``root_node_ref`` adoption the
@@ -183,10 +185,11 @@ def _restatement_held_case(
     differs from the baseline in one respect only:
 
     - ``duplicate_attached`` — anchoring the SECOND disjunct to the root makes it
-      the root's OWN hypothesis, which drops it out of the frame. One sibling is
-      then left, it alone accounts for everything the frame accounts for, and
-      the §7.1 attribution test releases the root — leaving an otherwise
-      identical genuine INSUFFICIENT_EVIDENCE stall.
+      the root's OWN hypothesis, which drops it out of the frame. The remaining
+      sibling leaves the root 0.444 novel, so it clears the NOVELTY bar outright
+      and the guard never reaches the fm#1122 attribution test — an otherwise
+      identical genuine INSUFFICIENT_EVIDENCE stall. (Measured, not assumed: the
+      knob turns off the novelty premise, not the attribution premise.)
     - ``extra_unsettled_root`` — a second live ROOT with no evidence at all. The
       hold is still there; it is no longer the case's SOLE block.
     - ``declared_wall`` — one outstanding ``CAUSAL_VERIFICATION`` need per

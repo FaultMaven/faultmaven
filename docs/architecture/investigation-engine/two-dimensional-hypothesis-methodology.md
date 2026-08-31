@@ -523,6 +523,18 @@ The problem anchors are themselves such a claim, so a root they alone cover is
 the symptom dressed as a cause and is held unconditionally — a sibling that
 happens to cover it too does not excuse it.
 
+**Principal source.** The attribution test above subtracts the anchors before
+asking whether one sibling accounts for the rest, which makes it blind to a
+disjunct the problem statement happens to pre-name (the #661 contaminated-anchor
+class — 6 of the 7 roots still held in the dev corpus). Delete that disjunct
+along with the anchors and the remaining fragment is covered by the other
+disjunct alone, so a *distributed* aggregation presents as *attributable to one*
+and a #656 root releases. The attributing claim must therefore also be where
+most of the root comes from, measured on the root's FULL token set: a root is a
+hypothesis's duplicate only when that hypothesis, not the problem statement, is
+its principal source. This is a comparison between two measured quantities, not
+a new constant.
+
 Deliberately a QUANTIFIER, not a threshold. fm#1137/#1140 swept "how much does
 one sibling cover" and found the classes overlap (the incident duplicate covers
 0.889 of its root, a verbose #656 disjunct 0.667, with mutual Jaccard ordering
